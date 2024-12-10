@@ -4,3 +4,5 @@ target
 # These directories don't contribute to our container build
 docs/
 plans/
+Containerfile
+build_seed.sh
