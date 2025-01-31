@@ -20,6 +20,8 @@ mod ostree_container;
 /// The path to the bootc root directory, relative to the physical
 /// system root
 pub(crate) const BOOTC_ROOT: &str = "ostree/bootc";
+/// The ostree repo config option to enable fsverity
+pub(crate) const REPO_VERITY_CONFIG: &str = "ex-integrity.fsverity";
 
 pub(crate) struct Storage {
     pub sysroot: SysrootLock,
