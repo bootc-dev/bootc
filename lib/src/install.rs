@@ -1597,20 +1597,20 @@ fn remove_all_in_dir_no_xdev(d: &Dir, mount_err: bool) -> Result<()> {
 
 #[context("Removing boot directory content")]
 fn clean_boot_directories(rootfs: &Dir) -> Result<()> {
-    let bootdir =
-        crate::utils::open_dir_remount_rw(rootfs, BOOT.into()).context("Opening /boot")?;
-    // This should not remove /boot/efi note.
-    remove_all_in_dir_no_xdev(&bootdir, false)?;
-    // TODO: Discover the ESP the same way bootupd does it; we should also
-    // support not wiping the ESP.
-    if ARCH_USES_EFI {
-        if let Some(efidir) = bootdir
-            .open_dir_optional(crate::bootloader::EFI_DIR)
-            .context("Opening /boot/efi")?
-        {
-            remove_all_in_dir_no_xdev(&efidir, false)?;
-        }
-    }
+    // let bootdir =
+    //     crate::utils::open_dir_remount_rw(rootfs, BOOT.into()).context("Opening /boot")?;
+    // // This should not remove /boot/efi note.
+    // remove_all_in_dir_no_xdev(&bootdir, false)?;
+    // // TODO: Discover the ESP the same way bootupd does it; we should also
+    // // support not wiping the ESP.
+    // if ARCH_USES_EFI {
+    //     if let Some(efidir) = bootdir
+    //         .open_dir_optional(crate::bootloader::EFI_DIR)
+    //         .context("Opening /boot/efi")?
+    //     {
+    //         remove_all_in_dir_no_xdev(&efidir, false)?;
+    //     }
+    // }
     Ok(())
 }
 
