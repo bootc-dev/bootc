@@ -1596,21 +1596,31 @@ fn remove_all_in_dir_no_xdev(d: &Dir, mount_err: bool) -> Result<()> {
 }
 
 #[context("Removing boot directory content")]
-fn clean_boot_directories(rootfs: &Dir) -> Result<()> {
-    // let bootdir =
-    //     crate::utils::open_dir_remount_rw(rootfs, BOOT.into()).context("Opening /boot")?;
-    // // This should not remove /boot/efi note.
-    // remove_all_in_dir_no_xdev(&bootdir, false)?;
-    // // TODO: Discover the ESP the same way bootupd does it; we should also
-    // // support not wiping the ESP.
-    // if ARCH_USES_EFI {
-    //     if let Some(efidir) = bootdir
-    //         .open_dir_optional(crate::bootloader::EFI_DIR)
-    //         .context("Opening /boot/efi")?
-    //     {
-    //         remove_all_in_dir_no_xdev(&efidir, false)?;
-    //     }
-    // }
+fn clean_boot_directories(rootfs: &Dir, is_ostree: bool) -> Result<()> {
+    let bootdir =
+        crate::utils::open_dir_remount_rw(rootfs, BOOT.into()).context("Opening /boot")?;
+
+    if is_ostree {
+        // On ostree systems, the boot directory already has our desired format, we should only
+        // remove the bootupd-state.json file to avoid bootupctl complaining it already exists.
+        bootdir
+            .remove_file_optional("bootupd-state.json")
+            .context("removing bootupd-state.json")?;
+    } else {
+        // This should not remove /boot/efi note.
+        remove_all_in_dir_no_xdev(&bootdir, false)?;
+        // TODO: Discover the ESP the same way bootupd does it; we should also
+        // support not wiping the ESP.
+        if ARCH_USES_EFI {
+            if let Some(efidir) = bootdir
+                .open_dir_optional(crate::bootloader::EFI_DIR)
+                .context("Opening /boot/efi")?
+            {
+                remove_all_in_dir_no_xdev(&efidir, false)?;
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -1731,7 +1741,8 @@ pub(crate) async fn install_to_filesystem(
     // the deployment root.
     let possible_physical_root = fsopts.root_path.join("sysroot");
     let possible_ostree_dir = possible_physical_root.join("ostree");
-    if possible_ostree_dir.exists() {
+    let is_already_ostree = possible_ostree_dir.exists();
+    if is_already_ostree {
         tracing::debug!(
             "ostree detected in {possible_ostree_dir}, assuming target is a deployment root and using {possible_physical_root}"
         );
@@ -1759,7 +1770,7 @@ pub(crate) async fn install_to_filesystem(
             tokio::task::spawn_blocking(move || remove_all_in_dir_no_xdev(&rootfs_fd, true))
                 .await??;
         }
-        Some(ReplaceMode::Alongside) => clean_boot_directories(&rootfs_fd)?,
+        Some(ReplaceMode::Alongside) => clean_boot_directories(&rootfs_fd, is_already_ostree)?,
         None => require_empty_rootdir(&rootfs_fd)?,
     }
 
