@@ -631,11 +631,17 @@ async fn initialize_ostree_root(state: &State, root_setup: &RootSetup) -> Result
 
     // Ensure that the physical root is labeled.
     // Another implementation: https://github.com/coreos/coreos-assembler/blob/3cd3307904593b3a131b81567b13a4d0b6fe7c90/src/create_disk.sh#L295
-    crate::lsm::ensure_dir_labeled(rootfs_dir, "", Some("/".into()), 0o755.into(), sepolicy)?;
+    crate::lsm::ensure_dir_labeled_as_path(
+        rootfs_dir,
+        "",
+        Some("/".into()),
+        0o755.into(),
+        sepolicy,
+    )?;
 
     // And also label /boot AKA xbootldr, if it exists
     if rootfs_dir.try_exists("boot")? {
-        crate::lsm::ensure_dir_labeled(rootfs_dir, "boot", None, 0o755.into(), sepolicy)?;
+        crate::lsm::ensure_dir_labeled_as_path(rootfs_dir, "boot", None, 0o755.into(), sepolicy)?;
     }
 
     for (k, v) in [
@@ -681,7 +687,7 @@ async fn initialize_ostree_root(state: &State, root_setup: &RootSetup) -> Result
     // Bootstrap the initial labeling of the /ostree directory as usr_t
     if let Some(policy) = sepolicy {
         let ostree_dir = rootfs_dir.open_dir("ostree")?;
-        crate::lsm::ensure_dir_labeled(
+        crate::lsm::ensure_dir_labeled_as_path(
             &ostree_dir,
             ".",
             Some("/usr".into()),

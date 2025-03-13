@@ -406,16 +406,22 @@ pub(crate) fn install_create_rootfs(
 
     mount::mount(&rootdev, &physical_root_path)?;
     let target_rootfs = Dir::open_ambient_dir(&physical_root_path, cap_std::ambient_authority())?;
-    crate::lsm::ensure_dir_labeled(&target_rootfs, "", Some("/".into()), 0o755.into(), sepolicy)?;
+    crate::lsm::ensure_dir_labeled_as_path(
+        &target_rootfs,
+        "",
+        Some("/".into()),
+        0o755.into(),
+        sepolicy,
+    )?;
     let physical_root = Dir::open_ambient_dir(&physical_root_path, cap_std::ambient_authority())?;
     let bootfs = physical_root_path.join("boot");
     // Create the underlying mount point directory, which should be labeled
-    crate::lsm::ensure_dir_labeled(&target_rootfs, "boot", None, 0o755.into(), sepolicy)?;
+    crate::lsm::ensure_dir_labeled_as_path(&target_rootfs, "boot", None, 0o755.into(), sepolicy)?;
     if let Some(bootdev) = bootdev {
         mount::mount(bootdev.node.as_str(), &bootfs)?;
     }
     // And we want to label the root mount of /boot
-    crate::lsm::ensure_dir_labeled(&target_rootfs, "boot", None, 0o755.into(), sepolicy)?;
+    crate::lsm::ensure_dir_labeled_as_path(&target_rootfs, "boot", None, 0o755.into(), sepolicy)?;
 
     // Create the EFI system partition, if applicable
     if let Some(esp_partno) = esp_partno {

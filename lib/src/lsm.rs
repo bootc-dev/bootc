@@ -323,7 +323,7 @@ pub(crate) fn ensure_dir_labeled_recurse(
 }
 
 /// A wrapper for creating a directory, also optionally setting a SELinux label.
-pub(crate) fn ensure_dir_labeled(
+pub(crate) fn ensure_dir_labeled_as_path(
     root: &Dir,
     destname: impl AsRef<Utf8Path>,
     as_path: Option<&Utf8Path>,
