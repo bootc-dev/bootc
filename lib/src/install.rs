@@ -677,9 +677,6 @@ async fn initialize_ostree_root(state: &State, root_setup: &RootSetup) -> Result
 
     state.tempdir.create_dir("temp-run")?;
     let temp_run = state.tempdir.open_dir("temp-run")?;
-    sysroot_dir
-        .create_dir_all(Utf8Path::new(crate::imgstorage::SUBPATH).parent().unwrap())
-        .context("creating bootc dir")?;
     let imgstore = crate::imgstorage::Storage::create(&sysroot_dir, &temp_run)?;
     // And drop it again - we'll reopen it after this
     drop(imgstore);

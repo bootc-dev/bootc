@@ -330,26 +330,8 @@ pub(crate) fn ensure_dir_labeled_as_path(
     mode: rustix::fs::Mode,
     policy: Option<&ostree::SePolicy>,
 ) -> Result<()> {
-    use std::borrow::Cow;
-
-    let destname = destname.as_ref();
-    // Special case the empty string
-    let local_destname = if destname.as_str().is_empty() {
-        ".".into()
-    } else {
-        destname
-    };
-    tracing::debug!("Labeling {local_destname}");
-    let label = policy
-        .map(|policy| {
-            let as_path = as_path
-                .map(Cow::Borrowed)
-                .unwrap_or_else(|| Utf8Path::new("/").join(destname).into());
-            require_label(policy, &as_path, libc::S_IFDIR | mode.as_raw_mode())
-        })
-        .transpose()
-        .with_context(|| format!("Labeling {local_destname}"))?;
-    tracing::trace!("Label for {local_destname} is {label:?}");
+    let label = get_label_from_policy(destname.as_ref(), as_path, policy, mode)?;
+    let local_destname = normalize_destname(destname.as_ref());
 
     root.ensure_dir_with(local_destname, &DirBuilder::new())
         .with_context(|| format!("Opening {local_destname}"))?;
@@ -366,6 +348,62 @@ pub(crate) fn ensure_dir_labeled_as_path(
     }
 
     Ok(())
+}
+
+/// This will create a directory and set the SELinux label to as_path's label
+/// without validating the directory is labeled in a policy
+pub(crate) fn ensure_dir_labeled(
+    root: &Dir,
+    destname: &Utf8Path,
+    label: &str,
+    mode: rustix::fs::Mode,
+) -> Result<()> {
+    let local_destname = normalize_destname(destname);
+
+    root.ensure_dir_with(local_destname, &DirBuilder::new())?;
+    let dirfd = cap_std_ext::cap_primitives::fs::open(
+        &root.as_filelike_view(),
+        local_destname.as_std_path(),
+        OpenOptions::new().read(true),
+    )
+    .context("opendir")?;
+    let dirfd = dirfd.as_fd();
+    rustix::fs::fchmod(dirfd, mode).context("fchmod")?;
+    set_security_selinux(dirfd, label.as_bytes())
+}
+
+fn get_label_from_policy(
+    destname: &Utf8Path,
+    as_path: Option<&Utf8Path>,
+    policy: Option<&ostree::SePolicy>,
+    mode: rustix::fs::Mode,
+) -> Result<Option<gio::glib::GString>> {
+    use std::borrow::Cow;
+
+    let local_destname = normalize_destname(destname);
+
+    tracing::debug!("Labeling {local_destname}");
+    let label = policy
+        .map(|policy| {
+            let as_path = as_path
+                .map(Cow::Borrowed)
+                .unwrap_or_else(|| Utf8Path::new("/").join(destname).into());
+            require_label(policy, &as_path, libc::S_IFDIR | mode.as_raw_mode())
+        })
+        .transpose()
+        .with_context(|| format!("Labeling {local_destname}"))?;
+    tracing::trace!("Label for {local_destname} is {label:?}");
+
+    Ok(label)
+}
+
+fn normalize_destname(destname: &Utf8Path) -> &Utf8Path {
+    // Special case the empty string
+    if destname.as_str().is_empty() {
+        ".".into()
+    } else {
+        destname
+    }
 }
 
 /// A wrapper for atomically writing a file, also optionally setting a SELinux label.

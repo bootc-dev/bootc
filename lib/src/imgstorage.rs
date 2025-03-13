@@ -18,7 +18,6 @@ use cap_std_ext::cap_std;
 use cap_std_ext::cap_std::fs::Dir;
 use cap_std_ext::cap_tempfile::TempDir;
 use cap_std_ext::cmdext::CapStdExtCommandExt;
-use cap_std_ext::dirext::CapStdExtDirExt;
 use fn_error_context::context;
 use std::os::fd::OwnedFd;
 use tokio::process::Command as AsyncCommand;
@@ -161,38 +160,60 @@ impl Storage {
         Ok(())
     }
 
+    #[context("Initializing imgstorage dirs")]
+    fn init_dirs(sysroot: &Dir) -> Result<()> {
+        // need to create all the imgstore directories first
+        // then label each of them
+        // then run podman --root <storage> images to create the remaining structure
+        // otherwise, if letting podman populate the imgstorage dir first,
+        // then all the files/dirs that podman creates will be labelled as usr_t
+        let subpath = &Self::subpath();
+        sysroot
+            .create_dir_all(subpath.parent().unwrap())
+            .context("creating imgstorage parent dir")?;
+
+        //directly set the label, instead of deriving it from an existing /var/lib/containers
+        //directory to avoid requiring loading an selinux policy whenever the storage is created
+        //e.g. during the anaconda installation path
+        crate::lsm::ensure_dir_labeled(
+            &sysroot,
+            subpath,
+            "system_u:object_r:container_var_lib_t:s0",
+            0o755.into(),
+        )
+        .context("labeling storage root")?;
+
+        let storage_dir = sysroot.open_dir(subpath).context("oppening storage dir")?;
+        let paths = ["overlay", "overlay-images", "overlay-layers", "volumes"];
+        for p in paths {
+            crate::lsm::ensure_dir_labeled(
+                &storage_dir,
+                Utf8Path::new(p),
+                "system_u:object_r:container_ro_file_t:s0",
+                0o755.into(),
+            )
+            .context(format!("labeling storage subpath: {}", p))?;
+        }
+
+        Ok(())
+    }
+
     #[context("Creating imgstorage")]
     pub(crate) fn create(sysroot: &Dir, run: &Dir) -> Result<Self> {
+        Self::init_dirs(sysroot)?;
         Self::init_globals()?;
         let subpath = &Self::subpath();
 
-        // SAFETY: We know there's a parent
-        let parent = subpath.parent().unwrap();
-        if !sysroot
-            .try_exists(subpath)
-            .with_context(|| format!("Querying {subpath}"))?
-        {
-            let tmp = format!("{subpath}.tmp");
-            sysroot.remove_all_optional(&tmp).context("Removing tmp")?;
-            sysroot
-                .create_dir_all(parent)
-                .with_context(|| format!("Creating {parent}"))?;
-            sysroot.create_dir_all(&tmp).context("Creating tmpdir")?;
-            let storage_root = sysroot.open_dir(&tmp).context("Open tmp")?;
-            // There's no explicit API to initialize a containers-storage:
-            // root, simply passing a path will attempt to auto-create it.
-            // We run "podman images" in the new root.
-            new_podman_cmd_in(&storage_root, &run)?
-                .stdout(Stdio::null())
-                .arg("images")
-                .run()
-                .context("Initializing images")?;
-            drop(storage_root);
-            sysroot
-                .rename(&tmp, sysroot, subpath)
-                .context("Renaming tmpdir")?;
-            tracing::debug!("Created image store");
-        }
+        let storage_dir = sysroot.open_dir(subpath).context("opening storage dir")?;
+        // There's no explicit API to initialize a containers-storage:
+        // root, simply passing a path will attempt to auto-create it.
+        // We run "podman images" in the new root.
+        new_podman_cmd_in(&storage_dir, &run)?
+            .stdout(Stdio::null())
+            .arg("images")
+            .run()
+            .context("Initializing images")?;
+        tracing::debug!("Created image store");
         Self::open(sysroot, run)
     }
 
