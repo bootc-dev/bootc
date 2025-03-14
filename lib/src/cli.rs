@@ -131,7 +131,15 @@ pub(crate) struct SwitchOpts {
 
 /// Options controlling rollback
 #[derive(Debug, Parser, PartialEq, Eq)]
-pub(crate) struct RollbackOpts {}
+pub(crate) struct RollbackOpts {
+    /// Restart or reboot into the rollback image.
+    ///
+    /// Currently, this option always reboots.  In the future this command
+    /// will detect the case where no kernel changes are queued, and perform
+    /// a userspace-only restart.
+    #[clap(long)]
+    pub(crate) apply: bool,
+}
 
 /// Perform an edit operation
 #[derive(Debug, Parser, PartialEq, Eq)]
@@ -905,9 +913,15 @@ async fn switch(opts: SwitchOpts) -> Result<()> {
 
 /// Implementation of the `bootc rollback` CLI command.
 #[context("Rollback")]
-async fn rollback(_opts: RollbackOpts) -> Result<()> {
+async fn rollback(opts: RollbackOpts) -> Result<()> {
     let sysroot = &get_storage().await?;
-    crate::deploy::rollback(sysroot).await
+    crate::deploy::rollback(sysroot).await?;
+
+    if opts.apply {
+        crate::reboot::reboot()?;
+    }
+
+    Ok(())
 }
 
 /// Implementation of the `bootc edit` CLI command.

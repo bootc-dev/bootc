@@ -7,7 +7,7 @@ queued upgrade) then it will be discarded
 
 # SYNOPSIS
 
-**bootc rollback** \[**-h**\|**\--help**\]
+**bootc rollback**  \[**\--apply**\] \[**-h**\|**\--help**\]
 
 # DESCRIPTION
 
@@ -27,6 +27,14 @@ A systemd journal message will be logged with
 rollback invocation.
 
 # OPTIONS
+
+**\--apply**
+
+:   Restart or reboot into the rollback image.
+
+    Currently, this option always reboots. In the future this command
+    will detect the case where no kernel changes are queued, and perform
+    a userspace-only restart.
 
 **-h**, **\--help**
 
