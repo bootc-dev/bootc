@@ -36,7 +36,7 @@ pub(crate) fn inject_root_ssh_authorized_keys(
     let tmpfiles_content =
         format!("f~ /{root_path}/.ssh/authorized_keys 600 root root - {b64_encoded}\n");
 
-    crate::lsm::ensure_dir_labeled(root, ETC_TMPFILES, None, 0o755.into(), sepolicy)?;
+    crate::lsm::ensure_dir_labeled_as_path(root, ETC_TMPFILES, None, 0o755.into(), sepolicy)?;
     let tmpfiles_dir = root.open_dir(ETC_TMPFILES)?;
     crate::lsm::atomic_replace_labeled(
         &tmpfiles_dir,
