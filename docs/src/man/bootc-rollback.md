@@ -32,6 +32,22 @@ rollback invocation.
 
 :   Print help (see a summary with -h)
 
+# Note on Rollbacks and the /etc Directory
+
+When you perform a rollback (e.g., with bootc rollback), any changes made to files in the `/etc` directory won’t carry over to the rolled-back deployment.
+The /etc files will revert to their state from that previous deployment instead.
+
+This is because `bootc rollback` just reorders the existing deployments. It doesn't create new deployments. The /etc merges happen when new deployments are created.
+
+If you want to save a modified /etc file for use after the rollback:
+You can copy it to a directory under `/var`, like /var/home/User (for a specific user) or /var/root/ (for the root user).
+These directories aren’t affected by the rollback as it is user content.
+
+Going back to the original state from either through a temporary rollback or another `bootc rollback`, the `/etc` directory will restore to its state from that original deployment.
+
+Another option if one is sure the situation you are rolling back for is not the config files i.e content in /etc/ and you want to go to an older deployment you can `bootc switch`
+to that older image, this will perform the /etc merge and deploy the previous version of the software.
+
 # VERSION
 
 v1.1.6
