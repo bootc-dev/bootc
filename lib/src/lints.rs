@@ -10,7 +10,7 @@ use std::env::consts::ARCH;
 use std::fmt::Write as WriteFmt;
 use std::os::unix::ffi::OsStrExt;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use bootc_utils::PathQuotedDisplay;
 use camino::{Utf8Path, Utf8PathBuf};
 use cap_std::fs::Dir;
@@ -21,7 +21,7 @@ use fn_error_context::context;
 use indoc::indoc;
 use linkme::distributed_slice;
 use ostree_ext::ostree_prepareroot;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// Reference to embedded default baseimage content that should exist.
 const BASEIMAGE_REF: &str = "usr/share/doc/bootc/baseimage/base";
@@ -57,12 +57,27 @@ impl LintError {
     }
 }
 
+#[derive(Debug, Clone)]
+pub(crate) enum Applicability {
+    Scan,
+    Fix,
+}
+
 type LintFn = fn(&Dir) -> LintResult;
+type LintFnExt = fn(&Dir, apply: Applicability) -> LintResult;
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum LintFnTy {
+    Scan(#[serde(skip)] LintFn),
+    ScanOrFix(#[serde(skip)] LintFnExt),
+}
+
 #[distributed_slice]
 pub(crate) static LINTS: [Lint];
 
 /// The classification of a lint type.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 enum LintType {
     /// If this fails, it is known to be fatal - the system will not install or
@@ -78,7 +93,8 @@ pub(crate) enum WarningDisposition {
     FatalWarnings,
 }
 
-#[derive(Debug, Copy, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
 pub(crate) enum RootType {
     Running,
     Alternative,
@@ -90,8 +106,7 @@ struct Lint {
     name: &'static str,
     #[serde(rename = "type")]
     ty: LintType,
-    #[serde(skip)]
-    f: LintFn,
+    apply: LintFnTy,
     description: &'static str,
     // Set if this only applies to a specific root type.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -107,7 +122,7 @@ impl Lint {
         Lint {
             name: name,
             ty: LintType::Fatal,
-            f: f,
+            apply: LintFnTy::Scan(f),
             description: description,
             root_type: None,
         }
@@ -121,12 +136,28 @@ impl Lint {
         Lint {
             name: name,
             ty: LintType::Warning,
-            f: f,
+            apply: LintFnTy::Scan(f),
             description: description,
             root_type: None,
         }
     }
 
+    pub(crate) const fn new(
+        name: &'static str,
+        description: &'static str,
+        f: LintFnTy,
+        ty: LintType,
+    ) -> Self {
+        Lint {
+            name,
+            description: description,
+            ty,
+            apply: f,
+            root_type: None,
+        }
+    }
+
+    /// Set the root filesystem type
     const fn set_root_type(mut self, v: RootType) -> Self {
         self.root_type = Some(v);
         self
@@ -150,6 +181,7 @@ struct LintExecutionResult {
 fn lint_inner<'skip>(
     root: &Dir,
     root_type: RootType,
+    fix: Applicability,
     skip: impl IntoIterator<Item = &'skip str>,
     mut output: impl std::io::Write,
 ) -> Result<LintExecutionResult> {
@@ -173,11 +205,15 @@ fn lint_inner<'skip>(
             }
         }
 
-        let r = match (lint.f)(&root) {
-            Ok(r) => r,
-            Err(e) => anyhow::bail!("Unexpected runtime error running lint {name}: {e}"),
-        };
+        // Call the lint function, and propagate the first level of error (runtime errors)
+        // immediately; we don't continue on and execute any other lints.
+        let r = match lint.apply {
+            LintFnTy::ScanOrFix(f) => f(&root, fix.clone()),
+            LintFnTy::Scan(f) => f(&root),
+        }
+        .with_context(|| format!("Runtime error executing lint {name}"))?;
 
+        // The lint executed OK, but may have successfully detected problems.
         if let Err(e) = r {
             match lint.ty {
                 LintType::Fatal => {
@@ -212,10 +248,11 @@ pub(crate) fn lint<'skip>(
     root: &Dir,
     warning_disposition: WarningDisposition,
     root_type: RootType,
+    fix: Applicability,
     skip: impl IntoIterator<Item = &'skip str>,
     mut output: impl std::io::Write,
 ) -> Result<()> {
-    let r = lint_inner(root, root_type, skip, &mut output)?;
+    let r = lint_inner(root, root_type, fix, skip, &mut output)?;
     writeln!(output, "Checks passed: {}", r.passed)?;
     if r.skipped > 0 {
         writeln!(output, "Checks skipped: {}", r.skipped)?;
@@ -503,7 +540,7 @@ fn check_varlog(root: &Dir) -> LintResult {
 }
 
 #[distributed_slice(LINTS)]
-static LINT_VAR_TMPFILES: Lint = Lint::new_warning(
+static LINT_VAR_TMPFILES: Lint = Lint::new(
     "var-tmpfiles",
     indoc! { r#"
 Check for content in /var that does not have corresponding systemd tmpfiles.d entries.
@@ -514,10 +551,27 @@ Instead, it's recommended to have /var effectively empty in the container image,
 and use systemd tmpfiles.d to generate empty directories and compatibility symbolic links
 as part of each boot.
 "#},
-    check_var_tmpfiles,
+    LintFnTy::ScanOrFix(check_var_tmpfiles),
+    LintType::Warning,
 )
 .set_root_type(RootType::Running);
-fn check_var_tmpfiles(_root: &Dir) -> LintResult {
+fn check_var_tmpfiles(_root: &Dir, fix: Applicability) -> LintResult {
+    // Handle the fix case first by doing the conversion where we can
+    match fix {
+        Applicability::Fix => {
+            let r = bootc_tmpfiles::convert_var_to_tmpfiles_current_root()?;
+            if let Some((count, path)) = r.generated {
+                println!(
+                    "tmpfiles.d: Generated: {} with entries: {}",
+                    PathQuotedDisplay::new(&path),
+                    count
+                );
+            } else {
+                println!("tmpfiles.d: Nogenerated");
+            }
+        }
+        Applicability::Scan => {}
+    };
     let r = bootc_tmpfiles::find_missing_tmpfiles_current_root()?;
     if r.tmpfiles.is_empty() && r.unsupported.is_empty() {
         return lint_ok();
@@ -680,10 +734,10 @@ mod tests {
         let mut out = Vec::new();
         let warnings = WarningDisposition::FatalWarnings;
         let root_type = RootType::Alternative;
-        lint(root, warnings, root_type, [], &mut out).unwrap();
+        lint(root, warnings, root_type, Applicability::Scan, [], &mut out).unwrap();
         root.create_dir_all("var/run/foo")?;
         let mut out = Vec::new();
-        assert!(lint(root, warnings, root_type, [], &mut out).is_err());
+        assert!(lint(root, warnings, root_type, Applicability::Scan, [], &mut out).is_err());
         Ok(())
     }
 
@@ -694,14 +748,14 @@ mod tests {
         // Verify that all lints run
         let mut out = Vec::new();
         let root_type = RootType::Alternative;
-        let r = lint_inner(root, root_type, [], &mut out).unwrap();
+        let r = lint_inner(root, root_type, Applicability::Scan, [], &mut out).unwrap();
         let running_only_lints = LINTS.len().checked_sub(*ALTROOT_LINTS).unwrap();
         assert_eq!(r.passed, *ALTROOT_LINTS);
         assert_eq!(r.fatal, 0);
         assert_eq!(r.skipped, running_only_lints);
         assert_eq!(r.warnings, 0);
 
-        let r = lint_inner(root, root_type, ["var-log"], &mut out).unwrap();
+        let r = lint_inner(root, root_type, Applicability::Scan, ["var-log"], &mut out).unwrap();
         // Trigger a failure in var-log
         root.create_dir_all("var/log/dnf")?;
         root.write("var/log/dnf/dnf.log", b"dummy dnf log")?;
@@ -712,7 +766,7 @@ mod tests {
 
         // But verify that not skipping it results in a warning
         let mut out = Vec::new();
-        let r = lint_inner(root, root_type, [], &mut out).unwrap();
+        let r = lint_inner(root, root_type, Applicability::Scan, [], &mut out).unwrap();
         assert_eq!(r.passed, ALTROOT_LINTS.checked_sub(1).unwrap());
         assert_eq!(r.fatal, 0);
         assert_eq!(r.skipped, running_only_lints);
@@ -928,5 +982,17 @@ mod tests {
         lint_list(&mut r).unwrap();
         let lints: Vec<serde_yaml::Value> = serde_yaml::from_slice(&r).unwrap();
         assert_eq!(lints.len(), LINTS.len());
+        let tmpfiles = lints
+            .iter()
+            .find(|v| {
+                let v = v.as_mapping().unwrap();
+                let name = v.get("name").unwrap();
+                return name == "var-tmpfiles";
+            })
+            .unwrap()
+            .as_mapping()
+            .unwrap();
+        let ty = tmpfiles.get("apply").unwrap();
+        assert_eq!(ty.as_str().unwrap(), "scan-or-fix");
     }
 }
