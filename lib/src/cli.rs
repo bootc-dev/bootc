@@ -24,7 +24,7 @@ use ostree_ext::ostree;
 use schemars::schema_for;
 use serde::{Deserialize, Serialize};
 
-use crate::deploy::RequiredHostSpec;
+use crate::deploy::{RequiredHostSpec, StageOptions};
 use crate::lints;
 use crate::progress_jsonl::{ProgressWriter, RawProgressFd};
 use crate::spec::Host;
@@ -77,6 +77,12 @@ pub(crate) struct UpgradeOpts {
     #[clap(long, conflicts_with = "check")]
     pub(crate) apply: bool,
 
+    /// Load the new deployment into kexec.
+    ///
+    /// Next time the system is rebooted, it will kexec instead of doing a full reboot
+    #[clap(long, conflicts_with = "check")]
+    pub(crate) kexec: bool,
+
     #[clap(flatten)]
     pub(crate) progress: ProgressOptions,
 }
@@ -95,6 +101,12 @@ pub(crate) struct SwitchOpts {
     /// a userspace-only restart.
     #[clap(long)]
     pub(crate) apply: bool,
+
+    /// Load the new deployment into kexec.
+    ///
+    /// Next time the system is rebooted, it will kexec instead of doing a full reboot
+    #[clap(long)]
+    pub(crate) kexec: bool,
 
     /// The transport; e.g. oci, oci-archive, containers-storage.  Defaults to `registry`.
     #[clap(long, default_value = "registry")]
@@ -807,7 +819,18 @@ async fn upgrade(opts: UpgradeOpts) -> Result<()> {
             println!("No update available.")
         } else {
             let osname = booted_deployment.osname();
-            crate::deploy::stage(sysroot, &osname, &fetched, &spec, prog.clone()).await?;
+            crate::deploy::stage(
+                sysroot,
+                &osname,
+                &fetched,
+                &spec,
+                prog.clone(),
+                StageOptions {
+                    deploy_kexec: opts.kexec,
+                    ..Default::default()
+                },
+            )
+            .await?;
             changed = true;
             if let Some(prev) = booted_image.as_ref() {
                 if let Some(fetched_manifest) = fetched.get_manifest(repo)? {
@@ -892,7 +915,18 @@ async fn switch(opts: SwitchOpts) -> Result<()> {
     }
 
     let stateroot = booted_deployment.osname();
-    crate::deploy::stage(sysroot, &stateroot, &fetched, &new_spec, prog.clone()).await?;
+    crate::deploy::stage(
+        sysroot,
+        &stateroot,
+        &fetched,
+        &new_spec,
+        prog.clone(),
+        StageOptions {
+            deploy_kexec: opts.kexec,
+            ..Default::default()
+        },
+    )
+    .await?;
 
     sysroot.update_mtime()?;
 
@@ -949,7 +983,15 @@ async fn edit(opts: EditOpts) -> Result<()> {
     // TODO gc old layers here
 
     let stateroot = booted_deployment.osname();
-    crate::deploy::stage(sysroot, &stateroot, &fetched, &new_spec, prog.clone()).await?;
+    crate::deploy::stage(
+        sysroot,
+        &stateroot,
+        &fetched,
+        &new_spec,
+        prog.clone(),
+        Default::default(),
+    )
+    .await?;
 
     sysroot.update_mtime()?;
 
