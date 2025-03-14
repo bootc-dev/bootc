@@ -26,6 +26,12 @@ Only changes to the \`spec\` section are honored.
 
 :   Use filename to edit system specification
 
+**-v**, **\--verbose...**
+
+:   Increase logging verbosity
+
+    Use `-vv`, `-vvv` to increase verbosity more.
+
 **\--quiet**
 
 :   Dont display progress

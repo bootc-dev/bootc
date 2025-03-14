@@ -222,6 +222,7 @@ dependencies = [
  "liboverdrop",
  "libsystemd",
  "linkme",
+ "nix",
  "openssl",
  "ostree-ext",
  "regex",

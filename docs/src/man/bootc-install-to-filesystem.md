@@ -33,6 +33,12 @@ is currently expected to be empty by default.
 
     If not provided, the UUID of the target filesystem will be used.
 
+**-v**, **\--verbose**
+
+:   Increase logging verbosity
+
+    Use `-vv`, `-vvv` to increase verbosity more.
+
 **\--boot-mount-spec**=*BOOT_MOUNT_SPEC*
 
 :   Mount specification for the /boot filesystem.

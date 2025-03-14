@@ -13,6 +13,12 @@ Operations which can be executed as part of a container build
 
 # OPTIONS
 
+**-v**, **\--verbose**
+
+:   Increase logging verbosity
+
+    Use `-vv`, `-vvv` to increase verbosity more.
+
 **-h**, **\--help**
 
 :   Print help

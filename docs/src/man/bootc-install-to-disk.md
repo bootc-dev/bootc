@@ -28,6 +28,12 @@ more complex such as RAID, LVM, LUKS etc.
 
 # OPTIONS
 
+**-v**, **\--verbose**
+
+:   Increase logging verbosity
+
+    Use `-vv`, `-vvv` to increase verbosity more.
+
 **\--wipe**
 
 :   Automatically wipe all existing data on device

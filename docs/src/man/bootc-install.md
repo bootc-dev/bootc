@@ -30,6 +30,12 @@ includes other setup and metadata.
 
 # OPTIONS
 
+**-v**, **\--verbose**
+
+:   Increase logging verbosity
+
+    Use `-vv`, `-vvv` to increase verbosity more.
+
 **-h**, **\--help**
 
 :   Print help (see a summary with -h)

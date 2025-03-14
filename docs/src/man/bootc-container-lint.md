@@ -22,6 +22,12 @@ part of a build process; it will error if any problems are detected.
 
 :   Operate on the provided rootfs
 
+**-v**, **\--verbose**
+
+:   Increase logging verbosity
+
+    Use `-vv`, `-vvv` to increase verbosity more.
+
 **\--fatal-warnings**
 
 :   Make warnings fatal

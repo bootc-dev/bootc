@@ -41,6 +41,12 @@ cleaned up if desired when rebooted into the new root.
         However, the running system (and all files) will remain in place
         until reboot
 
+**-v**, **\--verbose**
+
+:   Increase logging verbosity
+
+    Use `-vv`, `-vvv` to increase verbosity more.
+
 **\--source-imgref**=*SOURCE_IMGREF*
 
 :   Install the system from an explicitly given source.

@@ -29,6 +29,12 @@ not \`null\`.
 
 # OPTIONS
 
+**-v**, **\--verbose**
+
+:   Increase logging verbosity
+
+    Use `-vv`, `-vvv` to increase verbosity more.
+
 **\--format**=*FORMAT*
 
 :   The output format\

@@ -5,3 +5,6 @@ bootc.tar.zst
 
 # Added by cargo
 /target
+
+# IDEs / Editors
+.idea/
