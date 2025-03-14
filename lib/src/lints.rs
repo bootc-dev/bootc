@@ -25,6 +25,8 @@ use serde::Serialize;
 
 /// Reference to embedded default baseimage content that should exist.
 const BASEIMAGE_REF: &str = "usr/share/doc/bootc/baseimage/base";
+// https://systemd.io/API_FILE_SYSTEMS/ with /var added for us
+const API_DIRS: &[&str] = &["dev", "proc", "sys", "run", "tmp", "var"];
 
 /// A lint check has failed.
 #[derive(thiserror::Error, Debug)]
@@ -376,6 +378,31 @@ fn check_prepareroot_composefs_norecurse(dir: &Dir) -> LintResult {
 }
 
 #[distributed_slice(LINTS)]
+static LINT_API_DIRS: Lint = Lint::new_fatal(
+    "api-base-directories",
+    indoc! { r#"
+Verify that expected base API directories exist. For more information
+on these, see <https://systemd.io/API_FILE_SYSTEMS/>.
+
+Note that in addition, bootc requires that `/var` exist as a directory.
+"#},
+    check_api_dirs,
+);
+fn check_api_dirs(root: &Dir) -> LintResult {
+    for d in API_DIRS {
+        let Some(meta) = root.symlink_metadata_optional(d)? else {
+            return lint_err(format!("Missing API filesystem base directory: /{d}"));
+        };
+        if !meta.is_dir() {
+            return lint_err(format!(
+                "Expected directory for API filesystem base directory: /{d}"
+            ));
+        }
+    }
+    lint_ok()
+}
+
+#[distributed_slice(LINTS)]
 static LINT_COMPOSEFS: Lint = Lint::new_warning(
     "baseimage-composefs",
     indoc! { r#"
@@ -645,6 +672,9 @@ mod tests {
 
     fn passing_fixture() -> Result<cap_std_ext::cap_tempfile::TempDir> {
         let root = cap_std_ext::cap_tempfile::tempdir(cap_std::ambient_authority())?;
+        for d in API_DIRS {
+            root.create_dir(d)?;
+        }
         root.create_dir_all("usr/lib/modules/5.7.2")?;
         root.write("usr/lib/modules/5.7.2/vmlinuz", "vmlinuz")?;
 
@@ -671,6 +701,18 @@ mod tests {
         root.remove_dir_all("var/run")?;
         // Now we should pass again
         check_var_run(root).unwrap().unwrap();
+        Ok(())
+    }
+
+    #[test]
+    fn test_api() -> Result<()> {
+        let root = &passing_fixture()?;
+        // This one should pass
+        check_api_dirs(root).unwrap().unwrap();
+        root.remove_dir("var")?;
+        assert!(check_api_dirs(root).unwrap().is_err());
+        root.write("var", "a file for var")?;
+        assert!(check_api_dirs(root).unwrap().is_err());
         Ok(())
     }
 
