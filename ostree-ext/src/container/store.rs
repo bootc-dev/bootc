@@ -1058,7 +1058,7 @@ impl ImageImporter {
                 let root_dir = td.open_dir(rootpath)?;
 
                 let modifier =
-                    ostree::RepoCommitModifier::new(ostree::RepoCommitModifierFlags::CONSUME, None);
+                    ostree::RepoCommitModifier::new(ostree::RepoCommitModifierFlags::empty(), None);
                 modifier.set_devino_cache(&devino);
                 // If we have derived layers, then we need to handle the case where
                 // the derived layers include custom policy. Just relabel everything

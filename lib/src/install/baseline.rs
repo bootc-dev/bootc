@@ -162,13 +162,12 @@ pub(crate) fn install_create_rootfs(
     state: &State,
     opts: InstallBlockDeviceOpts,
 ) -> Result<RootSetup> {
+    let install_config = state.install_config.as_ref();
     let luks_name = "root";
     // Ensure we have a root filesystem upfront
     let root_filesystem = opts
         .filesystem
-        .or(state
-            .install_config
-            .as_ref()
+        .or(install_config
             .and_then(|c| c.filesystem_root())
             .and_then(|r| r.fstype))
         .ok_or_else(|| anyhow::anyhow!("No root filesystem specified"))?;
@@ -207,7 +206,7 @@ pub(crate) fn install_create_rootfs(
     }
 
     // Use the install configuration to find the block setup, if we have one
-    let block_setup = if let Some(config) = state.install_config.as_ref() {
+    let block_setup = if let Some(config) = install_config {
         config.get_block_setup(opts.block_setup.as_ref().copied())?
     } else if opts.filesystem.is_some() {
         // Otherwise, if a filesystem is specified then we default to whatever was
@@ -386,8 +385,20 @@ pub(crate) fn install_create_rootfs(
         None
     };
 
+    // Unconditionally enable fsverity for ext4
+    let mkfs_options = match root_filesystem {
+        Filesystem::Ext4 => ["-O", "verity"].as_slice(),
+        _ => [].as_slice(),
+    };
+
     // Initialize rootfs
-    let root_uuid = mkfs(&rootdev, root_filesystem, "root", opts.wipe, [])?;
+    let root_uuid = mkfs(
+        &rootdev,
+        root_filesystem,
+        "root",
+        opts.wipe,
+        mkfs_options.iter().copied(),
+    )?;
     let rootarg = format!("root=UUID={root_uuid}");
     let bootsrc = boot_uuid.as_ref().map(|uuid| format!("UUID={uuid}"));
     let bootarg = bootsrc.as_deref().map(|bootsrc| format!("boot={bootsrc}"));

@@ -1,0 +1,14 @@
+# Enable fsverity at install time
+FROM localhost/bootc
+RUN <<EORUN
+set -xeuo pipefail
+cat > /usr/lib/ostree/prepare-root.conf <<EOF
+[composefs]
+enabled = verity
+EOF
+cat > /usr/lib/bootc/install/90-ext4.toml <<EOF
+[install.filesystem.root]
+type = "ext4"
+EOF
+bootc container lint
+EORUN

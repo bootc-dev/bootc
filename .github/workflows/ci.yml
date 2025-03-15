@@ -65,16 +65,31 @@ jobs:
     # For a not-ancient podman
     runs-on: ubuntu-24.04
     steps:
+      - name: Get a newer podman for heredoc support (from debian testing)
+        run: |
+          set -eux
+          echo 'deb [trusted=yes] https://ftp.debian.org/debian/ testing main' | sudo tee /etc/apt/sources.list.d/testing.list
+          sudo apt update
+          sudo apt install -y crun/testing podman/testing skopeo/testing
       - name: Checkout repository
         uses: actions/checkout@v4
       - name: Free up disk space on runner
         run: sudo ./ci/clean-gha-runner.sh
+      - name: Enable fsverity for /
+        run: sudo tune2fs -O verity $(findmnt -vno SOURCE /)
+      - name: Install utils
+        run: sudo apt -y install fsverity
       - name: Integration tests
         run: |
           set -xeu
+          # Build images to test; TODO investigate doing single container builds
+          # via GHA and pushing to a temporary registry to share among workflows?
           sudo podman build -t localhost/bootc -f hack/Containerfile .
+          sudo podman build -t localhost/bootc-fsverity -f ci/Containerfile.install-fsverity
+
           export CARGO_INCREMENTAL=0  # because we aren't caching the test runner bits
           cargo build --release -p tests-integration
+
           df -h /
           sudo install -m 0755 target/release/tests-integration /usr/bin/bootc-integration-tests
           rm target -rf
@@ -84,8 +99,12 @@ jobs:
             -v /run/dbus:/run/dbus -v /run/systemd:/run/systemd localhost/bootc /src/ostree-ext/ci/priv-integration.sh
           # Nondestructive but privileged tests
           sudo bootc-integration-tests host-privileged localhost/bootc
-          # Finally the install-alongside suite
+          # Install tests
           sudo bootc-integration-tests install-alongside localhost/bootc
+
+          # And the fsverity case
+          sudo podman run --privileged --pid=host localhost/bootc-fsverity bootc install to-existing-root \
+            --acknowledge-destructive --skip-fetch-check
   docs:
     if: ${{ contains(github.event.pull_request.labels.*.name, 'documentation') }}
     runs-on: ubuntu-latest
