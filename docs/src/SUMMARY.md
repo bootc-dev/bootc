@@ -57,6 +57,10 @@
 - [bootc image](experimental-bootc-image.md)
 - [fsck](experimental-fsck.md)
 - [--progress-fd](experimental-progress-fd.md)
+- 
+# Troubleshooting
+
+- [increasing_logging_verbosity](increasing_logging_verbosity.md)
 
 # More information
 

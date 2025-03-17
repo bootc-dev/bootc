@@ -31,6 +31,12 @@ the update in addition.
 
 :   Dont display progress
 
+**-v**, **\--verbose**
+
+:   Increase logging verbosity
+
+    Use `-vv`, `-vvv` to increase verbosity more.
+
 **\--check**
 
 :   Check if an update is available without applying it.

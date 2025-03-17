@@ -10,7 +10,7 @@ use camino::Utf8Path;
 use clap::{Command, CommandFactory};
 
 pub fn generate_manpages(directory: &Utf8Path) -> Result<()> {
-    generate_one(directory, crate::cli::Opt::command())
+    generate_one(directory, crate::cli::Cli::command())
 }
 
 fn generate_one(directory: &Utf8Path, cmd: Command) -> Result<()> {

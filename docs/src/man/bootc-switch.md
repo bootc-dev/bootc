@@ -30,6 +30,12 @@ updates via container image tags; for example,
 
 :   Dont display progress
 
+**-v**, **\--verbose**
+
+:   Increase logging verbosity
+
+    Use `-vv`, `-vvv` to increase verbosity more.
+
 **\--apply**
 
 :   Restart or reboot into the new target image.

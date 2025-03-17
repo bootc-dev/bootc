@@ -55,6 +55,15 @@ impl TryFrom<ProgressOptions> for ProgressWriter {
     }
 }
 
+/// Global args that apply to all subcommands
+#[derive(clap::Args, Debug, Clone, Copy, Default)]
+#[command(about = None, long_about = None)]
+pub(crate) struct GlobalArgs {
+    /// Increase logging verbosity
+    #[arg(short = 'v', long = "verbose", action = clap::ArgAction::Count, global = true)]
+    pub(crate) verbose: u8, // Custom verbosity, counts occurrences of -v
+}
+
 /// Perform an upgrade operation
 #[derive(Debug, Parser, PartialEq, Eq)]
 pub(crate) struct UpgradeOpts {
@@ -468,10 +477,19 @@ impl InternalsOpts {
 /// whether directly via `bootc install` (executed as part of a container)
 /// or via another mechanism such as an OS installer tool, further
 /// updates can be pulled and `bootc upgrade`.
-#[derive(Debug, Parser, PartialEq, Eq)]
+#[derive(Debug, Parser)]
 #[clap(name = "bootc")]
 #[clap(rename_all = "kebab-case")]
 #[clap(version,long_version=clap::crate_version!())]
+pub(crate) struct Cli {
+    #[clap(flatten)]
+    pub(crate) global_args: GlobalArgs,
+
+    #[clap(subcommand)]
+    pub(crate) opt: Opt, // Wrap Opt inside Cli
+}
+
+#[derive(Debug, clap::Subcommand, PartialEq, Eq)]
 #[allow(clippy::large_enum_variant)]
 pub(crate) enum Opt {
     /// Download and queue an updated container image to apply.
@@ -996,7 +1014,7 @@ where
     I: IntoIterator,
     I::Item: Into<OsString> + Clone,
 {
-    run_from_opt(Opt::parse_including_static(args)).await
+    run_from_opt(Cli::parse_including_static(args).opt).await
 }
 
 /// Find the base binary name from argv0 (without a full path). The empty string
@@ -1011,7 +1029,7 @@ fn callname_from_argv0(argv0: &OsStr) -> &str {
         .unwrap_or(default)
 }
 
-impl Opt {
+impl Cli {
     /// In some cases (e.g. systemd generator) we dispatch specifically on argv0.  This
     /// requires some special handling in clap.
     fn parse_including_static<I>(args: I) -> Self
@@ -1035,13 +1053,26 @@ impl Opt {
             };
             if let Some(base_args) = mapped {
                 let base_args = base_args.iter().map(OsString::from);
-                return Opt::parse_from(base_args.chain(args.map(|i| i.into())));
+                return Cli::parse_from(base_args.chain(args.map(|i| i.into())));
             }
             Some(first)
         } else {
             None
         };
-        Opt::parse_from(first.into_iter().chain(args.map(|i| i.into())))
+        // Parse CLI to extract verbosity level
+        let cli = Cli::parse_from(first.into_iter().chain(args.map(|i| i.into())));
+
+        // Set log level based on `-v` occurrences
+        let log_level = match cli.global_args.verbose {
+            0 => tracing::Level::WARN,  // Default (no -v)
+            1 => tracing::Level::INFO,  // -v
+            2 => tracing::Level::DEBUG, // -vv
+            _ => tracing::Level::TRACE, // -vvv or more
+        };
+
+        bootc_utils::update_tracing_log_level(log_level);
+
+        cli
     }
 }
 
@@ -1215,7 +1246,24 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
 }
 
 #[cfg(test)]
+mod test_utils {
+    use std::sync::Once;
+    use bootc_utils::initialize_tracing;
+
+    // Ensure logging is initialized once to prevent conflicts across tests
+    static INIT: Once = Once::new();
+
+    /// Helper function to initialize tracing for tests
+    pub fn init_tracing_for_tests() {
+        INIT.call_once(|| {
+            initialize_tracing();
+        });
+    }
+}
+
+#[cfg(test)]
 mod tests {
+    use crate::cli::test_utils::init_tracing_for_tests;
     use super::*;
 
     #[test]
@@ -1256,14 +1304,15 @@ mod tests {
     #[test]
     fn test_parse_install_args() {
         // Verify we still process the legacy --target-no-signature-verification
-        let o = Opt::try_parse_from([
+        let o = Cli::try_parse_from([
             "bootc",
             "install",
             "to-filesystem",
             "--target-no-signature-verification",
             "/target",
         ])
-        .unwrap();
+        .unwrap()
+        .opt;
         let o = match o {
             Opt::Install(InstallOpts::ToFilesystem(fsopts)) => fsopts,
             o => panic!("Expected filesystem opts, not {o:?}"),
@@ -1279,8 +1328,9 @@ mod tests {
 
     #[test]
     fn test_parse_opts() {
+        init_tracing_for_tests();
         assert!(matches!(
-            Opt::parse_including_static(["bootc", "status"]),
+            Cli::parse_including_static(["bootc", "status"]).opt,
             Opt::Status(StatusOpts {
                 json: false,
                 format: None,
@@ -1289,7 +1339,7 @@ mod tests {
             })
         ));
         assert!(matches!(
-            Opt::parse_including_static(["bootc", "status", "--format-version=0"]),
+            Cli::parse_including_static(["bootc", "status", "--format-version=0"]).opt,
             Opt::Status(StatusOpts {
                 format_version: Some(0),
                 ..
@@ -1300,18 +1350,19 @@ mod tests {
     #[test]
     fn test_parse_generator() {
         assert!(matches!(
-            Opt::parse_including_static([
+            Cli::parse_including_static([
                 "/usr/lib/systemd/system/bootc-systemd-generator",
                 "/run/systemd/system"
-            ]),
+            ]).opt,
             Opt::Internals(InternalsOpts::SystemdGenerator { normal_dir, .. }) if normal_dir == "/run/systemd/system"
         ));
     }
 
     #[test]
     fn test_parse_ostree_ext() {
+        init_tracing_for_tests();
         assert!(matches!(
-            Opt::parse_including_static(["bootc", "internals", "ostree-container"]),
+            Cli::parse_including_static(["bootc", "internals", "ostree-container"]).opt,
             Opt::Internals(InternalsOpts::OstreeContainer { .. })
         ));
 
@@ -1321,25 +1372,121 @@ mod tests {
                 o => panic!("unexpected {o:?}"),
             }
         }
-        let args = peel(Opt::parse_including_static([
-            "/usr/libexec/libostree/ext/ostree-ima-sign",
-            "ima-sign",
-            "--repo=foo",
-            "foo",
-            "bar",
-            "baz",
-        ]));
+        let args = peel(
+            Cli::parse_including_static([
+                "/usr/libexec/libostree/ext/ostree-ima-sign",
+                "ima-sign",
+                "--repo=foo",
+                "foo",
+                "bar",
+                "baz",
+            ])
+            .opt,
+        );
         assert_eq!(
             args.as_slice(),
             ["ima-sign", "--repo=foo", "foo", "bar", "baz"]
         );
 
-        let args = peel(Opt::parse_including_static([
-            "/usr/libexec/libostree/ext/ostree-container",
-            "container",
-            "image",
-            "pull",
-        ]));
+        let args = peel(
+            Cli::parse_including_static([
+                "/usr/libexec/libostree/ext/ostree-container",
+                "container",
+                "image",
+                "pull",
+            ])
+            .opt,
+        );
         assert_eq!(args.as_slice(), ["container", "image", "pull"]);
+    }
+}
+
+#[cfg(test)]
+mod tracing_tests {
+    #![allow(unsafe_code)]
+
+    use bootc_utils::{initialize_tracing, update_tracing_log_level};
+    use nix::unistd::{close, dup, dup2, pipe};
+    use std::fs::File;
+    use std::io::{self, Read};
+    use std::os::unix::io::{AsRawFd, FromRawFd};
+    use std::sync::{Mutex, Once};
+    use crate::cli::test_utils::init_tracing_for_tests;
+
+    // Used for ensuring ordered testing of the tracing tests
+    static TEST_MUTEX: Mutex<()> = Mutex::new(());
+
+    /// Captures `stderr` output using a pipe
+    fn capture_stderr<F: FnOnce()>(test_fn: F) -> String {
+        let (read_fd, write_fd) = pipe().expect("Failed to create pipe");
+
+        // Duplicate original stderr
+        let original_stderr = dup(io::stderr().as_raw_fd()).expect("Failed to duplicate stderr");
+
+        // Redirect stderr to the write end of the pipe
+        dup2(write_fd, io::stderr().as_raw_fd()).expect("Failed to redirect stderr");
+
+        // Close the write end in the parent to prevent deadlocks
+        close(write_fd).expect("Failed to close write end");
+
+        // Run the test function that produces logs
+        test_fn();
+
+        // Restore original stderr
+        dup2(original_stderr, io::stderr().as_raw_fd()).expect("Failed to restore stderr");
+        close(original_stderr).expect("Failed to close original stderr");
+
+        // Read from the pipe
+        let mut buffer = String::new();
+        // File::from_raw_fd() is considered unsafe in Rust, as it takes ownership of a raw file descriptor.
+        // However, in this case, it's safe because we're using a valid file descriptor obtained from pipe().
+        let mut file = unsafe { File::from_raw_fd(read_fd) };
+        file.read_to_string(&mut buffer)
+            .expect("Failed to read from pipe");
+
+        buffer
+    }
+
+    #[test]
+    fn test_default_tracing() {
+        let _lock = TEST_MUTEX.lock().unwrap(); // Ensure sequential execution
+
+        init_tracing_for_tests();
+
+        let output = capture_stderr(|| {
+            tracing::warn!("Test log message to stderr");
+        });
+
+        assert!(
+            output.contains("Test log message to stderr"),
+            "Expected log message not found in stderr"
+        );
+    }
+
+    #[test]
+    fn test_update_tracing() {
+        let _lock = TEST_MUTEX.lock().unwrap(); // Ensure sequential execution
+
+        init_tracing_for_tests();
+        update_tracing_log_level(tracing::Level::TRACE);
+
+        let output = capture_stderr(|| {
+            tracing::info!("Info message to stderr");
+            tracing::debug!("Debug message to stderr");
+            tracing::trace!("Trace message to stderr");
+        });
+
+        assert!(
+            output.contains("Info message to stderr"),
+            "Expected INFO message not found"
+        );
+        assert!(
+            output.contains("Debug message to stderr"),
+            "Expected DEBUG message not found"
+        );
+        assert!(
+            output.contains("Trace message to stderr"),
+            "Expected TRACE message not found"
+        );
     }
 }
