@@ -849,10 +849,18 @@ pub(crate) fn fixup_etc_fstab(root: &Dir) -> Result<()> {
         }
         // If options already contains `ro`, nothing to do
         if options.split(',').any(|s| s == "ro") {
+            println!("/etc/fstab `/` already contains `ro`, nothing to do");
             return Ok(false);
         }
 
         writeln!(w, "# {}", crate::generator::BOOTC_EDITED_STAMP)?;
+
+        // If options == `defaults`, comment the whole line
+        if options == "defaults" {
+            writeln!(w, "# {line}")?;
+            println!("Updated /etc/fstab to comment `/` line");
+            return Ok(true);
+        }
 
         // SAFETY: we unpacked the options before.
         // This adds `ro` to the option list
@@ -871,6 +879,7 @@ pub(crate) fn fixup_etc_fstab(root: &Dir) -> Result<()> {
         }
         // And add the trailing newline
         writeln!(w)?;
+        println!("Updated /etc/fstab to add `ro` for `/`");
         Ok(true)
     }
 
@@ -886,7 +895,6 @@ pub(crate) fn fixup_etc_fstab(root: &Dir) -> Result<()> {
     })
     .context("Replacing /etc/fstab")?;
 
-    println!("Updated /etc/fstab to add `ro` for `/`");
     Ok(())
 }
 
@@ -934,7 +942,7 @@ mod tests {
     }
 
     #[test]
-    fn test_fixup_etc_fstab_default() -> Result<()> {
+    fn test_fixup_etc_fstab_no_root() -> Result<()> {
         let tempdir = cap_std_ext::cap_tempfile::tempdir(cap_std::ambient_authority())?;
         let default = "UUID=f7436547-20ac-43cb-aa2f-eac9632183f6 /boot auto ro 0 0\n";
         tempdir.create_dir_all("etc")?;
@@ -945,7 +953,7 @@ mod tests {
     }
 
     #[test]
-    fn test_fixup_etc_fstab_multi() -> Result<()> {
+    fn test_fixup_etc_fstab_no_root_multi() -> Result<()> {
         let tempdir = cap_std_ext::cap_tempfile::tempdir(cap_std::ambient_authority())?;
         let default = "UUID=f7436547-20ac-43cb-aa2f-eac9632183f6 /boot auto ro 0 0\n\
 UUID=6907-17CA          /boot/efi               vfat    umask=0077,shortname=winnt 0 2\n";
@@ -957,7 +965,7 @@ UUID=6907-17CA          /boot/efi               vfat    umask=0077,shortname=win
     }
 
     #[test]
-    fn test_fixup_etc_fstab_ro() -> Result<()> {
+    fn test_fixup_etc_fstab_root_ro() -> Result<()> {
         let tempdir = cap_std_ext::cap_tempfile::tempdir(cap_std::ambient_authority())?;
         let default = "UUID=f7436547-20ac-43cb-aa2f-eac9632183f6 /boot auto ro 0 0\n\
 UUID=1eef9f42-40e3-4bd8-ae20-e9f2325f8b52 /                     xfs   ro 0 0\n\
@@ -970,7 +978,7 @@ UUID=6907-17CA          /boot/efi               vfat    umask=0077,shortname=win
     }
 
     #[test]
-    fn test_fixup_etc_fstab_rw() -> Result<()> {
+    fn test_fixup_etc_fstab_root_defaults() -> Result<()> {
         let tempdir = cap_std_ext::cap_tempfile::tempdir(cap_std::ambient_authority())?;
         // This case uses `defaults`
         let default = "UUID=f7436547-20ac-43cb-aa2f-eac9632183f6 /boot auto ro 0 0\n\
@@ -978,7 +986,25 @@ UUID=1eef9f42-40e3-4bd8-ae20-e9f2325f8b52 /                     xfs   defaults 0
 UUID=6907-17CA          /boot/efi               vfat    umask=0077,shortname=winnt 0 2\n";
         let modified = "UUID=f7436547-20ac-43cb-aa2f-eac9632183f6 /boot auto ro 0 0\n\
 # Updated by bootc-fstab-edit.service\n\
-UUID=1eef9f42-40e3-4bd8-ae20-e9f2325f8b52 / xfs defaults,ro 0 0\n\
+#UUID=1eef9f42-40e3-4bd8-ae20-e9f2325f8b52 /                     xfs   defaults 0 0\n\
+UUID=6907-17CA          /boot/efi               vfat    umask=0077,shortname=winnt 0 2\n";
+        tempdir.create_dir_all("etc")?;
+        tempdir.atomic_write("etc/fstab", default)?;
+        fixup_etc_fstab(&tempdir).unwrap();
+        assert_eq!(tempdir.read_to_string("etc/fstab")?, modified);
+        Ok(())
+    }
+
+    #[test]
+    fn test_fixup_etc_fstab_root_non_defaults() -> Result<()> {
+        let tempdir = cap_std_ext::cap_tempfile::tempdir(cap_std::ambient_authority())?;
+        // This case uses `defaults`
+        let default = "UUID=f7436547-20ac-43cb-aa2f-eac9632183f6 /boot auto ro 0 0\n\
+UUID=1eef9f42-40e3-4bd8-ae20-e9f2325f8b52 /                     xfs   defaults,x-systemd.device-timeout=0 0 0\n\
+UUID=6907-17CA          /boot/efi               vfat    umask=0077,shortname=winnt 0 2\n";
+        let modified = "UUID=f7436547-20ac-43cb-aa2f-eac9632183f6 /boot auto ro 0 0\n\
+# Updated by bootc-fstab-edit.service\n\
+UUID=1eef9f42-40e3-4bd8-ae20-e9f2325f8b52 / xfs defaults,x-systemd.device-timeout=0,ro 0 0\n\
 UUID=6907-17CA          /boot/efi               vfat    umask=0077,shortname=winnt 0 2\n";
         tempdir.create_dir_all("etc")?;
         tempdir.atomic_write("etc/fstab", default)?;
