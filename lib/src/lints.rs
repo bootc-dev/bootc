@@ -8,6 +8,7 @@
 use std::collections::BTreeSet;
 use std::env::consts::ARCH;
 use std::fmt::Write as WriteFmt;
+use std::ops::ControlFlow;
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
@@ -17,7 +18,8 @@ use camino::{Utf8Path, Utf8PathBuf};
 use cap_std::fs::Dir;
 use cap_std_ext::cap_std;
 use cap_std_ext::cap_std::fs::MetadataExt;
-use cap_std_ext::dirext::{CapStdExtDirExt as _, WalkConfiguration};
+use cap_std_ext::dirext::WalkConfiguration;
+use cap_std_ext::dirext::{CapStdExtDirExt as _, WalkComponent};
 use fn_error_context::context;
 use indoc::indoc;
 use linkme::distributed_slice;
@@ -61,6 +63,17 @@ impl LintError {
 }
 
 type LintFn = fn(&Dir) -> LintResult;
+type LintRecursiveResult = Result<std::ops::ControlFlow<std::result::Result<(), LintError>>>;
+type LintRecursiveFn = fn(&WalkComponent) -> LintRecursiveResult;
+/// A lint can either operate as it pleases on a target root, or it
+/// can be recursive.
+#[derive(Debug)]
+enum LintFnTy {
+    /// A lint that doesn't traverse the whole filesystem
+    Regular(LintFn),
+    /// A recursive lint
+    Recursive(LintRecursiveFn),
+}
 #[distributed_slice]
 pub(crate) static LINTS: [Lint];
 
@@ -94,7 +107,7 @@ struct Lint {
     #[serde(rename = "type")]
     ty: LintType,
     #[serde(skip)]
-    f: LintFn,
+    f: LintFnTy,
     description: &'static str,
     // Set if this only applies to a specific root type.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -110,7 +123,7 @@ impl Lint {
         Lint {
             name: name,
             ty: LintType::Fatal,
-            f: f,
+            f: LintFnTy::Regular(f),
             description: description,
             root_type: None,
         }
@@ -124,7 +137,7 @@ impl Lint {
         Lint {
             name: name,
             ty: LintType::Warning,
-            f: f,
+            f: LintFnTy::Regular(f),
             description: description,
             root_type: None,
         }
@@ -159,24 +172,57 @@ fn lint_inner<'skip>(
     let mut fatal = 0usize;
     let mut warnings = 0usize;
     let mut passed = 0usize;
-    let mut skipped = 0usize;
     let skip: std::collections::HashSet<_> = skip.into_iter().collect();
-    for lint in LINTS {
-        let name = lint.name;
-
-        if skip.contains(name) {
-            skipped += 1;
-            continue;
+    let (mut applicable_lints, skipped_lints): (Vec<_>, Vec<_>) = LINTS.iter().partition(|lint| {
+        if skip.contains(lint.name) {
+            return false;
         }
-
         if let Some(lint_root_type) = lint.root_type {
             if lint_root_type != root_type {
-                skipped += 1;
-                continue;
+                return false;
             }
         }
+        true
+    });
+    // SAFETY: Length must be smaller.
+    let skipped = skipped_lints.len();
+    // Default to predictablility here
+    applicable_lints.sort_by(|a, b| a.name.cmp(b.name));
+    // Split the lints by type
+    let (nonrec_lints, recursive_lints): (Vec<_>, Vec<_>) = applicable_lints
+        .into_iter()
+        .partition(|lint| matches!(lint.f, LintFnTy::Regular(_)));
+    let mut results = Vec::new();
+    for lint in nonrec_lints {
+        let f = match lint.f {
+            LintFnTy::Regular(f) => f,
+            LintFnTy::Recursive(_) => unreachable!(),
+        };
+        results.push((lint, f(&root)));
+    }
 
-        let r = match (lint.f)(&root) {
+    assert!(!recursive_lints.is_empty());
+    root.walk(
+        &WalkConfiguration::default()
+            .noxdev()
+            .path_base(Path::new("/")),
+        |e| -> std::io::Result<_> {
+            for lint in &recursive_lints {
+                let f = match &lint.f {
+                    LintFnTy::Regular(_) => unreachable!(),
+                    LintFnTy::Recursive(f) => f,
+                };
+                if let Err(e) = f(e) {
+                    results.push((lint, Err(e)));
+                    return Ok(ControlFlow::Break(()));
+                }
+            }
+            Ok(ControlFlow::Continue(()))
+        },
+    )?;
+    for (lint, r) in results {
+        let name = lint.name;
+        let r = match r {
             Ok(r) => r,
             Err(e) => anyhow::bail!("Unexpected runtime error running lint {name}: {e}"),
         };
@@ -330,55 +376,40 @@ fn check_kernel(root: &Dir) -> LintResult {
 
 // This one can be lifted in the future, see https://github.com/containers/bootc/issues/975
 #[distributed_slice(LINTS)]
-static LINT_UTF8: Lint = Lint::new_fatal(
-    "utf8",
-    indoc! { r#"
+static LINT_UTF8: Lint = Lint {
+    name: "utf8",
+    description: indoc! { r#"
 Check for non-UTF8 filenames. Currently, the ostree backend of bootc only supports
 UTF-8 filenames. Non-UTF8 filenames will cause a fatal error.
 "#},
-    check_utf8,
-);
-fn check_utf8(dir: &Dir) -> LintResult {
-    let mut err = None;
-    dir.walk(
-        &WalkConfiguration::default()
-            .noxdev()
-            .path_base(Path::new("/")),
-        |e| -> std::io::Result<_> {
-            // Right now we stop iteration on the first non-UTF8 filename found.
-            // However in the future it'd make sense to handle multiple.
-            if err.is_some() {
-                return Ok(std::ops::ControlFlow::Break(()));
-            }
-            let path = e.path;
-            let filename = e.filename;
-            let dirname = path.parent().unwrap_or(Path::new("/"));
-            if filename.to_str().is_none() {
-                // This escapes like "abc\xFFdéf"
-                err = Some(format!(
-                    "{}: Found non-utf8 filename {filename:?}",
-                    PathQuotedDisplay::new(&dirname)
-                ));
-                return Ok(std::ops::ControlFlow::Break(()));
-            };
+    ty: LintType::Fatal,
+    root_type: None,
+    f: LintFnTy::Recursive(check_utf8),
+};
+fn check_utf8(e: &WalkComponent) -> LintRecursiveResult {
+    let path = e.path;
+    let filename = e.filename;
+    let dirname = path.parent().unwrap_or(Path::new("/"));
+    if filename.to_str().is_none() {
+        // This escapes like "abc\xFFdéf"
+        let err = LintError::new(format!(
+            "{}: Found non-utf8 filename {filename:?}",
+            PathQuotedDisplay::new(&dirname)
+        ));
+        return Ok(std::ops::ControlFlow::Break(Err(err)));
+    };
 
-            if e.file_type.is_symlink() {
-                let target = e.dir.read_link_contents(filename)?;
-                if !target.to_str().is_some() {
-                    err = Some(format!(
-                        "{}: Found non-utf8 symlink target",
-                        PathQuotedDisplay::new(&path)
-                    ));
-                    return Ok(std::ops::ControlFlow::Break(()));
-                }
-            }
-            Ok(std::ops::ControlFlow::Continue(()))
-        },
-    )?;
-    if let Some(err) = err {
-        return lint_err(err);
+    if e.file_type.is_symlink() {
+        let target = e.dir.read_link_contents(filename)?;
+        if !target.to_str().is_some() {
+            let err = LintError::new(format!(
+                "{}: Found non-utf8 symlink target",
+                PathQuotedDisplay::new(&path)
+            ));
+            return Ok(std::ops::ControlFlow::Break(Err(err)));
+        }
     }
-    lint_ok()
+    Ok(std::ops::ControlFlow::Continue(()))
 }
 
 fn check_prepareroot_composefs_norecurse(dir: &Dir) -> LintResult {
@@ -862,6 +893,28 @@ mod tests {
         Ok(())
     }
 
+    fn run_recursive_lint(root: &Dir, f: LintRecursiveFn) -> LintResult {
+        let mut result = Ok(());
+        root.walk(
+            &WalkConfiguration::default()
+                .noxdev()
+                .path_base(Path::new("/")),
+            |e| -> Result<_> {
+                let r = f(e)?;
+                let r = match r {
+                    ControlFlow::Continue(c) => ControlFlow::Continue(c),
+                    ControlFlow::Break(Ok(())) => ControlFlow::Break(()),
+                    ControlFlow::Break(Err(e)) => {
+                        result = Err(e);
+                        ControlFlow::Break(())
+                    }
+                };
+                Ok(r)
+            },
+        )?;
+        Ok(result)
+    }
+
     #[test]
     fn test_non_utf8() {
         use std::{ffi::OsStr, os::unix::ffi::OsStrExt};
@@ -879,13 +932,13 @@ mod tests {
         // Out-of-scope symlinks
         root.symlink("../../x", "escape").unwrap();
         // Should be fine
-        check_utf8(root).unwrap().unwrap();
+        run_recursive_lint(root, check_utf8).unwrap().unwrap();
 
         // But this will cause an issue
         let baddir = OsStr::from_bytes(b"subdir/2/bad\xffdir");
         root.create_dir("subdir/2").unwrap();
         root.create_dir(baddir).unwrap();
-        let Err(err) = check_utf8(root).unwrap() else {
+        let Err(err) = run_recursive_lint(root, check_utf8).unwrap() else {
             unreachable!("Didn't fail");
         };
         assert_eq!(
@@ -893,12 +946,12 @@ mod tests {
             r#"/subdir/2: Found non-utf8 filename "bad\xFFdir""#
         );
         root.remove_dir(baddir).unwrap(); // Get rid of the problem
-        check_utf8(root).unwrap().unwrap(); // Check it
+        run_recursive_lint(root, check_utf8).unwrap().unwrap(); // Check it
 
         // Create a new problem in the form of a regular file
         let badfile = OsStr::from_bytes(b"regular\xff");
         root.write(badfile, b"Hello, world!\n").unwrap();
-        let Err(err) = check_utf8(root).unwrap() else {
+        let Err(err) = run_recursive_lint(root, check_utf8).unwrap() else {
             unreachable!("Didn't fail");
         };
         assert_eq!(
@@ -906,11 +959,11 @@ mod tests {
             r#"/: Found non-utf8 filename "regular\xFF""#
         );
         root.remove_file(badfile).unwrap(); // Get rid of the problem
-        check_utf8(root).unwrap().unwrap(); // Check it
+        run_recursive_lint(root, check_utf8).unwrap().unwrap(); // Check it
 
         // And now test invalid symlink targets
         root.symlink(badfile, "subdir/good-name").unwrap();
-        let Err(err) = check_utf8(root).unwrap() else {
+        let Err(err) = run_recursive_lint(root, check_utf8).unwrap() else {
             unreachable!("Didn't fail");
         };
         assert_eq!(
@@ -918,12 +971,12 @@ mod tests {
             r#"/subdir/good-name: Found non-utf8 symlink target"#
         );
         root.remove_file("subdir/good-name").unwrap(); // Get rid of the problem
-        check_utf8(root).unwrap().unwrap(); // Check it
+        run_recursive_lint(root, check_utf8).unwrap().unwrap(); // Check it
 
         // Finally, test a self-referential symlink with an invalid name.
         // We should spot the invalid name before we check the target.
         root.symlink(badfile, badfile).unwrap();
-        let Err(err) = check_utf8(root).unwrap() else {
+        let Err(err) = run_recursive_lint(root, check_utf8).unwrap() else {
             unreachable!("Didn't fail");
         };
         assert_eq!(
@@ -931,7 +984,7 @@ mod tests {
             r#"/: Found non-utf8 filename "regular\xFF""#
         );
         root.remove_file(badfile).unwrap(); // Get rid of the problem
-        check_utf8(root).unwrap().unwrap(); // Check it
+        run_recursive_lint(root, check_utf8).unwrap().unwrap(); // Check it
     }
 
     #[test]
