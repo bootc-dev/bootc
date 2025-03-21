@@ -1,0 +1,137 @@
+digraph {
+	compound=true;
+
+	subgraph cluster_import {
+		 label="store::import";
+		 import_blob[label="blob"];
+		 import_driver[label="driver"];
+		 import_r[label="r"];
+		 import_r2[label="r",shape="tripleoctagon"];
+		 import_r -> import_r2[label="join_fetch"];
+		 import_driver -> import_r2[label="join_fetch"];
+	}
+
+
+	subgraph cluster_fetch_layer {
+		 label="unencapsulate::fetch_layer";
+		 fetch_layer_blob[label="blob"];
+		 fetch_layer_driver[label="driver"];
+		 fetch_layer_blob -> import_blob;
+		 fetch_layer_driver -> import_driver;
+	}
+
+	subgraph cluster_get_blob {
+		 label="imageproxy::get_blob";
+		 get_blob_fd[label="(_,fd)"];
+		 get_blob_fd2[label="tokio::File(tokio::BufReader)"];
+		 get_blob_finish[label="finish"];
+		 get_blob_fd2 -> fetch_layer_blob;
+		 get_blob_finish -> fetch_layer_driver;
+		 get_blob_fd -> get_blob_fd2;
+	}
+
+	subgraph cluster_impl_request {
+		 label="imageproxy::impl_request";
+		 request_req[label="req"];
+		 request_req -> get_blob_fd;
+	}
+
+	subgraph cluster_finish_pipe {
+		 label="imageproxy::finish_pipe";
+		 finish_pipe_r_fd[label="(r,fd)"];
+		 finish_pipe_r[label="r"];
+		 request_req -> finish_pipe_r_fd;
+		 finish_pipe_r_fd -> finish_pipe_r;
+		 finish_pipe_r -> get_blob_finish;
+	}
+
+	subgraph cluster_write_tar {
+		 label="tar::write_tar";
+		 write_tar_src[label="src"];
+		 write_tar_filtered_result[label="filtered_result"];
+		 write_tar_output_copier[label="output_copier"];
+		 import_blob -> write_tar_src;
+		 write_tar_ostree_commit_process[label="<ostree commit process>"];
+		 write_tar_child_stdin[label="child_stdin"];
+		 write_tar_ostree_commit_process -> write_tar_child_stdin;
+
+		 subgraph cluster_write_tar_status_future {
+			  label="status Future";
+			  write_tar_status_future_r[label="r"];
+		 }
+
+		 write_tar_r[label="r"];
+		 write_tar_ostree_commit_process -> write_tar_r[label="spawn()"];
+		 write_tar_r -> write_tar_status_future_r;
+
+		 subgraph cluster_write_tar_output_copier_future {
+			  label="output_copier Future";
+			  write_tar_output_copier_future_child_stdout[label="child_stdout"];
+			  write_tar_output_copier_future_child_stderr[label="child_stderr"];
+		 }
+
+		 write_tar_ostree_commit_process -> write_tar_output_copier_future_child_stdout;
+		 write_tar_ostree_commit_process -> write_tar_output_copier_future_child_stderr;
+
+
+		write_tar_filtered_result2[label="filtered_result (in try_join block)"];
+
+		write_tar_status_future_r -> write_tar_filtered_result2[label="tokio::try_join!"];
+		write_tar_filtered_result -> write_tar_filtered_result2[label="tokio::try_join!"];
+
+		write_tar_output_copier_await[label="output_copier.await"];
+		write_tar_filtered_result2 -> write_tar_output_copier_await;
+		write_tar_output_copier -> write_tar_output_copier_await;
+	}
+
+	subgraph cluster_filter_tar_async {
+		 label="tar::filter_tar_async";
+
+		 subgraph cluster_tar_transformer {
+			  label="tar_transformer Future";
+			  tar_transformer_src[label="src"];
+
+			  tar_transformer_src2[label="src: SyncIoBridge(src)"];
+			  tar_transformer_src -> tar_transformer_src2;
+			  tar_transformer_src3[label="src: decompressor(src)"];
+			  tar_transformer_src2 -> tar_transformer_src3;
+			  tar_transformer_tx_buf[label="tx_buf"];
+			  tar_transformer_dest[label="dest: SyncIoBridge(tx_buf)"];
+			  tar_transformer_tx_buf -> tar_transformer_dest;
+		}
+
+		subgraph cluster_filter_tar_async_copier_future {
+			 label="copier Future";
+			 filter_tar_async_copier_future_rx_buf[label="rx_buf"];
+			 filter_tar_async_copier_future_dest[label="dest"];
+		}
+
+		filter_tar_async_src[label="src"];
+		filter_tar_async_dest[label="dest"];
+		write_tar_src -> filter_tar_async_src;
+		filter_tar_async_tx_buf[label="tx_buf"];
+		filter_tar_async_rx_buf[label="rx_buf"];
+		write_tar_child_stdin -> filter_tar_async_dest;
+		filter_tar_async_src -> tar_transformer_src;
+		filter_tar_async_tx_buf -> tar_transformer_tx_buf;
+		filter_tar_async_rx_buf -> filter_tar_async_copier_future_rx_buf[label="&mut"];
+		filter_tar_async_dest -> filter_tar_async_copier_future_dest[label="&mut"];
+		filter_tar_async_r[label="r"];
+		tar_transformer_src -> filter_tar_async_r[label="tokio::join!", ltail=cluster_tar_transformer];
+		filter_tar_async_copier_future_dest -> filter_tar_async_r[label="tokio::join!", ltail=cluster_filter_tar_async_copier_future];
+		filter_tar_async_r2[label="r"];
+		filter_tar_async_src2[label="src"];
+
+		filter_tar_async_r -> filter_tar_async_r2;
+		filter_tar_async_r -> filter_tar_async_src2;
+
+		filter_tar_async_r2 -> write_tar_filtered_result;
+
+		filter_tar_async_drop_src[label="drop(src)"];
+		filter_tar_async_src2 -> filter_tar_async_drop_src;
+
+	}
+
+	write_tar_output_copier_await -> import_r[ltail=cluster_write_tar];
+
+}
