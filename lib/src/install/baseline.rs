@@ -37,6 +37,12 @@ pub(crate) const BOOTPN_SIZE_MB: u32 = 510;
 pub(crate) const EFIPN_SIZE_MB: u32 = 512;
 /// The GPT type for "linux"
 pub(crate) const LINUX_PARTTYPE: &str = "0FC63DAF-8483-4772-8E79-3D69D8477DE4";
+#[cfg(feature = "install-to-disk")]
+pub(crate) const PREPBOOT_GUID: &str = "9E1A2D38-C612-4316-AA26-8B49521E5A8B";
+#[cfg(feature = "install-to-disk")]
+pub(crate) const PREPBOOT_LABEL: &str = "PowerPC-PReP-boot";
+#[cfg(feature = "install-to-disk")]
+pub(crate) const ESP_GUID: &str = "C12A7328-F81F-11D2-BA4B-00A0C93EC93B";
 
 #[derive(clap::ValueEnum, Default, Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -258,8 +264,8 @@ pub(crate) fn install_create_rootfs(
     } else if cfg!(target_arch = "powerpc64") {
         // PowerPC-PReP-boot
         partno += 1;
-        let label = crate::bootloader::PREPBOOT_LABEL;
-        let uuid = crate::bootloader::PREPBOOT_GUID;
+        let label = PREPBOOT_LABEL;
+        let uuid = PREPBOOT_GUID;
         writeln!(
             &mut partitioning_buf,
             r#"size=4MiB, bootable, type={uuid}, name="{label}""#
@@ -271,7 +277,7 @@ pub(crate) fn install_create_rootfs(
     }
 
     let esp_partno = if super::ARCH_USES_EFI {
-        let esp_guid = crate::bootloader::ESP_GUID;
+        let esp_guid = ESP_GUID;
         partno += 1;
         writeln!(
             &mut partitioning_buf,
