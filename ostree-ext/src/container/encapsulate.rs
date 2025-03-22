@@ -191,6 +191,11 @@ fn build_oci(
 
     let mut ctrcfg = opts.container_config.clone().unwrap_or_default();
     let mut imgcfg = oci_image::ImageConfiguration::default();
+    // If a platform was provided, propagate it to the config
+    if let Some(platform) = opts.platform.as_ref() {
+        imgcfg.set_architecture(platform.architecture().clone());
+        imgcfg.set_os(platform.os().clone());
+    }
 
     let created_at = opts
         .created
@@ -269,6 +274,13 @@ fn build_oci(
         ctrcfg.set_cmd(Some(cmd.clone()));
     }
 
+    // Our platform uses the image config
+    let platform = oci_image::PlatformBuilder::default()
+        .architecture(imgcfg.architecture().clone())
+        .os(imgcfg.os().clone())
+        .build()
+        .unwrap();
+
     ctrcfg
         .labels_mut()
         .get_or_insert_with(Default::default)
@@ -277,7 +289,7 @@ fn build_oci(
     let ctrcfg = writer.write_config(imgcfg)?;
     manifest.set_config(ctrcfg);
     manifest.set_annotations(Some(labels));
-    let platform = oci_image::Platform::default();
+
     if let Some(tag) = tag {
         writer.insert_manifest(manifest, Some(tag), platform)?;
     } else {
@@ -383,6 +395,8 @@ pub struct ExportOpts<'m, 'o> {
     pub legacy_version_label: bool,
     /// Image runtime configuration that will be used as a base
     pub container_config: Option<oci_image::Config>,
+    /// Override the default platform
+    pub platform: Option<oci_image::Platform>,
     /// A reference to the metadata for a previous build; used to optimize
     /// the packing structure.
     pub prior_build: Option<&'m oci_image::ImageManifest>,
