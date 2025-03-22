@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::io::Write;
 use std::os::fd::AsRawFd;
 use std::os::unix::process::CommandExt;
@@ -230,8 +231,11 @@ pub(crate) fn has_security_selinux(root: &Dir, path: &Utf8Path) -> Result<SELinu
     }
 }
 
+/// Directly set the `security.selinux` extended atttribute on the target
+/// path. Symbolic links are not followed for the target.
+///
+/// Note that this API will work even if SELinux is disabled.
 pub(crate) fn set_security_selinux_path(root: &Dir, path: &Utf8Path, label: &[u8]) -> Result<()> {
-    // TODO: avoid hardcoding a max size here
     let fdpath = format!("/proc/self/fd/{}/", root.as_raw_fd());
     let fdpath = &Path::new(&fdpath).join(path);
     rustix::fs::lsetxattr(
@@ -243,6 +247,9 @@ pub(crate) fn set_security_selinux_path(root: &Dir, path: &Utf8Path, label: &[u8
     Ok(())
 }
 
+/// Given a policy, ensure the target file path has a security.selinux label.
+/// If the path already is labeled, this function is a no-op, even if
+/// the policy would default to a different label.
 pub(crate) fn ensure_labeled(
     root: &Dir,
     path: &Utf8Path,
@@ -251,42 +258,95 @@ pub(crate) fn ensure_labeled(
 ) -> Result<SELinuxLabelState> {
     let r = has_security_selinux(root, path)?;
     if matches!(r, SELinuxLabelState::Unlabeled) {
-        let abspath = Utf8Path::new("/").join(&path);
-        let label = require_label(policy, &abspath, metadata.mode())?;
-        tracing::trace!("Setting label for {path} to {label}");
-        set_security_selinux_path(root, &path, label.as_bytes())?;
+        relabel(root, metadata, path, None, policy)?;
     }
     Ok(r)
 }
 
-pub(crate) fn ensure_dir_labeled_recurse_policy(
+/// Given the policy, relabel the target file or directory.
+/// Optionally, an override for the path can be provided
+/// to set the label as if the target has that filename.
+pub(crate) fn relabel(
     root: &Dir,
-    destname: impl AsRef<Utf8Path>,
+    metadata: &Metadata,
+    path: &Utf8Path,
     as_path: Option<&Utf8Path>,
-    mode: rustix::fs::Mode,
-    policy: Option<&ostree::SePolicy>,
+    policy: &ostree::SePolicy,
 ) -> Result<()> {
-    ensure_dir_labeled(root, &destname, as_path, mode, policy)?;
-    let mut dest_path = destname.as_ref().to_path_buf();
+    assert!(!path.starts_with("/"));
+    let as_path = as_path
+        .map(Cow::Borrowed)
+        .unwrap_or_else(|| Utf8Path::new("/").join(path).into());
+    let label = require_label(policy, &as_path, metadata.mode())?;
+    tracing::trace!("Setting label for {path} to {label}");
+    set_security_selinux_path(root, &path, label.as_bytes())
+}
 
-    for ent in root.read_dir(destname.as_ref())? {
+pub(crate) fn relabel_recurse_inner(
+    root: &Dir,
+    path: &mut Utf8PathBuf,
+    mut as_path: Option<&mut Utf8PathBuf>,
+    policy: &ostree::SePolicy,
+) -> Result<()> {
+    // Relabel this directory
+    let self_meta = root.dir_metadata()?;
+    relabel(
+        root,
+        &self_meta,
+        path,
+        as_path.as_ref().map(|p| p.as_path()),
+        policy,
+    )?;
+
+    // Relabel all children
+    for ent in root.read_dir(&path)? {
         let ent = ent?;
         let metadata = ent.metadata()?;
         let name = ent.file_name();
         let name = name
             .to_str()
             .ok_or_else(|| anyhow::anyhow!("Invalid non-UTF-8 filename: {name:?}"))?;
-        dest_path.push(name);
+        // Extend both copies of the path
+        path.push(name);
+        if let Some(p) = as_path.as_mut() {
+            p.push(name);
+        }
 
         if metadata.is_dir() {
-            ensure_dir_labeled_recurse_policy(root, &dest_path, as_path, mode, policy)?;
+            let as_path = as_path.as_deref_mut();
+            relabel_recurse_inner(root, path, as_path, policy)?;
         } else {
-            ensure_dir_labeled(root, &dest_path, as_path, mode, policy)?
+            let as_path = as_path.as_ref().map(|p| p.as_path());
+            relabel(root, &metadata, &path, as_path, policy)?
         }
-        dest_path.pop();
+        // Trim what we added to the path
+        let r = path.pop();
+        assert!(r);
+        if let Some(p) = as_path.as_mut() {
+            let r = p.pop();
+            assert!(r);
+        }
     }
 
     Ok(())
+}
+
+/// Recursively relabel the target directory.
+pub(crate) fn relabel_recurse(
+    root: &Dir,
+    path: impl AsRef<Utf8Path>,
+    as_path: Option<&Utf8Path>,
+    policy: &ostree::SePolicy,
+) -> Result<()> {
+    let mut path = path.as_ref().to_owned();
+    // This path must be relative, as we access via cap-std
+    assert!(!path.starts_with("/"));
+    let mut as_path = as_path.map(|v| v.to_owned());
+    // But the as_path must be absolute, if provided
+    if let Some(as_path) = as_path.as_deref() {
+        assert!(as_path.starts_with("/"));
+    }
+    relabel_recurse_inner(root, &mut path, as_path.as_mut(), policy)
 }
 
 /// A wrapper for creating a directory, also optionally setting a SELinux label.

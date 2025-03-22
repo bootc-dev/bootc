@@ -436,6 +436,14 @@ pub(crate) enum InternalsOpts {
     Fsck,
     /// Perform cleanup actions
     Cleanup,
+    Relabel {
+        #[clap(long)]
+        /// Relabel using this path as root
+        as_path: Option<Utf8PathBuf>,
+
+        /// Relabel this path
+        path: Utf8PathBuf,
+    },
     /// Proxy frontend for the `ostree-ext` CLI.
     OstreeExt {
         #[clap(allow_hyphen_values = true)]
@@ -1220,6 +1228,14 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
             InternalsOpts::Cleanup => {
                 let sysroot = get_storage().await?;
                 crate::deploy::cleanup(&sysroot).await
+            }
+            InternalsOpts::Relabel { as_path, path } => {
+                let root = &Dir::open_ambient_dir("/", cap_std::ambient_authority())?;
+                let path = path.strip_prefix("/")?;
+                let sepolicy =
+                    &ostree::SePolicy::new(&gio::File::for_path("/"), gio::Cancellable::NONE)?;
+                crate::lsm::relabel_recurse(root, path, as_path.as_deref(), sepolicy)?;
+                Ok(())
             }
             InternalsOpts::BootcInstallCompletion { sysroot, stateroot } => {
                 let rootfs = &Dir::open_ambient_dir("/", cap_std::ambient_authority())?;

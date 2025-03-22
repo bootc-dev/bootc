@@ -164,8 +164,11 @@ impl Storage {
         Ok(())
     }
 
+    /// Ensure that the LSM (SELinux) labels are set on the bootc-owned
+    /// containers-storage: instance. We use a `LABELED` stamp file for
+    /// idempotence.
     #[context("Labeling imgstorage dirs")]
-    fn label_dirs(root: &Dir, sepolicy: Option<&ostree::SePolicy>) -> Result<()> {
+    fn ensure_labeled(root: &Dir, sepolicy: Option<&ostree::SePolicy>) -> Result<()> {
         if root.try_exists(LABELED)? {
             return Ok(());
         }
@@ -175,27 +178,13 @@ impl Storage {
 
         // recursively set the labels because they were previously set to usr_t,
         // and there is no policy defined to set them to the c/storage labels
-        crate::lsm::ensure_dir_labeled_recurse_policy(
+        crate::lsm::relabel_recurse(
             &root,
             ".",
             Some(Utf8Path::new("/var/lib/containers/storage")),
-            0o755.into(),
-            Some(sepolicy),
+            sepolicy,
         )
         .context("labeling storage root")?;
-
-        let paths = ["overlay", "overlay-images", "overlay-layers", "volumes"];
-        for p in paths {
-            let full_label_path = format!("/var/lib/containers/storage/{}", p);
-            crate::lsm::ensure_dir_labeled_recurse_policy(
-                &root,
-                p,
-                Some(Utf8Path::new(full_label_path.as_str())),
-                0o755.into(),
-                Some(sepolicy),
-            )
-            .context(format!("labeling storage subpath: {}", p))?;
-        }
 
         root.create(LABELED)?;
 
@@ -224,7 +213,6 @@ impl Storage {
                 .with_context(|| format!("Creating {parent}"))?;
             sysroot.create_dir_all(&tmp).context("Creating tmpdir")?;
             let storage_root = sysroot.open_dir(&tmp).context("Open tmp")?;
-            Self::label_dirs(&storage_root, sepolicy)?;
 
             // There's no explicit API to initialize a containers-storage:
             // root, simply passing a path will attempt to auto-create it.
@@ -234,6 +222,7 @@ impl Storage {
                 .arg("images")
                 .run()
                 .context("Initializing images")?;
+            Self::ensure_labeled(&storage_root, sepolicy)?;
             drop(storage_root);
             sysroot
                 .rename(&tmp, sysroot, subpath)
@@ -242,7 +231,7 @@ impl Storage {
         } else {
             // the storage already exists, make sure it has selinux labels
             let storage_root = sysroot.open_dir(subpath).context("opening storage dir")?;
-            Self::label_dirs(&storage_root, sepolicy)?;
+            Self::ensure_labeled(&storage_root, sepolicy)?;
         }
 
         Self::open(sysroot, run)

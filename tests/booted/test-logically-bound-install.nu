@@ -35,11 +35,22 @@ def test_bootc_image_list [] {
     validate_images $images
 }
 
+# Get just the type (foo_t) from a security context
+def get_file_selinux_type [p] {
+    getfattr --only-values -n security.selinux $p | split row ':' | get 2
+}
+
+# Verify that the SELinux labels on the main "containers-storage:" instance match ours.
+# See the relabeling we do in imgstorage.rs. We only verify types, because the role
+# may depend on the creating user.
 def test_storage_labels [] {
-    let root_labeled = getfattr -n security.selinux /var/lib/containers/storage | grep container_var_lib_t | complete
-    assert equal $root_labeled.exit_code 0
-    let overlay_labeled = getfattr -n security.selinux /usr/lib/bootc/storage/overlay | grep container_ro_file_t | complete
-    assert equal $overlay_labeled.exit_code 0
+    for v in [".", "overlay-images", "defaultNetworkBackend"] {
+        let base = (get_file_selinux_type $"/var/lib/containers/storage/($v)")
+        let target = (get_file_selinux_type $"/usr/lib/bootc/storage/($v)")
+        assert equal $base $target
+    }
+    # Verify the stamp file exists
+    test -f /usr/lib/bootc/storage/.bootc_labeled
 }
 
 test_logically_bound_images_in_storage
