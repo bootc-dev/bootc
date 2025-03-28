@@ -1,3 +1,4 @@
+use std::ffi::OsStr;
 use std::fmt::Display;
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
@@ -20,6 +21,9 @@ impl<'a> Display for PathQuotedDisplay<'a> {
         if let Ok(r) = shlex::bytes::try_quote(self.path.as_os_str().as_bytes()) {
             if let Ok(s) = std::str::from_utf8(&r) {
                 return f.write_str(s);
+            } else {
+                let r = OsStr::from_bytes(&r);
+                return write!(f, "{r:?}");
             }
         }
         // Should not happen really

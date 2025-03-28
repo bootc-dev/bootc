@@ -9,13 +9,14 @@ use std::collections::BTreeSet;
 use std::env::consts::ARCH;
 use std::fmt::Write as WriteFmt;
 use std::os::unix::ffi::OsStrExt;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use bootc_utils::PathQuotedDisplay;
 use camino::{Utf8Path, Utf8PathBuf};
 use cap_std::fs::Dir;
 use cap_std_ext::cap_std;
-use cap_std_ext::cap_std::fs::MetadataExt;
+use cap_std_ext::cap_std::fs::{DirEntry, MetadataExt};
 use cap_std_ext::dirext::CapStdExtDirExt as _;
 use fn_error_context::context;
 use indoc::indoc;
@@ -327,6 +328,35 @@ fn check_kernel(root: &Dir) -> LintResult {
     lint_ok()
 }
 
+type LintRecurseCheck = fn(&Dir, path: &Path, &DirEntry) -> LintResult;
+
+fn recursive_traversal(dir: &Dir, f: LintRecurseCheck) -> LintResult {
+    fn recursive_traversal_inner(dir: &Dir, path: &mut PathBuf, f: LintRecurseCheck) -> LintResult {
+        for entry in dir.entries()? {
+            let entry = entry?;
+            let name = entry.file_name();
+            path.push(&name);
+            let ifmt = entry.file_type()?;
+            // We must not use ?? because that unwraps to one level of error
+            if let Err(e) = f(dir, &path, &entry)? {
+                return Ok(Err(e));
+            }
+            if ifmt.is_dir() {
+                if let Some(subdir) = dir.open_dir_noxdev(&name)? {
+                    if let Err(e) = recursive_traversal(&subdir, f)? {
+                        return Ok(Err(e));
+                    }
+                }
+            }
+            let r = path.pop();
+            debug_assert!(r);
+        }
+        lint_ok()
+    }
+    let mut pathbuf = PathBuf::from("/");
+    recursive_traversal_inner(dir, &mut pathbuf, f)
+}
+
 // This one can be lifted in the future, see https://github.com/containers/bootc/issues/975
 #[distributed_slice(LINTS)]
 static LINT_UTF8: Lint = Lint::new_fatal(
@@ -338,32 +368,23 @@ UTF-8 filenames. Non-UTF8 filenames will cause a fatal error.
     check_utf8,
 );
 fn check_utf8(dir: &Dir) -> LintResult {
-    for entry in dir.entries()? {
-        let entry = entry?;
-        let name = entry.file_name();
-
-        let Some(strname) = &name.to_str() else {
+    recursive_traversal(dir, |dir, path, entry| {
+        let path_quoted = PathQuotedDisplay::new(&path);
+        // SAFETY: We know there's a filename here
+        let name = path.file_name().unwrap();
+        let Some(_) = &name.to_str() else {
             // will escape nicely like "abc\xFFdéf"
-            return lint_err(format!("/: Found non-utf8 filename {name:?}"));
+            return lint_err(format!("{path_quoted}: Found non-utf8 filename {name:?}",));
         };
-
         let ifmt = entry.file_type()?;
         if ifmt.is_symlink() {
             let target = dir.read_link_contents(&name)?;
             if !target.to_str().is_some() {
-                return lint_err(format!("/{strname}: Found non-utf8 symlink target"));
-            }
-        } else if ifmt.is_dir() {
-            let Some(subdir) = dir.open_dir_noxdev(entry.file_name())? else {
-                continue;
-            };
-            if let Err(err) = check_utf8(&subdir)? {
-                // Try to do the path pasting only in the event of an error
-                return lint_err(format!("/{strname}{err}"));
+                return lint_err(format!("{path_quoted}: Found non-utf8 symlink target"));
             }
         }
-    }
-    lint_ok()
+        lint_ok()
+    })
 }
 
 fn check_prepareroot_composefs_norecurse(dir: &Dir) -> LintResult {
