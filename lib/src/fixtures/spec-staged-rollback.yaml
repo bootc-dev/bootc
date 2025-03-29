@@ -14,6 +14,7 @@ status:
         image: quay.io/example/someimage:latest
         transport: registry
         signature: insecure
+      architecture: s390x
       version: nightly
       timestamp: 2023-10-14T19:22:15Z
       imageDigest: sha256:16dc2b6256b4ff0d2ec18d2dbfb06d117904010c8cf9732cdb022818cf7a7566
@@ -29,6 +30,7 @@ status:
         image: quay.io/example/someimage:latest
         transport: registry
         signature: insecure
+      architecture: s390x
       version: nightly
       timestamp: 2023-09-30T19:22:16Z
       imageDigest: sha256:736b359467c9437c1ac915acaae952aad854e07eb4a16a94999a48af08c83c34

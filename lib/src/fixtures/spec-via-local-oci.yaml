@@ -14,6 +14,7 @@ status:
       image:
         image: /var/mnt/osupdate
         transport: oci
+      architecture: amd64
       version: stream9.20240807.0
       timestamp: null
       imageDigest: sha256:47e5ed613a970b6574bfa954ab25bb6e85656552899aa518b5961d9645102b38

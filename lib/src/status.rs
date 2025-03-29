@@ -381,9 +381,10 @@ fn human_render_imagestatus(
     let prefix_len = prefix.chars().count();
     writeln!(out, "{prefix}: {imageref}")?;
 
+    let arch = image.architecture.as_str();
     write_row_name(&mut out, "Digest", prefix_len)?;
     let digest = &image.image_digest;
-    writeln!(out, "{digest}")?;
+    writeln!(out, "{digest} ({arch})")?;
 
     // Format the timestamp without nanoseconds since those are just irrelevant noise for human
     // consumption - that time scale should basically never matter for container builds.
@@ -477,11 +478,11 @@ mod tests {
             .expect("No spec found");
         let expected = indoc::indoc! { r"
             Staged image: quay.io/example/someimage:latest
-                  Digest: sha256:16dc2b6256b4ff0d2ec18d2dbfb06d117904010c8cf9732cdb022818cf7a7566
+                  Digest: sha256:16dc2b6256b4ff0d2ec18d2dbfb06d117904010c8cf9732cdb022818cf7a7566 (arm64)
                  Version: nightly (2023-10-14T19:22:15Z)
         
           ● Booted image: quay.io/example/someimage:latest
-                  Digest: sha256:736b359467c9437c1ac915acaae952aad854e07eb4a16a94999a48af08c83c34
+                  Digest: sha256:736b359467c9437c1ac915acaae952aad854e07eb4a16a94999a48af08c83c34 (arm64)
                  Version: nightly (2023-09-30T19:22:16Z)
         "};
         similar_asserts::assert_eq!(w, expected);
@@ -511,7 +512,7 @@ mod tests {
             .expect("No spec found");
         let expected = indoc::indoc! { r"
             Staged image: quay.io/centos-bootc/centos-bootc:stream9
-                  Digest: sha256:47e5ed613a970b6574bfa954ab25bb6e85656552899aa518b5961d9645102b38
+                  Digest: sha256:47e5ed613a970b6574bfa954ab25bb6e85656552899aa518b5961d9645102b38 (s390x)
                  Version: stream9.20240807.0
           
           ● Booted ostree
@@ -527,7 +528,7 @@ mod tests {
             .expect("No spec found");
         let expected = indoc::indoc! { r"
           ● Booted image: quay.io/centos-bootc/centos-bootc:stream9
-                  Digest: sha256:47e5ed613a970b6574bfa954ab25bb6e85656552899aa518b5961d9645102b38
+                  Digest: sha256:47e5ed613a970b6574bfa954ab25bb6e85656552899aa518b5961d9645102b38 (arm64)
                  Version: stream9.20240807.0
         "};
         similar_asserts::assert_eq!(w, expected);
@@ -548,7 +549,7 @@ mod tests {
             .unwrap();
         let expected = indoc::indoc! { r"
           ● Booted image: oci:/var/mnt/osupdate
-                  Digest: sha256:47e5ed613a970b6574bfa954ab25bb6e85656552899aa518b5961d9645102b38
+                  Digest: sha256:47e5ed613a970b6574bfa954ab25bb6e85656552899aa518b5961d9645102b38 (amd64)
                  Version: stream9.20240807.0
         "};
         similar_asserts::assert_eq!(w, expected);

@@ -55,11 +55,13 @@ fn create_imagestatus(
         .and_then(try_deserialize_timestamp);
 
     let version = ostree_container::version_for_config(config).map(ToOwned::to_owned);
+    let architecture = config.architecture().to_string();
     ImageStatus {
         image,
         version,
         timestamp,
         image_digest: manifest_digest.to_string(),
+        architecture,
     }
 }
 

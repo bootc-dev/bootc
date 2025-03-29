@@ -14,6 +14,7 @@ status:
         image: quay.io/example/someimage:latest
         transport: registry
         signature: insecure
+      architecture: arm64
       version: nightly
       # This one has nanoseconds, which should be dropped for human consumption
       timestamp: 2023-10-14T19:22:15.42Z
@@ -29,6 +30,7 @@ status:
         image: quay.io/example/someimage:latest
         transport: registry
         signature: insecure
+      architecture: arm64
       version: nightly
       timestamp: 2023-09-30T19:22:16Z
       imageDigest: sha256:736b359467c9437c1ac915acaae952aad854e07eb4a16a94999a48af08c83c34

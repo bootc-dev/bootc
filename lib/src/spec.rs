@@ -101,6 +101,8 @@ pub struct ImageStatus {
     pub timestamp: Option<chrono::DateTime<chrono::Utc>>,
     /// The digest of the fetched image (e.g. sha256:a0...);
     pub image_digest: String,
+    /// The hardware architecture of this image
+    pub architecture: String,
 }
 
 /// A bootable entry
