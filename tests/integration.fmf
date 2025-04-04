@@ -1,3 +1,0 @@
-summary: Run integration test
-test: cd .. && dnf -y builddep bootc && make test-tmt
-duration: 1h

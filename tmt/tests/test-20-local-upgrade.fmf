@@ -1,0 +1,3 @@
+summary: Execute local upgrade tests
+test: nu booted/test-image-pushpull-upgrade.nu
+duration: 30m

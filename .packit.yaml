@@ -69,8 +69,16 @@ jobs:
   - job: tests
     trigger: pull_request
     targets:
+      - centos-stream-9-x86_64
+      - centos-stream-9-aarch64
+      - centos-stream-10-x86_64
+      - centos-stream-10-aarch64
       - fedora-41-x86_64
       - fedora-41-aarch64
+      - fedora-42-x86_64
+      - fedora-42-aarch64
+      - fedora-rawhide-x86_64
+      - fedora-rawhide-aarch64
     tmt_plan: /integration
     skip_build: true
     identifier: integration-test

@@ -1,0 +1,56 @@
+# Please change the image when you run this plan locally with tmt run
+# tmt run -vvvvv plan -n /integration/test-01-readonly
+# local image: file:///home/foobar/image.qcow2
+provision:
+  how: virtual
+  image: https://composes.stream.centos.org/stream-10/production/CentOS-Stream-10-20250331.0/compose/BaseOS/x86_64/images/CentOS-Stream-GenericCloud-10-20250331.0.x86_64.qcow2
+prepare:
+  - how: install
+    package:
+      - podman
+      - skopeo
+      - jq
+execute:
+  how: tmt
+
+/test-01-readonly:
+  summary: Execute booted readonly/nondestructive tests
+  discover:
+    how: fmf
+    test:
+        - /tmt/tests/test-00-bootc-install
+        - /tmt/tests/test-01-readonly
+
+/test-20-local-upgrade:
+  summary: Execute local upgrade tests
+  discover:
+    how: fmf
+    test:
+        - /tmt/tests/test-00-bootc-install
+        - /tmt/tests/test-20-local-upgrade
+
+/test-21-logically-bound-switch:
+  summary: Execute logically bound images tests for switching images
+  discover:
+    how: fmf
+    test:
+        - /tmt/tests/test-00-bootc-install
+        - /tmt/tests/test-21-logically-bound-switch
+
+/test-22-logically-bound-install:
+  summary: Execute logically bound images tests for switching images
+  environment+:
+    LBI: enabled
+  discover:
+    how: fmf
+    test:
+        - /tmt/tests/test-00-bootc-install
+        - /tmt/tests/test-22-logically-bound-install
+
+/test-23-install-outside-container:
+  summary: Execute tests for installing outside of a container
+  discover:
+    how: fmf
+    test:
+        - /tmt/tests/test-00-bootc-install
+        - /tmt/tests/test-23-install-outside-container

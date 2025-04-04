@@ -1,0 +1,3 @@
+summary: Execute logically bound images tests for switching images
+test: nu booted/test-logically-bound-switch.nu
+duration: 30m
