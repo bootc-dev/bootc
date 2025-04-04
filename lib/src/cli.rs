@@ -273,6 +273,10 @@ pub(crate) enum ContainerOpts {
         #[clap(long)]
         list: bool,
 
+        /// Automatically apply fixes where possible.
+        #[clap(long)]
+        fix: bool,
+
         /// Skip checking the targeted lints, by name. Use `--list` to discover the set
         /// of available lints.
         ///
@@ -1094,11 +1098,17 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
                 rootfs,
                 fatal_warnings,
                 list,
+                fix,
                 skip,
             } => {
                 if list {
                     return lints::lint_list(std::io::stdout().lock());
                 }
+                let fix = if fix {
+                    lints::Applicability::Fix
+                } else {
+                    lints::Applicability::Scan
+                };
                 let warnings = if fatal_warnings {
                     lints::WarningDisposition::FatalWarnings
                 } else {
@@ -1112,7 +1122,14 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
 
                 let root = &Dir::open_ambient_dir(rootfs, cap_std::ambient_authority())?;
                 let skip = skip.iter().map(|s| s.as_str());
-                lints::lint(root, warnings, root_type, skip, std::io::stdout().lock())?;
+                lints::lint(
+                    root,
+                    warnings,
+                    root_type,
+                    fix,
+                    skip,
+                    std::io::stdout().lock(),
+                )?;
                 Ok(())
             }
         },
