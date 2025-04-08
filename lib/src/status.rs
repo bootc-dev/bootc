@@ -15,6 +15,7 @@ use ostree_ext::oci_spec;
 use ostree_ext::ostree;
 
 use crate::cli::OutputFormat;
+use crate::spec::FilesystemOverlay;
 use crate::spec::{BootEntry, BootOrder, Host, HostSpec, HostStatus, HostType};
 use crate::spec::{ImageReference, ImageSignature};
 use crate::store::{CachedImageStatus, ContainerImageStore, Storage};
@@ -225,6 +226,12 @@ pub(crate) fn get_status(
     } else {
         BootOrder::Default
     };
+    let usr_overlay = FilesystemOverlay::from_ostree_deployment_state(
+        &booted_deployment
+            .as_ref()
+            .expect("Expected a booted deployment")
+            .unlocked(),
+    );
     tracing::debug!("Rollback queued={rollback_queued:?}");
     let other = {
         related_deployments.extend(other_deployments);
@@ -260,6 +267,7 @@ pub(crate) fn get_status(
         .map(|img| HostSpec {
             image: Some(img.image.clone()),
             boot_order,
+            usr_overlay,
         })
         .unwrap_or_default();
 
@@ -280,6 +288,7 @@ pub(crate) fn get_status(
         booted,
         rollback,
         rollback_queued,
+        usr_overlay,
         ty,
     };
     Ok((deployments, host))
@@ -331,7 +340,7 @@ pub(crate) async fn status(opts: super::cli::StatusOpts) -> Result<()> {
     Ok(())
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum Slot {
     Staged,
     Booted,
@@ -363,6 +372,7 @@ fn human_render_imagestatus(
     mut out: impl Write,
     slot: Slot,
     image: &crate::spec::ImageStatus,
+    host: &crate::spec::HostStatus,
 ) -> Result<()> {
     let transport = &image.image.transport;
     let imagename = &image.image.image;
@@ -407,10 +417,24 @@ fn human_render_imagestatus(
         writeln!(out, "{timestamp}")?;
     }
 
+    if let Some(usr_overlay) = &host.usr_overlay {
+        // Only show the usr filesystem overlay state if we are booted and not the default
+        // read-only mode.
+        if slot == Slot::Booted && *usr_overlay != FilesystemOverlay::Readonly {
+            write_row_name(&mut out, "Usr overlay", prefix_len)?;
+            writeln!(out, "{}", usr_overlay.to_human_string())?;
+        }
+    }
+
     Ok(())
 }
 
-fn human_render_ostree(mut out: impl Write, slot: Slot, ostree_commit: &str) -> Result<()> {
+fn human_render_ostree(
+    mut out: impl Write,
+    slot: Slot,
+    ostree_commit: &str,
+    host: &crate::spec::HostStatus,
+) -> Result<()> {
     // TODO consider rendering more ostree stuff here like rpm-ostree status does
     let prefix = match slot {
         Slot::Staged => "  Staged ostree".into(),
@@ -421,6 +445,16 @@ fn human_render_ostree(mut out: impl Write, slot: Slot, ostree_commit: &str) -> 
     writeln!(out, "{prefix}")?;
     write_row_name(&mut out, "Commit", prefix_len)?;
     writeln!(out, "{ostree_commit}")?;
+
+    if let Some(usr_overlay) = &host.usr_overlay {
+        // Only show the usr filesystem overlay state if we are booted and not the default
+        // read-only mode.
+        if slot == Slot::Booted && *usr_overlay != FilesystemOverlay::Readonly {
+            write_row_name(&mut out, "Usr overlay", prefix_len)?;
+            writeln!(out, "{}", usr_overlay.to_human_string())?;
+        }
+    }
+
     Ok(())
 }
 
@@ -438,9 +472,9 @@ fn human_readable_output_booted(mut out: impl Write, host: &Host) -> Result<()> 
                 writeln!(out)?;
             }
             if let Some(image) = &host_status.image {
-                human_render_imagestatus(&mut out, slot_name, image)?;
+                human_render_imagestatus(&mut out, slot_name, image, &host.status)?;
             } else if let Some(ostree) = host_status.ostree.as_ref() {
-                human_render_ostree(&mut out, slot_name, &ostree.checksum)?;
+                human_render_ostree(&mut out, slot_name, &ostree.checksum, &host.status)?;
             } else {
                 writeln!(out, "Current {slot_name} state is unknown")?;
             }
@@ -480,7 +514,7 @@ mod tests {
             Staged image: quay.io/example/someimage:latest
                   Digest: sha256:16dc2b6256b4ff0d2ec18d2dbfb06d117904010c8cf9732cdb022818cf7a7566 (arm64)
                  Version: nightly (2023-10-14T19:22:15Z)
-        
+
           ● Booted image: quay.io/example/someimage:latest
                   Digest: sha256:736b359467c9437c1ac915acaae952aad854e07eb4a16a94999a48af08c83c34 (arm64)
                  Version: nightly (2023-09-30T19:22:16Z)
@@ -498,7 +532,7 @@ mod tests {
         let expected = indoc::indoc! { r"
             Staged ostree
                    Commit: 1c24260fdd1be20f72a4a97a75c582834ee3431fbb0fa8e4f482bb219d633a45
-          
+
           ● Booted ostree
                      Commit: f9fa3a553ceaaaf30cf85bfe7eed46a822f7b8fd7e14c1e3389cbc3f6d27f791
         "};
@@ -514,7 +548,7 @@ mod tests {
             Staged image: quay.io/centos-bootc/centos-bootc:stream9
                   Digest: sha256:47e5ed613a970b6574bfa954ab25bb6e85656552899aa518b5961d9645102b38 (s390x)
                  Version: stream9.20240807.0
-          
+
           ● Booted ostree
                      Commit: f9fa3a553ceaaaf30cf85bfe7eed46a822f7b8fd7e14c1e3389cbc3f6d27f791
         "};
