@@ -17,13 +17,13 @@ cap-std-ext = { workspace = true }
 clap = { workspace = true, features = ["derive","cargo"] }
 fn-error-context = { workspace = true }
 indoc = { workspace = true }
-libtest-mimic = "0.8.0"
-oci-spec = "0.7.0"
+libtest-mimic = "0.8.1"
+oci-spec = "0.7.1"
 rustix = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
-xshell = { version = "0.2.6" }
+xshell = { version = "0.2.7" }
 
 [lints]
 workspace = true

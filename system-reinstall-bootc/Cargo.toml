@@ -20,16 +20,16 @@ bootc-utils = { path = "../utils" }
 clap = { workspace = true, features = ["derive"] }
 dialoguer = "0.11.0"
 indoc = { workspace = true }
-log = "0.4.21"
+log = "0.4.27"
 openssh-keys = "0.6.4"
 rustix = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
-serde_yaml = "0.9.22"
+serde_yaml = "0.9.34"
 tempfile = { workspace = true }
 tracing = { workspace = true }
 uzers = "0.12.1"
-which = "7.0.2"
+which = "7.0.3"
 
 [lints]
 workspace = true

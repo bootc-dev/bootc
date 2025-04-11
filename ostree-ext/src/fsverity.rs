@@ -47,7 +47,7 @@ pub fn is_verity_enabled(repo: &ostree::Repo) -> Result<RepoVerityState> {
     // We use the flag of having fsverity set on the repository config as a flag to say that
     // fsverity is fully enabled; all objects have it.
     let enabled =
-        composefs_fsverity::measure_verity_digest::<_, composefs_fsverity::Sha256HashValue>(
+        composefs_fsverity::measure_verity::<Sha256HashValue>(
             config.as_fd(),
         )
         .is_ok();
@@ -67,10 +67,10 @@ fn enable_fsverity_in_objdir(d: &Dir) -> anyhow::Result<()> {
         };
         let f = d.open(&name)?;
         let enabled =
-            composefs::fsverity::ioctl::fs_ioc_measure_verity::<_, Sha256HashValue>(f.as_fd())?
+            composefs::fsverity::measure_verity_opt::<Sha256HashValue>(f.as_fd())?
                 .is_some();
         if !enabled {
-            composefs_fsverity::ioctl::fs_ioc_enable_verity::<_, Sha256HashValue>(&f)?;
+            composefs_fsverity::enable_verity::<Sha256HashValue>(&f)?;
         }
     }
     Ok(())
@@ -128,11 +128,11 @@ pub async fn ensure_verity(repo: &ostree::Repo) -> Result<()> {
     // And finally, enable fsverity as a flag that we have successfully
     // enabled fsverity on all objects.
     let f = repodir.open(CONFIG_PATH)?;
-    match composefs_fsverity::ioctl::fs_ioc_enable_verity::<_, composefs_fsverity::Sha256HashValue>(
+    match composefs_fsverity::enable_verity::<Sha256HashValue>(
         f.as_fd(),
     ) {
         Ok(()) => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+        Err(composefs_fsverity::EnableVerityError::Errno(e)) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
         Err(e) => Err(e.into()),
     }
 }

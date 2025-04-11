@@ -164,7 +164,7 @@ fn verity_state_of_objects(
         };
         let f = d.open(&name)?;
         let r: Option<composefs::fsverity::Sha256HashValue> =
-            composefs::fsverity::ioctl::fs_ioc_measure_verity(f.as_fd())?;
+            composefs::fsverity::measure_verity_opt(f.as_fd())?;
         drop(f);
         if r.is_some() {
             enabled += 1;
