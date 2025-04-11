@@ -1197,8 +1197,7 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
                 FsverityOpts::Measure { path } => {
                     let fd =
                         std::fs::File::open(&path).with_context(|| format!("Reading {path}"))?;
-                    let digest =
-                        fsverity::measure_verity_digest::<_, fsverity::Sha256HashValue>(&fd)?;
+                    let digest: fsverity::Sha256HashValue = fsverity::measure_verity(&fd)?;
                     let digest = hex::encode(digest);
                     println!("{digest}");
                     Ok(())
@@ -1206,7 +1205,7 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
                 FsverityOpts::Enable { path } => {
                     let fd =
                         std::fs::File::open(&path).with_context(|| format!("Reading {path}"))?;
-                    fsverity::ioctl::fs_ioc_enable_verity::<_, fsverity::Sha256HashValue>(&fd)?;
+                    fsverity::enable_verity::<fsverity::Sha256HashValue>(&fd)?;
                     Ok(())
                 }
             },

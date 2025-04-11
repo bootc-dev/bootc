@@ -13,13 +13,13 @@ anyhow = { workspace = true }
 bootc-utils = { path = "../utils" }
 camino = { workspace = true, features = ["serde1"] }
 fn-error-context = { workspace = true }
-regex = "1.10.4"
+regex = "1.11.1"
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
-indoc = "2.0.5"
+indoc = "2.0.6"
 
 [lib]
 path = "src/blockdev.rs"

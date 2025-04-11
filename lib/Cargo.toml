@@ -13,8 +13,8 @@ rust-version = "1.82.0"
 include = ["/src", "LICENSE-APACHE", "LICENSE-MIT"]
 
 [dependencies]
-anstream = "0.6.13"
-anstyle = "1.0.6"
+anstream = "0.6.18"
+anstyle = "1.0.10"
 anyhow = { workspace = true }
 bootc-utils = { path = "../utils" }
 bootc-blockdev = { path = "../blockdev" }
@@ -36,22 +36,22 @@ liboverdrop = "0.1.0"
 libsystemd = "0.7"
 linkme = "0.3"
 openssl = { workspace = true }
-regex = "1.10.4"
+regex = "1.11.1"
 rustix = { workspace = true }
-schemars = { version = "0.8.17", features = ["chrono"] }
+schemars = { version = "0.8.22", features = ["chrono"] }
 serde = { workspace = true, features = ["derive"] }
-serde_ignored = "0.1.10"
+serde_ignored = "0.1.11"
 serde_json = { workspace = true }
 serde_yaml = "0.9.34"
 tokio = { workspace = true, features = ["io-std", "time", "process", "rt", "net"] }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
 tempfile = { workspace = true }
-toml = "0.8.12"
-xshell = { version = "0.2.6", optional = true }
-uuid = { version = "1.8.0", features = ["v4"] }
+toml = "0.8.20"
+xshell = { version = "0.2.7", optional = true }
+uuid = { version = "1.16.0", features = ["v4"] }
 tini = "1.3.0"
-comfy-table = "7.1.1"
+comfy-table = "7.1.4"
 thiserror = { workspace = true }
 
 [dev-dependencies]

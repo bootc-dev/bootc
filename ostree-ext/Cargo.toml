@@ -20,42 +20,42 @@ ostree = { features = ["v2025_1"], version = "0.20.0" }
 anyhow = { workspace = true }
 bootc-utils = { path = "../utils" }
 camino = { workspace = true, features = ["serde1"] }
-composefs = { git = "https://github.com/containers/composefs-rs", rev = "55ae2e9ba72f6afda4887d746e6b98f0a1875ac4" }
+composefs = { git = "https://github.com/containers/composefs-rs", rev = "8983bb0b1102acdd6cf9114508842967c8b2ba29" }
 chrono = { workspace = true }
-olpc-cjson = "0.1.1"
+olpc-cjson = "0.1.4"
 clap = { workspace = true, features = ["derive","cargo"] }
 clap_mangen = { workspace = true, optional = true }
-comfy-table = "7.1.1"
+comfy-table = "7.1.4"
 cap-std-ext = { workspace = true, features = ["fs_utf8"] }
-flate2 = { features = ["zlib"], default-features = false, version = "1.0.20" }
+flate2 = { features = ["zlib"], default-features = false, version = "1.1.1" }
 fn-error-context = { workspace = true }
-futures-util = "0.3.13"
+futures-util = "0.3.31"
 gvariant = "0.5.0"
 hex = { workspace = true }
 io-lifetimes = "2"
 indicatif = { workspace = true }
-once_cell = "1.9"
+once_cell = "1.21"
 libc = { workspace = true }
 libsystemd = "0.7.0"
 openssl = { workspace = true }
-ocidir = "0.3.0"
-pin-project = "1.0"
-regex = "1.5.4"
+ocidir = "0.3.1"
+pin-project = "1.1"
+regex = "1.11.1"
 rustix = { workspace = true, features = ["fs", "process"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
-tar = "0.4.43"
+tar = "0.4.44"
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["io-std", "time", "process", "rt", "net"] }
 tokio-util = { workspace = true }
-tokio-stream = { features = ["sync"], version = "0.1.8" }
+tokio-stream = { features = ["sync"], version = "0.1.17" }
 tracing = "0.1"
-zstd = { version = "0.13.1", features = ["pkg-config"] }
-indexmap = { version = "2.2.2", features = ["serde"] }
+zstd = { version = "0.13.3", features = ["pkg-config"] }
+indexmap = { version = "2.9.0", features = ["serde"] }
 
 indoc = { version = "2", optional = true }
 xshell = { version = "0.2", optional = true }
-similar-asserts = { version = "1.5.0", optional = true }
+similar-asserts = { version = "1.7.0", optional = true }
 
 [dev-dependencies]
 quickcheck = "1"
