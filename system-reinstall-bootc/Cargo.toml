@@ -18,6 +18,7 @@ platforms = ["*-unknown-linux-gnu"]
 anyhow = { workspace = true }
 bootc-utils = { path = "../utils" }
 clap = { workspace = true, features = ["derive"] }
+crossterm = "0.29.0"
 dialoguer = "0.11.0"
 indoc = { workspace = true }
 log = "0.4.21"

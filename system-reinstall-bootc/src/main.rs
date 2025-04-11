@@ -52,6 +52,10 @@ fn run() -> Result<()> {
         .run_with_cmd_context()
         .context("running reinstall command")?;
 
+    prompt::reboot()?;
+
+    std::process::Command::new("reboot").run()?;
+
     Ok(())
 }
 

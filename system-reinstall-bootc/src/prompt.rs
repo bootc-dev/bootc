@@ -1,6 +1,9 @@
 use crate::{prompt, users::get_all_users_keys};
 use anyhow::{ensure, Context, Result};
 
+use crossterm::event::{self, Event};
+use std::time::Duration;
+
 const NO_SSH_PROMPT: &str = "None of the users on this system found have authorized SSH keys, \
     if your image doesn't use cloud-init or other means to set up users, \
     you may not be able to log in after reinstalling. Do you want to continue?";
@@ -9,7 +12,8 @@ fn prompt_single_user(user: &crate::users::UserKeys) -> Result<Vec<&crate::users
     let prompt = indoc::formatdoc! {
         "Found only one user ({user}) with {num_keys} SSH authorized keys.
         Would you like to import its SSH authorized keys
-        into the root user on the new bootc system?",
+        into the root user on the new bootc system?
+        Then you can login as root@ using those keys.",
         user = user.user,
         num_keys = user.num_keys(),
     };
@@ -25,8 +29,10 @@ fn prompt_user_selection(
     // TODO: Handle https://github.com/console-rs/dialoguer/issues/77
     let selected_user_indices: Vec<usize> = dialoguer::MultiSelect::new()
         .with_prompt(indoc::indoc! {
-            "Select which user's SSH authorized keys you want to
-            import into the root user of the new bootc system",
+            "Select which user's SSH authorized keys you want to import into
+            the root user of the new bootc system.
+            Then you can login as root@ using those keys.
+            (arrow keys to move, space to select)",
         })
         .items(&keys)
         .interact()?;
@@ -38,13 +44,35 @@ fn prompt_user_selection(
         .collect())
 }
 
+pub(crate) fn reboot() -> Result<()> {
+    let delay_seconds = 10;
+    println!(
+        "Operation complete, rebooting in {delay_seconds} seconds. Press Ctrl-C to cancel reboot, or press enter to continue immediately.",
+    );
+
+    let mut elapsed_ms = 0;
+    let interval = 100;
+
+    while elapsed_ms < delay_seconds * 1000 {
+        if event::poll(Duration::from_millis(0))? {
+            if let Event::Key(_) = event::read().unwrap() {
+                break;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(interval));
+        elapsed_ms += interval;
+    }
+
+    Ok(())
+}
+
 /// Temporary safety mechanism to stop devs from running it on their dev machine. TODO: Discuss
 /// final prompting UX in https://github.com/containers/bootc/discussions/1060
 pub(crate) fn temporary_developer_protection_prompt() -> Result<()> {
     // Print an empty line so that the warning stands out from the rest of the output
     println!();
 
-    let prompt = "THIS WILL REINSTALL YOUR SYSTEM! Are you sure you want to continue?";
+    let prompt = "NOTICE: This will replace the installed operating system and reboot. Are you sure you want to continue?";
     let answer = ask_yes_no(prompt, false)?;
 
     if !answer {
