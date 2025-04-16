@@ -37,6 +37,11 @@ fn main() {
     // This code just captures any errors.
     if let Err(e) = run() {
         tracing::error!("{:#}", e);
+        e.chain().skip(1).enumerate().for_each(|(idx, error)| {
+            if let Some(e) = error.source() {
+                eprintln!("{idx}: {e:#?}",)
+            }
+        });
         std::process::exit(1);
     }
 }
