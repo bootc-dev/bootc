@@ -10,11 +10,12 @@ RUN mkdir -p /build/target/dev-rootfs  # This can hold arbitrary extra content
 RUN --mount=type=cache,target=/build/target --mount=type=cache,target=/var/roothome make test-bin-archive && mkdir -p /out && cp target/bootc.tar /out
 RUN mkdir -p /build/target/dev-rootfs  # This can hold arbitrary extra content
 
-FROM quay.io/otuchfel/bootc:seed2 as seed
+FROM quay.io/otuchfel/bootc:seed30 as seed
 
 # ____________________________________________________________________________
 
-FROM quay.io/openshift-release-dev/ocp-v4.0-art-dev@sha256:5b1124faf4b73753b4679085604dd8cb810c4a7a2e659978f5c80183bb165f94
+FROM quay.io/openshift-release-dev/ocp-v4.0-art-dev@sha256:66b5f9d8f1af5acee783db84a25c08338252ff9c276d33e391680168a22f42ee
+
 
 LABEL com.openshift.lifecycle-agent.seed_format_version=4
 

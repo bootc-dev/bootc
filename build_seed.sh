@@ -7,5 +7,5 @@ set -euxo pipefail
 cd $SCRIPT_DIR
 
 podman build -t bootcseed -f Containerfile .
-podman tag bootcseed:latest quay.io/otuchfel/bootc:seed6
-podman push quay.io/otuchfel/bootc:seed6
+podman tag bootcseed:latest quay.io/otuchfel/bootc:seed61
+podman push quay.io/otuchfel/bootc:seed61

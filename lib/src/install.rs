@@ -1112,8 +1112,8 @@ fn ensure_var() -> Result<()> {
 /// will traverse the link.
 #[context("Linking tmp mounts to host")]
 pub(crate) fn setup_tmp_mounts() -> Result<()> {
-    let slash_tmp_statfs = rustix::fs::statfs("/tmp")?;
-    if slash_tmp_statfs.f_type == libc::TMPFS_MAGIC {
+    let st = rustix::fs::statfs("/tmp")?;
+    if st.f_type == libc::TMPFS_MAGIC {
         tracing::trace!("Already have tmpfs /tmp")
     } else {
         // Note we explicitly also don't want a "nosuid" tmp, because that
