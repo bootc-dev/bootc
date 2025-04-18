@@ -72,8 +72,10 @@ fn generate_fstab_editor(unit_dir: &Dir) -> Result<()> {
         EDIT_UNIT,
         "[Unit]\n\
 DefaultDependencies=no\n\
+Conflicts=shutdown.target\n\
 After=systemd-fsck-root.service\n\
 Before=local-fs-pre.target local-fs.target shutdown.target systemd-remount-fs.service\n\
+Wants=local-fs-pre.target\n\
 \n\
 [Service]\n\
 Type=oneshot\n\
@@ -81,7 +83,7 @@ RemainAfterExit=yes\n\
 ExecStart=bootc internals fixup-etc-fstab\n\
 ",
     )?;
-    let target = "local-fs-pre.target.wants";
+    let target = "local-fs.target.wants";
     unit_dir.create_dir_all(target)?;
     unit_dir.symlink(&format!("../{EDIT_UNIT}"), &format!("{target}/{EDIT_UNIT}"))?;
     Ok(())
