@@ -4,8 +4,6 @@
 
 use std::ffi::{CString, OsStr, OsString};
 use std::io::Seek;
-use std::os::unix::process::CommandExt;
-use std::process::Command;
 
 use anyhow::{ensure, Context, Result};
 use camino::Utf8PathBuf;
@@ -26,11 +24,11 @@ use schemars::schema_for;
 use serde::{Deserialize, Serialize};
 
 use crate::deploy::RequiredHostSpec;
-use crate::lints;
 use crate::progress_jsonl::{ProgressWriter, RawProgressFd};
-use crate::spec::Host;
 use crate::spec::ImageReference;
+use crate::spec::{FilesystemOverlay, Host};
 use crate::utils::sigpolicy_from_opt;
+use crate::{lints, overlay};
 
 /// Shared progress options
 #[derive(Debug, Parser, PartialEq, Eq)]
@@ -971,20 +969,22 @@ async fn edit(opts: EditOpts) -> Result<()> {
     host.spec.verify_transition(&new_host.spec)?;
     let new_spec = RequiredHostSpec::from_spec(&new_host.spec)?;
 
-    let prog = ProgressWriter::default();
-
-    // We only support two state transitions right now; switching the image,
-    // or flipping the bootloader ordering.
-    if host.spec.boot_order != new_host.spec.boot_order {
-        return crate::deploy::rollback(sysroot).await;
+    if new_host.spec.boot_order != host.spec.boot_order {
+        crate::deploy::rollback(sysroot).await?;
     }
-
-    let fetched = crate::deploy::pull(repo, new_spec.image, None, opts.quiet, prog.clone()).await?;
-
-    // TODO gc old layers here
-
-    let stateroot = booted_deployment.osname();
-    crate::deploy::stage(sysroot, &stateroot, &fetched, &new_spec, prog.clone()).await?;
+    if new_host.spec.image != host.spec.image {
+        let prog = ProgressWriter::default();
+        let fetched =
+            crate::deploy::pull(repo, new_spec.image, None, opts.quiet, prog.clone()).await?;
+        // TODO gc old layers here
+        let stateroot = booted_deployment.osname();
+        crate::deploy::stage(sysroot, &stateroot, &fetched, &new_spec, prog.clone()).await?;
+    }
+    if new_host.spec.usr_overlay != host.spec.usr_overlay {
+        if let Some(overlay) = new_host.spec.usr_overlay {
+            crate::overlay::set_usr_overlay(overlay)?;
+        }
+    }
 
     sysroot.update_mtime()?;
 
@@ -993,12 +993,7 @@ async fn edit(opts: EditOpts) -> Result<()> {
 
 /// Implementation of `bootc usroverlay`
 async fn usroverlay() -> Result<()> {
-    // This is just a pass-through today.  At some point we may make this a libostree API
-    // or even oxidize it.
-    Err(Command::new("ostree")
-        .args(["admin", "unlock"])
-        .exec()
-        .into())
+    overlay::set_usr_overlay(FilesystemOverlay::ReadWrite)
 }
 
 /// Perform process global initialization. This should be called as early as possible

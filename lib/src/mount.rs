@@ -129,6 +129,21 @@ pub(crate) fn mount(dev: &str, target: &Utf8Path) -> Result<()> {
     )
 }
 
+pub fn unmount(target: &Utf8Path, lazy: bool) -> Result<()> {
+    let args = if lazy {
+        vec!["-l", target.as_str()]
+    } else {
+        vec![target.as_str()]
+    };
+
+    let description = if lazy {
+        format!("Lazily unmounting {target}.\nThis may leave lingering mounts if in use")
+    } else {
+        format!("Unmounting {target}")
+    };
+    Task::new_and_run(description, "umount", args)
+}
+
 /// If the fsid of the passed path matches the fsid of the same path rooted
 /// at /proc/1/root, it is assumed that these are indeed the same mounted
 /// filesystem between container and host.

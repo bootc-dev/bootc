@@ -2,8 +2,8 @@
 
 use std::fmt::Display;
 
-use ostree_ext::container::OstreeImageReference;
 use ostree_ext::oci_spec::image::Digest;
+use ostree_ext::{container::OstreeImageReference, ostree::DeploymentUnlockedState};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -53,6 +53,41 @@ pub enum Store {
     OstreeContainer,
 }
 
+#[derive(
+    clap::ValueEnum, Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq, JsonSchema,
+)]
+#[serde(rename_all = "camelCase")]
+/// The filesystem overlay type
+pub enum FilesystemOverlay {
+    /// Readonly overlay mode
+    Readonly,
+    /// Read-write overlay mode
+    ReadWrite,
+}
+
+impl FilesystemOverlay {
+    /// Convert from the ostree deployment state
+    pub fn from_ostree_deployment_state(state: &DeploymentUnlockedState) -> Option<Self> {
+        match state {
+            DeploymentUnlockedState::None => Some(Self::Readonly),
+            DeploymentUnlockedState::Development
+            | DeploymentUnlockedState::Transient
+            | DeploymentUnlockedState::Hotfix => Some(Self::ReadWrite),
+            // Default to readonly when unknown since it is the default
+            // for bootc deployments.
+            _ => Some(Self::Readonly),
+        }
+    }
+
+    /// Convert the FilesystemOverlay value to a human-readable string
+    pub fn to_human_string(&self) -> String {
+        match self {
+            Self::Readonly => "read-only".to_string(),
+            Self::ReadWrite => "read-write".to_string(),
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq, Eq, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 /// The host specification
@@ -62,6 +97,9 @@ pub struct HostSpec {
     /// If set, and there is a rollback deployment, it will be set for the next boot.
     #[serde(default)]
     pub boot_order: BootOrder,
+    /// Matches the `ostree admin unlock` state
+    #[serde(default)]
+    pub usr_overlay: Option<FilesystemOverlay>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
@@ -157,6 +195,9 @@ pub struct HostStatus {
     /// Set to true if the rollback entry is queued for the next boot.
     #[serde(default)]
     pub rollback_queued: bool,
+    /// Matches the `ostree admin unlock` state
+    #[serde(default)]
+    pub usr_overlay: Option<FilesystemOverlay>,
 
     /// The detected type of system
     #[serde(rename = "type")]
