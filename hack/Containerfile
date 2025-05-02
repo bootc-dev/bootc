@@ -35,9 +35,9 @@ RUN --mount=type=bind,from=context,target=/run/context <<EORUN
 set -xeuo pipefail
 /run/context/hack/provision-derived.sh "$variant"
 # Add some testing kargs into our dev builds
-cp -a /run/context/hack/test-kargs /usr/lib/bootc/kargs.d/
+cp -a /run/context/hack/test-kargs/ /usr/lib/bootc/kargs.d/
 # Also copy in some default install configs we use for testing
-cp -a /run/context/hack/install-test-configs/* /usr/lib/bootc/install/
+cp -a /run/context/hack/install-test-configs/ /usr/lib/bootc/install/
 # Finally only in this containerfile, inject a file which signifies
 # this comes from this development image.
 touch /usr/lib/.bootc-dev-stamp
