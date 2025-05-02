@@ -5,33 +5,42 @@
 # You can also generate an image with cloud-init and other dependencies
 # with `--build-arg=tmt` which is intended for use particularly via
 # https://tmt.readthedocs.io/en/stable/
+
 ARG base=quay.io/centos-bootc/centos-bootc:stream9
-FROM $base as build
-# Keep this stuff before the `COPY . /build` below to ensure that the packages
-# are cached, i.e. we don't invalidate the package install stage by editing the source.
+
+FROM scratch as context
+# We only need this stuff in the initial context
+COPY hack /hack
 COPY contrib /contrib
-COPY hack/build.sh /build.sh
-RUN /build.sh && rm -v /build.sh
+
+FROM $base as build
+# This installs our package dependencies, and we want to cache it independently of the rest.
+# Basically we don't want changing a .rs file to blow out the cache of packages.
+RUN --mount=type=bind,from=context,target=/run/context /run/context/hack/build.sh
+# Now copy the rest of the source
 COPY . /build
 WORKDIR /build
-RUN mkdir -p /build/target/dev-rootfs  # This can hold arbitrary extra content
 # See https://www.reddit.com/r/rust/comments/126xeyx/exploring_the_problem_of_faster_cargo_docker/
 # We aren't using the full recommendations there, just the simple bits.
-RUN --mount=type=cache,target=/build/target --mount=type=cache,target=/var/roothome make test-bin-archive && mkdir -p /out && cp target/bootc.tar.zst /out
+RUN --mount=type=cache,target=/build/target --mount=type=cache,target=/var/roothome \
+    make && make install-all DESTDIR=/out
 
 FROM $base
 # We support e.g. adding cloud-init
 ARG variant=
-COPY hack/provision-derived.sh /tmp
-RUN /tmp/provision-derived.sh "$variant" && rm -f /tmp/*.sh
+# First, create a layer that is our new binaries.
+COPY --from=build /out/ /
+# And this layer has additional stuff for testing, such as nushell etc.
+RUN --mount=type=bind,from=context,target=/run/context <<EORUN
+set -xeuo pipefail
+/run/context/hack/provision-derived.sh "$variant"
+# Add some testing kargs into our dev builds
+cp -a /run/context/hack/test-kargs /usr/lib/bootc/kargs.d/
 # Also copy in some default install configs we use for testing
-COPY hack/install-test-configs/* /usr/lib/bootc/install/
-# And some test kargs
-COPY hack/test-kargs /usr/lib/bootc/kargs.d/
-# Inject our built code
-COPY --from=build /out/bootc.tar.zst /tmp
-RUN tar -C / --zstd -xvf /tmp/bootc.tar.zst && rm -vrf /tmp/*
-# Also copy over arbitrary bits from the target root
-COPY --from=build /build/target/dev-rootfs/ /
-# Test our own linting
-RUN bootc container lint --fatal-warnings
+cp -a /run/context/hack/install-test-configs/* /usr/lib/bootc/install/
+# Finally only in this containerfile, inject a file which signifies
+# this comes from this development image.
+touch /usr/lib/.bootc-dev-stamp
+# Finally, test our own linting
+bootc container lint --fatal-warnings
+EORUN

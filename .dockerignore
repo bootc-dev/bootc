@@ -1,6 +1,13 @@
-.cosa
+# The big one - this can get HUGE and we don't want
+# to copy it around.
 target
-!target/dev-rootfs
+# This one can have large .qcow2 files written by coreos-assembler
+.cosa
 # These directories don't contribute to our container build
 docs/
+# TMT interprets these, not the container build
 plans/
+# We don't use this by default in containers
+.git
+# Avoid changes to this blowing out all layer caches
+hack/Containerfile
