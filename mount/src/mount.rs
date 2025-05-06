@@ -45,7 +45,7 @@ pub struct Filesystem {
     pub children: Option<Vec<Filesystem>>,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Default)]
 pub struct Findmnt {
     pub filesystems: Vec<Filesystem>,
 }
