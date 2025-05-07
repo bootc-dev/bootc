@@ -21,18 +21,23 @@ use ostree_ext::composefs::fsverity;
 use ostree_ext::composefs::fsverity::FsVerityHashValue;
 use ostree_ext::composefs::splitstream::SplitStreamWriter;
 use ostree_ext::container as ostree_container;
-use ostree_ext::container_utils::ostree_booted;
+use ostree_ext::container_utils::{composefs_booted, ostree_booted};
 use ostree_ext::keyfileext::KeyFileExt;
 use ostree_ext::ostree;
 use ostree_ext::sysroot::SysrootLock;
 use schemars::schema_for;
 use serde::{Deserialize, Serialize};
 
-use crate::deploy::RequiredHostSpec;
+use crate::deploy::{composefs_rollback, RequiredHostSpec};
+use crate::install::{
+    pull_composefs_repo, setup_composefs_bls_boot, setup_composefs_uki_boot, write_composefs_state,
+    BootSetupType, BootType,
+};
 use crate::lints;
 use crate::progress_jsonl::{ProgressWriter, RawProgressFd};
 use crate::spec::Host;
 use crate::spec::ImageReference;
+use crate::status::composefs_deployment_status;
 use crate::utils::sigpolicy_from_opt;
 
 /// Shared progress options
@@ -909,6 +914,53 @@ fn prepare_for_write() -> Result<()> {
     Ok(())
 }
 
+#[context("Upgrading composefs")]
+async fn upgrade_composefs(_opts: UpgradeOpts) -> Result<()> {
+    // TODO: IMPORTANT Have all the checks here that `bootc upgrade` has for an ostree booted system
+
+    let host = composefs_deployment_status()
+        .await
+        .context("Getting composefs deployment status")?;
+
+    // TODO: IMPORTANT We need to check if any deployment is staged and get the image from that
+    let imgref = host
+        .spec
+        .image
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("No image source specified"))?;
+
+    // let booted_image = host
+    //     .status
+    //     .booted
+    //     .ok_or(anyhow::anyhow!("Could not find booted image"))?
+    //     .image
+    //     .ok_or(anyhow::anyhow!("Could not find booted image"))?;
+
+    // tracing::debug!("booted_image: {booted_image:#?}");
+    // tracing::debug!("imgref: {imgref:#?}");
+
+    // let digest = booted_image
+    //     .digest()
+    //     .context("Getting digest for booted image")?;
+
+    let (repo, entries, id) = pull_composefs_repo(&imgref.transport, &imgref.image).await?;
+
+    let Some(entry) = entries.into_iter().next() else {
+        anyhow::bail!("No boot entries!");
+    };
+
+    let boot_type = BootType::from(&entry);
+
+    match boot_type {
+        BootType::Bls => setup_composefs_bls_boot(BootSetupType::Upgrade, repo, &id, entry),
+        BootType::Uki => setup_composefs_uki_boot(BootSetupType::Upgrade, repo, &id, entry),
+    }?;
+
+    write_composefs_state(&Utf8PathBuf::from("/sysroot"), id, imgref, true, boot_type)?;
+
+    Ok(())
+}
+
 /// Implementation of the `bootc upgrade` CLI command.
 #[context("Upgrading")]
 async fn upgrade(opts: UpgradeOpts) -> Result<()> {
@@ -1022,9 +1074,7 @@ async fn upgrade(opts: UpgradeOpts) -> Result<()> {
     Ok(())
 }
 
-/// Implementation of the `bootc switch` CLI command.
-#[context("Switching")]
-async fn switch(opts: SwitchOpts) -> Result<()> {
+fn imgref_for_switch(opts: &SwitchOpts) -> Result<ImageReference> {
     let transport = ostree_container::Transport::try_from(opts.transport.as_str())?;
     let imgref = ostree_container::ImageReference {
         transport,
@@ -1033,6 +1083,63 @@ async fn switch(opts: SwitchOpts) -> Result<()> {
     let sigverify = sigpolicy_from_opt(opts.enforce_container_sigpolicy);
     let target = ostree_container::OstreeImageReference { sigverify, imgref };
     let target = ImageReference::from(target);
+
+    return Ok(target);
+}
+
+#[context("Composefs Switching")]
+async fn switch_composefs(opts: SwitchOpts) -> Result<()> {
+    let target = imgref_for_switch(&opts)?;
+    // TODO: Handle in-place
+
+    let host = composefs_deployment_status()
+        .await
+        .context("Getting composefs deployment status")?;
+
+    let new_spec = {
+        let mut new_spec = host.spec.clone();
+        new_spec.image = Some(target.clone());
+        new_spec
+    };
+
+    if new_spec == host.spec {
+        println!("Image specification is unchanged.");
+        return Ok(());
+    }
+
+    let Some(target_imgref) = new_spec.image else {
+        anyhow::bail!("Target image is undefined")
+    };
+
+    let (repo, entries, id) = pull_composefs_repo(&"docker".into(), &target_imgref.image).await?;
+
+    let Some(entry) = entries.into_iter().next() else {
+        anyhow::bail!("No boot entries!");
+    };
+
+    let boot_type = BootType::from(&entry);
+
+    match boot_type {
+        BootType::Bls => setup_composefs_bls_boot(BootSetupType::Upgrade, repo, &id, entry),
+        BootType::Uki => setup_composefs_uki_boot(BootSetupType::Upgrade, repo, &id, entry),
+    }?;
+
+    write_composefs_state(
+        &Utf8PathBuf::from("/sysroot"),
+        id,
+        &target_imgref,
+        true,
+        boot_type,
+    )?;
+
+    Ok(())
+}
+
+/// Implementation of the `bootc switch` CLI command.
+#[context("Switching")]
+async fn switch(opts: SwitchOpts) -> Result<()> {
+    let target = imgref_for_switch(&opts)?;
+
     let prog: ProgressWriter = opts.progress.try_into()?;
 
     // If we're doing an in-place mutation, we shortcut most of the rest of the work here
@@ -1104,21 +1211,25 @@ async fn switch(opts: SwitchOpts) -> Result<()> {
 /// Implementation of the `bootc rollback` CLI command.
 #[context("Rollback")]
 async fn rollback(opts: RollbackOpts) -> Result<()> {
-    let sysroot = &get_storage().await?;
-    let ostree = sysroot.get_ostree()?;
-    crate::deploy::rollback(sysroot).await?;
+    if composefs_booted()? {
+        composefs_rollback().await?
+    } else {
+        let sysroot = &get_storage().await?;
+        let ostree = sysroot.get_ostree()?;
+        crate::deploy::rollback(sysroot).await?;
 
-    if opts.soft_reboot.is_some() {
-        // Get status of rollback deployment to check soft-reboot capability
-        let host = crate::status::get_status_require_booted(ostree)?.2;
+        if opts.soft_reboot.is_some() {
+            // Get status of rollback deployment to check soft-reboot capability
+            let host = crate::status::get_status_require_booted(ostree)?.2;
 
-        handle_soft_reboot(
-            opts.soft_reboot,
-            host.status.rollback.as_ref(),
-            "rollback",
-            || soft_reboot_rollback(ostree),
-        )?;
-    }
+            handle_soft_reboot(
+                opts.soft_reboot,
+                host.status.rollback.as_ref(),
+                "rollback",
+                || soft_reboot_rollback(ostree),
+            )?;
+        }
+    };
 
     if opts.apply {
         crate::reboot::reboot()?;
@@ -1268,8 +1379,20 @@ impl Opt {
 async fn run_from_opt(opt: Opt) -> Result<()> {
     let root = &Dir::open_ambient_dir("/", cap_std::ambient_authority())?;
     match opt {
-        Opt::Upgrade(opts) => upgrade(opts).await,
-        Opt::Switch(opts) => switch(opts).await,
+        Opt::Upgrade(opts) => {
+            if composefs_booted()? {
+                upgrade_composefs(opts).await
+            } else {
+                upgrade(opts).await
+            }
+        }
+        Opt::Switch(opts) => {
+            if composefs_booted()? {
+                switch_composefs(opts).await
+            } else {
+                switch(opts).await
+            }
+        }
         Opt::Rollback(opts) => rollback(opts).await,
         Opt::Edit(opts) => edit(opts).await,
         Opt::UsrOverlay => usroverlay().await,
@@ -1410,8 +1533,7 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
                 FsverityOpts::Enable { path } => {
                     let fd =
                         std::fs::File::open(&path).with_context(|| format!("Reading {path}"))?;
-                    // Note this is not robust to forks, we're not using the _maybe_copy variant
-                    fsverity::enable_verity_with_retry::<fsverity::Sha256HashValue>(&fd)?;
+                    fsverity::enable_verity_raw::<fsverity::Sha256HashValue>(&fd)?;
                     Ok(())
                 }
             },

@@ -3,7 +3,9 @@
 //! Create a merged filesystem tree with the image and mounted configmaps.
 
 use std::collections::HashSet;
+use std::fs::create_dir_all;
 use std::io::{BufRead, Write};
+use std::path::PathBuf;
 
 use anyhow::Ok;
 use anyhow::{anyhow, Context, Result};
@@ -20,11 +22,15 @@ use ostree_ext::ostree::Deployment;
 use ostree_ext::ostree::{self, Sysroot};
 use ostree_ext::sysroot::SysrootLock;
 use ostree_ext::tokio_util::spawn_blocking_cancellable_flatten;
+use rustix::fs::{fsync, renameat_with, AtFlags, RenameFlags};
 
+use crate::bls_config::{parse_bls_config, BLSConfig};
+#[allow(unused_imports)]
+use crate::install::{get_efi_uuid_source, get_user_config, BootType};
 use crate::progress_jsonl::{Event, ProgressWriter, SubTaskBytes, SubTaskStep};
 use crate::spec::ImageReference;
-use crate::spec::{BootOrder, HostSpec};
-use crate::status::labels_of_config;
+use crate::spec::{BootEntry, BootOrder, HostSpec};
+use crate::status::{composefs_deployment_status, labels_of_config};
 use crate::store::Storage;
 use crate::utils::async_task_with_spinner;
 
@@ -741,6 +747,184 @@ pub(crate) async fn stage(
     run_dir
         .atomic_write("reboot-required", b"")
         .context("Creating /run/reboot-required")?;
+
+    Ok(())
+}
+
+#[context("Rolling back UKI")]
+pub(crate) fn rollback_composefs_uki(_current: &BootEntry, _rollback: &BootEntry) -> Result<()> {
+    unimplemented!()
+    // let user_cfg_name = "grub2/user.cfg.staged";
+    // let user_cfg_path = PathBuf::from("boot").join(user_cfg_name);
+    // let sysroot = &Dir::open_ambient_dir("/sysroot", cap_std::ambient_authority())?;
+
+    // let efi_uuid_source = get_efi_uuid_source();
+
+    // let rollback_verity = if let Some(composefs) = &rollback.composefs {
+    //     composefs.verity.clone()
+    // } else {
+    //     // Shouldn't really happen
+    //     anyhow::bail!("Verity not found for rollback deployment")
+    // };
+    // let rollback_config = get_user_config(todo!(), &rollback_verity).as_bytes();
+
+    // let current_verity = if let Some(composefs) = &current.composefs {
+    //     composefs.verity.clone()
+    // } else {
+    //     // Shouldn't really happen
+    //     anyhow::bail!("Verity not found for booted deployment")
+    // };
+    // let current_config = get_user_config(todo!(), &current_verity).as_bytes();
+
+    // // TODO: Need to check if user.cfg.staged exists
+    // sysroot
+    //     .atomic_replace_with(user_cfg_path, |w| {
+    //         write!(w, "{efi_uuid_source}")?;
+    //         w.write_all(rollback_config)?;
+    //         w.write_all(current_config)?;
+    //         Ok(())
+    //     })
+    //     .with_context(|| format!("Writing {user_cfg_name}"))?;
+
+    // Ok(())
+}
+
+/// Filename for `loader/entries`
+const CURRENT_ENTRIES: &str = "entries";
+const STAGED_ENTRIES: &str = "entries.staged";
+const ROLLBACK_ENTRIES: &str = STAGED_ENTRIES;
+
+#[context("Getting boot entries")]
+pub(crate) fn get_sorted_boot_entries(ascending: bool) -> Result<Vec<BLSConfig>> {
+    let mut all_configs = vec![];
+
+    for entry in std::fs::read_dir(format!("/sysroot/boot/loader/{CURRENT_ENTRIES}"))? {
+        let entry = entry?;
+
+        let file_name = entry.file_name();
+
+        let file_name = file_name
+            .to_str()
+            .ok_or(anyhow::anyhow!("Found non UTF-8 characters in filename"))?;
+
+        if !file_name.ends_with(".conf") {
+            continue;
+        }
+
+        let contents = std::fs::read_to_string(&entry.path())
+            .with_context(|| format!("Failed to read {:?}", entry.path()))?;
+
+        let config = parse_bls_config(&contents).context("Parsing bls config")?;
+
+        all_configs.push(config);
+    }
+
+    all_configs.sort_by(|a, b| if ascending { a.cmp(b) } else { b.cmp(a) });
+
+    return Ok(all_configs);
+}
+
+#[context("Rolling back BLS")]
+pub(crate) fn rollback_composefs_bls() -> Result<()> {
+    // Sort in descending order as that's the order they're shown on the boot screen
+    // After this:
+    // all_configs[0] -> booted depl
+    // all_configs[1] -> rollback depl
+    let mut all_configs = get_sorted_boot_entries(false)?;
+
+    // Update the indicies so that they're swapped
+    for (idx, cfg) in all_configs.iter_mut().enumerate() {
+        cfg.version = idx as u32;
+    }
+
+    assert!(all_configs.len() == 2);
+
+    // Write these
+    let dir_path = PathBuf::from(format!("/sysroot/boot/loader/{ROLLBACK_ENTRIES}"));
+    create_dir_all(&dir_path).with_context(|| format!("Failed to create dir: {dir_path:?}"))?;
+
+    let rollback_entries_dir =
+        cap_std::fs::Dir::open_ambient_dir(&dir_path, cap_std::ambient_authority())
+            .with_context(|| format!("Opening {dir_path:?}"))?;
+
+    // Write the BLS configs in there
+    for cfg in all_configs {
+        let file_name = format!("bootc-composefs-{}.conf", cfg.version);
+
+        rollback_entries_dir
+            .atomic_write(&file_name, cfg.to_string().as_bytes())
+            .with_context(|| format!("Writing to {file_name}"))?;
+    }
+
+    // Should we sync after every write?
+    fsync(
+        rollback_entries_dir
+            .reopen_as_ownedfd()
+            .with_context(|| format!("Reopening {dir_path:?} as owned fd"))?,
+    )
+    .with_context(|| format!("fsync {dir_path:?}"))?;
+
+    // Atomically exchange "entries" <-> "entries.rollback"
+    let dir = Dir::open_ambient_dir("/sysroot/boot/loader", cap_std::ambient_authority())
+        .context("Opening loader dir")?;
+
+    tracing::debug!("Atomically exchanging for {ROLLBACK_ENTRIES} and {CURRENT_ENTRIES}");
+    renameat_with(
+        &dir,
+        ROLLBACK_ENTRIES,
+        &dir,
+        CURRENT_ENTRIES,
+        RenameFlags::EXCHANGE,
+    )
+    .context("renameat")?;
+
+    tracing::debug!("Removing {ROLLBACK_ENTRIES}");
+    rustix::fs::unlinkat(&dir, ROLLBACK_ENTRIES, AtFlags::REMOVEDIR).context("unlinkat")?;
+
+    tracing::debug!("Syncing to disk");
+    fsync(
+        dir.reopen_as_ownedfd()
+            .with_context(|| format!("Reopening /sysroot/boot/loader as owned fd"))?,
+    )
+    .context("fsync")?;
+
+    Ok(())
+}
+
+#[context("Rolling back composefs")]
+pub(crate) async fn composefs_rollback() -> Result<()> {
+    let host = composefs_deployment_status().await?;
+
+    let new_spec = {
+        let mut new_spec = host.spec.clone();
+        new_spec.boot_order = new_spec.boot_order.swap();
+        new_spec
+    };
+
+    // Just to be sure
+    host.spec.verify_transition(&new_spec)?;
+
+    let reverting = new_spec.boot_order == BootOrder::Default;
+    if reverting {
+        println!("notice: Reverting queued rollback state");
+    }
+
+    let rollback_status = host
+        .status
+        .rollback
+        .ok_or_else(|| anyhow!("No rollback available"))?;
+
+    // TODO: Handle staged deployment
+    // Ostree will drop any staged deployment on rollback but will keep it if it is the first item
+    // in the new deployment list
+    let Some(rollback_composefs_entry) = &rollback_status.composefs else {
+        anyhow::bail!("Rollback deployment not a composefs deployment")
+    };
+
+    match rollback_composefs_entry.boot_type {
+        BootType::Bls => rollback_composefs_bls(),
+        BootType::Uki => rollback_composefs_uki(&host.status.booted.unwrap(), &rollback_status),
+    }?;
 
     Ok(())
 }

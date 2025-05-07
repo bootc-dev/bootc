@@ -3,22 +3,37 @@ use std::collections::VecDeque;
 use std::io::IsTerminal;
 use std::io::Read;
 use std::io::Write;
+use std::str::FromStr;
 
 use anyhow::{Context, Result};
+use bootc_kernel_cmdline::Cmdline;
+use bootc_utils::try_deserialize_timestamp;
 use canon_json::CanonJsonSerialize;
+use cap_std_ext::cap_std;
 use fn_error_context::context;
 use ostree::glib;
 use ostree_container::OstreeImageReference;
 use ostree_ext::container as ostree_container;
+use ostree_ext::container::deploy::ORIGIN_CONTAINER;
+use ostree_ext::container_utils::composefs_booted;
 use ostree_ext::container_utils::ostree_booted;
+use ostree_ext::containers_image_proxy;
 use ostree_ext::keyfileext::KeyFileExt;
 use ostree_ext::oci_spec;
 use ostree_ext::oci_spec::image::Digest;
 use ostree_ext::oci_spec::image::ImageConfiguration;
-use ostree_ext::ostree;
 use ostree_ext::sysroot::SysrootLock;
 
+use ostree_ext::oci_spec::image::ImageManifest;
+use ostree_ext::ostree;
+use tokio::io::AsyncReadExt;
+
 use crate::cli::OutputFormat;
+use crate::deploy::get_sorted_boot_entries;
+use crate::install::BootType;
+use crate::install::ORIGIN_KEY_BOOT;
+use crate::install::ORIGIN_KEY_BOOT_TYPE;
+use crate::install::{COMPOSEFS_STAGED_DEPLOYMENT_PATH, STATE_DIR_RELATIVE};
 use crate::spec::ImageStatus;
 use crate::spec::{BootEntry, BootOrder, Host, HostSpec, HostStatus, HostType};
 use crate::spec::{ImageReference, ImageSignature};
@@ -207,6 +222,7 @@ fn boot_entry_from_deployment(
             deploy_serial: deployment.deployserial().try_into().unwrap(),
             stateroot: deployment.stateroot().into(),
         }),
+        composefs: None,
     };
     Ok(r)
 }
@@ -335,6 +351,179 @@ pub(crate) fn get_status(
     Ok((deployments, host))
 }
 
+/// imgref = transport:image_name
+#[context("Getting container info")]
+async fn get_container_manifest_and_config(
+    imgref: &String,
+) -> Result<(ImageManifest, oci_spec::image::ImageConfiguration)> {
+    let config = containers_image_proxy::ImageProxyConfig::default();
+    let proxy = containers_image_proxy::ImageProxy::new_with_config(config).await?;
+
+    let img = proxy.open_image(&imgref).await.context("Opening image")?;
+
+    let (_, manifest) = proxy.fetch_manifest(&img).await?;
+    let (mut reader, driver) = proxy.get_descriptor(&img, manifest.config()).await?;
+
+    let mut buf = Vec::with_capacity(manifest.config().size() as usize);
+    buf.resize(manifest.config().size() as usize, 0);
+    reader.read_exact(&mut buf).await?;
+    driver.await?;
+
+    let config: oci_spec::image::ImageConfiguration = serde_json::from_slice(&buf)?;
+
+    Ok((manifest, config))
+}
+
+#[context("Getting composefs deployment metadata")]
+async fn boot_entry_from_composefs_deployment(
+    origin: tini::Ini,
+    verity: String,
+) -> Result<BootEntry> {
+    let image = match origin.get::<String>("origin", ORIGIN_CONTAINER) {
+        Some(img_name_from_config) => {
+            let ostree_img_ref = OstreeImageReference::from_str(&img_name_from_config)?;
+            let imgref = ostree_img_ref.imgref.to_string();
+            let img_ref = ImageReference::from(ostree_img_ref);
+
+            // The image might've been removed, so don't error if we can't get the image manifest
+            let (image_digest, version, architecture, created_at) =
+                match get_container_manifest_and_config(&imgref).await {
+                    Ok((manifest, config)) => {
+                        let digest = manifest.config().digest().to_string();
+                        let arch = config.architecture().to_string();
+                        let created = config.created().clone();
+                        let version = manifest
+                            .annotations()
+                            .as_ref()
+                            .and_then(|a| a.get(oci_spec::image::ANNOTATION_VERSION).cloned());
+
+                        (digest, version, arch, created)
+                    }
+
+                    Err(e) => {
+                        tracing::debug!("Failed to open image {img_ref}, because {e:?}");
+                        ("".into(), None, "".into(), None)
+                    }
+                };
+
+            let timestamp = created_at.and_then(|x| try_deserialize_timestamp(&x));
+
+            let image_status = ImageStatus {
+                image: img_ref,
+                version,
+                timestamp,
+                image_digest,
+                architecture,
+            };
+
+            Some(image_status)
+        }
+
+        // Wasn't booted using a container image. Do nothing
+        None => None,
+    };
+
+    let boot_type = match origin.get::<String>(ORIGIN_KEY_BOOT, ORIGIN_KEY_BOOT_TYPE) {
+        Some(s) => BootType::try_from(s.as_str())?,
+        None => anyhow::bail!("{ORIGIN_KEY_BOOT} not found"),
+    };
+
+    let e = BootEntry {
+        image,
+        cached_update: None,
+        incompatible: false,
+        pinned: false,
+        store: None,
+        ostree: None,
+        composefs: Some(crate::spec::BootEntryComposefs { verity, boot_type }),
+        soft_reboot_capable: false,
+    };
+
+    return Ok(e);
+}
+
+#[context("Getting composefs deployment status")]
+pub(crate) async fn composefs_deployment_status() -> Result<Host> {
+    let cmdline = Cmdline::from_proc()?;
+    let composefs_arg = cmdline
+        .find_str("composefs")
+        .ok_or_else(|| anyhow::anyhow!("Failed to find composefs parameter in kernel cmdline"))?;
+    let booted_image_verity = composefs_arg
+        .value
+        .ok_or_else(|| anyhow::anyhow!("Missing value for composefs"))?;
+
+    let sysroot = cap_std::fs::Dir::open_ambient_dir("/sysroot", cap_std::ambient_authority())
+        .context("Opening sysroot")?;
+    let deployments = sysroot
+        .read_dir(STATE_DIR_RELATIVE)
+        .with_context(|| format!("Reading sysroot {STATE_DIR_RELATIVE}"))?;
+
+    let host_spec = HostSpec {
+        image: None,
+        boot_order: BootOrder::Default,
+    };
+
+    let mut host = Host::new(host_spec);
+
+    let staged_deployment_id = match std::fs::File::open(COMPOSEFS_STAGED_DEPLOYMENT_PATH) {
+        Ok(mut f) => {
+            let mut s = String::new();
+            f.read_to_string(&mut s)?;
+
+            Ok(Some(s))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e),
+    }?;
+
+    for depl in deployments {
+        let depl = depl?;
+
+        let depl_file_name = depl.file_name();
+        let depl_file_name = depl_file_name.to_string_lossy();
+
+        // read the origin file
+        let config = depl
+            .open_dir()
+            .with_context(|| format!("Failed to open {depl_file_name}"))?
+            .read_to_string(format!("{depl_file_name}.origin"))
+            .with_context(|| format!("Reading file {depl_file_name}.origin"))?;
+
+        let ini = tini::Ini::from_string(&config)
+            .with_context(|| format!("Failed to parse file {depl_file_name}.origin as ini"))?;
+
+        let boot_entry =
+            boot_entry_from_composefs_deployment(ini, depl_file_name.to_string()).await?;
+
+        if depl.file_name() == booted_image_verity {
+            host.spec.image = boot_entry.image.as_ref().map(|x| x.image.clone());
+            host.status.booted = Some(boot_entry);
+            continue;
+        }
+
+        if let Some(staged_deployment_id) = &staged_deployment_id {
+            if depl_file_name == staged_deployment_id.trim() {
+                host.status.staged = Some(boot_entry);
+                continue;
+            }
+        }
+
+        host.status.rollback = Some(boot_entry);
+    }
+
+    host.status.rollback_queued = !get_sorted_boot_entries(false)?
+        .first()
+        .ok_or(anyhow::anyhow!("First boot entry not found"))?
+        .options
+        .contains(composefs_arg.as_ref());
+
+    if host.status.rollback_queued {
+        host.spec.boot_order = BootOrder::Rollback
+    };
+
+    Ok(host)
+}
+
 /// Implementation of the `bootc status` CLI command.
 #[context("Status")]
 pub(crate) async fn status(opts: super::cli::StatusOpts) -> Result<()> {
@@ -343,14 +532,16 @@ pub(crate) async fn status(opts: super::cli::StatusOpts) -> Result<()> {
         0 | 1 => {}
         o => anyhow::bail!("Unsupported format version: {o}"),
     };
-    let mut host = if !ostree_booted()? {
-        Default::default()
-    } else {
+    let mut host = if ostree_booted()? {
         let sysroot = super::cli::get_storage().await?;
         let ostree = sysroot.get_ostree()?;
         let booted_deployment = ostree.booted_deployment();
         let (_deployments, host) = get_status(&ostree, booted_deployment.as_ref())?;
         host
+    } else if composefs_booted()? {
+        composefs_deployment_status().await?
+    } else {
+        Default::default()
     };
 
     // We could support querying the staged or rollback deployments
@@ -485,6 +676,12 @@ fn human_render_slot(
     let digest = &image.image_digest;
     writeln!(out, "{digest} ({arch})")?;
 
+    // Write the EROFS verity if present
+    if let Some(composefs) = &entry.composefs {
+        write_row_name(&mut out, "Verity", prefix_len)?;
+        writeln!(out, "{}", composefs.verity)?;
+    }
+
     // Format the timestamp without nanoseconds since those are just irrelevant noise for human
     // consumption - that time scale should basically never matter for container builds.
     let timestamp = image
@@ -585,6 +782,27 @@ fn human_render_slot_ostree(
     Ok(())
 }
 
+/// Output a rendering of a non-container composefs boot entry.
+fn human_render_slot_composefs(
+    mut out: impl Write,
+    slot: Slot,
+    entry: &crate::spec::BootEntry,
+    erofs_verity: &str,
+) -> Result<()> {
+    // TODO consider rendering more ostree stuff here like rpm-ostree status does
+    let prefix = match slot {
+        Slot::Staged => "  Staged composefs".into(),
+        Slot::Booted => format!("{} Booted composefs", crate::glyph::Glyph::BlackCircle),
+        Slot::Rollback => "  Rollback composefs".into(),
+    };
+    let prefix_len = prefix.len();
+    writeln!(out, "{prefix}")?;
+    write_row_name(&mut out, "Commit", prefix_len)?;
+    writeln!(out, "{erofs_verity}")?;
+    tracing::debug!("pinned={}", entry.pinned);
+    Ok(())
+}
+
 fn human_readable_output_booted(mut out: impl Write, host: &Host, verbose: bool) -> Result<()> {
     let mut first = true;
     for (slot_name, status) in [
@@ -608,6 +826,8 @@ fn human_readable_output_booted(mut out: impl Write, host: &Host, verbose: bool)
                     &ostree.checksum,
                     verbose,
                 )?;
+            } else if let Some(composefs) = &host_status.composefs {
+                human_render_slot_composefs(&mut out, slot_name, host_status, &composefs.verity)?;
             } else {
                 writeln!(out, "Current {slot_name} state is unknown")?;
             }
