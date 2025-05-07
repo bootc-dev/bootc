@@ -77,6 +77,12 @@ pub fn ostree_booted() -> io::Result<bool> {
     Path::new(&format!("/{OSTREE_BOOTED}")).try_exists()
 }
 
+/// Returns true if the system appears to have been booted with composefs.
+pub fn composefs_booted() -> io::Result<bool> {
+    let cmdline = std::fs::read_to_string("/proc/cmdline")?;
+    Ok(cmdline.contains("composefs="))
+}
+
 /// Returns true if the target root appears to have been booted via ostree.
 pub fn is_ostree_booted_in(rootfs: &Dir) -> io::Result<bool> {
     rootfs.try_exists(OSTREE_BOOTED)

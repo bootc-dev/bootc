@@ -179,6 +179,7 @@ fn parse_all(input: &str) -> IResult<&str, Vec<MenuEntry>> {
     .parse(input)
 }
 
+#[allow(dead_code)]
 pub(crate) fn parse_grub_menuentry_file(contents: &str) -> anyhow::Result<Vec<MenuEntry>> {
     let result = parse_all(&contents);
 
