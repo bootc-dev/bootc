@@ -29,6 +29,11 @@ use ostree_ext::sysroot::SysrootLock;
 use schemars::schema_for;
 use serde::{Deserialize, Serialize};
 
+#[cfg(feature = "composefs-backend")]
+use crate::bootc_composefs::{
+    finalize::composefs_native_finalize, rollback::composefs_rollback, status::composefs_booted,
+    switch::switch_composefs, update::upgrade_composefs,
+};
 use crate::deploy::RequiredHostSpec;
 use crate::lints;
 use crate::progress_jsonl::{ProgressWriter, RawProgressFd};
@@ -707,6 +712,8 @@ pub(crate) enum Opt {
     #[clap(hide(true))]
     #[cfg(feature = "docgen")]
     Man(ManOpts),
+    #[cfg(feature = "composefs-backend")]
+    ComposefsFinalizeStaged,
 }
 
 /// Ensure we've entered a mount namespace, so that we can remount
@@ -1029,9 +1036,7 @@ async fn upgrade(opts: UpgradeOpts) -> Result<()> {
     Ok(())
 }
 
-/// Implementation of the `bootc switch` CLI command.
-#[context("Switching")]
-async fn switch(opts: SwitchOpts) -> Result<()> {
+pub(crate) fn imgref_for_switch(opts: &SwitchOpts) -> Result<ImageReference> {
     let transport = ostree_container::Transport::try_from(opts.transport.as_str())?;
     let imgref = ostree_container::ImageReference {
         transport,
@@ -1040,6 +1045,15 @@ async fn switch(opts: SwitchOpts) -> Result<()> {
     let sigverify = sigpolicy_from_opt(opts.enforce_container_sigpolicy);
     let target = ostree_container::OstreeImageReference { sigverify, imgref };
     let target = ImageReference::from(target);
+
+    return Ok(target);
+}
+
+/// Implementation of the `bootc switch` CLI command.
+#[context("Switching")]
+async fn switch(opts: SwitchOpts) -> Result<()> {
+    let target = imgref_for_switch(&opts)?;
+
     let prog: ProgressWriter = opts.progress.try_into()?;
 
     // If we're doing an in-place mutation, we shortcut most of the rest of the work here
@@ -1130,7 +1144,7 @@ async fn switch(opts: SwitchOpts) -> Result<()> {
 
 /// Implementation of the `bootc rollback` CLI command.
 #[context("Rollback")]
-async fn rollback(opts: RollbackOpts) -> Result<()> {
+async fn rollback(opts: &RollbackOpts) -> Result<()> {
     let sysroot = &get_storage().await?;
     let ostree = sysroot.get_ostree()?;
     crate::deploy::rollback(sysroot).await?;
@@ -1145,10 +1159,6 @@ async fn rollback(opts: RollbackOpts) -> Result<()> {
             "rollback",
             || soft_reboot_rollback(ostree),
         )?;
-    }
-
-    if opts.apply {
-        crate::reboot::reboot()?;
     }
 
     Ok(())
@@ -1294,9 +1304,45 @@ impl Opt {
 async fn run_from_opt(opt: Opt) -> Result<()> {
     let root = &Dir::open_ambient_dir("/", cap_std::ambient_authority())?;
     match opt {
-        Opt::Upgrade(opts) => upgrade(opts).await,
-        Opt::Switch(opts) => switch(opts).await,
-        Opt::Rollback(opts) => rollback(opts).await,
+        Opt::Upgrade(opts) => {
+            #[cfg(feature = "composefs-backend")]
+            if composefs_booted()?.is_some() {
+                upgrade_composefs(opts).await
+            } else {
+                upgrade(opts).await
+            }
+
+            #[cfg(not(feature = "composefs-backend"))]
+            upgrade(opts).await
+        }
+        Opt::Switch(opts) => {
+            #[cfg(feature = "composefs-backend")]
+            if composefs_booted()?.is_some() {
+                switch_composefs(opts).await
+            } else {
+                switch(opts).await
+            }
+
+            #[cfg(not(feature = "composefs-backend"))]
+            switch(opts).await
+        }
+        Opt::Rollback(opts) => {
+            #[cfg(feature = "composefs-backend")]
+            if composefs_booted()?.is_some() {
+                composefs_rollback().await?
+            } else {
+                rollback(&opts).await?
+            }
+
+            #[cfg(not(feature = "composefs-backend"))]
+            rollback(&opts).await?;
+
+            if opts.apply {
+                crate::reboot::reboot()?;
+            }
+
+            Ok(())
+        }
         Opt::Edit(opts) => edit(opts).await,
         Opt::UsrOverlay => usroverlay().await,
         Opt::Container(opts) => match opts {
@@ -1436,8 +1482,7 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
                 FsverityOpts::Enable { path } => {
                     let fd =
                         std::fs::File::open(&path).with_context(|| format!("Reading {path}"))?;
-                    // Note this is not robust to forks, we're not using the _maybe_copy variant
-                    fsverity::enable_verity_with_retry::<fsverity::Sha256HashValue>(&fd)?;
+                    fsverity::enable_verity_raw::<fsverity::Sha256HashValue>(&fd)?;
                     Ok(())
                 }
             },
@@ -1532,6 +1577,9 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
                 Ok(())
             }
         },
+
+        #[cfg(feature = "composefs-backend")]
+        Opt::ComposefsFinalizeStaged => composefs_native_finalize().await,
     }
 }
 

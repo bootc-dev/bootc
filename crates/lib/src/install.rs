@@ -53,17 +53,21 @@ use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "install-to-disk")]
 use self::baseline::InstallBlockDeviceOpts;
+#[cfg(feature = "composefs-backend")]
+use crate::bootc_composefs::{boot::setup_composefs_boot, repo::initialize_composefs_repository};
 use crate::boundimage::{BoundImage, ResolvedBoundImage};
 use crate::containerenv::ContainerExecutionInfo;
 use crate::deploy::{prepare_for_pull, pull_from_prepared, PreparedImportMeta, PreparedPullResult};
 use crate::lsm;
 use crate::progress_jsonl::ProgressWriter;
-use crate::spec::ImageReference;
+use crate::spec::{Bootloader, ImageReference};
 use crate::store::Storage;
 use crate::task::Task;
 use crate::utils::sigpolicy_from_opt;
-use bootc_kernel_cmdline::{bytes, utf8};
+use bootc_kernel_cmdline::{bytes, utf8, INITRD_ARG_PREFIX, ROOTFLAGS};
 use bootc_mount::Filesystem;
+#[cfg(feature = "composefs-backend")]
+use composefs::fsverity::FsVerityHashValue;
 
 /// The toplevel boot directory
 const BOOT: &str = "boot";
@@ -81,12 +85,10 @@ const OSTREE_COMPOSEFS_SUPER: &str = ".ostree.cfs";
 /// The mount path for selinux
 const SELINUXFS: &str = "/sys/fs/selinux";
 /// The mount path for uefi
-const EFIVARFS: &str = "/sys/firmware/efi/efivars";
+pub(crate) const EFIVARFS: &str = "/sys/firmware/efi/efivars";
 pub(crate) const ARCH_USES_EFI: bool = cfg!(any(target_arch = "x86_64", target_arch = "aarch64"));
-/// This is used by dracut.
-pub const INITRD_ARG_PREFIX: &str = "rd.";
-/// The kernel argument for configuring the rootfs flags.
-pub const ROOTFLAGS: &str = "rootflags";
+pub(crate) const ESP_GUID: &str = "C12A7328-F81F-11D2-BA4B-00A0C93EC93B";
+pub(crate) const DPS_UUID: &str = "6523f8ae-3eb1-4e2a-a05a-18b695ae656f";
 
 const DEFAULT_REPO_CONFIG: &[(&str, &str)] = &[
     // Default to avoiding grub2-mkconfig etc.
@@ -98,7 +100,7 @@ const DEFAULT_REPO_CONFIG: &[(&str, &str)] = &[
 ];
 
 /// Kernel argument used to specify we want the rootfs mounted read-write by default
-const RW_KARG: &str = "rw";
+pub(crate) const RW_KARG: &str = "rw";
 
 #[derive(clap::Args, Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct InstallTargetOpts {
@@ -193,7 +195,7 @@ pub(crate) struct InstallConfigOpts {
     ///
     /// Example: --karg=nosmt --karg=console=ttyS0,114800n8
     #[clap(long)]
-    karg: Option<Vec<String>>,
+    pub(crate) karg: Option<Vec<String>>,
 
     /// The path to an `authorized_keys` that will be injected into the `root` account.
     ///
@@ -225,6 +227,17 @@ pub(crate) struct InstallConfigOpts {
     pub(crate) stateroot: Option<String>,
 }
 
+#[derive(Debug, Clone, clap::Parser, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct InstallComposefsOpts {
+    #[clap(long, default_value_t)]
+    #[serde(default)]
+    pub(crate) insecure: bool,
+
+    #[clap(long, default_value_t)]
+    #[serde(default)]
+    pub(crate) bootloader: Bootloader,
+}
+
 #[cfg(feature = "install-to-disk")]
 #[derive(Debug, Clone, clap::Parser, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct InstallToDiskOpts {
@@ -248,6 +261,16 @@ pub(crate) struct InstallToDiskOpts {
     #[clap(long)]
     #[serde(default)]
     pub(crate) via_loopback: bool,
+
+    #[clap(long)]
+    #[serde(default)]
+    #[cfg(feature = "composefs-backend")]
+    pub(crate) composefs_native: bool,
+
+    #[clap(flatten)]
+    #[serde(flatten)]
+    #[cfg(feature = "composefs-backend")]
+    pub(crate) composefs_opts: InstallComposefsOpts,
 }
 
 #[derive(ValueEnum, Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -370,6 +393,7 @@ pub(crate) struct SourceInfo {
 }
 
 // Shared read-only global state
+#[derive(Debug)]
 pub(crate) struct State {
     pub(crate) source: SourceInfo,
     /// Force SELinux off in target system
@@ -387,6 +411,10 @@ pub(crate) struct State {
     /// The root filesystem of the running container
     pub(crate) container_root: Dir,
     pub(crate) tempdir: TempDir,
+
+    // If Some, then --composefs_native is passed
+    #[cfg(feature = "composefs-backend")]
+    pub(crate) composefs_options: Option<InstallComposefsOpts>,
 }
 
 impl State {
@@ -510,6 +538,20 @@ impl FromStr for MountSpec {
             target: target.to_string(),
             options,
         })
+    }
+}
+
+#[cfg(all(feature = "install-to-disk", feature = "composefs-backend"))]
+impl InstallToDiskOpts {
+    pub(crate) fn validate(&self) -> Result<()> {
+        if !self.composefs_native {
+            // Reject using --insecure without --composefs
+            if self.composefs_opts.insecure != false {
+                anyhow::bail!("--insecure must not be provided without --composefs");
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -928,17 +970,17 @@ pub(crate) fn exec_in_host_mountns(args: &[std::ffi::OsString]) -> Result<()> {
 pub(crate) struct RootSetup {
     #[cfg(feature = "install-to-disk")]
     luks_device: Option<String>,
-    device_info: bootc_blockdev::PartitionTable,
+    pub(crate) device_info: bootc_blockdev::PartitionTable,
     /// Absolute path to the location where we've mounted the physical
     /// root filesystem for the system we're installing.
-    physical_root_path: Utf8PathBuf,
+    pub(crate) physical_root_path: Utf8PathBuf,
     /// Directory file descriptor for the above physical root.
-    physical_root: Dir,
-    rootfs_uuid: Option<String>,
+    pub(crate) physical_root: Dir,
+    pub(crate) rootfs_uuid: Option<String>,
     /// True if we should skip finalizing
     skip_finalize: bool,
     boot: Option<MountSpec>,
-    kargs: Vec<String>,
+    pub(crate) kargs: Vec<String>,
 }
 
 fn require_boot_uuid(spec: &MountSpec) -> Result<&str> {
@@ -949,7 +991,7 @@ fn require_boot_uuid(spec: &MountSpec) -> Result<&str> {
 impl RootSetup {
     /// Get the UUID= mount specifier for the /boot filesystem; if there isn't one, the root UUID will
     /// be returned.
-    fn get_boot_uuid(&self) -> Result<Option<&str>> {
+    pub(crate) fn get_boot_uuid(&self) -> Result<Option<&str>> {
         self.boot.as_ref().map(require_boot_uuid).transpose()
     }
 
@@ -1158,6 +1200,7 @@ async fn prepare_install(
     config_opts: InstallConfigOpts,
     source_opts: InstallSourceOpts,
     target_opts: InstallTargetOpts,
+    _composefs_opts: Option<InstallComposefsOpts>,
 ) -> Result<Arc<State>> {
     tracing::trace!("Preparing install");
     let rootfs = cap_std::fs::Dir::open_ambient_dir("/", cap_std::ambient_authority())
@@ -1302,6 +1345,8 @@ async fn prepare_install(
         container_root: rootfs,
         tempdir,
         host_is_container,
+        #[cfg(feature = "composefs-backend")]
+        composefs_options: _composefs_opts,
     });
 
     Ok(state)
@@ -1338,7 +1383,7 @@ async fn install_with_sysroot(
             &rootfs.device_info,
             &rootfs.physical_root_path,
             &state.config_opts,
-            &deployment_path.as_str(),
+            Some(&deployment_path.as_str()),
         )?;
     }
     tracing::debug!("Installed bootloader");
@@ -1400,29 +1445,7 @@ impl BoundImages {
     }
 }
 
-async fn install_to_filesystem_impl(
-    state: &State,
-    rootfs: &mut RootSetup,
-    cleanup: Cleanup,
-) -> Result<()> {
-    if matches!(state.selinux_state, SELinuxFinalState::ForceTargetDisabled) {
-        rootfs.kargs.push("selinux=0".to_string());
-    }
-    // Drop exclusive ownership since we're done with mutation
-    let rootfs = &*rootfs;
-
-    match &rootfs.device_info.label {
-        bootc_blockdev::PartitionType::Dos => crate::utils::medium_visibility_warning(
-            "Installing to `dos` format partitions is not recommended",
-        ),
-        bootc_blockdev::PartitionType::Gpt => {
-            // The only thing we should be using in general
-        }
-        bootc_blockdev::PartitionType::Unknown(o) => {
-            crate::utils::medium_visibility_warning(&format!("Unknown partition label {o}"))
-        }
-    }
-
+async fn ostree_install(state: &State, rootfs: &RootSetup, cleanup: Cleanup) -> Result<()> {
     // We verify this upfront because it's currently required by bootupd
     let boot_uuid = rootfs
         .get_boot_uuid()?
@@ -1451,7 +1474,7 @@ async fn install_to_filesystem_impl(
         if matches!(cleanup, Cleanup::TriggerOnNextBoot) {
             let sysroot_dir = crate::utils::sysroot_dir(ostree)?;
             tracing::debug!("Writing {DESTRUCTIVE_CLEANUP}");
-            sysroot_dir.atomic_write(format!("etc/{DESTRUCTIVE_CLEANUP}"), b"")?;
+            sysroot_dir.atomic_write(format!("etc/{}", DESTRUCTIVE_CLEANUP), b"")?;
         }
 
         // We must drop the sysroot here in order to close any open file
@@ -1460,6 +1483,46 @@ async fn install_to_filesystem_impl(
 
     // Run this on every install as the penultimate step
     install_finalize(&rootfs.physical_root_path).await?;
+
+    Ok(())
+}
+
+async fn install_to_filesystem_impl(
+    state: &State,
+    rootfs: &mut RootSetup,
+    cleanup: Cleanup,
+) -> Result<()> {
+    if matches!(state.selinux_state, SELinuxFinalState::ForceTargetDisabled) {
+        rootfs.kargs.push("selinux=0".to_string());
+    }
+    // Drop exclusive ownership since we're done with mutation
+    let rootfs = &*rootfs;
+
+    match &rootfs.device_info.label {
+        bootc_blockdev::PartitionType::Dos => crate::utils::medium_visibility_warning(
+            "Installing to `dos` format partitions is not recommended",
+        ),
+        bootc_blockdev::PartitionType::Gpt => {
+            // The only thing we should be using in general
+        }
+        bootc_blockdev::PartitionType::Unknown(o) => {
+            crate::utils::medium_visibility_warning(&format!("Unknown partition label {o}"))
+        }
+    }
+
+    #[cfg(feature = "composefs-backend")]
+    if state.composefs_options.is_some() {
+        // Load a fd for the mounted target physical root
+
+        let (id, verity) = initialize_composefs_repository(state, rootfs).await?;
+        tracing::info!("id: {}, verity: {}", hex::encode(id), verity.to_hex());
+        setup_composefs_boot(rootfs, state, &hex::encode(id))?;
+    } else {
+        ostree_install(state, rootfs, cleanup).await?;
+    }
+
+    #[cfg(not(feature = "composefs-backend"))]
+    ostree_install(state, rootfs, cleanup).await?;
 
     // Finalize mounted filesystems
     if !rootfs.skip_finalize {
@@ -1480,6 +1543,9 @@ fn installation_complete() {
 #[context("Installing to disk")]
 #[cfg(feature = "install-to-disk")]
 pub(crate) async fn install_to_disk(mut opts: InstallToDiskOpts) -> Result<()> {
+    #[cfg(feature = "composefs-backend")]
+    opts.validate()?;
+
     // Log the disk installation operation to systemd journal
     const INSTALL_DISK_JOURNAL_ID: &str = "8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2";
     let source_image = opts
@@ -1521,7 +1587,24 @@ pub(crate) async fn install_to_disk(mut opts: InstallToDiskOpts) -> Result<()> {
     } else if !target_blockdev_meta.file_type().is_block_device() {
         anyhow::bail!("Not a block device: {}", block_opts.device);
     }
-    let state = prepare_install(opts.config_opts, opts.source_opts, opts.target_opts).await?;
+
+    #[cfg(feature = "composefs-backend")]
+    let composefs_arg = if opts.composefs_native {
+        Some(opts.composefs_opts)
+    } else {
+        None
+    };
+
+    #[cfg(not(feature = "composefs-backend"))]
+    let composefs_arg = None;
+
+    let state = prepare_install(
+        opts.config_opts,
+        opts.source_opts,
+        opts.target_opts,
+        composefs_arg,
+    )
+    .await?;
 
     // This is all blocking stuff
     let (mut rootfs, loopback) = {
@@ -1752,7 +1835,7 @@ pub(crate) async fn install_to_filesystem(
     // IMPORTANT: and hence anything that is done before MUST BE IDEMPOTENT.
     // IMPORTANT: In practice, we should only be gathering information before this point,
     // IMPORTANT: and not performing any mutations at all.
-    let state = prepare_install(opts.config_opts, opts.source_opts, opts.target_opts).await?;
+    let state = prepare_install(opts.config_opts, opts.source_opts, opts.target_opts, None).await?;
     // And the last bit of state here is the fsopts, which we also destructure now.
     let mut fsopts = opts.filesystem_opts;
 

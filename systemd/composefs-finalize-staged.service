@@ -1,0 +1,46 @@
+# Copyright (C) 2018 Red Hat, Inc.
+#
+# This library is free software; you can redistribute it and/or
+# modify it under the terms of the GNU Lesser General Public
+# License as published by the Free Software Foundation; either
+# version 2 of the License, or (at your option) any later version.
+#
+# This library is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+# Lesser General Public License for more details.
+#
+# You should have received a copy of the GNU Lesser General Public
+# License along with this library. If not, see <https://www.gnu.org/licenses/>.
+
+# For some implementation discussion, see:
+# https://lists.freedesktop.org/archives/systemd-devel/2018-March/040557.html
+[Unit]
+Description=Composefs Finalize Staged Deployment
+Documentation=man:bootc(1)
+DefaultDependencies=no
+
+RequiresMountsFor=/sysroot
+After=local-fs.target
+Before=basic.target final.target
+# We want to make sure the transaction logs are persisted to disk:
+# https://bugzilla.redhat.com/show_bug.cgi?id=1751272
+After=systemd-journal-flush.service
+Conflicts=final.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStop=/usr/bin/bootc composefs-finalize-staged
+# This is a quite long timeout intentionally; the failure mode
+# here is that people don't get an upgrade.  We need to handle
+# cases with slow rotational media, etc.
+TimeoutStopSec=5m
+# Bootc should never touch /var at all...except, we need to remove
+# the /var/.updated flag, so we can't just `InaccessiblePaths=/var` right now.
+# For now, let's at least use ProtectHome just so we have some sandboxing
+# of that.
+ProtectHome=yes
+# And we shouldn't affect the current deployment's /etc.
+ReadOnlyPaths=/etc
+# We write to /sysroot and /boot of course.

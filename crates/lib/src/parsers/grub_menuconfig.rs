@@ -1,5 +1,7 @@
 //! Parser for GRUB menuentry configuration files using nom combinators.
 
+#![allow(dead_code)]
+
 use std::fmt::Display;
 
 use nom::{
@@ -14,13 +16,15 @@ use nom::{
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct MenuentryBody<'a> {
     /// Kernel modules to load
-    insmod: Vec<&'a str>,
+    pub(crate) insmod: Vec<&'a str>,
     /// Chainloader path (optional)
-    chainloader: Option<&'a str>,
+    pub(crate) chainloader: String,
     /// Search command (optional)
-    search: Option<&'a str>,
+    pub(crate) search: &'a str,
+    /// The version
+    pub(crate) version: u8,
     /// Additional commands
-    extra: Vec<(&'a str, &'a str)>,
+    pub(crate) extra: Vec<(&'a str, &'a str)>,
 }
 
 impl<'a> Display for MenuentryBody<'a> {
@@ -29,13 +33,8 @@ impl<'a> Display for MenuentryBody<'a> {
             writeln!(f, "insmod {}", insmod)?;
         }
 
-        if let Some(search) = self.search {
-            writeln!(f, "search {}", search)?;
-        }
-
-        if let Some(chainloader) = self.chainloader {
-            writeln!(f, "chainloader {}", chainloader)?;
-        }
+        writeln!(f, "search {}", self.search)?;
+        writeln!(f, "chainloader {}", self.chainloader)?;
 
         for (k, v) in &self.extra {
             writeln!(f, "{k} {v}")?;
@@ -49,17 +48,17 @@ impl<'a> From<Vec<(&'a str, &'a str)>> for MenuentryBody<'a> {
     fn from(vec: Vec<(&'a str, &'a str)>) -> Self {
         let mut entry = Self {
             insmod: vec![],
-            chainloader: None,
-            search: None,
+            chainloader: "".into(),
+            search: "",
+            version: 0,
             extra: vec![],
         };
 
         for (key, value) in vec {
             match key {
                 "insmod" => entry.insmod.push(value),
-                "chainloader" => entry.chainloader = Some(value),
-                "search" => entry.search = Some(value),
-                // Skip 'set' commands as they are typically variable assignments
+                "chainloader" => entry.chainloader = value.into(),
+                "search" => entry.search = value,
                 "set" => {}
                 _ => entry.extra.push((key, value)),
             }
@@ -73,7 +72,7 @@ impl<'a> From<Vec<(&'a str, &'a str)>> for MenuentryBody<'a> {
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct MenuEntry<'a> {
     /// Display title (supports escaped quotes)
-    pub(crate) title: &'a str,
+    pub(crate) title: String,
     /// Commands within the menuentry block
     pub(crate) body: MenuentryBody<'a>,
 }
@@ -83,6 +82,22 @@ impl<'a> Display for MenuEntry<'a> {
         writeln!(f, "menuentry \"{}\" {{", self.title)?;
         write!(f, "{}", self.body)?;
         writeln!(f, "}}")
+    }
+}
+
+impl<'a> MenuEntry<'a> {
+    #[allow(dead_code)]
+    pub(crate) fn new(boot_label: &str, uki_id: &str) -> Self {
+        Self {
+            title: format!("{boot_label}: ({uki_id})"),
+            body: MenuentryBody {
+                insmod: vec!["fat", "chain"],
+                chainloader: format!("/EFI/Linux/{uki_id}.efi"),
+                search: "--no-floppy --set=root --fs-uuid \"${EFI_PART_UUID}\"",
+                version: 0,
+                extra: vec![],
+            },
+        }
     }
 }
 
@@ -180,7 +195,7 @@ fn parse_menuentry(input: &str) -> IResult<&str, MenuEntry<'_>> {
     Ok((
         input,
         MenuEntry {
-            title,
+            title: title.to_string(),
             body: MenuentryBody::from(map),
         },
     ))
@@ -272,20 +287,22 @@ mod test {
 
         let expected = vec![
             MenuEntry {
-                title: "Fedora 42: (Verity-42)",
+                title: "Fedora 42: (Verity-42)".into(),
                 body: MenuentryBody {
                     insmod: vec!["fat", "chain"],
-                    search: Some("--no-floppy --set=root --fs-uuid \"${EFI_PART_UUID}\""),
-                    chainloader: Some("/EFI/Linux/7e11ac46e3e022053e7226a20104ac656bf72d1a84e3a398b7cce70e9df188b6.efi"),
+                    search: "--no-floppy --set=root --fs-uuid \"${EFI_PART_UUID}\"",
+                    chainloader: "/EFI/Linux/7e11ac46e3e022053e7226a20104ac656bf72d1a84e3a398b7cce70e9df188b6.efi".into(),
+                    version: 0,
                     extra: vec![],
                 },
             },
             MenuEntry {
-                title: "Fedora 43: (Verity-43)",
+                title: "Fedora 43: (Verity-43)".into(),
                 body: MenuentryBody {
                     insmod: vec!["fat", "chain"],
-                    search: Some("--no-floppy --set=root --fs-uuid \"${EFI_PART_UUID}\""),
-                    chainloader: Some("/EFI/Linux/uki.efi"),
+                    search: "--no-floppy --set=root --fs-uuid \"${EFI_PART_UUID}\"",
+                    chainloader: "/EFI/Linux/uki.efi".into(),
+                    version: 0,
                     extra: vec![
                         ("extra_field1", "this is extra"), 
                         ("extra_field2", "this is also extra")
@@ -312,7 +329,7 @@ mod test {
 
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].title, "Title with \\\"escaped quotes\\\" inside");
-        assert_eq!(result[0].body.chainloader, Some("/EFI/Linux/test.efi"));
+        assert_eq!(result[0].body.chainloader, "/EFI/Linux/test.efi");
     }
 
     #[test]
@@ -361,8 +378,8 @@ mod test {
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].title, "Minimal Entry");
         assert_eq!(result[0].body.insmod.len(), 0);
-        assert_eq!(result[0].body.chainloader, None);
-        assert_eq!(result[0].body.search, None);
+        assert_eq!(result[0].body.chainloader, "");
+        assert_eq!(result[0].body.search, "");
         assert_eq!(result[0].body.extra.len(), 0);
     }
 
@@ -380,8 +397,8 @@ mod test {
 
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].body.insmod, vec!["fat", "chain", "ext2"]);
-        assert_eq!(result[0].body.chainloader, None);
-        assert_eq!(result[0].body.search, None);
+        assert_eq!(result[0].body.chainloader, "");
+        assert_eq!(result[0].body.search, "");
     }
 
     #[test]
@@ -399,7 +416,7 @@ mod test {
 
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].body.insmod, vec!["fat"]);
-        assert_eq!(result[0].body.chainloader, Some("/EFI/Linux/test.efi"));
+        assert_eq!(result[0].body.chainloader, "/EFI/Linux/test.efi");
         // set commands should be ignored
         assert!(!result[0].body.extra.iter().any(|(k, _)| k == &"set"));
     }
@@ -421,7 +438,7 @@ mod test {
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].title, "Nested Braces");
         assert_eq!(result[0].body.insmod, vec!["fat"]);
-        assert_eq!(result[0].body.chainloader, Some("/EFI/Linux/test.efi"));
+        assert_eq!(result[0].body.chainloader, "/EFI/Linux/test.efi");
         // The if/fi block should be captured as extra commands
         assert!(result[0].body.extra.iter().any(|(k, _)| k == &"if"));
     }
@@ -500,12 +517,9 @@ mod test {
 
         assert_eq!(result.len(), 2);
         assert_eq!(result[0].title, "First Entry");
-        assert_eq!(result[0].body.chainloader, Some("/EFI/Linux/first.efi"));
+        assert_eq!(result[0].body.chainloader, "/EFI/Linux/first.efi");
         assert_eq!(result[1].title, "Second Entry");
-        assert_eq!(result[1].body.chainloader, Some("/EFI/Linux/second.efi"));
-        assert_eq!(
-            result[1].body.search,
-            Some("--set=root --fs-uuid \"some-uuid\"")
-        );
+        assert_eq!(result[1].body.chainloader, "/EFI/Linux/second.efi");
+        assert_eq!(result[1].body.search, "--set=root --fs-uuid \"some-uuid\"");
     }
 }
