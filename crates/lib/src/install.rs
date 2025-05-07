@@ -39,12 +39,20 @@ use chrono::prelude::*;
 use clap::ValueEnum;
 use fn_error_context::context;
 use ostree::gio;
+use ostree_ext::composefs::{
+    fsverity::{FsVerityHashValue, Sha256HashValue},
+    oci::pull as composefs_oci_pull,
+    repository::Repository as ComposefsRepository,
+    util::Sha256Digest,
+};
 use ostree_ext::oci_spec;
 use ostree_ext::ostree;
 use ostree_ext::ostree_prepareroot::{ComposefsState, Tristate};
 use ostree_ext::prelude::Cast;
 use ostree_ext::sysroot::SysrootLock;
-use ostree_ext::{container as ostree_container, ostree_prepareroot};
+use ostree_ext::{
+    container as ostree_container, container::ImageReference as OstreeExtImgRef, ostree_prepareroot,
+};
 #[cfg(feature = "install-to-disk")]
 use rustix::fs::FileTypeExt;
 use rustix::fs::MetadataExt as _;
@@ -367,6 +375,7 @@ pub(crate) struct SourceInfo {
 }
 
 // Shared read-only global state
+#[derive(Debug)]
 pub(crate) struct State {
     pub(crate) source: SourceInfo,
     /// Force SELinux off in target system
@@ -1419,10 +1428,32 @@ impl BoundImages {
     }
 }
 
+async fn initialize_composefs_repository(
+    state: &State,
+    root_setup: &RootSetup,
+) -> Result<(Sha256Digest, impl FsVerityHashValue)> {
+    let rootfs_dir = &root_setup.physical_root;
+
+    rootfs_dir
+        .create_dir_all("composefs")
+        .context("Creating dir 'composefs'")?;
+
+    tracing::warn!("STATE: {state:#?}");
+
+    let repo: ComposefsRepository<Sha256HashValue> =
+        ComposefsRepository::open_path(rootfs_dir, "composefs").expect("failed to open_path");
+
+    let OstreeExtImgRef { transport, name } = &state.target_imgref.imgref;
+
+    // transport's display is already of type "<transport_type>:"
+    composefs_oci_pull(&Arc::new(repo), &format!("{transport}{name}",), None).await
+}
+
 async fn install_to_filesystem_impl(
     state: &State,
     rootfs: &mut RootSetup,
     cleanup: Cleanup,
+    composefs: bool,
 ) -> Result<()> {
     if matches!(state.selinux_state, SELinuxFinalState::ForceTargetDisabled) {
         rootfs.kargs.push("selinux=0".to_string());
@@ -1451,34 +1482,45 @@ async fn install_to_filesystem_impl(
 
     let bound_images = BoundImages::from_state(state).await?;
 
-    // Initialize the ostree sysroot (repo, stateroot, etc.)
+    if composefs {
+        // Load a fd for the mounted target physical root
+        let (id, verity) = initialize_composefs_repository(state, rootfs).await?;
 
-    {
-        let (sysroot, has_ostree, imgstore) = initialize_ostree_root(state, rootfs).await?;
+        tracing::warn!(
+            "id = {id}, verity = {verity}",
+            id = hex::encode(id),
+            verity = verity.to_hex()
+        );
+    } else {
+        // Initialize the ostree sysroot (repo, stateroot, etc.)
 
-        install_with_sysroot(
-            state,
-            rootfs,
-            &sysroot,
-            &boot_uuid,
-            bound_images,
-            has_ostree,
-            &imgstore,
-        )
-        .await?;
+        {
+            let (sysroot, has_ostree, imgstore) = initialize_ostree_root(state, rootfs).await?;
 
-        if matches!(cleanup, Cleanup::TriggerOnNextBoot) {
-            let sysroot_dir = crate::utils::sysroot_dir(&sysroot)?;
-            tracing::debug!("Writing {DESTRUCTIVE_CLEANUP}");
-            sysroot_dir.atomic_write(format!("etc/{}", DESTRUCTIVE_CLEANUP), b"")?;
-        }
+            install_with_sysroot(
+                state,
+                rootfs,
+                &sysroot,
+                &boot_uuid,
+                bound_images,
+                has_ostree,
+                &imgstore,
+            )
+            .await?;
 
-        // We must drop the sysroot here in order to close any open file
-        // descriptors.
-    };
+            if matches!(cleanup, Cleanup::TriggerOnNextBoot) {
+                let sysroot_dir = crate::utils::sysroot_dir(&sysroot)?;
+                tracing::debug!("Writing {DESTRUCTIVE_CLEANUP}");
+                sysroot_dir.atomic_write(format!("etc/{}", DESTRUCTIVE_CLEANUP), b"")?;
+            }
 
-    // Run this on every install as the penultimate step
-    install_finalize(&rootfs.physical_root_path).await?;
+            // We must drop the sysroot here in order to close any open file
+            // descriptors.
+        };
+
+        // Run this on every install as the penultimate step
+        install_finalize(&rootfs.physical_root_path).await?;
+    }
 
     // Finalize mounted filesystems
     if !rootfs.skip_finalize {
@@ -1541,7 +1583,7 @@ pub(crate) async fn install_to_disk(mut opts: InstallToDiskOpts) -> Result<()> {
         (rootfs, loopback_dev)
     };
 
-    install_to_filesystem_impl(&state, &mut rootfs, Cleanup::Skip).await?;
+    install_to_filesystem_impl(&state, &mut rootfs, Cleanup::Skip, opts.composefs).await?;
 
     // Drop all data about the root except the bits we need to ensure any file descriptors etc. are closed.
     let (root_path, luksdev) = rootfs.into_storage();
@@ -1927,7 +1969,7 @@ pub(crate) async fn install_to_filesystem(
         skip_finalize,
     };
 
-    install_to_filesystem_impl(&state, &mut rootfs, cleanup).await?;
+    install_to_filesystem_impl(&state, &mut rootfs, cleanup, false).await?;
 
     // Drop all data about the root except the path to ensure any file descriptors etc. are closed.
     drop(rootfs);
