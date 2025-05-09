@@ -173,6 +173,10 @@ pub struct HostStatus {
     pub booted: Option<BootEntry>,
     /// The previously booted image
     pub rollback: Option<BootEntry>,
+    /// Other deployments (i.e. pinned)
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
+    pub other_deployments: Vec<BootEntry>,
     /// Set to true if the rollback entry is queued for the next boot.
     #[serde(default)]
     pub rollback_queued: bool,

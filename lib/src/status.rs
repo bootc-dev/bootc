@@ -253,6 +253,12 @@ pub(crate) fn get_status(
         .map(|d| boot_entry_from_deployment(sysroot, d))
         .transpose()
         .context("Rollback deployment")?;
+    let other_deployments = deployments
+        .other
+        .iter()
+        .map(|d| boot_entry_from_deployment(sysroot, d))
+        .collect::<Result<Vec<_>>>()
+        .context("Other deployments")?;
     let spec = staged
         .as_ref()
         .or(booted.as_ref())
@@ -279,6 +285,7 @@ pub(crate) fn get_status(
         staged,
         booted,
         rollback,
+        other_deployments,
         rollback_queued,
         ty,
     };
@@ -361,7 +368,7 @@ fn write_row_name(mut out: impl Write, s: &str, prefix_len: usize) -> Result<()>
 /// Write the data for a container image based status.
 fn human_render_slot(
     mut out: impl Write,
-    slot: Slot,
+    slot: Option<Slot>,
     entry: &crate::spec::BootEntry,
     image: &crate::spec::ImageStatus,
 ) -> Result<()> {
@@ -375,9 +382,10 @@ fn human_render_slot(
         Cow::Owned(format!("{transport}:{imagename}"))
     };
     let prefix = match slot {
-        Slot::Staged => "  Staged image".into(),
-        Slot::Booted => format!("{} Booted image", crate::glyph::Glyph::BlackCircle),
-        Slot::Rollback => "  Rollback image".into(),
+        Some(Slot::Staged) => "  Staged image".into(),
+        Some(Slot::Booted) => format!("{} Booted image", crate::glyph::Glyph::BlackCircle),
+        Some(Slot::Rollback) => "  Rollback image".into(),
+        _ => "   Other image".into(),
     };
     let prefix_len = prefix.chars().count();
     writeln!(out, "{prefix}: {imageref}")?;
@@ -408,6 +416,11 @@ fn human_render_slot(
         writeln!(out, "{timestamp}")?;
     }
 
+    if entry.pinned {
+        write_row_name(&mut out, "Pinned", prefix_len)?;
+        writeln!(out, "yes")?;
+    }
+
     tracing::debug!("pinned={}", entry.pinned);
 
     Ok(())
@@ -416,20 +429,27 @@ fn human_render_slot(
 /// Output a rendering of a non-container boot entry.
 fn human_render_slot_ostree(
     mut out: impl Write,
-    slot: Slot,
+    slot: Option<Slot>,
     entry: &crate::spec::BootEntry,
     ostree_commit: &str,
 ) -> Result<()> {
     // TODO consider rendering more ostree stuff here like rpm-ostree status does
     let prefix = match slot {
-        Slot::Staged => "  Staged ostree".into(),
-        Slot::Booted => format!("{} Booted ostree", crate::glyph::Glyph::BlackCircle),
-        Slot::Rollback => "  Rollback ostree".into(),
+        Some(Slot::Staged) => "  Staged ostree".into(),
+        Some(Slot::Booted) => format!("{} Booted ostree", crate::glyph::Glyph::BlackCircle),
+        Some(Slot::Rollback) => "  Rollback ostree".into(),
+        _ => " Other ostree".into(),
     };
     let prefix_len = prefix.len();
     writeln!(out, "{prefix}")?;
     write_row_name(&mut out, "Commit", prefix_len)?;
     writeln!(out, "{ostree_commit}")?;
+
+    if entry.pinned {
+        write_row_name(&mut out, "Pinned", prefix_len)?;
+        writeln!(out, "yes")?;
+    }
+
     tracing::debug!("pinned={}", entry.pinned);
     Ok(())
 }
@@ -448,14 +468,27 @@ fn human_readable_output_booted(mut out: impl Write, host: &Host) -> Result<()> 
                 writeln!(out)?;
             }
             if let Some(image) = &host_status.image {
-                human_render_slot(&mut out, slot_name, host_status, image)?;
+                human_render_slot(&mut out, Some(slot_name), host_status, image)?;
             } else if let Some(ostree) = host_status.ostree.as_ref() {
-                human_render_slot_ostree(&mut out, slot_name, host_status, &ostree.checksum)?;
+                human_render_slot_ostree(&mut out, Some(slot_name), host_status, &ostree.checksum)?;
             } else {
                 writeln!(out, "Current {slot_name} state is unknown")?;
             }
         }
     }
+
+    if !host.status.other_deployments.is_empty() {
+        for entry in &host.status.other_deployments {
+            writeln!(out)?;
+
+            if let Some(image) = &entry.image {
+                human_render_slot(&mut out, None, entry, image)?;
+            } else if let Some(ostree) = entry.ostree.as_ref() {
+                human_render_slot_ostree(&mut out, None, entry, &ostree.checksum)?;
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -490,7 +523,7 @@ mod tests {
             Staged image: quay.io/example/someimage:latest
                   Digest: sha256:16dc2b6256b4ff0d2ec18d2dbfb06d117904010c8cf9732cdb022818cf7a7566 (arm64)
                  Version: nightly (2023-10-14T19:22:15Z)
-        
+
           ● Booted image: quay.io/example/someimage:latest
                   Digest: sha256:736b359467c9437c1ac915acaae952aad854e07eb4a16a94999a48af08c83c34 (arm64)
                  Version: nightly (2023-09-30T19:22:16Z)
@@ -508,7 +541,7 @@ mod tests {
         let expected = indoc::indoc! { r"
             Staged ostree
                    Commit: 1c24260fdd1be20f72a4a97a75c582834ee3431fbb0fa8e4f482bb219d633a45
-          
+
           ● Booted ostree
                      Commit: f9fa3a553ceaaaf30cf85bfe7eed46a822f7b8fd7e14c1e3389cbc3f6d27f791
         "};
@@ -524,7 +557,7 @@ mod tests {
             Staged image: quay.io/centos-bootc/centos-bootc:stream9
                   Digest: sha256:47e5ed613a970b6574bfa954ab25bb6e85656552899aa518b5961d9645102b38 (s390x)
                  Version: stream9.20240807.0
-          
+
           ● Booted ostree
                      Commit: f9fa3a553ceaaaf30cf85bfe7eed46a822f7b8fd7e14c1e3389cbc3f6d27f791
         "};
@@ -587,5 +620,24 @@ mod tests {
             ir.signature,
             Some(ImageSignature::OstreeRemote("fedora".into()))
         );
+    }
+
+    #[test]
+    fn test_human_readable_booted_pinned_spec() {
+        // booted image, no staged/rollback
+        let w = human_status_from_spec_fixture(include_str!("fixtures/spec-booted-pinned.yaml"))
+            .expect("No spec found");
+        let expected = indoc::indoc! { r"
+          ● Booted image: quay.io/centos-bootc/centos-bootc:stream9
+                  Digest: sha256:47e5ed613a970b6574bfa954ab25bb6e85656552899aa518b5961d9645102b38 (arm64)
+                 Version: stream9.20240807.0
+                  Pinned: yes
+
+             Other image: quay.io/centos-bootc/centos-bootc:stream9
+                  Digest: sha256:47e5ed613a970b6574bfa954ab25bb6e85656552899aa518b5961d9645102b37 (arm64)
+                 Version: stream9.20240807.0
+                  Pinned: yes
+        "};
+        similar_asserts::assert_eq!(w, expected);
     }
 }
