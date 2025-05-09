@@ -1,4 +1,4 @@
-use crate::{prompt, users::get_all_users_keys};
+use crate::{btrfs, lvm, prompt, users::get_all_users_keys};
 use anyhow::{ensure, Context, Result};
 
 use crossterm::event::{self, Event};
@@ -90,6 +90,46 @@ pub(crate) fn ask_yes_no(prompt: &str, default: bool) -> Result<bool> {
         .wait_for_newline(true)
         .interact()
         .context("prompting")
+}
+
+fn check_lvm_mounts() -> Result<()> {
+    let siblings = lvm::check_root_siblings()?;
+    if !siblings.is_empty() {
+        lvm::print_warning(siblings);
+    }
+    Ok(())
+}
+
+fn check_btrfs_mounts() -> Result<()> {
+    let siblings = btrfs::check_root_siblings()?;
+    if !siblings.is_empty() {
+        btrfs::print_warning(siblings);
+    }
+    Ok(())
+}
+
+pub(crate) fn press_enter() {
+    println!();
+    println!("Press <enter> to continue.");
+
+    loop {
+        if let Event::Key(_) = event::read().unwrap() {
+            break;
+        }
+    }
+}
+
+fn generic_warning() {
+    println!();
+    println!("NOTICE: the reinstall procedure will switch to use the bootc image as the system root. The current root will be available in the /sysroot directory. Some automatic cleanup of the old root is performed on reboot. Any existing mounts will not be automatically mounted by the bootc system unless they are defined in the bootc image.");
+    press_enter()
+}
+
+pub(crate) fn mount_warning() -> Result<()> {
+    check_lvm_mounts()?;
+    check_btrfs_mounts()?;
+    generic_warning();
+    Ok(())
 }
 
 /// Gather authorized keys for all user's of the host system

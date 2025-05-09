@@ -2361,6 +2361,7 @@ name = "system-reinstall-bootc"
 version = "0.1.9"
 dependencies = [
  "anyhow",
+ "bootc-mount",
  "bootc-utils",
  "clap",
  "crossterm 0.29.0",

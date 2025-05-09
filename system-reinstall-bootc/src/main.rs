@@ -4,7 +4,9 @@ use anyhow::{ensure, Context, Result};
 use bootc_utils::CommandRunExt;
 use rustix::process::getuid;
 
+mod btrfs;
 mod config;
+mod lvm;
 mod podman;
 mod prompt;
 pub(crate) mod users;
@@ -39,6 +41,8 @@ fn run() -> Result<()> {
     tracing::trace!("ssh_key_file_path: {}", ssh_key_file_path);
 
     prompt::get_ssh_keys(ssh_key_file_path)?;
+
+    prompt::mount_warning()?;
 
     let mut reinstall_podman_command =
         podman::reinstall_command(&config.bootc_image, ssh_key_file_path);

@@ -45,29 +45,30 @@ pub struct Filesystem {
     pub children: Option<Vec<Filesystem>>,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Default)]
 pub struct Findmnt {
     pub filesystems: Vec<Filesystem>,
 }
 
-fn run_findmnt(args: &[&str], path: &str) -> Result<Findmnt> {
-    let o: Findmnt = Command::new("findmnt")
-        .args([
-            "-J",
-            "-v",
-            // If you change this you probably also want to change the Filesystem struct above
-            "--output=SOURCE,TARGET,MAJ:MIN,FSTYPE,OPTIONS,UUID",
-        ])
-        .args(args)
-        .arg(path)
-        .log_debug()
-        .run_and_parse_json()?;
+pub fn run_findmnt(args: &[&str], path: Option<&str>) -> Result<Findmnt> {
+    let mut cmd = Command::new("findmnt");
+    cmd.args([
+        "-J",
+        "-v",
+        // If you change this you probably also want to change the Filesystem struct above
+        "--output=SOURCE,TARGET,MAJ:MIN,FSTYPE,OPTIONS,UUID",
+    ])
+    .args(args);
+    if let Some(path) = path {
+        cmd.arg(path);
+    }
+    let o: Findmnt = cmd.log_debug().run_and_parse_json()?;
     Ok(o)
 }
 
 // Retrieve a mounted filesystem from a device given a matching path
 fn findmnt_filesystem(args: &[&str], path: &str) -> Result<Filesystem> {
-    let o = run_findmnt(args, path)?;
+    let o = run_findmnt(args, Some(path))?;
     o.filesystems
         .into_iter()
         .next()
@@ -90,7 +91,7 @@ pub fn inspect_filesystem_by_uuid(uuid: &str) -> Result<Filesystem> {
 // Check if a specified device contains an already mounted filesystem
 // in the root mount namespace
 pub fn is_mounted_in_pid1_mountns(path: &str) -> Result<bool> {
-    let o = run_findmnt(&["-N"], "1")?;
+    let o = run_findmnt(&["-N"], Some("1"))?;
 
     let mounted = o.filesystems.iter().any(|fs| is_source_mounted(path, fs));
 
