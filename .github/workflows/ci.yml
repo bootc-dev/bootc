@@ -46,6 +46,12 @@ jobs:
     if: ${{ !contains(github.event.pull_request.labels.*.name, 'control/skip-ci') }}
     runs-on: ubuntu-24.04
     steps:
+      - name: Get a newer podman for heredoc support (from debian testing)
+        run: |
+          set -eux
+          echo 'deb [trusted=yes] https://ftp.debian.org/debian/ testing main' | sudo tee /etc/apt/sources.list.d/testing.list
+          sudo apt update
+          sudo apt install -y crun/testing podman/testing skopeo/testing
       - uses: actions/checkout@v4
       - name: Build container (fedora)
         run: sudo podman build --build-arg=base=quay.io/fedora/fedora-bootc:41 -t localhost/bootc -f hack/Containerfile . 
