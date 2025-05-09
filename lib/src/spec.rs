@@ -2,6 +2,7 @@
 
 use std::fmt::Display;
 
+use anyhow::Result;
 use ostree_ext::oci_spec::image::Digest;
 use ostree_ext::{container::OstreeImageReference, oci_spec};
 use schemars::JsonSchema;
@@ -91,20 +92,26 @@ pub struct ImageReference {
 
 impl ImageReference {
     /// Returns a canonicalized version of this image reference, preferring the digest over the tag if both are present.
-    pub fn canonicalize(self) -> Result<Self, anyhow::Error> {
+    pub fn canonicalize(self) -> Result<Self> {
         let reference: oci_spec::distribution::Reference = self.image.parse()?;
 
-        if reference.digest().is_some() && reference.tag().is_some() {
-            let registry = reference.registry();
-            let repository = reference.repository();
-            let digest = reference.digest().expect("digest is present");
-            return Ok(ImageReference {
-                image: format!("{registry}/{repository}@{digest}"),
-                ..self
-            });
+        // No tag? Just pass through.
+        if reference.tag().is_none() {
+            return Ok(self);
         }
 
-        Ok(self)
+        // No digest? Also pass through.
+        let Some(digest) = reference.digest() else {
+            return Ok(self);
+        };
+
+        let registry = reference.registry();
+        let repository = reference.repository();
+        let r = ImageReference {
+            image: format!("{registry}/{repository}@{digest}"),
+            ..self
+        };
+        Ok(r)
     }
 }
 
