@@ -70,7 +70,7 @@ in derived builds.
 ## `/etc`
 
 The `/etc` directory contains mutable persistent state by default; however,
-it is suppported (and encouraged) to enable the [`etc.transient` config option](https://ostreedev.github.io/ostree/man/ostree-prepare-root.html),
+it is supported (and encouraged) to enable the [`etc.transient` config option](https://ostreedev.github.io/ostree/man/ostree-prepare-root.html),
 see below as well.
 
 When in persistent mode, it inherits the OSTree semantics of [performing a 3-way merge](https://ostreedev.github.io/ostree/atomic-upgrades/#assembling-a-new-deployment-directory)
@@ -81,7 +81,7 @@ across upgrades.  In a nutshell:
 - Locally modified files in `/etc` different from the default `/usr/etc` (of the same deployment) will be retained
 
 You can view the state via `ostree admin config-diff`. Note that the "diff"
-here is includes metadata (uid, gid, extended attributes), so changing any of those
+here includes metadata (uid, gid, extended attributes), so changing any of those
 will also mean that updated files from the image are not applied.
 
 The implementation of this defaults to being executed by `ostree-finalize-staged.service`
@@ -92,7 +92,7 @@ default configuration files in `/etc`.  And even if the default package doesn't,
 only looks for config files there by default.
 
 Some other image-based update systems do not have distinct "versions" of `/etc` and
-it may be populated only set up at a install time, and untouched thereafter.  But
+it may be populated only set up at install time, and untouched thereafter.  But
 that creates "hysteresis" where the state of the system's `/etc` is strongly
 influenced by the initial image version.  This can lead to problems
 where e.g. a change to `/etc/sudoers.conf` (to give on simple example)

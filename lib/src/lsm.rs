@@ -251,7 +251,7 @@ pub(crate) fn has_security_selinux(root: &Dir, path: &Utf8Path) -> Result<SELinu
     }
 }
 
-/// Directly set the `security.selinux` extended atttribute on the target
+/// Directly set the `security.selinux` extended attribute on the target
 /// path. Symbolic links are not followed for the target.
 ///
 /// Note that this API will work even if SELinux is disabled.

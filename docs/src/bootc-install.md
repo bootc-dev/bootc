@@ -70,7 +70,7 @@ the host's block device where `<image>` will be installed on.
 
 The `--pid=host --security-opt label=type:unconfined_t` today
 make it more convenient for bootc to perform some privileged
-operations; in the future these requirement may be dropped.
+operations; in the future these requirements may be dropped.
 
 The `-v /var/lib/containers:/var/lib/containers` option is required in order
 for the container to access its own underlying image, which is used by
@@ -147,7 +147,7 @@ can be configured off at build time via Cargo features.
 
 The usual expected way for an external storage system to work
 is to provide `root=<UUID>` and `rootflags` kernel arguments
-to describe to the inital RAM disk how to find and mount the
+to describe to the initial RAM disk how to find and mount the
 root partition. For more on this, see the below section
 discussing mounting the root filesystem.
 
@@ -280,7 +280,7 @@ in `/etc/fstab`.
 
 The physical root is mounted at `/sysroot`. It is an option
 for legacy `/etc/fstab` references for `/` to use
-`/sysroot` by default, but `rootflags` is prefered.
+`/sysroot` by default, but `rootflags` is preferred.
 
 ## Configuring machine-local state
 
