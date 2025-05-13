@@ -14,6 +14,7 @@ mod osbuild;
 pub(crate) mod osconfig;
 
 use std::collections::HashMap;
+use std::fs::create_dir_all;
 use std::io::Write;
 use std::os::fd::{AsFd, AsRawFd};
 use std::os::unix::process::CommandExt;
@@ -41,9 +42,11 @@ use fn_error_context::context;
 use ostree::gio;
 use ostree_ext::composefs::{
     fsverity::{FsVerityHashValue, Sha256HashValue},
+    oci::image::create_filesystem as create_composefs_filesystem,
     oci::pull as composefs_oci_pull,
     repository::Repository as ComposefsRepository,
     util::Sha256Digest,
+    write_boot::write_boot_simple as composefs_write_boot_simple,
 };
 use ostree_ext::oci_spec;
 use ostree_ext::ostree;
@@ -1428,6 +1431,11 @@ impl BoundImages {
     }
 }
 
+fn open_composefs_repo(rootfs_dir: &Dir) -> Result<ComposefsRepository<Sha256HashValue>> {
+    ComposefsRepository::open_path(rootfs_dir, "composefs")
+        .context("Failed to open composefs repository")
+}
+
 async fn initialize_composefs_repository(
     state: &State,
     root_setup: &RootSetup,
@@ -1440,13 +1448,78 @@ async fn initialize_composefs_repository(
 
     tracing::warn!("STATE: {state:#?}");
 
-    let repo: ComposefsRepository<Sha256HashValue> =
-        ComposefsRepository::open_path(rootfs_dir, "composefs").expect("failed to open_path");
+    let repo = open_composefs_repo(rootfs_dir)?;
 
     let OstreeExtImgRef { transport, name } = &state.target_imgref.imgref;
 
     // transport's display is already of type "<transport_type>:"
     composefs_oci_pull(&Arc::new(repo), &format!("{transport}{name}",), None).await
+}
+
+#[context("Setting up composefs boot")]
+fn setup_composefs_boot(root_setup: &RootSetup, state: &State, image_id: &str) -> Result<()> {
+    let boot_uuid = root_setup
+        .get_boot_uuid()?
+        .or(root_setup.rootfs_uuid.as_deref())
+        .ok_or_else(|| anyhow!("No uuid for boot/root"))?;
+
+    if cfg!(target_arch = "s390x") {
+        // TODO: Integrate s390x support into install_via_bootupd
+        crate::bootloader::install_via_zipl(&root_setup.device_info, boot_uuid)?;
+    } else {
+        crate::bootloader::install_via_bootupd(
+            &root_setup.device_info,
+            &root_setup.physical_root_path,
+            &state.config_opts,
+        )?;
+    }
+
+    let repo = open_composefs_repo(&root_setup.physical_root)?;
+
+    let mut fs = create_composefs_filesystem(&repo, image_id, None)?;
+
+    let entries = fs.transform_for_boot(&repo)?;
+    let id = fs.commit_image(&repo, None)?;
+
+    println!("{entries:#?}");
+
+    let Some(entry) = entries.into_iter().next() else {
+        anyhow::bail!("No boot entries!");
+    };
+
+    let rootfs_uuid = match &root_setup.rootfs_uuid {
+        Some(u) => u,
+        None => anyhow::bail!("Expected rootfs to have a UUID by now"),
+    };
+
+    let cmdline_refs = [
+        "console=ttyS0,115200",
+        &format!("root=UUID={rootfs_uuid}"),
+        "rw",
+    ];
+
+    let boot_dir = root_setup.physical_root_path.join("boot");
+    create_dir_all(&boot_dir).context("Failed to create boot dir")?;
+
+    composefs_write_boot_simple(
+        &repo,
+        entry,
+        &id,
+        boot_dir.as_std_path(),
+        Some(&format!("{}", id.to_hex())),
+        Some("/boot"),
+        &cmdline_refs,
+    )?;
+
+    let state_path = root_setup
+        .physical_root_path
+        .join(format!("state/{}", id.to_hex()));
+
+    create_dir_all(state_path.join("var"))?;
+    create_dir_all(state_path.join("etc/upper"))?;
+    create_dir_all(state_path.join("etc/work"))?;
+
+    Ok(())
 }
 
 async fn install_to_filesystem_impl(
@@ -1491,6 +1564,8 @@ async fn install_to_filesystem_impl(
             id = hex::encode(id),
             verity = verity.to_hex()
         );
+
+        setup_composefs_boot(rootfs, state, &hex::encode(id))?;
     } else {
         // Initialize the ostree sysroot (repo, stateroot, etc.)
 
