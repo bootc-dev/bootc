@@ -17,7 +17,7 @@ WORKDIR /build
 RUN mkdir -p /build/target/dev-rootfs  # This can hold arbitrary extra content
 # See https://www.reddit.com/r/rust/comments/126xeyx/exploring_the_problem_of_faster_cargo_docker/
 # We aren't using the full recommendations there, just the simple bits.
-RUN --mount=type=cache,target=/build/target --mount=type=cache,target=/var/roothome make test-bin-archive && mkdir -p /out && cp target/bootc.tar.zst /out
+RUN --mount=type=cache,target=/build/target --mount=type=cache,target=/var/roothome make test-bin-archive && mkdir -p /out && cp target/bootc.tar /out
 
 FROM $base
 # We support e.g. adding cloud-init
@@ -29,8 +29,8 @@ COPY hack/install-test-configs/* /usr/lib/bootc/install/
 # And some test kargs
 COPY hack/test-kargs /usr/lib/bootc/kargs.d/
 # Inject our built code
-COPY --from=build /out/bootc.tar.zst /tmp
-RUN tar -C / --zstd -xvf /tmp/bootc.tar.zst && rm -vrf /tmp/*
+COPY --from=build /out/bootc.tar /tmp
+RUN tar -C / -xvf /tmp/bootc.tar && rm -vrf /tmp/*
 # Also copy over arbitrary bits from the target root
 COPY --from=build /build/target/dev-rootfs/ /
 # Test our own linting
