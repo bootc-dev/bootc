@@ -1511,6 +1511,21 @@ fn setup_composefs_boot(root_setup: &RootSetup, state: &State, image_id: &str) -
         &cmdline_refs,
     )?;
 
+    // Add the user grug cfg
+    let grub_user_config = format!(
+r#"
+menuentry "Some Fedora Idk" {{
+    insmod fat
+    insmod chain
+    search --no-floppy --set=root --fs-uuid {rootfs_uuid}
+    chainloader /boot/EFI/Linux/uki.efi
+}}
+"#
+    );
+
+    std::fs::write(boot_dir.join("grub2/user.cfg"), grub_user_config)
+        .context("Failed to write grub2/user.cfg")?;
+
     let state_path = root_setup
         .physical_root_path
         .join(format!("state/{}", id.to_hex()));
