@@ -8,9 +8,10 @@
 
 use std::fmt::Write as _;
 use std::future::Future;
+use std::num::NonZeroUsize;
 use std::pin::Pin;
 
-use bootc_utils::iterator_split_nonempty_rest_count;
+use bootc_utils::collect_until;
 use camino::Utf8PathBuf;
 use cap_std::fs::{Dir, MetadataExt as _};
 use cap_std_ext::cap_std;
@@ -250,9 +251,10 @@ async fn check_fsverity_inner(storage: &Storage) -> FsckResult {
     let verity_found_state =
         verity_state_of_all_objects(&storage.repo(), verity_state.desired == Tristate::Enabled)
             .await?;
-    let Some((missing, rest)) =
-        iterator_split_nonempty_rest_count(verity_found_state.missing.iter(), 5)
-    else {
+    let Some((missing, rest)) = collect_until(
+        verity_found_state.missing.iter(),
+        const { NonZeroUsize::new(5).unwrap() },
+    ) else {
         return fsck_ok();
     };
     let mut err = String::from("fsverity enabled, but objects without fsverity:\n");
