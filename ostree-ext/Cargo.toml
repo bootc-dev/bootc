@@ -12,7 +12,7 @@ version = "0.15.3"
 # Note that we re-export the oci-spec types
 # that are exported by this crate, so when bumping
 # semver here you must also bump our semver.
-containers-image-proxy = "0.7.0"
+containers-image-proxy = "0.7.1"
 # We re-export this library too.
 ostree = { features = ["v2025_1"], version = "0.20.0" }
 
@@ -20,7 +20,7 @@ ostree = { features = ["v2025_1"], version = "0.20.0" }
 anyhow = { workspace = true }
 bootc-utils = { path = "../utils" }
 camino = { workspace = true, features = ["serde1"] }
-composefs = { git = "https://github.com/containers/composefs-rs", rev = "821eeae93e48f1ee381c49b8cd4d22fda92d27a2" }
+composefs = { git = "https://github.com/containers/composefs-rs", rev = "b1bd9c1d253c9b15bbf8e04068ad96edd974ccd0" }
 chrono = { workspace = true }
 olpc-cjson = "0.1.1"
 clap = { workspace = true, features = ["derive","cargo"] }

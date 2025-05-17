@@ -518,7 +518,6 @@ dependencies = [
 [[package]]
 name = "composefs"
 version = "0.2.0"
-source = "git+https://github.com/containers/composefs-rs?rev=821eeae93e48f1ee381c49b8cd4d22fda92d27a2#821eeae93e48f1ee381c49b8cd4d22fda92d27a2"
 dependencies = [
  "anyhow",
  "async-compression",
@@ -529,6 +528,7 @@ dependencies = [
  "indicatif",
  "log",
  "oci-spec",
+ "once_cell",
  "regex-automata 0.4.9",
  "rustix 1.0.3",
  "serde",
@@ -558,9 +558,9 @@ dependencies = [
 
 [[package]]
 name = "containers-image-proxy"
-version = "0.7.0"
+version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c1b4ec45d60513c498a40c69d89447d8bf91bbd17f71a32aa285b39e4dc03294"
+checksum = "e366fb6e732b808c920cfdc758949a2f4d80445d413b040640aeb3d744cabcdb"
 dependencies = [
  "cap-std-ext",
  "fn-error-context",
@@ -1618,9 +1618,9 @@ dependencies = [
 
 [[package]]
 name = "once_cell"
-version = "1.20.3"
+version = "1.21.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "945462a4b81e43c4e3ba96bd7b49d834c6f61198356aa858733bc4acf3cbe62e"
+checksum = "42f5e15c9953c5e4ccceeb2e7382a716482c34515315f7b03532b8b4e8393d2d"
 
 [[package]]
 name = "openssh-keys"
