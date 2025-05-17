@@ -1,7 +1,7 @@
 # Filesystem
 
 As noted in other chapters, the bootc project currently
-depends on [ostree project](https://github.com/ostreedev/ostree/)
+depends on the [ostree project](https://github.com/ostreedev/ostree/)
 for storing the base container image. Additionally there is a [containers/storage](https://github.com/containers/storage) instance for [logically bound images](logically-bound-images.md).
 
 However, bootc is intending to be a "fresh, new container-native interface",
@@ -95,7 +95,7 @@ Some other image-based update systems do not have distinct "versions" of `/etc` 
 it may be populated only set up at install time, and untouched thereafter.  But
 that creates "hysteresis" where the state of the system's `/etc` is strongly
 influenced by the initial image version.  This can lead to problems
-where e.g. a change to `/etc/sudoers.conf` (to give on simple example)
+where e.g. a change to `/etc/sudoers` (to give one simple example)
 would require external intervention to apply.
 
 For more on configuration file best practices, see [Building](building/guidance.md).

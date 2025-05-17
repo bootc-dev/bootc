@@ -34,7 +34,7 @@ start by looking at [ADOPTERS.md](ADOPTERS.md).
 
 ## Community discussion
 
-The [Github discussion forum](https://github.com/containers/bootc/discussions) is enabled.
+The [GitHub discussion forum](https://github.com/containers/bootc/discussions) is enabled.
 
 This project is also tightly related to the previously mentioned Fedora/CentOS bootc project,
 and many developers monitor the relevant discussion forums there. In particular there's a
@@ -46,6 +46,7 @@ Are you interested in working on bootc?  Great!  See our [CONTRIBUTING.md](CONTR
 There is also a list of [MAINTAINERS.md](MAINTAINERS.md).
 
 ## Governance
+See [GOVERNANCE.md](GOVERNANCE.md) for project governance details.
 
 ## Badges
 

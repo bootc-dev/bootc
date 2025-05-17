@@ -16,9 +16,8 @@ systemd is in use, systemd acts as pid1 as usual - there's no "outer" process.
 
 # Status
 
-At the current time, bootc has not reached 1.0, and it is possible
-that some APIs and CLIs may change.  For more information, see
-the [1.0 milestone](https://github.com/containers/bootc/milestone/1).
+The CLI and API for bootc are now considered stable. Every existing system
+can be upgraded in place seamlessly across any future changes.
 
 However, the core underlying code uses the [ostree](https://github.com/ostreedev/ostree)
 project which has been powering stable operating system updates for
