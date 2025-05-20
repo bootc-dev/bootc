@@ -42,11 +42,14 @@ use fn_error_context::context;
 use ostree::gio;
 use ostree_ext::composefs::{
     fsverity::{FsVerityHashValue, Sha256HashValue},
-    oci::image::create_filesystem as create_composefs_filesystem,
-    oci::pull as composefs_oci_pull,
     repository::Repository as ComposefsRepository,
     util::Sha256Digest,
-    write_boot::write_boot_simple as composefs_write_boot_simple,
+};
+use ostree_ext::composefs_boot::{
+    write_boot::write_boot_simple as composefs_write_boot_simple, BootOps,
+};
+use ostree_ext::composefs_oci::{
+    image::create_filesystem as create_composefs_filesystem, pull as composefs_oci_pull,
 };
 use ostree_ext::oci_spec;
 use ostree_ext::ostree;
@@ -1512,9 +1515,11 @@ fn setup_composefs_boot(root_setup: &RootSetup, state: &State, image_id: &str) -
     )?;
 
     // Add the user grug cfg
+    // TODO: We don't need this for BLS. Have a flag for BLS vs UKI, or maybe we can figure it out
+    // via the boot entries above
     let grub_user_config = format!(
-r#"
-menuentry "Some Fedora Idk" {{
+        r#"
+menuentry "Some Fedora" {{
     insmod fat
     insmod chain
     search --no-floppy --set=root --fs-uuid {rootfs_uuid}
