@@ -20,7 +20,11 @@ ostree = { features = ["v2025_1"], version = "0.20.0" }
 anyhow = { workspace = true }
 bootc-utils = { path = "../utils" }
 camino = { workspace = true, features = ["serde1"] }
-composefs = { git = "https://github.com/containers/composefs-rs", rev = "b1bd9c1d253c9b15bbf8e04068ad96edd974ccd0" }
+
+composefs = { git = "https://github.com/containers/composefs-rs", rev = "2a71e03791a50f7c254b98b20b70b9ab3c0ca997", package = "composefs" }
+composefs-boot = { git = "https://github.com/containers/composefs-rs", rev = "2a71e03791a50f7c254b98b20b70b9ab3c0ca997", package = "composefs-boot" }
+composefs-oci = { git = "https://github.com/containers/composefs-rs", rev = "2a71e03791a50f7c254b98b20b70b9ab3c0ca997", package = "composefs-oci" }
+
 chrono = { workspace = true }
 olpc-cjson = "0.1.1"
 clap = { workspace = true, features = ["derive","cargo"] }
