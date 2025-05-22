@@ -1012,6 +1012,8 @@ pub fn global_init() -> Result<()> {
         // This shouldn't ever happen
         eprintln!("failed to set name: {e}");
     }
+    // Silence SELinux log warnings
+    ostree::SePolicy::set_null_log();
     let am_root = rustix::process::getuid().is_root();
     // Work around bootc-image-builder not setting HOME, in combination with podman (really c/common)
     // bombing out if it is unset.

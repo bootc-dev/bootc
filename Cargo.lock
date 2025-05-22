@@ -364,7 +364,7 @@ dependencies = [
  "ipnet",
  "maybe-owned",
  "rustix 0.38.44",
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
  "winx",
 ]
 
@@ -854,7 +854,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "33d852cb9b869c2a9b3df2f71a3074817f01e1844f839a144f5fcef059a4eb5d"
 dependencies = [
  "libc",
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1079,7 +1079,7 @@ dependencies = [
  "gobject-sys",
  "libc",
  "system-deps",
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1675,9 +1675,9 @@ dependencies = [
 
 [[package]]
 name = "ostree"
-version = "0.20.0"
+version = "0.20.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2c8ae6495e328b0ab2bf0d738f5e7df1151f9ff345cd58198d113f5e1ac4ea36"
+checksum = "2e17eb61e9ab4fc34187af48a8b45df0c57d004a963473e1c18fc1c2dbeb573f"
 dependencies = [
  "base64 0.20.0",
  "bitflags 1.3.2",
@@ -1739,9 +1739,9 @@ dependencies = [
 
 [[package]]
 name = "ostree-sys"
-version = "0.15.0"
+version = "0.15.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "389a71bbeb0adfda235c801c930765d585852f12d63ea30c3411a0547058ef79"
+checksum = "9e07b303a4d842e4fbd2a31496d61d1fb35fe1dac31084e2e18fc5e95ce64c76"
 dependencies = [
  "gio-sys",
  "glib-sys",
@@ -2038,7 +2038,7 @@ dependencies = [
  "libc",
  "linux-raw-sys 0.4.14",
  "once_cell",
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2051,7 +2051,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.9.3",
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2406,7 +2406,7 @@ dependencies = [
  "fastrand",
  "once_cell",
  "rustix 0.38.44",
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
