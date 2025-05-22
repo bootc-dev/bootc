@@ -31,6 +31,7 @@ use ostree::{gio, glib};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Write as _;
 use std::iter::FromIterator;
+use std::num::NonZeroUsize;
 use tokio::sync::mpsc::{Receiver, Sender};
 
 /// Configuration for the proxy.
@@ -963,9 +964,10 @@ impl ImageImporter {
                 tracing::debug!("Imported layer: {}", r.commit.as_str());
                 layer_commits.push(r.commit);
                 let filtered_owned = HashMap::from_iter(r.filtered.clone());
-                if let Some((filtered, n_rest)) =
-                    bootc_utils::iterator_split_nonempty_rest_count(r.filtered.iter(), 5)
-                {
+                if let Some((filtered, n_rest)) = bootc_utils::collect_until(
+                    r.filtered.iter(),
+                    const { NonZeroUsize::new(5).unwrap() },
+                ) {
                     let mut msg = String::new();
                     for (path, n) in filtered {
                         write!(msg, "{path}: {n} ").unwrap();

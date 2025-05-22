@@ -7,7 +7,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::env::consts::ARCH;
-use std::fmt::Write as WriteFmt;
+use std::fmt::{Display, Write as WriteFmt};
+use std::num::NonZeroUsize;
 use std::ops::ControlFlow;
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
@@ -30,6 +31,9 @@ use serde::Serialize;
 const BASEIMAGE_REF: &str = "usr/share/doc/bootc/baseimage/base";
 // https://systemd.io/API_FILE_SYSTEMS/ with /var added for us
 const API_DIRS: &[&str] = &["dev", "proc", "sys", "run", "tmp", "var"];
+
+/// Only output this many items by default
+const DEFAULT_TRUNCATED_OUTPUT: NonZeroUsize = const { NonZeroUsize::new(5).unwrap() };
 
 /// A lint check has failed.
 #[derive(thiserror::Error, Debug)]
@@ -62,9 +66,14 @@ impl LintError {
     }
 }
 
-type LintFn = fn(&Dir) -> LintResult;
+#[derive(Debug, Default)]
+struct LintExecutionConfig {
+    no_truncate: bool,
+}
+
+type LintFn = fn(&Dir, config: &LintExecutionConfig) -> LintResult;
 type LintRecursiveResult = LintResult;
-type LintRecursiveFn = fn(&WalkComponent) -> LintRecursiveResult;
+type LintRecursiveFn = fn(&WalkComponent, config: &LintExecutionConfig) -> LintRecursiveResult;
 /// A lint can either operate as it pleases on a target root, or it
 /// can be recursive.
 #[derive(Debug)]
@@ -188,9 +197,64 @@ struct LintExecutionResult {
     fatal: usize,
 }
 
+// Helper function to format items with optional truncation
+fn format_items<T>(
+    config: &LintExecutionConfig,
+    header: &str,
+    items: impl Iterator<Item = T>,
+    o: &mut String,
+) -> Result<()>
+where
+    T: Display,
+{
+    let mut items = items.into_iter();
+    if config.no_truncate {
+        let Some(first) = items.next() else {
+            return Ok(());
+        };
+        writeln!(o, "{header}:")?;
+        writeln!(o, "  {first}")?;
+        for item in items {
+            writeln!(o, "  {item}")?;
+        }
+        return Ok(());
+    } else {
+        let Some((samples, rest)) = bootc_utils::collect_until(items, DEFAULT_TRUNCATED_OUTPUT)
+        else {
+            return Ok(());
+        };
+        writeln!(o, "{header}:")?;
+        for item in samples {
+            writeln!(o, "  {item}")?;
+        }
+        if rest > 0 {
+            writeln!(o, "  ...and {rest} more")?;
+        }
+    }
+    Ok(())
+}
+
+// Helper to build a lint error message from multiple sections.
+// The closure `build_message_fn` is responsible for calling `format_items`
+// to populate the message buffer.
+fn format_lint_err_from_items<T>(
+    config: &LintExecutionConfig,
+    header: &str,
+    items: impl Iterator<Item = T>,
+) -> LintResult
+where
+    T: Display,
+{
+    let mut msg = String::new();
+    // SAFETY: Writing to a string can't fail
+    format_items(config, header, items, &mut msg).unwrap();
+    lint_err(msg)
+}
+
 fn lint_inner<'skip>(
     root: &Dir,
     root_type: RootType,
+    config: &LintExecutionConfig,
     skip: impl IntoIterator<Item = &'skip str>,
     mut output: impl std::io::Write,
 ) -> Result<LintExecutionResult> {
@@ -223,7 +287,7 @@ fn lint_inner<'skip>(
             LintFnTy::Regular(f) => f,
             LintFnTy::Recursive(_) => unreachable!(),
         };
-        results.push((lint, f(&root)));
+        results.push((lint, f(&root, &config)));
     }
 
     let mut recursive_lints = BTreeSet::from_iter(recursive_lints.into_iter());
@@ -248,7 +312,7 @@ fn lint_inner<'skip>(
                     LintFnTy::Recursive(f) => f,
                 };
                 // Keep track of the error if we found one
-                match f(e) {
+                match f(e, &config) {
                     Ok(Ok(())) => {}
                     o => this_iteration_errors.push((lint, o)),
                 }
@@ -306,8 +370,10 @@ pub(crate) fn lint<'skip>(
     root_type: RootType,
     skip: impl IntoIterator<Item = &'skip str>,
     mut output: impl std::io::Write,
+    no_truncate: bool,
 ) -> Result<()> {
-    let r = lint_inner(root, root_type, skip, &mut output)?;
+    let config = LintExecutionConfig { no_truncate };
+    let r = lint_inner(root, root_type, &config, skip, &mut output)?;
     writeln!(output, "Checks passed: {}", r.passed)?;
     if r.skipped > 0 {
         writeln!(output, "Checks skipped: {}", r.skipped)?;
@@ -334,7 +400,7 @@ static LINT_VAR_RUN: Lint = Lint::new_fatal(
     "Check for /var/run being a physical directory; this is always a bug.",
     check_var_run,
 );
-fn check_var_run(root: &Dir) -> LintResult {
+fn check_var_run(root: &Dir, _config: &LintExecutionConfig) -> LintResult {
     if let Some(meta) = root.symlink_metadata_optional("var/run")? {
         if !meta.is_symlink() {
             return lint_err("Not a symlink: var/run");
@@ -354,7 +420,7 @@ static LINT_BUILDAH_INJECTED: Lint = Lint::new_warning(
 // This one doesn't make sense to run looking at the running root,
 // because we do expect /etc/hostname to be injected as
 .set_root_type(RootType::Alternative);
-fn check_buildah_injected(root: &Dir) -> LintResult {
+fn check_buildah_injected(root: &Dir, _config: &LintExecutionConfig) -> LintResult {
     const RUNTIME_INJECTED: &[&str] = &["etc/hostname", "etc/resolv.conf"];
     for ent in RUNTIME_INJECTED {
         if let Some(meta) = root.symlink_metadata_optional(ent)? {
@@ -376,7 +442,7 @@ and /usr/etc.
 "# },
     check_usretc,
 );
-fn check_usretc(root: &Dir) -> LintResult {
+fn check_usretc(root: &Dir, _config: &LintExecutionConfig) -> LintResult {
     let etc_exists = root.symlink_metadata_optional("etc")?.is_some();
     // For compatibility/conservatism don't bomb out if there's no /etc.
     if !etc_exists {
@@ -398,7 +464,7 @@ static LINT_KARGS: Lint = Lint::new_fatal(
     "Verify syntax of /usr/lib/bootc/kargs.d.",
     check_parse_kargs,
 );
-fn check_parse_kargs(root: &Dir) -> LintResult {
+fn check_parse_kargs(root: &Dir, _config: &LintExecutionConfig) -> LintResult {
     let args = crate::kargs::get_kargs_in_root(root, ARCH)?;
     tracing::debug!("found kargs: {args:?}");
     lint_ok()
@@ -413,7 +479,7 @@ static LINT_KERNEL: Lint = Lint::new_fatal(
      "# },
     check_kernel,
 );
-fn check_kernel(root: &Dir) -> LintResult {
+fn check_kernel(root: &Dir, _config: &LintExecutionConfig) -> LintResult {
     let result = ostree_ext::bootabletree::find_kernel_dir_fs(&root)?;
     tracing::debug!("Found kernel: {:?}", result);
     lint_ok()
@@ -431,7 +497,7 @@ UTF-8 filenames. Non-UTF8 filenames will cause a fatal error.
     root_type: None,
     f: LintFnTy::Recursive(check_utf8),
 };
-fn check_utf8(e: &WalkComponent) -> LintRecursiveResult {
+fn check_utf8(e: &WalkComponent, _config: &LintExecutionConfig) -> LintRecursiveResult {
     let path = e.path;
     let filename = e.filename;
     let dirname = path.parent().unwrap_or(Path::new("/"));
@@ -477,7 +543,7 @@ Note that in addition, bootc requires that `/var` exist as a directory.
 "#},
     check_api_dirs,
 );
-fn check_api_dirs(root: &Dir) -> LintResult {
+fn check_api_dirs(root: &Dir, _config: &LintExecutionConfig) -> LintResult {
     for d in API_DIRS {
         let Some(meta) = root.symlink_metadata_optional(d)? else {
             return lint_err(format!("Missing API filesystem base directory: /{d}"));
@@ -500,7 +566,7 @@ Check that composefs is enabled for ostree. More in
 "#},
     check_composefs,
 );
-fn check_composefs(dir: &Dir) -> LintResult {
+fn check_composefs(dir: &Dir, _config: &LintExecutionConfig) -> LintResult {
     if let Err(e) = check_prepareroot_composefs_norecurse(dir)? {
         return Ok(Err(e));
     }
@@ -515,7 +581,7 @@ fn check_composefs(dir: &Dir) -> LintResult {
 }
 
 /// Check for a few files and directories we expect in the base image.
-fn check_baseimage_root_norecurse(dir: &Dir) -> LintResult {
+fn check_baseimage_root_norecurse(dir: &Dir, _config: &LintExecutionConfig) -> LintResult {
     // Check /sysroot
     let meta = dir.symlink_metadata_optional("sysroot")?;
     match meta {
@@ -551,14 +617,14 @@ as /sysroot and a composefs configuration for ostree. More in
 "#},
     check_baseimage_root,
 );
-fn check_baseimage_root(dir: &Dir) -> LintResult {
-    if let Err(e) = check_baseimage_root_norecurse(dir)? {
+fn check_baseimage_root(dir: &Dir, config: &LintExecutionConfig) -> LintResult {
+    if let Err(e) = check_baseimage_root_norecurse(dir, config)? {
         return Ok(Err(e));
     }
     // If we have our own documentation with the expected root contents
     // embedded, then check that too! Mostly just because recursion is fun.
     if let Some(dir) = dir.open_dir_optional(BASEIMAGE_REF)? {
-        if let Err(e) = check_baseimage_root_norecurse(&dir)? {
+        if let Err(e) = check_baseimage_root_norecurse(&dir, config)? {
             return Ok(Err(e));
         }
     }
@@ -599,23 +665,20 @@ sensitive build system information.
 "#},
     check_varlog,
 );
-fn check_varlog(root: &Dir) -> LintResult {
+fn check_varlog(root: &Dir, config: &LintExecutionConfig) -> LintResult {
     let Some(d) = root.open_dir_optional("var/log")? else {
         return lint_ok();
     };
     let mut nonempty_regfiles = BTreeSet::new();
     collect_nonempty_regfiles(&d, "/var/log".into(), &mut nonempty_regfiles)?;
-    let mut nonempty_regfiles = nonempty_regfiles.into_iter();
-    let Some(first) = nonempty_regfiles.next() else {
+
+    if nonempty_regfiles.is_empty() {
         return lint_ok();
-    };
-    let others = nonempty_regfiles.len();
-    let others = if others > 0 {
-        format!(" (and {others} more)")
-    } else {
-        "".into()
-    };
-    lint_err(format!("Found non-empty logfile: {first}{others}"))
+    }
+
+    let header = "Found non-empty logfiles";
+    let items = nonempty_regfiles.iter().map(PathQuotedDisplay::new);
+    format_lint_err_from_items(config, header, items)
 }
 
 #[distributed_slice(LINTS)]
@@ -633,34 +696,18 @@ as part of each boot.
     check_var_tmpfiles,
 )
 .set_root_type(RootType::Running);
-fn check_var_tmpfiles(_root: &Dir) -> LintResult {
+
+fn check_var_tmpfiles(_root: &Dir, config: &LintExecutionConfig) -> LintResult {
     let r = bootc_tmpfiles::find_missing_tmpfiles_current_root()?;
     if r.tmpfiles.is_empty() && r.unsupported.is_empty() {
         return lint_ok();
     }
     let mut msg = String::new();
-    if let Some((samples, rest)) =
-        bootc_utils::iterator_split_nonempty_rest_count(r.tmpfiles.iter(), 5)
-    {
-        msg.push_str("Found content in /var missing systemd tmpfiles.d entries:\n");
-        for elt in samples {
-            writeln!(msg, "  {elt}")?;
-        }
-        if rest > 0 {
-            writeln!(msg, "  ...and {} more", rest)?;
-        }
-    }
-    if let Some((samples, rest)) =
-        bootc_utils::iterator_split_nonempty_rest_count(r.unsupported.iter(), 5)
-    {
-        msg.push_str("Found non-directory/non-symlink files in /var:\n");
-        for elt in samples.map(PathQuotedDisplay::new) {
-            writeln!(msg, "  {elt}")?;
-        }
-        if rest > 0 {
-            writeln!(msg, "  ...and {} more", rest)?;
-        }
-    }
+    let header = "Found content in /var missing systemd tmpfiles.d entries";
+    format_items(config, header, r.tmpfiles.iter().map(|v| v as &_), &mut msg)?;
+    let header = "Found non-directory/non-symlink files in /var";
+    let items = r.unsupported.iter().map(PathQuotedDisplay::new);
+    format_items(config, header, items, &mut msg)?;
     lint_err(msg)
 }
 
@@ -681,34 +728,17 @@ More on this topic in <https://bootc-dev.github.io/bootc/building/users-and-grou
 "# },
     check_sysusers,
 );
-fn check_sysusers(rootfs: &Dir) -> LintResult {
+fn check_sysusers(rootfs: &Dir, config: &LintExecutionConfig) -> LintResult {
     let r = bootc_sysusers::analyze(rootfs)?;
     if r.is_empty() {
         return lint_ok();
     }
     let mut msg = String::new();
-    if let Some((samples, rest)) =
-        bootc_utils::iterator_split_nonempty_rest_count(r.missing_users.iter(), 5)
-    {
-        msg.push_str("Found /etc/passwd entry without corresponding systemd sysusers.d:\n");
-        for elt in samples {
-            writeln!(msg, "  {elt}")?;
-        }
-        if rest > 0 {
-            writeln!(msg, "  ...and {} more", rest)?;
-        }
-    }
-    if let Some((samples, rest)) =
-        bootc_utils::iterator_split_nonempty_rest_count(r.missing_groups.iter(), 5)
-    {
-        msg.push_str("Found /etc/group entry without corresponding systemd sysusers.d:\n");
-        for elt in samples {
-            writeln!(msg, "  {elt}")?;
-        }
-        if rest > 0 {
-            writeln!(msg, "  ...and {} more", rest)?;
-        }
-    }
+    let header = "Found /etc/passwd entry without corresponding systemd sysusers.d";
+    let items = r.missing_users.iter().map(|v| v as &dyn std::fmt::Display);
+    format_items(config, header, items, &mut msg)?;
+    let header = "Found /etc/group entry without corresponding systemd sysusers.d";
+    format_items(config, header, r.missing_groups.into_iter(), &mut msg)?;
     lint_err(msg)
 }
 
@@ -722,23 +752,24 @@ Any content here in the container image will be masked at runtime.
 "#},
     check_boot,
 );
-fn check_boot(root: &Dir) -> LintResult {
+fn check_boot(root: &Dir, config: &LintExecutionConfig) -> LintResult {
     let Some(d) = root.open_dir_optional("boot")? else {
         return lint_err(format!("Missing /boot directory"));
     };
-    let mut entries = d.entries()?;
-    let Some(ent) = entries.next() else {
+
+    // First collect all entries to determine if the directory is empty
+    let entries: Result<Vec<_>, _> = d.entries()?.collect();
+    let entries = entries?;
+    if entries.is_empty() {
         return lint_ok();
-    };
-    let ent = ent?;
-    let first = ent.file_name();
-    let others = entries.count();
-    let others = if others > 0 {
-        format!(" (and {others} more)")
-    } else {
-        "".into()
-    };
-    lint_err(format!("Found non-empty /boot: {first:?}{others}"))
+    }
+    // Gather sorted filenames
+    let mut entries = entries.iter().map(|v| v.file_name()).collect::<Vec<_>>();
+    entries.sort();
+
+    let header = "Found non-empty /boot";
+    let items = entries.iter().map(PathQuotedDisplay::new);
+    format_lint_err_from_items(config, header, items)
 }
 
 #[cfg(test)]
@@ -755,11 +786,13 @@ mod tests {
     });
 
     fn fixture() -> Result<cap_std_ext::cap_tempfile::TempDir> {
+        // Create a new temporary directory for test fixtures.
         let tempdir = cap_std_ext::cap_tempfile::tempdir(cap_std::ambient_authority())?;
         Ok(tempdir)
     }
 
     fn passing_fixture() -> Result<cap_std_ext::cap_tempfile::TempDir> {
+        // Create a temporary directory fixture that is expected to pass most lints.
         let root = cap_std_ext::cap_tempfile::tempdir(cap_std::ambient_authority())?;
         for d in API_DIRS {
             root.create_dir(d)?;
@@ -783,57 +816,61 @@ mod tests {
     #[test]
     fn test_var_run() -> Result<()> {
         let root = &fixture()?;
+        let config = &LintExecutionConfig::default();
         // This one should pass
-        check_var_run(root).unwrap().unwrap();
+        check_var_run(root, config).unwrap().unwrap();
         root.create_dir_all("var/run/foo")?;
-        assert!(check_var_run(root).unwrap().is_err());
+        assert!(check_var_run(root, config).unwrap().is_err());
         root.remove_dir_all("var/run")?;
         // Now we should pass again
-        check_var_run(root).unwrap().unwrap();
+        check_var_run(root, config).unwrap().unwrap();
         Ok(())
     }
 
     #[test]
     fn test_api() -> Result<()> {
         let root = &passing_fixture()?;
+        let config = &LintExecutionConfig::default();
         // This one should pass
-        check_api_dirs(root).unwrap().unwrap();
+        check_api_dirs(root, config).unwrap().unwrap();
         root.remove_dir("var")?;
-        assert!(check_api_dirs(root).unwrap().is_err());
+        assert!(check_api_dirs(root, config).unwrap().is_err());
         root.write("var", "a file for var")?;
-        assert!(check_api_dirs(root).unwrap().is_err());
+        assert!(check_api_dirs(root, config).unwrap().is_err());
         Ok(())
     }
 
     #[test]
     fn test_lint_main() -> Result<()> {
         let root = &passing_fixture()?;
+        let config = &LintExecutionConfig::default();
         let mut out = Vec::new();
         let warnings = WarningDisposition::FatalWarnings;
         let root_type = RootType::Alternative;
-        lint(root, warnings, root_type, [], &mut out).unwrap();
+        lint(root, warnings, root_type, [], &mut out, config.no_truncate).unwrap();
         root.create_dir_all("var/run/foo")?;
         let mut out = Vec::new();
-        assert!(lint(root, warnings, root_type, [], &mut out).is_err());
+        assert!(lint(root, warnings, root_type, [], &mut out, config.no_truncate).is_err());
         Ok(())
     }
 
     #[test]
     fn test_lint_inner() -> Result<()> {
         let root = &passing_fixture()?;
+        let config = &LintExecutionConfig::default();
 
         // Verify that all lints run
         let mut out = Vec::new();
         let root_type = RootType::Alternative;
-        let r = lint_inner(root, root_type, [], &mut out).unwrap();
+        let r = lint_inner(root, root_type, config, [], &mut out).unwrap();
         let running_only_lints = LINTS.len().checked_sub(*ALTROOT_LINTS).unwrap();
         assert_eq!(r.warnings, 0);
         assert_eq!(r.fatal, 0);
         assert_eq!(r.skipped, running_only_lints);
         assert_eq!(r.passed, *ALTROOT_LINTS);
 
-        let r = lint_inner(root, root_type, ["var-log"], &mut out).unwrap();
-        // Trigger a failure in var-log
+        let r = lint_inner(root, root_type, config, ["var-log"], &mut out).unwrap();
+        // Trigger a failure in var-log by creating a non-empty log file.
         root.create_dir_all("var/log/dnf")?;
         root.write("var/log/dnf/dnf.log", b"dummy dnf log")?;
         assert_eq!(r.passed, ALTROOT_LINTS.checked_sub(1).unwrap());
@@ -843,7 +880,7 @@ mod tests {
 
         // But verify that not skipping it results in a warning
         let mut out = Vec::new();
-        let r = lint_inner(root, root_type, [], &mut out).unwrap();
+        let r = lint_inner(root, root_type, config, [], &mut out).unwrap();
         assert_eq!(r.passed, ALTROOT_LINTS.checked_sub(1).unwrap());
         assert_eq!(r.fatal, 0);
         assert_eq!(r.skipped, running_only_lints);
@@ -854,70 +891,78 @@ mod tests {
     #[test]
     fn test_kernel_lint() -> Result<()> {
         let root = &fixture()?;
+        let config = &LintExecutionConfig::default();
         // This one should pass
-        check_kernel(root).unwrap().unwrap();
+        check_kernel(root, config).unwrap().unwrap();
         root.create_dir_all("usr/lib/modules/5.7.2")?;
         root.write("usr/lib/modules/5.7.2/vmlinuz", "old vmlinuz")?;
         root.create_dir_all("usr/lib/modules/6.3.1")?;
         root.write("usr/lib/modules/6.3.1/vmlinuz", "new vmlinuz")?;
-        assert!(check_kernel(root).is_err());
+        assert!(check_kernel(root, config).is_err());
         root.remove_dir_all("usr/lib/modules/5.7.2")?;
         // Now we should pass again
-        check_kernel(root).unwrap().unwrap();
+        check_kernel(root, config).unwrap().unwrap();
         Ok(())
     }
 
     #[test]
     fn test_kargs() -> Result<()> {
         let root = &fixture()?;
-        check_parse_kargs(root).unwrap().unwrap();
+        let config = &LintExecutionConfig::default();
+        check_parse_kargs(root, config).unwrap().unwrap();
         root.create_dir_all("usr/lib/bootc")?;
         root.write("usr/lib/bootc/kargs.d", "not a directory")?;
-        assert!(check_parse_kargs(root).is_err());
+        assert!(check_parse_kargs(root, config).is_err());
         Ok(())
     }
 
     #[test]
     fn test_usr_etc() -> Result<()> {
         let root = &fixture()?;
+        let config = &LintExecutionConfig::default();
         // This one should pass
-        check_usretc(root).unwrap().unwrap();
+        check_usretc(root, config).unwrap().unwrap();
         root.create_dir_all("etc")?;
         root.create_dir_all("usr/etc")?;
-        assert!(check_usretc(root).unwrap().is_err());
+        assert!(check_usretc(root, config).unwrap().is_err());
         root.remove_dir_all("etc")?;
         // Now we should pass again
-        check_usretc(root).unwrap().unwrap();
+        check_usretc(root, config).unwrap().unwrap();
         Ok(())
     }
 
     #[test]
     fn test_varlog() -> Result<()> {
         let root = &fixture()?;
-        check_varlog(root).unwrap().unwrap();
+        let config = &LintExecutionConfig::default();
+        check_varlog(root, config).unwrap().unwrap();
         root.create_dir_all("var/log")?;
-        check_varlog(root).unwrap().unwrap();
+        check_varlog(root, config).unwrap().unwrap();
         root.symlink_contents("../../usr/share/doc/systemd/README.logs", "var/log/README")?;
-        check_varlog(root).unwrap().unwrap();
+        check_varlog(root, config).unwrap().unwrap();
 
         root.atomic_write("var/log/somefile.log", "log contents")?;
-        let Err(e) = check_varlog(root).unwrap() else {
+        let Err(e) = check_varlog(root, config).unwrap() else {
             unreachable!()
         };
-        assert_eq!(
+        similar_asserts::assert_eq!(
             e.to_string(),
-            "Found non-empty logfile: /var/log/somefile.log"
+            "Found non-empty logfiles:\n  /var/log/somefile.log\n"
         );
-
         root.create_dir_all("var/log/someproject")?;
         root.atomic_write("var/log/someproject/audit.log", "audit log")?;
         root.atomic_write("var/log/someproject/info.log", "info")?;
-        let Err(e) = check_varlog(root).unwrap() else {
+        let Err(e) = check_varlog(root, config).unwrap() else {
             unreachable!()
         };
-        assert_eq!(
+        similar_asserts::assert_eq!(
             e.to_string(),
-            "Found non-empty logfile: /var/log/somefile.log (and 2 more)"
+            indoc! { r#"
+                Found non-empty logfiles:
+                  /var/log/somefile.log
+                  /var/log/someproject/audit.log
+                  /var/log/someproject/info.log
+                "# }
         );
 
         Ok(())
@@ -926,9 +971,10 @@ mod tests {
     #[test]
     fn test_boot() -> Result<()> {
         let root = &passing_fixture()?;
-        check_boot(&root).unwrap().unwrap();
+        let config = &LintExecutionConfig::default();
+        check_boot(&root, config).unwrap().unwrap();
         root.create_dir("boot/somesubdir")?;
-        let Err(e) = check_boot(&root).unwrap() else {
+        let Err(e) = check_boot(&root, config).unwrap() else {
             unreachable!()
         };
         assert!(e.to_string().contains("somesubdir"));
@@ -936,14 +982,19 @@ mod tests {
         Ok(())
     }
 
-    fn run_recursive_lint(root: &Dir, f: LintRecursiveFn) -> LintResult {
+    fn run_recursive_lint(
+        root: &Dir,
+        f: LintRecursiveFn,
+        config: &LintExecutionConfig,
+    ) -> LintResult {
+        // Helper function to execute a recursive lint function over a directory.
         let mut result = lint_ok();
         root.walk(
             &WalkConfiguration::default()
                 .noxdev()
                 .path_base(Path::new("/")),
             |e| -> Result<_> {
-                let r = f(e)?;
+                let r = f(e, config)?;
                 match r {
                     Ok(()) => Ok(ControlFlow::Continue(())),
                     Err(e) => {
@@ -961,6 +1012,7 @@ mod tests {
         use std::{ffi::OsStr, os::unix::ffi::OsStrExt};
 
         let root = &fixture().unwrap();
+        let config = &LintExecutionConfig::default();
 
         // Try to create some adversarial symlink situations to ensure the walk doesn't crash
         root.create_dir("subdir").unwrap();
@@ -973,13 +1025,15 @@ mod tests {
         // Out-of-scope symlinks
         root.symlink("../../x", "escape").unwrap();
         // Should be fine
-        run_recursive_lint(root, check_utf8).unwrap().unwrap();
+        run_recursive_lint(root, check_utf8, config)
+            .unwrap()
+            .unwrap();
 
         // But this will cause an issue
         let baddir = OsStr::from_bytes(b"subdir/2/bad\xffdir");
         root.create_dir("subdir/2").unwrap();
         root.create_dir(baddir).unwrap();
-        let Err(err) = run_recursive_lint(root, check_utf8).unwrap() else {
+        let Err(err) = run_recursive_lint(root, check_utf8, config).unwrap() else {
             unreachable!("Didn't fail");
         };
         assert_eq!(
@@ -987,12 +1041,14 @@ mod tests {
             r#"/subdir/2: Found non-utf8 filename "bad\xFFdir""#
         );
         root.remove_dir(baddir).unwrap(); // Get rid of the problem
-        run_recursive_lint(root, check_utf8).unwrap().unwrap(); // Check it
+        run_recursive_lint(root, check_utf8, config)
+            .unwrap()
+            .unwrap(); // Check it
 
         // Create a new problem in the form of a regular file
         let badfile = OsStr::from_bytes(b"regular\xff");
         root.write(badfile, b"Hello, world!\n").unwrap();
-        let Err(err) = run_recursive_lint(root, check_utf8).unwrap() else {
+        let Err(err) = run_recursive_lint(root, check_utf8, config).unwrap() else {
             unreachable!("Didn't fail");
         };
         assert_eq!(
@@ -1000,11 +1056,13 @@ mod tests {
             r#"/: Found non-utf8 filename "regular\xFF""#
         );
         root.remove_file(badfile).unwrap(); // Get rid of the problem
-        run_recursive_lint(root, check_utf8).unwrap().unwrap(); // Check it
+        run_recursive_lint(root, check_utf8, config)
+            .unwrap()
+            .unwrap(); // Check it
 
         // And now test invalid symlink targets
         root.symlink(badfile, "subdir/good-name").unwrap();
-        let Err(err) = run_recursive_lint(root, check_utf8).unwrap() else {
+        let Err(err) = run_recursive_lint(root, check_utf8, config).unwrap() else {
             unreachable!("Didn't fail");
         };
         assert_eq!(
@@ -1012,12 +1070,14 @@ mod tests {
             r#"/subdir/good-name: Found non-utf8 symlink target"#
         );
         root.remove_file("subdir/good-name").unwrap(); // Get rid of the problem
-        run_recursive_lint(root, check_utf8).unwrap().unwrap(); // Check it
+        run_recursive_lint(root, check_utf8, config)
+            .unwrap()
+            .unwrap(); // Check it
 
         // Finally, test a self-referential symlink with an invalid name.
         // We should spot the invalid name before we check the target.
         root.symlink(badfile, badfile).unwrap();
-        let Err(err) = run_recursive_lint(root, check_utf8).unwrap() else {
+        let Err(err) = run_recursive_lint(root, check_utf8, config).unwrap() else {
             unreachable!("Didn't fail");
         };
         assert_eq!(
@@ -1025,38 +1085,44 @@ mod tests {
             r#"/: Found non-utf8 filename "regular\xFF""#
         );
         root.remove_file(badfile).unwrap(); // Get rid of the problem
-        run_recursive_lint(root, check_utf8).unwrap().unwrap(); // Check it
+        run_recursive_lint(root, check_utf8, config)
+            .unwrap()
+            .unwrap(); // Check it
     }
 
     #[test]
     fn test_baseimage_root() -> Result<()> {
         let td = fixture()?;
+        let config = &LintExecutionConfig::default();
 
         // An empty root should fail our test
-        assert!(check_baseimage_root(&td).unwrap().is_err());
+        assert!(check_baseimage_root(&td, config).unwrap().is_err());
 
         drop(td);
         let td = passing_fixture()?;
-        check_baseimage_root(&td).unwrap().unwrap();
+        check_baseimage_root(&td, config).unwrap().unwrap();
         Ok(())
     }
 
     #[test]
     fn test_composefs() -> Result<()> {
         let td = fixture()?;
+        let config = &LintExecutionConfig::default();
 
         // An empty root should fail our test
-        assert!(check_composefs(&td).unwrap().is_err());
+        assert!(check_composefs(&td, config).unwrap().is_err());
 
         drop(td);
         let td = passing_fixture()?;
-        check_baseimage_root(&td).unwrap().unwrap();
+        // This should pass as the fixture includes a valid composefs config.
+        check_composefs(&td, config).unwrap().unwrap();
 
         td.write(
             "usr/lib/ostree/prepare-root.conf",
             b"[composefs]\nenabled = false",
         )?;
-        assert!(check_composefs(&td).unwrap().is_err());
+        // Now it should fail because composefs is explicitly disabled.
+        assert!(check_composefs(&td, config).unwrap().is_err());
 
         Ok(())
     }
@@ -1064,12 +1130,13 @@ mod tests {
     #[test]
     fn test_buildah_injected() -> Result<()> {
         let td = fixture()?;
+        let config = &LintExecutionConfig::default();
         td.create_dir("etc")?;
-        assert!(check_buildah_injected(&td).unwrap().is_ok());
+        assert!(check_buildah_injected(&td, config).unwrap().is_ok());
         td.write("etc/hostname", b"")?;
-        assert!(check_buildah_injected(&td).unwrap().is_err());
+        assert!(check_buildah_injected(&td, config).unwrap().is_err());
         td.write("etc/hostname", b"some static hostname")?;
-        assert!(check_buildah_injected(&td).unwrap().is_ok());
+        assert!(check_buildah_injected(&td, config).unwrap().is_ok());
         Ok(())
     }
 
@@ -1079,5 +1146,110 @@ mod tests {
         lint_list(&mut r).unwrap();
         let lints: Vec<serde_yaml::Value> = serde_yaml::from_slice(&r).unwrap();
         assert_eq!(lints.len(), LINTS.len());
+    }
+
+    #[test]
+    fn test_format_items_no_truncate() -> Result<()> {
+        let config = LintExecutionConfig { no_truncate: true };
+        let header = "Test Header";
+        let mut output_str = String::new();
+
+        // Test case 1: Empty iterator
+        let items_empty: Vec<String> = vec![];
+        format_items(&config, header, items_empty.iter(), &mut output_str)?;
+        assert_eq!(output_str, "");
+        output_str.clear();
+
+        // Test case 2: Iterator with one item
+        let items_one = vec!["item1"];
+        format_items(&config, header, items_one.iter(), &mut output_str)?;
+        assert_eq!(output_str, "Test Header:\n  item1\n");
+        output_str.clear();
+
+        // Test case 3: Iterator with multiple items
+        let items_multiple = (1..=3).map(|v| format!("item{v}")).collect::<Vec<_>>();
+        format_items(&config, header, items_multiple.iter(), &mut output_str)?;
+        assert_eq!(output_str, "Test Header:\n  item1\n  item2\n  item3\n");
+        output_str.clear();
+
+        // Test case 4: Iterator with items > DEFAULT_TRUNCATED_OUTPUT
+        let items_multiple = (1..=8).map(|v| format!("item{v}")).collect::<Vec<_>>();
+        format_items(&config, header, items_multiple.iter(), &mut output_str)?;
+        assert_eq!(output_str, "Test Header:\n  item1\n  item2\n  item3\n  item4\n  item5\n  item6\n  item7\n  item8\n");
+        output_str.clear();
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_format_items_truncate() -> Result<()> {
+        let config = LintExecutionConfig::default();
+        let header = "Test Header";
+        let mut output_str = String::new();
+
+        // Test case 1: Empty iterator
+        let items_empty: Vec<String> = vec![];
+        format_items(&config, header, items_empty.iter(), &mut output_str)?;
+        assert_eq!(output_str, "");
+        output_str.clear();
+
+        // Test case 2: Iterator with fewer items than DEFAULT_TRUNCATED_OUTPUT
+        let items_few = vec!["item1", "item2"];
+        format_items(&config, header, items_few.iter(), &mut output_str)?;
+        assert_eq!(output_str, "Test Header:\n  item1\n  item2\n");
+        output_str.clear();
+
+        // Test case 3: Iterator with exactly DEFAULT_TRUNCATED_OUTPUT items
+        let items_exact: Vec<_> = (0..DEFAULT_TRUNCATED_OUTPUT.get())
+            .map(|i| format!("item{}", i + 1))
+            .collect();
+        format_items(&config, header, items_exact.iter(), &mut output_str)?;
+        let mut expected_output = String::from("Test Header:\n");
+        for i in 0..DEFAULT_TRUNCATED_OUTPUT.get() {
+            writeln!(expected_output, "  item{}", i + 1)?;
+        }
+        assert_eq!(output_str, expected_output);
+        output_str.clear();
+
+        // Test case 4: Iterator with more items than DEFAULT_TRUNCATED_OUTPUT
+        let items_many: Vec<_> = (0..(DEFAULT_TRUNCATED_OUTPUT.get() + 2))
+            .map(|i| format!("item{}", i + 1))
+            .collect();
+        format_items(&config, header, items_many.iter(), &mut output_str)?;
+        let mut expected_output = String::from("Test Header:\n");
+        for i in 0..DEFAULT_TRUNCATED_OUTPUT.get() {
+            writeln!(expected_output, "  item{}", i + 1)?;
+        }
+        writeln!(expected_output, "  ...and 2 more")?;
+        assert_eq!(output_str, expected_output);
+        output_str.clear();
+
+        // Test case 5: Iterator with one more item than DEFAULT_TRUNCATED_OUTPUT
+        let items_one_more: Vec<_> = (0..(DEFAULT_TRUNCATED_OUTPUT.get() + 1))
+            .map(|i| format!("item{}", i + 1))
+            .collect();
+        format_items(&config, header, items_one_more.iter(), &mut output_str)?;
+        let mut expected_output = String::from("Test Header:\n");
+        for i in 0..DEFAULT_TRUNCATED_OUTPUT.get() {
+            writeln!(expected_output, "  item{}", i + 1)?;
+        }
+        writeln!(expected_output, "  ...and 1 more")?;
+        assert_eq!(output_str, expected_output);
+        output_str.clear();
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_format_items_display_impl() -> Result<()> {
+        let config = LintExecutionConfig::default();
+        let header = "Numbers";
+        let mut output_str = String::new();
+
+        let items_numbers = vec![1, 2, 3];
+        format_items(&config, header, items_numbers.iter(), &mut output_str)?;
+        similar_asserts::assert_eq!(output_str, "Numbers:\n  1\n  2\n  3\n");
+
+        Ok(())
     }
 }
