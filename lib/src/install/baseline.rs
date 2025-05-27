@@ -49,6 +49,7 @@ pub(crate) enum BlockSetup {
     #[default]
     Direct,
     Tpm2Luks,
+    PasswordLuks,
 }
 
 impl Display for BlockSetup {
@@ -73,8 +74,13 @@ pub(crate) struct InstallBlockDeviceOpts {
     ///
     /// direct: Filesystem written directly to block device
     /// tpm2-luks: Bind unlock of filesystem to presence of the default tpm2 device.
+    /// password-luks: Encrypt filesystem with LUKS using a password.
     #[clap(long, value_enum)]
     pub(crate) block_setup: Option<BlockSetup>,
+
+    /// Password for LUKS encryption when `block_setup` is `password-luks`.
+    #[clap(long)]
+    pub(crate) luks_password: Option<String>,
 
     /// Target root filesystem type.
     #[clap(long, value_enum)]
@@ -93,6 +99,7 @@ impl BlockSetup {
         match self {
             BlockSetup::Direct => false,
             BlockSetup::Tpm2Luks => true,
+            BlockSetup::PasswordLuks => true,
         }
     }
 }
@@ -222,6 +229,13 @@ pub(crate) fn install_create_rootfs(
         // and we need to error out.
         anyhow::bail!("No install configuration found, and no filesystem specified")
     };
+
+    // Validate luks_password if PasswordLuks is selected
+    if block_setup == BlockSetup::PasswordLuks && opts.luks_password.is_none() {
+        anyhow::bail!("--luks-password is required when block-setup is password-luks");
+    }
+
+
     let serial = device.serial.as_deref().unwrap_or("<unknown>");
     let model = device.model.as_deref().unwrap_or("<unknown>");
     println!("Block setup: {block_setup}");
@@ -367,6 +381,27 @@ pub(crate) fn install_create_rootfs(
             ];
             (rootdev, Some(kargs))
         }
+        BlockSetup::PasswordLuks => {
+            let uuid = uuid::Uuid::new_v4().to_string();
+            let password = opts.luks_password.as_ref().unwrap();
+            let root_devpath = root_partition.path();
+
+            Task::new("Initializing LUKS for root", "cryptsetup")
+                .args(["--verbose", "--batch", "luksFormat", "--uuid", uuid.as_str()])
+                .args([root_devpath])
+                .run_with_stdin_buf(Some(password.as_bytes()))?;
+            Task::new("Opening root LUKS device", "cryptsetup")
+                .args(["luksOpen", root_devpath.as_str(), luks_name])
+                .run_with_stdin_buf(Some(password.as_bytes()))?;
+
+            let rootdev = format!("/dev/mapper/{luks_name}");
+            // Kernel arguments for password-based LUKS
+            // rd.luks.uuid is preferred for systemd initramfs
+            let kargs = vec![
+                format!("luks.uuid={uuid}"),
+            ];
+            (rootdev, Some(kargs))
+        }
     };
 
     // Initialize the /boot filesystem
@@ -448,6 +483,7 @@ pub(crate) fn install_create_rootfs(
     let luks_device = match block_setup {
         BlockSetup::Direct => None,
         BlockSetup::Tpm2Luks => Some(luks_name.to_string()),
+        BlockSetup::PasswordLuks => Some(luks_name.to_string()),
     };
     let device_info = bootc_blockdev::partitions_of(&devpath)?;
     Ok(RootSetup {

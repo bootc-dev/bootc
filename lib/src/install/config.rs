@@ -379,6 +379,19 @@ block = ["tpm2-luks"]"##,
 
         // And verify passing a disallowed config is an error
         assert!(install.get_block_setup(Some(BlockSetup::Direct)).is_err());
+
+        let c: InstallConfigurationToplevel = toml::from_str(
+            r##"[install]
+block = ["password-luks"]"##,
+        )
+        .unwrap();
+        let mut install = c.install.unwrap();
+        install.canonicalize();
+        assert_eq!(install.block.as_ref().unwrap().len(), 1);
+        assert_eq!(install.get_block_setup(None).unwrap(), BlockSetup::PasswordLuks);
+
+        // And verify passing a disallowed config is an error
+        assert!(install.get_block_setup(Some(BlockSetup::Direct)).is_err());
     }
 
     #[test]
