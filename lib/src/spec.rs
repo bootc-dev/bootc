@@ -113,7 +113,7 @@ impl ImageReference {
         // TODO maintain a proper transport enum in the spec here
         let transport = Transport::try_from(self.transport.as_str())?;
         match transport {
-            Transport::ContainerStorage | Transport::Registry => {
+            Transport::Registry => {
                 let reference: oci_spec::distribution::Reference = self.image.parse()?;
 
                 // Check if the image reference needs canonicicalization
@@ -350,11 +350,6 @@ mod tests {
                 format!("quay.io/example/someimage@{}", sample_digest),
                 "registry",
             ),
-            (
-                format!("quay.io/example/someimage:latest@{}", sample_digest),
-                format!("quay.io/example/someimage@{}", sample_digest),
-                "containers-storage",
-            ),
             // When only a digest is present, it should be used
             (
                 format!("quay.io/example/someimage@{}", sample_digest),
@@ -385,7 +380,12 @@ mod tests {
                 format!("localhost/someimage@{sample_digest}"),
                 "registry",
             ),
-            // Also for now, we do not canonicalize OCI references
+            // Other cases are not canonicalized
+            (
+                format!("quay.io/example/someimage:latest@{}", sample_digest),
+                format!("quay.io/example/someimage:latest@{}", sample_digest),
+                "containers-storage",
+            ),
             (
                 format!("/path/to/dir:latest"),
                 format!("/path/to/dir:latest"),

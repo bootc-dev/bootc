@@ -45,6 +45,8 @@ pub enum GroupReference {
     Numeric(u32),
     /// A named reference
     Name(String),
+    /// A file path
+    Path(String),
 }
 
 impl From<u32> for GroupReference {
@@ -57,12 +59,42 @@ impl FromStr for GroupReference {
     type Err = ParseIntError;
 
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
-        let r = if s.chars().all(|c| matches!(c, '0'..='9')) {
+        let r = if s.starts_with('/') {
+            Self::Path(s.to_owned())
+        } else if s.chars().all(|c| matches!(c, '0'..='9')) {
             Self::Numeric(u32::from_str(s)?)
         } else {
             Self::Name(s.to_owned())
         };
         Ok(r)
+    }
+}
+
+/// In sysusers a uid can be defined statically or via a file path
+#[derive(Debug, PartialEq, Eq)]
+pub enum IdSource {
+    /// A numeric uid
+    Numeric(u32),
+    /// The uid is defined by the owner of this path
+    Path(String),
+}
+
+impl FromStr for IdSource {
+    type Err = ParseIntError;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        let r = if s.starts_with('/') {
+            Self::Path(s.to_owned())
+        } else {
+            Self::Numeric(u32::from_str(s)?)
+        };
+        Ok(r)
+    }
+}
+
+impl From<u32> for IdSource {
+    fn from(value: u32) -> Self {
+        Self::Numeric(value)
     }
 }
 
@@ -73,14 +105,14 @@ pub enum SysusersEntry {
     /// Defines a user
     User {
         name: String,
-        uid: Option<u32>,
+        uid: Option<IdSource>,
         pgid: Option<GroupReference>,
         gecos: String,
         home: Option<String>,
         shell: Option<String>,
     },
     /// Defines a group
-    Group { name: String, id: Option<u32> },
+    Group { name: String, id: Option<IdSource> },
     /// Defines a range of uids
     Range { start: u32, end: u32 },
 }
@@ -134,9 +166,9 @@ impl SysusersEntry {
         let err = || Error::ParseFailure(s.to_owned());
         let (ftype, s) = Self::next_token(s).ok_or_else(err.clone())?;
         let r = match ftype {
-            "u" => {
+            "u" | "u!" => {
                 let (name, s) = Self::next_token_owned(s).ok_or_else(err.clone())?;
-                let (id, s) = Self::next_optional_token(s).ok_or_else(err.clone())?;
+                let (id, s) = Self::next_optional_token(s).unwrap_or_default();
                 let (uid, pgid) = id
                     .and_then(|v| v.split_once(':'))
                     .or_else(|| id.map(|id| (id, id)))
@@ -148,7 +180,8 @@ impl SysusersEntry {
                     .transpose()
                     .map_err(|_| err())?;
                 let pgid = pgid.map(|id| id.parse()).transpose().map_err(|_| err())?;
-                let (gecos, s) = Self::next_token_owned(s).ok_or_else(err.clone())?;
+                let (gecos, s) = Self::next_token(s).unwrap_or_default();
+                let gecos = gecos.to_owned();
                 let (home, s) = Self::next_optional_token_owned(s).unwrap_or_default();
                 let (shell, _) = Self::next_optional_token_owned(s).unwrap_or_default();
                 SysusersEntry::User {
@@ -162,7 +195,7 @@ impl SysusersEntry {
             }
             "g" => {
                 let (name, s) = Self::next_token_owned(s).ok_or_else(err.clone())?;
-                let (id, _) = Self::next_optional_token(s).ok_or_else(err.clone())?;
+                let (id, _) = Self::next_optional_token(s).unwrap_or_default();
                 let id = id.map(|id| id.parse()).transpose().map_err(|_| err())?;
                 SysusersEntry::Group { name, id }
             }
@@ -216,7 +249,8 @@ pub fn read_sysusers(rootfs: &Dir) -> Result<Vec<SysusersEntry>> {
                     found_groups.insert(name.clone());
                     // Users implicitly create a group with the same name
                     let pgid = pgid.as_ref().and_then(|g| match g {
-                        GroupReference::Numeric(n) => Some(*n),
+                        GroupReference::Numeric(n) => Some(IdSource::Numeric(*n)),
+                        GroupReference::Path(p) => Some(IdSource::Path(p.clone())),
                         GroupReference::Name(_) => None,
                     });
                     result.push(SysusersEntry::Group {
@@ -258,14 +292,14 @@ impl SysusersAnalysis {
 pub fn analyze(rootfs: &Dir) -> Result<SysusersAnalysis> {
     struct SysuserData {
         #[allow(dead_code)]
-        uid: Option<u32>,
+        uid: Option<IdSource>,
         #[allow(dead_code)]
         pgid: Option<GroupReference>,
     }
 
     struct SysgroupData {
         #[allow(dead_code)]
-        id: Option<u32>,
+        id: Option<IdSource>,
     }
 
     let Some(passwd) = nameservice::passwd::load_etc_passwd(rootfs)
@@ -353,6 +387,8 @@ mod tests {
         u games 12:100 "games" /usr/games -
         u ftp 14:50 "FTP User" /var/ftp -
         u nobody 65534:65534 "Kernel Overflow User" - -
+        # Newer systemd uses locked references
+        u! systemd-coredump - "systemd Core Dumper"
     "##};
 
     const SYSGROUPS_REF: &str = indoc::indoc! { r##"
@@ -395,6 +431,22 @@ mod tests {
         u vboxadd -:1 - /var/run/vboxadd -
     "#};
 
+    /// Taken from man sysusers.d
+    const OTHER_SYSUSERS_EXAMPLES: &str = indoc! { r#"
+        u user_name  /file/owned/by/user "User Description" /home/dir /path/to/shell
+        g group_name /file/owned/by/group
+        # Note no GECOS field
+        u otheruser -
+        # And finally, no numeric specification at all
+        u justusername
+        g justgroupname
+    "#};
+
+    const OTHER_SYSUSERS_UNHANDLED: &str = indoc! { r#"
+        m     user_name  group_name
+        r     -          42-43
+    "#};
+
     fn parse_all(s: &str) -> impl Iterator<Item = SysusersEntry> + use<'_> {
         s.lines()
             .filter(|line| !(line.is_empty() || line.starts_with('#')))
@@ -408,7 +460,7 @@ mod tests {
             entries.next().unwrap(),
             SysusersEntry::User {
                 name: "root".into(),
-                uid: Some(0),
+                uid: Some(0.into()),
                 pgid: Some(0.into()),
                 gecos: "Super User".into(),
                 home: Some("/root".into()),
@@ -419,7 +471,7 @@ mod tests {
             entries.next().unwrap(),
             SysusersEntry::User {
                 name: "root".into(),
-                uid: Some(0),
+                uid: Some(0.into()),
                 pgid: Some(0.into()),
                 gecos: "Super User".into(),
                 home: Some("/root".into()),
@@ -430,7 +482,7 @@ mod tests {
             entries.next().unwrap(),
             SysusersEntry::User {
                 name: "bin".into(),
-                uid: Some(1),
+                uid: Some(1.into()),
                 pgid: Some(1.into()),
                 gecos: "bin".into(),
                 home: Some("/bin".into()),
@@ -442,21 +494,21 @@ mod tests {
             entries.next().unwrap(),
             SysusersEntry::User {
                 name: "adm".into(),
-                uid: Some(3),
+                uid: Some(3.into()),
                 pgid: Some(4.into()),
                 gecos: "adm".into(),
                 home: Some("/var/adm".into()),
                 shell: None
             }
         );
-        assert_eq!(entries.count(), 9);
+        assert_eq!(entries.count(), 10);
 
         let mut entries = parse_all(OTHER_SYSUSERS_REF);
         assert_eq!(
             entries.next().unwrap(),
             SysusersEntry::User {
                 name: "qemu".into(),
-                uid: Some(107),
+                uid: Some(107.into()),
                 pgid: Some(GroupReference::Name("qemu".into())),
                 gecos: "qemu user".into(),
                 home: None,
@@ -476,6 +528,68 @@ mod tests {
         );
         assert_eq!(entries.count(), 0);
 
+        let mut entries = parse_all(OTHER_SYSUSERS_EXAMPLES);
+        assert_eq!(
+            entries.next().unwrap(),
+            SysusersEntry::User {
+                name: "user_name".into(),
+                uid: Some(IdSource::Path("/file/owned/by/user".into())),
+                pgid: Some(GroupReference::Path("/file/owned/by/user".into())),
+                gecos: "User Description".into(),
+                home: Some("/home/dir".into()),
+                shell: Some("/path/to/shell".into())
+            }
+        );
+        assert_eq!(
+            entries.next().unwrap(),
+            SysusersEntry::Group {
+                name: "group_name".into(),
+                id: Some(IdSource::Path("/file/owned/by/group".into()))
+            }
+        );
+        assert_eq!(
+            entries.next().unwrap(),
+            SysusersEntry::User {
+                name: "otheruser".into(),
+                uid: None,
+                pgid: None,
+                gecos: "".into(),
+                home: None,
+                shell: None
+            }
+        );
+        assert_eq!(
+            entries.next().unwrap(),
+            SysusersEntry::User {
+                name: "justusername".into(),
+                uid: None,
+                pgid: None,
+                gecos: "".into(),
+                home: None,
+                shell: None
+            }
+        );
+        assert_eq!(
+            entries.next().unwrap(),
+            SysusersEntry::Group {
+                name: "justgroupname".into(),
+                id: None
+            }
+        );
+        assert_eq!(entries.count(), 0);
+
+        let n = OTHER_SYSUSERS_UNHANDLED
+            .lines()
+            .filter(|line| !(line.is_empty() || line.starts_with('#')))
+            .try_fold(Vec::new(), |mut acc, line| {
+                if let Some(v) = SysusersEntry::parse(line)? {
+                    acc.push(v);
+                }
+                anyhow::Ok(acc)
+            })?;
+        assert_eq!(n.len(), 1);
+        assert_eq!(n[0], SysusersEntry::Range { start: 42, end: 43 });
+
         Ok(())
     }
 
@@ -489,14 +603,14 @@ mod tests {
             entries.next().unwrap(),
             SysusersEntry::Group {
                 name: "root".into(),
-                id: Some(0),
+                id: Some(0.into()),
             }
         );
         assert_eq!(
             entries.next().unwrap(),
             SysusersEntry::Group {
                 name: "bin".into(),
-                id: Some(1),
+                id: Some(1.into()),
             }
         );
         assert_eq!(entries.count(), 28);

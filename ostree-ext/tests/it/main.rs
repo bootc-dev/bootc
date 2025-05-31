@@ -1331,9 +1331,7 @@ async fn test_non_ostree() -> Result<()> {
         return Ok(());
     }
     let fixture = NonOstreeFixture::new_base()?;
-    let src_digest = fixture.export_container().await?.1;
-
-    let imgref = fixture.export_container().await.unwrap().0;
+    let (imgref, src_digest) = fixture.export_container().await.unwrap();
     let imp = fixture.must_import(&imgref).await?;
     if imp.manifest_digest != src_digest {
         let src_manifest: oci_image::ImageManifest = {

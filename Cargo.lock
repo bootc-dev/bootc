@@ -175,10 +175,12 @@ dependencies = [
 name = "bootc"
 version = "0.1.9"
 dependencies = [
+ "anstream",
  "anyhow",
  "bootc-lib",
  "bootc-utils",
  "log",
+ "owo-colors",
  "tokio",
  "tracing",
 ]
@@ -200,7 +202,7 @@ dependencies = [
 
 [[package]]
 name = "bootc-lib"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "anstream",
  "anstyle",
@@ -301,6 +303,7 @@ name = "bootc-utils"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "rustix 1.0.3",
  "serde",
  "serde_json",
@@ -1675,9 +1678,9 @@ dependencies = [
 
 [[package]]
 name = "ostree"
-version = "0.20.0"
+version = "0.20.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2c8ae6495e328b0ab2bf0d738f5e7df1151f9ff345cd58198d113f5e1ac4ea36"
+checksum = "2e17eb61e9ab4fc34187af48a8b45df0c57d004a963473e1c18fc1c2dbeb573f"
 dependencies = [
  "base64 0.20.0",
  "bitflags 1.3.2",
@@ -1739,9 +1742,9 @@ dependencies = [
 
 [[package]]
 name = "ostree-sys"
-version = "0.15.0"
+version = "0.15.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "389a71bbeb0adfda235c801c930765d585852f12d63ea30c3411a0547058ef79"
+checksum = "9e07b303a4d842e4fbd2a31496d61d1fb35fe1dac31084e2e18fc5e95ce64c76"
 dependencies = [
  "gio-sys",
  "glib-sys",
@@ -1755,6 +1758,12 @@ name = "overload"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b15813163c1d831bf4a13c3610c05c0d03b39feb07f7e09fa234dac9b15aaf39"
+
+[[package]]
+name = "owo-colors"
+version = "4.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "26995317201fa17f3656c36716aed4a7c81743a9634ac4c99c0eeda495db0cec"
 
 [[package]]
 name = "parking_lot"

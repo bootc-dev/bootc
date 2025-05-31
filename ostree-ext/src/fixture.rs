@@ -26,6 +26,7 @@ use ocidir::cap_std::fs::{DirBuilder, DirBuilderExt as _};
 use ocidir::oci_spec::image::ImageConfigurationBuilder;
 use regex::Regex;
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::ffi::CString;
 use std::fmt::Write as _;
 use std::io::{self, Write};
@@ -1014,8 +1015,20 @@ impl NonOstreeFixture {
         let bw = bw.into_inner()?;
         let new_layer = bw.complete()?;
 
-        self.src_oci
-            .push_layer(&mut manifest, &mut config, new_layer, "root", None);
+        let created = config
+            .created()
+            .as_deref()
+            .and_then(bootc_utils::try_deserialize_timestamp)
+            .unwrap_or_default();
+
+        self.src_oci.push_layer_full(
+            &mut manifest,
+            &mut config,
+            new_layer,
+            None::<HashMap<String, String>>,
+            "root",
+            created,
+        );
         let config = self.src_oci.write_config(config)?;
 
         manifest.set_config(config);

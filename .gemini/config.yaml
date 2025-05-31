@@ -1,0 +1,12 @@
+# This config mainly overrides `summary: false` by default
+# as it's really noisy.
+have_fun: true
+code_review:
+  disable: false
+  comment_severity_threshold: MEDIUM
+  max_review_comments: -1
+  pull_request_opened:
+    help: false
+    summary: false # turned off by default
+    code_review: true
+ignore_patterns: []

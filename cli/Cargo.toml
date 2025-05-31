@@ -14,11 +14,13 @@ default-run = "bootc"
 platforms = ["*-unknown-linux-gnu"]
 
 [dependencies]
+anstream = { workspace = true }
 anyhow = { workspace = true }
 bootc-lib = { version = "1.0", path = "../lib" }
 bootc-utils = { path = "../utils" }
 tokio = { workspace = true, features = ["macros"] }
 log = "0.4.21"
+owo-colors = { workspace = true }
 tracing = { workspace = true }
 
 [lints]

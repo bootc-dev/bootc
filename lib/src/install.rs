@@ -535,7 +535,7 @@ impl InstallAleph {
                 l.get(oci_spec::image::ANNOTATION_CREATED)
                     .map(|s| s.as_str())
             })
-            .and_then(crate::status::try_deserialize_timestamp);
+            .and_then(bootc_utils::try_deserialize_timestamp);
         let r = InstallAleph {
             image: src_imageref.imgref.name.clone(),
             version: imgstate.version().as_ref().map(|s| s.to_string()),

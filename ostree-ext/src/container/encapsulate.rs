@@ -133,8 +133,20 @@ pub(crate) fn export_chunked(
         .uncompressed_sha256
         .clone();
 
+    let created = imgcfg
+        .created()
+        .as_deref()
+        .and_then(bootc_utils::try_deserialize_timestamp)
+        .unwrap_or_default();
     // Add the ostree layer
-    ociw.push_layer(manifest, imgcfg, ostree_layer, description, None);
+    ociw.push_layer_full(
+        manifest,
+        imgcfg,
+        ostree_layer,
+        None::<HashMap<String, String>>,
+        description,
+        created,
+    );
     // Add the component/content layers
     let mut buf = [0; 8];
     let sep = COMPONENT_SEPARATOR.encode_utf8(&mut buf);
@@ -142,12 +154,13 @@ pub(crate) fn export_chunked(
         let mut annotation_component_layer = HashMap::new();
         packages.sort();
         annotation_component_layer.insert(CONTENT_ANNOTATION.to_string(), packages.join(sep));
-        ociw.push_layer(
+        ociw.push_layer_full(
             manifest,
             imgcfg,
             layer,
-            name.as_str(),
             Some(annotation_component_layer),
+            name.as_str(),
+            created,
         );
     }
 

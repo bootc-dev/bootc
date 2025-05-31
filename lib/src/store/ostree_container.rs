@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 
 use ostree_ext::container as ostree_container;
 use ostree_ext::oci_spec;
@@ -52,7 +52,7 @@ fn create_imagestatus(
                 .map(|s| s.as_str())
         })
         .or_else(|| config.created().as_deref())
-        .and_then(try_deserialize_timestamp);
+        .and_then(bootc_utils::try_deserialize_timestamp);
 
     let version = ostree_container::version_for_config(config).map(ToOwned::to_owned);
     let architecture = config.architecture().to_string();
@@ -69,14 +69,4 @@ fn labels_of_config(
     config: &oci_spec::image::ImageConfiguration,
 ) -> Option<&std::collections::HashMap<String, String>> {
     config.config().as_ref().and_then(|c| c.labels().as_ref())
-}
-
-fn try_deserialize_timestamp(t: &str) -> Option<chrono::DateTime<chrono::Utc>> {
-    match chrono::DateTime::parse_from_rfc3339(t).context("Parsing timestamp") {
-        Ok(t) => Some(t.into()),
-        Err(e) => {
-            tracing::warn!("Invalid timestamp in image: {:#}", e);
-            None
-        }
-    }
 }

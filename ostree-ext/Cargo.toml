@@ -14,7 +14,7 @@ version = "0.15.3"
 # semver here you must also bump our semver.
 containers-image-proxy = "0.7.0"
 # We re-export this library too.
-ostree = { features = ["v2025_1"], version = "0.20.0" }
+ostree = { features = ["v2025_2"], version = "0.20" }
 
 # Private dependencies
 anyhow = { workspace = true }

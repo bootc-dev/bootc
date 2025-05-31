@@ -1,3 +1,5 @@
+use std::num::NonZeroUsize;
+
 /// Given an iterator that's clonable, split it into two iterators
 /// at a given maximum number of elements.
 pub fn iterator_split<I>(
@@ -11,23 +13,31 @@ where
     (it.take(max), rest.skip(max))
 }
 
-/// Given an iterator that's clonable, split off the first N elements
-/// at the pivot point. If the iterator would be empty, return None.
-/// Return the count of the remainder.
-pub fn iterator_split_nonempty_rest_count<I>(
-    it: I,
-    max: usize,
-) -> Option<(impl Iterator<Item = I::Item>, usize)>
+/// Gather the first N items, and provide the count of the remaining items.
+/// The max count cannot be zero as that's a pathological case.
+pub fn collect_until<I>(it: I, max: NonZeroUsize) -> Option<(Vec<I::Item>, usize)>
 where
-    I: Iterator + Clone,
+    I: Iterator,
 {
-    let rest = it.clone();
+    let mut items = Vec::with_capacity(max.get());
+
     let mut it = it.peekable();
-    if it.peek().is_some() {
-        Some((it.take(max), rest.skip(max).count()))
-    } else {
-        None
+    if it.peek().is_none() {
+        return None;
     }
+
+    while let Some(next) = it.next() {
+        items.push(next);
+
+        // If we've reached max items, stop collecting
+        if items.len() == max.get() {
+            break;
+        }
+    }
+    // Count remaining items
+    let remaining = it.count();
+    items.shrink_to_fit();
+    Some((items, remaining))
 }
 
 #[cfg(test)]
@@ -60,8 +70,8 @@ mod tests {
     #[test]
     fn test_split_empty_iterator() {
         let a: &[&str] = &[];
-        for v in [0, 1, 5] {
-            assert!(iterator_split_nonempty_rest_count(a.iter(), v).is_none());
+        for v in [1, 5].into_iter().map(|v| NonZeroUsize::new(v).unwrap()) {
+            assert!(collect_until(a.iter(), v).is_none());
         }
     }
 
@@ -69,25 +79,22 @@ mod tests {
     fn test_split_nonempty_iterator() {
         let a = &["foo"];
 
-        let Some((elts, 1)) = iterator_split_nonempty_rest_count(a.iter(), 0) else {
+        let Some((elts, 0)) = collect_until(a.iter(), NonZeroUsize::new(1).unwrap()) else {
             panic!()
         };
-        assert_eq!(elts.count(), 0);
+        assert_eq!(elts.len(), 1);
 
-        let Some((elts, 0)) = iterator_split_nonempty_rest_count(a.iter(), 1) else {
+        let Some((elts, 0)) = collect_until(a.iter(), const { NonZeroUsize::new(5).unwrap() })
+        else {
             panic!()
         };
-        assert_eq!(elts.count(), 1);
-
-        let Some((elts, 0)) = iterator_split_nonempty_rest_count(a.iter(), 5) else {
-            panic!()
-        };
-        assert_eq!(elts.count(), 1);
+        assert_eq!(elts.len(), 1);
 
         let a = &["foo", "bar", "baz", "blah", "other"];
-        let Some((elts, 3)) = iterator_split_nonempty_rest_count(a.iter(), 2) else {
+        let Some((elts, 3)) = collect_until(a.iter(), const { NonZeroUsize::new(2).unwrap() })
+        else {
             panic!()
         };
-        assert_eq!(elts.count(), 2);
+        assert_eq!(elts.len(), 2);
     }
 }
