@@ -121,13 +121,16 @@ cat >%{?buildroot}/%{system_reinstall_bootc_install_podman_path} <<EOF
 exec dnf -y install podman
 EOF
 chmod +x %{?buildroot}/%{system_reinstall_bootc_install_podman_path}
+# generate doc file list excluding directories
+touch %{?buildroot}/%{_docdir}/bootc/baseimage/base/sysroot/.keepdir
+find %{?buildroot}/%{_docdir} ! -type d -printf '%{_docdir}/%%P\n' > bootcdoclist.txt
 
 %if %{with check}
 %check
 %cargo_test
 %endif
 
-%files
+%files -f bootcdoclist.txt
 %license LICENSE-MIT
 %license LICENSE-APACHE
 %license LICENSE.dependencies
@@ -140,7 +143,6 @@ chmod +x %{?buildroot}/%{system_reinstall_bootc_install_podman_path}
 %{_prefix}/libexec/libostree/ext/*
 %endif
 %{_unitdir}/*
-%{_docdir}/bootc/*
 %{_mandir}/man*/bootc*
 
 %files -n system-reinstall-bootc
