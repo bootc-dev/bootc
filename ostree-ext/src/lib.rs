@@ -61,6 +61,7 @@ pub(crate) mod ostree_manual;
 
 pub(crate) mod statistics;
 
+mod json;
 mod utils;
 
 #[cfg(feature = "docgen")]
