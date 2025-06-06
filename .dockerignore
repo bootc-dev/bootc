@@ -7,5 +7,7 @@ target
 docs/
 # TMT interprets these, not the container build
 plans/
-# Avoid changes to this blowing out all layer caches
+# These only affect flow outside of the container
+Dockerfile
+Justfile
 hack/Containerfile

@@ -1,35 +1,13 @@
-# Build bootc from the current git into a c9s-bootc container image.
-# Use e.g. --build-arg=base=quay.io/fedora/fedora-bootc:41 to target
-# Fedora instead.
-#
-# You can also generate an image with cloud-init and other dependencies
-# with `--build-arg=tmt` which is intended for use particularly via
-# https://tmt.readthedocs.io/en/stable/
-
-ARG base=quay.io/centos-bootc/centos-bootc:stream9
+# This injects some extra testing stuff into our image
 
 FROM scratch as context
 # We only need this stuff in the initial context
 COPY hack /hack
 COPY contrib /contrib
 
-FROM $base as build
-# This installs our package dependencies, and we want to cache it independently of the rest.
-# Basically we don't want changing a .rs file to blow out the cache of packages.
-RUN --mount=type=bind,from=context,target=/run/context /run/context/hack/build.sh
-# Now copy the rest of the source
-COPY . /build
-WORKDIR /build
-# See https://www.reddit.com/r/rust/comments/126xeyx/exploring_the_problem_of_faster_cargo_docker/
-# We aren't using the full recommendations there, just the simple bits.
-RUN --mount=type=cache,target=/build/target --mount=type=cache,target=/var/roothome \
-    make && make install-all DESTDIR=/out
-
-FROM $base
+FROM localhost/bootc
 # We support e.g. adding cloud-init
 ARG variant=
-# First, create a layer that is our new binaries.
-COPY --from=build /out/ /
 # And this layer has additional stuff for testing, such as nushell etc.
 RUN --mount=type=bind,from=context,target=/run/context <<EORUN
 set -xeuo pipefail
@@ -38,9 +16,6 @@ set -xeuo pipefail
 install -D -t /usr/lib/bootc/kargs.d /run/context/hack/test-kargs/*
 # Also copy in some default install configs we use for testing
 install -D -t /usr/lib/bootc/install/ /run/context/hack/install-test-configs/*
-# Finally only in this containerfile, inject a file which signifies
-# this comes from this development image.
-touch /usr/lib/.bootc-dev-stamp
 # Finally, test our own linting
 bootc container lint --fatal-warnings
 EORUN

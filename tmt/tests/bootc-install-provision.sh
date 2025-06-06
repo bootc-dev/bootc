@@ -1,6 +1,11 @@
 #!/bin/bash
 set -exuo pipefail
 
+# This script basically builds bootc from source using the provided base image,
+# then runs the target tests. We need to do this because at the moment
+# packit/tmt/testing-farm effectively only support RPMs, not container images.
+# https://issues.redhat.com/browse/TFT-2751
+
 BOOTC_TEMPDIR=$(mktemp -d)
 trap 'rm -rf -- "$BOOTC_TEMPDIR"' EXIT
 
@@ -102,11 +107,22 @@ $(cat "$COMMON_CONTAINERFILE")
 REALEOF
     else
         BOOTC_CI_CONTAINERFILE="${BOOTC_TEMPDIR}/bootc_ci_containerfile"
-        tee "$BOOTC_CI_CONTAINERFILE" > /dev/null << BOOTCCIEOF
+        # TODO use the default Dockerfile here instead of a copy of it
+        tee "$BOOTC_CI_CONTAINERFILE" > /dev/null <<'BOOTCCIEOF'
 FROM $TIER1_IMAGE_URL as build
 
 WORKDIR /code
-RUN hack/build.sh
+RUN <<EORUN
+set -xeuo pipefail
+. /usr/lib/os-release
+case $ID in
+  centos|rhel) dnf config-manager --set-enabled crb;;
+  fedora) dnf -y install dnf-utils 'dnf5-command(builddep)';;
+esac
+dnf -y builddep /tmp/bootc.spec
+# Extra dependencies
+dnf -y install git-core
+EORUN
 
 RUN mkdir -p /build/target/dev-rootfs
 RUN --mount=type=cache,target=/build/target --mount=type=cache,target=/var/roothome make test-bin-archive && mkdir -p /out && cp target/bootc.tar.zst /out
@@ -116,16 +132,12 @@ FROM $TIER1_IMAGE_URL
 # Inject our built code
 COPY --from=build /out/bootc.tar.zst /tmp
 RUN tar -C / --zstd -xvf /tmp/bootc.tar.zst && rm -vrf /tmp/*
-# Also copy over arbitrary bits from the target root
-COPY --from=build /build/target/dev-rootfs/ /
-
 BOOTCCIEOF
         cat >"$CONTAINERFILE" <<REALEOF
 $(cat "$BOOTC_CI_CONTAINERFILE")
 $(cat "$COMMON_CONTAINERFILE")
 REALEOF
     fi
-
 
     if [[ -d "/var/ARTIFACTS" ]]; then
         # In Testing Farm, TMT work dir /var/ARTIFACTS should be reserved
