@@ -44,8 +44,10 @@ jobs:
       - centos-stream-10-s390x
       - fedora-41-x86_64
       - fedora-41-aarch64
-      - fedora-41-ppc64le
-      - fedora-41-s390x
+      - fedora-42-x86_64
+      - fedora-42-aarch64
+      - fedora-42-ppc64le
+      - fedora-42-s390x
       # Sanity check on secondary targets, fewer architectures just
       # because the chance that we break e.g. ppc64le *just* on
       # rawhide is basically nil.
@@ -81,7 +83,7 @@ jobs:
       - fedora-rawhide-aarch64
     tmt_plan: /integration
     skip_build: true
-    identifier: integration-test
+    identifier: integration
 
   - job: propose_downstream
     trigger: release

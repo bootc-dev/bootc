@@ -1,0 +1,101 @@
+name: build bootc and bootc image
+
+on:
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm]
+        # os: [ubuntu-latest]
+        # distro: [fedora-41, fedora-42, fedora-r43, centos-stream-9, centos-stream-10]
+        distro: [centos-stream-9]
+    runs-on: ${{ matrix.os }}
+
+    # Required to push container image to ghcr.io
+    # https://github.com/orgs/community/discussions/57724
+    permissions:
+      contents: read
+      packages: write
+      attestations: write
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build bootc RPM
+        env:
+          DISTRO: ${{ matrix.distro }}
+          BUILD_IMAGE: quay.io/fedora/fedora:42
+        run: |
+          podman run \
+            --rm \
+            --privileged \
+            -v $(pwd):/workdir:z \
+            -e DISTRO=$DISTRO \
+            --workdir /workdir \
+            $BUILD_IMAGE \
+            contrib/scripts/mock_build.sh
+
+      - name: Re-build bootc image with new bootc PRM
+        env:
+          DISTRO: ${{ matrix.distro }}
+        run: |
+          set -xeu
+          if [[ $DISTRO =~ fedora ]]; then
+            VERSION_ID=$(cut -d'-' -f2 <<<"$DISTRO")
+            BASE_IMAGE="quay.io/fedora/fedora-bootc:${VERSION_ID}"
+          fi
+          if [[ $DISTRO =~ centos ]]; then
+            VERSION_ID=$(cut -d'-' -f3 <<<"$DISTRO")
+            BASE_IMAGE="quay.io/centos-bootc/centos-bootc:stream${VERSION_ID}"
+          fi
+
+          tee target/build/Containerfile >/dev/null <<CONTAINERFILEEOF
+          FROM $BASE_IMAGE
+          RUN dnf -y upgrade /rpms/*.rpm && dnf -y clean all && rm -rf /var/cache /var/lib/dnf
+          CONTAINERFILEEOF
+          cat target/build/Containerfile
+
+          IMAGE_NAME="bootc-image:${{ github.sha }}-$(uname -m)"
+          IMAGE_TAG="${{ github.sha }}-$(uname -m)"
+          buildah build -v "$(pwd)/target/build/":/rpms:z -t $IMAGE_NAME target/build
+          buildah login -u bootc-dev -p ${{ secrets.GITHUB_TOKEN }} ghcr.io
+          buildah push $IMAGE_NAME "docker://ghcr.io/bootc-dev/${IMAGE_NAME}"
+
+  push:
+    needs: build
+    runs-on: ubuntu-latest
+
+    # Required to push container image to ghcr.io
+    # https://github.com/orgs/community/discussions/57724
+    permissions:
+      contents: read
+      packages: write
+      attestations: write
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Push manifest
+        env:
+          ARCHES: "x86_64 aarch64"
+        run: |
+          set -xeuo pipefail
+          REGISTRY_NAME="ghcr.io/${{ github.event.pull_request.head.repo.full_name }}/bootc-image"
+          buildah login -u ${{ github.actor }} -p ${{ secrets.GITHUB_TOKEN }} ghcr.io
+
+          for arch in $ARCHES; do
+            buildah pull "${REGISTRY_NAME}:${{ github.sha }}-${arch}"
+          done
+
+          buildah manifest create "${REGISTRY_NAME}:${{ github.sha }}" `for arch in ${ARCHES}; do echo "${REGISTRY_NAME}:${{ github.sha }}-${arch};" done`
+
+          for arch in ${ARCHES}; do
+            buildah manifest annotate "${REGISTRY_NAME}:${{ github.sha }}" "${REGISTRY_NAME}:${{ github.sha }}-${arch}" --os linux --arch ${arch}
+          done
+          buildah tag "${REGISTRY_NAME}:${{ github.sha }}"
+          buildah manifest push --all "${REGISTRY_NAME}:${{ github.sha }}" docker://"${REGISTRY_NAME}:${{ github.sha }}"
