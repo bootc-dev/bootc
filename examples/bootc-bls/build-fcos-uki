@@ -1,0 +1,5 @@
+#!/bin/bash
+
+export FROM="quay.io/fedora/fedora-coreos-bls:42.20250901.3.0"
+export TAG="quay.io/fedora/fedora-coreos-uki:42.20250901.3.0"
+exec ./build-bootc-uki

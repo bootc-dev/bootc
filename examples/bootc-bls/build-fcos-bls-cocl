@@ -1,0 +1,8 @@
+#!/bin/bash
+
+export FROM="quay.io/fedora/fedora-coreos:42.20250901.3.0"
+export TAG="quay.io/fedora/fedora-coreos-bls-cocl:42.20250901.3.0"
+# export TAG="quay.io/fedora/fedora-coreos-bls-cocl:42.20250901.3.1"
+export CONTAINERFILE="Containerfile.cocl"
+export EXTRA="extra-cocl"
+exec ./build-bootc-bls

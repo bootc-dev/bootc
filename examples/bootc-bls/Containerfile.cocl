@@ -1,0 +1,87 @@
+ARG BASE
+FROM $BASE
+
+FROM quay.io/afrosi_rh/kbs-client-image:latest as kbc
+FROM quay.io/confidential-clusters/clevis-pin-trustee as clevis
+FROM quay.io/confidential-clusters/ignition:clevis-pin-trustee as ignition
+
+FROM $BASE
+COPY . /
+
+COPY --from=kbc /usr/local/bin/kbs-client /usr/bin/trustee-attester
+COPY --from=clevis /usr/bin/clevis-pin-trustee /usr/bin/clevis-pin-trustee
+COPY --from=clevis /usr/bin/clevis-encrypt-trustee /usr/bin/clevis-encrypt-trustee
+COPY --from=clevis /usr/bin/clevis-decrypt-trustee /usr/bin/clevis-decrypt-trustee
+COPY --from=ignition /usr/bin/ignition /usr/lib/dracut/modules.d/30ignition/ignition
+
+RUN <<EOF
+set -euxo pipefail
+
+# Disable root password for debug/testing/demos
+passwd -d root
+
+if [[ "$(grep -c "VARIANT=\"CoreOS\"" /etc/os-release)" -eq 1 ]]; then
+    # Disable some units that currently don't work for us
+    sed -i 's/enable coreos-warn-invalid-mounts.service//' \
+        /usr/lib/systemd/system-preset/45-fcos.preset
+    sed -i 's/enable coreos-populate-lvmdevices.service//' \
+        /usr/lib/systemd/system-preset/45-coreos-populate-lvmdevices.preset
+    sed -i 's/enable coreos-oci-migration-motd.service//' \
+        /usr/lib/systemd/system-preset/35-oci-migration.preset
+
+    # Fix dependencies
+    sed -i 's|ExecStart=/usr/sbin/coreos-boot-edit|ExecStart=true|' \
+        /usr/lib/dracut/modules.d/35coreos-ignition/coreos-boot-edit.service
+    sed -i 's|ExecStart=/usr/bin/rdcore verify-unique-fs-label --rereadpt boot|ExecStart=true|' \
+        /usr/lib/dracut/modules.d/35coreos-ignition/coreos-ignition-unique-boot.service 
+
+    sed -i 's/ConditionKernelCommandLine=ostree/ConditionKernelCommandLine=composefs/' \
+        /usr/lib/dracut/modules.d/40ignition-ostree/*
+    sed -i 's/After=ostree-prepare-root.service/After=bootc-initramfs-setup.service/' \
+        /usr/lib/dracut/modules.d/40ignition-ostree/*
+    sed -i 's/Requires=ostree-prepare-root.service/Requires=bootc-initramfs-setup.service/' \
+        /usr/lib/dracut/modules.d/40ignition-ostree/*
+
+    sed -i '/Type=oneshot/a ExecStart=bash -c "udevadm settle; sleep 1"' \
+        /usr/lib/dracut/modules.d/40ignition-ostree/ignition-ostree-growfs.service
+
+    sed -i 's|ExecStart=/usr/sbin/ignition-ostree-mount-var mount|ExecStart=true|' \
+        /usr/lib/dracut/modules.d/40ignition-ostree/ignition-ostree-mount-var.service
+    sed -i 's|ExecStop=/usr/sbin/ignition-ostree-mount-var umount|ExecStart=true|' \
+        /usr/lib/dracut/modules.d/40ignition-ostree/ignition-ostree-mount-var.service
+
+    sed -i 's|ExecStart=/usr/sbin/ignition-ostree-firstboot-uuid boot|ExecStart=true|' \
+        /usr/lib/dracut/modules.d/40ignition-ostree/ignition-ostree-uuid-boot.service
+    sed -i 's|ExecStart=/usr/sbin/ignition-ostree-firstboot-uuid root|ExecStart=true|' \
+        /usr/lib/dracut/modules.d/40ignition-ostree/ignition-ostree-uuid-root.service
+
+    sed -i 's/find/find fsverity/' \
+        /usr/lib/dracut/modules.d/40ignition-ostree/module-setup.sh
+
+    sed -i 's|chcon -v --reference "${saved_root}" /sysroot  # the root of the fs itself|chcon -v system_u:object_r:root_t:s0 /sysroot  # the root of the fs itself|' \
+        /usr/lib/dracut/modules.d/40ignition-ostree/ignition-ostree-transposefs.sh
+    sed -i '/chattr +i/d' \
+        /usr/lib/dracut/modules.d/40ignition-ostree/ignition-ostree-transposefs.sh
+    sed -i '/chcon -v system_u:object_r:root_t:s0 \/sysroot  # the root of the fs itself/a echo "Enabling fs-verity again..."' \
+        /usr/lib/dracut/modules.d/40ignition-ostree/ignition-ostree-transposefs.sh
+    sed -i '/echo "Enabling fs-verity again..."/a find /sysroot/composefs/objects -type f -exec fsverity enable {} \\;' \
+        /usr/lib/dracut/modules.d/40ignition-ostree/ignition-ostree-transposefs.sh
+
+    # We don't want openh264
+    rm -f '/etc/yum.repos.d/fedora-cisco-openh264.repo'
+
+    # Install fsverity utils to re-enable fsverity on repo objects after
+    # transposefs step when reprovisionning the root disk
+    dnf install -y fsverity-utils
+    dnf clean all
+fi
+
+# Rebuild the initramfs to get bootc-initramfs-setup & our other dracut modules
+kver=$(cd /usr/lib/modules && echo *)
+dracut -vf --install "/etc/passwd /etc/group" /usr/lib/modules/$kver/initramfs.img $kver
+
+bootc container lint
+EOF
+
+# RUN sed -i "s/42.20250901.3.0/42.20250901.3.1/g" /usr/lib/os-release
+# LABEL org.opencontainers.image.version=42.20250901.3.0
