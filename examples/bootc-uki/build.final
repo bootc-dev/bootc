@@ -1,0 +1,52 @@
+#!/bin/bash
+
+set -eux
+
+cd "${0%/*}"
+
+cargo build --release --features=pre-6.15 --bin cfsctl --bin composefs-setup-root
+
+cp ../../target/release/cfsctl .
+
+rm -rf tmp/sysroot
+mkdir -p tmp/sysroot/composefs
+
+IMAGE_ID="$(sed s/sha256:// tmp/iid)"
+./cfsctl --repo tmp/sysroot/composefs oci pull containers-storage:"${IMAGE_ID}"
+COMPOSEFS_FSVERITY="$(./cfsctl --repo tmp/sysroot/composefs oci compute-id --bootable "${IMAGE_ID}")"
+
+sudo podman build \
+    -t quay.io/fedora/fedora-bootc-uki:42 \
+    --build-arg=COMPOSEFS_FSVERITY="${COMPOSEFS_FSVERITY}" \
+    -f Containerfile.stage2 \
+    --iidfile=tmp/iid2
+
+rm -rf tmp/efi
+mkdir -p tmp/efi
+./cfsctl --repo tmp/sysroot/composefs oci pull containers-storage:"${IMAGE_ID}"
+./cfsctl --repo tmp/sysroot/composefs oci compute-id --bootable "${IMAGE_ID}"
+./cfsctl --repo tmp/sysroot/composefs oci prepare-boot "${IMAGE_ID}" --bootdir tmp/efi
+
+# For debugging, add --no-cache to podman command
+# mkdir tmp/internal-sysroot
+# # podman build \
+#     --iidfile=tmp/iid \
+#     -v "${PWD}/tmp/internal-sysroot:/tmp/sysroot:z,U" \
+#     --secret=id=key,src=secureboot/db.key \
+#     --secret=id=cert,src=secureboot/db.crt \
+
+# See: https://wiki.archlinux.org/title/Unified_Extensible_Firmware_Interface/Secure_Boot
+# Alternative to generate keys for testing: `sbctl create-keys`
+# if [[ ! -d "secureboot" ]]; then
+#     echo "Generating test Secure Boot keys"
+#     mkdir secureboot
+#     pushd secureboot > /dev/null
+#     uuidgen --random > GUID.txt
+#     openssl req -newkey rsa:4096 -nodes -keyout PK.key -new -x509 -sha256 -days 3650 -subj "/CN=Test Platform Key/" -out PK.crt
+#     openssl x509 -outform DER -in PK.crt -out PK.cer
+#     openssl req -newkey rsa:4096 -nodes -keyout KEK.key -new -x509 -sha256 -days 3650 -subj "/CN=Test Key Exchange Key/" -out KEK.crt
+#     openssl x509 -outform DER -in KEK.crt -out KEK.cer
+#     openssl req -newkey rsa:4096 -nodes -keyout db.key -new -x509 -sha256 -days 3650 -subj "/CN=Test Signature Database key/" -out db.crt
+#     openssl x509 -outform DER -in db.crt -out db.cer
+#     popd > /dev/null
+# fi
