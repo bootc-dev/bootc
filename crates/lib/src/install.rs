@@ -46,7 +46,7 @@ use ostree_ext::composefs::{
     util::Sha256Digest,
 };
 use ostree_ext::composefs_boot::{
-    write_boot::write_boot_simple as composefs_write_boot_simple, BootOps,
+    bootloader::BootEntry, write_boot::write_boot_simple as composefs_write_boot_simple, BootOps,
 };
 use ostree_ext::composefs_oci::{
     image::create_filesystem as create_composefs_filesystem, pull as composefs_oci_pull,
@@ -241,7 +241,8 @@ pub(crate) enum BootType {
 }
 
 #[derive(Debug, Clone, clap::Parser, Serialize, Deserialize, PartialEq, Eq)]
-pub(crate) struct InstallComposefsOptions {
+pub(crate) struct InstallComposefsOpts {
+    #[clap(long, value_enum, default_value_t)]
     pub(crate) boot: BootType,
 }
 
@@ -270,10 +271,10 @@ pub(crate) struct InstallToDiskOpts {
     pub(crate) via_loopback: bool,
 
     #[clap(long)]
-    pub(crate) composefs_experimental: bool,
+    pub(crate) composefs_native: bool,
 
     #[clap(flatten)]
-    pub(crate) composefs_opts: InstallComposefsOptions,
+    pub(crate) composefs_opts: InstallComposefsOpts,
 }
 
 #[derive(ValueEnum, Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -414,6 +415,9 @@ pub(crate) struct State {
     /// The root filesystem of the running container
     pub(crate) container_root: Dir,
     pub(crate) tempdir: TempDir,
+
+    // If Some, then --composefs_native is passed
+    pub(crate) composefs_options: Option<InstallComposefsOpts>,
 }
 
 impl State {
@@ -557,7 +561,7 @@ impl FromStr for MountSpec {
 
 impl InstallToDiskOpts {
     pub(crate) fn validate(&self) {
-        if !self.composefs_experimental {
+        if !self.composefs_native {
             // Reject using --boot without --composefs
             if self.composefs_opts.boot != BootType::default() {
                 panic!("--boot must not be provided without --composefs");
@@ -1218,6 +1222,7 @@ async fn prepare_install(
     config_opts: InstallConfigOpts,
     source_opts: InstallSourceOpts,
     target_opts: InstallTargetOpts,
+    composefs_opts: Option<InstallComposefsOpts>,
 ) -> Result<Arc<State>> {
     tracing::trace!("Preparing install");
     let rootfs = cap_std::fs::Dir::open_ambient_dir("/", cap_std::ambient_authority())
@@ -1362,6 +1367,7 @@ async fn prepare_install(
         container_root: rootfs,
         tempdir,
         host_is_container,
+        composefs_options: composefs_opts,
     });
 
     Ok(state)
@@ -1485,6 +1491,84 @@ async fn initialize_composefs_repository(
     composefs_oci_pull(&Arc::new(repo), &format!("{transport}{name}",), None).await
 }
 
+#[context("Setting up BLS boot")]
+fn setup_composefs_bls_boot(
+    root_setup: &RootSetup,
+    // TODO: Make this generic
+    repo: ComposefsRepository<Sha256HashValue>,
+    id: &Sha256HashValue,
+    entry: BootEntry<Sha256HashValue>,
+) -> Result<()> {
+    let rootfs_uuid = match &root_setup.rootfs_uuid {
+        Some(u) => u,
+        None => anyhow::bail!("Expected rootfs to have a UUID by now"),
+    };
+
+    let cmdline_refs = [
+        "console=ttyS0,115200",
+        &format!("root=UUID={rootfs_uuid}"),
+        "rw",
+    ];
+
+    composefs_write_boot_simple(
+        &repo,
+        entry,
+        &id,
+        root_setup.physical_root_path.as_std_path(), // /run/mounts/bootc/boot
+        Some("boot"),
+        Some(&format!("{}", id.to_hex())),
+        &cmdline_refs,
+    )?;
+
+    Ok(())
+}
+
+#[context("Setting up UKI boot")]
+fn setup_composefs_uki_boot(
+    root_setup: &RootSetup,
+    // TODO: Make this generic
+    repo: ComposefsRepository<Sha256HashValue>,
+    id: &Sha256HashValue,
+    entry: BootEntry<Sha256HashValue>,
+) -> Result<()> {
+    let rootfs_uuid = match &root_setup.rootfs_uuid {
+        Some(u) => u,
+        None => anyhow::bail!("Expected rootfs to have a UUID by now"),
+    };
+
+    let boot_dir = root_setup.physical_root_path.join("boot");
+    create_dir_all(&boot_dir).context("Failed to create boot dir")?;
+
+    composefs_write_boot_simple(
+        &repo,
+        entry,
+        &id,
+        boot_dir.as_std_path(),
+        None,
+        Some(&format!("{}", id.to_hex())),
+        &[],
+    )?;
+
+    // Add the user grug cfg
+    // TODO: We don't need this for BLS. Have a flag for BLS vs UKI, or maybe we can figure it out
+    // via the boot entries above
+    let grub_user_config = format!(
+        r#"
+menuentry "Fedora Bootc UKI" {{
+    insmod fat
+    insmod chain
+    search --no-floppy --set=root --fs-uuid {rootfs_uuid}
+    chainloader /boot/EFI/Linux/{uki_id}.efi
+}}
+"#, uki_id=id.to_hex()
+    );
+
+    std::fs::write(boot_dir.join("grub2/user.cfg"), grub_user_config)
+        .context("Failed to write grub2/user.cfg")?;
+
+    Ok(())
+}
+
 #[context("Setting up composefs boot")]
 fn setup_composefs_boot(root_setup: &RootSetup, state: &State, image_id: &str) -> Result<()> {
     let boot_uuid = root_setup
@@ -1516,46 +1600,14 @@ fn setup_composefs_boot(root_setup: &RootSetup, state: &State, image_id: &str) -
         anyhow::bail!("No boot entries!");
     };
 
-    let rootfs_uuid = match &root_setup.rootfs_uuid {
-        Some(u) => u,
-        None => anyhow::bail!("Expected rootfs to have a UUID by now"),
+    let Some(composefs_opts) = &state.composefs_options else {
+        anyhow::bail!("Could not find options for composefs")
     };
 
-    let cmdline_refs = [
-        "console=ttyS0,115200",
-        &format!("root=UUID={rootfs_uuid}"),
-        "rw",
-    ];
-
-    let boot_dir = root_setup.physical_root_path.join("boot");
-    create_dir_all(&boot_dir).context("Failed to create boot dir")?;
-
-    composefs_write_boot_simple(
-        &repo,
-        entry,
-        &id,
-        boot_dir.as_std_path(),
-        Some(&format!("{}", id.to_hex())),
-        Some("/boot"),
-        &cmdline_refs,
-    )?;
-
-    // Add the user grug cfg
-    // TODO: We don't need this for BLS. Have a flag for BLS vs UKI, or maybe we can figure it out
-    // via the boot entries above
-    let grub_user_config = format!(
-        r#"
-menuentry "Some Fedora" {{
-    insmod fat
-    insmod chain
-    search --no-floppy --set=root --fs-uuid {rootfs_uuid}
-    chainloader /boot/EFI/Linux/uki.efi
-}}
-"#
-    );
-
-    std::fs::write(boot_dir.join("grub2/user.cfg"), grub_user_config)
-        .context("Failed to write grub2/user.cfg")?;
+    match composefs_opts.boot {
+        BootType::Bls => setup_composefs_bls_boot(root_setup, repo, &id, entry)?,
+        BootType::Uki => setup_composefs_uki_boot(root_setup, repo, &id, entry)?,
+    };
 
     let state_path = root_setup
         .physical_root_path
@@ -1572,7 +1624,6 @@ async fn install_to_filesystem_impl(
     state: &State,
     rootfs: &mut RootSetup,
     cleanup: Cleanup,
-    composefs: bool,
 ) -> Result<()> {
     if matches!(state.selinux_state, SELinuxFinalState::ForceTargetDisabled) {
         rootfs.kargs.push("selinux=0".to_string());
@@ -1601,7 +1652,7 @@ async fn install_to_filesystem_impl(
 
     let bound_images = BoundImages::from_state(state).await?;
 
-    if composefs {
+    if state.composefs_options.is_some() {
         // Load a fd for the mounted target physical root
         let (id, verity) = initialize_composefs_repository(state, rootfs).await?;
 
@@ -1685,7 +1736,17 @@ pub(crate) async fn install_to_disk(mut opts: InstallToDiskOpts) -> Result<()> {
     } else if !target_blockdev_meta.file_type().is_block_device() {
         anyhow::bail!("Not a block device: {}", block_opts.device);
     }
-    let state = prepare_install(opts.config_opts, opts.source_opts, opts.target_opts).await?;
+    let state = prepare_install(
+        opts.config_opts,
+        opts.source_opts,
+        opts.target_opts,
+        if opts.composefs_native {
+            Some(opts.composefs_opts)
+        } else {
+            None
+        },
+    )
+    .await?;
 
     // This is all blocking stuff
     let (mut rootfs, loopback) = {
@@ -1706,7 +1767,7 @@ pub(crate) async fn install_to_disk(mut opts: InstallToDiskOpts) -> Result<()> {
         (rootfs, loopback_dev)
     };
 
-    install_to_filesystem_impl(&state, &mut rootfs, Cleanup::Skip, opts.composefs_experimental).await?;
+    install_to_filesystem_impl(&state, &mut rootfs, Cleanup::Skip).await?;
 
     // Drop all data about the root except the bits we need to ensure any file descriptors etc. are closed.
     let (root_path, luksdev) = rootfs.into_storage();
@@ -1893,7 +1954,7 @@ pub(crate) async fn install_to_filesystem(
     // IMPORTANT: and hence anything that is done before MUST BE IDEMPOTENT.
     // IMPORTANT: In practice, we should only be gathering information before this point,
     // IMPORTANT: and not performing any mutations at all.
-    let state = prepare_install(opts.config_opts, opts.source_opts, opts.target_opts).await?;
+    let state = prepare_install(opts.config_opts, opts.source_opts, opts.target_opts, None).await?;
     // And the last bit of state here is the fsopts, which we also destructure now.
     let mut fsopts = opts.filesystem_opts;
 
@@ -2092,7 +2153,7 @@ pub(crate) async fn install_to_filesystem(
         skip_finalize,
     };
 
-    install_to_filesystem_impl(&state, &mut rootfs, cleanup, false).await?;
+    install_to_filesystem_impl(&state, &mut rootfs, cleanup).await?;
 
     // Drop all data about the root except the path to ensure any file descriptors etc. are closed.
     drop(rootfs);
