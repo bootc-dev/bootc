@@ -233,6 +233,18 @@ pub(crate) struct InstallConfigOpts {
     pub(crate) stateroot: Option<String>,
 }
 
+#[derive(ValueEnum, Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub(crate) enum BootType {
+    #[default]
+    Bls,
+    Uki,
+}
+
+#[derive(Debug, Clone, clap::Parser, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct InstallComposefsOptions {
+    pub(crate) boot: BootType,
+}
+
 #[cfg(feature = "install-to-disk")]
 #[derive(Debug, Clone, clap::Parser, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct InstallToDiskOpts {
@@ -258,7 +270,10 @@ pub(crate) struct InstallToDiskOpts {
     pub(crate) via_loopback: bool,
 
     #[clap(long)]
-    pub(crate) composefs: bool,
+    pub(crate) composefs_experimental: bool,
+
+    #[clap(flatten)]
+    pub(crate) composefs_opts: InstallComposefsOptions,
 }
 
 #[derive(ValueEnum, Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -537,6 +552,17 @@ impl FromStr for MountSpec {
             target: target.to_string(),
             options,
         })
+    }
+}
+
+impl InstallToDiskOpts {
+    pub(crate) fn validate(&self) {
+        if !self.composefs_experimental {
+            // Reject using --boot without --composefs
+            if self.composefs_opts.boot != BootType::default() {
+                panic!("--boot must not be provided without --composefs");
+            }
+        }
     }
 }
 
@@ -1636,6 +1662,8 @@ fn installation_complete() {
 #[context("Installing to disk")]
 #[cfg(feature = "install-to-disk")]
 pub(crate) async fn install_to_disk(mut opts: InstallToDiskOpts) -> Result<()> {
+    opts.validate();
+
     let mut block_opts = opts.block_opts;
     let target_blockdev_meta = block_opts
         .device
@@ -1678,7 +1706,7 @@ pub(crate) async fn install_to_disk(mut opts: InstallToDiskOpts) -> Result<()> {
         (rootfs, loopback_dev)
     };
 
-    install_to_filesystem_impl(&state, &mut rootfs, Cleanup::Skip, opts.composefs).await?;
+    install_to_filesystem_impl(&state, &mut rootfs, Cleanup::Skip, opts.composefs_experimental).await?;
 
     // Drop all data about the root except the bits we need to ensure any file descriptors etc. are closed.
     let (root_path, luksdev) = rootfs.into_storage();
