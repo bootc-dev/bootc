@@ -1485,10 +1485,13 @@ async fn initialize_composefs_repository(
 
     let repo = open_composefs_repo(rootfs_dir)?;
 
-    let OstreeExtImgRef { transport, name } = &state.target_imgref.imgref;
+    let OstreeExtImgRef {
+        name: image_name,
+        transport,
+    } = &state.source.imageref;
 
     // transport's display is already of type "<transport_type>:"
-    composefs_oci_pull(&Arc::new(repo), &format!("{transport}{name}",), None).await
+    composefs_oci_pull(&Arc::new(repo), &format!("{transport}{image_name}",), None).await
 }
 
 #[context("Setting up BLS boot")]
@@ -1560,7 +1563,8 @@ menuentry "Fedora Bootc UKI" {{
     search --no-floppy --set=root --fs-uuid {rootfs_uuid}
     chainloader /boot/EFI/Linux/{uki_id}.efi
 }}
-"#, uki_id=id.to_hex()
+"#,
+        uki_id = id.to_hex()
     );
 
     std::fs::write(boot_dir.join("grub2/user.cfg"), grub_user_config)
