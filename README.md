@@ -44,6 +44,7 @@ start by looking at [ADOPTERS.md](ADOPTERS.md).
 
 - [Github discussion forum](https://github.com/containers/bootc/discussions) for async discussion
 - [#bootc-dev on CNCF Slack](https://cloud-native.slack.com/archives/C08SKSQKG1L) for live chat
+- Recurring [Jitsi live meeting](https://meet.jit.si/YourOperatingSystemIsAContainer) each Friday at 11:30 EDT/ 15:30 UTC.  (Currently ambiguous what happens during daylight saving time switch, if in doubt ask in Slack!)
 
 This project is also tightly related to the previously mentioned Fedora/CentOS bootc project,
 and many developers monitor the relevant discussion forums there. In particular there's a
