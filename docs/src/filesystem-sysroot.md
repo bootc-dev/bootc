@@ -57,7 +57,7 @@ storage stack, from basic partitions to LVM.  However, a
 common tool is the [growpart](https://manpages.debian.org/testing/cloud-guest-utils/growpart.1.en.html)
 utility from `cloud-init`.
 
-### Growing the filesytem
+### Growing the filesystem
 
 The systemd project ships a [systemd-growfs](https://www.freedesktop.org/software/systemd/man/latest/systemd-growfs.html#)
 tool and corresponding `systemd-growfs@` services.  This is

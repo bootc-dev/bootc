@@ -99,7 +99,7 @@ have `/etc` exist and be useful!  Writing files there, whether from `vi`
 or config management tooling must continue to work.  Both bootc and systemd "particle"
 systems should still Feel Like Unix - in contrast to e.g. Android.
 
-At the current time, this is implemeted in ostree; as bootc moves
+At the current time, this is implemented in ostree; as bootc moves
 towards stronger integration with podman, it is likely that this logic
 will simply be moved into bootc instead on top of podman.
 Alternatively perhaps, podman itself may grow some support for
