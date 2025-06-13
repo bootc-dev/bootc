@@ -18,8 +18,8 @@ clap = { workspace = true, features = ["derive","cargo"] }
 fn-error-context = { workspace = true }
 indoc = { workspace = true }
 libtest-mimic = "0.8.0"
-oci-spec = "0.7.0"
-rexpect = "0.5"
+oci-spec = "0.8.0"
+rexpect = "0.6"
 rustix = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
