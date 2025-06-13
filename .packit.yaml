@@ -44,8 +44,10 @@ jobs:
       - centos-stream-10-s390x
       - fedora-41-x86_64
       - fedora-41-aarch64
-      - fedora-41-ppc64le
-      - fedora-41-s390x
+      - fedora-42-x86_64
+      - fedora-42-aarch64
+      - fedora-42-ppc64le
+      - fedora-42-s390x
       # Sanity check on secondary targets, fewer architectures just
       # because the chance that we break e.g. ppc64le *just* on
       # rawhide is basically nil.
@@ -81,7 +83,32 @@ jobs:
       - fedora-rawhide-aarch64
     tmt_plan: /integration
     skip_build: true
-    identifier: integration-test
+    identifier: integration
+
+  - job: tests
+    trigger: pull_request
+    fmf_url: https://gitlab.com/xiaofwan/bootc-workflow-test.git
+    fmf_ref: for_bootc
+    targets:
+      - centos-stream-9-x86_64
+      - centos-stream-9-aarch64
+      - centos-stream-10-x86_64
+      - centos-stream-10-aarch64
+      - fedora-41-x86_64
+      - fedora-41-aarch64
+      - fedora-42-x86_64
+      - fedora-42-aarch64
+      - fedora-rawhide-x86_64
+      - fedora-rawhide-aarch64
+    tf_extra_params:
+      environments:
+        - variables:
+            TIER1_IMAGE_URL: localhost/bootc:e2e
+            BOOTC_TEMPDIR: /tmp/tmp.bib_test
+      test:
+        tmt:
+          plan_filter: "tag: bootc-e2e"
+    identifier: e2e
 
   - job: propose_downstream
     trigger: release
