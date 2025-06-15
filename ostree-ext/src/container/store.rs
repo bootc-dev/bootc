@@ -8,6 +8,7 @@
 use super::*;
 use crate::chunking::{self, Chunk};
 use crate::container::Decompressor;
+use crate::json::JsonOrderedSerialize;
 use crate::logging::system_repo_journal_print;
 use crate::refescape;
 use crate::sysroot::SysrootLock;
@@ -28,7 +29,7 @@ use oci_spec::image::{
 };
 use ostree::prelude::{Cast, FileEnumeratorExt, FileExt, ToVariant};
 use ostree::{gio, glib};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::iter::FromIterator;
 use std::num::NonZeroUsize;
@@ -59,7 +60,7 @@ const META_CONFIG: &str = "ostree.container.image-config";
 /// Value of type `a{sa{su}}` containing number of filtered out files
 pub const META_FILTERED: &str = "ostree.tar-filtered";
 /// The type used to store content filtering information with `META_FILTERED`.
-pub type MetaFilteredData = HashMap<String, HashMap<String, u32>>;
+pub type MetaFilteredData = BTreeMap<String, BTreeMap<String, u32>>;
 
 /// The ref prefixes which point to ostree deployments.  (TODO: Add an official API for this)
 const OSTREE_BASE_DEPLOYMENT_REFS: &[&str] = &["ostree/0", "ostree/1"];
@@ -595,9 +596,13 @@ impl ImageImporter {
             Self::CACHED_KEY_MANIFEST_DIGEST,
             manifest_digest.to_string(),
         );
-        let cached_manifest = serde_json::to_string(manifest).context("Serializing manifest")?;
+        let cached_manifest = manifest
+            .to_json_ordered_string()
+            .context("Serializing manifest")?;
         commitmeta.insert(Self::CACHED_KEY_MANIFEST, cached_manifest);
-        let cached_config = serde_json::to_string(config).context("Serializing config")?;
+        let cached_config = config
+            .to_json_ordered_string()
+            .context("Serializing config")?;
         commitmeta.insert(Self::CACHED_KEY_CONFIG, cached_config);
         let commitmeta = commitmeta.to_variant();
         // Clone these to move into blocking method
@@ -921,7 +926,7 @@ impl ImageImporter {
         let ostree_ref = ref_for_image(&target_imgref.imgref)?;
 
         let mut layer_commits = Vec::new();
-        let mut layer_filtered_content: MetaFilteredData = HashMap::new();
+        let mut layer_filtered_content: MetaFilteredData = BTreeMap::new();
         let have_derived_layers = !import.layers.is_empty();
         tracing::debug!("Processing layers: {}", import.layers.len());
         for layer in import.layers {
@@ -963,7 +968,7 @@ impl ImageImporter {
                     .with_context(|| format!("Parsing layer blob {}", layer.layer.digest()))?;
                 tracing::debug!("Imported layer: {}", r.commit.as_str());
                 layer_commits.push(r.commit);
-                let filtered_owned = HashMap::from_iter(r.filtered.clone());
+                let filtered_owned = BTreeMap::from_iter(r.filtered.clone());
                 if let Some((filtered, n_rest)) = bootc_utils::collect_until(
                     r.filtered.iter(),
                     const { NonZeroUsize::new(5).unwrap() },
@@ -999,9 +1004,9 @@ impl ImageImporter {
         let _ = self.layer_byte_progress.take();
         let _ = self.layer_progress.take();
 
-        let serialized_manifest = serde_json::to_string(&import.manifest)?;
-        let serialized_config = serde_json::to_string(&import.config)?;
-        let mut metadata = HashMap::new();
+        let serialized_manifest = import.manifest.to_json_ordered_string()?;
+        let serialized_config = import.config.to_json_ordered_string()?;
+        let mut metadata = BTreeMap::new();
         metadata.insert(
             META_MANIFEST_DIGEST,
             import.manifest_digest.to_string().to_variant(),
