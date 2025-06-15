@@ -135,7 +135,7 @@ is generic support for `/etc`.
 
 Some software supports generic configuration both `/usr` and `/etc` - systemd,
 among others.  Because bootc supports *derivation* (the way OCI
-containers work) - it is supported and encourged to put configuration
+containers work) - it is supported and encouraged to put configuration
 files in `/usr` (instead of `/etc`) where possible, because then
 the state is consistently immutable.
 

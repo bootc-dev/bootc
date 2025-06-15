@@ -230,7 +230,7 @@ However in contrast, the cockpit project allocates
 [a floating cockpit-ws user](https://gitlab.com/redhat/centos-stream/rpms/cockpit/-/blob/1909236ad28c7d93238b8b3b806ecf9c4feb7e46/cockpit.spec#L506).
 
 This means that each container image build (without additional work, unlike the
-example at the begining of this section),may (due to RPM installation 
+example at the beginning of this section),may (due to RPM installation 
 ordering or other reasons) result in the uid changing.
 
 This can be a problem if that user maintains persistent state.
