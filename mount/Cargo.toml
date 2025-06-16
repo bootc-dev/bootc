@@ -19,7 +19,7 @@ serde = { workspace = true, features = ["derive"] }
 tracing = { workspace = true }
 
 [dev-dependencies]
-indoc = "2.0.5"
+indoc = "=2.0.5"
 
 [lib]
 path = "src/mount.rs"
