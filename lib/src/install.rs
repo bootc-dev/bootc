@@ -14,6 +14,7 @@ mod osbuild;
 pub(crate) mod osconfig;
 
 use std::collections::HashMap;
+use std::fs::create_dir_all;
 use std::io::Write;
 use std::os::fd::{AsFd, AsRawFd};
 use std::os::unix::process::CommandExt;
@@ -38,12 +39,25 @@ use chrono::prelude::*;
 use clap::ValueEnum;
 use fn_error_context::context;
 use ostree::gio;
+use ostree_ext::composefs::{
+    fsverity::{FsVerityHashValue, Sha256HashValue},
+    repository::Repository as ComposefsRepository,
+    util::Sha256Digest,
+};
+use ostree_ext::composefs_boot::{
+    bootloader::BootEntry, write_boot::write_boot_simple as composefs_write_boot_simple, BootOps,
+};
+use ostree_ext::composefs_oci::{
+    image::create_filesystem as create_composefs_filesystem, pull as composefs_oci_pull,
+};
 use ostree_ext::oci_spec;
 use ostree_ext::ostree;
 use ostree_ext::ostree_prepareroot::{ComposefsState, Tristate};
 use ostree_ext::prelude::Cast;
 use ostree_ext::sysroot::SysrootLock;
-use ostree_ext::{container as ostree_container, ostree_prepareroot};
+use ostree_ext::{
+    container as ostree_container, container::ImageReference as OstreeExtImgRef, ostree_prepareroot,
+};
 #[cfg(feature = "install-to-disk")]
 use rustix::fs::FileTypeExt;
 use rustix::fs::MetadataExt as _;
@@ -218,6 +232,19 @@ pub(crate) struct InstallConfigOpts {
     pub(crate) stateroot: Option<String>,
 }
 
+#[derive(ValueEnum, Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub(crate) enum BootType {
+    #[default]
+    Bls,
+    Uki,
+}
+
+#[derive(Debug, Clone, clap::Parser, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct InstallComposefsOpts {
+    #[clap(long, value_enum, default_value_t)]
+    pub(crate) boot: BootType,
+}
+
 #[cfg(feature = "install-to-disk")]
 #[derive(Debug, Clone, clap::Parser, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct InstallToDiskOpts {
@@ -241,6 +268,12 @@ pub(crate) struct InstallToDiskOpts {
     #[clap(long)]
     #[serde(default)]
     pub(crate) via_loopback: bool,
+
+    #[clap(long)]
+    pub(crate) composefs_native: bool,
+
+    #[clap(flatten)]
+    pub(crate) composefs_opts: InstallComposefsOpts,
 }
 
 #[derive(ValueEnum, Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -363,6 +396,7 @@ pub(crate) struct SourceInfo {
 }
 
 // Shared read-only global state
+#[derive(Debug)]
 pub(crate) struct State {
     pub(crate) source: SourceInfo,
     /// Force SELinux off in target system
@@ -380,6 +414,9 @@ pub(crate) struct State {
     /// The root filesystem of the running container
     pub(crate) container_root: Dir,
     pub(crate) tempdir: TempDir,
+
+    // If Some, then --composefs_native is passed
+    pub(crate) composefs_options: Option<InstallComposefsOpts>,
 }
 
 impl State {
@@ -518,6 +555,19 @@ impl FromStr for MountSpec {
             target: target.to_string(),
             options,
         })
+    }
+}
+
+impl InstallToDiskOpts {
+    pub(crate) fn validate(&self) -> Result<()> {
+        if !self.composefs_native {
+            // Reject using --boot without --composefs
+            if self.composefs_opts.boot != BootType::default() {
+                anyhow::bail!("--boot must not be provided without --composefs");
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -1180,6 +1230,7 @@ async fn prepare_install(
     config_opts: InstallConfigOpts,
     source_opts: InstallSourceOpts,
     target_opts: InstallTargetOpts,
+    composefs_opts: Option<InstallComposefsOpts>,
 ) -> Result<Arc<State>> {
     tracing::trace!("Preparing install");
     let rootfs = cap_std::fs::Dir::open_ambient_dir("/", cap_std::ambient_authority())
@@ -1324,6 +1375,7 @@ async fn prepare_install(
         container_root: rootfs,
         tempdir,
         host_is_container,
+        composefs_options: composefs_opts,
     });
 
     Ok(state)
@@ -1423,6 +1475,164 @@ impl BoundImages {
     }
 }
 
+fn open_composefs_repo(rootfs_dir: &Dir) -> Result<ComposefsRepository<Sha256HashValue>> {
+    ComposefsRepository::open_path(rootfs_dir, "composefs")
+        .context("Failed to open composefs repository")
+}
+
+async fn initialize_composefs_repository(
+    state: &State,
+    root_setup: &RootSetup,
+) -> Result<(Sha256Digest, impl FsVerityHashValue)> {
+    let rootfs_dir = &root_setup.physical_root;
+
+    rootfs_dir
+        .create_dir_all("composefs")
+        .context("Creating dir 'composefs'")?;
+
+    tracing::warn!("STATE: {state:#?}");
+
+    let repo = open_composefs_repo(rootfs_dir)?;
+
+    let OstreeExtImgRef {
+        name: image_name,
+        transport,
+    } = &state.source.imageref;
+
+    // transport's display is already of type "<transport_type>:"
+    composefs_oci_pull(&Arc::new(repo), &format!("{transport}{image_name}",), None).await
+}
+
+#[context("Setting up BLS boot")]
+fn setup_composefs_bls_boot(
+    root_setup: &RootSetup,
+    // TODO: Make this generic
+    repo: ComposefsRepository<Sha256HashValue>,
+    id: &Sha256HashValue,
+    entry: BootEntry<Sha256HashValue>,
+) -> Result<()> {
+    let rootfs_uuid = match &root_setup.rootfs_uuid {
+        Some(u) => u,
+        None => anyhow::bail!("Expected rootfs to have a UUID by now"),
+    };
+
+    let cmdline_refs = [
+        "console=ttyS0,115200",
+        &format!("root=UUID={rootfs_uuid}"),
+        "rw",
+    ];
+
+    composefs_write_boot_simple(
+        &repo,
+        entry,
+        &id,
+        root_setup.physical_root_path.as_std_path(), // /run/mounts/bootc/boot
+        Some("boot"),
+        Some(&format!("{}", id.to_hex())),
+        &cmdline_refs,
+    )?;
+
+    Ok(())
+}
+
+#[context("Setting up UKI boot")]
+fn setup_composefs_uki_boot(
+    root_setup: &RootSetup,
+    // TODO: Make this generic
+    repo: ComposefsRepository<Sha256HashValue>,
+    id: &Sha256HashValue,
+    entry: BootEntry<Sha256HashValue>,
+) -> Result<()> {
+    let rootfs_uuid = match &root_setup.rootfs_uuid {
+        Some(u) => u,
+        None => anyhow::bail!("Expected rootfs to have a UUID by now"),
+    };
+
+    let boot_dir = root_setup.physical_root_path.join("boot");
+    create_dir_all(&boot_dir).context("Failed to create boot dir")?;
+
+    composefs_write_boot_simple(
+        &repo,
+        entry,
+        &id,
+        boot_dir.as_std_path(),
+        None,
+        Some(&format!("{}", id.to_hex())),
+        &[],
+    )?;
+
+    // Add the user grug cfg
+    // TODO: We don't need this for BLS. Have a flag for BLS vs UKI, or maybe we can figure it out
+    // via the boot entries above
+    let grub_user_config = format!(
+        r#"
+menuentry "Fedora Bootc UKI" {{
+    insmod fat
+    insmod chain
+    search --no-floppy --set=root --fs-uuid {rootfs_uuid}
+    chainloader /boot/EFI/Linux/{uki_id}.efi
+}}
+"#,
+        uki_id = id.to_hex()
+    );
+
+    std::fs::write(boot_dir.join("grub2/user.cfg"), grub_user_config)
+        .context("Failed to write grub2/user.cfg")?;
+
+    Ok(())
+}
+
+#[context("Setting up composefs boot")]
+fn setup_composefs_boot(root_setup: &RootSetup, state: &State, image_id: &str) -> Result<()> {
+    let boot_uuid = root_setup
+        .get_boot_uuid()?
+        .or(root_setup.rootfs_uuid.as_deref())
+        .ok_or_else(|| anyhow!("No uuid for boot/root"))?;
+
+    if cfg!(target_arch = "s390x") {
+        // TODO: Integrate s390x support into install_via_bootupd
+        crate::bootloader::install_via_zipl(&root_setup.device_info, boot_uuid)?;
+    } else {
+        crate::bootloader::install_via_bootupd(
+            &root_setup.device_info,
+            &root_setup.physical_root_path,
+            &state.config_opts,
+        )?;
+    }
+
+    let repo = open_composefs_repo(&root_setup.physical_root)?;
+
+    let mut fs = create_composefs_filesystem(&repo, image_id, None)?;
+
+    let entries = fs.transform_for_boot(&repo)?;
+    let id = fs.commit_image(&repo, None)?;
+
+    println!("{entries:#?}");
+
+    let Some(entry) = entries.into_iter().next() else {
+        anyhow::bail!("No boot entries!");
+    };
+
+    let Some(composefs_opts) = &state.composefs_options else {
+        anyhow::bail!("Could not find options for composefs")
+    };
+
+    match composefs_opts.boot {
+        BootType::Bls => setup_composefs_bls_boot(root_setup, repo, &id, entry)?,
+        BootType::Uki => setup_composefs_uki_boot(root_setup, repo, &id, entry)?,
+    };
+
+    let state_path = root_setup
+        .physical_root_path
+        .join(format!("state/{}", id.to_hex()));
+
+    create_dir_all(state_path.join("var"))?;
+    create_dir_all(state_path.join("etc/upper"))?;
+    create_dir_all(state_path.join("etc/work"))?;
+
+    Ok(())
+}
+
 async fn install_to_filesystem_impl(
     state: &State,
     rootfs: &mut RootSetup,
@@ -1455,34 +1665,47 @@ async fn install_to_filesystem_impl(
 
     let bound_images = BoundImages::from_state(state).await?;
 
-    // Initialize the ostree sysroot (repo, stateroot, etc.)
+    if state.composefs_options.is_some() {
+        // Load a fd for the mounted target physical root
+        let (id, verity) = initialize_composefs_repository(state, rootfs).await?;
 
-    {
-        let (sysroot, has_ostree, imgstore) = initialize_ostree_root(state, rootfs).await?;
+        tracing::warn!(
+            "id = {id}, verity = {verity}",
+            id = hex::encode(id),
+            verity = verity.to_hex()
+        );
 
-        install_with_sysroot(
-            state,
-            rootfs,
-            &sysroot,
-            &boot_uuid,
-            bound_images,
-            has_ostree,
-            &imgstore,
-        )
-        .await?;
+        setup_composefs_boot(rootfs, state, &hex::encode(id))?;
+    } else {
+        // Initialize the ostree sysroot (repo, stateroot, etc.)
 
-        if matches!(cleanup, Cleanup::TriggerOnNextBoot) {
-            let sysroot_dir = crate::utils::sysroot_dir(&sysroot)?;
-            tracing::debug!("Writing {DESTRUCTIVE_CLEANUP}");
-            sysroot_dir.atomic_write(format!("etc/{}", DESTRUCTIVE_CLEANUP), b"")?;
-        }
+        {
+            let (sysroot, has_ostree, imgstore) = initialize_ostree_root(state, rootfs).await?;
 
-        // We must drop the sysroot here in order to close any open file
-        // descriptors.
-    };
+            install_with_sysroot(
+                state,
+                rootfs,
+                &sysroot,
+                &boot_uuid,
+                bound_images,
+                has_ostree,
+                &imgstore,
+            )
+            .await?;
 
-    // Run this on every install as the penultimate step
-    install_finalize(&rootfs.physical_root_path).await?;
+            if matches!(cleanup, Cleanup::TriggerOnNextBoot) {
+                let sysroot_dir = crate::utils::sysroot_dir(&sysroot)?;
+                tracing::debug!("Writing {DESTRUCTIVE_CLEANUP}");
+                sysroot_dir.atomic_write(format!("etc/{}", DESTRUCTIVE_CLEANUP), b"")?;
+            }
+
+            // We must drop the sysroot here in order to close any open file
+            // descriptors.
+        };
+
+        // Run this on every install as the penultimate step
+        install_finalize(&rootfs.physical_root_path).await?;
+    }
 
     // Finalize mounted filesystems
     if !rootfs.skip_finalize {
@@ -1503,6 +1726,8 @@ fn installation_complete() {
 #[context("Installing to disk")]
 #[cfg(feature = "install-to-disk")]
 pub(crate) async fn install_to_disk(mut opts: InstallToDiskOpts) -> Result<()> {
+    opts.validate()?;
+
     let mut block_opts = opts.block_opts;
     let target_blockdev_meta = block_opts
         .device
@@ -1524,7 +1749,17 @@ pub(crate) async fn install_to_disk(mut opts: InstallToDiskOpts) -> Result<()> {
     } else if !target_blockdev_meta.file_type().is_block_device() {
         anyhow::bail!("Not a block device: {}", block_opts.device);
     }
-    let state = prepare_install(opts.config_opts, opts.source_opts, opts.target_opts).await?;
+    let state = prepare_install(
+        opts.config_opts,
+        opts.source_opts,
+        opts.target_opts,
+        if opts.composefs_native {
+            Some(opts.composefs_opts)
+        } else {
+            None
+        },
+    )
+    .await?;
 
     // This is all blocking stuff
     let (mut rootfs, loopback) = {
@@ -1732,7 +1967,7 @@ pub(crate) async fn install_to_filesystem(
     // IMPORTANT: and hence anything that is done before MUST BE IDEMPOTENT.
     // IMPORTANT: In practice, we should only be gathering information before this point,
     // IMPORTANT: and not performing any mutations at all.
-    let state = prepare_install(opts.config_opts, opts.source_opts, opts.target_opts).await?;
+    let state = prepare_install(opts.config_opts, opts.source_opts, opts.target_opts, None).await?;
     // And the last bit of state here is the fsopts, which we also destructure now.
     let mut fsopts = opts.filesystem_opts;
 
