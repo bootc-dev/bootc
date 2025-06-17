@@ -560,13 +560,15 @@ impl FromStr for MountSpec {
 }
 
 impl InstallToDiskOpts {
-    pub(crate) fn validate(&self) {
+    pub(crate) fn validate(&self) -> Result<()> {
         if !self.composefs_native {
             // Reject using --boot without --composefs
             if self.composefs_opts.boot != BootType::default() {
-                panic!("--boot must not be provided without --composefs");
+                anyhow::bail!("--boot must not be provided without --composefs");
             }
         }
+
+        Ok(())
     }
 }
 
@@ -1717,7 +1719,7 @@ fn installation_complete() {
 #[context("Installing to disk")]
 #[cfg(feature = "install-to-disk")]
 pub(crate) async fn install_to_disk(mut opts: InstallToDiskOpts) -> Result<()> {
-    opts.validate();
+    opts.validate()?;
 
     let mut block_opts = opts.block_opts;
     let target_blockdev_meta = block_opts
