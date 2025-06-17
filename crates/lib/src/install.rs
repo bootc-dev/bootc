@@ -201,7 +201,7 @@ pub(crate) struct InstallConfigOpts {
     ///
     /// Example: --karg=nosmt --karg=console=ttyS0,114800n8
     #[clap(long)]
-    karg: Option<Vec<String>>,
+    pub(crate) karg: Option<Vec<String>>,
 
     /// The path to an `authorized_keys` that will be injected into the `root` account.
     ///
@@ -566,6 +566,11 @@ impl InstallToDiskOpts {
             if self.composefs_opts.boot != BootType::default() {
                 anyhow::bail!("--boot must not be provided without --composefs");
             }
+        }
+
+        // Can't add kargs to UKI
+        if self.composefs_opts.boot == BootType::Uki && self.config_opts.karg.is_some() {
+            anyhow::bail!("Cannot pass kargs to UKI");
         }
 
         Ok(())
@@ -1509,17 +1514,17 @@ fn setup_composefs_bls_boot(
         None => anyhow::bail!("Expected rootfs to have a UUID by now"),
     };
 
-    let cmdline_refs = [
-        "console=ttyS0,115200",
-        &format!("root=UUID={rootfs_uuid}"),
-        "rw",
-    ];
+    let root_uuid_karg = format!("root=UUID={rootfs_uuid}");
+
+    let mut cmdline_refs = vec!["console=ttyS0,115200", &root_uuid_karg, "rw"];
+
+    cmdline_refs.extend(root_setup.kargs.iter().map(String::as_str));
 
     composefs_write_boot_simple(
         &repo,
         entry,
         &id,
-        root_setup.physical_root_path.as_std_path(), // /run/mounts/bootc/boot
+        root_setup.physical_root_path.as_std_path(),
         Some("boot"),
         Some(&format!("{}", id.to_hex())),
         &cmdline_refs,
@@ -1555,8 +1560,6 @@ fn setup_composefs_uki_boot(
     )?;
 
     // Add the user grug cfg
-    // TODO: We don't need this for BLS. Have a flag for BLS vs UKI, or maybe we can figure it out
-    // via the boot entries above
     let grub_user_config = format!(
         r#"
 menuentry "Fedora Bootc UKI" {{
