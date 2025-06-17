@@ -18,7 +18,7 @@ use std::fs::create_dir_all;
 use std::io::Write;
 use std::os::fd::{AsFd, AsRawFd};
 use std::os::unix::process::CommandExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -107,6 +107,10 @@ const DEFAULT_REPO_CONFIG: &[(&str, &str)] = &[
 
 /// Kernel argument used to specify we want the rootfs mounted read-write by default
 const RW_KARG: &str = "rw";
+
+/// The ESP partition label on Fedora CoreOS derivatives
+const COREOS_ESP_PART_LABEL: &str = "EFI-SYSTEM";
+const ANACONDA_ESP_PART_LABEL: &str = "EFI\\x20System\\x20Partition";
 
 #[derive(clap::Args, Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct InstallTargetOpts {
@@ -1533,6 +1537,44 @@ fn setup_composefs_bls_boot(
     Ok(())
 }
 
+fn get_esp_device() -> Option<PathBuf> {
+    let esp_devices = [COREOS_ESP_PART_LABEL, ANACONDA_ESP_PART_LABEL]
+        .into_iter()
+        .map(|p| Path::new("/dev/disk/by-partlabel/").join(p));
+    let mut esp_device = None;
+    for path in esp_devices {
+        if path.exists() {
+            esp_device = Some(path);
+            break;
+        }
+    }
+    return esp_device;
+}
+
+/// esp_device - /dev/disk/by-partlabel/<ESP_DEVICE>
+fn get_esp_uuid(esp_device: &PathBuf) -> Result<String> {
+    // not using blkid here as the output might change from under us
+    let resolved = std::fs::canonicalize(esp_device)
+        .with_context(|| format!("Failed to resolve link {esp_device:?}"))?;
+
+    let mut uuid = String::new();
+
+    for dir_entry in std::fs::read_dir("/dev/disk/by-uuid")? {
+        let file = dir_entry?;
+
+        let uuid_resolve = std::fs::canonicalize(file.path())
+            .with_context(|| format!("Failed to resolve link {file:?}"))?;
+
+        if resolved == uuid_resolve {
+            // SAFETY: UUID has to be [A-Fa-f0-9\-]
+            uuid = file.file_name().to_string_lossy().into_owned();
+            break;
+        }
+    }
+
+    Ok(uuid)
+}
+
 #[context("Setting up UKI boot")]
 fn setup_composefs_uki_boot(
     root_setup: &RootSetup,
@@ -1541,23 +1583,34 @@ fn setup_composefs_uki_boot(
     id: &Sha256HashValue,
     entry: BootEntry<Sha256HashValue>,
 ) -> Result<()> {
-    let rootfs_uuid = match &root_setup.rootfs_uuid {
-        Some(u) => u,
-        None => anyhow::bail!("Expected rootfs to have a UUID by now"),
+    // Write the UKI to <ESP>/EFI/Linux
+    let Some(esp_device) = get_esp_device() else {
+        anyhow::bail!("ESP device not found");
     };
 
-    let boot_dir = root_setup.physical_root_path.join("boot");
-    create_dir_all(&boot_dir).context("Failed to create boot dir")?;
+    let mounted_esp: PathBuf = root_setup.physical_root_path.join("../esp").into();
+    create_dir_all(&mounted_esp).context("Failed to create dir {mounted_esp:?}")?;
+
+    Task::new("Mounting ESP", "mount")
+        .args([&esp_device, &mounted_esp.clone()])
+        .run()?;
 
     composefs_write_boot_simple(
         &repo,
         entry,
         &id,
-        boot_dir.as_std_path(),
+        &mounted_esp,
         None,
         Some(&format!("{}", id.to_hex())),
         &[],
     )?;
+
+    Task::new("Unmounting ESP", "umount")
+        .arg(mounted_esp)
+        .run()?;
+
+    let boot_dir = root_setup.physical_root_path.join("boot");
+    create_dir_all(&boot_dir).context("Failed to create boot dir")?;
 
     // Add the user grug cfg
     let grub_user_config = format!(
@@ -1565,11 +1618,12 @@ fn setup_composefs_uki_boot(
 menuentry "Fedora Bootc UKI" {{
     insmod fat
     insmod chain
-    search --no-floppy --set=root --fs-uuid {rootfs_uuid}
-    chainloader /boot/EFI/Linux/{uki_id}.efi
+    search --no-floppy --set=root --fs-uuid {esp_uuid}
+    chainloader /EFI/Linux/{uki_id}.efi
 }}
 "#,
-        uki_id = id.to_hex()
+        uki_id = id.to_hex(),
+        esp_uuid = get_esp_uuid(&esp_device)?
     );
 
     std::fs::write(boot_dir.join("grub2/user.cfg"), grub_user_config)
