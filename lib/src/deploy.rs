@@ -4,6 +4,7 @@
 
 use std::collections::HashSet;
 use std::io::{BufRead, Write};
+use std::str::FromStr;
 
 use anyhow::Ok;
 use anyhow::{anyhow, Context, Result};
@@ -15,6 +16,7 @@ use ostree::{gio, glib};
 use ostree_container::OstreeImageReference;
 use ostree_ext::container as ostree_container;
 use ostree_ext::container::store::{ImageImporter, ImportProgress, PrepareResult, PreparedImport};
+use ostree_ext::oci_spec::distribution::Reference as OciReference;
 use ostree_ext::oci_spec::image::{Descriptor, Digest};
 use ostree_ext::ostree::Deployment;
 use ostree_ext::ostree::{self, Sysroot};
@@ -343,6 +345,20 @@ pub(crate) async fn prepare_for_pull(
     let imgref_canonicalized = imgref.clone().canonicalize()?;
     tracing::debug!("Canonicalized image reference: {imgref_canonicalized:#}");
     let ostree_imgref = &OstreeImageReference::from(imgref_canonicalized);
+
+    let maybe_oci_ref = ostree_imgref.imgref.name.parse::<OciReference>().ok();
+    if let Some(digest) = maybe_oci_ref.as_ref().and_then(|oci_ref| oci_ref.digest()) {
+        // This is a digested pull. If that digested image already exists in
+        // the store, we can short-circuit a lot here and e.g. not spawn skopeo
+        // at all.
+        if let Some(c) = ostree_container::store::query_image(repo, &ostree_imgref.imgref)? {
+            let digest = Digest::from_str(digest)?;
+            assert_eq!(digest, c.manifest_digest);
+            println!("Digest-based pullspec {imgref:#} already present");
+            return Ok(PreparedPullResult::AlreadyPresent(Box::new((*c).into())));
+        }
+    }
+
     let mut imp = new_importer(repo, ostree_imgref).await?;
     if let Some(target) = target_imgref {
         imp.set_target(target);
