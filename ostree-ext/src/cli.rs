@@ -30,6 +30,7 @@ use crate::commit::container_commit;
 use crate::container::store::{ExportToOCIOpts, ImportProgress, LayerProgress, PreparedImport};
 use crate::container::{self as ostree_container, ManifestDiff};
 use crate::container::{Config, ImageReference, OstreeImageReference};
+use crate::json::JsonOrderedSerialize;
 use crate::objectsource::ObjectSourceMeta;
 use crate::sysroot::SysrootLock;
 use ostree_container::store::{ImageImporter, PrepareResult};
@@ -880,7 +881,9 @@ async fn container_store(
     if let Some(check) = check.as_deref() {
         let rootfs = Dir::open_ambient_dir("/", cap_std::ambient_authority())?;
         rootfs.atomic_replace_with(check.as_str().trim_start_matches('/'), |w| {
-            serde_json::to_writer(w, &prep.manifest).context("Serializing manifest")
+            prep.manifest
+                .to_json_ordered_writer(w)
+                .context("Serializing manifest")
         })?;
         // In check mode, we're done
         return Ok(());
@@ -1007,10 +1010,11 @@ fn container_remount_sysroot(sysroot: &Utf8Path) -> Result<()> {
 #[context("Serializing to output file")]
 fn handle_serialize_to_file<T: serde::Serialize>(path: Option<&Utf8Path>, obj: T) -> Result<()> {
     if let Some(path) = path {
-        let mut out = std::fs::File::create(path)
+        let out = std::fs::File::create(path)
             .map(BufWriter::new)
             .with_context(|| anyhow::anyhow!("Opening {path} for writing"))?;
-        serde_json::to_writer(&mut out, &obj).context("Serializing output")?;
+        obj.to_json_ordered_writer(out)
+            .context("Serializing output")?;
     }
     Ok(())
 }
@@ -1136,9 +1140,9 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
                     let stdout = std::io::stdout().lock();
                     let mut stdout = std::io::BufWriter::new(stdout);
                     if config {
-                        serde_json::to_writer(&mut stdout, &image.configuration)?;
+                        image.configuration.to_json_ordered_writer(&mut stdout)?;
                     } else {
-                        serde_json::to_writer(&mut stdout, &image.manifest)?;
+                        image.manifest.to_json_ordered_writer(&mut stdout)?;
                     }
                     stdout.flush()?;
                     Ok(())
