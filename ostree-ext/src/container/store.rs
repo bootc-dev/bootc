@@ -3,7 +3,7 @@
 //! # Extension of encapsulation support
 //!
 //! This code supports ingesting arbitrary layered container images from an ostree-exported
-//! base.  See [`encapsulate`][`super::encapsulate()`] for more information on encaspulation of images.
+//! base.  See [`encapsulate`][`super::encapsulate()`] for more information on encapsulation of images.
 
 use super::*;
 use crate::chunking::{self, Chunk};

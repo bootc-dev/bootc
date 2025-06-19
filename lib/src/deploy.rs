@@ -554,7 +554,7 @@ async fn deploy(
     };
     // Clone all the things to move to worker thread
     let sysroot_clone = sysroot.sysroot.clone();
-    // ostree::Deployment is incorrently !Send 😢 so convert it to an integer
+    // ostree::Deployment is incorrectly !Send 😢 so convert it to an integer
     let merge_deployment = merge_deployment.map(|d| d.index() as usize);
     let stateroot = stateroot.to_string();
     let ostree_commit = image.ostree_commit.to_string();
