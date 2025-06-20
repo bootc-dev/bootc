@@ -353,7 +353,9 @@ pub(crate) async fn prepare_for_pull(
         // at all.
         if let Some(c) = ostree_container::store::query_image(repo, &ostree_imgref.imgref)? {
             let digest = Digest::from_str(digest)?;
-            assert_eq!(digest, c.manifest_digest);
+            if digest != c.manifest_digest {
+                return Err(anyhow::anyhow!("Digest mismatch: expected {} got {}", digest, c.manifest_digest));
+            }
             println!("Digest-based pullspec {imgref:#} already present");
             return Ok(PreparedPullResult::AlreadyPresent(Box::new((*c).into())));
         }
