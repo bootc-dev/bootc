@@ -1680,6 +1680,22 @@ fn setup_composefs_boot(root_setup: &RootSetup, state: &State, image_id: &str) -
     create_dir_all(state_path.join("etc/upper"))?;
     create_dir_all(state_path.join("etc/work"))?;
 
+    let OstreeExtImgRef {
+        name: image_name,
+        transport,
+    } = &state.source.imageref;
+
+    let config = tini::Ini::new().section("origin").item(
+        ORIGIN_CONTAINER,
+        format!("ostree-unverified-image:{transport}{image_name}"),
+    );
+
+    let mut origin_file = std::fs::File::create(state_path.join(format!("{}.origin", id.to_hex())))
+        .context("Failed to open .origin file")?;
+    origin_file
+        .write(config.to_string().as_bytes())
+        .context("Falied to write to .origin file")?;
+
     Ok(())
 }
 
