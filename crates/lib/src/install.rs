@@ -1674,11 +1674,19 @@ fn setup_composefs_boot(root_setup: &RootSetup, state: &State, image_id: &str) -
 
     let state_path = root_setup
         .physical_root_path
-        .join(format!("state/{}", id.to_hex()));
+        .join(format!("state/deploy/{}", id.to_hex()));
 
-    create_dir_all(state_path.join("var"))?;
     create_dir_all(state_path.join("etc/upper"))?;
     create_dir_all(state_path.join("etc/work"))?;
+
+    let actual_var_path = root_setup
+        .physical_root_path
+        .join(format!("state/os/fedora/var"));
+
+    create_dir_all(&actual_var_path)?;
+
+    symlink(Path::new("../../os/fedora/var"), state_path.join("var"))
+        .context("Failed to create symlink for /var")?;
 
     let OstreeExtImgRef {
         name: image_name,
