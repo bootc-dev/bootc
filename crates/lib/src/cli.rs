@@ -42,7 +42,7 @@ use crate::bootc_composefs::{
     switch::switch_composefs,
     update::upgrade_composefs,
 };
-use crate::deploy::RequiredHostSpec;
+use crate::deploy::{MergeState, RequiredHostSpec, RequiredHostSpec};
 use crate::lints;
 use crate::podstorage::set_additional_image_store;
 use crate::progress_jsonl::{ProgressWriter, RawProgressFd};
@@ -262,6 +262,12 @@ pub(crate) enum InstallOpts {
     /// will be wiped, but the content of the existing root will otherwise be retained, and will
     /// need to be cleaned up if desired when rebooted into the new root.
     ToExistingRoot(crate::install::InstallToExistingRootOpts),
+    /// Nondestructively create a fresh installation state inside an existing bootc system.
+    ///
+    /// This is a nondestructive variant of `install to-existing-root` that works only inside
+    /// an existing bootc system.
+    #[clap(hide = true)]
+    Reset(crate::install::InstallResetOpts),
     /// Execute this as the penultimate step of an installation using `install to-filesystem`.
     ///
     Finalize {
@@ -962,8 +968,9 @@ async fn upgrade(opts: UpgradeOpts) -> Result<()> {
         } else if booted_unchanged {
             println!("No update available.")
         } else {
-            let osname = booted_deployment.osname();
-            crate::deploy::stage(sysroot, &osname, &fetched, &spec, prog.clone()).await?;
+            let stateroot = booted_deployment.osname();
+            let from = MergeState::from_stateroot(sysroot, &stateroot)?;
+            crate::deploy::stage(sysroot, from, &fetched, &spec, prog.clone()).await?;
             changed = true;
             if let Some(prev) = booted_image.as_ref() {
                 if let Some(fetched_manifest) = fetched.get_manifest(repo)? {
@@ -1082,7 +1089,8 @@ async fn switch(opts: SwitchOpts) -> Result<()> {
     }
 
     let stateroot = booted_deployment.osname();
-    crate::deploy::stage(sysroot, &stateroot, &fetched, &new_spec, prog.clone()).await?;
+    let from = MergeState::from_stateroot(sysroot, &stateroot)?;
+    crate::deploy::stage(sysroot, from, &fetched, &new_spec, prog.clone()).await?;
 
     sysroot.update_mtime()?;
 
@@ -1161,7 +1169,8 @@ async fn edit(opts: EditOpts) -> Result<()> {
     // TODO gc old layers here
 
     let stateroot = booted_deployment.osname();
-    crate::deploy::stage(sysroot, &stateroot, &fetched, &new_spec, prog.clone()).await?;
+    let from = MergeState::from_stateroot(sysroot, &stateroot)?;
+    crate::deploy::stage(sysroot, from, &fetched, &new_spec, prog.clone()).await?;
 
     sysroot.update_mtime()?;
 
@@ -1441,6 +1450,7 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
             InstallOpts::ToExistingRoot(opts) => {
                 crate::install::install_to_existing_root(opts).await
             }
+            InstallOpts::Reset(opts) => crate::install::install_reset(opts).await,
             InstallOpts::PrintConfiguration => crate::install::print_configuration(),
             InstallOpts::EnsureCompletion {} => {
                 let rootfs = &Dir::open_ambient_dir("/", cap_std::ambient_authority())?;
