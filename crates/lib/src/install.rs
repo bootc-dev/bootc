@@ -15,8 +15,9 @@ pub(crate) mod osconfig;
 
 use std::collections::HashMap;
 use std::fs::create_dir_all;
-use std::io::Write;
+use std::io::{Seek, SeekFrom, Write};
 use std::os::fd::{AsFd, AsRawFd};
+use std::os::unix::fs::symlink;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -25,6 +26,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{anyhow, ensure, Context, Result};
+use baseline::{DPS_UUID, ESP_GUID};
+use bootc_blockdev::{find_parent_devices, PartitionTable};
 use bootc_utils::CommandRunExt;
 use camino::Utf8Path;
 use camino::Utf8PathBuf;
@@ -51,6 +54,7 @@ use ostree_ext::composefs_boot::{
 use ostree_ext::composefs_oci::{
     image::create_filesystem as create_composefs_filesystem, pull as composefs_oci_pull,
 };
+use ostree_ext::container::deploy::ORIGIN_CONTAINER;
 use ostree_ext::oci_spec;
 use ostree_ext::ostree;
 use ostree_ext::ostree_prepareroot::{ComposefsState, Tristate};
@@ -75,7 +79,7 @@ use crate::spec::ImageReference;
 use crate::store::Storage;
 use crate::task::Task;
 use crate::utils::sigpolicy_from_opt;
-use bootc_mount::Filesystem;
+use bootc_mount::{inspect_filesystem, Filesystem};
 
 /// The toplevel boot directory
 const BOOT: &str = "boot";
@@ -107,10 +111,6 @@ const DEFAULT_REPO_CONFIG: &[(&str, &str)] = &[
 
 /// Kernel argument used to specify we want the rootfs mounted read-write by default
 const RW_KARG: &str = "rw";
-
-/// The ESP partition label on Fedora CoreOS derivatives
-const COREOS_ESP_PART_LABEL: &str = "EFI-SYSTEM";
-const ANACONDA_ESP_PART_LABEL: &str = "EFI\\x20System\\x20Partition";
 
 #[derive(clap::Args, Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct InstallTargetOpts {
@@ -242,6 +242,17 @@ pub(crate) enum BootType {
     #[default]
     Bls,
     Uki,
+}
+
+impl From<&BootEntry<Sha256HashValue>> for BootType {
+    fn from(entry: &BootEntry<Sha256HashValue>) -> Self {
+        match entry {
+            BootEntry::Type1(..) => Self::Bls,
+            BootEntry::Type2(..) => Self::Uki,
+            BootEntry::UsrLibModulesUki(..) => Self::Uki,
+            BootEntry::UsrLibModulesVmLinuz(..) => Self::Bls,
+        }
+    }
 }
 
 #[derive(Debug, Clone, clap::Parser, Serialize, Deserialize, PartialEq, Eq)]
@@ -1477,7 +1488,9 @@ impl BoundImages {
     }
 }
 
-fn open_composefs_repo(rootfs_dir: &Dir) -> Result<ComposefsRepository<Sha256HashValue>> {
+pub(crate) fn open_composefs_repo(
+    rootfs_dir: &Dir,
+) -> Result<ComposefsRepository<Sha256HashValue>> {
     ComposefsRepository::open_path(rootfs_dir, "composefs")
         .context("Failed to open composefs repository")
 }
@@ -1492,8 +1505,6 @@ async fn initialize_composefs_repository(
         .create_dir_all("composefs")
         .context("Creating dir 'composefs'")?;
 
-    tracing::warn!("STATE: {state:#?}");
-
     let repo = open_composefs_repo(rootfs_dir)?;
 
     let OstreeExtImgRef {
@@ -1502,132 +1513,211 @@ async fn initialize_composefs_repository(
     } = &state.source.imageref;
 
     // transport's display is already of type "<transport_type>:"
-    composefs_oci_pull(&Arc::new(repo), &format!("{transport}{image_name}",), None).await
+    composefs_oci_pull(&Arc::new(repo), &format!("{transport}{image_name}"), None).await
+}
+
+pub(crate) enum BootSetupType<'a> {
+    /// For initial setup, i.e. install to-disk
+    Setup(&'a RootSetup),
+    /// For `bootc upgrade`
+    Upgrade,
 }
 
 #[context("Setting up BLS boot")]
-fn setup_composefs_bls_boot(
-    root_setup: &RootSetup,
+pub(crate) fn setup_composefs_bls_boot(
+    setup_type: BootSetupType,
     // TODO: Make this generic
     repo: ComposefsRepository<Sha256HashValue>,
     id: &Sha256HashValue,
     entry: BootEntry<Sha256HashValue>,
 ) -> Result<()> {
-    let rootfs_uuid = match &root_setup.rootfs_uuid {
-        Some(u) => u,
-        None => anyhow::bail!("Expected rootfs to have a UUID by now"),
+    let (root_path, cmdline_refs) = match setup_type {
+        BootSetupType::Setup(root_setup) => {
+            // root_setup.kargs has [root=UUID=<UUID>, "rw"]
+            (root_setup.physical_root_path.clone(), &root_setup.kargs)
+        }
+
+        BootSetupType::Upgrade => (
+            Utf8PathBuf::from("/sysroot"),
+            &vec![format!("root=UUID={DPS_UUID}"), RW_KARG.to_string()],
+        ),
     };
 
-    let root_uuid_karg = format!("root=UUID={rootfs_uuid}");
-
-    let mut cmdline_refs = vec!["console=ttyS0,115200", &root_uuid_karg, "rw"];
-
-    cmdline_refs.extend(root_setup.kargs.iter().map(String::as_str));
+    let str_slice = cmdline_refs
+        .iter()
+        .map(|x| x.as_str())
+        .collect::<Vec<&str>>();
 
     composefs_write_boot_simple(
         &repo,
         entry,
         &id,
-        root_setup.physical_root_path.as_std_path(),
+        false,
+        root_path.as_std_path(),
         Some("boot"),
-        Some(&format!("{}", id.to_hex())),
-        &cmdline_refs,
-    )?;
-
-    Ok(())
+        Some(&id.to_hex()),
+        &str_slice,
+    )
 }
 
-fn get_esp_device() -> Option<PathBuf> {
-    let esp_devices = [COREOS_ESP_PART_LABEL, ANACONDA_ESP_PART_LABEL]
+pub fn get_esp_partition(device: &str) -> Result<(String, Option<String>)> {
+    let device_info: PartitionTable = bootc_blockdev::partitions_of(Utf8Path::new(device))?;
+    let esp = device_info
+        .partitions
         .into_iter()
-        .map(|p| Path::new("/dev/disk/by-partlabel/").join(p));
-    let mut esp_device = None;
-    for path in esp_devices {
-        if path.exists() {
-            esp_device = Some(path);
-            break;
-        }
-    }
-    return esp_device;
-}
+        .find(|p| p.parttype.as_str() == ESP_GUID)
+        .ok_or(anyhow::anyhow!("ESP not found for device: {device}"))?;
 
-/// esp_device - /dev/disk/by-partlabel/<ESP_DEVICE>
-fn get_esp_uuid(esp_device: &PathBuf) -> Result<String> {
-    // not using blkid here as the output might change from under us
-    let resolved = std::fs::canonicalize(esp_device)
-        .with_context(|| format!("Failed to resolve link {esp_device:?}"))?;
-
-    let mut uuid = String::new();
-
-    for dir_entry in std::fs::read_dir("/dev/disk/by-uuid")? {
-        let file = dir_entry?;
-
-        let uuid_resolve = std::fs::canonicalize(file.path())
-            .with_context(|| format!("Failed to resolve link {file:?}"))?;
-
-        if resolved == uuid_resolve {
-            // SAFETY: UUID has to be [A-Fa-f0-9\-]
-            uuid = file.file_name().to_string_lossy().into_owned();
-            break;
-        }
-    }
-
-    Ok(uuid)
+    Ok((esp.node, esp.uuid))
 }
 
 #[context("Setting up UKI boot")]
-fn setup_composefs_uki_boot(
-    root_setup: &RootSetup,
+pub(crate) fn setup_composefs_uki_boot(
+    setup_type: BootSetupType,
     // TODO: Make this generic
     repo: ComposefsRepository<Sha256HashValue>,
     id: &Sha256HashValue,
     entry: BootEntry<Sha256HashValue>,
 ) -> Result<()> {
-    // Write the UKI to <ESP>/EFI/Linux
-    let Some(esp_device) = get_esp_device() else {
-        anyhow::bail!("ESP device not found");
+    let (root_path, esp_device) = match setup_type {
+        BootSetupType::Setup(root_setup) => {
+            let esp_part = root_setup
+                .device_info
+                .partitions
+                .iter()
+                .find(|p| p.parttype.as_str() == ESP_GUID)
+                .ok_or_else(|| anyhow!("ESP partition not found"))?;
+
+            (root_setup.physical_root_path.clone(), esp_part.node.clone())
+        }
+
+        BootSetupType::Upgrade => {
+            let sysroot = Utf8PathBuf::from("/sysroot");
+
+            let fsinfo = inspect_filesystem(&sysroot)?;
+            let parent_devices = find_parent_devices(&fsinfo.source)?;
+
+            let Some(parent) = parent_devices.into_iter().next() else {
+                anyhow::bail!("Could not find parent device for mountpoint /sysroot");
+            };
+
+            (sysroot, get_esp_partition(&parent)?.0)
+        }
     };
 
-    let mounted_esp: PathBuf = root_setup.physical_root_path.join("../esp").into();
+    let mounted_esp: PathBuf = root_path.join("esp").into();
+    let esp_mount_point_existed = mounted_esp.exists();
+
     create_dir_all(&mounted_esp).context("Failed to create dir {mounted_esp:?}")?;
 
     Task::new("Mounting ESP", "mount")
-        .args([&esp_device, &mounted_esp.clone()])
+        .args([&PathBuf::from(&esp_device), &mounted_esp.clone()])
         .run()?;
 
     composefs_write_boot_simple(
         &repo,
         entry,
         &id,
+        false,
         &mounted_esp,
         None,
-        Some(&format!("{}", id.to_hex())),
+        Some(&id.to_hex()),
         &[],
     )?;
 
     Task::new("Unmounting ESP", "umount")
-        .arg(mounted_esp)
+        .arg(&mounted_esp)
         .run()?;
 
-    let boot_dir = root_setup.physical_root_path.join("boot");
+    if !esp_mount_point_existed {
+        // This shouldn't be a fatal error
+        if let Err(e) = std::fs::remove_dir(&mounted_esp) {
+            tracing::error!("Failed to remove mount point '{mounted_esp:?}': {e}");
+        }
+    }
+
+    let boot_dir = root_path.join("boot");
     create_dir_all(&boot_dir).context("Failed to create boot dir")?;
+
+    let is_upgrade = matches!(setup_type, BootSetupType::Upgrade);
 
     // Add the user grug cfg
     let grub_user_config = format!(
         r#"
-menuentry "Fedora Bootc UKI" {{
+menuentry "Fedora Bootc UKI: ({uki_id})" {{
     insmod fat
     insmod chain
-    search --no-floppy --set=root --fs-uuid {esp_uuid}
+    search --no-floppy --set=root --fs-uuid "${{EFI_PART_UUID}}"
     chainloader /EFI/Linux/{uki_id}.efi
 }}
 "#,
         uki_id = id.to_hex(),
-        esp_uuid = get_esp_uuid(&esp_device)?
     );
 
-    std::fs::write(boot_dir.join("grub2/user.cfg"), grub_user_config)
-        .context("Failed to write grub2/user.cfg")?;
+    let user_cfg_name = "grub2/user.cfg";
+    let user_cfg_path = boot_dir.join(user_cfg_name);
+
+    // TODO: Figure out a better way to sort these menuentries. This is a bit scuffed
+    //
+    // Read the current user.cfg, split at the first menuentry, then stick the new menuentry in
+    // between the efiuuid.cfg sourcing code and the previous menuentry
+    if is_upgrade {
+        let contents =
+            std::fs::read_to_string(&user_cfg_path).context(format!("Reading {user_cfg_name}"))?;
+
+        let mut usr_cfg = std::fs::OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(user_cfg_path)
+            .with_context(|| format!("Opening {user_cfg_name}"))?;
+
+        let Some((before, after)) = contents.split_once("menuentry") else {
+            anyhow::bail!("Did not find menuentry in {user_cfg_name}")
+        };
+
+        usr_cfg
+            .seek(SeekFrom::Start(0))
+            .with_context(|| format!("Seek {user_cfg_name}"))?;
+
+        usr_cfg
+            .write_all(format!("{before} {grub_user_config}\nmenuentry {after}").as_bytes())
+            .with_context(|| format!("Writing to {user_cfg_name}"))?;
+
+        return Ok(());
+    }
+
+    // Open grub2/efiuuid.cfg and write the EFI partition UUID in there
+    // This will be sourced by grub2/user.cfg to be used for `--fs-uuid`
+    let mut efi_uuid_file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .open(boot_dir.join("grub2/efiuuid.cfg"))
+        .context("Opening grub2/efiuuid.cfg")?;
+
+    let esp_uuid = Task::new("blkid for ESP UUID", "blkid")
+        .args(["-s", "UUID", "-o", "value", &esp_device])
+        .read()?;
+
+    efi_uuid_file
+        .write_all(format!("set EFI_PART_UUID=\"{}\"", esp_uuid.trim()).as_bytes())
+        .context("Writing to grub2/efiuuid.cfg")?;
+
+    // Write to grub2/user.cfg
+    let mut usr_cfg = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .open(user_cfg_path)
+        .with_context(|| format!("Opening {user_cfg_name}"))?;
+
+    let efi_uuid_source = r#"
+if [ -f ${config_directory}/efiuuid.cfg ]; then
+        source ${config_directory}/efiuuid.cfg
+fi
+"#;
+
+    usr_cfg
+        .write_all(format!("{efi_uuid_source}\n{grub_user_config}").as_bytes())
+        .with_context(|| format!("Writing to {user_cfg_name}"))?;
 
     Ok(())
 }
@@ -1657,8 +1747,6 @@ fn setup_composefs_boot(root_setup: &RootSetup, state: &State, image_id: &str) -
     let entries = fs.transform_for_boot(&repo)?;
     let id = fs.commit_image(&repo, None)?;
 
-    println!("{entries:#?}");
-
     let Some(entry) = entries.into_iter().next() else {
         anyhow::bail!("No boot entries!");
     };
@@ -1668,38 +1756,60 @@ fn setup_composefs_boot(root_setup: &RootSetup, state: &State, image_id: &str) -
     };
 
     match composefs_opts.boot {
-        BootType::Bls => setup_composefs_bls_boot(root_setup, repo, &id, entry)?,
-        BootType::Uki => setup_composefs_uki_boot(root_setup, repo, &id, entry)?,
+        BootType::Bls => {
+            setup_composefs_bls_boot(BootSetupType::Setup(&root_setup), repo, &id, entry)?
+        }
+        BootType::Uki => {
+            setup_composefs_uki_boot(BootSetupType::Setup(&root_setup), repo, &id, entry)?
+        }
     };
 
-    let state_path = root_setup
-        .physical_root_path
-        .join(format!("state/deploy/{}", id.to_hex()));
+    write_composefs_state(
+        &root_setup.physical_root_path,
+        id,
+        &ImageReference {
+            image: state.source.imageref.name.clone(),
+            transport: state.source.imageref.transport.to_string(),
+            signature: None,
+        },
+    )?;
+
+    Ok(())
+}
+
+/// Creates and populates /sysroot/state/deploy/image_id
+#[context("Writing composefs state")]
+pub(crate) fn write_composefs_state(
+    root_path: &Utf8PathBuf,
+    deployment_id: Sha256HashValue,
+    imgref: &ImageReference,
+) -> Result<()> {
+    let state_path = root_path.join(format!("state/deploy/{}", deployment_id.to_hex()));
 
     create_dir_all(state_path.join("etc/upper"))?;
     create_dir_all(state_path.join("etc/work"))?;
 
-    let actual_var_path = root_setup
-        .physical_root_path
-        .join(format!("state/os/fedora/var"));
-
+    let actual_var_path = root_path.join(format!("state/os/fedora/var"));
     create_dir_all(&actual_var_path)?;
 
     symlink(Path::new("../../os/fedora/var"), state_path.join("var"))
         .context("Failed to create symlink for /var")?;
 
-    let OstreeExtImgRef {
-        name: image_name,
+    let ImageReference {
+        image: image_name,
         transport,
-    } = &state.source.imageref;
+        ..
+    } = &imgref;
 
     let config = tini::Ini::new().section("origin").item(
         ORIGIN_CONTAINER,
-        format!("ostree-unverified-image:{transport}{image_name}"),
+        format!("ostree-unverified-image:{transport}:{image_name}"),
     );
 
-    let mut origin_file = std::fs::File::create(state_path.join(format!("{}.origin", id.to_hex())))
-        .context("Failed to open .origin file")?;
+    let mut origin_file =
+        std::fs::File::create(state_path.join(format!("{}.origin", deployment_id.to_hex())))
+            .context("Failed to open .origin file")?;
+
     origin_file
         .write(config.to_string().as_bytes())
         .context("Falied to write to .origin file")?;

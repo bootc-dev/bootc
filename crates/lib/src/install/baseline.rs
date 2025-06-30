@@ -42,6 +42,7 @@ pub(crate) const PREPBOOT_GUID: &str = "9E1A2D38-C612-4316-AA26-8B49521E5A8B";
 pub(crate) const PREPBOOT_LABEL: &str = "PowerPC-PReP-boot";
 #[cfg(feature = "install-to-disk")]
 pub(crate) const ESP_GUID: &str = "C12A7328-F81F-11D2-BA4B-00A0C93EC93B";
+pub(crate) const DPS_UUID: &str = "6523F8AE-3EB1-4E2A-A05A-18B695AE656F";
 
 #[derive(clap::ValueEnum, Default, Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -410,7 +411,7 @@ pub(crate) fn install_create_rootfs(
         opts.wipe,
         mkfs_options.iter().copied(),
         // TODO: Add cli option for this
-        Some(uuid::uuid!("6523f8ae-3eb1-4e2a-a05a-18b695ae656f")),
+        Some(uuid::uuid!(DPS_UUID)),
     )?;
     let rootarg = format!("root=UUID={root_uuid}");
     let bootsrc = boot_uuid.as_ref().map(|uuid| format!("UUID={uuid}"));

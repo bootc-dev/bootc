@@ -6,6 +6,7 @@ use std::ffi::{CString, OsStr, OsString};
 use std::io::Seek;
 use std::os::unix::process::CommandExt;
 use std::process::Command;
+use std::sync::Arc;
 
 use anyhow::{ensure, Context, Result};
 use camino::Utf8PathBuf;
@@ -20,18 +21,28 @@ use ostree_container::store::PrepareResult;
 use ostree_ext::composefs::fsverity;
 use ostree_ext::composefs::fsverity::FsVerityHashValue;
 use ostree_ext::container as ostree_container;
-use ostree_ext::container_utils::ostree_booted;
+use ostree_ext::container_utils::{composefs_booted, ostree_booted};
 use ostree_ext::keyfileext::KeyFileExt;
 use ostree_ext::ostree;
 use schemars::schema_for;
 use serde::{Deserialize, Serialize};
 
 use crate::deploy::RequiredHostSpec;
+use crate::install::{
+    open_composefs_repo, setup_composefs_bls_boot, setup_composefs_uki_boot, write_composefs_state,
+    BootType, BootSetupType,
+};
 use crate::lints;
 use crate::progress_jsonl::{ProgressWriter, RawProgressFd};
 use crate::spec::Host;
 use crate::spec::ImageReference;
+use crate::status::composefs_deployment_status;
 use crate::utils::sigpolicy_from_opt;
+
+use ostree_ext::composefs_boot::BootOps;
+use ostree_ext::composefs_oci::{
+    image::create_filesystem as create_composefs_filesystem, pull as composefs_oci_pull,
+};
 
 /// Shared progress options
 #[derive(Debug, Parser, PartialEq, Eq)]
@@ -757,6 +768,74 @@ fn prepare_for_write() -> Result<()> {
     Ok(())
 }
 
+#[context("Upgrading composefs")]
+async fn upgrade_composefs(_opts: UpgradeOpts) -> Result<()> {
+    // TODO: IMPORTANT Have all the checks here that `bootc upgrade` has for an ostree booted system
+
+    let host = composefs_deployment_status()
+        .await
+        .context("Getting composefs deployment status")?;
+
+    // TODO: IMPORTANT We need to check if any deployment is staged and get the image from that
+    let imgref = host
+        .spec
+        .image
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("No image source specified"))?;
+
+    let booted_image = host
+        .status
+        .booted
+        .ok_or(anyhow::anyhow!("Could not find booted image"))?
+        .image
+        .ok_or(anyhow::anyhow!("Could not find booted image"))?;
+
+    tracing::debug!("booted_image: {booted_image:#?}");
+    tracing::debug!("imgref: {imgref:#?}");
+
+    let digest = booted_image
+        .digest()
+        .context("Getting digest for booted image")?;
+
+    let rootfs_dir = cap_std::fs::Dir::open_ambient_dir("/sysroot", cap_std::ambient_authority())?;
+
+    let repo = open_composefs_repo(&rootfs_dir).context("Opening compoesfs repo")?;
+
+    let (id, verity) = composefs_oci_pull(
+        &Arc::new(repo),
+        &format!("{}:{}", imgref.transport, imgref.image),
+        None,
+    )
+    .await
+    .context("Pulling composefs repo")?;
+
+    tracing::debug!(
+        "id = {id}, verity = {verity}",
+        id = hex::encode(id),
+        verity = verity.to_hex()
+    );
+
+    let repo = open_composefs_repo(&rootfs_dir)?;
+    let mut fs = create_composefs_filesystem(&repo, digest.digest(), None)
+        .context("Failed to create composefs filesystem")?;
+
+    let entries = fs.transform_for_boot(&repo)?;
+    let id = fs.commit_image(&repo, None)?;
+
+    let Some(entry) = entries.into_iter().next() else {
+        anyhow::bail!("No boot entries!");
+    };
+
+    match BootType::from(&entry) {
+        BootType::Bls => setup_composefs_bls_boot(BootSetupType::Upgrade, repo, &id, entry),
+        BootType::Uki => setup_composefs_uki_boot(BootSetupType::Upgrade, repo, &id, entry),
+    }?;
+
+    write_composefs_state(&Utf8PathBuf::from("/sysroot"), id, imgref)?;
+
+    Ok(())
+}
+
 /// Implementation of the `bootc upgrade` CLI command.
 #[context("Upgrading")]
 async fn upgrade(opts: UpgradeOpts) -> Result<()> {
@@ -1096,7 +1175,13 @@ impl Opt {
 async fn run_from_opt(opt: Opt) -> Result<()> {
     let root = &Dir::open_ambient_dir("/", cap_std::ambient_authority())?;
     match opt {
-        Opt::Upgrade(opts) => upgrade(opts).await,
+        Opt::Upgrade(opts) => {
+            if composefs_booted()? {
+                upgrade_composefs(opts).await
+            } else {
+                upgrade(opts).await
+            }
+        }
         Opt::Switch(opts) => switch(opts).await,
         Opt::Rollback(opts) => rollback(opts).await,
         Opt::Edit(opts) => edit(opts).await,
