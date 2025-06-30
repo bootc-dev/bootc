@@ -26,11 +26,11 @@ use schemars::schema_for;
 use serde::{Deserialize, Serialize};
 
 use crate::deploy::RequiredHostSpec;
-use crate::lints;
 use crate::progress_jsonl::{ProgressWriter, RawProgressFd};
 use crate::spec::Host;
 use crate::spec::ImageReference;
 use crate::utils::sigpolicy_from_opt;
+use crate::{lints, reboot};
 
 /// Shared progress options
 #[derive(Debug, Parser, PartialEq, Eq)]
@@ -536,7 +536,7 @@ pub(crate) enum Opt {
         Note on Rollbacks and the `/etc` Directory:
 
         When you perform a rollback (e.g., with `bootc rollback`), any
-        changes made to files in the `/etc` directory won’t carry over
+        changes made to files in the `/etc` directory won't carry over
         to the rolled-back deployment.  The `/etc` files will revert
         to their state from that previous deployment instead.
 
@@ -835,6 +835,31 @@ async fn upgrade(opts: UpgradeOpts) -> Result<()> {
             println!("Staged update present, not changed.");
 
             if opts.apply {
+                // Check if we can do a soft-reboot instead of a full reboot
+                let can_soft_reboot = host
+                    .status
+                    .staged
+                    .as_ref()
+                    .map(|s| s.soft_reboot_capable)
+                    .unwrap_or(false);
+
+                if can_soft_reboot {
+                    println!("Staged deployment is soft-reboot capable, performing soft-reboot...");
+
+                    // Find the staged deployment
+                    let deployments_list = sysroot.deployments();
+                    let staged_deployment = deployments_list
+                        .iter()
+                        .find(|d| d.is_staged())
+                        .ok_or_else(|| anyhow::anyhow!("Failed to find staged deployment"))?;
+
+                    // Prepare the soft-reboot using native ostree bindings
+                    let cancellable = ostree::gio::Cancellable::NONE;
+                    sysroot
+                        .sysroot
+                        .deployment_prepare_next_root(staged_deployment, false, cancellable)
+                        .context("Failed to prepare soft-reboot")?;
+                }
                 crate::reboot::reboot()?;
             }
         } else if booted_unchanged {
@@ -931,6 +956,33 @@ async fn switch(opts: SwitchOpts) -> Result<()> {
     sysroot.update_mtime()?;
 
     if opts.apply {
+        // Get updated status to check for soft-reboot capability
+        let (_updated_deployments, updated_host) =
+            crate::status::get_status(sysroot, Some(&booted_deployment))?;
+        let can_soft_reboot = updated_host
+            .status
+            .staged
+            .as_ref()
+            .map(|s| s.soft_reboot_capable)
+            .unwrap_or(false);
+
+        if can_soft_reboot {
+            println!("Staged deployment is soft-reboot capable, performing soft-reboot...");
+
+            // Find the staged deployment
+            let deployments_list = sysroot.deployments();
+            let staged_deployment = deployments_list
+                .iter()
+                .find(|d| d.is_staged())
+                .ok_or_else(|| anyhow::anyhow!("Failed to find staged deployment"))?;
+
+            // Prepare the soft-reboot using native ostree bindings
+            let cancellable = ostree::gio::Cancellable::NONE;
+            sysroot
+                .sysroot
+                .deployment_prepare_next_root(staged_deployment, false, cancellable)
+                .context("Failed to prepare soft-reboot")?;
+        }
         crate::reboot::reboot()?;
     }
 
@@ -941,10 +993,40 @@ async fn switch(opts: SwitchOpts) -> Result<()> {
 #[context("Rollback")]
 async fn rollback(opts: RollbackOpts) -> Result<()> {
     let sysroot = &get_storage().await?;
-    crate::deploy::rollback(sysroot).await?;
 
     if opts.apply {
+        // Get status before rollback to check soft-reboot capability
+        let (_booted_deployment, _deployments, host) =
+            crate::status::get_status_require_booted(sysroot)?;
+        let can_soft_reboot = host
+            .status
+            .rollback
+            .as_ref()
+            .map(|r| r.soft_reboot_capable)
+            .unwrap_or(false);
+
+        // Perform the rollback
+        crate::deploy::rollback(sysroot).await?;
+
+        if can_soft_reboot {
+            println!("Rollback deployment is soft-reboot capable, performing soft-reboot...");
+
+            // For rollback, get the current first deployment after rollback
+            let deployments_list = sysroot.deployments();
+            let target_deployment = deployments_list
+                .first()
+                .ok_or_else(|| anyhow::anyhow!("No deployments found after rollback"))?;
+
+            // Prepare the soft-reboot using native ostree bindings
+            let cancellable = ostree::gio::Cancellable::NONE;
+            sysroot
+                .sysroot
+                .deployment_prepare_next_root(target_deployment, false, cancellable)
+                .context("Failed to prepare soft-reboot")?;
+        }
         crate::reboot::reboot()?;
+    } else {
+        crate::deploy::rollback(sysroot).await?;
     }
 
     Ok(())
