@@ -37,6 +37,14 @@ execute:
         - /tmt/tests/bootc-install-provision
         - /tmt/tests/test-21-logically-bound-switch
 
+/test-21-soft-reboot:
+  summary: Soft reboot support
+  discover:
+    how: fmf
+    test:
+        - /tmt/tests/bootc-install-provision
+        - /tmt/tests/test-21-soft-reboot
+
 /test-22-logically-bound-install:
   summary: Execute logically bound images tests for switching images
   environment+:

@@ -78,3 +78,12 @@ pub mod prelude {
 pub mod fixture;
 #[cfg(feature = "internal-testing-api")]
 pub mod integrationtest;
+
+/// Check if the system has the soft reboot target, which signals
+/// systemd support for soft reboots.
+pub fn systemd_has_soft_reboot() -> bool {
+    const UNIT: &str = "/usr/lib/systemd/system/soft-reboot.target";
+    use std::sync::OnceLock;
+    static EXISTS: OnceLock<bool> = OnceLock::new();
+    *EXISTS.get_or_init(|| std::path::Path::new(UNIT).exists())
+}

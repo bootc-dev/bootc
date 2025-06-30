@@ -577,10 +577,6 @@ async fn deploy(
                 &opts,
                 Some(cancellable),
             )?;
-            tracing::debug!(
-                "Soft reboot capable: {:?}",
-                sysroot.deployment_can_soft_reboot(&d)
-            );
             Ok(d.index())
         }),
     )
