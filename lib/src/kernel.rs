@@ -1,6 +1,8 @@
 use anyhow::Result;
 use fn_error_context::context;
 
+/// The default root filesystem mount specification.
+pub(crate) const ROOT: &str = "root=";
 /// This is used by dracut.
 pub(crate) const INITRD_ARG_PREFIX: &str = "rd.";
 /// The kernel argument for configuring the rootfs flags.
@@ -35,6 +37,19 @@ pub(crate) fn find_first_cmdline_arg<'a>(
         None
     })
     .next()
+}
+
+/// Find the subset of kernel argumetns which describe how to mount the root filesystem.
+pub(crate) fn root_args_from_cmdline<'a>(cmdline: &'a [&str]) -> Vec<&'a str> {
+    cmdline
+        .iter()
+        .filter(|arg| {
+            arg.starts_with(ROOT)
+                || arg.starts_with(ROOTFLAGS)
+                || arg.starts_with(INITRD_ARG_PREFIX)
+        })
+        .copied()
+        .collect()
 }
 
 #[cfg(test)]

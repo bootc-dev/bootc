@@ -43,7 +43,7 @@ use ostree_ext::oci_spec;
 use ostree_ext::ostree;
 use ostree_ext::ostree_prepareroot::{ComposefsState, Tristate};
 use ostree_ext::prelude::Cast;
-use ostree_ext::sysroot::SysrootLock;
+use ostree_ext::sysroot::{allocate_new_stateroot, list_stateroots, SysrootLock};
 use ostree_ext::{container as ostree_container, ostree_prepareroot};
 #[cfg(feature = "install-to-disk")]
 use rustix::fs::FileTypeExt;
@@ -54,7 +54,9 @@ use serde::{Deserialize, Serialize};
 use self::baseline::InstallBlockDeviceOpts;
 use crate::boundimage::{BoundImage, ResolvedBoundImage};
 use crate::containerenv::ContainerExecutionInfo;
-use crate::deploy::{prepare_for_pull, pull_from_prepared, PreparedImportMeta, PreparedPullResult};
+use crate::deploy::{
+    prepare_for_pull, pull_from_prepared, MergeState, PreparedImportMeta, PreparedPullResult,
+};
 use crate::lsm;
 use crate::progress_jsonl::ProgressWriter;
 use crate::spec::ImageReference;
@@ -350,6 +352,50 @@ pub(crate) struct InstallToExistingRootOpts {
     pub(crate) root_path: Utf8PathBuf,
 }
 
+#[derive(Debug, clap::Parser, PartialEq, Eq)]
+pub(crate) struct InstallResetOpts {
+    /// Acknowledge that this command is experimental.
+    #[clap(long)]
+    pub(crate) experimental: bool,
+
+    #[clap(flatten)]
+    pub(crate) source_opts: InstallSourceOpts,
+
+    #[clap(flatten)]
+    pub(crate) target_opts: InstallTargetOpts,
+
+    /// Name of the target stateroot. If not provided, one will be automatically
+    /// generated of the form s<year>-<serial> where <serial> starts at zero and
+    /// increments automatically.
+    #[clap(long)]
+    pub(crate) stateroot: Option<String>,
+
+    /// Don't display progress
+    #[clap(long)]
+    pub(crate) quiet: bool,
+
+    #[clap(flatten)]
+    pub(crate) progress: crate::cli::ProgressOptions,
+
+    /// Restart or reboot into the new target image.
+    ///
+    /// Currently, this option always reboots.  In the future this command
+    /// will detect the case where no kernel changes are queued, and perform
+    /// a userspace-only restart.
+    #[clap(long)]
+    pub(crate) apply: bool,
+
+    /// Skip inheriting any automatically discovered root file system kernel arguments.
+    #[clap(long)]
+    no_root_kargs: bool,
+
+    /// Add a kernel argument.  This option can be provided multiple times.
+    ///
+    /// Example: --karg=nosmt --karg=console=ttyS0,114800n8
+    #[clap(long)]
+    karg: Option<Vec<String>>,
+}
+
 /// Global state captured from the container.
 #[derive(Debug, Clone)]
 pub(crate) struct SourceInfo {
@@ -381,6 +427,24 @@ pub(crate) struct State {
     /// The root filesystem of the running container
     pub(crate) container_root: Dir,
     pub(crate) tempdir: TempDir,
+}
+
+impl InstallTargetOpts {
+    pub(crate) fn imageref(&self) -> Result<Option<ostree_container::OstreeImageReference>> {
+        let Some(target_imgname) = self.target_imgref.as_deref() else {
+            return Ok(None);
+        };
+        let target_transport =
+            ostree_container::Transport::try_from(self.target_transport.as_str())?;
+        let target_imgref = ostree_container::OstreeImageReference {
+            sigverify: ostree_container::SignatureSource::ContainerPolicyAllowInsecure,
+            imgref: ostree_container::ImageReference {
+                transport: target_transport,
+                name: target_imgname.to_string(),
+            },
+        };
+        Ok(Some(target_imgref))
+    }
 }
 
 impl State {
@@ -1962,6 +2026,94 @@ pub(crate) async fn install_to_existing_root(opts: InstallToExistingRootOpts) ->
     };
 
     install_to_filesystem(opts, true, cleanup).await
+}
+
+pub(crate) async fn install_reset(opts: InstallResetOpts) -> Result<()> {
+    let rootfs = &Dir::open_ambient_dir("/", cap_std::ambient_authority())?;
+    if !opts.experimental {
+        anyhow::bail!("This command requires --experimental");
+    }
+
+    let prog: ProgressWriter = opts.progress.try_into()?;
+
+    let sysroot = &crate::cli::get_storage().await?;
+    let repo = &sysroot.repo();
+    let (booted_deployment, _deployments, host) =
+        crate::status::get_status_require_booted(sysroot)?;
+
+    let stateroots = list_stateroots(sysroot)?;
+    dbg!(&stateroots);
+    let target_stateroot = if let Some(s) = opts.stateroot {
+        s
+    } else {
+        let now = chrono::Utc::now();
+        let r = allocate_new_stateroot(&sysroot, &stateroots, now)?;
+        r.name
+    };
+
+    let booted_stateroot = booted_deployment.osname();
+    assert!(booted_stateroot.as_str() != target_stateroot);
+    let (fetched, spec) = if let Some(target) = opts.target_opts.imageref()? {
+        let mut new_spec = host.spec;
+        new_spec.image = Some(target.into());
+        let fetched = crate::deploy::pull(
+            repo,
+            &new_spec.image.as_ref().unwrap(),
+            None,
+            opts.quiet,
+            prog.clone(),
+        )
+        .await?;
+        (fetched, new_spec)
+    } else {
+        let imgstate = host
+            .status
+            .booted
+            .map(|b| b.query_image(repo))
+            .transpose()?
+            .flatten()
+            .ok_or_else(|| anyhow::anyhow!("No image source specified"))?;
+        (Box::new((*imgstate).into()), host.spec)
+    };
+    let spec = crate::deploy::RequiredHostSpec::from_spec(&spec)?;
+
+    // Compute the kernel arguments to inherit. By default, that's only those involved
+    // in the root filesystem.
+    let root_kargs = if opts.no_root_kargs {
+        Vec::new()
+    } else {
+        let bootcfg = booted_deployment
+            .bootconfig()
+            .ok_or_else(|| anyhow!("Missing bootcfg for booted deployment"))?;
+        if let Some(options) = bootcfg.get("options") {
+            let options = options.split_ascii_whitespace().collect::<Vec<_>>();
+            crate::kernel::root_args_from_cmdline(&options)
+                .into_iter()
+                .map(ToOwned::to_owned)
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        }
+    };
+
+    let kargs = crate::kargs::get_kargs_in_root(rootfs, std::env::consts::ARCH)?
+        .into_iter()
+        .chain(root_kargs.into_iter())
+        .chain(opts.karg.unwrap_or_default())
+        .collect::<Vec<_>>();
+
+    let from = MergeState::Reset {
+        stateroot: target_stateroot,
+        kargs,
+    };
+    crate::deploy::stage(sysroot, from, &fetched, &spec, prog.clone()).await?;
+
+    sysroot.update_mtime()?;
+
+    if opts.apply {
+        crate::reboot::reboot()?;
+    }
+    Ok(())
 }
 
 /// Implementation of `bootc install finalize`.
