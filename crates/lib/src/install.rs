@@ -15,7 +15,7 @@ pub(crate) mod osconfig;
 
 use std::collections::HashMap;
 use std::fs::create_dir_all;
-use std::io::{Seek, SeekFrom, Write};
+use std::io::Write;
 use std::os::fd::{AsFd, AsRawFd};
 use std::os::unix::fs::symlink;
 use std::os::unix::process::CommandExt;
@@ -1772,10 +1772,16 @@ fn setup_composefs_boot(root_setup: &RootSetup, state: &State, image_id: &str) -
             transport: state.source.imageref.transport.to_string(),
             signature: None,
         },
+        false,
     )?;
 
     Ok(())
 }
+
+pub(crate) const COMPOSEFS_TRANSIENT_STATE_DIR: &str = "/run/composefs";
+pub(crate) const COMPOSEFS_STAGED_DEPLOYMENT_PATH: &str = "/run/composefs/staged-deployment";
+/// Relative to /sysroot
+pub(crate) const STATE_DIR_RELATIVE: &str = "state/deploy";
 
 /// Creates and populates /sysroot/state/deploy/image_id
 #[context("Writing composefs state")]
@@ -1783,8 +1789,9 @@ pub(crate) fn write_composefs_state(
     root_path: &Utf8PathBuf,
     deployment_id: Sha256HashValue,
     imgref: &ImageReference,
+    staged: bool,
 ) -> Result<()> {
-    let state_path = root_path.join(format!("state/deploy/{}", deployment_id.to_hex()));
+    let state_path = root_path.join(format!("{STATE_DIR_RELATIVE}/{}", deployment_id.to_hex()));
 
     create_dir_all(state_path.join("etc/upper"))?;
     create_dir_all(state_path.join("etc/work"))?;
@@ -1813,6 +1820,19 @@ pub(crate) fn write_composefs_state(
     origin_file
         .write(config.to_string().as_bytes())
         .context("Falied to write to .origin file")?;
+
+    if staged {
+        std::fs::create_dir_all(COMPOSEFS_TRANSIENT_STATE_DIR)
+            .with_context(|| format!("Creating {COMPOSEFS_TRANSIENT_STATE_DIR}"))?;
+
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .open(COMPOSEFS_STAGED_DEPLOYMENT_PATH)
+            .context("Opening staged-deployment file")?;
+
+        file.write_all(deployment_id.to_hex().as_bytes())?;
+    }
 
     Ok(())
 }

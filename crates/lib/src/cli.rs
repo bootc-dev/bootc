@@ -831,7 +831,7 @@ async fn upgrade_composefs(_opts: UpgradeOpts) -> Result<()> {
         BootType::Uki => setup_composefs_uki_boot(BootSetupType::Upgrade, repo, &id, entry),
     }?;
 
-    write_composefs_state(&Utf8PathBuf::from("/sysroot"), id, imgref)?;
+    write_composefs_state(&Utf8PathBuf::from("/sysroot"), id, imgref, true)?;
 
     Ok(())
 }

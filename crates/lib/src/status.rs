@@ -23,6 +23,7 @@ use ostree_ext::ostree;
 use tokio::io::AsyncReadExt;
 
 use crate::cli::OutputFormat;
+use crate::install::{COMPOSEFS_STAGED_DEPLOYMENT_PATH, STATE_DIR_RELATIVE};
 use crate::spec::ImageStatus;
 use crate::spec::{BootEntry, BootOrder, Host, HostSpec, HostStatus, HostType};
 use crate::spec::{ImageReference, ImageSignature};
@@ -389,8 +390,8 @@ pub(crate) async fn composefs_deployment_status() -> Result<Host> {
     let sysroot = cap_std::fs::Dir::open_ambient_dir("/sysroot", cap_std::ambient_authority())
         .context("Opening sysroot")?;
     let deployments = sysroot
-        .read_dir("state/deploy")
-        .context("Reading sysroot state/deploy")?;
+        .read_dir(STATE_DIR_RELATIVE)
+        .with_context(|| format!("Reading sysroot {STATE_DIR_RELATIVE}"))?;
 
     let host_spec = HostSpec {
         image: None,
@@ -398,6 +399,17 @@ pub(crate) async fn composefs_deployment_status() -> Result<Host> {
     };
 
     let mut host = Host::new(host_spec);
+
+    let staged_deployment_id = match std::fs::File::open(COMPOSEFS_STAGED_DEPLOYMENT_PATH) {
+        Ok(mut f) => {
+            let mut s = String::new();
+            f.read_to_string(&mut s)?;
+
+            Ok(Some(s))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e),
+    }?;
 
     for depl in deployments {
         let depl = depl?;
@@ -422,6 +434,15 @@ pub(crate) async fn composefs_deployment_status() -> Result<Host> {
             host.status.booted = Some(boot_entry);
             continue;
         }
+
+        if let Some(staged_deployment_id) = &staged_deployment_id {
+            if depl_file_name == staged_deployment_id.trim() {
+                host.status.staged = Some(boot_entry);
+                continue;
+            }
+        }
+
+        host.status.rollback = Some(boot_entry);
     }
 
     Ok(host)
