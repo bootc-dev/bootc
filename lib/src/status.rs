@@ -144,10 +144,13 @@ fn boot_entry_from_deployment(
         (None, CachedImageStatus::default(), false)
     };
 
+    let soft_reboot_capable = sysroot.sysroot.deployment_can_soft_reboot(deployment);
+
     let r = BootEntry {
         image,
         cached_update,
         incompatible,
+        soft_reboot_capable,
         store,
         pinned: deployment.is_pinned(),
         ostree: Some(crate::spec::BootEntryOstree {
@@ -228,17 +231,17 @@ pub(crate) fn get_status(
         other,
     };
 
+    let booted = booted_deployment
+        .as_ref()
+        .map(|d| boot_entry_from_deployment(sysroot, d))
+        .transpose()
+        .context("Booted deployment")?;
     let staged = deployments
         .staged
         .as_ref()
         .map(|d| boot_entry_from_deployment(sysroot, d))
         .transpose()
         .context("Staged deployment")?;
-    let booted = booted_deployment
-        .as_ref()
-        .map(|d| boot_entry_from_deployment(sysroot, d))
-        .transpose()
-        .context("Booted deployment")?;
     let rollback = deployments
         .rollback
         .as_ref()
@@ -415,6 +418,11 @@ fn human_render_slot(
         writeln!(out, "yes")?;
     }
 
+    if entry.soft_reboot_capable {
+        write_row_name(&mut out, "Soft-reboot", prefix_len)?;
+        writeln!(out, "capable")?;
+    }
+
     tracing::debug!("pinned={}", entry.pinned);
 
     Ok(())
@@ -442,6 +450,11 @@ fn human_render_slot_ostree(
     if entry.pinned {
         write_row_name(&mut out, "Pinned", prefix_len)?;
         writeln!(out, "yes")?;
+    }
+
+    if entry.soft_reboot_capable {
+        write_row_name(&mut out, "Soft-reboot", prefix_len)?;
+        writeln!(out, "capable")?;
     }
 
     tracing::debug!("pinned={}", entry.pinned);
