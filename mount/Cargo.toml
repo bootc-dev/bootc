@@ -10,7 +10,7 @@ version = "0.0.0"
 
 [dependencies]
 anyhow = { workspace = true }
-bootc-utils = { path = "../utils" }
+bootc-utils = { package = "bootc-internal-utils", path = "../utils", version = "0.0.0" }
 camino = { workspace = true, features = ["serde1"] }
 fn-error-context = { workspace = true }
 rustix = { workspace = true }

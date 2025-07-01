@@ -18,8 +18,8 @@ include = ["/src", "LICENSE-APACHE", "LICENSE-MIT"]
 anstream = "0.6.13"
 anstyle = "1.0.6"
 anyhow = { workspace = true }
-bootc-utils = { path = "../utils" }
-bootc-blockdev = { path = "../blockdev" }
+bootc-utils = { package = "bootc-internal-utils", path = "../utils", version = "0.0.0" }
+bootc-blockdev = { package = "bootc-internal-blockdev", path = "../blockdev", version = "0.0.0" }
 bootc-mount = { path = "../mount" }
 bootc-tmpfiles = { path = "../tmpfiles" }
 bootc-sysusers = { path = "../sysusers" }

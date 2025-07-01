@@ -177,8 +177,8 @@ version = "0.0.0"
 dependencies = [
  "anstream",
  "anyhow",
+ "bootc-internal-utils",
  "bootc-lib",
- "bootc-utils",
  "log",
  "owo-colors",
  "tokio",
@@ -186,11 +186,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "bootc-blockdev"
+name = "bootc-internal-blockdev"
 version = "0.0.0"
 dependencies = [
  "anyhow",
- "bootc-utils",
+ "bootc-internal-utils",
  "camino",
  "fn-error-context",
  "indoc",
@@ -201,17 +201,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "bootc-internal-utils"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "rustix 1.0.3",
+ "serde",
+ "serde_json",
+ "shlex",
+ "similar-asserts",
+ "static_assertions",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "bootc-lib"
 version = "1.4.0"
 dependencies = [
  "anstream",
  "anstyle",
  "anyhow",
- "bootc-blockdev",
+ "bootc-internal-blockdev",
+ "bootc-internal-utils",
  "bootc-mount",
  "bootc-sysusers",
  "bootc-tmpfiles",
- "bootc-utils",
  "camino",
  "canon-json",
  "cap-std-ext",
@@ -254,7 +272,7 @@ name = "bootc-mount"
 version = "0.0.0"
 dependencies = [
  "anyhow",
- "bootc-utils",
+ "bootc-internal-utils",
  "camino",
  "fn-error-context",
  "indoc",
@@ -269,7 +287,7 @@ name = "bootc-sysusers"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "bootc-utils",
+ "bootc-internal-utils",
  "camino",
  "cap-std-ext",
  "fn-error-context",
@@ -287,7 +305,7 @@ name = "bootc-tmpfiles"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "bootc-utils",
+ "bootc-internal-utils",
  "camino",
  "cap-std-ext",
  "fn-error-context",
@@ -297,24 +315,6 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.12",
  "uzers",
-]
-
-[[package]]
-name = "bootc-utils"
-version = "0.0.0"
-dependencies = [
- "anyhow",
- "chrono",
- "rustix 1.0.3",
- "serde",
- "serde_json",
- "shlex",
- "similar-asserts",
- "static_assertions",
- "tempfile",
- "tokio",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]
@@ -1794,7 +1794,7 @@ name = "ostree-ext"
 version = "0.15.3"
 dependencies = [
  "anyhow",
- "bootc-utils",
+ "bootc-internal-utils",
  "camino",
  "canon-json",
  "cap-std-ext",
@@ -2498,8 +2498,8 @@ name = "system-reinstall-bootc"
 version = "0.1.9"
 dependencies = [
  "anyhow",
+ "bootc-internal-utils",
  "bootc-mount",
- "bootc-utils",
  "clap",
  "crossterm 0.29.0",
  "dialoguer",

@@ -11,7 +11,7 @@ fn-error-context = { workspace = true }
 cap-std-ext = { version = "4" }
 thiserror = { workspace = true }
 tempfile = { workspace = true }
-bootc-utils = { path = "../utils" }
+bootc-utils = { package = "bootc-internal-utils", path = "../utils", version = "0.0.0" }
 rustix = { workspace = true }
 uzers = "0.12"
 

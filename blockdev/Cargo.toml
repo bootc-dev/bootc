@@ -1,16 +1,14 @@
 [package]
-description = "Internal blockdev code"
-# Should never be published to crates.io
-publish = false
+description = "Internal implementation component of bootc; do not use"
 edition = "2021"
 license = "MIT OR Apache-2.0"
-name = "bootc-blockdev"
+name = "bootc-internal-blockdev"
 repository = "https://github.com/bootc-dev/bootc"
 version = "0.0.0"
 
 [dependencies]
 anyhow = { workspace = true }
-bootc-utils = { path = "../utils" }
+bootc-utils = { package = "bootc-internal-utils", path = "../utils", version = "0.0.0" }
 camino = { workspace = true, features = ["serde1"] }
 fn-error-context = { workspace = true }
 regex = "1.10.4"

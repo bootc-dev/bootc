@@ -15,7 +15,7 @@ ostree = { features = ["v2025_2"], version = "0.20" }
 
 # Private dependencies
 anyhow = { workspace = true }
-bootc-utils = { path = "../utils" }
+bootc-utils = { package = "bootc-internal-utils", path = "../utils", version = "0.0.0" }
 camino = { workspace = true, features = ["serde1"] }
 composefs = { git = "https://github.com/containers/composefs-rs", rev = "821eeae93e48f1ee381c49b8cd4d22fda92d27a2" }
 chrono = { workspace = true }

@@ -17,7 +17,7 @@ platforms = ["*-unknown-linux-gnu"]
 [dependencies]
 anyhow = { workspace = true }
 bootc-mount = { path = "../mount" }
-bootc-utils = { path = "../utils" }
+bootc-utils = { package = "bootc-internal-utils", path = "../utils", version = "0.0.0" }
 clap = { workspace = true, features = ["derive"] }
 crossterm = "0.29.0"
 dialoguer = "0.11.0"
