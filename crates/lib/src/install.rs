@@ -1531,15 +1531,18 @@ pub(crate) fn setup_composefs_bls_boot(
     id: &Sha256HashValue,
     entry: BootEntry<Sha256HashValue>,
 ) -> Result<()> {
-    let (root_path, cmdline_refs) = match setup_type {
-        BootSetupType::Setup(root_setup) => {
+    let (root_path, cmdline_refs, entry_id) = match setup_type {
+        BootSetupType::Setup(root_setup) => (
+            root_setup.physical_root_path.clone(),
             // root_setup.kargs has [root=UUID=<UUID>, "rw"]
-            (root_setup.physical_root_path.clone(), &root_setup.kargs)
-        }
+            &root_setup.kargs,
+            format!("{}", id.to_hex()),
+        ),
 
         BootSetupType::Upgrade => (
             Utf8PathBuf::from("/sysroot"),
             &vec![format!("root=UUID={DPS_UUID}"), RW_KARG.to_string()],
+            format!("{}.staged", id.to_hex()),
         ),
     };
 
@@ -1555,7 +1558,7 @@ pub(crate) fn setup_composefs_bls_boot(
         false,
         root_path.as_std_path(),
         Some("boot"),
-        Some(&id.to_hex()),
+        Some(&entry_id),
         &str_slice,
     )
 }
@@ -1570,6 +1573,24 @@ pub fn get_esp_partition(device: &str) -> Result<(String, Option<String>)> {
 
     Ok((esp.node, esp.uuid))
 }
+
+fn get_user_config(uki_id: &str) -> String {
+    let s = format!(
+        r#"
+menuentry "Fedora Bootc UKI: ({uki_id})" {{
+    insmod fat
+    insmod chain
+    search --no-floppy --set=root --fs-uuid "${{EFI_PART_UUID}}"
+    chainloader /EFI/Linux/{uki_id}.efi
+}}
+"#
+    );
+
+    return s;
+}
+
+/// Contains the EFP's filesystem UUID. Used by grub
+const EFI_UUID_FILE: &str = "efiuuid.cfg";
 
 #[context("Setting up UKI boot")]
 pub(crate) fn setup_composefs_uki_boot(
@@ -1641,58 +1662,55 @@ pub(crate) fn setup_composefs_uki_boot(
 
     let is_upgrade = matches!(setup_type, BootSetupType::Upgrade);
 
-    // Add the user grug cfg
-    let grub_user_config = format!(
+    let efi_uuid_source = format!(
         r#"
-menuentry "Fedora Bootc UKI: ({uki_id})" {{
-    insmod fat
-    insmod chain
-    search --no-floppy --set=root --fs-uuid "${{EFI_PART_UUID}}"
-    chainloader /EFI/Linux/{uki_id}.efi
-}}
-"#,
-        uki_id = id.to_hex(),
+if [ -f ${{config_directory}}/{EFI_UUID_FILE} ]; then
+        source ${{config_directory}}/{EFI_UUID_FILE}
+fi
+"#
     );
 
-    let user_cfg_name = "grub2/user.cfg";
+    let user_cfg_name = if is_upgrade {
+        "grub2/user.cfg.staged"
+    } else {
+        "grub2/user.cfg"
+    };
     let user_cfg_path = boot_dir.join(user_cfg_name);
 
-    // TODO: Figure out a better way to sort these menuentries. This is a bit scuffed
-    //
-    // Read the current user.cfg, split at the first menuentry, then stick the new menuentry in
-    // between the efiuuid.cfg sourcing code and the previous menuentry
+    // Iterate over all available deployments, and generate a menuentry for each
     if is_upgrade {
-        let contents =
-            std::fs::read_to_string(&user_cfg_path).context(format!("Reading {user_cfg_name}"))?;
-
         let mut usr_cfg = std::fs::OpenOptions::new()
             .write(true)
-            .truncate(true)
+            .create(true)
             .open(user_cfg_path)
             .with_context(|| format!("Opening {user_cfg_name}"))?;
 
-        let Some((before, after)) = contents.split_once("menuentry") else {
-            anyhow::bail!("Did not find menuentry in {user_cfg_name}")
-        };
+        usr_cfg.write_all(efi_uuid_source.as_bytes())?;
+        usr_cfg.write_all(get_user_config(&id.to_hex()).as_bytes())?;
 
-        usr_cfg
-            .seek(SeekFrom::Start(0))
-            .with_context(|| format!("Seek {user_cfg_name}"))?;
+        // root_path here will be /sysroot
+        for entry in std::fs::read_dir(root_path.join(STATE_DIR_RELATIVE))? {
+            let entry = entry?;
 
-        usr_cfg
-            .write_all(format!("{before} {grub_user_config}\nmenuentry {after}").as_bytes())
-            .with_context(|| format!("Writing to {user_cfg_name}"))?;
+            let depl_file_name = entry.file_name();
+            // SAFETY: Deployment file name shouldn't containg non UTF-8 chars
+            let depl_file_name = depl_file_name.to_string_lossy();
+
+            usr_cfg.write_all(get_user_config(&depl_file_name).as_bytes())?;
+        }
 
         return Ok(());
     }
 
-    // Open grub2/efiuuid.cfg and write the EFI partition UUID in there
+    let efi_uuid_file_path = format!("grub2/{EFI_UUID_FILE}");
+
+    // Open grub2/efiuuid.cfg and write the EFI partition fs-UUID in there
     // This will be sourced by grub2/user.cfg to be used for `--fs-uuid`
     let mut efi_uuid_file = std::fs::OpenOptions::new()
         .write(true)
         .create(true)
-        .open(boot_dir.join("grub2/efiuuid.cfg"))
-        .context("Opening grub2/efiuuid.cfg")?;
+        .open(boot_dir.join(&efi_uuid_file_path))
+        .with_context(|| format!("Opening {efi_uuid_file_path}"))?;
 
     let esp_uuid = Task::new("blkid for ESP UUID", "blkid")
         .args(["-s", "UUID", "-o", "value", &esp_device])
@@ -1700,7 +1718,7 @@ menuentry "Fedora Bootc UKI: ({uki_id})" {{
 
     efi_uuid_file
         .write_all(format!("set EFI_PART_UUID=\"{}\"", esp_uuid.trim()).as_bytes())
-        .context("Writing to grub2/efiuuid.cfg")?;
+        .with_context(|| format!("Writing to {efi_uuid_file_path}"))?;
 
     // Write to grub2/user.cfg
     let mut usr_cfg = std::fs::OpenOptions::new()
@@ -1709,15 +1727,8 @@ menuentry "Fedora Bootc UKI: ({uki_id})" {{
         .open(user_cfg_path)
         .with_context(|| format!("Opening {user_cfg_name}"))?;
 
-    let efi_uuid_source = r#"
-if [ -f ${config_directory}/efiuuid.cfg ]; then
-        source ${config_directory}/efiuuid.cfg
-fi
-"#;
-
-    usr_cfg
-        .write_all(format!("{efi_uuid_source}\n{grub_user_config}").as_bytes())
-        .with_context(|| format!("Writing to {user_cfg_name}"))?;
+    usr_cfg.write_all(efi_uuid_source.as_bytes())?;
+    usr_cfg.write_all(get_user_config(&id.to_hex()).as_bytes())?;
 
     Ok(())
 }
