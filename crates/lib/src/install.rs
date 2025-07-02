@@ -1733,6 +1733,41 @@ fi
     Ok(())
 }
 
+/// Pulls the `image` from `transport` into a composefs repository at /sysroot
+/// Checks for boot entries in the image and returns them
+#[context("Pulling composefs repository")]
+pub(crate) async fn pull_composefs_repo(
+    transport: &String,
+    image: &String,
+) -> Result<(
+    ComposefsRepository<Sha256HashValue>,
+    Vec<BootEntry<Sha256HashValue>>,
+    Sha256HashValue,
+)> {
+    let rootfs_dir = cap_std::fs::Dir::open_ambient_dir("/sysroot", cap_std::ambient_authority())?;
+
+    let repo = open_composefs_repo(&rootfs_dir).context("Opening compoesfs repo")?;
+
+    let (id, verity) = composefs_oci_pull(&Arc::new(repo), &format!("{transport}:{image}"), None)
+        .await
+        .context("Pulling composefs repo")?;
+
+    tracing::debug!(
+        "id = {id}, verity = {verity}",
+        id = hex::encode(id),
+        verity = verity.to_hex()
+    );
+
+    let repo = open_composefs_repo(&rootfs_dir)?;
+    let mut fs = create_composefs_filesystem(&repo, &hex::encode(id), None)
+        .context("Failed to create composefs filesystem")?;
+
+    let entries = fs.transform_for_boot(&repo)?;
+    let id = fs.commit_image(&repo, None)?;
+
+    Ok((repo, entries, id))
+}
+
 #[context("Setting up composefs boot")]
 fn setup_composefs_boot(root_setup: &RootSetup, state: &State, image_id: &str) -> Result<()> {
     let boot_uuid = root_setup

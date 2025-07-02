@@ -6,7 +6,6 @@ use std::ffi::{CString, OsStr, OsString};
 use std::io::Seek;
 use std::os::unix::process::CommandExt;
 use std::process::Command;
-use std::sync::Arc;
 
 use anyhow::{ensure, Context, Result};
 use camino::Utf8PathBuf;
@@ -29,8 +28,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::deploy::RequiredHostSpec;
 use crate::install::{
-    open_composefs_repo, setup_composefs_bls_boot, setup_composefs_uki_boot, write_composefs_state,
-    BootType, BootSetupType,
+    pull_composefs_repo, setup_composefs_bls_boot, setup_composefs_uki_boot, write_composefs_state,
+    BootSetupType, BootType,
 };
 use crate::lints;
 use crate::progress_jsonl::{ProgressWriter, RawProgressFd};
@@ -38,11 +37,6 @@ use crate::spec::Host;
 use crate::spec::ImageReference;
 use crate::status::composefs_deployment_status;
 use crate::utils::sigpolicy_from_opt;
-
-use ostree_ext::composefs_boot::BootOps;
-use ostree_ext::composefs_oci::{
-    image::create_filesystem as create_composefs_filesystem, pull as composefs_oci_pull,
-};
 
 /// Shared progress options
 #[derive(Debug, Parser, PartialEq, Eq)]
@@ -783,44 +777,21 @@ async fn upgrade_composefs(_opts: UpgradeOpts) -> Result<()> {
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("No image source specified"))?;
 
-    let booted_image = host
-        .status
-        .booted
-        .ok_or(anyhow::anyhow!("Could not find booted image"))?
-        .image
-        .ok_or(anyhow::anyhow!("Could not find booted image"))?;
+    // let booted_image = host
+    //     .status
+    //     .booted
+    //     .ok_or(anyhow::anyhow!("Could not find booted image"))?
+    //     .image
+    //     .ok_or(anyhow::anyhow!("Could not find booted image"))?;
 
-    tracing::debug!("booted_image: {booted_image:#?}");
-    tracing::debug!("imgref: {imgref:#?}");
+    // tracing::debug!("booted_image: {booted_image:#?}");
+    // tracing::debug!("imgref: {imgref:#?}");
 
-    let digest = booted_image
-        .digest()
-        .context("Getting digest for booted image")?;
+    // let digest = booted_image
+    //     .digest()
+    //     .context("Getting digest for booted image")?;
 
-    let rootfs_dir = cap_std::fs::Dir::open_ambient_dir("/sysroot", cap_std::ambient_authority())?;
-
-    let repo = open_composefs_repo(&rootfs_dir).context("Opening compoesfs repo")?;
-
-    let (id, verity) = composefs_oci_pull(
-        &Arc::new(repo),
-        &format!("{}:{}", imgref.transport, imgref.image),
-        None,
-    )
-    .await
-    .context("Pulling composefs repo")?;
-
-    tracing::debug!(
-        "id = {id}, verity = {verity}",
-        id = hex::encode(id),
-        verity = verity.to_hex()
-    );
-
-    let repo = open_composefs_repo(&rootfs_dir)?;
-    let mut fs = create_composefs_filesystem(&repo, digest.digest(), None)
-        .context("Failed to create composefs filesystem")?;
-
-    let entries = fs.transform_for_boot(&repo)?;
-    let id = fs.commit_image(&repo, None)?;
+    let (repo, entries, id) = pull_composefs_repo(&imgref.transport, &imgref.image).await?;
 
     let Some(entry) = entries.into_iter().next() else {
         anyhow::bail!("No boot entries!");
@@ -949,9 +920,7 @@ async fn upgrade(opts: UpgradeOpts) -> Result<()> {
     Ok(())
 }
 
-/// Implementation of the `bootc switch` CLI command.
-#[context("Switching")]
-async fn switch(opts: SwitchOpts) -> Result<()> {
+fn imgref_for_switch(opts: &SwitchOpts) -> Result<ImageReference> {
     let transport = ostree_container::Transport::try_from(opts.transport.as_str())?;
     let imgref = ostree_container::ImageReference {
         transport,
@@ -960,6 +929,56 @@ async fn switch(opts: SwitchOpts) -> Result<()> {
     let sigverify = sigpolicy_from_opt(opts.enforce_container_sigpolicy);
     let target = ostree_container::OstreeImageReference { sigverify, imgref };
     let target = ImageReference::from(target);
+
+    return Ok(target);
+}
+
+#[context("Composefs Switching")]
+async fn switch_composefs(opts: SwitchOpts) -> Result<()> {
+    let target = imgref_for_switch(&opts)?;
+    // TODO: Handle in-place
+
+    let host = composefs_deployment_status()
+        .await
+        .context("Getting composefs deployment status")?;
+
+    let new_spec = {
+        let mut new_spec = host.spec.clone();
+        new_spec.image = Some(target.clone());
+        new_spec
+    };
+
+    if new_spec == host.spec {
+        println!("Image specification is unchanged.");
+        return Ok(());
+    }
+
+    let Some(target_imgref) = new_spec.image else {
+        anyhow::bail!("Target image is undefined")
+    };
+
+    let (repo, entries, id) =
+        pull_composefs_repo(&target_imgref.transport, &target_imgref.image).await?;
+
+    let Some(entry) = entries.into_iter().next() else {
+        anyhow::bail!("No boot entries!");
+    };
+
+    match BootType::from(&entry) {
+        BootType::Bls => setup_composefs_bls_boot(BootSetupType::Upgrade, repo, &id, entry),
+        BootType::Uki => setup_composefs_uki_boot(BootSetupType::Upgrade, repo, &id, entry),
+    }?;
+
+    write_composefs_state(&Utf8PathBuf::from("/sysroot"), id, &target_imgref, true)?;
+
+    Ok(())
+}
+
+/// Implementation of the `bootc switch` CLI command.
+#[context("Switching")]
+async fn switch(opts: SwitchOpts) -> Result<()> {
+    let target = imgref_for_switch(&opts)?;
+
     let prog: ProgressWriter = opts.progress.try_into()?;
 
     // If we're doing an in-place mutation, we shortcut most of the rest of the work here
@@ -1182,7 +1201,13 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
                 upgrade(opts).await
             }
         }
-        Opt::Switch(opts) => switch(opts).await,
+        Opt::Switch(opts) => {
+            if composefs_booted()? {
+                switch_composefs(opts).await
+            } else {
+                switch(opts).await
+            }
+        }
         Opt::Rollback(opts) => rollback(opts).await,
         Opt::Edit(opts) => edit(opts).await,
         Opt::UsrOverlay => usroverlay().await,
