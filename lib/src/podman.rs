@@ -24,14 +24,12 @@ pub(crate) struct ImageListEntry {
 /// Given an image ID, return its manifest digest
 pub(crate) fn imageid_to_digest(imgid: &str) -> Result<String> {
     use bootc_utils::CommandRunExt;
-    let o: Vec<Inspect> = crate::install::run_in_host_mountns("podman")
-        .args(["inspect", imgid])
+    // Use skopeo here as that's our current baseline dependency.
+    let o: Inspect = std::process::Command::new("skopeo")
+        .arg("inspect")
+        .arg(format!("containers-storage:{imgid}"))
         .run_and_parse_json()?;
-    let i = o
-        .into_iter()
-        .next()
-        .ok_or_else(|| anyhow::anyhow!("No images returned for inspect"))?;
-    Ok(i.digest)
+    Ok(o.digest)
 }
 
 /// Return true if there is apparently an active container store at the target path.
