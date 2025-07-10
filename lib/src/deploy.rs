@@ -587,6 +587,10 @@ async fn deploy(
                 &opts,
                 Some(cancellable),
             )?;
+            tracing::debug!(
+                "Soft reboot capable: {:?}",
+                ostree_ext::deployment_can_soft_reboot(&sysroot, &d)
+            );
             Ok(d.index())
         }),
     )

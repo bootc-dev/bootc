@@ -77,3 +77,19 @@ pub mod prelude {
 pub mod fixture;
 #[cfg(feature = "internal-testing-api")]
 pub mod integrationtest;
+
+/// Dynamic detection wrapper for soft reboots, if the installed ostree is too old
+/// then we return `None`.
+pub fn deployment_can_soft_reboot(
+    sysroot: &ostree::Sysroot,
+    deployment: &ostree::Deployment,
+) -> Option<bool> {
+    #[cfg(have_ostree_2025_3)]
+    {
+        Some(ostree::Sysroot::deployment_can_soft_reboot(
+            sysroot, deployment,
+        ))
+    }
+    #[cfg(not(have_ostree_2025_3))]
+    None
+}

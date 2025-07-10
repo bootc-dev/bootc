@@ -11,7 +11,8 @@ version = "0.15.3"
 [dependencies]
 containers-image-proxy = "0.8.0"
 # We re-export this library too.
-ostree = { features = ["v2025_2"], version = "0.20" }
+# Default to v2025_2, upgrade to v2025_3 when feature is enabled
+ostree = { version = "0.20", features = ["v2025_2"] }
 
 # Private dependencies
 anyhow = { workspace = true }
@@ -58,6 +59,9 @@ quickcheck = "1"
 # https://github.com/rust-lang/cargo/issues/2911
 # https://github.com/rust-lang/rfcs/pull/1956
 ostree-ext = { path = ".", features = ["internal-testing-api"] }
+
+[build-dependencies]
+pkg-config = "0.3"
 
 [package.metadata.docs.rs]
 features = ["dox"]
