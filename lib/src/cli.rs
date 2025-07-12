@@ -464,6 +464,15 @@ pub(crate) enum InternalsOpts {
         #[clap(allow_hyphen_values = true)]
         args: Vec<OsString>,
     },
+    /// Loopback device cleanup helper (internal use only)
+    LoopbackCleanupHelper {
+        /// Device path to clean up
+        #[clap(long)]
+        device: String,
+        /// Parent process ID to monitor
+        #[clap(long)]
+        parent_pid: u32,
+    },
     /// Invoked from ostree-ext to complete an installation.
     BootcInstallCompletion {
         /// Path to the sysroot
@@ -1260,6 +1269,9 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
             InternalsOpts::BootcInstallCompletion { sysroot, stateroot } => {
                 let rootfs = &Dir::open_ambient_dir("/", cap_std::ambient_authority())?;
                 crate::install::completion::run_from_ostree(rootfs, &sysroot, &stateroot).await
+            }
+            InternalsOpts::LoopbackCleanupHelper { device, parent_pid } => {
+                crate::blockdev::run_loopback_cleanup_helper(&device, parent_pid)
             }
             #[cfg(feature = "rhsm")]
             InternalsOpts::PublishRhsmFacts => crate::rhsm::publish_facts(&root).await,

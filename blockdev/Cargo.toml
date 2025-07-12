@@ -11,6 +11,7 @@ anyhow = { workspace = true }
 bootc-utils = { package = "bootc-internal-utils", path = "../utils", version = "0.0.0" }
 camino = { workspace = true, features = ["serde1"] }
 fn-error-context = { workspace = true }
+libc = { workspace = true }
 regex = "1.10.4"
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
@@ -18,6 +19,7 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 indoc = "2.0.5"
+tempfile = { workspace = true }
 
 [lib]
 path = "src/blockdev.rs"
