@@ -27,6 +27,7 @@ mod status;
 mod store;
 mod task;
 mod utils;
+mod bls_config;
 
 #[cfg(feature = "docgen")]
 mod docgen;

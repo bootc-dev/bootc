@@ -48,6 +48,7 @@ use ostree_ext::composefs::{
     repository::Repository as ComposefsRepository,
     util::Sha256Digest,
 };
+use ostree_ext::composefs_boot::bootloader::read_file;
 use ostree_ext::composefs_boot::{
     bootloader::BootEntry as ComposefsBootEntry,
     write_boot::write_boot_simple as composefs_write_boot_simple, BootOps,
@@ -72,6 +73,7 @@ use schemars::JsonSchema;
 
 #[cfg(feature = "install-to-disk")]
 use self::baseline::InstallBlockDeviceOpts;
+use crate::bls_config::{parse_bls_config, BLSConfig};
 use crate::boundimage::{BoundImage, ResolvedBoundImage};
 use crate::containerenv::ContainerExecutionInfo;
 use crate::deploy::{prepare_for_pull, pull_from_prepared, PreparedImportMeta, PreparedPullResult};
@@ -1543,6 +1545,31 @@ async fn initialize_composefs_repository(
     composefs_oci_pull(&Arc::new(repo), &format!("{transport}{image_name}"), None).await
 }
 
+fn get_booted_bls() -> Result<BLSConfig> {
+    let cmdline = crate::kernel::parse_cmdline()?;
+    let booted = cmdline.iter().find_map(|x| x.strip_prefix("composefs="));
+
+    let Some(booted) = booted else {
+        anyhow::bail!("Failed to find composefs parameter in kernel cmdline");
+    };
+
+    for entry in std::fs::read_dir("/sysroot/boot/loader/entries")? {
+        let entry = entry?;
+
+        if !entry.file_name().as_str()?.ends_with(".conf") {
+            continue;
+        }
+
+        let bls = parse_bls_config(&std::fs::read_to_string(&entry.path())?)?;
+
+        if bls.options.contains(booted) {
+            return Ok(bls);
+        }
+    }
+
+    Err(anyhow::anyhow!("Booted BLS not found"))
+}
+
 pub(crate) enum BootSetupType<'a> {
     /// For initial setup, i.e. install to-disk
     Setup(&'a RootSetup),
@@ -1556,38 +1583,97 @@ pub(crate) fn setup_composefs_bls_boot(
     // TODO: Make this generic
     repo: ComposefsRepository<Sha256HashValue>,
     id: &Sha256HashValue,
-    entry: BootEntry<Sha256HashValue>,
+    entry: ComposefsBootEntry<Sha256HashValue>,
 ) -> Result<()> {
-    let (root_path, cmdline_refs, entry_id) = match setup_type {
-        BootSetupType::Setup(root_setup) => (
-            root_setup.physical_root_path.clone(),
+    let id_hex = id.to_hex();
+
+    let (root_path, cmdline_refs) = match setup_type {
+        BootSetupType::Setup(root_setup) => {
             // root_setup.kargs has [root=UUID=<UUID>, "rw"]
-            &root_setup.kargs,
-            format!("{}", id.to_hex()),
-        ),
+            let mut cmdline_options = String::from(root_setup.kargs.join(" "));
+            cmdline_options.push_str(&format!(" composefs={id_hex}"));
+
+            (root_setup.physical_root_path.clone(), cmdline_options)
+        }
 
         BootSetupType::Upgrade => (
             Utf8PathBuf::from("/sysroot"),
-            &vec![format!("root=UUID={DPS_UUID}"), RW_KARG.to_string()],
-            format!("{}.staged", id.to_hex()),
+            vec![
+                format!("root=UUID={DPS_UUID}"),
+                RW_KARG.to_string(),
+                format!("composefs={id_hex}"),
+            ]
+            .join(" "),
         ),
     };
 
-    let str_slice = cmdline_refs
-        .iter()
-        .map(|x| x.as_str())
-        .collect::<Vec<&str>>();
+    let boot_dir = root_path.join("boot");
 
-    composefs_write_boot_simple(
-        &repo,
-        entry,
-        &id,
-        false,
-        root_path.as_std_path(),
-        Some("boot"),
-        Some(&entry_id),
-        &str_slice,
-    )
+    let bls_config = match &entry {
+        ComposefsBootEntry::Type1(..) => todo!(),
+        ComposefsBootEntry::Type2(..) => todo!(),
+        ComposefsBootEntry::UsrLibModulesUki(..) => todo!(),
+
+        ComposefsBootEntry::UsrLibModulesVmLinuz(usr_lib_modules_vmlinuz) => {
+            // Write the initrd and vmlinuz at /boot/<id>/
+            let path = boot_dir.join(&id_hex);
+            create_dir_all(&path)?;
+
+            let vmlinuz_path = path.join("vmlinuz");
+            let initrd_path = path.join("initrd");
+
+            std::fs::write(
+                &vmlinuz_path,
+                read_file(&usr_lib_modules_vmlinuz.vmlinuz, &repo).context("Reading vmlinuz")?,
+            )
+            .context("Writing vmlinuz to path")?;
+
+            if let Some(initramfs) = &usr_lib_modules_vmlinuz.initramfs {
+                std::fs::write(
+                    &initrd_path,
+                    read_file(initramfs, &repo).context("Reading initramfs")?,
+                )
+                .context("Writing initrd to path")?;
+            } else {
+                anyhow::bail!("initramfs not found");
+            };
+
+            BLSConfig {
+                title: Some(id_hex.clone()),
+                version: 1,
+                linux: format!("/boot/{id_hex}/vmlinuz"),
+                initrd: format!("/boot/{id_hex}/initrd"),
+                options: cmdline_refs,
+                extra: HashMap::new(),
+            }
+        }
+    };
+
+    let (entries_path, booted_bls) = if matches!(setup_type, BootSetupType::Upgrade) {
+        let mut booted_bls = get_booted_bls()?;
+        booted_bls.version = 0; // entries are sorted by their filename in reverse order
+
+        // This will be atomically renamed to 'loader/entries' on shutdown/reboot
+        (boot_dir.join("loader/entries.staged"), Some(booted_bls))
+    } else {
+        (boot_dir.join("loader/entries"), None)
+    };
+
+    create_dir_all(&entries_path).with_context(|| format!("Creating {:?}", entries_path))?;
+
+    std::fs::write(
+        entries_path.join(format!("bootc-composefs-{}.conf", bls_config.version)),
+        bls_config.to_string().as_bytes(),
+    )?;
+
+    if let Some(booted_bls) = booted_bls {
+        std::fs::write(
+            entries_path.join(format!("bootc-composefs-{}.conf", booted_bls.version)),
+            booted_bls.to_string().as_bytes(),
+        )?;
+    }
+
+    Ok(())
 }
 
 pub fn get_esp_partition(device: &str) -> Result<(String, Option<String>)> {
