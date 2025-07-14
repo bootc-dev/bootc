@@ -26,7 +26,7 @@ use ostree_ext::ostree;
 use schemars::schema_for;
 use serde::{Deserialize, Serialize};
 
-use crate::deploy::RequiredHostSpec;
+use crate::deploy::{composefs_rollback, RequiredHostSpec};
 use crate::install::{
     pull_composefs_repo, setup_composefs_bls_boot, setup_composefs_uki_boot, write_composefs_state,
     BootSetupType, BootType,
@@ -959,8 +959,7 @@ async fn switch_composefs(opts: SwitchOpts) -> Result<()> {
         anyhow::bail!("Target image is undefined")
     };
 
-    let (repo, entries, id) =
-        pull_composefs_repo(&target_imgref.transport, &target_imgref.image).await?;
+    let (repo, entries, id) = pull_composefs_repo(&"docker".into(), &target_imgref.image).await?;
 
     let Some(entry) = entries.into_iter().next() else {
         anyhow::bail!("No boot entries!");
@@ -1053,8 +1052,12 @@ async fn switch(opts: SwitchOpts) -> Result<()> {
 /// Implementation of the `bootc rollback` CLI command.
 #[context("Rollback")]
 async fn rollback(opts: RollbackOpts) -> Result<()> {
-    let sysroot = &get_storage().await?;
-    crate::deploy::rollback(sysroot).await?;
+    if composefs_booted()? {
+        composefs_rollback().await?
+    } else {
+        let sysroot = &get_storage().await?;
+        crate::deploy::rollback(sysroot).await?;
+    };
 
     if opts.apply {
         crate::reboot::reboot()?;

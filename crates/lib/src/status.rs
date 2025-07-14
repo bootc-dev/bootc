@@ -19,10 +19,15 @@ use ostree_ext::container_utils::ostree_booted;
 use ostree_ext::containers_image_proxy;
 use ostree_ext::keyfileext::KeyFileExt;
 use ostree_ext::oci_spec;
+use ostree_ext::oci_spec::image::ImageManifest;
 use ostree_ext::ostree;
 use tokio::io::AsyncReadExt;
 
 use crate::cli::OutputFormat;
+use crate::deploy::get_sorted_boot_entries;
+use crate::install::BootType;
+use crate::install::ORIGIN_KEY_BOOT;
+use crate::install::ORIGIN_KEY_BOOT_TYPE;
 use crate::install::{COMPOSEFS_STAGED_DEPLOYMENT_PATH, STATE_DIR_RELATIVE};
 use crate::spec::ImageStatus;
 use crate::spec::{BootEntry, BootOrder, Host, HostSpec, HostStatus, HostType};
@@ -294,37 +299,44 @@ pub(crate) fn get_status(
     Ok((deployments, host))
 }
 
+/// imgref = transport:image_name
+#[context("Getting container info")]
+async fn get_container_manifest_and_config(
+    imgref: &String,
+) -> Result<(ImageManifest, oci_spec::image::ImageConfiguration)> {
+    let config = containers_image_proxy::ImageProxyConfig::default();
+    let proxy = containers_image_proxy::ImageProxy::new_with_config(config).await?;
+
+    let img = proxy.open_image(&imgref).await.context("Opening image")?;
+
+    let (_, manifest) = proxy.fetch_manifest(&img).await?;
+    let (mut reader, driver) = proxy.get_descriptor(&img, manifest.config()).await?;
+
+    let mut buf = Vec::with_capacity(manifest.config().size() as usize);
+    buf.resize(manifest.config().size() as usize, 0);
+    reader.read_exact(&mut buf).await?;
+    driver.await?;
+
+    let config: oci_spec::image::ImageConfiguration = serde_json::from_slice(&buf)?;
+
+    Ok((manifest, config))
+}
+
 #[context("Getting composefs deployment metadata")]
 async fn boot_entry_from_composefs_deployment(
     origin: tini::Ini,
-    booted: &String,
+    verity: String,
 ) -> Result<BootEntry> {
     let image = match origin.get::<String>("origin", ORIGIN_CONTAINER) {
         Some(img_name_from_config) => {
             let ostree_img_ref = OstreeImageReference::from_str(&img_name_from_config)?;
             let imgref = ostree_img_ref.imgref.to_string();
-
             let img_ref = ImageReference::from(ostree_img_ref);
-
-            let config = containers_image_proxy::ImageProxyConfig::default();
-            let proxy = containers_image_proxy::ImageProxy::new_with_config(config).await?;
 
             // The image might've been removed, so don't error if we can't get the image manifest
             let (image_digest, version, architecture, created_at) =
-                match proxy.open_image(&imgref).await.context("Opening image") {
-                    Ok(img) => {
-                        let (_, manifest) = proxy.fetch_manifest(&img).await?;
-                        let (mut reader, driver) =
-                            proxy.get_descriptor(&img, manifest.config()).await?;
-
-                        let mut buf = Vec::with_capacity(manifest.config().size() as usize);
-                        buf.resize(manifest.config().size() as usize, 0);
-                        reader.read_exact(&mut buf).await?;
-                        driver.await?;
-
-                        let config: oci_spec::image::ImageConfiguration =
-                            serde_json::from_slice(&buf)?;
-
+                match get_container_manifest_and_config(&imgref).await {
+                    Ok((manifest, config)) => {
                         let digest = manifest.config().digest().to_string();
                         let arch = config.architecture().to_string();
                         let created = config.created().clone();
@@ -342,11 +354,7 @@ async fn boot_entry_from_composefs_deployment(
                     }
                 };
 
-            let timestamp = if let Some(created_at) = created_at {
-                try_deserialize_timestamp(&created_at)
-            } else {
-                None
-            };
+            let timestamp = created_at.and_then(|x| try_deserialize_timestamp(&x));
 
             let image_status = ImageStatus {
                 image: img_ref,
@@ -363,6 +371,11 @@ async fn boot_entry_from_composefs_deployment(
         None => None,
     };
 
+    let boot_type = match origin.get::<String>(ORIGIN_KEY_BOOT, ORIGIN_KEY_BOOT_TYPE) {
+        Some(s) => BootType::try_from(s.as_str())?,
+        None => anyhow::bail!("{ORIGIN_KEY_BOOT} not found"),
+    };
+
     let e = BootEntry {
         image,
         cached_update: None,
@@ -370,9 +383,7 @@ async fn boot_entry_from_composefs_deployment(
         pinned: false,
         store: None,
         ostree: None,
-        composefs: Some(crate::spec::BootEntryComposefs {
-            verity: booted.into(),
-        }),
+        composefs: Some(crate::spec::BootEntryComposefs { verity, boot_type }),
     };
 
     return Ok(e);
@@ -381,9 +392,9 @@ async fn boot_entry_from_composefs_deployment(
 #[context("Getting composefs deployment status")]
 pub(crate) async fn composefs_deployment_status() -> Result<Host> {
     let cmdline = crate::kernel::parse_cmdline()?;
-    let booted = cmdline.iter().find_map(|x| x.strip_prefix("composefs="));
+    let booted_image_verity = cmdline.iter().find_map(|x| x.strip_prefix("composefs="));
 
-    let Some(booted) = booted else {
+    let Some(booted_image_verity) = booted_image_verity else {
         anyhow::bail!("Failed to find composefs parameter in kernel cmdline");
     };
 
@@ -427,9 +438,10 @@ pub(crate) async fn composefs_deployment_status() -> Result<Host> {
         let ini = tini::Ini::from_string(&config)
             .with_context(|| format!("Failed to parse file {depl_file_name}.origin as ini"))?;
 
-        let boot_entry = boot_entry_from_composefs_deployment(ini, &booted.into()).await?;
+        let boot_entry =
+            boot_entry_from_composefs_deployment(ini, depl_file_name.to_string()).await?;
 
-        if depl.file_name() == booted {
+        if depl.file_name() == booted_image_verity {
             host.spec.image = boot_entry.image.as_ref().map(|x| x.image.clone());
             host.status.booted = Some(boot_entry);
             continue;
@@ -444,6 +456,16 @@ pub(crate) async fn composefs_deployment_status() -> Result<Host> {
 
         host.status.rollback = Some(boot_entry);
     }
+
+    host.status.rollback_queued = !get_sorted_boot_entries(false)?
+        .first()
+        .ok_or(anyhow::anyhow!("First boot entry not found"))?
+        .options
+        .contains(booted_image_verity);
+
+    if host.status.rollback_queued {
+        host.spec.boot_order = BootOrder::Rollback
+    };
 
     Ok(host)
 }
@@ -577,6 +599,12 @@ fn human_render_slot(
     write_row_name(&mut out, "Digest", prefix_len)?;
     let digest = &image.image_digest;
     writeln!(out, "{digest} ({arch})")?;
+
+    // Write the EROFS verity if present
+    if let Some(composefs) = &entry.composefs {
+        write_row_name(&mut out, "Verity", prefix_len)?;
+        writeln!(out, "{}", composefs.verity)?;
+    }
 
     // Format the timestamp without nanoseconds since those are just irrelevant noise for human
     // consumption - that time scale should basically never matter for container builds.

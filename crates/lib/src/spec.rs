@@ -10,6 +10,7 @@ use ostree_ext::{container::OstreeImageReference, oci_spec};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::install::BootType;
 use crate::{k8sapitypes, status::Slot};
 
 const API_VERSION: &str = "org.containers.bootc/v1";
@@ -171,6 +172,8 @@ pub struct BootEntryOstree {
 pub struct BootEntryComposefs {
     /// The erofs verity
     pub verity: String,
+    /// Whether this deployment is to be booted via BLS or UKI
+    pub boot_type: BootType,
 }
 
 /// A bootable entry
