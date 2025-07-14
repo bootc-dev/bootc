@@ -49,7 +49,8 @@ use ostree_ext::composefs::{
     util::Sha256Digest,
 };
 use ostree_ext::composefs_boot::{
-    bootloader::BootEntry, write_boot::write_boot_simple as composefs_write_boot_simple, BootOps,
+    bootloader::BootEntry as ComposefsBootEntry,
+    write_boot::write_boot_simple as composefs_write_boot_simple, BootOps,
 };
 use ostree_ext::composefs_oci::{
     image::create_filesystem as create_composefs_filesystem, pull as composefs_oci_pull,
@@ -67,6 +68,7 @@ use ostree_ext::{
 use rustix::fs::FileTypeExt;
 use rustix::fs::MetadataExt as _;
 use serde::{Deserialize, Serialize};
+use schemars::JsonSchema;
 
 #[cfg(feature = "install-to-disk")]
 use self::baseline::InstallBlockDeviceOpts;
@@ -237,20 +239,45 @@ pub(crate) struct InstallConfigOpts {
     pub(crate) stateroot: Option<String>,
 }
 
-#[derive(ValueEnum, Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub(crate) enum BootType {
+#[derive(
+    ValueEnum, Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize, Default, JsonSchema,
+)]
+pub enum BootType {
     #[default]
     Bls,
     Uki,
 }
 
-impl From<&BootEntry<Sha256HashValue>> for BootType {
-    fn from(entry: &BootEntry<Sha256HashValue>) -> Self {
+impl ::std::fmt::Display for BootType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            BootType::Bls => "bls",
+            BootType::Uki => "uki",
+        };
+
+        write!(f, "{}", s)
+    }
+}
+
+impl TryFrom<&str> for BootType {
+    type Error = anyhow::Error;
+
+    fn try_from(value: &str) -> std::result::Result<Self, Self::Error> {
+        match value {
+            "bls" => Ok(Self::Bls),
+            "uki" => Ok(Self::Uki),
+            unrecognized => Err(anyhow::anyhow!("Unrecognized boot option: '{unrecognized}'")),
+        }
+    }
+}
+
+impl From<&ComposefsBootEntry<Sha256HashValue>> for BootType {
+    fn from(entry: &ComposefsBootEntry<Sha256HashValue>) -> Self {
         match entry {
-            BootEntry::Type1(..) => Self::Bls,
-            BootEntry::Type2(..) => Self::Uki,
-            BootEntry::UsrLibModulesUki(..) => Self::Uki,
-            BootEntry::UsrLibModulesVmLinuz(..) => Self::Bls,
+            ComposefsBootEntry::Type1(..) => Self::Bls,
+            ComposefsBootEntry::Type2(..) => Self::Uki,
+            ComposefsBootEntry::UsrLibModulesUki(..) => Self::Uki,
+            ComposefsBootEntry::UsrLibModulesVmLinuz(..) => Self::Bls,
         }
     }
 }
@@ -1819,6 +1846,7 @@ fn setup_composefs_boot(root_setup: &RootSetup, state: &State, image_id: &str) -
             signature: None,
         },
         false,
+        composefs_opts.boot,
     )?;
 
     Ok(())
@@ -1829,6 +1857,9 @@ pub(crate) const COMPOSEFS_STAGED_DEPLOYMENT_PATH: &str = "/run/composefs/staged
 /// Relative to /sysroot
 pub(crate) const STATE_DIR_RELATIVE: &str = "state/deploy";
 
+pub(crate) const ORIGIN_KEY_BOOT: &str = "boot";
+pub(crate) const ORIGIN_KEY_BOOT_TYPE: &str = "boot_type";
+
 /// Creates and populates /sysroot/state/deploy/image_id
 #[context("Writing composefs state")]
 pub(crate) fn write_composefs_state(
@@ -1836,6 +1867,7 @@ pub(crate) fn write_composefs_state(
     deployment_id: Sha256HashValue,
     imgref: &ImageReference,
     staged: bool,
+    boot_type: BootType,
 ) -> Result<()> {
     let state_path = root_path.join(format!("{STATE_DIR_RELATIVE}/{}", deployment_id.to_hex()));
 
@@ -1854,10 +1886,14 @@ pub(crate) fn write_composefs_state(
         ..
     } = &imgref;
 
-    let config = tini::Ini::new().section("origin").item(
+    let mut config = tini::Ini::new().section("origin").item(
         ORIGIN_CONTAINER,
-        format!("ostree-unverified-image:{transport}:{image_name}"),
+        format!("ostree-unverified-image:{transport}{image_name}"),
     );
+
+    config = config
+        .section(ORIGIN_KEY_BOOT)
+        .item(ORIGIN_KEY_BOOT_TYPE, boot_type);
 
     let mut origin_file =
         std::fs::File::create(state_path.join(format!("{}.origin", deployment_id.to_hex())))

@@ -797,12 +797,14 @@ async fn upgrade_composefs(_opts: UpgradeOpts) -> Result<()> {
         anyhow::bail!("No boot entries!");
     };
 
-    match BootType::from(&entry) {
+    let boot_type = BootType::from(&entry);
+
+    match boot_type {
         BootType::Bls => setup_composefs_bls_boot(BootSetupType::Upgrade, repo, &id, entry),
         BootType::Uki => setup_composefs_uki_boot(BootSetupType::Upgrade, repo, &id, entry),
     }?;
 
-    write_composefs_state(&Utf8PathBuf::from("/sysroot"), id, imgref, true)?;
+    write_composefs_state(&Utf8PathBuf::from("/sysroot"), id, imgref, true, boot_type)?;
 
     Ok(())
 }
@@ -964,12 +966,20 @@ async fn switch_composefs(opts: SwitchOpts) -> Result<()> {
         anyhow::bail!("No boot entries!");
     };
 
-    match BootType::from(&entry) {
+    let boot_type = BootType::from(&entry);
+
+    match boot_type {
         BootType::Bls => setup_composefs_bls_boot(BootSetupType::Upgrade, repo, &id, entry),
         BootType::Uki => setup_composefs_uki_boot(BootSetupType::Upgrade, repo, &id, entry),
     }?;
 
-    write_composefs_state(&Utf8PathBuf::from("/sysroot"), id, &target_imgref, true)?;
+    write_composefs_state(
+        &Utf8PathBuf::from("/sysroot"),
+        id,
+        &target_imgref,
+        true,
+        boot_type,
+    )?;
 
     Ok(())
 }
