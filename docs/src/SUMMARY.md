@@ -57,7 +57,10 @@
 
 - [bootc image](experimental-bootc-image.md)
 - [fsck](experimental-fsck.md)
-- [--progress-fd](experimental-progress-fd.md)
+
+# Progress monitoring
+
+- [--progress-fd](progress-fd.md)
 
 # More information
 

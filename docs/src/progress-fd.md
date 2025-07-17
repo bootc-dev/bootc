@@ -1,8 +1,6 @@
 
 # Interactive progress with `--progress-fd`
 
-This is an experimental feature; tracking issue: <https://github.com/bootc-dev/bootc/issues/1016>
-
 While the `bootc status` tooling allows a client to discover the state
 of the system, during interactive changes such as `bootc upgrade`
 or `bootc switch` it is possible to monitor the status of downloads
