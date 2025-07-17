@@ -41,7 +41,7 @@ linkme = "0.3"
 openssl = { workspace = true }
 regex = "1.10.4"
 rustix = { workspace = true }
-schemars = { version = "0.8.17", features = ["chrono"] }
+schemars = { version = "1.0.0", features = ["chrono04"] }
 serde = { workspace = true, features = ["derive"] }
 serde_ignored = "0.1.10"
 serde_json = { workspace = true }
