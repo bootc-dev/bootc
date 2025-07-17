@@ -525,6 +525,27 @@ pub(crate) fn get_base_commit(repo: &ostree::Repo, commit: &str) -> Result<Optio
     Ok(r)
 }
 
+#[context("Loading deployment into kexec")]
+async fn kexec_load(sysroot: &Storage, deployment: &Deployment) -> Result<()> {
+    // Clone all the things to move to worker thread
+    let sysroot = sysroot.sysroot.clone();
+    // ostree::Deployment is incorrently !Send 😢 so convert it to an integer
+    let deployment_index = deployment.index() as usize;
+
+    async_task_with_spinner(
+        "Deploying",
+        spawn_blocking_cancellable_flatten(move |cancellable| -> Result<()> {
+            let deployments = sysroot.deployments();
+            let deployment = &deployments[deployment_index];
+
+            sysroot.deployment_kexec_load(&deployment, Some(cancellable))?;
+            Ok(())
+        }),
+    )
+    .await?;
+    Ok(())
+}
+
 #[context("Writing deployment")]
 async fn deploy(
     sysroot: &Storage,
@@ -599,6 +620,12 @@ fn origin_from_imageref(imgref: &ImageReference) -> Result<glib::KeyFile> {
     Ok(origin)
 }
 
+#[derive(Debug, Clone, Default)]
+#[non_exhaustive]
+pub(crate) struct StageOptions {
+    pub(crate) deploy_kexec: bool,
+}
+
 /// Stage (queue deployment of) a fetched container image.
 #[context("Staging")]
 pub(crate) async fn stage(
@@ -607,7 +634,11 @@ pub(crate) async fn stage(
     image: &ImageState,
     spec: &RequiredHostSpec<'_>,
     prog: ProgressWriter,
+    StageOptions { deploy_kexec }: StageOptions,
 ) -> Result<()> {
+    let steps_total = 4 + (deploy_kexec as u64);
+    let mut steps = 0;
+
     let mut subtask = SubTaskStep {
         subtask: "merging".into(),
         description: "Merging Image".into(),
@@ -621,7 +652,7 @@ pub(crate) async fn stage(
         id: image.manifest_digest.clone().as_ref().into(),
         steps_cached: 0,
         steps: 0,
-        steps_total: 3,
+        steps_total,
         subtasks: subtasks
             .clone()
             .into_iter()
@@ -637,13 +668,14 @@ pub(crate) async fn stage(
     subtask.id = "deploying".into();
     subtask.description = "Deploying Image".into();
     subtask.completed = false;
+    steps += 1;
     prog.send(Event::ProgressSteps {
         task: "staging".into(),
         description: "Deploying Image".into(),
         id: image.manifest_digest.clone().as_ref().into(),
         steps_cached: 0,
-        steps: 1,
-        steps_total: 3,
+        steps,
+        steps_total,
         subtasks: subtasks
             .clone()
             .into_iter()
@@ -667,13 +699,14 @@ pub(crate) async fn stage(
     subtask.id = "bound_images".into();
     subtask.description = "Pulling Bound Images".into();
     subtask.completed = false;
+    steps += 1;
     prog.send(Event::ProgressSteps {
         task: "staging".into(),
         description: "Deploying Image".into(),
         id: image.manifest_digest.clone().as_ref().into(),
         steps_cached: 0,
-        steps: 1,
-        steps_total: 3,
+        steps,
+        steps_total,
         subtasks: subtasks
             .clone()
             .into_iter()
@@ -689,13 +722,14 @@ pub(crate) async fn stage(
     subtask.id = "cleanup".into();
     subtask.description = "Removing old images".into();
     subtask.completed = false;
+    steps += 1;
     prog.send(Event::ProgressSteps {
         task: "staging".into(),
         description: "Deploying Image".into(),
         id: image.manifest_digest.clone().as_ref().into(),
         steps_cached: 0,
-        steps: 2,
-        steps_total: 3,
+        steps,
+        steps_total,
         subtasks: subtasks
             .clone()
             .into_iter()
@@ -710,15 +744,42 @@ pub(crate) async fn stage(
     }
     println!("  Digest: {}", image.manifest_digest);
 
+    if deploy_kexec {
+        subtask.completed = true;
+        subtasks.push(subtask.clone());
+        subtask.subtask = "kexec".into();
+        subtask.id = "kexec".into();
+        subtask.description = "Loading image into kexec".into();
+        subtask.completed = false;
+        steps += 1;
+        prog.send(Event::ProgressSteps {
+            task: "staging".into(),
+            description: "Deploying Image".into(),
+            id: image.manifest_digest.clone().as_ref().into(),
+            steps_cached: 0,
+            steps,
+            steps_total,
+            subtasks: subtasks
+                .clone()
+                .into_iter()
+                .chain([subtask.clone()])
+                .collect(),
+        })
+        .await;
+        crate::deploy::kexec_load(sysroot, &deployment).await?;
+        println!("  Next reboot will kexec into this deployment!");
+    }
+
     subtask.completed = true;
     subtasks.push(subtask.clone());
+    steps += 1;
     prog.send(Event::ProgressSteps {
         task: "staging".into(),
         description: "Deploying Image".into(),
         id: image.manifest_digest.clone().as_ref().into(),
         steps_cached: 0,
-        steps: 3,
-        steps_total: 3,
+        steps,
+        steps_total,
         subtasks: subtasks
             .clone()
             .into_iter()
