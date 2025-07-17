@@ -54,3 +54,11 @@ execute:
     test:
         - /tmt/tests/bootc-install-provision
         - /tmt/tests/test-23-install-outside-container
+
+/test-24-local-upgrade-reboot:
+  summary: Execute local upgrade tests with automated reboot
+  discover:
+    how: fmf
+    test:
+        - /tmt/tests/bootc-install-provision
+        - /tmt/tests/test-24-local-upgrade-reboot

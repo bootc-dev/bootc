@@ -1,0 +1,3 @@
+summary: Execute local upgrade tests
+test: nu booted/test-image-upgrade-reboot.nu
+duration: 30m
