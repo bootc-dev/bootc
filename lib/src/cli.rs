@@ -541,7 +541,7 @@ pub(crate) enum Opt {
         Note on Rollbacks and the `/etc` Directory:
 
         When you perform a rollback (e.g., with `bootc rollback`), any
-        changes made to files in the `/etc` directory won’t carry over
+        changes made to files in the `/etc` directory won't carry over
         to the rolled-back deployment.  The `/etc` files will revert
         to their state from that previous deployment instead.
 
@@ -720,6 +720,54 @@ pub(crate) fn require_root(is_container: bool) -> Result<()> {
     Ok(())
 }
 
+/// Check if a deployment can perform a soft reboot
+fn can_perform_soft_reboot(deployment: Option<&crate::spec::BootEntry>) -> bool {
+    deployment.map(|d| d.soft_reboot_capable).unwrap_or(false)
+}
+
+/// Prepare and execute a soft reboot for the given deployment
+#[context("Preparing soft reboot")]
+fn prepare_soft_reboot(
+    sysroot: &crate::store::Storage,
+    deployment: &ostree::Deployment,
+) -> Result<()> {
+    let cancellable = ostree::gio::Cancellable::NONE;
+    sysroot
+        .sysroot
+        .deployment_prepare_next_root(deployment, false, cancellable)
+        .context("Failed to prepare soft-reboot")?;
+    Ok(())
+}
+
+/// Perform a soft reboot for a staged deployment
+#[context("Soft reboot staged deployment")]
+fn soft_reboot_staged(sysroot: &crate::store::Storage) -> Result<()> {
+    println!("Staged deployment is soft-reboot capable, performing soft-reboot...");
+
+    let deployments_list = sysroot.deployments();
+    let staged_deployment = deployments_list
+        .iter()
+        .find(|d| d.is_staged())
+        .ok_or_else(|| anyhow::anyhow!("Failed to find staged deployment"))?;
+
+    prepare_soft_reboot(sysroot, staged_deployment)?;
+    Ok(())
+}
+
+/// Perform a soft reboot for a rollback deployment
+#[context("Soft reboot rollback deployment")]
+fn soft_reboot_rollback(sysroot: &crate::store::Storage) -> Result<()> {
+    println!("Rollback deployment is soft-reboot capable, performing soft-reboot...");
+
+    let deployments_list = sysroot.deployments();
+    let target_deployment = deployments_list
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("No deployments found after rollback"))?;
+
+    prepare_soft_reboot(sysroot, target_deployment)?;
+    Ok(())
+}
+
 /// A few process changes that need to be made for writing.
 /// IMPORTANT: This may end up re-executing the current process,
 /// so anything that happens before this should be idempotent.
@@ -840,6 +888,9 @@ async fn upgrade(opts: UpgradeOpts) -> Result<()> {
             println!("Staged update present, not changed.");
 
             if opts.apply {
+                if can_perform_soft_reboot(host.status.staged.as_ref()) {
+                    soft_reboot_staged(sysroot)?;
+                }
                 crate::reboot::reboot()?;
             }
         } else if booted_unchanged {
@@ -936,6 +987,13 @@ async fn switch(opts: SwitchOpts) -> Result<()> {
     sysroot.update_mtime()?;
 
     if opts.apply {
+        // Get updated status to check for soft-reboot capability
+        let (_updated_deployments, updated_host) =
+            crate::status::get_status(sysroot, Some(&booted_deployment))?;
+
+        if can_perform_soft_reboot(updated_host.status.staged.as_ref()) {
+            soft_reboot_staged(sysroot)?;
+        }
         crate::reboot::reboot()?;
     }
 
@@ -946,10 +1004,22 @@ async fn switch(opts: SwitchOpts) -> Result<()> {
 #[context("Rollback")]
 async fn rollback(opts: RollbackOpts) -> Result<()> {
     let sysroot = &get_storage().await?;
-    crate::deploy::rollback(sysroot).await?;
 
     if opts.apply {
+        // Get status before rollback to check soft-reboot capability
+        let (_booted_deployment, _deployments, host) =
+            crate::status::get_status_require_booted(sysroot)?;
+        let can_soft_reboot = can_perform_soft_reboot(host.status.rollback.as_ref());
+
+        // Perform the rollback
+        crate::deploy::rollback(sysroot).await?;
+
+        if can_soft_reboot {
+            soft_reboot_rollback(sysroot)?;
+        }
         crate::reboot::reboot()?;
+    } else {
+        crate::deploy::rollback(sysroot).await?;
     }
 
     Ok(())
