@@ -1,8 +1,6 @@
 //! Perform initial setup for a container image based system root
 
 use std::collections::HashSet;
-#[cfg(feature = "bootc")]
-use std::os::fd::BorrowedFd;
 
 use anyhow::Result;
 use fn_error_context::context;
@@ -51,13 +49,6 @@ pub struct DeployOpts<'a> {
 
     /// Do not cleanup deployments
     pub no_clean: bool,
-}
-
-// Access the file descriptor for a sysroot
-#[allow(unsafe_code)]
-#[cfg(feature = "bootc")]
-pub(crate) fn sysroot_fd(sysroot: &ostree::Sysroot) -> BorrowedFd {
-    unsafe { BorrowedFd::borrow_raw(sysroot.fd()) }
 }
 
 /// Write a container image to an OSTree deployment.
@@ -148,7 +139,7 @@ pub async fn deploy(
             use cap_std_ext::cmdext::CapStdExtCommandExt;
             use ocidir::cap_std::fs::Dir;
 
-            let sysroot_dir = &Dir::reopen_dir(&sysroot_fd(sysroot))?;
+            let sysroot_dir = &Dir::reopen_dir(&crate::sysroot::sysroot_fd(sysroot))?;
 
             // Note that the sysroot is provided as `.`  but we use cwd_dir to
             // make the process current working directory the sysroot.
