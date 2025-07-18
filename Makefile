@@ -99,3 +99,48 @@ vendor:
 package-rpm:
 	cargo xtask $@
 .PHONY: package-rpm
+
+# Create a release commit with updated version
+# Usage: make release-commit VERSION=1.5.0
+release-commit:
+	@if [ -z "$(VERSION)" ]; then \
+		echo "Error: VERSION is required. Usage: make release-commit VERSION=1.5.0"; \
+		exit 1; \
+	fi
+	@echo "Creating release commit for version $(VERSION)..."
+	# Update version in lib/Cargo.toml
+	sed -i 's/^version = ".*"/version = "$(VERSION)"/' crates/lib/Cargo.toml
+	# Update Cargo.lock with new version
+	cargo update --workspace
+	# Run cargo xtask update-generated to update generated files
+	cargo xtask update-generated
+	# Stage all changes
+	git add crates/lib/Cargo.toml Cargo.lock
+	git add -A  # Add any files updated by cargo xtask update-generated
+	# Create commit
+	git commit -m "Release $(VERSION)"
+	# Create signed tag
+	git tag -s -m "Release $(VERSION)" v$(VERSION)
+.PHONY: release-commit
+
+# Get the next minor version by bumping the minor version from crates/lib/Cargo.toml
+# Outputs the new version string (e.g., "1.3.0" if current version is "1.2.4")
+next-minor-version:
+	@VERSION=$$(grep '^version' crates/lib/Cargo.toml | sed 's/version = "//;s/"//'); \
+	if [ -z "$$VERSION" ]; then \
+		echo "Error: Could not find version in crates/lib/Cargo.toml" >&2; \
+		exit 1; \
+	fi; \
+	if ! echo "$$VERSION" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$$' >/dev/null; then \
+		echo "Error: Invalid version format in Cargo.toml: $$VERSION" >&2; \
+		exit 1; \
+	fi; \
+	MAJOR=$$(echo "$$VERSION" | cut -d. -f1); \
+	MINOR=$$(echo "$$VERSION" | cut -d. -f2); \
+	if ! [ "$$MAJOR" -eq "$$MAJOR" ] 2>/dev/null || ! [ "$$MINOR" -eq "$$MINOR" ] 2>/dev/null; then \
+		echo "Error: Invalid version numbers in $$VERSION" >&2; \
+		exit 1; \
+	fi; \
+	NEW_MINOR=$$((MINOR + 1)); \
+	echo "$$MAJOR.$$NEW_MINOR.0"
+.PHONY: next-minor-version

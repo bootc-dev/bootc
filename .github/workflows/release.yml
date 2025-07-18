@@ -1,0 +1,132 @@
+name: Release
+
+on:
+  pull_request:
+    types: [closed]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Create Release
+    if: |
+      (github.event_name == 'pull_request' && 
+       github.event.pull_request.merged == true &&
+       contains(github.event.pull_request.labels.*.name, 'release'))
+    runs-on: ubuntu-latest
+    container: quay.io/coreos-assembler/fcos-buildroot:testing-devel
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Extract version
+        id: extract_version
+        run: |
+          # Extract version from crates/lib/Cargo.toml
+          VERSION=$(grep '^version' crates/lib/Cargo.toml | sed 's/version = "//;s/"//')
+          
+          # Validate version format
+          if ! echo "$VERSION" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' >/dev/null; then
+            echo "Error: Invalid version format in Cargo.toml: $VERSION"
+            exit 1
+          fi
+          
+          echo "Extracted version: $VERSION"
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "TAG_NAME=v$VERSION" >> $GITHUB_OUTPUT
+      
+      - name: Install deps
+        run: ./ci/installdeps.sh
+      
+      - name: Mark git checkout as safe
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      
+      - name: Import GPG key
+        if: github.event_name != 'push'
+        uses: crazy-max/ghaction-import-gpg@v6
+        with:
+          gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
+          passphrase: ${{ secrets.GPG_PASSPHRASE }}
+          git_user_signingkey: true
+          git_commit_gpgsign: true
+          git_tag_gpgsign: true
+      
+      - name: Create and push tag
+        if: github.event_name != 'push'
+        run: |
+          VERSION="${{ steps.extract_version.outputs.version }}"
+          TAG_NAME="v$VERSION"
+          
+          # Check if tag already exists
+          if git rev-parse "$TAG_NAME" >/dev/null 2>&1; then
+            echo "Tag $TAG_NAME already exists"
+            exit 0
+          fi
+          
+          # Create signed annotated tag
+          git tag -s -m "Release $VERSION" "$TAG_NAME"
+          
+          # Push the tag
+          git push origin "$TAG_NAME"
+          
+          echo "Successfully created and pushed tag $TAG_NAME"
+          
+          # Switch to the tagged commit for building
+          git checkout "$TAG_NAME"
+      
+      - name: Install vendor tool
+        run: cargo install cargo-vendor-filterer
+      
+      - name: Cache Dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: "release"
+      
+      - name: Run cargo xtask package
+        run: cargo xtask package
+      
+      - name: Create Release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ steps.extract_version.outputs.TAG_NAME }}
+          release_name: Release ${{ steps.extract_version.outputs.TAG_NAME }}
+          draft: true
+          prerelease: false
+          body: |
+            ## bootc ${{ steps.extract_version.outputs.version }}
+            
+            ### Changes
+            
+            Auto-generated release notes will be populated here.
+            
+            ### Assets
+            
+            - `bootc-${{ steps.extract_version.outputs.version }}-vendor.tar.zstd` - Vendored dependencies archive
+            - `bootc-${{ steps.extract_version.outputs.version }}.tar.zstd` - Source archive
+      
+      - name: Upload vendor archive
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./target/bootc-${{ steps.extract_version.outputs.version }}-vendor.tar.zstd
+          asset_name: bootc-${{ steps.extract_version.outputs.version }}-vendor.tar.zstd
+          asset_content_type: application/zstd
+      
+      - name: Upload source archive
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./target/bootc-${{ steps.extract_version.outputs.version }}.tar.zstd
+          asset_name: bootc-${{ steps.extract_version.outputs.version }}.tar.zstd
+          asset_content_type: application/zstd

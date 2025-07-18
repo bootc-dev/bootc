@@ -1,0 +1,163 @@
+name: Create Release PR
+
+on:
+  schedule:
+    # Run every 3 weeks on Monday at 8:00 AM UTC
+    # Note: GitHub Actions doesn't support "every 3 weeks" directly,
+    # so we use a workaround by running weekly and checking if it's been 3 weeks
+    - cron: '0 8 * * 1'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (e.g., 1.5.1). Leave empty to auto-increment.'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  create-release-pr:
+    runs-on: ubuntu-latest
+    container: quay.io/coreos-assembler/fcos-buildroot:testing-devel
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Install deps
+        run: ./ci/installdeps.sh
+      
+      - name: Mark git checkout as safe
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      
+      - name: Check if it's time for a release
+        id: check_schedule
+        run: |
+          # For manual workflow dispatch, always proceed
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "should_release=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          # For scheduled runs, check if it's been 3 weeks since the last release
+          LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+          LAST_TAG_DATE=$(git log -1 --format=%ct "$LAST_TAG" 2>/dev/null || echo "0")
+          CURRENT_DATE=$(date +%s)
+          DAYS_SINCE_RELEASE=$(( (CURRENT_DATE - LAST_TAG_DATE) / 86400 ))
+          
+          echo "Days since last release: $DAYS_SINCE_RELEASE"
+          
+          # Release if it's been at least 21 days (3 weeks)
+          if [ $DAYS_SINCE_RELEASE -ge 21 ]; then
+            echo "should_release=true" >> $GITHUB_OUTPUT
+          else
+            echo "should_release=false" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Determine next version
+        if: steps.check_schedule.outputs.should_release == 'true'
+        id: next_version
+        run: |
+          # If version is provided via workflow dispatch, validate and use it
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+            # Validate version format strictly
+            if ! echo "$VERSION" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' >/dev/null; then
+              echo "Error: Invalid version format. Expected X.Y.Z (e.g., 1.5.1)"
+              exit 1
+            fi
+            echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          # Use make command to get next minor version
+          NEW_VERSION=$(make next-minor-version)
+          
+          echo "New version: $NEW_VERSION"
+          echo "VERSION=$NEW_VERSION" >> $GITHUB_OUTPUT
+      
+      - name: Import GPG key
+        if: steps.check_schedule.outputs.should_release == 'true'
+        uses: crazy-max/ghaction-import-gpg@v6
+        with:
+          gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
+          passphrase: ${{ secrets.GPG_PASSPHRASE }}
+          git_user_signingkey: true
+          git_commit_gpgsign: true
+          git_tag_gpgsign: true
+      
+      - name: Create release branch
+        if: steps.check_schedule.outputs.should_release == 'true'
+        id: create_branch
+        env:
+          VERSION: ${{ steps.next_version.outputs.VERSION }}
+        run: |
+          BRANCH_NAME="release-${VERSION}"
+          git checkout -b "$BRANCH_NAME"
+          echo "branch_name=$BRANCH_NAME" >> $GITHUB_OUTPUT
+      
+      - name: Create release commit
+        if: steps.check_schedule.outputs.should_release == 'true'
+        env:
+          VERSION: ${{ steps.next_version.outputs.VERSION }}
+        run: |
+          # Update version and create signed commit
+          sed -i "s/^version = \".*\"/version = \"${VERSION}\"/" crates/lib/Cargo.toml
+          cargo update --workspace
+          dnf -y install pandoc
+          cargo xtask update-generated
+          git add -A
+          git commit -S -m "Release ${VERSION}"
+      
+      - name: Push branch
+        if: steps.check_schedule.outputs.should_release == 'true'
+        env:
+          BRANCH_NAME: ${{ steps.create_branch.outputs.branch_name }}
+        run: |
+          git push origin "${BRANCH_NAME}"
+      
+      - name: Create Pull Request
+        if: steps.check_schedule.outputs.should_release == 'true'
+        uses: actions/github-script@v7
+        env:
+          VERSION: ${{ steps.next_version.outputs.VERSION }}
+          BRANCH_NAME: ${{ steps.create_branch.outputs.branch_name }}
+        with:
+          script: |
+            const version = process.env.VERSION;
+            const branchName = process.env.BRANCH_NAME;
+            
+            const { data: pr } = await github.rest.pulls.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `Release ${version}`,
+              body: `## Release ${version}
+            
+            This is an automated release PR created by the scheduled release workflow.
+            
+            ### Release Process
+            
+            1. Review the changes in this PR
+            2. Ensure all tests pass
+            3. Merge the PR
+            4. The release tag will be automatically created and signed when this PR is merged
+            
+            The release workflow will automatically trigger when the tag is pushed.`,
+              head: branchName,
+              base: 'main',
+              draft: false
+            });
+            
+            // Add the release label
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: pr.number,
+              labels: ['release']
+            });
+            
+            console.log(`Created PR #${pr.number}: ${pr.html_url}`);
