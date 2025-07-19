@@ -65,7 +65,7 @@ fn enable_fsverity_in_objdir(d: &Dir) -> anyhow::Result<()> {
         let enabled =
             composefs::fsverity::measure_verity_opt::<Sha256HashValue>(f.as_fd())?.is_some();
         if !enabled {
-            composefs_fsverity::enable_verity::<Sha256HashValue>(&f)?;
+            composefs_fsverity::enable_verity_raw::<Sha256HashValue>(&f)?;
         }
     }
     Ok(())
@@ -123,7 +123,7 @@ pub async fn ensure_verity(repo: &ostree::Repo) -> Result<()> {
     // And finally, enable fsverity as a flag that we have successfully
     // enabled fsverity on all objects.
     let f = repodir.open(CONFIG_PATH)?;
-    match composefs_fsverity::enable_verity::<Sha256HashValue>(f.as_fd()) {
+    match composefs_fsverity::enable_verity_raw::<Sha256HashValue>(f.as_fd()) {
         Ok(()) => Ok(()),
         Err(composefs_fsverity::EnableVerityError::AlreadyEnabled) => Ok(()),
         Err(e) => Err(e.into()),

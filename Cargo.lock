@@ -419,7 +419,7 @@ checksum = "200812b29d9de495a9ba97dee1737f7def8907de53a0962843b6a955df921e22"
 dependencies = [
  "camino",
  "cap-std",
- "rand",
+ "rand 0.8.5",
  "rustix 0.38.44",
  "uuid",
 ]
@@ -542,12 +542,13 @@ checksum = "55b672471b4e9f9e95499ea597ff64941a309b2cdbffcc46f2cc5e2d971fd335"
 [[package]]
 name = "composefs"
 version = "0.3.0"
-source = "git+https://github.com/containers/composefs-rs?rev=d8e285f14c3c9fa969496fd98e12ffba3079842d#d8e285f14c3c9fa969496fd98e12ffba3079842d"
+source = "git+https://github.com/containers/composefs-rs?rev=28d4721f77f973f0e394d60d6a69d9b39cb38d7f#28d4721f77f973f0e394d60d6a69d9b39cb38d7f"
 dependencies = [
  "anyhow",
  "hex",
  "log",
  "once_cell",
+ "rand 0.9.1",
  "rustix 1.0.3",
  "sha2",
  "tempfile",
@@ -561,10 +562,11 @@ dependencies = [
 [[package]]
 name = "composefs-boot"
 version = "0.3.0"
-source = "git+https://github.com/containers/composefs-rs?rev=d8e285f14c3c9fa969496fd98e12ffba3079842d#d8e285f14c3c9fa969496fd98e12ffba3079842d"
+source = "git+https://github.com/containers/composefs-rs?rev=28d4721f77f973f0e394d60d6a69d9b39cb38d7f#28d4721f77f973f0e394d60d6a69d9b39cb38d7f"
 dependencies = [
  "anyhow",
  "composefs",
+ "hex",
  "regex-automata 0.4.9",
  "thiserror 2.0.12",
  "zerocopy 0.8.25",
@@ -573,15 +575,15 @@ dependencies = [
 [[package]]
 name = "composefs-oci"
 version = "0.3.0"
-source = "git+https://github.com/containers/composefs-rs?rev=d8e285f14c3c9fa969496fd98e12ffba3079842d#d8e285f14c3c9fa969496fd98e12ffba3079842d"
+source = "git+https://github.com/containers/composefs-rs?rev=28d4721f77f973f0e394d60d6a69d9b39cb38d7f#28d4721f77f973f0e394d60d6a69d9b39cb38d7f"
 dependencies = [
  "anyhow",
  "async-compression",
  "composefs",
- "containers-image-proxy 0.7.1",
+ "containers-image-proxy",
  "hex",
  "indicatif",
- "oci-spec 0.7.1",
+ "oci-spec",
  "rustix 1.0.3",
  "sha2",
  "tar",
@@ -623,25 +625,6 @@ dependencies = [
 
 [[package]]
 name = "containers-image-proxy"
-version = "0.7.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e366fb6e732b808c920cfdc758949a2f4d80445d413b040640aeb3d744cabcdb"
-dependencies = [
- "cap-std-ext",
- "fn-error-context",
- "futures-util",
- "oci-spec 0.7.1",
- "rustix 0.38.44",
- "semver",
- "serde",
- "serde_json",
- "thiserror 1.0.69",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "containers-image-proxy"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9953374bea7d415048415d1f871ba974897209ba0c14d3c665d4a41bdc15628d"
@@ -649,7 +632,7 @@ dependencies = [
  "cap-std-ext",
  "futures-util",
  "itertools",
- "oci-spec 0.8.1",
+ "oci-spec",
  "rustix 1.0.3",
  "semver",
  "serde",
@@ -1092,7 +1075,19 @@ checksum = "c4567c8db10ae91089c99af84c68c38da3ec2f087c3f82960bcdbf3656b6f4d7"
 dependencies = [
  "cfg-if",
  "libc",
- "wasi",
+ "wasi 0.11.0+wasi-snapshot-preview1",
+]
+
+[[package]]
+name = "getrandom"
+version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "26145e563e54f2cadc477553f1ec5ee650b00862f0a58bcd12cbdc5f0ea2d2f4"
+dependencies = [
+ "cfg-if",
+ "libc",
+ "r-efi",
+ "wasi 0.14.2+wasi-0.2.4",
 ]
 
 [[package]]
@@ -1582,7 +1577,7 @@ dependencies = [
  "hermit-abi",
  "libc",
  "log",
- "wasi",
+ "wasi 0.11.0+wasi-snapshot-preview1",
  "windows-sys 0.52.0",
 ]
 
@@ -1671,22 +1666,6 @@ dependencies = [
 
 [[package]]
 name = "oci-spec"
-version = "0.7.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "da406e58efe2eb5986a6139626d611ce426e5324a824133d76367c765cf0b882"
-dependencies = [
- "derive_builder",
- "getset",
- "regex",
- "serde",
- "serde_json",
- "strum 0.26.3",
- "strum_macros 0.26.4",
- "thiserror 2.0.12",
-]
-
-[[package]]
-name = "oci-spec"
 version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "57e9beda9d92fac7bf4904c34c83340ef1024159faee67179a04e0277523da33"
@@ -1697,8 +1676,8 @@ dependencies = [
  "regex",
  "serde",
  "serde_json",
- "strum 0.27.1",
- "strum_macros 0.27.1",
+ "strum",
+ "strum_macros",
  "thiserror 2.0.12",
 ]
 
@@ -1714,7 +1693,7 @@ dependencies = [
  "chrono",
  "flate2",
  "hex",
- "oci-spec 0.8.1",
+ "oci-spec",
  "openssl",
  "serde",
  "serde_json",
@@ -1746,7 +1725,7 @@ dependencies = [
  "libc",
  "nix 0.23.2",
  "openat",
- "rand",
+ "rand 0.8.5",
 ]
 
 [[package]]
@@ -1833,7 +1812,7 @@ dependencies = [
  "composefs",
  "composefs-boot",
  "composefs-oci",
- "containers-image-proxy 0.8.0",
+ "containers-image-proxy",
  "flate2",
  "fn-error-context",
  "futures-util",
@@ -2034,7 +2013,7 @@ checksum = "588f6378e4dd99458b60ec275b4477add41ce4fa9f64dcba6f15adccb19b50d6"
 dependencies = [
  "env_logger",
  "log",
- "rand",
+ "rand 0.8.5",
 ]
 
 [[package]]
@@ -2047,14 +2026,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "r-efi"
+version = "5.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "69cdb34c158ceb288df11e18b4bd39de994f6657d83847bdffdbd7f346754b0f"
+
+[[package]]
 name = "rand"
 version = "0.8.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "34af8d1a0e25924bc5b7c43c079c942339d8f0a8b57c39049bef581b46327404"
 dependencies = [
  "libc",
- "rand_chacha",
- "rand_core",
+ "rand_chacha 0.3.1",
+ "rand_core 0.6.4",
+]
+
+[[package]]
+name = "rand"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9fbfd9d094a40bf3ae768db9361049ace4c0e04a4fd6b359518bd7b73a73dd97"
+dependencies = [
+ "rand_chacha 0.9.0",
+ "rand_core 0.9.3",
 ]
 
 [[package]]
@@ -2064,7 +2059,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e6c10a63a0fa32252be49d21e7709d4d4baf8d231c2dbce1eaa8141b9b127d88"
 dependencies = [
  "ppv-lite86",
- "rand_core",
+ "rand_core 0.6.4",
+]
+
+[[package]]
+name = "rand_chacha"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d3022b5f1df60f26e1ffddd6c66e8aa15de382ae63b3a0c1bfc0e4d3e3f325cb"
+dependencies = [
+ "ppv-lite86",
+ "rand_core 0.9.3",
 ]
 
 [[package]]
@@ -2073,7 +2078,16 @@ version = "0.6.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ec0be4795e2f6a28069bec0b5ff3e2ac9bafc99e6a9a7dc3547996c5c816922c"
 dependencies = [
- "getrandom",
+ "getrandom 0.2.15",
+]
+
+[[package]]
+name = "rand_core"
+version = "0.9.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "99d9a13982dcf210057a8a78572b2217b667c3beacbf3a0d8b454f6f82837d38"
+dependencies = [
+ "getrandom 0.3.3",
 ]
 
 [[package]]
@@ -2446,28 +2460,9 @@ checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
 
 [[package]]
 name = "strum"
-version = "0.26.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8fec0f0aef304996cf250b31b5a10dee7980c85da9d759361292b8bca5a18f06"
-
-[[package]]
-name = "strum"
 version = "0.27.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f64def088c51c9510a8579e3c5d67c65349dcf755e5479ad3d010aa6454e2c32"
-
-[[package]]
-name = "strum_macros"
-version = "0.26.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4c6bee85a5a24955dc440386795aa378cd9cf82acd5f764469152d2270e581be"
-dependencies = [
- "heck",
- "proc-macro2",
- "quote",
- "rustversion",
- "syn 2.0.87",
-]
 
 [[package]]
 name = "strum_macros"
@@ -2587,7 +2582,7 @@ dependencies = [
  "fn-error-context",
  "indoc",
  "libtest-mimic",
- "oci-spec 0.8.1",
+ "oci-spec",
  "rexpect",
  "rustix 1.0.3",
  "serde",
@@ -2860,7 +2855,7 @@ version = "1.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b913a3b5fe84142e269d63cc62b64319ccaf89b748fc31fe025177f767a756c4"
 dependencies = [
- "getrandom",
+ "getrandom 0.2.15",
  "serde",
 ]
 
@@ -2903,6 +2898,15 @@ name = "wasi"
 version = "0.11.0+wasi-snapshot-preview1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9c8d87e72b64a3b4db28d11ce29237c246188f4f51057d65a7eab63b7987e423"
+
+[[package]]
+name = "wasi"
+version = "0.14.2+wasi-0.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9683f9a5a998d873c0d21fcbe3c083009670149a8fab228644b8bd36b2c48cb3"
+dependencies = [
+ "wit-bindgen-rt",
+]
 
 [[package]]
 name = "wasm-bindgen"
@@ -3123,6 +3127,15 @@ checksum = "f9643b83820c0cd246ecabe5fa454dd04ba4fa67996369466d0747472d337346"
 dependencies = [
  "bitflags 2.9.0",
  "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "wit-bindgen-rt"
+version = "0.39.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6f42320e61fe2cfd34354ecb597f86f413484a798ba44a8ca1165c58d42da6c1"
+dependencies = [
+ "bitflags 2.9.0",
 ]
 
 [[package]]
