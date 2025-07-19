@@ -98,9 +98,24 @@ dependencies = [
 
 [[package]]
 name = "anyhow"
-version = "1.0.97"
+version = "1.0.98"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dcfed56ad506cb2c684a14971b8861fdc3baaaae314b9e5f9bb532cbe3ba7a4f"
+checksum = "e16d2d3311acee920a9eb8d33b8cbc1787ce4a264e85f964c2404b969bdcd487"
+
+[[package]]
+name = "async-compression"
+version = "0.4.23"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b37fc50485c4f3f736a4fb14199f6d5f5ba008d7f28fe710306c92780f004c07"
+dependencies = [
+ "flate2",
+ "futures-core",
+ "memchr",
+ "pin-project-lite",
+ "tokio",
+ "zstd",
+ "zstd-safe",
+]
 
 [[package]]
 name = "autocfg"
@@ -230,6 +245,8 @@ dependencies = [
  "liboverdrop",
  "libsystemd",
  "linkme",
+ "openat",
+ "openat-ext",
  "openssl",
  "ostree-ext",
  "regex",
@@ -525,7 +542,7 @@ checksum = "55b672471b4e9f9e95499ea597ff64941a309b2cdbffcc46f2cc5e2d971fd335"
 [[package]]
 name = "composefs"
 version = "0.3.0"
-source = "git+https://github.com/containers/composefs-rs?rev=d5455222f282200913902f29c66d5f625ca5661f#d5455222f282200913902f29c66d5f625ca5661f"
+source = "git+https://github.com/containers/composefs-rs?rev=28d4721f77f973f0e394d60d6a69d9b39cb38d7f#28d4721f77f973f0e394d60d6a69d9b39cb38d7f"
 dependencies = [
  "anyhow",
  "hex",
@@ -538,8 +555,39 @@ dependencies = [
  "thiserror 2.0.12",
  "tokio",
  "xxhash-rust",
- "zerocopy 0.8.23",
+ "zerocopy 0.8.25",
  "zstd",
+]
+
+[[package]]
+name = "composefs-boot"
+version = "0.3.0"
+source = "git+https://github.com/containers/composefs-rs?rev=28d4721f77f973f0e394d60d6a69d9b39cb38d7f#28d4721f77f973f0e394d60d6a69d9b39cb38d7f"
+dependencies = [
+ "anyhow",
+ "composefs",
+ "hex",
+ "regex-automata 0.4.9",
+ "thiserror 2.0.12",
+ "zerocopy 0.8.25",
+]
+
+[[package]]
+name = "composefs-oci"
+version = "0.3.0"
+source = "git+https://github.com/containers/composefs-rs?rev=28d4721f77f973f0e394d60d6a69d9b39cb38d7f#28d4721f77f973f0e394d60d6a69d9b39cb38d7f"
+dependencies = [
+ "anyhow",
+ "async-compression",
+ "composefs",
+ "containers-image-proxy",
+ "hex",
+ "indicatif",
+ "oci-spec",
+ "rustix 1.0.3",
+ "sha2",
+ "tar",
+ "tokio",
 ]
 
 [[package]]
@@ -1247,6 +1295,7 @@ dependencies = [
  "console",
  "number_prefix",
  "portable-atomic",
+ "tokio",
  "unicode-width 0.2.0",
  "web-time",
 ]
@@ -1534,6 +1583,19 @@ dependencies = [
 
 [[package]]
 name = "nix"
+version = "0.23.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8f3790c00a0150112de0f4cd161e3d7fc4b2d8a5542ffc35f099a2562aecb35c"
+dependencies = [
+ "bitflags 1.3.2",
+ "cc",
+ "cfg-if",
+ "libc",
+ "memoffset 0.6.5",
+]
+
+[[package]]
+name = "nix"
 version = "0.25.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f346ff70e7dbfd675fe90590b92d59ef2de15a8779ae305ebcbfd3f0caf59be4"
@@ -1646,6 +1708,27 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "42f5e15c9953c5e4ccceeb2e7382a716482c34515315f7b03532b8b4e8393d2d"
 
 [[package]]
+name = "openat"
+version = "0.1.21"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "95aa7c05907b3ebde2610d602f4ddd992145cc6a84493647c30396f30ba83abe"
+dependencies = [
+ "libc",
+]
+
+[[package]]
+name = "openat-ext"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2cf3e4baa7f516441f58373f58aaf6e91a5dfa2e2b50e68a0d313b082014c61d"
+dependencies = [
+ "libc",
+ "nix 0.23.2",
+ "openat",
+ "rand 0.8.5",
+]
+
+[[package]]
 name = "openssh-keys"
 version = "0.6.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1698,9 +1781,9 @@ dependencies = [
 
 [[package]]
 name = "ostree"
-version = "0.20.2"
+version = "0.20.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2e17eb61e9ab4fc34187af48a8b45df0c57d004a963473e1c18fc1c2dbeb573f"
+checksum = "138ac5080fe780662bc76058fc837d292dff5cb73fa3affdfe249121d725c9ed"
 dependencies = [
  "base64 0.20.0",
  "bitflags 1.3.2",
@@ -1727,6 +1810,8 @@ dependencies = [
  "clap_mangen",
  "comfy-table",
  "composefs",
+ "composefs-boot",
+ "composefs-oci",
  "containers-image-proxy",
  "flate2",
  "fn-error-context",
@@ -1762,9 +1847,9 @@ dependencies = [
 
 [[package]]
 name = "ostree-sys"
-version = "0.15.1"
+version = "0.15.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9e07b303a4d842e4fbd2a31496d61d1fb35fe1dac31084e2e18fc5e95ce64c76"
+checksum = "90498b088c5f355a11e8f256b7896efdda7ea93f32a93ba4f66719dee50ef720"
 dependencies = [
  "gio-sys",
  "glib-sys",
@@ -1781,9 +1866,9 @@ checksum = "b15813163c1d831bf4a13c3610c05c0d03b39feb07f7e09fa234dac9b15aaf39"
 
 [[package]]
 name = "owo-colors"
-version = "4.2.1"
+version = "4.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "26995317201fa17f3656c36716aed4a7c81743a9634ac4c99c0eeda495db0cec"
+checksum = "48dd4f4a2c8405440fd0462561f0e5806bd0f77e86f51c761481bdd4018b545e"
 
 [[package]]
 name = "parking_lot"
@@ -3112,11 +3197,11 @@ dependencies = [
 
 [[package]]
 name = "zerocopy"
-version = "0.8.23"
+version = "0.8.25"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fd97444d05a4328b90e75e503a34bad781f14e28a823ad3557f0750df1ebcbc6"
+checksum = "a1702d9583232ddb9174e01bb7c15a2ab8fb1bc6f227aa1233858c351a3ba0cb"
 dependencies = [
- "zerocopy-derive 0.8.23",
+ "zerocopy-derive 0.8.25",
 ]
 
 [[package]]
@@ -3132,9 +3217,9 @@ dependencies = [
 
 [[package]]
 name = "zerocopy-derive"
-version = "0.8.23"
+version = "0.8.25"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6352c01d0edd5db859a63e2605f4ea3183ddbd15e2c4a9e7d32184df75e4f154"
+checksum = "28a6e20d751156648aa063f3800b706ee209a32c0b4d9f24be3d980b01be55ef"
 dependencies = [
  "proc-macro2",
  "quote",

@@ -3,7 +3,9 @@
 //! Create a merged filesystem tree with the image and mounted configmaps.
 
 use std::collections::HashSet;
+use std::fs::create_dir_all;
 use std::io::{BufRead, Write};
+use std::path::PathBuf;
 
 use anyhow::Ok;
 use anyhow::{anyhow, Context, Result};
@@ -21,12 +23,16 @@ use ostree_ext::ostree::{self, Sysroot};
 use ostree_ext::sysroot::SysrootLock;
 use ostree_ext::tokio_util::spawn_blocking_cancellable_flatten;
 
+use crate::bls_config::{parse_bls_config, BLSConfig};
+use crate::install::{get_efi_uuid_source, get_user_config, BootType};
 use crate::progress_jsonl::{Event, ProgressWriter, SubTaskBytes, SubTaskStep};
 use crate::spec::ImageReference;
-use crate::spec::{BootOrder, HostSpec};
-use crate::status::labels_of_config;
+use crate::spec::{BootOrder, HostSpec, BootEntry};
+use crate::status::{composefs_deployment_status, labels_of_config};
 use crate::store::Storage;
 use crate::utils::async_task_with_spinner;
+
+use openat_ext::OpenatDirExt;
 
 // TODO use https://github.com/ostreedev/ostree-rs-ext/pull/493/commits/afc1837ff383681b947de30c0cefc70080a4f87a
 const BASE_IMAGE_PREFIX: &str = "ostree/container/baseimage/bootc";
@@ -733,6 +739,165 @@ pub(crate) async fn stage(
     run_dir
         .atomic_write("reboot-required", b"")
         .context("Creating /run/reboot-required")?;
+
+    Ok(())
+}
+
+
+#[context("Rolling back UKI")]
+pub(crate) fn rollback_composefs_uki(current: &BootEntry, rollback: &BootEntry) -> Result<()> {
+    let user_cfg_name = "grub2/user.cfg.staged";
+    let user_cfg_path = PathBuf::from("/sysroot/boot").join(user_cfg_name);
+
+    let efi_uuid_source = get_efi_uuid_source();
+
+    // TODO: Need to check if user.cfg.staged exists
+    let mut usr_cfg = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(user_cfg_path)
+        .with_context(|| format!("Opening {user_cfg_name}"))?;
+
+    usr_cfg.write(efi_uuid_source.as_bytes())?;
+
+    let verity = if let Some(composefs) = &rollback.composefs {
+        composefs.verity.clone()
+    } else {
+        // Shouldn't really happen
+        anyhow::bail!("Verity not found for rollback deployment")
+    };
+    usr_cfg.write(get_user_config(&verity).as_bytes())?;
+
+    let verity = if let Some(composefs) = &current.composefs {
+        composefs.verity.clone()
+    } else {
+        // Shouldn't really happen
+        anyhow::bail!("Verity not found for booted deployment")
+    };
+    usr_cfg.write(get_user_config(&verity).as_bytes())?;
+
+    Ok(())
+}
+
+/// Filename for `loader/entries`
+const CURRENT_ENTRIES: &str = "entries";
+const ROLLBACK_ENTRIES: &str = "entries.staged";
+
+#[context("Getting boot entries")]
+pub(crate) fn get_sorted_boot_entries(ascending: bool) -> Result<Vec<BLSConfig>> {
+    let mut all_configs = vec![];
+
+    for entry in std::fs::read_dir(format!("/sysroot/boot/loader/{CURRENT_ENTRIES}"))? {
+        let entry = entry?;
+
+        let file_name = entry.file_name();
+
+        let file_name = file_name
+            .to_str()
+            .ok_or(anyhow::anyhow!("Found non UTF-8 characters in filename"))?;
+
+        if !file_name.ends_with(".conf") {
+            continue;
+        }
+
+        let contents = std::fs::read_to_string(&entry.path())
+            .with_context(|| format!("Failed to read {:?}", entry.path()))?;
+
+        let config = parse_bls_config(&contents).context("Parsing bls config")?;
+
+        all_configs.push(config);
+    }
+
+    all_configs.sort_by(|a, b| if ascending { a.cmp(b) } else { b.cmp(a) });
+
+    return Ok(all_configs);
+}
+
+#[context("Rolling back BLS")]
+pub(crate) fn rollback_composefs_bls() -> Result<()> {
+    // Sort in descending order as that's the order they're shown on the boot screen
+    // After this:
+    // all_configs[0] -> booted depl
+    // all_configs[1] -> rollback depl
+    let mut all_configs = get_sorted_boot_entries(false)?;
+
+    // Update the indicies so that they're swapped
+    for (idx, cfg) in all_configs.iter_mut().enumerate() {
+        cfg.version = idx as u32;
+    }
+
+    assert!(all_configs.len() == 2);
+
+    // Write these
+    let dir_path = PathBuf::from(format!("/sysroot/boot/loader/{ROLLBACK_ENTRIES}"));
+    create_dir_all(&dir_path).with_context(|| format!("Failed to create dir: {dir_path:?}"))?;
+
+    // Write the BLS configs in there
+    for cfg in all_configs {
+        let file_name = format!("bootc-composefs-{}.conf", cfg.version);
+
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .open(dir_path.join(&file_name))
+            .with_context(|| format!("Opening {file_name}"))?;
+
+        file.write_all(cfg.to_string().as_bytes())
+            .with_context(|| format!("Writing to {file_name}"))?;
+    }
+
+    // Atomically exchange "entries" <-> "entries.rollback"
+    let dir = openat::Dir::open("/sysroot/boot/loader").context("Opening loader dir")?;
+
+    tracing::debug!("Atomically exchanging for {ROLLBACK_ENTRIES} and {CURRENT_ENTRIES}");
+    dir.local_exchange(ROLLBACK_ENTRIES, CURRENT_ENTRIES)
+        .context("local exchange")?;
+
+    tracing::debug!("Removing {ROLLBACK_ENTRIES}");
+    dir.remove_all(ROLLBACK_ENTRIES)
+        .context("Removing entries.rollback")?;
+
+    tracing::debug!("Syncing to disk");
+    dir.syncfs().context("syncfs")?;
+
+    Ok(())
+}
+
+#[context("Rolling back composefs")]
+pub(crate) async fn composefs_rollback() -> Result<()> {
+    let host = composefs_deployment_status().await?;
+
+    let new_spec = {
+        let mut new_spec = host.spec.clone();
+        new_spec.boot_order = new_spec.boot_order.swap();
+        new_spec
+    };
+
+    // Just to be sure
+    host.spec.verify_transition(&new_spec)?;
+
+    let reverting = new_spec.boot_order == BootOrder::Default;
+    if reverting {
+        println!("notice: Reverting queued rollback state");
+    }
+
+    let rollback_status = host
+        .status
+        .rollback
+        .ok_or_else(|| anyhow!("No rollback available"))?;
+
+    // TODO: Handle staged deployment
+    // Ostree will drop any staged deployment on rollback but will keep it if it is the first item
+    // in the new deployment list
+    let Some(rollback_composefs_entry) = &rollback_status.composefs else {
+        anyhow::bail!("Rollback deployment not a composefs deployment")
+    };
+
+    match rollback_composefs_entry.boot_type {
+        BootType::Bls => rollback_composefs_bls(),
+        BootType::Uki => rollback_composefs_uki(&host.status.booted.unwrap(), &rollback_status),
+    }?;
 
     Ok(())
 }
