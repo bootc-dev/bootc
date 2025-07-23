@@ -14,6 +14,7 @@ mod osbuild;
 pub(crate) mod osconfig;
 
 use std::collections::HashMap;
+use std::fmt::write;
 use std::fs::create_dir_all;
 use std::io::{Read, Write};
 use std::os::fd::{AsFd, AsRawFd};
@@ -50,8 +51,7 @@ use ostree_ext::composefs::{
     util::Sha256Digest,
 };
 use ostree_ext::composefs_boot::{
-    bootloader::BootEntry as ComposefsBootEntry,
-    write_boot::write_boot_simple as composefs_write_boot_simple, BootOps,
+    bootloader::BootEntry as ComposefsBootEntry, cmdline::get_cmdline_composefs, uki, BootOps,
 };
 use ostree_ext::composefs_oci::{
     image::create_filesystem as create_composefs_filesystem, pull as composefs_oci_pull,
@@ -69,8 +69,8 @@ use ostree_ext::{
 use rustix::fs::FileTypeExt;
 use rustix::fs::MetadataExt as _;
 use rustix::path::Arg;
-use serde::{Deserialize, Serialize};
 use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "install-to-disk")]
 use self::baseline::InstallBlockDeviceOpts;
@@ -269,7 +269,9 @@ impl TryFrom<&str> for BootType {
         match value {
             "bls" => Ok(Self::Bls),
             "uki" => Ok(Self::Uki),
-            unrecognized => Err(anyhow::anyhow!("Unrecognized boot option: '{unrecognized}'")),
+            unrecognized => Err(anyhow::anyhow!(
+                "Unrecognized boot option: '{unrecognized}'"
+            )),
         }
     }
 }
@@ -1706,10 +1708,11 @@ pub fn get_esp_partition(device: &str) -> Result<(String, Option<String>)> {
     Ok((esp.node, esp.uuid))
 }
 
-pub(crate) fn get_user_config(uki_id: &str) -> String {
+pub(crate) fn get_user_config(boot_label: &String, uki_id: &str) -> String {
+    // TODO: Full EFI path here
     let s = format!(
         r#"
-menuentry "Fedora Bootc UKI: ({uki_id})" {{
+menuentry "{boot_label}: ({uki_id})" {{
     insmod fat
     insmod chain
     search --no-floppy --set=root --fs-uuid "${{EFI_PART_UUID}}"
@@ -1779,16 +1782,34 @@ pub(crate) fn setup_composefs_uki_boot(
         .args([&PathBuf::from(&esp_device), &mounted_esp.clone()])
         .run()?;
 
-    composefs_write_boot_simple(
-        &repo,
-        entry,
-        &id,
-        false,
-        &mounted_esp,
-        None,
-        Some(&id.to_hex()),
-        &[],
-    )?;
+    let boot_label = match entry {
+        ComposefsBootEntry::Type1(..) => todo!(),
+        ComposefsBootEntry::UsrLibModulesUki(..) => todo!(),
+        ComposefsBootEntry::UsrLibModulesVmLinuz(..) => todo!(),
+
+        ComposefsBootEntry::Type2(type2_entry) => {
+            let uki = read_file(&type2_entry.file, &repo).context("Reading UKI")?;
+            let cmdline = uki::get_cmdline(&uki).context("Getting UKI cmdline")?;
+            let (composefs_cmdline, _) = get_cmdline_composefs::<Sha256HashValue>(cmdline)?;
+
+            let boot_label = uki::get_boot_label(&uki).context("Getting UKI boot label")?;
+
+            if composefs_cmdline != *id {
+                anyhow::bail!(
+                    "The UKI has the wrong composefs= parameter (is '{composefs_cmdline:?}', should be {id:?})"
+                );
+            }
+
+            // Write the UKI to ESP
+            let efi_linux = mounted_esp.join("EFI/Linux");
+            create_dir_all(&efi_linux).context("Creating EFI/Linux")?;
+
+            let final_uki_path = efi_linux.join(format!("{}.efi", id.to_hex()));
+            std::fs::write(final_uki_path, uki).context("Writing UKI to final path")?;
+
+            boot_label
+        }
+    };
 
     Task::new("Unmounting ESP", "umount")
         .arg(&mounted_esp)
@@ -1826,7 +1847,7 @@ pub(crate) fn setup_composefs_uki_boot(
             .with_context(|| format!("Opening {user_cfg_name}"))?;
 
         usr_cfg.write_all(efi_uuid_source.as_bytes())?;
-        usr_cfg.write_all(get_user_config(&id.to_hex()).as_bytes())?;
+        usr_cfg.write_all(get_user_config(&boot_label, &id.to_hex()).as_bytes())?;
 
         // root_path here will be /sysroot
         for entry in std::fs::read_dir(root_path.join(STATE_DIR_RELATIVE))? {
@@ -1836,7 +1857,7 @@ pub(crate) fn setup_composefs_uki_boot(
             // SAFETY: Deployment file name shouldn't containg non UTF-8 chars
             let depl_file_name = depl_file_name.to_string_lossy();
 
-            usr_cfg.write_all(get_user_config(&depl_file_name).as_bytes())?;
+            usr_cfg.write_all(get_user_config(&boot_label, &depl_file_name).as_bytes())?;
         }
 
         return Ok(());
@@ -1868,7 +1889,7 @@ pub(crate) fn setup_composefs_uki_boot(
         .with_context(|| format!("Opening {user_cfg_name}"))?;
 
     usr_cfg.write_all(efi_uuid_source.as_bytes())?;
-    usr_cfg.write_all(get_user_config(&id.to_hex()).as_bytes())?;
+    usr_cfg.write_all(get_user_config(&boot_label, &id.to_hex()).as_bytes())?;
 
     Ok(())
 }

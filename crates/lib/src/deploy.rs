@@ -767,7 +767,7 @@ pub(crate) fn rollback_composefs_uki(current: &BootEntry, rollback: &BootEntry) 
         // Shouldn't really happen
         anyhow::bail!("Verity not found for rollback deployment")
     };
-    usr_cfg.write(get_user_config(&verity).as_bytes())?;
+    usr_cfg.write(get_user_config(todo!(), &verity).as_bytes())?;
 
     let verity = if let Some(composefs) = &current.composefs {
         composefs.verity.clone()
@@ -775,7 +775,7 @@ pub(crate) fn rollback_composefs_uki(current: &BootEntry, rollback: &BootEntry) 
         // Shouldn't really happen
         anyhow::bail!("Verity not found for booted deployment")
     };
-    usr_cfg.write(get_user_config(&verity).as_bytes())?;
+    usr_cfg.write(get_user_config(todo!(), &verity).as_bytes())?;
 
     Ok(())
 }
