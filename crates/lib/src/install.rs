@@ -14,7 +14,6 @@ mod osbuild;
 pub(crate) mod osconfig;
 
 use std::collections::HashMap;
-use std::fmt::write;
 use std::fs::create_dir_all;
 use std::io::{Read, Write};
 use std::os::fd::{AsFd, AsRawFd};
@@ -1640,24 +1639,35 @@ pub(crate) fn setup_composefs_bls_boot(
             let path = boot_dir.join(&id_hex);
             create_dir_all(&path)?;
 
-            let vmlinuz_path = path.join("vmlinuz");
-            let initrd_path = path.join("initrd");
+            let entries_dir =
+                cap_std::fs::Dir::open_ambient_dir(&path, cap_std::ambient_authority())
+                    .with_context(|| format!("Opening {path}"))?;
 
-            std::fs::write(
-                &vmlinuz_path,
-                read_file(&usr_lib_modules_vmlinuz.vmlinuz, &repo).context("Reading vmlinuz")?,
-            )
-            .context("Writing vmlinuz to path")?;
+            entries_dir
+                .atomic_write(
+                    "vmlinuz",
+                    read_file(&usr_lib_modules_vmlinuz.vmlinuz, &repo)
+                        .context("Reading vmlinuz")?,
+                )
+                .context("Writing vmlinuz to path")?;
 
             if let Some(initramfs) = &usr_lib_modules_vmlinuz.initramfs {
-                std::fs::write(
-                    &initrd_path,
-                    read_file(initramfs, &repo).context("Reading initramfs")?,
-                )
-                .context("Writing initrd to path")?;
+                entries_dir
+                    .atomic_write(
+                        "initrd",
+                        read_file(initramfs, &repo).context("Reading initrd")?,
+                    )
+                    .context("Writing initrd to path")?;
             } else {
                 anyhow::bail!("initramfs not found");
             };
+
+            // Can't call fsync on O_PATH fds, so re-open it as a non O_PATH fd
+            let owned_fd = entries_dir
+                .reopen_as_ownedfd()
+                .context("Reopen as owned fd")?;
+
+            rustix::fs::fsync(owned_fd).context("fsync")?;
 
             BLSConfig {
                 title: Some(id_hex.clone()),
@@ -1682,17 +1692,26 @@ pub(crate) fn setup_composefs_bls_boot(
 
     create_dir_all(&entries_path).with_context(|| format!("Creating {:?}", entries_path))?;
 
-    std::fs::write(
-        entries_path.join(format!("bootc-composefs-{}.conf", bls_config.version)),
+    let loader_entries_dir =
+        cap_std::fs::Dir::open_ambient_dir(&entries_path, cap_std::ambient_authority())
+            .with_context(|| format!("Opening {entries_path}"))?;
+
+    loader_entries_dir.atomic_write(
+        format!("bootc-composefs-{}.conf", bls_config.version),
         bls_config.to_string().as_bytes(),
     )?;
 
     if let Some(booted_bls) = booted_bls {
-        std::fs::write(
-            entries_path.join(format!("bootc-composefs-{}.conf", booted_bls.version)),
+        loader_entries_dir.atomic_write(
+            format!("bootc-composefs-{}.conf", booted_bls.version),
             booted_bls.to_string().as_bytes(),
         )?;
     }
+
+    let owned_loader_entries_fd = loader_entries_dir
+        .reopen_as_ownedfd()
+        .context("Reopening as owned fd")?;
+    rustix::fs::fsync(owned_loader_entries_fd).context("fsync")?;
 
     Ok(())
 }
@@ -1801,11 +1820,23 @@ pub(crate) fn setup_composefs_uki_boot(
             }
 
             // Write the UKI to ESP
-            let efi_linux = mounted_esp.join("EFI/Linux");
-            create_dir_all(&efi_linux).context("Creating EFI/Linux")?;
+            let efi_linux_path = mounted_esp.join("EFI/Linux");
+            create_dir_all(&efi_linux_path).context("Creating EFI/Linux")?;
 
-            let final_uki_path = efi_linux.join(format!("{}.efi", id.to_hex()));
-            std::fs::write(final_uki_path, uki).context("Writing UKI to final path")?;
+            let efi_linux =
+                cap_std::fs::Dir::open_ambient_dir(&efi_linux_path, cap_std::ambient_authority())
+                    .with_context(|| format!("Opening {efi_linux_path:?}"))?;
+
+            efi_linux
+                .atomic_write(format!("{}.efi", id.to_hex()), uki)
+                .context("Writing UKI")?;
+
+            rustix::fs::fsync(
+                efi_linux
+                    .reopen_as_ownedfd()
+                    .context("Reopening as owned fd")?,
+            )
+            .context("fsync")?;
 
             boot_label
         }
@@ -1830,24 +1861,24 @@ pub(crate) fn setup_composefs_uki_boot(
     let efi_uuid_source = get_efi_uuid_source();
 
     let user_cfg_name = if is_upgrade {
-        "grub2/user.cfg.staged"
+        "user.cfg.staged"
     } else {
-        "grub2/user.cfg"
+        "user.cfg"
     };
-    let user_cfg_path = boot_dir.join(user_cfg_name);
+
+    let grub_dir =
+        cap_std::fs::Dir::open_ambient_dir(boot_dir.join("grub2"), cap_std::ambient_authority())
+            .context("opening boot/grub2")?;
 
     // Iterate over all available deployments, and generate a menuentry for each
     //
     // TODO: We might find a staged deployment here
     if is_upgrade {
-        let mut usr_cfg = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .open(user_cfg_path)
-            .with_context(|| format!("Opening {user_cfg_name}"))?;
+        let mut buffer = vec![];
 
-        usr_cfg.write_all(efi_uuid_source.as_bytes())?;
-        usr_cfg.write_all(get_user_config(&boot_label, &id.to_hex()).as_bytes())?;
+        // Shouldn't really fail so no context here
+        buffer.write_all(efi_uuid_source.as_bytes())?;
+        buffer.write_all(get_user_config(&boot_label, &id.to_hex()).as_bytes())?;
 
         // root_path here will be /sysroot
         for entry in std::fs::read_dir(root_path.join(STATE_DIR_RELATIVE))? {
@@ -1857,39 +1888,41 @@ pub(crate) fn setup_composefs_uki_boot(
             // SAFETY: Deployment file name shouldn't containg non UTF-8 chars
             let depl_file_name = depl_file_name.to_string_lossy();
 
-            usr_cfg.write_all(get_user_config(&boot_label, &depl_file_name).as_bytes())?;
+            buffer.write_all(get_user_config(&boot_label, &depl_file_name).as_bytes())?;
         }
+
+        grub_dir
+            .atomic_write(user_cfg_name, buffer)
+            .with_context(|| format!("Writing to {user_cfg_name}"))?;
+
+        rustix::fs::fsync(grub_dir.reopen_as_ownedfd()?).context("fsync")?;
 
         return Ok(());
     }
 
-    let efi_uuid_file_path = format!("grub2/{EFI_UUID_FILE}");
-
     // Open grub2/efiuuid.cfg and write the EFI partition fs-UUID in there
     // This will be sourced by grub2/user.cfg to be used for `--fs-uuid`
-    let mut efi_uuid_file = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .open(boot_dir.join(&efi_uuid_file_path))
-        .with_context(|| format!("Opening {efi_uuid_file_path}"))?;
-
     let esp_uuid = Task::new("blkid for ESP UUID", "blkid")
         .args(["-s", "UUID", "-o", "value", &esp_device])
         .read()?;
 
-    efi_uuid_file
-        .write_all(format!("set EFI_PART_UUID=\"{}\"", esp_uuid.trim()).as_bytes())
-        .with_context(|| format!("Writing to {efi_uuid_file_path}"))?;
+    grub_dir.atomic_write(
+        EFI_UUID_FILE,
+        format!("set EFI_PART_UUID=\"{}\"", esp_uuid.trim()).as_bytes(),
+    )?;
 
     // Write to grub2/user.cfg
-    let mut usr_cfg = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .open(user_cfg_path)
-        .with_context(|| format!("Opening {user_cfg_name}"))?;
+    let mut buffer = vec![];
 
-    usr_cfg.write_all(efi_uuid_source.as_bytes())?;
-    usr_cfg.write_all(get_user_config(&boot_label, &id.to_hex()).as_bytes())?;
+    // Shouldn't really fail so no context here
+    buffer.write_all(efi_uuid_source.as_bytes())?;
+    buffer.write_all(get_user_config(&boot_label, &id.to_hex()).as_bytes())?;
+
+    grub_dir
+        .atomic_write(user_cfg_name, buffer)
+        .with_context(|| format!("Writing to {user_cfg_name}"))?;
+
+    rustix::fs::fsync(grub_dir.reopen_as_ownedfd()?).context("fsync")?;
 
     Ok(())
 }

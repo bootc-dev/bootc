@@ -22,17 +22,16 @@ use ostree_ext::ostree::Deployment;
 use ostree_ext::ostree::{self, Sysroot};
 use ostree_ext::sysroot::SysrootLock;
 use ostree_ext::tokio_util::spawn_blocking_cancellable_flatten;
+use rustix::fs::{fsync, renameat_with, AtFlags, RenameFlags};
 
 use crate::bls_config::{parse_bls_config, BLSConfig};
 use crate::install::{get_efi_uuid_source, get_user_config, BootType};
 use crate::progress_jsonl::{Event, ProgressWriter, SubTaskBytes, SubTaskStep};
 use crate::spec::ImageReference;
-use crate::spec::{BootOrder, HostSpec, BootEntry};
+use crate::spec::{BootEntry, BootOrder, HostSpec};
 use crate::status::{composefs_deployment_status, labels_of_config};
 use crate::store::Storage;
 use crate::utils::async_task_with_spinner;
-
-use openat_ext::OpenatDirExt;
 
 // TODO use https://github.com/ostreedev/ostree-rs-ext/pull/493/commits/afc1837ff383681b947de30c0cefc70080a4f87a
 const BASE_IMAGE_PREFIX: &str = "ostree/container/baseimage/bootc";
@@ -743,7 +742,6 @@ pub(crate) async fn stage(
     Ok(())
 }
 
-
 #[context("Rolling back UKI")]
 pub(crate) fn rollback_composefs_uki(current: &BootEntry, rollback: &BootEntry) -> Result<()> {
     let user_cfg_name = "grub2/user.cfg.staged";
@@ -782,7 +780,8 @@ pub(crate) fn rollback_composefs_uki(current: &BootEntry, rollback: &BootEntry) 
 
 /// Filename for `loader/entries`
 const CURRENT_ENTRIES: &str = "entries";
-const ROLLBACK_ENTRIES: &str = "entries.staged";
+const STAGED_ENTRIES: &str = "entries.staged";
+const ROLLBACK_ENTRIES: &str = STAGED_ENTRIES;
 
 #[context("Getting boot entries")]
 pub(crate) fn get_sorted_boot_entries(ascending: bool) -> Result<Vec<BLSConfig>> {
@@ -833,33 +832,50 @@ pub(crate) fn rollback_composefs_bls() -> Result<()> {
     let dir_path = PathBuf::from(format!("/sysroot/boot/loader/{ROLLBACK_ENTRIES}"));
     create_dir_all(&dir_path).with_context(|| format!("Failed to create dir: {dir_path:?}"))?;
 
+    let rollback_entries_dir =
+        cap_std::fs::Dir::open_ambient_dir(&dir_path, cap_std::ambient_authority())
+            .with_context(|| format!("Opening {dir_path:?}"))?;
+
     // Write the BLS configs in there
     for cfg in all_configs {
         let file_name = format!("bootc-composefs-{}.conf", cfg.version);
 
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .open(dir_path.join(&file_name))
-            .with_context(|| format!("Opening {file_name}"))?;
-
-        file.write_all(cfg.to_string().as_bytes())
+        rollback_entries_dir
+            .atomic_write(&file_name, cfg.to_string().as_bytes())
             .with_context(|| format!("Writing to {file_name}"))?;
     }
 
+    // Should we sync after every write?
+    fsync(
+        rollback_entries_dir
+            .reopen_as_ownedfd()
+            .with_context(|| format!("Reopening {dir_path:?} as owned fd"))?,
+    )
+    .with_context(|| format!("fsync {dir_path:?}"))?;
+
     // Atomically exchange "entries" <-> "entries.rollback"
-    let dir = openat::Dir::open("/sysroot/boot/loader").context("Opening loader dir")?;
+    let dir = Dir::open_ambient_dir("/sysroot/boot/loader", cap_std::ambient_authority())
+        .context("Opening loader dir")?;
 
     tracing::debug!("Atomically exchanging for {ROLLBACK_ENTRIES} and {CURRENT_ENTRIES}");
-    dir.local_exchange(ROLLBACK_ENTRIES, CURRENT_ENTRIES)
-        .context("local exchange")?;
+    renameat_with(
+        &dir,
+        ROLLBACK_ENTRIES,
+        &dir,
+        CURRENT_ENTRIES,
+        RenameFlags::EXCHANGE,
+    )
+    .context("renameat")?;
 
     tracing::debug!("Removing {ROLLBACK_ENTRIES}");
-    dir.remove_all(ROLLBACK_ENTRIES)
-        .context("Removing entries.rollback")?;
+    rustix::fs::unlinkat(&dir, ROLLBACK_ENTRIES, AtFlags::REMOVEDIR).context("unlinkat")?;
 
     tracing::debug!("Syncing to disk");
-    dir.syncfs().context("syncfs")?;
+    fsync(
+        dir.reopen_as_ownedfd()
+            .with_context(|| format!("Reopening /sysroot/boot/loader as owned fd"))?,
+    )
+    .context("fsync")?;
 
     Ok(())
 }
