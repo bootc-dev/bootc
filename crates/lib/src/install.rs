@@ -288,8 +288,9 @@ impl From<&ComposefsBootEntry<Sha256HashValue>> for BootType {
 
 #[derive(Debug, Clone, clap::Parser, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct InstallComposefsOpts {
-    #[clap(long, value_enum, default_value_t)]
-    pub(crate) boot: BootType,
+    #[clap(long, default_value_t)]
+    #[serde(default)]
+    pub(crate) insecure: bool,
 }
 
 #[cfg(feature = "install-to-disk")]
@@ -317,9 +318,11 @@ pub(crate) struct InstallToDiskOpts {
     pub(crate) via_loopback: bool,
 
     #[clap(long)]
+    #[serde(default)]
     pub(crate) composefs_native: bool,
 
     #[clap(flatten)]
+    #[serde(flatten)]
     pub(crate) composefs_opts: InstallComposefsOpts,
 }
 
@@ -608,15 +611,10 @@ impl FromStr for MountSpec {
 impl InstallToDiskOpts {
     pub(crate) fn validate(&self) -> Result<()> {
         if !self.composefs_native {
-            // Reject using --boot without --composefs
-            if self.composefs_opts.boot != BootType::default() {
-                anyhow::bail!("--boot must not be provided without --composefs");
+            // Reject using --insecure without --composefs
+            if self.composefs_opts.insecure != false {
+                anyhow::bail!("--insecure must not be provided without --composefs");
             }
-        }
-
-        // Can't add kargs to UKI
-        if self.composefs_opts.boot == BootType::Uki && self.config_opts.karg.is_some() {
-            anyhow::bail!("Cannot pass kargs to UKI");
         }
 
         Ok(())
@@ -1592,7 +1590,7 @@ pub fn read_file<ObjectID: FsVerityHashValue>(
 
 pub(crate) enum BootSetupType<'a> {
     /// For initial setup, i.e. install to-disk
-    Setup(&'a RootSetup),
+    Setup((&'a RootSetup, &'a State)),
     /// For `bootc upgrade`
     Upgrade,
 }
@@ -1608,10 +1606,18 @@ pub(crate) fn setup_composefs_bls_boot(
     let id_hex = id.to_hex();
 
     let (root_path, cmdline_refs) = match setup_type {
-        BootSetupType::Setup(root_setup) => {
+        BootSetupType::Setup((root_setup, state)) => {
             // root_setup.kargs has [root=UUID=<UUID>, "rw"]
             let mut cmdline_options = String::from(root_setup.kargs.join(" "));
-            cmdline_options.push_str(&format!(" composefs={id_hex}"));
+
+            match &state.composefs_options {
+                Some(opt) if opt.insecure => {
+                    cmdline_options.push_str(&format!(" composefs=?{id_hex}"));
+                }
+                None | Some(..) => {
+                    cmdline_options.push_str(&format!(" composefs={id_hex}"));
+                }
+            };
 
             (root_setup.physical_root_path.clone(), cmdline_options)
         }
@@ -1766,8 +1772,14 @@ pub(crate) fn setup_composefs_uki_boot(
     id: &Sha256HashValue,
     entry: ComposefsBootEntry<Sha256HashValue>,
 ) -> Result<()> {
-    let (root_path, esp_device) = match setup_type {
-        BootSetupType::Setup(root_setup) => {
+    let (root_path, esp_device, is_insecure_from_opts) = match setup_type {
+        BootSetupType::Setup((root_setup, state)) => {
+            if let Some(v) = &state.config_opts.karg {
+                if v.len() > 0 {
+                    tracing::warn!("kargs passed for UKI will be ignored");
+                }
+            }
+
             let esp_part = root_setup
                 .device_info
                 .partitions
@@ -1775,7 +1787,11 @@ pub(crate) fn setup_composefs_uki_boot(
                 .find(|p| p.parttype.as_str() == ESP_GUID)
                 .ok_or_else(|| anyhow!("ESP partition not found"))?;
 
-            (root_setup.physical_root_path.clone(), esp_part.node.clone())
+            (
+                root_setup.physical_root_path.clone(),
+                esp_part.node.clone(),
+                state.composefs_options.as_ref().map(|x| x.insecure),
+            )
         }
 
         BootSetupType::Upgrade => {
@@ -1788,7 +1804,7 @@ pub(crate) fn setup_composefs_uki_boot(
                 anyhow::bail!("Could not find parent device for mountpoint /sysroot");
             };
 
-            (sysroot, get_esp_partition(&parent)?.0)
+            (sysroot, get_esp_partition(&parent)?.0, None)
         }
     };
 
@@ -1809,7 +1825,27 @@ pub(crate) fn setup_composefs_uki_boot(
         ComposefsBootEntry::Type2(type2_entry) => {
             let uki = read_file(&type2_entry.file, &repo).context("Reading UKI")?;
             let cmdline = uki::get_cmdline(&uki).context("Getting UKI cmdline")?;
-            let (composefs_cmdline, _) = get_cmdline_composefs::<Sha256HashValue>(cmdline)?;
+            let (composefs_cmdline, insecure) = get_cmdline_composefs::<Sha256HashValue>(cmdline)?;
+
+            // If the UKI cmdline does not match what the user has passed as cmdline option
+            // NOTE: This will only be checked for new installs and now upgrades/switches
+            if let Some(is_insecure_from_opts) = is_insecure_from_opts {
+                match is_insecure_from_opts {
+                    true => {
+                        if !insecure {
+                            tracing::warn!(
+                                "--insecure passed as option but UKI cmdline does not support it"
+                            )
+                        }
+                    }
+
+                    false => {
+                        if insecure {
+                            tracing::warn!("UKI cmdline has composefs set as insecure")
+                        }
+                    }
+                }
+            }
 
             let boot_label = uki::get_boot_label(&uki).context("Getting UKI boot label")?;
 
@@ -1991,17 +2027,21 @@ fn setup_composefs_boot(root_setup: &RootSetup, state: &State, image_id: &str) -
         anyhow::bail!("No boot entries!");
     };
 
-    let Some(composefs_opts) = &state.composefs_options else {
-        anyhow::bail!("Could not find options for composefs")
-    };
+    let boot_type = BootType::from(&entry);
 
-    match composefs_opts.boot {
-        BootType::Bls => {
-            setup_composefs_bls_boot(BootSetupType::Setup(&root_setup), repo, &id, entry)?
-        }
-        BootType::Uki => {
-            setup_composefs_uki_boot(BootSetupType::Setup(&root_setup), repo, &id, entry)?
-        }
+    match boot_type {
+        BootType::Bls => setup_composefs_bls_boot(
+            BootSetupType::Setup((&root_setup, &state)),
+            repo,
+            &id,
+            entry,
+        )?,
+        BootType::Uki => setup_composefs_uki_boot(
+            BootSetupType::Setup((&root_setup, &state)),
+            repo,
+            &id,
+            entry,
+        )?,
     };
 
     write_composefs_state(
@@ -2013,7 +2053,7 @@ fn setup_composefs_boot(root_setup: &RootSetup, state: &State, image_id: &str) -
             signature: None,
         },
         false,
-        composefs_opts.boot,
+        boot_type,
     )?;
 
     Ok(())
