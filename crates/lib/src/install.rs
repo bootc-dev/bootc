@@ -50,8 +50,7 @@ use ostree_ext::composefs::{
     util::Sha256Digest,
 };
 use ostree_ext::composefs_boot::{
-    bootloader::BootEntry as ComposefsBootEntry,
-    write_boot::write_boot_simple as composefs_write_boot_simple, BootOps,
+    bootloader::BootEntry as ComposefsBootEntry, cmdline::get_cmdline_composefs, uki, BootOps,
 };
 use ostree_ext::composefs_oci::{
     image::create_filesystem as create_composefs_filesystem, pull as composefs_oci_pull,
@@ -69,8 +68,8 @@ use ostree_ext::{
 use rustix::fs::FileTypeExt;
 use rustix::fs::MetadataExt as _;
 use rustix::path::Arg;
-use serde::{Deserialize, Serialize};
 use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "install-to-disk")]
 use self::baseline::InstallBlockDeviceOpts;
@@ -269,7 +268,9 @@ impl TryFrom<&str> for BootType {
         match value {
             "bls" => Ok(Self::Bls),
             "uki" => Ok(Self::Uki),
-            unrecognized => Err(anyhow::anyhow!("Unrecognized boot option: '{unrecognized}'")),
+            unrecognized => Err(anyhow::anyhow!(
+                "Unrecognized boot option: '{unrecognized}'"
+            )),
         }
     }
 }
@@ -287,8 +288,8 @@ impl From<&ComposefsBootEntry<Sha256HashValue>> for BootType {
 
 #[derive(Debug, Clone, clap::Parser, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct InstallComposefsOpts {
-    #[clap(long, value_enum, default_value_t)]
-    pub(crate) boot: BootType,
+    #[clap(long, default_value_t)]
+    pub(crate) insecure: bool,
 }
 
 #[cfg(feature = "install-to-disk")]
@@ -607,15 +608,10 @@ impl FromStr for MountSpec {
 impl InstallToDiskOpts {
     pub(crate) fn validate(&self) -> Result<()> {
         if !self.composefs_native {
-            // Reject using --boot without --composefs
-            if self.composefs_opts.boot != BootType::default() {
-                anyhow::bail!("--boot must not be provided without --composefs");
+            // Reject using --insecure without --composefs
+            if self.composefs_opts.insecure != false {
+                anyhow::bail!("--insecure must not be provided without --composefs");
             }
-        }
-
-        // Can't add kargs to UKI
-        if self.composefs_opts.boot == BootType::Uki && self.config_opts.karg.is_some() {
-            anyhow::bail!("Cannot pass kargs to UKI");
         }
 
         Ok(())
@@ -1591,7 +1587,7 @@ pub fn read_file<ObjectID: FsVerityHashValue>(
 
 pub(crate) enum BootSetupType<'a> {
     /// For initial setup, i.e. install to-disk
-    Setup(&'a RootSetup),
+    Setup((&'a RootSetup, &'a State)),
     /// For `bootc upgrade`
     Upgrade,
 }
@@ -1607,10 +1603,18 @@ pub(crate) fn setup_composefs_bls_boot(
     let id_hex = id.to_hex();
 
     let (root_path, cmdline_refs) = match setup_type {
-        BootSetupType::Setup(root_setup) => {
+        BootSetupType::Setup((root_setup, state)) => {
             // root_setup.kargs has [root=UUID=<UUID>, "rw"]
             let mut cmdline_options = String::from(root_setup.kargs.join(" "));
-            cmdline_options.push_str(&format!(" composefs={id_hex}"));
+
+            match &state.composefs_options {
+                Some(opt) if opt.insecure => {
+                    cmdline_options.push_str(&format!(" composefs=?{id_hex}"));
+                }
+                None | Some(..) => {
+                    cmdline_options.push_str(&format!(" composefs={id_hex}"));
+                }
+            };
 
             (root_setup.physical_root_path.clone(), cmdline_options)
         }
@@ -1638,24 +1642,35 @@ pub(crate) fn setup_composefs_bls_boot(
             let path = boot_dir.join(&id_hex);
             create_dir_all(&path)?;
 
-            let vmlinuz_path = path.join("vmlinuz");
-            let initrd_path = path.join("initrd");
+            let entries_dir =
+                cap_std::fs::Dir::open_ambient_dir(&path, cap_std::ambient_authority())
+                    .with_context(|| format!("Opening {path}"))?;
 
-            std::fs::write(
-                &vmlinuz_path,
-                read_file(&usr_lib_modules_vmlinuz.vmlinuz, &repo).context("Reading vmlinuz")?,
-            )
-            .context("Writing vmlinuz to path")?;
+            entries_dir
+                .atomic_write(
+                    "vmlinuz",
+                    read_file(&usr_lib_modules_vmlinuz.vmlinuz, &repo)
+                        .context("Reading vmlinuz")?,
+                )
+                .context("Writing vmlinuz to path")?;
 
             if let Some(initramfs) = &usr_lib_modules_vmlinuz.initramfs {
-                std::fs::write(
-                    &initrd_path,
-                    read_file(initramfs, &repo).context("Reading initramfs")?,
-                )
-                .context("Writing initrd to path")?;
+                entries_dir
+                    .atomic_write(
+                        "initrd",
+                        read_file(initramfs, &repo).context("Reading initrd")?,
+                    )
+                    .context("Writing initrd to path")?;
             } else {
                 anyhow::bail!("initramfs not found");
             };
+
+            // Can't call fsync on O_PATH fds, so re-open it as a non O_PATH fd
+            let owned_fd = entries_dir
+                .reopen_as_ownedfd()
+                .context("Reopen as owned fd")?;
+
+            rustix::fs::fsync(owned_fd).context("fsync")?;
 
             BLSConfig {
                 title: Some(id_hex.clone()),
@@ -1680,17 +1695,26 @@ pub(crate) fn setup_composefs_bls_boot(
 
     create_dir_all(&entries_path).with_context(|| format!("Creating {:?}", entries_path))?;
 
-    std::fs::write(
-        entries_path.join(format!("bootc-composefs-{}.conf", bls_config.version)),
+    let loader_entries_dir =
+        cap_std::fs::Dir::open_ambient_dir(&entries_path, cap_std::ambient_authority())
+            .with_context(|| format!("Opening {entries_path}"))?;
+
+    loader_entries_dir.atomic_write(
+        format!("bootc-composefs-{}.conf", bls_config.version),
         bls_config.to_string().as_bytes(),
     )?;
 
     if let Some(booted_bls) = booted_bls {
-        std::fs::write(
-            entries_path.join(format!("bootc-composefs-{}.conf", booted_bls.version)),
+        loader_entries_dir.atomic_write(
+            format!("bootc-composefs-{}.conf", booted_bls.version),
             booted_bls.to_string().as_bytes(),
         )?;
     }
+
+    let owned_loader_entries_fd = loader_entries_dir
+        .reopen_as_ownedfd()
+        .context("Reopening as owned fd")?;
+    rustix::fs::fsync(owned_loader_entries_fd).context("fsync")?;
 
     Ok(())
 }
@@ -1706,10 +1730,11 @@ pub fn get_esp_partition(device: &str) -> Result<(String, Option<String>)> {
     Ok((esp.node, esp.uuid))
 }
 
-pub(crate) fn get_user_config(uki_id: &str) -> String {
+pub(crate) fn get_user_config(boot_label: &String, uki_id: &str) -> String {
+    // TODO: Full EFI path here
     let s = format!(
         r#"
-menuentry "Fedora Bootc UKI: ({uki_id})" {{
+menuentry "{boot_label}: ({uki_id})" {{
     insmod fat
     insmod chain
     search --no-floppy --set=root --fs-uuid "${{EFI_PART_UUID}}"
@@ -1744,8 +1769,14 @@ pub(crate) fn setup_composefs_uki_boot(
     id: &Sha256HashValue,
     entry: ComposefsBootEntry<Sha256HashValue>,
 ) -> Result<()> {
-    let (root_path, esp_device) = match setup_type {
-        BootSetupType::Setup(root_setup) => {
+    let (root_path, esp_device, is_insecure_from_opts) = match setup_type {
+        BootSetupType::Setup((root_setup, state)) => {
+            if let Some(v) = &state.config_opts.karg {
+                if v.len() > 0 {
+                    tracing::warn!("kargs passed for UKI will be ignored");
+                }
+            }
+
             let esp_part = root_setup
                 .device_info
                 .partitions
@@ -1753,7 +1784,11 @@ pub(crate) fn setup_composefs_uki_boot(
                 .find(|p| p.parttype.as_str() == ESP_GUID)
                 .ok_or_else(|| anyhow!("ESP partition not found"))?;
 
-            (root_setup.physical_root_path.clone(), esp_part.node.clone())
+            (
+                root_setup.physical_root_path.clone(),
+                esp_part.node.clone(),
+                state.composefs_options.as_ref().map(|x| x.insecure),
+            )
         }
 
         BootSetupType::Upgrade => {
@@ -1766,7 +1801,7 @@ pub(crate) fn setup_composefs_uki_boot(
                 anyhow::bail!("Could not find parent device for mountpoint /sysroot");
             };
 
-            (sysroot, get_esp_partition(&parent)?.0)
+            (sysroot, get_esp_partition(&parent)?.0, None)
         }
     };
 
@@ -1779,16 +1814,66 @@ pub(crate) fn setup_composefs_uki_boot(
         .args([&PathBuf::from(&esp_device), &mounted_esp.clone()])
         .run()?;
 
-    composefs_write_boot_simple(
-        &repo,
-        entry,
-        &id,
-        false,
-        &mounted_esp,
-        None,
-        Some(&id.to_hex()),
-        &[],
-    )?;
+    let boot_label = match entry {
+        ComposefsBootEntry::Type1(..) => todo!(),
+        ComposefsBootEntry::UsrLibModulesUki(..) => todo!(),
+        ComposefsBootEntry::UsrLibModulesVmLinuz(..) => todo!(),
+
+        ComposefsBootEntry::Type2(type2_entry) => {
+            let uki = read_file(&type2_entry.file, &repo).context("Reading UKI")?;
+            let cmdline = uki::get_cmdline(&uki).context("Getting UKI cmdline")?;
+            let (composefs_cmdline, insecure) = get_cmdline_composefs::<Sha256HashValue>(cmdline)?;
+
+            // If the UKI cmdline does not match what the user has passed as cmdline option
+            // NOTE: This will only be checked for new installs and now upgrades/switches
+            if let Some(is_insecure_from_opts) = is_insecure_from_opts {
+                match is_insecure_from_opts {
+                    true => {
+                        if !insecure {
+                            tracing::warn!(
+                                "--insecure passed as option but UKI cmdline does not support it"
+                            )
+                        }
+                    }
+
+                    false => {
+                        if insecure {
+                            tracing::warn!("UKI cmdline has composefs set as insecure")
+                        }
+                    }
+                }
+            }
+
+            let boot_label = uki::get_boot_label(&uki).context("Getting UKI boot label")?;
+
+            if composefs_cmdline != *id {
+                anyhow::bail!(
+                    "The UKI has the wrong composefs= parameter (is '{composefs_cmdline:?}', should be {id:?})"
+                );
+            }
+
+            // Write the UKI to ESP
+            let efi_linux_path = mounted_esp.join("EFI/Linux");
+            create_dir_all(&efi_linux_path).context("Creating EFI/Linux")?;
+
+            let efi_linux =
+                cap_std::fs::Dir::open_ambient_dir(&efi_linux_path, cap_std::ambient_authority())
+                    .with_context(|| format!("Opening {efi_linux_path:?}"))?;
+
+            efi_linux
+                .atomic_write(format!("{}.efi", id.to_hex()), uki)
+                .context("Writing UKI")?;
+
+            rustix::fs::fsync(
+                efi_linux
+                    .reopen_as_ownedfd()
+                    .context("Reopening as owned fd")?,
+            )
+            .context("fsync")?;
+
+            boot_label
+        }
+    };
 
     Task::new("Unmounting ESP", "umount")
         .arg(&mounted_esp)
@@ -1809,24 +1894,24 @@ pub(crate) fn setup_composefs_uki_boot(
     let efi_uuid_source = get_efi_uuid_source();
 
     let user_cfg_name = if is_upgrade {
-        "grub2/user.cfg.staged"
+        "user.cfg.staged"
     } else {
-        "grub2/user.cfg"
+        "user.cfg"
     };
-    let user_cfg_path = boot_dir.join(user_cfg_name);
+
+    let grub_dir =
+        cap_std::fs::Dir::open_ambient_dir(boot_dir.join("grub2"), cap_std::ambient_authority())
+            .context("opening boot/grub2")?;
 
     // Iterate over all available deployments, and generate a menuentry for each
     //
     // TODO: We might find a staged deployment here
     if is_upgrade {
-        let mut usr_cfg = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .open(user_cfg_path)
-            .with_context(|| format!("Opening {user_cfg_name}"))?;
+        let mut buffer = vec![];
 
-        usr_cfg.write_all(efi_uuid_source.as_bytes())?;
-        usr_cfg.write_all(get_user_config(&id.to_hex()).as_bytes())?;
+        // Shouldn't really fail so no context here
+        buffer.write_all(efi_uuid_source.as_bytes())?;
+        buffer.write_all(get_user_config(&boot_label, &id.to_hex()).as_bytes())?;
 
         // root_path here will be /sysroot
         for entry in std::fs::read_dir(root_path.join(STATE_DIR_RELATIVE))? {
@@ -1836,39 +1921,41 @@ pub(crate) fn setup_composefs_uki_boot(
             // SAFETY: Deployment file name shouldn't containg non UTF-8 chars
             let depl_file_name = depl_file_name.to_string_lossy();
 
-            usr_cfg.write_all(get_user_config(&depl_file_name).as_bytes())?;
+            buffer.write_all(get_user_config(&boot_label, &depl_file_name).as_bytes())?;
         }
+
+        grub_dir
+            .atomic_write(user_cfg_name, buffer)
+            .with_context(|| format!("Writing to {user_cfg_name}"))?;
+
+        rustix::fs::fsync(grub_dir.reopen_as_ownedfd()?).context("fsync")?;
 
         return Ok(());
     }
 
-    let efi_uuid_file_path = format!("grub2/{EFI_UUID_FILE}");
-
     // Open grub2/efiuuid.cfg and write the EFI partition fs-UUID in there
     // This will be sourced by grub2/user.cfg to be used for `--fs-uuid`
-    let mut efi_uuid_file = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .open(boot_dir.join(&efi_uuid_file_path))
-        .with_context(|| format!("Opening {efi_uuid_file_path}"))?;
-
     let esp_uuid = Task::new("blkid for ESP UUID", "blkid")
         .args(["-s", "UUID", "-o", "value", &esp_device])
         .read()?;
 
-    efi_uuid_file
-        .write_all(format!("set EFI_PART_UUID=\"{}\"", esp_uuid.trim()).as_bytes())
-        .with_context(|| format!("Writing to {efi_uuid_file_path}"))?;
+    grub_dir.atomic_write(
+        EFI_UUID_FILE,
+        format!("set EFI_PART_UUID=\"{}\"", esp_uuid.trim()).as_bytes(),
+    )?;
 
     // Write to grub2/user.cfg
-    let mut usr_cfg = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .open(user_cfg_path)
-        .with_context(|| format!("Opening {user_cfg_name}"))?;
+    let mut buffer = vec![];
 
-    usr_cfg.write_all(efi_uuid_source.as_bytes())?;
-    usr_cfg.write_all(get_user_config(&id.to_hex()).as_bytes())?;
+    // Shouldn't really fail so no context here
+    buffer.write_all(efi_uuid_source.as_bytes())?;
+    buffer.write_all(get_user_config(&boot_label, &id.to_hex()).as_bytes())?;
+
+    grub_dir
+        .atomic_write(user_cfg_name, buffer)
+        .with_context(|| format!("Writing to {user_cfg_name}"))?;
+
+    rustix::fs::fsync(grub_dir.reopen_as_ownedfd()?).context("fsync")?;
 
     Ok(())
 }
@@ -1937,17 +2024,21 @@ fn setup_composefs_boot(root_setup: &RootSetup, state: &State, image_id: &str) -
         anyhow::bail!("No boot entries!");
     };
 
-    let Some(composefs_opts) = &state.composefs_options else {
-        anyhow::bail!("Could not find options for composefs")
-    };
+    let boot_type = BootType::from(&entry);
 
-    match composefs_opts.boot {
-        BootType::Bls => {
-            setup_composefs_bls_boot(BootSetupType::Setup(&root_setup), repo, &id, entry)?
-        }
-        BootType::Uki => {
-            setup_composefs_uki_boot(BootSetupType::Setup(&root_setup), repo, &id, entry)?
-        }
+    match boot_type {
+        BootType::Bls => setup_composefs_bls_boot(
+            BootSetupType::Setup((&root_setup, &state)),
+            repo,
+            &id,
+            entry,
+        )?,
+        BootType::Uki => setup_composefs_uki_boot(
+            BootSetupType::Setup((&root_setup, &state)),
+            repo,
+            &id,
+            entry,
+        )?,
     };
 
     write_composefs_state(
@@ -1959,7 +2050,7 @@ fn setup_composefs_boot(root_setup: &RootSetup, state: &State, image_id: &str) -
             signature: None,
         },
         false,
-        composefs_opts.boot,
+        boot_type,
     )?;
 
     Ok(())

@@ -427,6 +427,7 @@ pub(crate) fn install_create_rootfs(
         .flatten()
         .chain([rootarg, RW_KARG.to_string()].into_iter())
         .chain(bootarg)
+        .chain(state.config_opts.karg.clone().into_iter().flatten())
         .collect::<Vec<_>>();
 
     bootc_mount::mount(&rootdev, &physical_root_path)?;
