@@ -1,12 +1,12 @@
 use std::collections::HashMap;
 use std::env;
 use std::path::Path;
-use std::process::Command;
+use std::path::PathBuf;
+use std::process::{Command, Stdio};
 use std::sync::OnceLock;
 
 use anyhow::{anyhow, Context, Result};
-use camino::Utf8Path;
-use camino::Utf8PathBuf;
+use camino::{Utf8Path, Utf8PathBuf};
 use fn_error_context::context;
 use regex::Regex;
 use serde::Deserialize;
@@ -181,6 +181,14 @@ pub fn partitions_of(dev: &Utf8Path) -> Result<PartitionTable> {
 
 pub struct LoopbackDevice {
     pub dev: Option<Utf8PathBuf>,
+    // Handle to the cleanup helper process
+    cleanup_handle: Option<LoopbackCleanupHandle>,
+}
+
+/// Handle to manage the cleanup helper process for loopback devices
+struct LoopbackCleanupHandle {
+    /// Child process handle
+    child: std::process::Child,
 }
 
 impl LoopbackDevice {
@@ -208,13 +216,96 @@ impl LoopbackDevice {
             .run_get_string()?;
         let dev = Utf8PathBuf::from(dev.trim());
         tracing::debug!("Allocated loopback {dev}");
-        Ok(Self { dev: Some(dev) })
+
+        // Try to spawn cleanup helper, but don't fail if it doesn't work
+        let cleanup_handle = match Self::spawn_cleanup_helper(dev.as_str()) {
+            Ok(handle) => Some(handle),
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to spawn loopback cleanup helper for {}: {}. \
+                     Loopback device may not be cleaned up if process is interrupted.",
+                    dev,
+                    e
+                );
+                None
+            }
+        };
+
+        Ok(Self {
+            dev: Some(dev),
+            cleanup_handle,
+        })
     }
 
     // Access the path to the loopback block device.
     pub fn path(&self) -> &Utf8Path {
         // SAFETY: The option cannot be destructured until we are dropped
         self.dev.as_deref().unwrap()
+    }
+
+    /// Spawn a cleanup helper process that will clean up the loopback device
+    /// if the parent process dies unexpectedly
+    fn spawn_cleanup_helper(device_path: &str) -> Result<LoopbackCleanupHandle> {
+        // Try multiple strategies to find the bootc binary
+        let bootc_path = Self::find_bootc_binary()
+            .context("Failed to locate bootc binary for cleanup helper")?;
+
+        // Create the helper process
+        let mut cmd = Command::new(bootc_path);
+        cmd.args(["loopback-cleanup-helper", "--device", device_path]);
+
+        // Set environment variable to indicate this is a cleanup helper
+        cmd.env("BOOTC_LOOPBACK_CLEANUP_HELPER", "1");
+
+        // Set up stdio to redirect to /dev/null
+        cmd.stdin(Stdio::null());
+        cmd.stdout(Stdio::null());
+        // Don't redirect stderr so we can see error messages
+
+        // Spawn the process
+        let child = cmd
+            .spawn()
+            .context("Failed to spawn loopback cleanup helper")?;
+
+        Ok(LoopbackCleanupHandle { child })
+    }
+
+    /// Find the bootc binary using multiple strategies
+    fn find_bootc_binary() -> Result<PathBuf> {
+        // Strategy 1: Try /proc/self/exe (works in most cases)
+        if let Ok(exe_path) = std::fs::read_link("/proc/self/exe") {
+            if exe_path.exists() {
+                return Ok(exe_path);
+            } else {
+                tracing::warn!("/proc/self/exe points to non-existent path: {:?}", exe_path);
+            }
+        } else {
+            tracing::warn!("Failed to read /proc/self/exe");
+        }
+
+        // Strategy 2: Try argv[0] from std::env
+        if let Some(argv0) = std::env::args().next() {
+            let argv0_path = PathBuf::from(argv0);
+            if argv0_path.is_absolute() && argv0_path.exists() {
+                return Ok(argv0_path);
+            }
+            // If it's relative, try to resolve it
+            if let Ok(canonical) = argv0_path.canonicalize() {
+                return Ok(canonical);
+            }
+        }
+
+        // Strategy 3: Try common installation paths
+        let common_paths = ["/usr/bin/bootc", "/usr/local/bin/bootc"];
+
+        for path in &common_paths {
+            let path_buf = PathBuf::from(path);
+            if path_buf.exists() {
+                return Ok(path_buf);
+            }
+        }
+
+        anyhow::bail!("Could not locate bootc binary using any available strategy")
     }
 
     // Shared backend for our `close` and `drop` implementations.
@@ -224,6 +315,13 @@ impl LoopbackDevice {
             tracing::trace!("loopback device already deallocated");
             return Ok(());
         };
+
+        // Kill the cleanup helper since we're cleaning up normally
+        if let Some(mut cleanup_handle) = self.cleanup_handle.take() {
+            // Send SIGTERM to the child process and let it do the cleanup
+            let _ = cleanup_handle.child.kill();
+        }
+
         Command::new("losetup").args(["-d", dev.as_str()]).run()
     }
 
@@ -237,6 +335,56 @@ impl Drop for LoopbackDevice {
     fn drop(&mut self) {
         // Best effort to unmount if we're dropped without invoking `close`
         let _ = self.impl_close();
+    }
+}
+
+/// Main function for the loopback cleanup helper process
+/// This function does not return - it either exits normally or via signal
+pub async fn run_loopback_cleanup_helper(device_path: &str) -> Result<()> {
+    // Check if we're running as a cleanup helper
+    if std::env::var("BOOTC_LOOPBACK_CLEANUP_HELPER").is_err() {
+        anyhow::bail!("This function should only be called as a cleanup helper");
+    }
+
+    // Set up death signal notification - we want to be notified when parent dies
+    rustix::process::set_parent_process_death_signal(Some(rustix::process::Signal::TERM))
+        .context("Failed to set parent death signal")?;
+
+    // Wait for SIGTERM (either from parent death or normal cleanup)
+    tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .expect("Failed to create signal stream")
+        .recv()
+        .await;
+
+    // Clean up the loopback device
+    let output = std::process::Command::new("losetup")
+        .args(["-d", device_path])
+        .output();
+
+    match output {
+        Ok(output) if output.status.success() => {
+            // Log to systemd journal instead of stderr
+            tracing::info!("Cleaned up leaked loopback device {}", device_path);
+            std::process::exit(0);
+        }
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            tracing::error!(
+                "Failed to clean up loopback device {}: {}. Stderr: {}",
+                device_path,
+                output.status,
+                stderr.trim()
+            );
+            std::process::exit(1);
+        }
+        Err(e) => {
+            tracing::error!(
+                "Error executing losetup to clean up loopback device {}: {}",
+                device_path,
+                e
+            );
+            std::process::exit(1);
+        }
     }
 }
 

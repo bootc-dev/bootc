@@ -11,9 +11,13 @@ anyhow = { workspace = true }
 bootc-utils = { package = "bootc-internal-utils", path = "../utils", version = "0.0.0" }
 camino = { workspace = true, features = ["serde1"] }
 fn-error-context = { workspace = true }
+libc = { workspace = true }
 regex = "1.10.4"
+rustix = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["signal"] }
 tracing = { workspace = true }
 
 [dev-dependencies]
