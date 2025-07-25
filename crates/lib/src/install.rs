@@ -1807,6 +1807,7 @@ pub(crate) async fn install_to_filesystem(
 
     // We support overriding the mount specification for root (i.e. LABEL vs UUID versus
     // raw paths).
+    // We also support an empty specification as a signal to omit any mountspec kargs.
     let root_info = if let Some(s) = fsopts.root_mount_spec {
         RootMountInfo {
             mount_spec: s.to_string(),
@@ -1903,12 +1904,20 @@ pub(crate) async fn install_to_filesystem(
     // By default, we inject a boot= karg because things like FIPS compliance currently
     // require checking in the initramfs.
     let bootarg = boot.as_ref().map(|boot| format!("boot={}", &boot.source));
-    let kargs = [rootarg]
-        .into_iter()
-        .chain(root_info.kargs)
-        .chain([RW_KARG.to_string()])
-        .chain(bootarg)
-        .collect::<Vec<_>>();
+
+    // If the root mount spec is empty, we omit the mounts kargs entirely.
+    // https://github.com/bootc-dev/bootc/issues/1441
+    let mut kargs = if root_info.mount_spec.is_empty() {
+        Vec::new()
+    } else {
+        [rootarg]
+            .into_iter()
+            .chain(root_info.kargs)
+            .chain(bootarg)
+            .collect::<Vec<_>>()
+    };
+
+    kargs.push(RW_KARG.to_string());
 
     let skip_finalize =
         matches!(fsopts.replace, Some(ReplaceMode::Alongside)) || fsopts.skip_finalize;
