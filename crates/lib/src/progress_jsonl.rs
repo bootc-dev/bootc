@@ -4,7 +4,7 @@
 use anyhow::Result;
 use canon_json::CanonJsonSerialize;
 use schemars::JsonSchema;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::os::fd::{FromRawFd, OwnedFd, RawFd};
 use std::str::FromStr;
@@ -137,7 +137,7 @@ pub enum Event<'t> {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct RawProgressFd(RawFd);
 
 impl FromStr for RawProgressFd {
@@ -150,6 +150,13 @@ impl FromStr for RawProgressFd {
             anyhow::bail!("Cannot use fd {fd} for progress JSON")
         }
         Ok(Self(fd.try_into()?))
+    }
+}
+
+impl RawProgressFd {
+    #[cfg(test)]
+    pub(crate) fn get_raw_fd(&self) -> RawFd {
+        self.0
     }
 }
 

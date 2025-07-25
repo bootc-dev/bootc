@@ -21,7 +21,9 @@ use ostree_ext::ostree::{self, Sysroot};
 use ostree_ext::sysroot::SysrootLock;
 use ostree_ext::tokio_util::spawn_blocking_cancellable_flatten;
 
+use crate::progress_aggregator::ProgressAggregatorBuilder;
 use crate::progress_jsonl::{Event, ProgressWriter, SubTaskBytes, SubTaskStep};
+use crate::progress_renderer::ProgressFilter;
 use crate::spec::ImageReference;
 use crate::spec::{BootOrder, HostSpec};
 use crate::status::labels_of_config;
@@ -138,7 +140,7 @@ fn prefix_of_progress(p: &ImportProgress) -> &'static str {
     }
 }
 
-/// Write container fetch progress to standard output.
+/// Write container fetch progress using JSON-first architecture.
 async fn handle_layer_progress_print(
     mut layers: tokio::sync::mpsc::Receiver<ostree_container::store::ImportProgress>,
     mut layer_bytes: tokio::sync::watch::Receiver<Option<ostree_container::store::LayerProgress>>,
@@ -152,35 +154,26 @@ async fn handle_layer_progress_print(
 ) -> ProgressWriter {
     let start = std::time::Instant::now();
     let mut total_read = 0u64;
-    let bar = indicatif::MultiProgress::new();
-    if quiet {
-        bar.set_draw_target(indicatif::ProgressDrawTarget::hidden());
-    }
-    let layers_bar = bar.add(indicatif::ProgressBar::new(
-        n_layers_to_fetch.try_into().unwrap(),
-    ));
-    let byte_bar = bar.add(indicatif::ProgressBar::new(0));
-    // let byte_bar = indicatif::ProgressBar::new(0);
-    // byte_bar.set_draw_target(indicatif::ProgressDrawTarget::hidden());
-    layers_bar.set_style(
-        indicatif::ProgressStyle::default_bar()
-            .template("{prefix} {bar} {pos}/{len} {wide_msg}")
-            .unwrap(),
-    );
-    let taskname = "Fetching layers";
-    layers_bar.set_prefix(taskname);
-    layers_bar.set_message("");
-    byte_bar.set_prefix("Fetching");
-    byte_bar.set_style(
-        indicatif::ProgressStyle::default_bar()
-                .template(
-                    " └ {prefix} {bar} {binary_bytes}/{binary_total_bytes} ({binary_bytes_per_sec}) {wide_msg}",
-                )
-                .unwrap()
-        );
+
+    // Create JSON-first progress aggregator for pulling tasks
+    let visual_filter = if quiet {
+        None
+    } else {
+        Some(ProgressFilter::TasksMatching(vec!["pulling".to_string()]))
+    };
+
+    let mut aggregator = {
+        let mut builder = ProgressAggregatorBuilder::new().with_json(prog.clone());
+        if let Some(filter) = visual_filter {
+            builder = builder.with_visual(filter);
+        }
+        builder.build()
+    };
 
     let mut subtasks = vec![];
     let mut subtask: SubTaskBytes = Default::default();
+    let mut current_layer_step = 0u64;
+
     loop {
         tokio::select! {
             // Always handle layer changes first.
@@ -192,12 +185,6 @@ async fn handle_layer_progress_print(
                     let short_digest = &layer.digest().digest()[0..21];
                     let layer_size = layer.size();
                     if l.is_starting() {
-                        // Reset the progress bar
-                        byte_bar.reset_elapsed();
-                        byte_bar.reset_eta();
-                        byte_bar.set_length(layer_size);
-                        byte_bar.set_message(format!("{layer_type} {short_digest}"));
-
                         subtask = SubTaskBytes {
                             subtask: layer_type.into(),
                             description: format!("{layer_type}: {short_digest}").clone().into(),
@@ -207,13 +194,14 @@ async fn handle_layer_progress_print(
                             bytes_total: layer_size,
                         };
                     } else {
-                        byte_bar.set_position(layer_size);
-                        layers_bar.inc(1);
                         total_read = total_read.saturating_add(layer_size);
+                        current_layer_step += 1;
                         // Emit an event where bytes == total to signal completion.
                         subtask.bytes = layer_size;
                         subtasks.push(subtask.clone());
-                        prog.send(Event::ProgressBytes {
+
+                        // Send progress event via JSON-first aggregator
+                        let event = Event::ProgressBytes {
                             task: "pulling".into(),
                             description: format!("Pulling Image: {digest}").into(),
                             id: (*digest).into(),
@@ -221,10 +209,11 @@ async fn handle_layer_progress_print(
                             bytes: total_read,
                             bytes_total: bytes_to_download,
                             steps_cached: (layers_total - n_layers_to_fetch) as u64,
-                            steps: layers_bar.position(),
+                            steps: current_layer_step,
                             steps_total: n_layers_to_fetch as u64,
                             subtasks: subtasks.clone(),
-                        }).await;
+                        };
+                        let _ = aggregator.send_event(event).await;
                     }
                 } else {
                     // If the receiver is disconnected, then we're done
@@ -241,40 +230,42 @@ async fn handle_layer_progress_print(
                     bytes.as_ref().cloned()
                 };
                 if let Some(bytes) = bytes {
-                    byte_bar.set_position(bytes.fetched);
-                    subtask.bytes = byte_bar.position();
-                    prog.send_lossy(Event::ProgressBytes {
+                    subtask.bytes = bytes.fetched;
+
+                    // Send lossy progress event via JSON-first aggregator
+                    let event = Event::ProgressBytes {
                         task: "pulling".into(),
                         description: format!("Pulling Image: {digest}").into(),
                         id: (*digest).into(),
                         bytes_cached: bytes_total - bytes_to_download,
-                        bytes: total_read + byte_bar.position(),
+                        bytes: total_read + bytes.fetched,
                         bytes_total: bytes_to_download,
                         steps_cached: (layers_total - n_layers_to_fetch) as u64,
-                        steps: layers_bar.position(),
+                        steps: current_layer_step,
                         steps_total: n_layers_to_fetch as u64,
                         subtasks: subtasks.clone().into_iter().chain([subtask.clone()]).collect(),
-                    }).await;
+                    };
+                    let _ = aggregator.send_event(event).await;
                 }
             }
         }
     }
-    byte_bar.finish_and_clear();
-    layers_bar.finish_and_clear();
-    if let Err(e) = bar.clear() {
-        tracing::warn!("clearing bar: {e}");
-    }
+
+    // Finish progress aggregator
+    aggregator.finish();
+
     let end = std::time::Instant::now();
     let elapsed = end.duration_since(start);
     let persec = total_read as f64 / elapsed.as_secs_f64();
     let persec = indicatif::HumanBytes(persec as u64);
-    if let Err(e) = bar.println(&format!(
-        "Fetched layers: {} in {} ({}/s)",
-        indicatif::HumanBytes(total_read),
-        indicatif::HumanDuration(elapsed),
-        persec,
-    )) {
-        tracing::warn!("writing to stdout: {e}");
+
+    if !quiet {
+        println!(
+            "Fetched layers: {} in {} ({}/s)",
+            indicatif::HumanBytes(total_read),
+            indicatif::HumanDuration(elapsed),
+            persec,
+        );
     }
 
     // Since the progress notifier closed, we know import has started
