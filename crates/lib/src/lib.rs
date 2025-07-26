@@ -38,6 +38,8 @@ mod kernel;
 
 #[cfg(feature = "rhsm")]
 mod rhsm;
+#[cfg(feature = "grub")]
+pub(crate) mod parsers;
 
 // Re-export blockdev crate for internal use
 pub(crate) use bootc_blockdev as blockdev;
