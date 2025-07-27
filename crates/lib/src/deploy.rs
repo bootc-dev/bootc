@@ -783,8 +783,16 @@ const CURRENT_ENTRIES: &str = "entries";
 const STAGED_ENTRIES: &str = "entries.staged";
 const ROLLBACK_ENTRIES: &str = STAGED_ENTRIES;
 
+// Need str to store lifetime
+pub(crate) fn get_sorted_uki_boot_entries<'a>(str: &'a mut String) -> Result<Vec<MenuEntry<'a>>> {
+    let mut file = std::fs::File::open("/sysroot/boot/grub2/user.cfg")?;
+    file.read_to_string(str)?;
+    parse_grub_menuentry_file(str)
+}
+
+
 #[context("Getting boot entries")]
-pub(crate) fn get_sorted_boot_entries(ascending: bool) -> Result<Vec<BLSConfig>> {
+pub(crate) fn get_sorted_bls_boot_entries(ascending: bool) -> Result<Vec<BLSConfig>> {
     let mut all_configs = vec![];
 
     for entry in std::fs::read_dir(format!("/sysroot/boot/loader/{CURRENT_ENTRIES}"))? {
@@ -819,7 +827,7 @@ pub(crate) fn rollback_composefs_bls() -> Result<()> {
     // After this:
     // all_configs[0] -> booted depl
     // all_configs[1] -> rollback depl
-    let mut all_configs = get_sorted_boot_entries(false)?;
+    let mut all_configs = get_sorted_bls_boot_entries(false)?;
 
     // Update the indicies so that they're swapped
     for (idx, cfg) in all_configs.iter_mut().enumerate() {

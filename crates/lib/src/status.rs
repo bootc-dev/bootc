@@ -24,7 +24,8 @@ use ostree_ext::ostree;
 use tokio::io::AsyncReadExt;
 
 use crate::cli::OutputFormat;
-use crate::deploy::get_sorted_boot_entries;
+use crate::deploy::get_sorted_bls_boot_entries;
+use crate::deploy::get_sorted_uki_boot_entries;
 use crate::install::BootType;
 use crate::install::ORIGIN_KEY_BOOT;
 use crate::install::ORIGIN_KEY_BOOT_TYPE;
@@ -422,6 +423,9 @@ pub(crate) async fn composefs_deployment_status() -> Result<Host> {
         Err(e) => Err(e),
     }?;
 
+    // NOTE: This cannot work if we support both BLS and UKI at the same time
+    let mut boot_type: Option<BootType> = None;
+
     for depl in deployments {
         let depl = depl?;
 
@@ -441,6 +445,21 @@ pub(crate) async fn composefs_deployment_status() -> Result<Host> {
         let boot_entry =
             boot_entry_from_composefs_deployment(ini, depl_file_name.to_string()).await?;
 
+        // SAFETY: boot_entry.composefs will always be present
+        let boot_type_from_origin = boot_entry.composefs.as_ref().unwrap().boot_type;
+
+        match boot_type {
+            Some(current_type) => {
+                if current_type != boot_type_from_origin {
+                    anyhow::bail!("Conflicting boot types")
+                }
+            }
+
+            None => {
+                boot_type = Some(boot_type_from_origin);
+            }
+        };
+
         if depl.file_name() == booted_image_verity {
             host.spec.image = boot_entry.image.as_ref().map(|x| x.image.clone());
             host.status.booted = Some(boot_entry);
@@ -457,11 +476,31 @@ pub(crate) async fn composefs_deployment_status() -> Result<Host> {
         host.status.rollback = Some(boot_entry);
     }
 
-    host.status.rollback_queued = !get_sorted_boot_entries(false)?
-        .first()
-        .ok_or(anyhow::anyhow!("First boot entry not found"))?
-        .options
-        .contains(booted_image_verity);
+    // Shouldn't really happen, but for sanity nonetheless
+    let Some(boot_type) = boot_type else {
+        anyhow::bail!("Could not determine boot type");
+    };
+
+    match boot_type {
+        BootType::Bls => {
+            host.status.rollback_queued = !get_sorted_bls_boot_entries(false)?
+                .first()
+                .ok_or(anyhow::anyhow!("First boot entry not found"))?
+                .options
+                .contains(booted_image_verity);
+        }
+
+        BootType::Uki => {
+            let mut s = String::new();
+
+            host.status.rollback_queued = !get_sorted_uki_boot_entries(&mut s)?
+                .first()
+                .ok_or(anyhow::anyhow!("First boot entry not found"))?
+                .body
+                .chainloader
+                .contains(booted_image_verity);
+        }
+    };
 
     if host.status.rollback_queued {
         host.spec.boot_order = BootOrder::Rollback
