@@ -332,7 +332,7 @@ mod tests {
         // non-UTF8 things are in fact valid
         let non_utf8_byte = b"\xff";
         #[allow(invalid_from_utf8)]
-        let failed_conversion = str::from_utf8(non_utf8_byte);
+        let failed_conversion = std::str::from_utf8(non_utf8_byte);
         assert!(failed_conversion.is_err());
         let mut p = b"foo=".to_vec();
         p.push(non_utf8_byte[0]);

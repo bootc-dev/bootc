@@ -14,13 +14,13 @@ use nom::{
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct MenuentryBody<'a> {
     /// Kernel modules to load
-    insmod: Vec<&'a str>,
+    pub(crate) insmod: Vec<&'a str>,
     /// Chainloader path (optional)
-    chainloader: Option<&'a str>,
+    pub(crate) chainloader: Option<&'a str>,
     /// Search command (optional)
-    search: Option<&'a str>,
+    pub(crate) search: Option<&'a str>,
     /// Additional commands
-    extra: Vec<(&'a str, &'a str)>,
+    pub(crate) extra: Vec<(&'a str, &'a str)>,
 }
 
 impl<'a> Display for MenuentryBody<'a> {
