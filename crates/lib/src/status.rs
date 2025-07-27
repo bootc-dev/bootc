@@ -567,8 +567,7 @@ pub(crate) async fn composefs_deployment_status() -> Result<Host> {
                 .ok_or(anyhow::anyhow!("First boot entry not found"))?
                 .body
                 .chainloader
-                .map(|v| v.contains(composefs_arg.as_ref()))
-                .unwrap_or_default()
+                .contains(composefs_arg.as_ref())
         }
     };
 
