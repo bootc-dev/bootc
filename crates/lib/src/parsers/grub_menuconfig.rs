@@ -12,7 +12,7 @@ use nom::{
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct MenuentryBody<'a> {
     insmod: Vec<&'a str>,
-    chainloader: &'a str,
+    pub(crate) chainloader: String,
     search: &'a str,
     version: u8,
     extra: Vec<(&'a str, &'a str)>,
@@ -40,7 +40,7 @@ impl<'a> From<Vec<(&'a str, &'a str)>> for MenuentryBody<'a> {
     fn from(vec: Vec<(&'a str, &'a str)>) -> Self {
         let mut entry = Self {
             insmod: vec![],
-            chainloader: "",
+            chainloader: "".into(),
             search: "",
             version: 0,
             extra: vec![],
@@ -49,7 +49,7 @@ impl<'a> From<Vec<(&'a str, &'a str)>> for MenuentryBody<'a> {
         for (key, value) in vec {
             match key {
                 "insmod" => entry.insmod.push(value),
-                "chainloader" => entry.chainloader = value,
+                "chainloader" => entry.chainloader = value.into(),
                 "search" => entry.search = value,
                 "set" => {}
                 _ => entry.extra.push((key, value)),
@@ -62,7 +62,7 @@ impl<'a> From<Vec<(&'a str, &'a str)>> for MenuentryBody<'a> {
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct MenuEntry<'a> {
-    pub(crate) title: &'a str,
+    pub(crate) title: String,
     pub(crate) body: MenuentryBody<'a>,
 }
 
@@ -71,6 +71,21 @@ impl<'a> Display for MenuEntry<'a> {
         writeln!(f, "menuentry \"{}\" {{", self.title)?;
         write!(f, "{}", self.body)?;
         writeln!(f, "}}")
+    }
+}
+
+impl<'a> MenuEntry<'a> {
+    pub(crate) fn new(boot_label: &str, uki_id: &str) -> Self {
+        Self {
+            title: format!("{boot_label}: ({uki_id})"),
+            body: MenuentryBody {
+                insmod: vec!["fat", "chain"],
+                chainloader: format!("/EFI/Linux/{uki_id}.efi"),
+                search: "--no-floppy --set=root --fs-uuid \"${EFI_PART_UUID}\"",
+                version: 0,
+                extra: vec![],
+            },
+        }
     }
 }
 
@@ -162,7 +177,7 @@ fn parse_menuentry(input: &str) -> IResult<&str, MenuEntry> {
     Ok((
         input,
         MenuEntry {
-            title,
+            title: title.to_string(),
             body: MenuentryBody::from(map),
         },
     ))
@@ -223,21 +238,21 @@ mod test {
 
         let expected = vec![
             MenuEntry {
-                title: "Fedora 42: (Verity-42)",
+                title: "Fedora 42: (Verity-42)".into(),
                 body: MenuentryBody {
                     insmod: vec!["fat", "chain"],
                     search: "--no-floppy --set=root --fs-uuid \"${EFI_PART_UUID}\"",
-                    chainloader: "/EFI/Linux/7e11ac46e3e022053e7226a20104ac656bf72d1a84e3a398b7cce70e9df188b6.efi",
+                    chainloader: "/EFI/Linux/7e11ac46e3e022053e7226a20104ac656bf72d1a84e3a398b7cce70e9df188b6.efi".into(),
                     version: 0,
                     extra: vec![],
                 },
             },
             MenuEntry {
-                title: "Fedora 43: (Verity-43)",
+                title: "Fedora 43: (Verity-43)".into(),
                 body: MenuentryBody {
                     insmod: vec!["fat", "chain"],
                     search: "--no-floppy --set=root --fs-uuid \"${EFI_PART_UUID}\"",
-                    chainloader: "/EFI/Linux/uki.efi",
+                    chainloader: "/EFI/Linux/uki.efi".into(),
                     version: 0,
                     extra: vec![
                         ("extra_field1", "this is extra"), 
