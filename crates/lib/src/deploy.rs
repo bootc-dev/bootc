@@ -3,8 +3,9 @@
 //! Create a merged filesystem tree with the image and mounted configmaps.
 
 use std::collections::HashSet;
+use std::fmt::Write as _;
 use std::fs::create_dir_all;
-use std::io::{BufRead, Read as _, Write};
+use std::io::{BufRead, Read, Write};
 use std::path::PathBuf;
 
 use anyhow::Ok;
@@ -25,12 +26,11 @@ use ostree_ext::tokio_util::spawn_blocking_cancellable_flatten;
 use rustix::fs::{fsync, renameat_with, AtFlags, RenameFlags};
 
 use crate::bls_config::{parse_bls_config, BLSConfig};
-#[allow(unused_imports)]
-use crate::install::{get_efi_uuid_source, get_user_config, BootType};
+use crate::install::{get_efi_uuid_source, BootType};
 use crate::parsers::grub_menuconfig::{parse_grub_menuentry_file, MenuEntry};
 use crate::progress_jsonl::{Event, ProgressWriter, SubTaskBytes, SubTaskStep};
 use crate::spec::ImageReference;
-use crate::spec::{BootEntry, BootOrder, HostSpec};
+use crate::spec::{BootOrder, HostSpec};
 use crate::status::{composefs_deployment_status, labels_of_config};
 use crate::store::Storage;
 use crate::utils::async_task_with_spinner;
@@ -752,42 +752,61 @@ pub(crate) async fn stage(
     Ok(())
 }
 
+/// Filename for `loader/entries`
+pub(crate) const USER_CFG: &str = "user.cfg";
+pub(crate) const USER_CFG_STAGED: &str = "user.cfg.staged";
+pub(crate) const USER_CFG_ROLLBACK: &str = USER_CFG_STAGED;
+
 #[context("Rolling back UKI")]
-pub(crate) fn rollback_composefs_uki(_current: &BootEntry, _rollback: &BootEntry) -> Result<()> {
-    unimplemented!()
-    // let user_cfg_name = "grub2/user.cfg.staged";
-    // let user_cfg_path = PathBuf::from("boot").join(user_cfg_name);
-    // let sysroot = &Dir::open_ambient_dir("/sysroot", cap_std::ambient_authority())?;
+pub(crate) fn rollback_composefs_uki() -> Result<()> {
+    let user_cfg_path = PathBuf::from("/sysroot/boot/grub2");
 
-    // let efi_uuid_source = get_efi_uuid_source();
+    let mut str = String::new();
+    let mut menuentries =
+        get_sorted_uki_boot_entries(&mut str).context("Getting UKI boot entries")?;
 
-    // let rollback_verity = if let Some(composefs) = &rollback.composefs {
-    //     composefs.verity.clone()
-    // } else {
-    //     // Shouldn't really happen
-    //     anyhow::bail!("Verity not found for rollback deployment")
-    // };
-    // let rollback_config = get_user_config(todo!(), &rollback_verity).as_bytes();
+    // TODO(Johan-Liebert): Currently assuming there are only two deployments
+    assert!(menuentries.len() == 2);
 
-    // let current_verity = if let Some(composefs) = &current.composefs {
-    //     composefs.verity.clone()
-    // } else {
-    //     // Shouldn't really happen
-    //     anyhow::bail!("Verity not found for booted deployment")
-    // };
-    // let current_config = get_user_config(todo!(), &current_verity).as_bytes();
+    let (first, second) = menuentries.split_at_mut(1);
+    std::mem::swap(&mut first[0], &mut second[0]);
 
-    // // TODO: Need to check if user.cfg.staged exists
-    // sysroot
-    //     .atomic_replace_with(user_cfg_path, |w| {
-    //         write!(w, "{efi_uuid_source}")?;
-    //         w.write_all(rollback_config)?;
-    //         w.write_all(current_config)?;
-    //         Ok(())
-    //     })
-    //     .with_context(|| format!("Writing {user_cfg_name}"))?;
+    let mut buffer = get_efi_uuid_source();
 
-    // Ok(())
+    for entry in menuentries {
+        write!(buffer, "{entry}")?;
+    }
+
+    let entries_dir =
+        cap_std::fs::Dir::open_ambient_dir(&user_cfg_path, cap_std::ambient_authority())
+            .with_context(|| format!("Opening {user_cfg_path:?}"))?;
+
+    entries_dir
+        .atomic_write(USER_CFG_ROLLBACK, buffer)
+        .with_context(|| format!("Writing to {USER_CFG_ROLLBACK}"))?;
+
+    tracing::debug!("Atomically exchanging for {USER_CFG_ROLLBACK} and {USER_CFG}");
+    renameat_with(
+        &entries_dir,
+        USER_CFG_ROLLBACK,
+        &entries_dir,
+        USER_CFG,
+        RenameFlags::EXCHANGE,
+    )
+    .context("renameat")?;
+
+    tracing::debug!("Removing {USER_CFG_ROLLBACK}");
+    rustix::fs::unlinkat(&entries_dir, USER_CFG_ROLLBACK, AtFlags::empty()).context("unlinkat")?;
+
+    tracing::debug!("Syncing to disk");
+    fsync(
+        entries_dir
+            .reopen_as_ownedfd()
+            .with_context(|| format!("Reopening {user_cfg_path:?} as owned fd"))?,
+    )
+    .with_context(|| format!("fsync {user_cfg_path:?}"))?;
+
+    Ok(())
 }
 
 /// Filename for `loader/entries`
@@ -845,6 +864,7 @@ pub(crate) fn rollback_composefs_bls() -> Result<()> {
         cfg.version = idx as u32;
     }
 
+    // TODO(Johan-Liebert): Currently assuming there are only two deployments
     assert!(all_configs.len() == 2);
 
     // Write these
@@ -860,7 +880,7 @@ pub(crate) fn rollback_composefs_bls() -> Result<()> {
         let file_name = format!("bootc-composefs-{}.conf", cfg.version);
 
         rollback_entries_dir
-            .atomic_write(&file_name, cfg.to_string().as_bytes())
+            .atomic_write(&file_name, cfg.to_string())
             .with_context(|| format!("Writing to {file_name}"))?;
     }
 
@@ -887,7 +907,7 @@ pub(crate) fn rollback_composefs_bls() -> Result<()> {
     .context("renameat")?;
 
     tracing::debug!("Removing {ROLLBACK_ENTRIES}");
-    rustix::fs::unlinkat(&dir, ROLLBACK_ENTRIES, AtFlags::REMOVEDIR).context("unlinkat")?;
+    rustix::fs::unlinkat(&dir, ROLLBACK_ENTRIES, AtFlags::empty()).context("unlinkat")?;
 
     tracing::debug!("Syncing to disk");
     fsync(
@@ -931,7 +951,7 @@ pub(crate) async fn composefs_rollback() -> Result<()> {
 
     match rollback_composefs_entry.boot_type {
         BootType::Bls => rollback_composefs_bls(),
-        BootType::Uki => rollback_composefs_uki(&host.status.booted.unwrap(), &rollback_status),
+        BootType::Uki => rollback_composefs_uki(),
     }?;
 
     Ok(())

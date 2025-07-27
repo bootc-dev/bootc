@@ -76,8 +76,12 @@ use self::baseline::InstallBlockDeviceOpts;
 use crate::bls_config::{parse_bls_config, BLSConfig};
 use crate::boundimage::{BoundImage, ResolvedBoundImage};
 use crate::containerenv::ContainerExecutionInfo;
-use crate::deploy::{prepare_for_pull, pull_from_prepared, PreparedImportMeta, PreparedPullResult};
+use crate::deploy::{
+    get_sorted_uki_boot_entries, prepare_for_pull, pull_from_prepared, PreparedImportMeta,
+    PreparedPullResult, USER_CFG, USER_CFG_STAGED,
+};
 use crate::lsm;
+use crate::parsers::grub_menuconfig::MenuEntry;
 use crate::progress_jsonl::ProgressWriter;
 use crate::spec::ImageReference;
 use crate::store::Storage;
@@ -1720,22 +1724,6 @@ pub fn get_esp_partition(device: &str) -> Result<(String, Option<String>)> {
     Ok((esp.node, esp.uuid))
 }
 
-pub(crate) fn get_user_config(boot_label: &String, uki_id: &str) -> String {
-    // TODO: Full EFI path here
-    let s = format!(
-        r#"
-menuentry "{boot_label}: ({uki_id})" {{
-    insmod fat
-    insmod chain
-    search --no-floppy --set=root --fs-uuid "${{EFI_PART_UUID}}"
-    chainloader /EFI/Linux/{uki_id}.efi
-}}
-"#
-    );
-
-    return s;
-}
-
 /// Contains the EFP's filesystem UUID. Used by grub
 pub(crate) const EFI_UUID_FILE: &str = "efiuuid.cfg";
 
@@ -1884,9 +1872,9 @@ pub(crate) fn setup_composefs_uki_boot(
     let efi_uuid_source = get_efi_uuid_source();
 
     let user_cfg_name = if is_upgrade {
-        "user.cfg.staged"
+        USER_CFG_STAGED
     } else {
-        "user.cfg"
+        USER_CFG
     };
 
     let grub_dir =
@@ -1901,17 +1889,17 @@ pub(crate) fn setup_composefs_uki_boot(
 
         // Shouldn't really fail so no context here
         buffer.write_all(efi_uuid_source.as_bytes())?;
-        buffer.write_all(get_user_config(&boot_label, &id.to_hex()).as_bytes())?;
+        buffer.write_all(
+            MenuEntry::new(&boot_label, &id.to_hex())
+                .to_string()
+                .as_bytes(),
+        )?;
 
-        // root_path here will be /sysroot
-        for entry in std::fs::read_dir(root_path.join(STATE_DIR_RELATIVE))? {
-            let entry = entry?;
+        let mut str_buf = String::new();
+        let entries = get_sorted_uki_boot_entries(&mut str_buf)?;
 
-            let depl_file_name = entry.file_name();
-            // SAFETY: Deployment file name shouldn't containg non UTF-8 chars
-            let depl_file_name = depl_file_name.to_string_lossy();
-
-            buffer.write_all(get_user_config(&boot_label, &depl_file_name).as_bytes())?;
+        for entry in entries {
+            buffer.write_all(entry.to_string().as_bytes())?;
         }
 
         grub_dir
@@ -1939,7 +1927,11 @@ pub(crate) fn setup_composefs_uki_boot(
 
     // Shouldn't really fail so no context here
     buffer.write_all(efi_uuid_source.as_bytes())?;
-    buffer.write_all(get_user_config(&boot_label, &id.to_hex()).as_bytes())?;
+    buffer.write_all(
+        MenuEntry::new(&boot_label, &id.to_hex())
+            .to_string()
+            .as_bytes(),
+    )?;
 
     grub_dir
         .atomic_write(user_cfg_name, buffer)
