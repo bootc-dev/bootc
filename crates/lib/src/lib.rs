@@ -28,6 +28,7 @@ mod store;
 mod task;
 mod utils;
 mod bls_config;
+pub(crate) mod parsers;
 
 #[cfg(feature = "docgen")]
 mod docgen;

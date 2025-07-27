@@ -78,7 +78,7 @@ pub fn ostree_booted() -> io::Result<bool> {
 }
 
 
-/// Returns true if the system appears to have been booted with composefs.
+/// Returns true if the system appears to have been booted with composefs without ostree.
 pub fn composefs_booted() -> io::Result<bool> {
     let cmdline = std::fs::read_to_string("/proc/cmdline")?;
     Ok(cmdline.contains("composefs="))
