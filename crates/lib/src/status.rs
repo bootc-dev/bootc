@@ -34,7 +34,9 @@ use crate::deploy::get_sorted_uki_boot_entries;
 use crate::install::BootType;
 use crate::install::ORIGIN_KEY_BOOT;
 use crate::install::ORIGIN_KEY_BOOT_TYPE;
-use crate::install::{COMPOSEFS_STAGED_DEPLOYMENT_PATH, STATE_DIR_RELATIVE};
+use crate::install::{
+    COMPOSEFS_STAGED_DEPLOYMENT_FNAME, COMPOSEFS_TRANSIENT_STATE_DIR, STATE_DIR_RELATIVE,
+};
 use crate::spec::ImageStatus;
 use crate::spec::{BootEntry, BootOrder, Host, HostSpec, HostStatus, HostType};
 use crate::spec::{ImageReference, ImageSignature};
@@ -481,7 +483,9 @@ pub(crate) async fn composefs_deployment_status() -> Result<Host> {
 
     let mut host = Host::new(host_spec);
 
-    let staged_deployment_id = match std::fs::File::open(COMPOSEFS_STAGED_DEPLOYMENT_PATH) {
+    let staged_deployment_id = match std::fs::File::open(format!(
+        "{COMPOSEFS_TRANSIENT_STATE_DIR}/{COMPOSEFS_STAGED_DEPLOYMENT_FNAME}"
+    )) {
         Ok(mut f) => {
             let mut s = String::new();
             f.read_to_string(&mut s)?;
