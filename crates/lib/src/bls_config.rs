@@ -1,7 +1,7 @@
-use serde::{Deserialize, Deserializer};
-use serde::de::Error;
-use std::collections::HashMap;
 use anyhow::Result;
+use serde::de::Error;
+use serde::{Deserialize, Deserializer};
+use std::collections::HashMap;
 
 #[derive(Debug, Deserialize, Eq)]
 pub(crate) struct BLSConfig {

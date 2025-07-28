@@ -4,6 +4,7 @@
 //! to provide a fully "container native" tool for using
 //! bootable container images.
 
+mod bls_config;
 mod boundimage;
 pub mod cli;
 pub(crate) mod deploy;
@@ -18,6 +19,7 @@ pub(crate) mod kargs;
 mod lints;
 mod lsm;
 pub(crate) mod metadata;
+pub(crate) mod parsers;
 mod podman;
 mod progress_jsonl;
 mod reboot;
@@ -27,8 +29,6 @@ mod status;
 mod store;
 mod task;
 mod utils;
-mod bls_config;
-pub(crate) mod parsers;
 
 #[cfg(feature = "docgen")]
 mod docgen;

@@ -813,7 +813,6 @@ pub(crate) fn get_sorted_uki_boot_entries<'a>(str: &'a mut String) -> Result<Vec
     parse_grub_menuentry_file(str)
 }
 
-
 #[context("Getting boot entries")]
 pub(crate) fn get_sorted_bls_boot_entries(ascending: bool) -> Result<Vec<BLSConfig>> {
     let mut all_configs = vec![];

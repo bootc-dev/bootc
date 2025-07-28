@@ -2052,7 +2052,8 @@ fn setup_composefs_boot(root_setup: &RootSetup, state: &State, image_id: &str) -
 }
 
 pub(crate) const COMPOSEFS_TRANSIENT_STATE_DIR: &str = "/run/composefs";
-pub(crate) const COMPOSEFS_STAGED_DEPLOYMENT_PATH: &str = "/run/composefs/staged-deployment";
+/// File created in /run/composefs to record a staged-deployment
+pub(crate) const COMPOSEFS_STAGED_DEPLOYMENT_FNAME: &str = "staged-deployment";
 /// Relative to /sysroot
 pub(crate) const STATE_DIR_RELATIVE: &str = "state/deploy";
 
@@ -2094,25 +2095,32 @@ pub(crate) fn write_composefs_state(
         .section(ORIGIN_KEY_BOOT)
         .item(ORIGIN_KEY_BOOT_TYPE, boot_type);
 
-    let mut origin_file =
-        std::fs::File::create(state_path.join(format!("{}.origin", deployment_id.to_hex())))
-            .context("Failed to open .origin file")?;
+    let state_dir = cap_std::fs::Dir::open_ambient_dir(&state_path, cap_std::ambient_authority())
+        .context("Opening state dir")?;
 
-    origin_file
-        .write(config.to_string().as_bytes())
+    state_dir
+        .atomic_write(
+            format!("{}.origin", deployment_id.to_hex()),
+            config.to_string().as_bytes(),
+        )
         .context("Falied to write to .origin file")?;
 
     if staged {
         std::fs::create_dir_all(COMPOSEFS_TRANSIENT_STATE_DIR)
             .with_context(|| format!("Creating {COMPOSEFS_TRANSIENT_STATE_DIR}"))?;
 
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .open(COMPOSEFS_STAGED_DEPLOYMENT_PATH)
-            .context("Opening staged-deployment file")?;
+        let staged_depl_dir = cap_std::fs::Dir::open_ambient_dir(
+            COMPOSEFS_TRANSIENT_STATE_DIR,
+            cap_std::ambient_authority(),
+        )
+        .with_context(|| format!("Opening {COMPOSEFS_TRANSIENT_STATE_DIR}"))?;
 
-        file.write_all(deployment_id.to_hex().as_bytes())?;
+        staged_depl_dir
+            .atomic_write(
+                COMPOSEFS_STAGED_DEPLOYMENT_FNAME,
+                deployment_id.to_hex().as_bytes(),
+            )
+            .with_context(|| format!("Writing to {COMPOSEFS_STAGED_DEPLOYMENT_FNAME}"))?;
     }
 
     Ok(())
