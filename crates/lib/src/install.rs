@@ -49,6 +49,7 @@ use ostree_ext::composefs::{
     repository::Repository as ComposefsRepository,
     util::Sha256Digest,
 };
+use ostree_ext::composefs_boot::bootloader::UsrLibModulesVmlinuz;
 use ostree_ext::composefs_boot::{
     bootloader::BootEntry as ComposefsBootEntry, cmdline::get_cmdline_composefs, uki, BootOps,
 };
@@ -1599,6 +1600,133 @@ pub(crate) enum BootSetupType<'a> {
     Upgrade,
 }
 
+/// Compute SHA256Sum of VMlinuz + Initrd
+///
+/// # Arguments
+/// * entry - BootEntry containing VMlinuz and Initrd
+/// * repo - The composefs repository
+#[context("Computing boot digest")]
+fn compute_boot_digest(
+    entry: &UsrLibModulesVmlinuz<Sha256HashValue>,
+    repo: &ComposefsRepository<Sha256HashValue>,
+) -> Result<String> {
+    let vmlinuz = read_file(&entry.vmlinuz, &repo).context("Reading vmlinuz")?;
+
+    let Some(initramfs) = &entry.initramfs else {
+        anyhow::bail!("initramfs not found");
+    };
+
+    let initramfs = read_file(initramfs, &repo).context("Reading intird")?;
+
+    let mut hasher = openssl::hash::Hasher::new(openssl::hash::MessageDigest::sha256())
+        .context("Creating hasher")?;
+
+    hasher.update(&vmlinuz).context("hashing vmlinuz")?;
+    hasher.update(&initramfs).context("hashing initrd")?;
+
+    let digest: &[u8] = &hasher.finish().context("Finishing digest")?;
+
+    return Ok(hex::encode(digest));
+}
+
+/// Given the SHA256 sum of current VMlinuz + Initrd combo, find boot entry with the same SHA256Sum
+///
+/// # Returns
+/// Returns the verity of the deployment that has a boot digest same as the one passed in
+#[context("Checking boot entry duplicates")]
+fn find_vmlinuz_initrd_duplicates(digest: &str) -> Result<Option<String>> {
+    let deployments =
+        cap_std::fs::Dir::open_ambient_dir(STATE_DIR_ABS, cap_std::ambient_authority());
+
+    let deployments = match deployments {
+        Ok(d) => d,
+        // The first ever deployment
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => anyhow::bail!(e),
+    };
+
+    let mut symlink_to: Option<String> = None;
+
+    for depl in deployments.entries()? {
+        let depl = depl?;
+
+        let depl_file_name = depl.file_name();
+        let depl_file_name = depl_file_name.as_str()?;
+
+        let config = depl
+            .open_dir()
+            .with_context(|| format!("Opening {depl_file_name}"))?
+            .read_to_string(format!("{depl_file_name}.origin"))
+            .context("Reading origin file")?;
+
+        let ini = tini::Ini::from_string(&config)
+            .with_context(|| format!("Failed to parse file {depl_file_name}.origin as ini"))?;
+
+        match ini.get::<String>(ORIGIN_KEY_BOOT, ORIGIN_KEY_BOOT_DIGEST) {
+            Some(hash) => {
+                if hash == digest {
+                    symlink_to = Some(depl_file_name.to_string());
+                    break;
+                }
+            }
+
+            // No SHASum recorded in origin file
+            // `symlink_to` is already none, but being explicit here
+            None => symlink_to = None,
+        };
+    }
+
+    Ok(symlink_to)
+}
+
+#[context("Writing BLS entries to disk")]
+fn write_bls_boot_entries_to_disk(
+    boot_dir: &Utf8PathBuf,
+    deployment_id: &Sha256HashValue,
+    entry: &UsrLibModulesVmlinuz<Sha256HashValue>,
+    repo: &ComposefsRepository<Sha256HashValue>,
+) -> Result<()> {
+    let id_hex = deployment_id.to_hex();
+
+    // Write the initrd and vmlinuz at /boot/<id>/
+    let path = boot_dir.join(&id_hex);
+    create_dir_all(&path)?;
+
+    let entries_dir = cap_std::fs::Dir::open_ambient_dir(&path, cap_std::ambient_authority())
+        .with_context(|| format!("Opening {path}"))?;
+
+    entries_dir
+        .atomic_write(
+            "vmlinuz",
+            read_file(&entry.vmlinuz, &repo).context("Reading vmlinuz")?,
+        )
+        .context("Writing vmlinuz to path")?;
+
+    let Some(initramfs) = &entry.initramfs else {
+        anyhow::bail!("initramfs not found");
+    };
+
+    entries_dir
+        .atomic_write(
+            "initrd",
+            read_file(initramfs, &repo).context("Reading initrd")?,
+        )
+        .context("Writing initrd to path")?;
+
+    // Can't call fsync on O_PATH fds, so re-open it as a non O_PATH fd
+    let owned_fd = entries_dir
+        .reopen_as_ownedfd()
+        .context("Reopen as owned fd")?;
+
+    rustix::fs::fsync(owned_fd).context("fsync")?;
+
+    Ok(())
+}
+
+/// Sets up and writes BLS entries and binaries (VMLinuz + Initrd) to disk
+///
+/// # Returns
+/// Returns the SHA256Sum of VMLinuz + Initrd combo. Error if any
 #[context("Setting up BLS boot")]
 pub(crate) fn setup_composefs_bls_boot(
     setup_type: BootSetupType,
@@ -1606,7 +1734,7 @@ pub(crate) fn setup_composefs_bls_boot(
     repo: ComposefsRepository<Sha256HashValue>,
     id: &Sha256HashValue,
     entry: ComposefsBootEntry<Sha256HashValue>,
-) -> Result<()> {
+) -> Result<String> {
     let id_hex = id.to_hex();
 
     let (root_path, cmdline_refs) = match setup_type {
@@ -1639,58 +1767,38 @@ pub(crate) fn setup_composefs_bls_boot(
 
     let boot_dir = root_path.join("boot");
 
-    let bls_config = match &entry {
+    let is_upgrade = matches!(setup_type, BootSetupType::Upgrade);
+
+    let (bls_config, boot_digest) = match &entry {
         ComposefsBootEntry::Type1(..) => todo!(),
         ComposefsBootEntry::Type2(..) => todo!(),
         ComposefsBootEntry::UsrLibModulesUki(..) => todo!(),
 
         ComposefsBootEntry::UsrLibModulesVmLinuz(usr_lib_modules_vmlinuz) => {
-            // Write the initrd and vmlinuz at /boot/<id>/
-            let path = boot_dir.join(&id_hex);
-            create_dir_all(&path)?;
+            let boot_digest = compute_boot_digest(usr_lib_modules_vmlinuz, &repo)
+                .context("Computing boot digest")?;
 
-            let entries_dir =
-                cap_std::fs::Dir::open_ambient_dir(&path, cap_std::ambient_authority())
-                    .with_context(|| format!("Opening {path}"))?;
-
-            entries_dir
-                .atomic_write(
-                    "vmlinuz",
-                    read_file(&usr_lib_modules_vmlinuz.vmlinuz, &repo)
-                        .context("Reading vmlinuz")?,
-                )
-                .context("Writing vmlinuz to path")?;
-
-            if let Some(initramfs) = &usr_lib_modules_vmlinuz.initramfs {
-                entries_dir
-                    .atomic_write(
-                        "initrd",
-                        read_file(initramfs, &repo).context("Reading initrd")?,
-                    )
-                    .context("Writing initrd to path")?;
-            } else {
-                anyhow::bail!("initramfs not found");
-            };
-
-            // Can't call fsync on O_PATH fds, so re-open it as a non O_PATH fd
-            let owned_fd = entries_dir
-                .reopen_as_ownedfd()
-                .context("Reopen as owned fd")?;
-
-            rustix::fs::fsync(owned_fd).context("fsync")?;
-
-            BLSConfig {
+            let mut bls_config = BLSConfig {
                 title: Some(id_hex.clone()),
                 version: 1,
                 linux: format!("/boot/{id_hex}/vmlinuz"),
                 initrd: format!("/boot/{id_hex}/initrd"),
                 options: cmdline_refs,
                 extra: HashMap::new(),
+            };
+
+            if let Some(symlink_to) = find_vmlinuz_initrd_duplicates(&boot_digest)? {
+                bls_config.linux = format!("/boot/{symlink_to}/vmlinuz");
+                bls_config.initrd = format!("/boot/{symlink_to}/initrd");
+            } else {
+                write_bls_boot_entries_to_disk(&boot_dir, id, usr_lib_modules_vmlinuz, &repo)?;
             }
+
+            (bls_config, boot_digest)
         }
     };
 
-    let (entries_path, booted_bls) = if matches!(setup_type, BootSetupType::Upgrade) {
+    let (entries_path, booted_bls) = if is_upgrade {
         let mut booted_bls = get_booted_bls()?;
         booted_bls.version = 0; // entries are sorted by their filename in reverse order
 
@@ -1723,7 +1831,7 @@ pub(crate) fn setup_composefs_bls_boot(
         .context("Reopening as owned fd")?;
     rustix::fs::fsync(owned_loader_entries_fd).context("fsync")?;
 
-    Ok(())
+    Ok(boot_digest)
 }
 
 pub fn get_esp_partition(device: &str) -> Result<(String, Option<String>)> {
@@ -2020,14 +2128,19 @@ fn setup_composefs_boot(root_setup: &RootSetup, state: &State, image_id: &str) -
     };
 
     let boot_type = BootType::from(&entry);
+    let mut boot_digest: Option<String> = None;
 
     match boot_type {
-        BootType::Bls => setup_composefs_bls_boot(
-            BootSetupType::Setup((&root_setup, &state)),
-            repo,
-            &id,
-            entry,
-        )?,
+        BootType::Bls => {
+            let digest = setup_composefs_bls_boot(
+                BootSetupType::Setup((&root_setup, &state)),
+                repo,
+                &id,
+                entry,
+            )?;
+
+            boot_digest = Some(digest);
+        }
         BootType::Uki => setup_composefs_uki_boot(
             BootSetupType::Setup((&root_setup, &state)),
             repo,
@@ -2046,6 +2159,7 @@ fn setup_composefs_boot(root_setup: &RootSetup, state: &State, image_id: &str) -
         },
         false,
         boot_type,
+        boot_digest,
     )?;
 
     Ok(())
@@ -2054,11 +2168,16 @@ fn setup_composefs_boot(root_setup: &RootSetup, state: &State, image_id: &str) -
 pub(crate) const COMPOSEFS_TRANSIENT_STATE_DIR: &str = "/run/composefs";
 /// File created in /run/composefs to record a staged-deployment
 pub(crate) const COMPOSEFS_STAGED_DEPLOYMENT_FNAME: &str = "staged-deployment";
-/// Relative to /sysroot
+
+/// Absolute path to composefs-native state directory
+pub(crate) const STATE_DIR_ABS: &str = "/sysroot/state/deploy";
+/// Relative path to composefs-native state directory. Relative to /sysroot
 pub(crate) const STATE_DIR_RELATIVE: &str = "state/deploy";
 
 pub(crate) const ORIGIN_KEY_BOOT: &str = "boot";
 pub(crate) const ORIGIN_KEY_BOOT_TYPE: &str = "boot_type";
+/// Key to store the SHA256 sum of vmlinuz + initrd for a deployment
+pub(crate) const ORIGIN_KEY_BOOT_DIGEST: &str = "digest";
 
 /// Creates and populates /sysroot/state/deploy/image_id
 #[context("Writing composefs state")]
@@ -2068,6 +2187,7 @@ pub(crate) fn write_composefs_state(
     imgref: &ImageReference,
     staged: bool,
     boot_type: BootType,
+    boot_digest: Option<String>,
 ) -> Result<()> {
     let state_path = root_path.join(format!("{STATE_DIR_RELATIVE}/{}", deployment_id.to_hex()));
 
@@ -2094,6 +2214,12 @@ pub(crate) fn write_composefs_state(
     config = config
         .section(ORIGIN_KEY_BOOT)
         .item(ORIGIN_KEY_BOOT_TYPE, boot_type);
+
+    if let Some(boot_digest) = boot_digest {
+        config = config
+            .section(ORIGIN_KEY_BOOT)
+            .item(ORIGIN_KEY_BOOT_DIGEST, boot_digest);
+    }
 
     let state_dir = cap_std::fs::Dir::open_ambient_dir(&state_path, cap_std::ambient_authority())
         .context("Opening state dir")?;
