@@ -2,6 +2,7 @@ use anyhow::Result;
 use serde::de::Error;
 use serde::{Deserialize, Deserializer};
 use std::collections::HashMap;
+use std::fmt::Display;
 
 #[derive(Debug, Deserialize, Eq)]
 pub(crate) struct BLSConfig {
@@ -34,24 +35,22 @@ impl Ord for BLSConfig {
     }
 }
 
-impl BLSConfig {
-    pub(crate) fn to_string(&self) -> String {
-        let mut out = String::new();
-
+impl Display for BLSConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if let Some(title) = &self.title {
-            out += &format!("title {}\n", title);
+            writeln!(f, "title {}", title)?;
         }
 
-        out += &format!("version {}\n", self.version);
-        out += &format!("linux {}\n", self.linux);
-        out += &format!("initrd {}\n", self.initrd);
-        out += &format!("options {}\n", self.options);
+        writeln!(f, "version {}", self.version)?;
+        writeln!(f, "linux {}", self.linux)?;
+        writeln!(f, "initrd {}", self.initrd)?;
+        writeln!(f, "options {}", self.options)?;
 
         for (key, value) in &self.extra {
-            out += &format!("{} {}\n", key, value);
+            writeln!(f, "{} {}", key, value)?;
         }
 
-        out
+        Ok(())
     }
 }
 
