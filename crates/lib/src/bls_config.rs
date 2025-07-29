@@ -66,6 +66,7 @@ where
     }
 }
 
+#[allow(dead_code)]
 pub(crate) fn parse_bls_config(input: &str) -> Result<BLSConfig> {
     let mut map = HashMap::new();
 

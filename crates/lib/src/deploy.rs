@@ -25,11 +25,11 @@ use ostree_ext::sysroot::SysrootLock;
 use ostree_ext::tokio_util::spawn_blocking_cancellable_flatten;
 use rustix::fs::{fsync, renameat_with, AtFlags, RenameFlags};
 
-use crate::bls_config::{parse_bls_config, BLSConfig};
 use crate::composefs_consts::{
     BOOT_LOADER_ENTRIES, ROLLBACK_BOOT_LOADER_ENTRIES, USER_CFG, USER_CFG_ROLLBACK,
 };
 use crate::install::{get_efi_uuid_source, BootType};
+use crate::parsers::bls_config::{parse_bls_config, BLSConfig};
 use crate::parsers::grub_menuconfig::{parse_grub_menuentry_file, MenuEntry};
 use crate::progress_jsonl::{Event, ProgressWriter, SubTaskBytes, SubTaskStep};
 use crate::spec::ImageReference;
@@ -854,7 +854,7 @@ pub(crate) fn rollback_composefs_bls() -> Result<()> {
 
     // Update the indicies so that they're swapped
     for (idx, cfg) in all_configs.iter_mut().enumerate() {
-        cfg.version = idx as u32;
+        cfg.sort_key = Some(idx.to_string());
     }
 
     // TODO(Johan-Liebert): Currently assuming there are only two deployments
@@ -872,7 +872,8 @@ pub(crate) fn rollback_composefs_bls() -> Result<()> {
 
     // Write the BLS configs in there
     for cfg in all_configs {
-        let file_name = format!("bootc-composefs-{}.conf", cfg.version);
+        // SAFETY: We set sort_key above
+        let file_name = format!("bootc-composefs-{}.conf", cfg.sort_key.as_ref().unwrap());
 
         rollback_entries_dir
             .atomic_write(&file_name, cfg.to_string())

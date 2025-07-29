@@ -559,6 +559,8 @@ pub(crate) async fn composefs_deployment_status() -> Result<Host> {
                 .first()
                 .ok_or(anyhow::anyhow!("First boot entry not found"))?
                 .options
+                .as_ref()
+                .ok_or(anyhow::anyhow!("options key not found in bls config"))?
                 .contains(composefs_arg.as_ref());
         }
 

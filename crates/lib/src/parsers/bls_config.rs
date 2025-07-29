@@ -12,7 +12,7 @@ use uapi_version::Version;
 /// The boot loader should present the available boot menu entries to the user in a sorted list.
 /// The list should be sorted by the `sort-key` field, if it exists, otherwise by the `machine-id` field.
 /// If multiple entries have the same `sort-key` (or `machine-id`), they should be sorted by the `version` field in descending order.
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq, Default)]
 #[non_exhaustive]
 pub(crate) struct BLSConfig {
     /// The title of the boot entry, to be displayed in the boot menu.
