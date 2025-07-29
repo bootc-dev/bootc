@@ -34,13 +34,14 @@ use crate::spec::ImageReference;
 use crate::utils::sigpolicy_from_opt;
 
 /// Shared progress options
-#[derive(Debug, Parser, PartialEq, Eq)]
+#[derive(Debug, Parser, PartialEq, Eq, Clone, Serialize, Deserialize)]
 pub(crate) struct ProgressOptions {
     /// File descriptor number which must refer to an open pipe (anonymous or named).
     ///
     /// Interactive progress will be written to this file descriptor as "JSON lines"
     /// format, where each value is separated by a newline.
     #[clap(long, hide = true)]
+    #[serde(default)]
     pub(crate) progress_fd: Option<RawProgressFd>,
 }
 
@@ -1455,5 +1456,87 @@ mod tests {
             "pull",
         ]));
         assert_eq!(args.as_slice(), ["container", "image", "pull"]);
+    }
+
+    #[test]
+    fn test_progress_fd_install_parsing() {
+        // Test install to-disk with progress-fd
+        let opts = Opt::try_parse_from([
+            "bootc",
+            "install",
+            "to-disk",
+            "--progress-fd",
+            "3",
+            "/dev/sda",
+        ])
+        .unwrap();
+
+        if let Opt::Install(crate::cli::InstallOpts::ToDisk(install_opts)) = opts {
+            assert_eq!(install_opts.progress.progress_fd.unwrap().get_raw_fd(), 3);
+        } else {
+            panic!("Expected install to-disk command");
+        }
+
+        // Test install to-filesystem with progress-fd
+        let opts = Opt::try_parse_from([
+            "bootc",
+            "install",
+            "to-filesystem",
+            "--progress-fd",
+            "4",
+            "/mnt/root",
+        ])
+        .unwrap();
+
+        if let Opt::Install(crate::cli::InstallOpts::ToFilesystem(install_opts)) = opts {
+            assert_eq!(install_opts.progress.progress_fd.unwrap().get_raw_fd(), 4);
+        } else {
+            panic!("Expected install to-filesystem command");
+        }
+
+        // Test install to-existing-root with progress-fd
+        let opts =
+            Opt::try_parse_from(["bootc", "install", "to-existing-root", "--progress-fd", "5"])
+                .unwrap();
+
+        if let Opt::Install(crate::cli::InstallOpts::ToExistingRoot(install_opts)) = opts {
+            assert_eq!(install_opts.progress.progress_fd.unwrap().get_raw_fd(), 5);
+        } else {
+            panic!("Expected install to-existing-root command");
+        }
+    }
+
+    #[test]
+    fn test_progress_fd_validation() {
+        // Test that invalid FD values are rejected
+        let result = Opt::try_parse_from([
+            "bootc",
+            "install",
+            "to-disk",
+            "--progress-fd",
+            "1",
+            "/dev/sda",
+        ]);
+        assert!(result.is_err());
+
+        let result = Opt::try_parse_from([
+            "bootc",
+            "install",
+            "to-disk",
+            "--progress-fd",
+            "2",
+            "/dev/sda",
+        ]);
+        assert!(result.is_err());
+
+        let result = Opt::try_parse_from([
+            "bootc",
+            "install",
+            "to-disk",
+            "--progress-fd",
+            "invalid",
+            "/dev/sda",
+        ]);
+        assert!(result.is_err());
     }
 }

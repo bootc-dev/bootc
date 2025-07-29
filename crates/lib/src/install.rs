@@ -53,6 +53,7 @@ use serde::{Deserialize, Serialize};
 #[cfg(feature = "install-to-disk")]
 use self::baseline::InstallBlockDeviceOpts;
 use crate::boundimage::{BoundImage, ResolvedBoundImage};
+use crate::cli::ProgressOptions;
 use crate::containerenv::ContainerExecutionInfo;
 use crate::deploy::{prepare_for_pull, pull_from_prepared, PreparedImportMeta, PreparedPullResult};
 use crate::lsm;
@@ -242,6 +243,10 @@ pub(crate) struct InstallToDiskOpts {
     #[clap(long)]
     #[serde(default)]
     pub(crate) via_loopback: bool,
+
+    #[clap(flatten)]
+    #[serde(flatten)]
+    pub(crate) progress: ProgressOptions,
 }
 
 #[derive(ValueEnum, Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -317,6 +322,9 @@ pub(crate) struct InstallToFilesystemOpts {
 
     #[clap(flatten)]
     pub(crate) config_opts: InstallConfigOpts,
+
+    #[clap(flatten)]
+    pub(crate) progress: ProgressOptions,
 }
 
 #[derive(Debug, Clone, clap::Parser, PartialEq, Eq)]
@@ -348,6 +356,9 @@ pub(crate) struct InstallToExistingRootOpts {
     /// via e.g. `-v /:/target`.
     #[clap(default_value = ALONGSIDE_ROOT_MOUNT)]
     pub(crate) root_path: Utf8PathBuf,
+
+    #[clap(flatten)]
+    pub(crate) progress: ProgressOptions,
 }
 
 /// Global state captured from the container.
@@ -761,6 +772,7 @@ async fn install_container(
     root_setup: &RootSetup,
     sysroot: &ostree::Sysroot,
     has_ostree: bool,
+    prog: ProgressWriter,
 ) -> Result<(ostree::Deployment, InstallAleph)> {
     let sepolicy = state.load_policy()?;
     let sepolicy = sepolicy.as_ref();
@@ -799,15 +811,14 @@ async fn install_container(
     let repo = &sysroot.repo();
     repo.set_disable_fsync(true);
 
-    let pulled_image = match prepare_for_pull(repo, &spec_imgref, Some(&state.target_imgref))
-        .await?
-    {
-        PreparedPullResult::AlreadyPresent(existing) => existing,
-        PreparedPullResult::Ready(image_meta) => {
-            check_disk_space(root_setup.physical_root.as_fd(), &image_meta, &spec_imgref)?;
-            pull_from_prepared(&spec_imgref, false, ProgressWriter::default(), image_meta).await?
-        }
-    };
+    let pulled_image =
+        match prepare_for_pull(repo, &spec_imgref, Some(&state.target_imgref)).await? {
+            PreparedPullResult::AlreadyPresent(existing) => existing,
+            PreparedPullResult::Ready(image_meta) => {
+                check_disk_space(root_setup.physical_root.as_fd(), &image_meta, &spec_imgref)?;
+                pull_from_prepared(&spec_imgref, false, prog, image_meta).await?
+            }
+        };
 
     repo.set_disable_fsync(false);
 
@@ -1344,10 +1355,11 @@ async fn install_with_sysroot(
     bound_images: BoundImages,
     has_ostree: bool,
     imgstore: &crate::imgstorage::Storage,
+    prog: ProgressWriter,
 ) -> Result<()> {
     // And actually set up the container in that root, returning a deployment and
     // the aleph state (see below).
-    let (_deployment, aleph) = install_container(state, rootfs, &sysroot, has_ostree).await?;
+    let (_deployment, aleph) = install_container(state, rootfs, &sysroot, has_ostree, prog).await?;
     // Write the aleph data that captures the system state at the time of provisioning for aid in future debugging.
     rootfs
         .physical_root
@@ -1429,6 +1441,7 @@ async fn install_to_filesystem_impl(
     state: &State,
     rootfs: &mut RootSetup,
     cleanup: Cleanup,
+    prog: ProgressWriter,
 ) -> Result<()> {
     if matches!(state.selinux_state, SELinuxFinalState::ForceTargetDisabled) {
         rootfs.kargs.push("selinux=0".to_string());
@@ -1470,6 +1483,7 @@ async fn install_to_filesystem_impl(
             bound_images,
             has_ostree,
             &imgstore,
+            prog,
         )
         .await?;
 
@@ -1505,6 +1519,7 @@ fn installation_complete() {
 #[context("Installing to disk")]
 #[cfg(feature = "install-to-disk")]
 pub(crate) async fn install_to_disk(mut opts: InstallToDiskOpts) -> Result<()> {
+    let prog: ProgressWriter = opts.progress.try_into()?;
     let mut block_opts = opts.block_opts;
     let target_blockdev_meta = block_opts
         .device
@@ -1547,7 +1562,7 @@ pub(crate) async fn install_to_disk(mut opts: InstallToDiskOpts) -> Result<()> {
         (rootfs, loopback_dev)
     };
 
-    install_to_filesystem_impl(&state, &mut rootfs, Cleanup::Skip).await?;
+    install_to_filesystem_impl(&state, &mut rootfs, Cleanup::Skip, prog).await?;
 
     // Drop all data about the root except the bits we need to ensure any file descriptors etc. are closed.
     let (root_path, luksdev) = rootfs.into_storage();
@@ -1729,6 +1744,7 @@ pub(crate) async fn install_to_filesystem(
     targeting_host_root: bool,
     cleanup: Cleanup,
 ) -> Result<()> {
+    let prog: ProgressWriter = opts.progress.try_into()?;
     // Gather global state, destructuring the provided options.
     // IMPORTANT: We might re-execute the current process in this function (for SELinux among other things)
     // IMPORTANT: and hence anything that is done before MUST BE IDEMPOTENT.
@@ -1951,7 +1967,7 @@ pub(crate) async fn install_to_filesystem(
         skip_finalize,
     };
 
-    install_to_filesystem_impl(&state, &mut rootfs, cleanup).await?;
+    install_to_filesystem_impl(&state, &mut rootfs, cleanup, prog).await?;
 
     // Drop all data about the root except the path to ensure any file descriptors etc. are closed.
     drop(rootfs);
@@ -1979,6 +1995,7 @@ pub(crate) async fn install_to_existing_root(opts: InstallToExistingRootOpts) ->
         source_opts: opts.source_opts,
         target_opts: opts.target_opts,
         config_opts: opts.config_opts,
+        progress: opts.progress,
     };
 
     install_to_filesystem(opts, true, cleanup).await
