@@ -76,10 +76,15 @@ use serde::{Deserialize, Serialize};
 use self::baseline::InstallBlockDeviceOpts;
 use crate::bls_config::{parse_bls_config, BLSConfig};
 use crate::boundimage::{BoundImage, ResolvedBoundImage};
+use crate::composefs_consts::{
+    BOOT_LOADER_ENTRIES, COMPOSEFS_CMDLINE, COMPOSEFS_STAGED_DEPLOYMENT_FNAME,
+    COMPOSEFS_TRANSIENT_STATE_DIR, ORIGIN_KEY_BOOT, ORIGIN_KEY_BOOT_DIGEST, ORIGIN_KEY_BOOT_TYPE,
+    STAGED_BOOT_LOADER_ENTRIES, STATE_DIR_ABS, STATE_DIR_RELATIVE, USER_CFG, USER_CFG_STAGED,
+};
 use crate::containerenv::ContainerExecutionInfo;
 use crate::deploy::{
     get_sorted_uki_boot_entries, prepare_for_pull, pull_from_prepared, PreparedImportMeta,
-    PreparedPullResult, USER_CFG, USER_CFG_STAGED,
+    PreparedPullResult,
 };
 use crate::lsm;
 use crate::parsers::grub_menuconfig::MenuEntry;
@@ -1519,7 +1524,7 @@ async fn initialize_composefs_repository(
 
     rootfs_dir
         .create_dir_all("composefs")
-        .context("Creating dir 'composefs'")?;
+        .context("Creating dir composefs")?;
 
     let repo = open_composefs_repo(rootfs_dir)?;
 
@@ -1541,7 +1546,7 @@ async fn initialize_composefs_repository(
 fn get_booted_bls() -> Result<BLSConfig> {
     let cmdline = Cmdline::from_proc()?;
     let booted = cmdline
-        .find_str("composefs")
+        .find_str(COMPOSEFS_CMDLINE)
         .ok_or_else(|| anyhow::anyhow!("Failed to find composefs parameter in kernel cmdline"))?;
 
     for entry in std::fs::read_dir("/sysroot/boot/loader/entries")? {
@@ -1731,10 +1736,10 @@ pub(crate) fn setup_composefs_bls_boot(
 
             match &state.composefs_options {
                 Some(opt) if opt.insecure => {
-                    cmdline_options.push_str(&format!(" composefs=?{id_hex}"));
+                    cmdline_options.push_str(&format!(" {COMPOSEFS_CMDLINE}=?{id_hex}"));
                 }
                 None | Some(..) => {
-                    cmdline_options.push_str(&format!(" composefs={id_hex}"));
+                    cmdline_options.push_str(&format!(" {COMPOSEFS_CMDLINE}={id_hex}"));
                 }
             };
 
@@ -1746,7 +1751,7 @@ pub(crate) fn setup_composefs_bls_boot(
             vec![
                 format!("root=UUID={DPS_UUID}"),
                 RW_KARG.to_string(),
-                format!("composefs={id_hex}"),
+                format!("{COMPOSEFS_CMDLINE}={id_hex}"),
             ]
             .join(" "),
         ),
@@ -1789,9 +1794,12 @@ pub(crate) fn setup_composefs_bls_boot(
         booted_bls.version = 0; // entries are sorted by their filename in reverse order
 
         // This will be atomically renamed to 'loader/entries' on shutdown/reboot
-        (boot_dir.join("loader/entries.staged"), Some(booted_bls))
+        (
+            boot_dir.join(format!("loader/{STAGED_BOOT_LOADER_ENTRIES}")),
+            Some(booted_bls),
+        )
     } else {
-        (boot_dir.join("loader/entries"), None)
+        (boot_dir.join(format!("loader/{BOOT_LOADER_ENTRIES}")), None)
     };
 
     create_dir_all(&entries_path).with_context(|| format!("Creating {:?}", entries_path))?;
@@ -2152,20 +2160,6 @@ fn setup_composefs_boot(root_setup: &RootSetup, state: &State, image_id: &str) -
 
     Ok(())
 }
-
-pub(crate) const COMPOSEFS_TRANSIENT_STATE_DIR: &str = "/run/composefs";
-/// File created in /run/composefs to record a staged-deployment
-pub(crate) const COMPOSEFS_STAGED_DEPLOYMENT_FNAME: &str = "staged-deployment";
-
-/// Absolute path to composefs-native state directory
-pub(crate) const STATE_DIR_ABS: &str = "/sysroot/state/deploy";
-/// Relative path to composefs-native state directory. Relative to /sysroot
-pub(crate) const STATE_DIR_RELATIVE: &str = "state/deploy";
-
-pub(crate) const ORIGIN_KEY_BOOT: &str = "boot";
-pub(crate) const ORIGIN_KEY_BOOT_TYPE: &str = "boot_type";
-/// Key to store the SHA256 sum of vmlinuz + initrd for a deployment
-pub(crate) const ORIGIN_KEY_BOOT_DIGEST: &str = "digest";
 
 /// Creates and populates /sysroot/state/deploy/image_id
 #[context("Writing composefs state")]

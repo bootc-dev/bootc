@@ -29,14 +29,13 @@ use ostree_ext::ostree;
 use tokio::io::AsyncReadExt;
 
 use crate::cli::OutputFormat;
+use crate::composefs_consts::{
+    COMPOSEFS_CMDLINE, COMPOSEFS_STAGED_DEPLOYMENT_FNAME, COMPOSEFS_TRANSIENT_STATE_DIR,
+    ORIGIN_KEY_BOOT, ORIGIN_KEY_BOOT_TYPE, STATE_DIR_RELATIVE,
+};
 use crate::deploy::get_sorted_bls_boot_entries;
 use crate::deploy::get_sorted_uki_boot_entries;
 use crate::install::BootType;
-use crate::install::ORIGIN_KEY_BOOT;
-use crate::install::ORIGIN_KEY_BOOT_TYPE;
-use crate::install::{
-    COMPOSEFS_STAGED_DEPLOYMENT_FNAME, COMPOSEFS_TRANSIENT_STATE_DIR, STATE_DIR_RELATIVE,
-};
 use crate::spec::ImageStatus;
 use crate::spec::{BootEntry, BootOrder, Host, HostSpec, HostStatus, HostType};
 use crate::spec::{ImageReference, ImageSignature};
@@ -464,7 +463,7 @@ async fn boot_entry_from_composefs_deployment(
 pub(crate) async fn composefs_deployment_status() -> Result<Host> {
     let cmdline = Cmdline::from_proc()?;
     let composefs_arg = cmdline
-        .find_str("composefs")
+        .find_str(COMPOSEFS_CMDLINE)
         .ok_or_else(|| anyhow::anyhow!("Failed to find composefs parameter in kernel cmdline"))?;
     let booted_image_verity = composefs_arg
         .value
