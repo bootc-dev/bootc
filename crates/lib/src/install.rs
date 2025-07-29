@@ -74,7 +74,6 @@ use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "install-to-disk")]
 use self::baseline::InstallBlockDeviceOpts;
-use crate::bls_config::{parse_bls_config, BLSConfig};
 use crate::boundimage::{BoundImage, ResolvedBoundImage};
 use crate::composefs_consts::{
     BOOT_LOADER_ENTRIES, COMPOSEFS_CMDLINE, COMPOSEFS_INSECURE_CMDLINE,
@@ -88,6 +87,7 @@ use crate::deploy::{
     PreparedPullResult,
 };
 use crate::lsm;
+use crate::parsers::bls_config::{parse_bls_config, BLSConfig};
 use crate::parsers::grub_menuconfig::MenuEntry;
 use crate::progress_jsonl::ProgressWriter;
 use crate::spec::ImageReference;

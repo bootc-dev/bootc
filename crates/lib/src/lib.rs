@@ -4,7 +4,6 @@
 //! to provide a fully "container native" tool for using
 //! bootable container images.
 
-mod bls_config;
 mod boundimage;
 pub mod cli;
 mod composefs_consts;

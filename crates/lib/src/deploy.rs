@@ -25,11 +25,11 @@ use ostree_ext::sysroot::SysrootLock;
 use ostree_ext::tokio_util::spawn_blocking_cancellable_flatten;
 use rustix::fs::{fsync, renameat_with, AtFlags, RenameFlags};
 
-use crate::bls_config::{parse_bls_config, BLSConfig};
 use crate::composefs_consts::{
     BOOT_LOADER_ENTRIES, ROLLBACK_BOOT_LOADER_ENTRIES, USER_CFG, USER_CFG_ROLLBACK,
 };
 use crate::install::{get_efi_uuid_source, BootType};
+use crate::parsers::bls_config::{parse_bls_config, BLSConfig};
 use crate::parsers::grub_menuconfig::{parse_grub_menuentry_file, MenuEntry};
 use crate::progress_jsonl::{Event, ProgressWriter, SubTaskBytes, SubTaskStep};
 use crate::spec::ImageReference;
