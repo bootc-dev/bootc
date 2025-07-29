@@ -10,6 +10,8 @@ pub(crate) const COMPOSEFS_STAGED_DEPLOYMENT_FNAME: &str = "staged-deployment";
 pub(crate) const STATE_DIR_ABS: &str = "/sysroot/state/deploy";
 /// Relative path to composefs-native state directory. Relative to /sysroot
 pub(crate) const STATE_DIR_RELATIVE: &str = "state/deploy";
+/// Relative path to the shared 'var' directory. Relative to /sysroot
+pub(crate) const SHARED_VAR_PATH: &str = "state/os/default/var";
 
 /// Section in .origin file to store boot related metadata
 pub(crate) const ORIGIN_KEY_BOOT: &str = "boot";

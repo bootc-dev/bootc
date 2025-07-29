@@ -79,7 +79,8 @@ use crate::boundimage::{BoundImage, ResolvedBoundImage};
 use crate::composefs_consts::{
     BOOT_LOADER_ENTRIES, COMPOSEFS_CMDLINE, COMPOSEFS_STAGED_DEPLOYMENT_FNAME,
     COMPOSEFS_TRANSIENT_STATE_DIR, ORIGIN_KEY_BOOT, ORIGIN_KEY_BOOT_DIGEST, ORIGIN_KEY_BOOT_TYPE,
-    STAGED_BOOT_LOADER_ENTRIES, STATE_DIR_ABS, STATE_DIR_RELATIVE, USER_CFG, USER_CFG_STAGED,
+    SHARED_VAR_PATH, STAGED_BOOT_LOADER_ENTRIES, STATE_DIR_ABS, STATE_DIR_RELATIVE, USER_CFG,
+    USER_CFG_STAGED,
 };
 use crate::containerenv::ContainerExecutionInfo;
 use crate::deploy::{
@@ -92,7 +93,7 @@ use crate::progress_jsonl::ProgressWriter;
 use crate::spec::ImageReference;
 use crate::store::Storage;
 use crate::task::Task;
-use crate::utils::sigpolicy_from_opt;
+use crate::utils::{path_relative_to, sigpolicy_from_opt};
 use bootc_kernel_cmdline::Cmdline;
 use bootc_mount::{inspect_filesystem, Filesystem};
 
@@ -2176,11 +2177,15 @@ pub(crate) fn write_composefs_state(
     create_dir_all(state_path.join("etc/upper"))?;
     create_dir_all(state_path.join("etc/work"))?;
 
-    let actual_var_path = root_path.join(format!("state/os/fedora/var"));
+    let actual_var_path = root_path.join(SHARED_VAR_PATH);
     create_dir_all(&actual_var_path)?;
 
-    symlink(Path::new("../../os/fedora/var"), state_path.join("var"))
-        .context("Failed to create symlink for /var")?;
+    symlink(
+        path_relative_to(state_path.as_std_path(), actual_var_path.as_std_path())
+            .context("Getting var symlink path")?,
+        state_path.join("var"),
+    )
+    .context("Failed to create symlink for /var")?;
 
     let ImageReference {
         image: image_name,
