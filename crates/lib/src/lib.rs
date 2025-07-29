@@ -7,6 +7,7 @@
 mod bls_config;
 mod boundimage;
 pub mod cli;
+mod composefs_consts;
 pub(crate) mod deploy;
 pub(crate) mod fsck;
 pub(crate) mod generator;

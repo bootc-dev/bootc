@@ -20,7 +20,7 @@ use ostree_container::store::PrepareResult;
 use ostree_ext::composefs::fsverity;
 use ostree_ext::composefs::fsverity::FsVerityHashValue;
 use ostree_ext::container as ostree_container;
-use ostree_ext::container_utils::{composefs_booted, ostree_booted};
+use ostree_ext::container_utils::ostree_booted;
 use ostree_ext::keyfileext::KeyFileExt;
 use ostree_ext::ostree;
 use schemars::schema_for;
@@ -36,7 +36,7 @@ use crate::progress_jsonl::{ProgressWriter, RawProgressFd};
 use crate::spec::Host;
 use crate::spec::ImageReference;
 use crate::status::composefs_deployment_status;
-use crate::utils::sigpolicy_from_opt;
+use crate::utils::{composefs_booted, sigpolicy_from_opt};
 
 /// Shared progress options
 #[derive(Debug, Parser, PartialEq, Eq)]

@@ -14,7 +14,6 @@ use ostree::glib;
 use ostree_container::OstreeImageReference;
 use ostree_ext::container as ostree_container;
 use ostree_ext::container::deploy::ORIGIN_CONTAINER;
-use ostree_ext::container_utils::composefs_booted;
 use ostree_ext::container_utils::ostree_booted;
 use ostree_ext::containers_image_proxy;
 use ostree_ext::keyfileext::KeyFileExt;
@@ -24,18 +23,18 @@ use ostree_ext::ostree;
 use tokio::io::AsyncReadExt;
 
 use crate::cli::OutputFormat;
+use crate::composefs_consts::{
+    COMPOSEFS_CMDLINE, COMPOSEFS_INSECURE_CMDLINE, COMPOSEFS_STAGED_DEPLOYMENT_FNAME,
+    COMPOSEFS_TRANSIENT_STATE_DIR, ORIGIN_KEY_BOOT, ORIGIN_KEY_BOOT_TYPE, STATE_DIR_RELATIVE,
+};
 use crate::deploy::get_sorted_bls_boot_entries;
 use crate::deploy::get_sorted_uki_boot_entries;
 use crate::install::BootType;
-use crate::install::ORIGIN_KEY_BOOT;
-use crate::install::ORIGIN_KEY_BOOT_TYPE;
-use crate::install::{
-    COMPOSEFS_STAGED_DEPLOYMENT_FNAME, COMPOSEFS_TRANSIENT_STATE_DIR, STATE_DIR_RELATIVE,
-};
 use crate::spec::ImageStatus;
 use crate::spec::{BootEntry, BootOrder, Host, HostSpec, HostStatus, HostType};
 use crate::spec::{ImageReference, ImageSignature};
 use crate::store::{CachedImageStatus, ContainerImageStore, Storage};
+use crate::utils::composefs_booted;
 
 impl From<ostree_container::SignatureSource> for ImageSignature {
     fn from(sig: ostree_container::SignatureSource) -> Self {
@@ -395,7 +394,11 @@ async fn boot_entry_from_composefs_deployment(
 #[context("Getting composefs deployment status")]
 pub(crate) async fn composefs_deployment_status() -> Result<Host> {
     let cmdline = crate::kernel::parse_cmdline()?;
-    let booted_image_verity = cmdline.iter().find_map(|x| x.strip_prefix("composefs="));
+
+    let booted_image_verity = cmdline.iter().find_map(|x| {
+        x.strip_prefix(COMPOSEFS_INSECURE_CMDLINE)
+            .or_else(|| x.strip_prefix(COMPOSEFS_CMDLINE))
+    });
 
     let Some(booted_image_verity) = booted_image_verity else {
         anyhow::bail!("Failed to find composefs parameter in kernel cmdline");

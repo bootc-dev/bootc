@@ -17,6 +17,14 @@ use ostree::glib;
 use ostree_ext::container::SignatureSource;
 use ostree_ext::ostree;
 
+use crate::composefs_consts::{COMPOSEFS_CMDLINE, COMPOSEFS_INSECURE_CMDLINE};
+
+/// Returns true if the system appears to have been booted with composefs without ostree.
+pub fn composefs_booted() -> std::io::Result<bool> {
+    let cmdline = std::fs::read_to_string("/proc/cmdline")?;
+    Ok(cmdline.contains(COMPOSEFS_CMDLINE) || cmdline.contains(COMPOSEFS_INSECURE_CMDLINE))
+}
+
 /// Try to look for keys injected by e.g. rpm-ostree requesting machine-local
 /// changes; if any are present, return `true`.
 pub(crate) fn origin_has_rpmostree_stuff(kf: &glib::KeyFile) -> bool {

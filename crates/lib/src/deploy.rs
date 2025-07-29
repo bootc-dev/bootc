@@ -26,6 +26,9 @@ use ostree_ext::tokio_util::spawn_blocking_cancellable_flatten;
 use rustix::fs::{fsync, renameat_with, AtFlags, RenameFlags};
 
 use crate::bls_config::{parse_bls_config, BLSConfig};
+use crate::composefs_consts::{
+    BOOT_LOADER_ENTRIES, ROLLBACK_BOOT_LOADER_ENTRIES, USER_CFG, USER_CFG_ROLLBACK,
+};
 use crate::install::{get_efi_uuid_source, BootType};
 use crate::parsers::grub_menuconfig::{parse_grub_menuentry_file, MenuEntry};
 use crate::progress_jsonl::{Event, ProgressWriter, SubTaskBytes, SubTaskStep};
@@ -744,11 +747,6 @@ pub(crate) async fn stage(
     Ok(())
 }
 
-/// Filename for `loader/entries`
-pub(crate) const USER_CFG: &str = "user.cfg";
-pub(crate) const USER_CFG_STAGED: &str = "user.cfg.staged";
-pub(crate) const USER_CFG_ROLLBACK: &str = USER_CFG_STAGED;
-
 #[context("Rolling back UKI")]
 pub(crate) fn rollback_composefs_uki() -> Result<()> {
     let user_cfg_path = PathBuf::from("/sysroot/boot/grub2");
@@ -801,14 +799,9 @@ pub(crate) fn rollback_composefs_uki() -> Result<()> {
     Ok(())
 }
 
-/// Filename for `loader/entries`
-const CURRENT_ENTRIES: &str = "entries";
-const STAGED_ENTRIES: &str = "entries.staged";
-const ROLLBACK_ENTRIES: &str = STAGED_ENTRIES;
-
 // Need str to store lifetime
 pub(crate) fn get_sorted_uki_boot_entries<'a>(str: &'a mut String) -> Result<Vec<MenuEntry<'a>>> {
-    let mut file = std::fs::File::open("/sysroot/boot/grub2/user.cfg")?;
+    let mut file = std::fs::File::open(format!("/sysroot/boot/grub2/{USER_CFG}"))?;
     file.read_to_string(str)?;
     parse_grub_menuentry_file(str)
 }
@@ -817,7 +810,7 @@ pub(crate) fn get_sorted_uki_boot_entries<'a>(str: &'a mut String) -> Result<Vec
 pub(crate) fn get_sorted_bls_boot_entries(ascending: bool) -> Result<Vec<BLSConfig>> {
     let mut all_configs = vec![];
 
-    for entry in std::fs::read_dir(format!("/sysroot/boot/loader/{CURRENT_ENTRIES}"))? {
+    for entry in std::fs::read_dir(format!("/sysroot/boot/loader/{BOOT_LOADER_ENTRIES}"))? {
         let entry = entry?;
 
         let file_name = entry.file_name();
@@ -860,7 +853,9 @@ pub(crate) fn rollback_composefs_bls() -> Result<()> {
     assert!(all_configs.len() == 2);
 
     // Write these
-    let dir_path = PathBuf::from(format!("/sysroot/boot/loader/{ROLLBACK_ENTRIES}"));
+    let dir_path = PathBuf::from(format!(
+        "/sysroot/boot/loader/{ROLLBACK_BOOT_LOADER_ENTRIES}"
+    ));
     create_dir_all(&dir_path).with_context(|| format!("Failed to create dir: {dir_path:?}"))?;
 
     let rollback_entries_dir =
@@ -888,18 +883,21 @@ pub(crate) fn rollback_composefs_bls() -> Result<()> {
     let dir = Dir::open_ambient_dir("/sysroot/boot/loader", cap_std::ambient_authority())
         .context("Opening loader dir")?;
 
-    tracing::debug!("Atomically exchanging for {ROLLBACK_ENTRIES} and {CURRENT_ENTRIES}");
+    tracing::debug!(
+        "Atomically exchanging for {ROLLBACK_BOOT_LOADER_ENTRIES} and {BOOT_LOADER_ENTRIES}"
+    );
     renameat_with(
         &dir,
-        ROLLBACK_ENTRIES,
+        ROLLBACK_BOOT_LOADER_ENTRIES,
         &dir,
-        CURRENT_ENTRIES,
+        BOOT_LOADER_ENTRIES,
         RenameFlags::EXCHANGE,
     )
     .context("renameat")?;
 
-    tracing::debug!("Removing {ROLLBACK_ENTRIES}");
-    rustix::fs::unlinkat(&dir, ROLLBACK_ENTRIES, AtFlags::empty()).context("unlinkat")?;
+    tracing::debug!("Removing {ROLLBACK_BOOT_LOADER_ENTRIES}");
+    rustix::fs::unlinkat(&dir, ROLLBACK_BOOT_LOADER_ENTRIES, AtFlags::empty())
+        .context("unlinkat")?;
 
     tracing::debug!("Syncing to disk");
     fsync(
