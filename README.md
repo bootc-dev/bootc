@@ -61,6 +61,7 @@ See [GOVERNANCE.md](GOVERNANCE.md) for project governance details.
 ## Badges
 
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/10113/badge)](https://www.bestpractices.dev/projects/10113)
+[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2Fbootc-dev%2Fbootc.svg?type=shield)](https://app.fossa.com/projects/git%2Bgithub.com%2Fbootc-dev%2Fbootc?ref=badge_shield)
 
 
 ### Code of Conduct
@@ -70,3 +71,7 @@ and adheres to the [CNCF Community Code of Conduct](https://github.com/cncf/foun
 
 ---
 The Linux Foundation® (TLF) has registered trademarks and uses trademarks. For a list of TLF trademarks, see [Trademark Usage](https://www.linuxfoundation.org/trademark-usage/).
+
+
+## License
+[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2Fbootc-dev%2Fbootc.svg?type=large)](https://app.fossa.com/projects/git%2Bgithub.com%2Fbootc-dev%2Fbootc?ref=badge_large)
