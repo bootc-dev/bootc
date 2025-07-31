@@ -1,0 +1,17 @@
+[Unit]
+Description=bootc soft reboot preparation
+Documentation=man:bootc(8)
+ConditionPathExists=/run/ostree-booted
+DefaultDependencies=no
+Before=ostree-finalize-staged.service final.target
+Conflicts=final.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/true
+ExecStop=/usr/bin/bootc internals prepare-soft-reboot
+TimeoutStopSec=5m
+
+[Install]
+WantedBy=multi-user.target
