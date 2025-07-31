@@ -2019,9 +2019,10 @@ pub(crate) fn setup_composefs_uki_boot(
         let mut str_buf = String::new();
         let entries = get_sorted_uki_boot_entries(&mut str_buf)?;
 
-        for entry in entries {
-            buffer.write_all(entry.to_string().as_bytes())?;
-        }
+        // Write out only the currently booted entry, which should be the very first one
+        // Even if we have booted into the second menuentry "boot entry", the default will be the
+        // first one
+        buffer.write_all(entries[0].to_string().as_bytes())?;
 
         grub_dir
             .atomic_write(user_cfg_name, buffer)
