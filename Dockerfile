@@ -10,7 +10,7 @@ COPY . /src
 
 FROM $base as base
 # Set this to anything non-0 to enable https://copr.fedorainfracloud.org/coprs/g/CoreOS/continuous/
-ARG continuous_repo=0
+ARG continuous_repo=1
 RUN <<EORUN
 set -xeuo pipefail
 if [ "${continuous_repo}" == 0 ]; then
