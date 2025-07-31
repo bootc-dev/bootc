@@ -944,6 +944,12 @@ pub(crate) async fn composefs_rollback() -> Result<()> {
         BootType::Uki => rollback_composefs_uki(),
     }?;
 
+    if reverting {
+        println!("Next boot: current deployment");
+    } else {
+        println!("Next boot: rollback deployment");
+    }
+
     Ok(())
 }
 
