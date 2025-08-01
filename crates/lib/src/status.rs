@@ -553,9 +553,11 @@ pub(crate) async fn composefs_deployment_status() -> Result<Host> {
         anyhow::bail!("Could not determine boot type");
     };
 
+    let boot_dir = sysroot.open_dir("boot").context("Opening boot dir")?;
+
     match boot_type {
         BootType::Bls => {
-            host.status.rollback_queued = !get_sorted_bls_boot_entries(false)?
+            host.status.rollback_queued = !get_sorted_bls_boot_entries(&boot_dir, false)?
                 .first()
                 .ok_or(anyhow::anyhow!("First boot entry not found"))?
                 .options
@@ -567,7 +569,7 @@ pub(crate) async fn composefs_deployment_status() -> Result<Host> {
         BootType::Uki => {
             let mut s = String::new();
 
-            host.status.rollback_queued = !get_sorted_uki_boot_entries(&mut s)?
+            host.status.rollback_queued = !get_sorted_uki_boot_entries(&boot_dir, &mut s)?
                 .first()
                 .ok_or(anyhow::anyhow!("First boot entry not found"))?
                 .body

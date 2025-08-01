@@ -2017,7 +2017,9 @@ pub(crate) fn setup_composefs_uki_boot(
         )?;
 
         let mut str_buf = String::new();
-        let entries = get_sorted_uki_boot_entries(&mut str_buf)?;
+        let boot_dir = cap_std::fs::Dir::open_ambient_dir(boot_dir, cap_std::ambient_authority())
+            .context("Opening boot dir")?;
+        let entries = get_sorted_uki_boot_entries(&boot_dir, &mut str_buf)?;
 
         // Write out only the currently booted entry, which should be the very first one
         // Even if we have booted into the second menuentry "boot entry", the default will be the
