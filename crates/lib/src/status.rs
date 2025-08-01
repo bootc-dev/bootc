@@ -467,6 +467,18 @@ fn human_render_slot(
                 }
             }
         }
+
+        // Show soft-reboot capability
+        write_row_name(&mut out, "Soft-reboot capable", prefix_len)?;
+        writeln!(
+            out,
+            "{}",
+            if entry.soft_reboot_capable {
+                "yes"
+            } else {
+                "no"
+            }
+        )?;
     }
 
     tracing::debug!("pinned={}", entry.pinned);
@@ -504,6 +516,18 @@ fn human_render_slot_ostree(
         if let Some(ostree) = &entry.ostree {
             render_verbose_ostree_info(&mut out, ostree, slot, prefix_len)?;
         }
+
+        // Show soft-reboot capability
+        write_row_name(&mut out, "Soft-reboot capable", prefix_len)?;
+        writeln!(
+            out,
+            "{}",
+            if entry.soft_reboot_capable {
+                "yes"
+            } else {
+                "no"
+            }
+        )?;
     }
 
     tracing::debug!("pinned={}", entry.pinned);
@@ -725,5 +749,6 @@ mod tests {
         assert!(w.contains("Deploy serial:"));
         assert!(w.contains("Staged:"));
         assert!(w.contains("Commit:"));
+        assert!(w.contains("Soft-reboot capable:"));
     }
 }

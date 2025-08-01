@@ -748,12 +748,12 @@ fn should_soft_reboot(
 ) -> Result<bool> {
     // Get updated status to check for soft-reboot capability
     let (_deployments, updated_host) = crate::status::get_status(sysroot, booted_deployment)?;
-    
+
     // Check if there's a staged deployment that can perform soft reboot
     if can_perform_soft_reboot(updated_host.status.staged.as_ref()) {
         soft_reboot_staged(sysroot)?;
         return Ok(true);
-    }    
+    }
     // TODO check if this reboot is doing a rollback...
     // TODO then perform a soft reboot for the rollback deployment
     Ok(false)
