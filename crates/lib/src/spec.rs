@@ -165,7 +165,6 @@ pub struct BootEntryOstree {
     pub deploy_serial: u32,
 }
 
-
 /// A bootable entry
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
 #[serde(rename_all = "camelCase")]

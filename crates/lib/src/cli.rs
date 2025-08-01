@@ -20,7 +20,7 @@ use ostree_container::store::PrepareResult;
 use ostree_ext::composefs::fsverity;
 use ostree_ext::composefs::fsverity::FsVerityHashValue;
 use ostree_ext::container as ostree_container;
-use ostree_ext::container_utils::{composefs_booted, ostree_booted};
+use ostree_ext::container_utils::ostree_booted;
 use ostree_ext::keyfileext::KeyFileExt;
 use ostree_ext::ostree;
 use schemars::schema_for;
@@ -36,7 +36,7 @@ use crate::progress_jsonl::{ProgressWriter, RawProgressFd};
 use crate::spec::Host;
 use crate::spec::ImageReference;
 use crate::status::composefs_deployment_status;
-use crate::utils::sigpolicy_from_opt;
+use crate::utils::{composefs_booted, sigpolicy_from_opt};
 
 /// Shared progress options
 #[derive(Debug, Parser, PartialEq, Eq)]
@@ -798,13 +798,29 @@ async fn upgrade_composefs(_opts: UpgradeOpts) -> Result<()> {
     };
 
     let boot_type = BootType::from(&entry);
+    let mut boot_digest = None;
 
     match boot_type {
-        BootType::Bls => setup_composefs_bls_boot(BootSetupType::Upgrade, repo, &id, entry),
-        BootType::Uki => setup_composefs_uki_boot(BootSetupType::Upgrade, repo, &id, entry),
-    }?;
+        BootType::Bls => {
+            boot_digest = Some(setup_composefs_bls_boot(
+                BootSetupType::Upgrade,
+                repo,
+                &id,
+                entry,
+            )?)
+        }
 
-    write_composefs_state(&Utf8PathBuf::from("/sysroot"), id, imgref, true, boot_type)?;
+        BootType::Uki => setup_composefs_uki_boot(BootSetupType::Upgrade, repo, &id, entry)?,
+    };
+
+    write_composefs_state(
+        &Utf8PathBuf::from("/sysroot"),
+        id,
+        imgref,
+        true,
+        boot_type,
+        boot_digest,
+    )?;
 
     Ok(())
 }
@@ -966,11 +982,19 @@ async fn switch_composefs(opts: SwitchOpts) -> Result<()> {
     };
 
     let boot_type = BootType::from(&entry);
+    let mut boot_digest = None;
 
     match boot_type {
-        BootType::Bls => setup_composefs_bls_boot(BootSetupType::Upgrade, repo, &id, entry),
-        BootType::Uki => setup_composefs_uki_boot(BootSetupType::Upgrade, repo, &id, entry),
-    }?;
+        BootType::Bls => {
+            boot_digest = Some(setup_composefs_bls_boot(
+                BootSetupType::Upgrade,
+                repo,
+                &id,
+                entry,
+            )?)
+        }
+        BootType::Uki => setup_composefs_uki_boot(BootSetupType::Upgrade, repo, &id, entry)?,
+    };
 
     write_composefs_state(
         &Utf8PathBuf::from("/sysroot"),
@@ -978,6 +1002,7 @@ async fn switch_composefs(opts: SwitchOpts) -> Result<()> {
         &target_imgref,
         true,
         boot_type,
+        boot_digest,
     )?;
 
     Ok(())

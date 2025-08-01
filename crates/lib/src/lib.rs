@@ -6,6 +6,7 @@
 
 mod boundimage;
 pub mod cli;
+mod composefs_consts;
 pub(crate) mod deploy;
 pub(crate) mod fsck;
 pub(crate) mod generator;
@@ -18,6 +19,7 @@ pub(crate) mod kargs;
 mod lints;
 mod lsm;
 pub(crate) mod metadata;
+pub(crate) mod parsers;
 mod podman;
 mod progress_jsonl;
 mod reboot;
@@ -27,7 +29,6 @@ mod status;
 mod store;
 mod task;
 mod utils;
-mod bls_config;
 
 #[cfg(feature = "docgen")]
 mod docgen;

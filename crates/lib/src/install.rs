@@ -49,9 +49,9 @@ use ostree_ext::composefs::{
     repository::Repository as ComposefsRepository,
     util::Sha256Digest,
 };
+use ostree_ext::composefs_boot::bootloader::UsrLibModulesVmlinuz;
 use ostree_ext::composefs_boot::{
-    bootloader::BootEntry as ComposefsBootEntry,
-    write_boot::write_boot_simple as composefs_write_boot_simple, BootOps,
+    bootloader::BootEntry as ComposefsBootEntry, cmdline::get_cmdline_composefs, uki, BootOps,
 };
 use ostree_ext::composefs_oci::{
     image::create_filesystem as create_composefs_filesystem, pull as composefs_oci_pull,
@@ -69,21 +69,31 @@ use ostree_ext::{
 use rustix::fs::FileTypeExt;
 use rustix::fs::MetadataExt as _;
 use rustix::path::Arg;
-use serde::{Deserialize, Serialize};
 use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "install-to-disk")]
 use self::baseline::InstallBlockDeviceOpts;
-use crate::bls_config::{parse_bls_config, BLSConfig};
 use crate::boundimage::{BoundImage, ResolvedBoundImage};
+use crate::composefs_consts::{
+    BOOT_LOADER_ENTRIES, COMPOSEFS_CMDLINE, COMPOSEFS_INSECURE_CMDLINE,
+    COMPOSEFS_STAGED_DEPLOYMENT_FNAME, COMPOSEFS_TRANSIENT_STATE_DIR, ORIGIN_KEY_BOOT,
+    ORIGIN_KEY_BOOT_DIGEST, ORIGIN_KEY_BOOT_TYPE, SHARED_VAR_PATH, STAGED_BOOT_LOADER_ENTRIES,
+    STATE_DIR_ABS, STATE_DIR_RELATIVE, USER_CFG, USER_CFG_STAGED,
+};
 use crate::containerenv::ContainerExecutionInfo;
-use crate::deploy::{prepare_for_pull, pull_from_prepared, PreparedImportMeta, PreparedPullResult};
+use crate::deploy::{
+    get_sorted_uki_boot_entries, prepare_for_pull, pull_from_prepared, PreparedImportMeta,
+    PreparedPullResult,
+};
 use crate::lsm;
+use crate::parsers::bls_config::{parse_bls_config, BLSConfig};
+use crate::parsers::grub_menuconfig::MenuEntry;
 use crate::progress_jsonl::ProgressWriter;
 use crate::spec::ImageReference;
 use crate::store::Storage;
 use crate::task::Task;
-use crate::utils::sigpolicy_from_opt;
+use crate::utils::{path_relative_to, sigpolicy_from_opt};
 use bootc_mount::{inspect_filesystem, Filesystem};
 
 /// The toplevel boot directory
@@ -269,7 +279,9 @@ impl TryFrom<&str> for BootType {
         match value {
             "bls" => Ok(Self::Bls),
             "uki" => Ok(Self::Uki),
-            unrecognized => Err(anyhow::anyhow!("Unrecognized boot option: '{unrecognized}'")),
+            unrecognized => Err(anyhow::anyhow!(
+                "Unrecognized boot option: '{unrecognized}'"
+            )),
         }
     }
 }
@@ -287,8 +299,9 @@ impl From<&ComposefsBootEntry<Sha256HashValue>> for BootType {
 
 #[derive(Debug, Clone, clap::Parser, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct InstallComposefsOpts {
-    #[clap(long, value_enum, default_value_t)]
-    pub(crate) boot: BootType,
+    #[clap(long, default_value_t)]
+    #[serde(default)]
+    pub(crate) insecure: bool,
 }
 
 #[cfg(feature = "install-to-disk")]
@@ -316,9 +329,11 @@ pub(crate) struct InstallToDiskOpts {
     pub(crate) via_loopback: bool,
 
     #[clap(long)]
+    #[serde(default)]
     pub(crate) composefs_native: bool,
 
     #[clap(flatten)]
+    #[serde(flatten)]
     pub(crate) composefs_opts: InstallComposefsOpts,
 }
 
@@ -607,15 +622,10 @@ impl FromStr for MountSpec {
 impl InstallToDiskOpts {
     pub(crate) fn validate(&self) -> Result<()> {
         if !self.composefs_native {
-            // Reject using --boot without --composefs
-            if self.composefs_opts.boot != BootType::default() {
-                anyhow::bail!("--boot must not be provided without --composefs");
+            // Reject using --insecure without --composefs
+            if self.composefs_opts.insecure != false {
+                anyhow::bail!("--insecure must not be provided without --composefs");
             }
-        }
-
-        // Can't add kargs to UKI
-        if self.composefs_opts.boot == BootType::Uki && self.config_opts.karg.is_some() {
-            anyhow::bail!("Cannot pass kargs to UKI");
         }
 
         Ok(())
@@ -1533,7 +1543,7 @@ async fn initialize_composefs_repository(
 
     rootfs_dir
         .create_dir_all("composefs")
-        .context("Creating dir 'composefs'")?;
+        .context("Creating dir composefs")?;
 
     let repo = open_composefs_repo(rootfs_dir)?;
 
@@ -1548,7 +1558,10 @@ async fn initialize_composefs_repository(
 
 fn get_booted_bls() -> Result<BLSConfig> {
     let cmdline = crate::kernel::parse_cmdline()?;
-    let booted = cmdline.iter().find_map(|x| x.strip_prefix("composefs="));
+    let booted = cmdline.iter().find_map(|x| {
+        x.strip_prefix(COMPOSEFS_INSECURE_CMDLINE)
+            .or_else(|| x.strip_prefix(COMPOSEFS_CMDLINE))
+    });
 
     let Some(booted) = booted else {
         anyhow::bail!("Failed to find composefs parameter in kernel cmdline");
@@ -1591,11 +1604,138 @@ pub fn read_file<ObjectID: FsVerityHashValue>(
 
 pub(crate) enum BootSetupType<'a> {
     /// For initial setup, i.e. install to-disk
-    Setup(&'a RootSetup),
+    Setup((&'a RootSetup, &'a State)),
     /// For `bootc upgrade`
     Upgrade,
 }
 
+/// Compute SHA256Sum of VMlinuz + Initrd
+///
+/// # Arguments
+/// * entry - BootEntry containing VMlinuz and Initrd
+/// * repo - The composefs repository
+#[context("Computing boot digest")]
+fn compute_boot_digest(
+    entry: &UsrLibModulesVmlinuz<Sha256HashValue>,
+    repo: &ComposefsRepository<Sha256HashValue>,
+) -> Result<String> {
+    let vmlinuz = read_file(&entry.vmlinuz, &repo).context("Reading vmlinuz")?;
+
+    let Some(initramfs) = &entry.initramfs else {
+        anyhow::bail!("initramfs not found");
+    };
+
+    let initramfs = read_file(initramfs, &repo).context("Reading intird")?;
+
+    let mut hasher = openssl::hash::Hasher::new(openssl::hash::MessageDigest::sha256())
+        .context("Creating hasher")?;
+
+    hasher.update(&vmlinuz).context("hashing vmlinuz")?;
+    hasher.update(&initramfs).context("hashing initrd")?;
+
+    let digest: &[u8] = &hasher.finish().context("Finishing digest")?;
+
+    return Ok(hex::encode(digest));
+}
+
+/// Given the SHA256 sum of current VMlinuz + Initrd combo, find boot entry with the same SHA256Sum
+///
+/// # Returns
+/// Returns the verity of the deployment that has a boot digest same as the one passed in
+#[context("Checking boot entry duplicates")]
+fn find_vmlinuz_initrd_duplicates(digest: &str) -> Result<Option<String>> {
+    let deployments =
+        cap_std::fs::Dir::open_ambient_dir(STATE_DIR_ABS, cap_std::ambient_authority());
+
+    let deployments = match deployments {
+        Ok(d) => d,
+        // The first ever deployment
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => anyhow::bail!(e),
+    };
+
+    let mut symlink_to: Option<String> = None;
+
+    for depl in deployments.entries()? {
+        let depl = depl?;
+
+        let depl_file_name = depl.file_name();
+        let depl_file_name = depl_file_name.as_str()?;
+
+        let config = depl
+            .open_dir()
+            .with_context(|| format!("Opening {depl_file_name}"))?
+            .read_to_string(format!("{depl_file_name}.origin"))
+            .context("Reading origin file")?;
+
+        let ini = tini::Ini::from_string(&config)
+            .with_context(|| format!("Failed to parse file {depl_file_name}.origin as ini"))?;
+
+        match ini.get::<String>(ORIGIN_KEY_BOOT, ORIGIN_KEY_BOOT_DIGEST) {
+            Some(hash) => {
+                if hash == digest {
+                    symlink_to = Some(depl_file_name.to_string());
+                    break;
+                }
+            }
+
+            // No SHASum recorded in origin file
+            // `symlink_to` is already none, but being explicit here
+            None => symlink_to = None,
+        };
+    }
+
+    Ok(symlink_to)
+}
+
+#[context("Writing BLS entries to disk")]
+fn write_bls_boot_entries_to_disk(
+    boot_dir: &Utf8PathBuf,
+    deployment_id: &Sha256HashValue,
+    entry: &UsrLibModulesVmlinuz<Sha256HashValue>,
+    repo: &ComposefsRepository<Sha256HashValue>,
+) -> Result<()> {
+    let id_hex = deployment_id.to_hex();
+
+    // Write the initrd and vmlinuz at /boot/<id>/
+    let path = boot_dir.join(&id_hex);
+    create_dir_all(&path)?;
+
+    let entries_dir = cap_std::fs::Dir::open_ambient_dir(&path, cap_std::ambient_authority())
+        .with_context(|| format!("Opening {path}"))?;
+
+    entries_dir
+        .atomic_write(
+            "vmlinuz",
+            read_file(&entry.vmlinuz, &repo).context("Reading vmlinuz")?,
+        )
+        .context("Writing vmlinuz to path")?;
+
+    let Some(initramfs) = &entry.initramfs else {
+        anyhow::bail!("initramfs not found");
+    };
+
+    entries_dir
+        .atomic_write(
+            "initrd",
+            read_file(initramfs, &repo).context("Reading initrd")?,
+        )
+        .context("Writing initrd to path")?;
+
+    // Can't call fsync on O_PATH fds, so re-open it as a non O_PATH fd
+    let owned_fd = entries_dir
+        .reopen_as_ownedfd()
+        .context("Reopen as owned fd")?;
+
+    rustix::fs::fsync(owned_fd).context("fsync")?;
+
+    Ok(())
+}
+
+/// Sets up and writes BLS entries and binaries (VMLinuz + Initrd) to disk
+///
+/// # Returns
+/// Returns the SHA256Sum of VMLinuz + Initrd combo. Error if any
 #[context("Setting up BLS boot")]
 pub(crate) fn setup_composefs_bls_boot(
     setup_type: BootSetupType,
@@ -1603,14 +1743,22 @@ pub(crate) fn setup_composefs_bls_boot(
     repo: ComposefsRepository<Sha256HashValue>,
     id: &Sha256HashValue,
     entry: ComposefsBootEntry<Sha256HashValue>,
-) -> Result<()> {
+) -> Result<String> {
     let id_hex = id.to_hex();
 
     let (root_path, cmdline_refs) = match setup_type {
-        BootSetupType::Setup(root_setup) => {
+        BootSetupType::Setup((root_setup, state)) => {
             // root_setup.kargs has [root=UUID=<UUID>, "rw"]
             let mut cmdline_options = String::from(root_setup.kargs.join(" "));
-            cmdline_options.push_str(&format!(" composefs={id_hex}"));
+
+            match &state.composefs_options {
+                Some(opt) if opt.insecure => {
+                    cmdline_options.push_str(&format!(" {COMPOSEFS_INSECURE_CMDLINE}{id_hex}"));
+                }
+                None | Some(..) => {
+                    cmdline_options.push_str(&format!(" {COMPOSEFS_CMDLINE}{id_hex}"));
+                }
+            };
 
             (root_setup.physical_root_path.clone(), cmdline_options)
         }
@@ -1620,7 +1768,7 @@ pub(crate) fn setup_composefs_bls_boot(
             vec![
                 format!("root=UUID={DPS_UUID}"),
                 RW_KARG.to_string(),
-                format!("composefs={id_hex}"),
+                format!("{COMPOSEFS_CMDLINE}{id_hex}"),
             ]
             .join(" "),
         ),
@@ -1628,71 +1776,74 @@ pub(crate) fn setup_composefs_bls_boot(
 
     let boot_dir = root_path.join("boot");
 
-    let bls_config = match &entry {
+    let is_upgrade = matches!(setup_type, BootSetupType::Upgrade);
+
+    let (bls_config, boot_digest) = match &entry {
         ComposefsBootEntry::Type1(..) => todo!(),
         ComposefsBootEntry::Type2(..) => todo!(),
         ComposefsBootEntry::UsrLibModulesUki(..) => todo!(),
 
         ComposefsBootEntry::UsrLibModulesVmLinuz(usr_lib_modules_vmlinuz) => {
-            // Write the initrd and vmlinuz at /boot/<id>/
-            let path = boot_dir.join(&id_hex);
-            create_dir_all(&path)?;
+            let boot_digest = compute_boot_digest(usr_lib_modules_vmlinuz, &repo)
+                .context("Computing boot digest")?;
 
-            let vmlinuz_path = path.join("vmlinuz");
-            let initrd_path = path.join("initrd");
-
-            std::fs::write(
-                &vmlinuz_path,
-                read_file(&usr_lib_modules_vmlinuz.vmlinuz, &repo).context("Reading vmlinuz")?,
-            )
-            .context("Writing vmlinuz to path")?;
-
-            if let Some(initramfs) = &usr_lib_modules_vmlinuz.initramfs {
-                std::fs::write(
-                    &initrd_path,
-                    read_file(initramfs, &repo).context("Reading initramfs")?,
-                )
-                .context("Writing initrd to path")?;
-            } else {
-                anyhow::bail!("initramfs not found");
-            };
-
-            BLSConfig {
+            let mut bls_config = BLSConfig {
                 title: Some(id_hex.clone()),
                 version: 1,
                 linux: format!("/boot/{id_hex}/vmlinuz"),
                 initrd: format!("/boot/{id_hex}/initrd"),
                 options: cmdline_refs,
                 extra: HashMap::new(),
+            };
+
+            if let Some(symlink_to) = find_vmlinuz_initrd_duplicates(&boot_digest)? {
+                bls_config.linux = format!("/boot/{symlink_to}/vmlinuz");
+                bls_config.initrd = format!("/boot/{symlink_to}/initrd");
+            } else {
+                write_bls_boot_entries_to_disk(&boot_dir, id, usr_lib_modules_vmlinuz, &repo)?;
             }
+
+            (bls_config, boot_digest)
         }
     };
 
-    let (entries_path, booted_bls) = if matches!(setup_type, BootSetupType::Upgrade) {
+    let (entries_path, booted_bls) = if is_upgrade {
         let mut booted_bls = get_booted_bls()?;
         booted_bls.version = 0; // entries are sorted by their filename in reverse order
 
         // This will be atomically renamed to 'loader/entries' on shutdown/reboot
-        (boot_dir.join("loader/entries.staged"), Some(booted_bls))
+        (
+            boot_dir.join(format!("loader/{STAGED_BOOT_LOADER_ENTRIES}")),
+            Some(booted_bls),
+        )
     } else {
-        (boot_dir.join("loader/entries"), None)
+        (boot_dir.join(format!("loader/{BOOT_LOADER_ENTRIES}")), None)
     };
 
     create_dir_all(&entries_path).with_context(|| format!("Creating {:?}", entries_path))?;
 
-    std::fs::write(
-        entries_path.join(format!("bootc-composefs-{}.conf", bls_config.version)),
+    let loader_entries_dir =
+        cap_std::fs::Dir::open_ambient_dir(&entries_path, cap_std::ambient_authority())
+            .with_context(|| format!("Opening {entries_path}"))?;
+
+    loader_entries_dir.atomic_write(
+        format!("bootc-composefs-{}.conf", bls_config.version),
         bls_config.to_string().as_bytes(),
     )?;
 
     if let Some(booted_bls) = booted_bls {
-        std::fs::write(
-            entries_path.join(format!("bootc-composefs-{}.conf", booted_bls.version)),
+        loader_entries_dir.atomic_write(
+            format!("bootc-composefs-{}.conf", booted_bls.version),
             booted_bls.to_string().as_bytes(),
         )?;
     }
 
-    Ok(())
+    let owned_loader_entries_fd = loader_entries_dir
+        .reopen_as_ownedfd()
+        .context("Reopening as owned fd")?;
+    rustix::fs::fsync(owned_loader_entries_fd).context("fsync")?;
+
+    Ok(boot_digest)
 }
 
 pub fn get_esp_partition(device: &str) -> Result<(String, Option<String>)> {
@@ -1704,21 +1855,6 @@ pub fn get_esp_partition(device: &str) -> Result<(String, Option<String>)> {
         .ok_or(anyhow::anyhow!("ESP not found for device: {device}"))?;
 
     Ok((esp.node, esp.uuid))
-}
-
-pub(crate) fn get_user_config(uki_id: &str) -> String {
-    let s = format!(
-        r#"
-menuentry "Fedora Bootc UKI: ({uki_id})" {{
-    insmod fat
-    insmod chain
-    search --no-floppy --set=root --fs-uuid "${{EFI_PART_UUID}}"
-    chainloader /EFI/Linux/{uki_id}.efi
-}}
-"#
-    );
-
-    return s;
 }
 
 /// Contains the EFP's filesystem UUID. Used by grub
@@ -1744,8 +1880,14 @@ pub(crate) fn setup_composefs_uki_boot(
     id: &Sha256HashValue,
     entry: ComposefsBootEntry<Sha256HashValue>,
 ) -> Result<()> {
-    let (root_path, esp_device) = match setup_type {
-        BootSetupType::Setup(root_setup) => {
+    let (root_path, esp_device, is_insecure_from_opts) = match setup_type {
+        BootSetupType::Setup((root_setup, state)) => {
+            if let Some(v) = &state.config_opts.karg {
+                if v.len() > 0 {
+                    tracing::warn!("kargs passed for UKI will be ignored");
+                }
+            }
+
             let esp_part = root_setup
                 .device_info
                 .partitions
@@ -1753,7 +1895,11 @@ pub(crate) fn setup_composefs_uki_boot(
                 .find(|p| p.parttype.as_str() == ESP_GUID)
                 .ok_or_else(|| anyhow!("ESP partition not found"))?;
 
-            (root_setup.physical_root_path.clone(), esp_part.node.clone())
+            (
+                root_setup.physical_root_path.clone(),
+                esp_part.node.clone(),
+                state.composefs_options.as_ref().map(|x| x.insecure),
+            )
         }
 
         BootSetupType::Upgrade => {
@@ -1766,7 +1912,7 @@ pub(crate) fn setup_composefs_uki_boot(
                 anyhow::bail!("Could not find parent device for mountpoint /sysroot");
             };
 
-            (sysroot, get_esp_partition(&parent)?.0)
+            (sysroot, get_esp_partition(&parent)?.0, None)
         }
     };
 
@@ -1779,16 +1925,66 @@ pub(crate) fn setup_composefs_uki_boot(
         .args([&PathBuf::from(&esp_device), &mounted_esp.clone()])
         .run()?;
 
-    composefs_write_boot_simple(
-        &repo,
-        entry,
-        &id,
-        false,
-        &mounted_esp,
-        None,
-        Some(&id.to_hex()),
-        &[],
-    )?;
+    let boot_label = match entry {
+        ComposefsBootEntry::Type1(..) => todo!(),
+        ComposefsBootEntry::UsrLibModulesUki(..) => todo!(),
+        ComposefsBootEntry::UsrLibModulesVmLinuz(..) => todo!(),
+
+        ComposefsBootEntry::Type2(type2_entry) => {
+            let uki = read_file(&type2_entry.file, &repo).context("Reading UKI")?;
+            let cmdline = uki::get_cmdline(&uki).context("Getting UKI cmdline")?;
+            let (composefs_cmdline, insecure) = get_cmdline_composefs::<Sha256HashValue>(cmdline)?;
+
+            // If the UKI cmdline does not match what the user has passed as cmdline option
+            // NOTE: This will only be checked for new installs and now upgrades/switches
+            if let Some(is_insecure_from_opts) = is_insecure_from_opts {
+                match is_insecure_from_opts {
+                    true => {
+                        if !insecure {
+                            tracing::warn!(
+                                "--insecure passed as option but UKI cmdline does not support it"
+                            )
+                        }
+                    }
+
+                    false => {
+                        if insecure {
+                            tracing::warn!("UKI cmdline has composefs set as insecure")
+                        }
+                    }
+                }
+            }
+
+            let boot_label = uki::get_boot_label(&uki).context("Getting UKI boot label")?;
+
+            if composefs_cmdline != *id {
+                anyhow::bail!(
+                    "The UKI has the wrong composefs= parameter (is '{composefs_cmdline:?}', should be {id:?})"
+                );
+            }
+
+            // Write the UKI to ESP
+            let efi_linux_path = mounted_esp.join("EFI/Linux");
+            create_dir_all(&efi_linux_path).context("Creating EFI/Linux")?;
+
+            let efi_linux =
+                cap_std::fs::Dir::open_ambient_dir(&efi_linux_path, cap_std::ambient_authority())
+                    .with_context(|| format!("Opening {efi_linux_path:?}"))?;
+
+            efi_linux
+                .atomic_write(format!("{}.efi", id.to_hex()), uki)
+                .context("Writing UKI")?;
+
+            rustix::fs::fsync(
+                efi_linux
+                    .reopen_as_ownedfd()
+                    .context("Reopening as owned fd")?,
+            )
+            .context("fsync")?;
+
+            boot_label
+        }
+    };
 
     Task::new("Unmounting ESP", "umount")
         .arg(&mounted_esp)
@@ -1809,66 +2005,75 @@ pub(crate) fn setup_composefs_uki_boot(
     let efi_uuid_source = get_efi_uuid_source();
 
     let user_cfg_name = if is_upgrade {
-        "grub2/user.cfg.staged"
+        USER_CFG_STAGED
     } else {
-        "grub2/user.cfg"
+        USER_CFG
     };
-    let user_cfg_path = boot_dir.join(user_cfg_name);
+
+    let grub_dir =
+        cap_std::fs::Dir::open_ambient_dir(boot_dir.join("grub2"), cap_std::ambient_authority())
+            .context("opening boot/grub2")?;
 
     // Iterate over all available deployments, and generate a menuentry for each
     //
     // TODO: We might find a staged deployment here
     if is_upgrade {
-        let mut usr_cfg = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .open(user_cfg_path)
-            .with_context(|| format!("Opening {user_cfg_name}"))?;
+        let mut buffer = vec![];
 
-        usr_cfg.write_all(efi_uuid_source.as_bytes())?;
-        usr_cfg.write_all(get_user_config(&id.to_hex()).as_bytes())?;
+        // Shouldn't really fail so no context here
+        buffer.write_all(efi_uuid_source.as_bytes())?;
+        buffer.write_all(
+            MenuEntry::new(&boot_label, &id.to_hex())
+                .to_string()
+                .as_bytes(),
+        )?;
 
-        // root_path here will be /sysroot
-        for entry in std::fs::read_dir(root_path.join(STATE_DIR_RELATIVE))? {
-            let entry = entry?;
+        let mut str_buf = String::new();
+        let boot_dir = cap_std::fs::Dir::open_ambient_dir(boot_dir, cap_std::ambient_authority())
+            .context("Opening boot dir")?;
+        let entries = get_sorted_uki_boot_entries(&boot_dir, &mut str_buf)?;
 
-            let depl_file_name = entry.file_name();
-            // SAFETY: Deployment file name shouldn't containg non UTF-8 chars
-            let depl_file_name = depl_file_name.to_string_lossy();
+        // Write out only the currently booted entry, which should be the very first one
+        // Even if we have booted into the second menuentry "boot entry", the default will be the
+        // first one
+        buffer.write_all(entries[0].to_string().as_bytes())?;
 
-            usr_cfg.write_all(get_user_config(&depl_file_name).as_bytes())?;
-        }
+        grub_dir
+            .atomic_write(user_cfg_name, buffer)
+            .with_context(|| format!("Writing to {user_cfg_name}"))?;
+
+        rustix::fs::fsync(grub_dir.reopen_as_ownedfd()?).context("fsync")?;
 
         return Ok(());
     }
 
-    let efi_uuid_file_path = format!("grub2/{EFI_UUID_FILE}");
-
     // Open grub2/efiuuid.cfg and write the EFI partition fs-UUID in there
     // This will be sourced by grub2/user.cfg to be used for `--fs-uuid`
-    let mut efi_uuid_file = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .open(boot_dir.join(&efi_uuid_file_path))
-        .with_context(|| format!("Opening {efi_uuid_file_path}"))?;
-
     let esp_uuid = Task::new("blkid for ESP UUID", "blkid")
         .args(["-s", "UUID", "-o", "value", &esp_device])
         .read()?;
 
-    efi_uuid_file
-        .write_all(format!("set EFI_PART_UUID=\"{}\"", esp_uuid.trim()).as_bytes())
-        .with_context(|| format!("Writing to {efi_uuid_file_path}"))?;
+    grub_dir.atomic_write(
+        EFI_UUID_FILE,
+        format!("set EFI_PART_UUID=\"{}\"", esp_uuid.trim()).as_bytes(),
+    )?;
 
     // Write to grub2/user.cfg
-    let mut usr_cfg = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .open(user_cfg_path)
-        .with_context(|| format!("Opening {user_cfg_name}"))?;
+    let mut buffer = vec![];
 
-    usr_cfg.write_all(efi_uuid_source.as_bytes())?;
-    usr_cfg.write_all(get_user_config(&id.to_hex()).as_bytes())?;
+    // Shouldn't really fail so no context here
+    buffer.write_all(efi_uuid_source.as_bytes())?;
+    buffer.write_all(
+        MenuEntry::new(&boot_label, &id.to_hex())
+            .to_string()
+            .as_bytes(),
+    )?;
+
+    grub_dir
+        .atomic_write(user_cfg_name, buffer)
+        .with_context(|| format!("Writing to {user_cfg_name}"))?;
+
+    rustix::fs::fsync(grub_dir.reopen_as_ownedfd()?).context("fsync")?;
 
     Ok(())
 }
@@ -1937,17 +2142,26 @@ fn setup_composefs_boot(root_setup: &RootSetup, state: &State, image_id: &str) -
         anyhow::bail!("No boot entries!");
     };
 
-    let Some(composefs_opts) = &state.composefs_options else {
-        anyhow::bail!("Could not find options for composefs")
-    };
+    let boot_type = BootType::from(&entry);
+    let mut boot_digest: Option<String> = None;
 
-    match composefs_opts.boot {
+    match boot_type {
         BootType::Bls => {
-            setup_composefs_bls_boot(BootSetupType::Setup(&root_setup), repo, &id, entry)?
+            let digest = setup_composefs_bls_boot(
+                BootSetupType::Setup((&root_setup, &state)),
+                repo,
+                &id,
+                entry,
+            )?;
+
+            boot_digest = Some(digest);
         }
-        BootType::Uki => {
-            setup_composefs_uki_boot(BootSetupType::Setup(&root_setup), repo, &id, entry)?
-        }
+        BootType::Uki => setup_composefs_uki_boot(
+            BootSetupType::Setup((&root_setup, &state)),
+            repo,
+            &id,
+            entry,
+        )?,
     };
 
     write_composefs_state(
@@ -1959,19 +2173,12 @@ fn setup_composefs_boot(root_setup: &RootSetup, state: &State, image_id: &str) -
             signature: None,
         },
         false,
-        composefs_opts.boot,
+        boot_type,
+        boot_digest,
     )?;
 
     Ok(())
 }
-
-pub(crate) const COMPOSEFS_TRANSIENT_STATE_DIR: &str = "/run/composefs";
-pub(crate) const COMPOSEFS_STAGED_DEPLOYMENT_PATH: &str = "/run/composefs/staged-deployment";
-/// Relative to /sysroot
-pub(crate) const STATE_DIR_RELATIVE: &str = "state/deploy";
-
-pub(crate) const ORIGIN_KEY_BOOT: &str = "boot";
-pub(crate) const ORIGIN_KEY_BOOT_TYPE: &str = "boot_type";
 
 /// Creates and populates /sysroot/state/deploy/image_id
 #[context("Writing composefs state")]
@@ -1981,17 +2188,22 @@ pub(crate) fn write_composefs_state(
     imgref: &ImageReference,
     staged: bool,
     boot_type: BootType,
+    boot_digest: Option<String>,
 ) -> Result<()> {
     let state_path = root_path.join(format!("{STATE_DIR_RELATIVE}/{}", deployment_id.to_hex()));
 
     create_dir_all(state_path.join("etc/upper"))?;
     create_dir_all(state_path.join("etc/work"))?;
 
-    let actual_var_path = root_path.join(format!("state/os/fedora/var"));
+    let actual_var_path = root_path.join(SHARED_VAR_PATH);
     create_dir_all(&actual_var_path)?;
 
-    symlink(Path::new("../../os/fedora/var"), state_path.join("var"))
-        .context("Failed to create symlink for /var")?;
+    symlink(
+        path_relative_to(state_path.as_std_path(), actual_var_path.as_std_path())
+            .context("Getting var symlink path")?,
+        state_path.join("var"),
+    )
+    .context("Failed to create symlink for /var")?;
 
     let ImageReference {
         image: image_name,
@@ -2008,25 +2220,38 @@ pub(crate) fn write_composefs_state(
         .section(ORIGIN_KEY_BOOT)
         .item(ORIGIN_KEY_BOOT_TYPE, boot_type);
 
-    let mut origin_file =
-        std::fs::File::create(state_path.join(format!("{}.origin", deployment_id.to_hex())))
-            .context("Failed to open .origin file")?;
+    if let Some(boot_digest) = boot_digest {
+        config = config
+            .section(ORIGIN_KEY_BOOT)
+            .item(ORIGIN_KEY_BOOT_DIGEST, boot_digest);
+    }
 
-    origin_file
-        .write(config.to_string().as_bytes())
+    let state_dir = cap_std::fs::Dir::open_ambient_dir(&state_path, cap_std::ambient_authority())
+        .context("Opening state dir")?;
+
+    state_dir
+        .atomic_write(
+            format!("{}.origin", deployment_id.to_hex()),
+            config.to_string().as_bytes(),
+        )
         .context("Falied to write to .origin file")?;
 
     if staged {
         std::fs::create_dir_all(COMPOSEFS_TRANSIENT_STATE_DIR)
             .with_context(|| format!("Creating {COMPOSEFS_TRANSIENT_STATE_DIR}"))?;
 
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .open(COMPOSEFS_STAGED_DEPLOYMENT_PATH)
-            .context("Opening staged-deployment file")?;
+        let staged_depl_dir = cap_std::fs::Dir::open_ambient_dir(
+            COMPOSEFS_TRANSIENT_STATE_DIR,
+            cap_std::ambient_authority(),
+        )
+        .with_context(|| format!("Opening {COMPOSEFS_TRANSIENT_STATE_DIR}"))?;
 
-        file.write_all(deployment_id.to_hex().as_bytes())?;
+        staged_depl_dir
+            .atomic_write(
+                COMPOSEFS_STAGED_DEPLOYMENT_FNAME,
+                deployment_id.to_hex().as_bytes(),
+            )
+            .with_context(|| format!("Writing to {COMPOSEFS_STAGED_DEPLOYMENT_FNAME}"))?;
     }
 
     Ok(())
