@@ -26,8 +26,7 @@ use ostree_ext::tokio_util::spawn_blocking_cancellable_flatten;
 use rustix::fs::{fsync, renameat_with, AtFlags, RenameFlags};
 
 use crate::composefs_consts::{
-    BOOT_LOADER_ENTRIES, ROLLBACK_BOOT_LOADER_ENTRIES, USER_CFG,
-    USER_CFG_ROLLBACK,
+    BOOT_LOADER_ENTRIES, ROLLBACK_BOOT_LOADER_ENTRIES, USER_CFG, USER_CFG_ROLLBACK,
 };
 use crate::install::{get_efi_uuid_source, BootType};
 use crate::parsers::bls_config::{parse_bls_config, BLSConfig};
@@ -1183,6 +1182,10 @@ pub(crate) fn fixup_etc_fstab(root: &Dir) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
+    use crate::parsers::grub_menuconfig::MenuentryBody;
+
     use super::*;
 
     #[test]
@@ -1275,6 +1278,121 @@ UUID=6907-17CA          /boot/efi               vfat    umask=0077,shortname=win
         tempdir.atomic_write("etc/fstab", default)?;
         fixup_etc_fstab(&tempdir).unwrap();
         assert_eq!(tempdir.read_to_string("etc/fstab")?, modified);
+        Ok(())
+    }
+
+    #[test]
+    fn test_sorted_bls_boot_entries() -> Result<()> {
+        let tempdir = cap_std_ext::cap_tempfile::tempdir(cap_std::ambient_authority())?;
+
+        let entry1 = r#"
+            title Fedora 42.20250623.3.1 (CoreOS)
+            version 1
+            linux /boot/7e11ac46e3e022053e7226a20104ac656bf72d1a84e3a398b7cce70e9df188b6/vmlinuz-5.14.10
+            initrd /boot/7e11ac46e3e022053e7226a20104ac656bf72d1a84e3a398b7cce70e9df188b6/initramfs-5.14.10.img
+            options root=UUID=abc123 rw composefs=7e11ac46e3e022053e7226a20104ac656bf72d1a84e3a398b7cce70e9df188b6
+        "#;
+
+        let entry2 = r#"
+            title Fedora 41.20250214.2.0 (CoreOS)
+            version 2
+            linux /boot/febdf62805de2ae7b6b597f2a9775d9c8a753ba1e5f09298fc8fbe0b0d13bf01/vmlinuz-5.14.10
+            initrd /boot/febdf62805de2ae7b6b597f2a9775d9c8a753ba1e5f09298fc8fbe0b0d13bf01/initramfs-5.14.10.img
+            options root=UUID=abc123 rw composefs=febdf62805de2ae7b6b597f2a9775d9c8a753ba1e5f09298fc8fbe0b0d13bf01
+        "#;
+
+        tempdir.create_dir_all("loader/entries")?;
+        tempdir.atomic_write(
+            "loader/entries/random_file.txt",
+            "Random file that we won't parse",
+        )?;
+        tempdir.atomic_write("loader/entries/entry1.conf", entry1)?;
+        tempdir.atomic_write("loader/entries/entry2.conf", entry2)?;
+
+        let result = get_sorted_bls_boot_entries(&tempdir, true);
+
+        let mut expected = vec![
+            BLSConfig {
+                title: Some("Fedora 42.20250623.3.1 (CoreOS)".into()),
+                version: 1,
+                linux: "/boot/7e11ac46e3e022053e7226a20104ac656bf72d1a84e3a398b7cce70e9df188b6/vmlinuz-5.14.10".into(),
+                initrd: "/boot/7e11ac46e3e022053e7226a20104ac656bf72d1a84e3a398b7cce70e9df188b6/initramfs-5.14.10.img".into(),
+                options: "root=UUID=abc123 rw composefs=7e11ac46e3e022053e7226a20104ac656bf72d1a84e3a398b7cce70e9df188b6".into(),
+                extra: HashMap::new(),
+            },
+            BLSConfig {
+                title: Some("Fedora 41.20250214.2.0 (CoreOS)".into()),
+                version: 2,
+                linux: "/boot/febdf62805de2ae7b6b597f2a9775d9c8a753ba1e5f09298fc8fbe0b0d13bf01/vmlinuz-5.14.10".into(),
+                initrd: "/boot/febdf62805de2ae7b6b597f2a9775d9c8a753ba1e5f09298fc8fbe0b0d13bf01/initramfs-5.14.10.img".into(),
+                options: "root=UUID=abc123 rw composefs=febdf62805de2ae7b6b597f2a9775d9c8a753ba1e5f09298fc8fbe0b0d13bf01".into(),
+                extra: HashMap::new(),
+            },
+        ];
+
+        assert_eq!(result.unwrap(), expected);
+
+        let result = get_sorted_bls_boot_entries(&tempdir, false);
+        expected.reverse();
+        assert_eq!(result.unwrap(), expected);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_sorted_uki_boot_entries() -> Result<()> {
+        let user_cfg = r#"
+            if [ -f ${config_directory}/efiuuid.cfg ]; then
+                    source ${config_directory}/efiuuid.cfg
+            fi
+
+            menuentry "Fedora Bootc UKI: (f7415d75017a12a387a39d2281e033a288fc15775108250ef70a01dcadb93346)" {
+                insmod fat
+                insmod chain
+                search --no-floppy --set=root --fs-uuid "${EFI_PART_UUID}"
+                chainloader /EFI/Linux/f7415d75017a12a387a39d2281e033a288fc15775108250ef70a01dcadb93346.efi
+            }
+
+            menuentry "Fedora Bootc UKI: (7e11ac46e3e022053e7226a20104ac656bf72d1a84e3a398b7cce70e9df188b6)" {
+                insmod fat
+                insmod chain
+                search --no-floppy --set=root --fs-uuid "${EFI_PART_UUID}"
+                chainloader /EFI/Linux/7e11ac46e3e022053e7226a20104ac656bf72d1a84e3a398b7cce70e9df188b6.efi
+            }
+        "#;
+
+        let bootdir = cap_std_ext::cap_tempfile::tempdir(cap_std::ambient_authority())?;
+        bootdir.create_dir_all(format!("grub2"))?;
+        bootdir.atomic_write(format!("grub2/{USER_CFG}"), user_cfg)?;
+
+        let mut s = String::new();
+        let result = get_sorted_uki_boot_entries(&bootdir, &mut s)?;
+
+        let expected = vec![
+            MenuEntry {
+                title: "Fedora Bootc UKI: (f7415d75017a12a387a39d2281e033a288fc15775108250ef70a01dcadb93346)".into(),
+                body: MenuentryBody {
+                    insmod: vec!["fat", "chain"],
+                    chainloader: "/EFI/Linux/f7415d75017a12a387a39d2281e033a288fc15775108250ef70a01dcadb93346.efi".into(),
+                    search: "--no-floppy --set=root --fs-uuid \"${EFI_PART_UUID}\"",
+                    version: 0,
+                    extra: vec![],
+                },
+            },
+            MenuEntry {
+                title: "Fedora Bootc UKI: (7e11ac46e3e022053e7226a20104ac656bf72d1a84e3a398b7cce70e9df188b6)".into(),
+                body: MenuentryBody {
+                    insmod: vec!["fat", "chain"],
+                    chainloader: "/EFI/Linux/7e11ac46e3e022053e7226a20104ac656bf72d1a84e3a398b7cce70e9df188b6.efi".into(),
+                    search: "--no-floppy --set=root --fs-uuid \"${EFI_PART_UUID}\"",
+                    version: 0,
+                    extra: vec![],
+                },
+            },
+        ];
+
+        assert_eq!(result, expected);
+
         Ok(())
     }
 }

@@ -11,11 +11,11 @@ use nom::{
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct MenuentryBody<'a> {
-    insmod: Vec<&'a str>,
+    pub(crate) insmod: Vec<&'a str>,
     pub(crate) chainloader: String,
-    search: &'a str,
-    version: u8,
-    extra: Vec<(&'a str, &'a str)>,
+    pub(crate) search: &'a str,
+    pub(crate) version: u8,
+    pub(crate) extra: Vec<(&'a str, &'a str)>,
 }
 
 impl<'a> Display for MenuentryBody<'a> {
