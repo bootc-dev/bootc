@@ -26,7 +26,8 @@ use ostree_ext::tokio_util::spawn_blocking_cancellable_flatten;
 use rustix::fs::{fsync, renameat_with, AtFlags, RenameFlags};
 
 use crate::composefs_consts::{
-    BOOT_LOADER_ENTRIES, ROLLBACK_BOOT_LOADER_ENTRIES, USER_CFG, USER_CFG_ROLLBACK,
+    BOOT_LOADER_ENTRIES, ROLLBACK_BOOT_LOADER_ENTRIES, USER_CFG,
+    USER_CFG_ROLLBACK,
 };
 use crate::install::{get_efi_uuid_source, BootType};
 use crate::parsers::bls_config::{parse_bls_config, BLSConfig};
@@ -752,8 +753,11 @@ pub(crate) fn rollback_composefs_uki() -> Result<()> {
     let user_cfg_path = PathBuf::from("/sysroot/boot/grub2");
 
     let mut str = String::new();
+    let boot_dir =
+        cap_std::fs::Dir::open_ambient_dir("/sysroot/boot", cap_std::ambient_authority())
+            .context("Opening boot dir")?;
     let mut menuentries =
-        get_sorted_uki_boot_entries(&mut str).context("Getting UKI boot entries")?;
+        get_sorted_uki_boot_entries(&boot_dir, &mut str).context("Getting UKI boot entries")?;
 
     // TODO(Johan-Liebert): Currently assuming there are only two deployments
     assert!(menuentries.len() == 2);
@@ -800,17 +804,25 @@ pub(crate) fn rollback_composefs_uki() -> Result<()> {
 }
 
 // Need str to store lifetime
-pub(crate) fn get_sorted_uki_boot_entries<'a>(str: &'a mut String) -> Result<Vec<MenuEntry<'a>>> {
-    let mut file = std::fs::File::open(format!("/sysroot/boot/grub2/{USER_CFG}"))?;
+pub(crate) fn get_sorted_uki_boot_entries<'a>(
+    boot_dir: &Dir,
+    str: &'a mut String,
+) -> Result<Vec<MenuEntry<'a>>> {
+    let mut file = boot_dir
+        .open(format!("grub2/{USER_CFG}"))
+        .with_context(|| format!("Opening {USER_CFG}"))?;
     file.read_to_string(str)?;
     parse_grub_menuentry_file(str)
 }
 
-#[context("Getting boot entries")]
-pub(crate) fn get_sorted_bls_boot_entries(ascending: bool) -> Result<Vec<BLSConfig>> {
+#[context("Getting sorted BLS entries")]
+pub(crate) fn get_sorted_bls_boot_entries(
+    boot_dir: &Dir,
+    ascending: bool,
+) -> Result<Vec<BLSConfig>> {
     let mut all_configs = vec![];
 
-    for entry in std::fs::read_dir(format!("/sysroot/boot/loader/{BOOT_LOADER_ENTRIES}"))? {
+    for entry in boot_dir.read_dir(format!("loader/{BOOT_LOADER_ENTRIES}"))? {
         let entry = entry?;
 
         let file_name = entry.file_name();
@@ -823,8 +835,13 @@ pub(crate) fn get_sorted_bls_boot_entries(ascending: bool) -> Result<Vec<BLSConf
             continue;
         }
 
-        let contents = std::fs::read_to_string(&entry.path())
-            .with_context(|| format!("Failed to read {:?}", entry.path()))?;
+        let mut file = entry
+            .open()
+            .with_context(|| format!("Failed to open {:?}", file_name))?;
+
+        let mut contents = String::new();
+        file.read_to_string(&mut contents)
+            .with_context(|| format!("Failed to read {:?}", file_name))?;
 
         let config = parse_bls_config(&contents).context("Parsing bls config")?;
 
@@ -838,11 +855,15 @@ pub(crate) fn get_sorted_bls_boot_entries(ascending: bool) -> Result<Vec<BLSConf
 
 #[context("Rolling back BLS")]
 pub(crate) fn rollback_composefs_bls() -> Result<()> {
+    let boot_dir =
+        cap_std::fs::Dir::open_ambient_dir("/sysroot/boot", cap_std::ambient_authority())
+            .context("Opening boot dir")?;
+
     // Sort in descending order as that's the order they're shown on the boot screen
     // After this:
     // all_configs[0] -> booted depl
     // all_configs[1] -> rollback depl
-    let mut all_configs = get_sorted_bls_boot_entries(false)?;
+    let mut all_configs = get_sorted_bls_boot_entries(&boot_dir, false)?;
 
     // Update the indicies so that they're swapped
     for (idx, cfg) in all_configs.iter_mut().enumerate() {
