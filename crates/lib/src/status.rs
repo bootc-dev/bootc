@@ -144,10 +144,14 @@ fn boot_entry_from_deployment(
         (None, CachedImageStatus::default(), false)
     };
 
+    let soft_reboot_capable =
+        ostree_ext::systemd_has_soft_reboot() && sysroot.deployment_can_soft_reboot(deployment);
+
     let r = BootEntry {
         image,
         cached_update,
         incompatible,
+        soft_reboot_capable,
         store,
         pinned: deployment.is_pinned(),
         ostree: Some(crate::spec::BootEntryOstree {
@@ -228,17 +232,17 @@ pub(crate) fn get_status(
         other,
     };
 
+    let booted = booted_deployment
+        .as_ref()
+        .map(|d| boot_entry_from_deployment(sysroot, d))
+        .transpose()
+        .context("Booted deployment")?;
     let staged = deployments
         .staged
         .as_ref()
         .map(|d| boot_entry_from_deployment(sysroot, d))
         .transpose()
         .context("Staged deployment")?;
-    let booted = booted_deployment
-        .as_ref()
-        .map(|d| boot_entry_from_deployment(sysroot, d))
-        .transpose()
-        .context("Booted deployment")?;
     let rollback = deployments
         .rollback
         .as_ref()
@@ -463,6 +467,18 @@ fn human_render_slot(
                 }
             }
         }
+
+        // Show soft-reboot capability
+        write_row_name(&mut out, "Soft-reboot capable", prefix_len)?;
+        writeln!(
+            out,
+            "{}",
+            if entry.soft_reboot_capable {
+                "yes"
+            } else {
+                "no"
+            }
+        )?;
     }
 
     tracing::debug!("pinned={}", entry.pinned);
@@ -500,6 +516,18 @@ fn human_render_slot_ostree(
         if let Some(ostree) = &entry.ostree {
             render_verbose_ostree_info(&mut out, ostree, slot, prefix_len)?;
         }
+
+        // Show soft-reboot capability
+        write_row_name(&mut out, "Soft-reboot capable", prefix_len)?;
+        writeln!(
+            out,
+            "{}",
+            if entry.soft_reboot_capable {
+                "yes"
+            } else {
+                "no"
+            }
+        )?;
     }
 
     tracing::debug!("pinned={}", entry.pinned);
@@ -721,5 +749,6 @@ mod tests {
         assert!(w.contains("Deploy serial:"));
         assert!(w.contains("Staged:"));
         assert!(w.contains("Commit:"));
+        assert!(w.contains("Soft-reboot capable:"));
     }
 }

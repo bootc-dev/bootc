@@ -493,6 +493,8 @@ pub(crate) enum InternalsOpts {
     /// Initiate a reboot the same way we would after --apply; intended
     /// primarily for testing.
     Reboot,
+    /// Check if soft reboot should be performed and prepare if needed
+    PrepareSoftReboot,
     #[cfg(feature = "rhsm")]
     /// Publish subscription-manager facts to /etc/rhsm/facts/bootc.facts
     PublishRhsmFacts,
@@ -562,7 +564,7 @@ pub(crate) enum Opt {
         Note on Rollbacks and the `/etc` Directory:
 
         When you perform a rollback (e.g., with `bootc rollback`), any
-        changes made to files in the `/etc` directory won’t carry over
+        changes made to files in the `/etc` directory won't carry over
         to the rolled-back deployment.  The `/etc` files will revert
         to their state from that previous deployment instead.
 
@@ -738,6 +740,59 @@ pub(crate) fn require_root(is_container: bool) -> Result<()> {
 
     tracing::trace!("Verified uid 0 with CAP_SYS_ADMIN");
 
+    Ok(())
+}
+
+/// Check if a deployment can perform a soft reboot
+fn can_perform_soft_reboot(deployment: Option<&crate::spec::BootEntry>) -> bool {
+    deployment.map(|d| d.soft_reboot_capable).unwrap_or(false)
+}
+
+/// If there is staged deployment, check if soft reboot is possible and perform it if possible and return true
+/// else return false
+fn should_soft_reboot(
+    sysroot: &crate::store::Storage,
+    booted_deployment: Option<&ostree::Deployment>,
+) -> Result<bool> {
+    // Get updated status to check for soft-reboot capability
+    let (_deployments, updated_host) = crate::status::get_status(sysroot, booted_deployment)?;
+
+    // Check if there's a staged deployment that can perform soft reboot
+    if can_perform_soft_reboot(updated_host.status.staged.as_ref()) {
+        soft_reboot_staged(sysroot)?;
+        return Ok(true);
+    }
+    // TODO check if this reboot is doing a rollback...
+    // TODO then perform a soft reboot for the rollback deployment
+    Ok(false)
+}
+
+/// Prepare and execute a soft reboot for the given deployment
+#[context("Preparing soft reboot")]
+fn prepare_soft_reboot(
+    sysroot: &crate::store::Storage,
+    deployment: &ostree::Deployment,
+) -> Result<()> {
+    let cancellable = ostree::gio::Cancellable::NONE;
+    sysroot
+        .sysroot
+        .deployment_set_soft_reboot(deployment, false, cancellable)
+        .context("Failed to prepare soft-reboot")?;
+    Ok(())
+}
+
+/// Perform a soft reboot for a staged deployment
+#[context("Soft reboot staged deployment")]
+fn soft_reboot_staged(sysroot: &crate::store::Storage) -> Result<()> {
+    println!("Staged deployment is soft-reboot capable, performing soft-reboot...");
+
+    let deployments_list = sysroot.deployments();
+    let staged_deployment = deployments_list
+        .iter()
+        .find(|d| d.is_staged())
+        .ok_or_else(|| anyhow::anyhow!("Failed to find staged deployment"))?;
+
+    prepare_soft_reboot(sysroot, staged_deployment)?;
     Ok(())
 }
 
@@ -1269,6 +1324,17 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
                 crate::cfsctl::run_from_iter(sysroot, args.iter()).await
             }
             InternalsOpts::Reboot => crate::reboot::reboot(),
+            InternalsOpts::PrepareSoftReboot => {
+                let sysroot = &get_storage().await?;
+                let booted_deployment = sysroot.booted_deployment();
+                let should_perform = should_soft_reboot(sysroot, booted_deployment.as_ref())?;
+                if should_perform {
+                    println!("Soft reboot preparation completed");
+                } else {
+                    println!("Soft reboot not needed");
+                }
+                Ok(())
+            }
             InternalsOpts::Fsck => {
                 let sysroot = &get_storage().await?;
                 crate::fsck::fsck(&sysroot, std::io::stdout().lock()).await?;
