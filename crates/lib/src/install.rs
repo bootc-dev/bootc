@@ -2126,13 +2126,9 @@ pub(crate) fn write_composefs_state(
         std::fs::create_dir_all(COMPOSEFS_TRANSIENT_STATE_DIR)
             .with_context(|| format!("Creating {COMPOSEFS_TRANSIENT_STATE_DIR}"))?;
 
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .open(COMPOSEFS_STAGED_DEPLOYMENT_PATH)
-            .context("Opening staged-deployment file")?;
-
-        file.write_all(deployment_id.to_hex().as_bytes())?;
+        let buf = deployment_id.to_hex();
+        std::fs::write(COMPOSEFS_STAGED_DEPLOYMENT_PATH, buf)
+            .with_context(|| format!("Writing {COMPOSEFS_STAGED_DEPLOYMENT_PATH}"))?;
     }
 
     Ok(())
