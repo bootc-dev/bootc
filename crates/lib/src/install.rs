@@ -1559,8 +1559,7 @@ async fn initialize_composefs_repository(
 fn get_booted_bls() -> Result<BLSConfig> {
     let cmdline = crate::kernel::Cmdline::from_proc()?;
     let booted = cmdline
-        .iter()
-        .find(|x| x.key == b"composefs")
+        .find("composefs")
         .ok_or_else(|| anyhow::anyhow!("Failed to find composefs parameter in kernel cmdline"))?;
 
     for entry in std::fs::read_dir("/sysroot/boot/loader/entries")? {

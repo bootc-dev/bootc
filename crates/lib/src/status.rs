@@ -393,8 +393,7 @@ async fn boot_entry_from_composefs_deployment(
 pub(crate) async fn composefs_deployment_status() -> Result<Host> {
     let cmdline = crate::kernel::Cmdline::from_proc()?;
     let composefs_arg = cmdline
-        .iter()
-        .find(|x| x.key == b"composefs")
+        .find("composefs")
         .ok_or_else(|| anyhow::anyhow!("Failed to find composefs parameter in kernel cmdline"))?;
     let booted_image_verity = composefs_arg
         .value
