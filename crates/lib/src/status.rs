@@ -398,7 +398,7 @@ pub(crate) async fn composefs_deployment_status() -> Result<Host> {
         .ok_or_else(|| anyhow::anyhow!("Failed to find composefs parameter in kernel cmdline"))?;
     let booted_image_verity = composefs_arg
         .value
-        .and_then(|v| str::from_utf8(v).ok())
+        .and_then(|v| std::str::from_utf8(v).ok())
         .ok_or_else(|| anyhow::anyhow!("Missing value for composefs"))?;
 
     let sysroot = cap_std::fs::Dir::open_ambient_dir("/sysroot", cap_std::ambient_authority())
