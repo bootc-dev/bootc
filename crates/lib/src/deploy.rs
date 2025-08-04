@@ -25,6 +25,7 @@ use ostree_ext::tokio_util::spawn_blocking_cancellable_flatten;
 use rustix::fs::{fsync, renameat_with, AtFlags, RenameFlags};
 
 use crate::bls_config::{parse_bls_config, BLSConfig};
+#[allow(unused_imports)]
 use crate::install::{get_efi_uuid_source, get_user_config, BootType};
 use crate::progress_jsonl::{Event, ProgressWriter, SubTaskBytes, SubTaskStep};
 use crate::spec::ImageReference;
@@ -743,40 +744,41 @@ pub(crate) async fn stage(
 }
 
 #[context("Rolling back UKI")]
-pub(crate) fn rollback_composefs_uki(current: &BootEntry, rollback: &BootEntry) -> Result<()> {
-    let user_cfg_name = "grub2/user.cfg.staged";
-    let user_cfg_path = PathBuf::from("boot").join(user_cfg_name);
-    let sysroot = &Dir::open_ambient_dir("/sysroot", cap_std::ambient_authority())?;
+pub(crate) fn rollback_composefs_uki(_current: &BootEntry, _rollback: &BootEntry) -> Result<()> {
+    unimplemented!()
+    // let user_cfg_name = "grub2/user.cfg.staged";
+    // let user_cfg_path = PathBuf::from("boot").join(user_cfg_name);
+    // let sysroot = &Dir::open_ambient_dir("/sysroot", cap_std::ambient_authority())?;
 
-    let efi_uuid_source = get_efi_uuid_source();
+    // let efi_uuid_source = get_efi_uuid_source();
 
-    let rollback_verity = if let Some(composefs) = &rollback.composefs {
-        composefs.verity.clone()
-    } else {
-        // Shouldn't really happen
-        anyhow::bail!("Verity not found for rollback deployment")
-    };
-    let rollback_config = get_user_config(todo!(), &rollback_verity).as_bytes();
+    // let rollback_verity = if let Some(composefs) = &rollback.composefs {
+    //     composefs.verity.clone()
+    // } else {
+    //     // Shouldn't really happen
+    //     anyhow::bail!("Verity not found for rollback deployment")
+    // };
+    // let rollback_config = get_user_config(todo!(), &rollback_verity).as_bytes();
 
-    let current_verity = if let Some(composefs) = &current.composefs {
-        composefs.verity.clone()
-    } else {
-        // Shouldn't really happen
-        anyhow::bail!("Verity not found for booted deployment")
-    };
-    let current_config = get_user_config(todo!(), &current_verity).as_bytes();
+    // let current_verity = if let Some(composefs) = &current.composefs {
+    //     composefs.verity.clone()
+    // } else {
+    //     // Shouldn't really happen
+    //     anyhow::bail!("Verity not found for booted deployment")
+    // };
+    // let current_config = get_user_config(todo!(), &current_verity).as_bytes();
 
-    // TODO: Need to check if user.cfg.staged exists
-    sysroot
-        .atomic_replace_with(user_cfg_path, |w| {
-            write!(w, "{efi_uuid_source}")?;
-            w.write_all(rollback_config)?;
-            w.write_all(current_config)?;
-            Ok(())
-        })
-        .with_context(|| format!("Writing {user_cfg_name}"))?;
+    // // TODO: Need to check if user.cfg.staged exists
+    // sysroot
+    //     .atomic_replace_with(user_cfg_path, |w| {
+    //         write!(w, "{efi_uuid_source}")?;
+    //         w.write_all(rollback_config)?;
+    //         w.write_all(current_config)?;
+    //         Ok(())
+    //     })
+    //     .with_context(|| format!("Writing {user_cfg_name}"))?;
 
-    Ok(())
+    // Ok(())
 }
 
 /// Filename for `loader/entries`

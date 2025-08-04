@@ -1647,9 +1647,9 @@ pub(crate) fn setup_composefs_bls_boot(
     let boot_dir = root_path.join("boot");
 
     let bls_config = match &entry {
-        ComposefsBootEntry::Type1(..) => todo!(),
-        ComposefsBootEntry::Type2(..) => todo!(),
-        ComposefsBootEntry::UsrLibModulesUki(..) => todo!(),
+        ComposefsBootEntry::Type1(..) => unimplemented!(),
+        ComposefsBootEntry::Type2(..) => unimplemented!(),
+        ComposefsBootEntry::UsrLibModulesUki(..) => unimplemented!(),
 
         ComposefsBootEntry::UsrLibModulesVmLinuz(usr_lib_modules_vmlinuz) => {
             // Write the initrd and vmlinuz at /boot/<id>/
@@ -1829,9 +1829,9 @@ pub(crate) fn setup_composefs_uki_boot(
         .run()?;
 
     let boot_label = match entry {
-        ComposefsBootEntry::Type1(..) => todo!(),
-        ComposefsBootEntry::UsrLibModulesUki(..) => todo!(),
-        ComposefsBootEntry::UsrLibModulesVmLinuz(..) => todo!(),
+        ComposefsBootEntry::Type1(..) => unimplemented!(),
+        ComposefsBootEntry::UsrLibModulesUki(..) => unimplemented!(),
+        ComposefsBootEntry::UsrLibModulesVmLinuz(..) => unimplemented!(),
 
         ComposefsBootEntry::Type2(type2_entry) => {
             let uki = read_file(&type2_entry.file, &repo).context("Reading UKI")?;
