@@ -26,7 +26,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{anyhow, ensure, Context, Result};
-use baseline::{DPS_UUID, ESP_GUID};
 use bootc_blockdev::{find_parent_devices, PartitionTable};
 use bootc_utils::CommandRunExt;
 use camino::Utf8Path;
@@ -104,6 +103,8 @@ const SELINUXFS: &str = "/sys/fs/selinux";
 /// The mount path for uefi
 const EFIVARFS: &str = "/sys/firmware/efi/efivars";
 pub(crate) const ARCH_USES_EFI: bool = cfg!(any(target_arch = "x86_64", target_arch = "aarch64"));
+pub(crate) const ESP_GUID: &str = "C12A7328-F81F-11D2-BA4B-00A0C93EC93B";
+pub(crate) const DPS_UUID: &str = "6523f8ae-3eb1-4e2a-a05a-18b695ae656f";
 
 const DEFAULT_REPO_CONFIG: &[(&str, &str)] = &[
     // Default to avoiding grub2-mkconfig etc.
@@ -615,6 +616,7 @@ impl FromStr for MountSpec {
     }
 }
 
+#[cfg(feature = "install-to-disk")]
 impl InstallToDiskOpts {
     pub(crate) fn validate(&self) -> Result<()> {
         if !self.composefs_native {
