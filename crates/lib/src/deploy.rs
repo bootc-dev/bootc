@@ -745,35 +745,36 @@ pub(crate) async fn stage(
 #[context("Rolling back UKI")]
 pub(crate) fn rollback_composefs_uki(current: &BootEntry, rollback: &BootEntry) -> Result<()> {
     let user_cfg_name = "grub2/user.cfg.staged";
-    let user_cfg_path = PathBuf::from("/sysroot/boot").join(user_cfg_name);
+    let user_cfg_path = PathBuf::from("boot").join(user_cfg_name);
+    let sysroot = &Dir::open_ambient_dir("/sysroot", cap_std::ambient_authority())?;
 
     let efi_uuid_source = get_efi_uuid_source();
 
-    // TODO: Need to check if user.cfg.staged exists
-    let mut usr_cfg = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(user_cfg_path)
-        .with_context(|| format!("Opening {user_cfg_name}"))?;
-
-    usr_cfg.write(efi_uuid_source.as_bytes())?;
-
-    let verity = if let Some(composefs) = &rollback.composefs {
+    let rollback_verity = if let Some(composefs) = &rollback.composefs {
         composefs.verity.clone()
     } else {
         // Shouldn't really happen
         anyhow::bail!("Verity not found for rollback deployment")
     };
-    usr_cfg.write(get_user_config(todo!(), &verity).as_bytes())?;
+    let rollback_config = get_user_config(todo!(), &rollback_verity).as_bytes();
 
-    let verity = if let Some(composefs) = &current.composefs {
+    let current_verity = if let Some(composefs) = &current.composefs {
         composefs.verity.clone()
     } else {
         // Shouldn't really happen
         anyhow::bail!("Verity not found for booted deployment")
     };
-    usr_cfg.write(get_user_config(todo!(), &verity).as_bytes())?;
+    let current_config = get_user_config(todo!(), &current_verity).as_bytes();
+
+    // TODO: Need to check if user.cfg.staged exists
+    sysroot
+        .atomic_replace_with(user_cfg_path, |w| {
+            write!(w, "{efi_uuid_source}")?;
+            w.write_all(rollback_config)?;
+            w.write_all(current_config)?;
+            Ok(())
+        })
+        .with_context(|| format!("Writing {user_cfg_name}"))?;
 
     Ok(())
 }
