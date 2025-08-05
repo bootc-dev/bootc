@@ -914,6 +914,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5692dd7b5a1978a5aeb0ce83b7655c58ca8efdcb79d21036ea249da95afec2c6"
 
 [[package]]
+name = "etc-merge"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "cap-std-ext",
+ "hex",
+ "openssl",
+ "rustix 1.0.3",
+]
+
+[[package]]
 name = "fastrand"
 version = "2.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
