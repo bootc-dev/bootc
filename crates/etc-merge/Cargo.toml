@@ -1,0 +1,14 @@
+[package]
+name = "etc-merge"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = { workspace = true }
+cap-std-ext = { workspace = true }
+rustix = { workspace = true }
+openssl = { workspace = true }
+hex = { workspace = true }
+
+[lints]
+workspace = true
