@@ -9,6 +9,8 @@ cap-std-ext = { workspace = true }
 rustix = { workspace = true }
 openssl = { workspace = true }
 hex = { workspace = true }
+tracing = { workspace = true }
+composefs = { workspace = true }
 
 [lints]
 workspace = true

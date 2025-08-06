@@ -2,11 +2,13 @@
 
 #![allow(dead_code)]
 
+use std::io::BufReader;
 use std::{collections::BTreeMap, io::Read, path::PathBuf};
 
 use anyhow::Context;
 use cap_std_ext::cap_std;
-use cap_std_ext::cap_std::fs::{Dir as CapStdDir, MetadataExt, PermissionsExt};
+use cap_std_ext::cap_std::fs::{Dir as CapStdDir, PermissionsExt};
+use composefs::fsverity::{FsVerityHashValue, Sha256HashValue};
 use openssl::hash::DigestBytes;
 use rustix::fs::readlinkat;
 
@@ -14,13 +16,15 @@ use rustix::fs::readlinkat;
 struct Metadata {
     content_hash: String,
     metadata_hash: String,
+    verity: Option<String>,
 }
 
 impl Metadata {
-    fn new(content_hash: String, metadata_hash: String) -> Self {
+    fn new(content_hash: String, metadata_hash: String, verity: Option<String>) -> Self {
         Self {
             content_hash,
             metadata_hash,
+            verity,
         }
     }
 }
@@ -75,6 +79,26 @@ fn compute_diff(
             added.push(current_file);
             continue;
         };
+
+        match (&current_meta.verity, &old_meta.verity) {
+            (Some(v1), Some(v2)) => {
+                if v1 != v2 {
+                    modified.push(current_file.clone());
+                    pristine_etc_files.remove(&current_file);
+                    continue;
+                }
+            }
+
+            (None, None) => {
+                // No verity enabled for files, so we move forward to checking metadata + content
+                // checksum
+            }
+
+            // This has to be some kind of error?
+            (None, Some(_)) | (Some(_), None) => {
+                anyhow::bail!("File did not have fs-verity now it does or vice-versa")
+            }
+        }
 
         if old_meta.metadata_hash != current_meta.metadata_hash
             || old_meta.content_hash != current_meta.content_hash
@@ -134,7 +158,12 @@ fn recurse_dir(dir: &CapStdDir, mut path: PathBuf, list: &mut Map) -> anyhow::Re
 
             list.insert(
                 path.clone(),
-                Metadata::new("".into(), hex::encode(compute_metadata_hash(&metadata)?)),
+                Metadata::new(
+                    "".into(),
+                    hex::encode(compute_metadata_hash(&metadata)?),
+                    // fs-verity is not enabled for directories
+                    None,
+                ),
             );
 
             recurse_dir(&dir, path.clone(), list).context(format!("Recursing {path:?}"))?;
@@ -143,27 +172,42 @@ fn recurse_dir(dir: &CapStdDir, mut path: PathBuf, list: &mut Map) -> anyhow::Re
             continue;
         }
 
-        let buf = if entry_type.is_symlink() {
+        // TODO: Another generic here but constrained to Sha256HashValue
+        // Regarding this, we'll definitely get DigestMismatch error if SHA512 is being used
+        let measured_verity =
+            composefs::fsverity::measure_verity_opt::<Sha256HashValue>(entry.open()?)?;
+
+        if let Some(measured_verity) = measured_verity {
+            list.insert(
+                path.clone(),
+                Metadata::new("".into(), "".into(), Some(measured_verity.to_hex())),
+            );
+
+            path.pop();
+
+            // file has fs-verity enabled. We don't need to check the content/metadata
+            continue;
+        }
+
+        let mut hasher = openssl::hash::Hasher::new(openssl::hash::MessageDigest::sha256())?;
+
+        if entry_type.is_symlink() {
             let readlinkat_result = readlinkat(&dir, &entry_name, vec![])
                 .context(format!("readlinkat {entry_name:?}"))?;
 
-            readlinkat_result.into()
+            hasher.update(readlinkat_result.as_bytes())?;
         } else if entry_type.is_file() {
-            let mut buf = vec![0u8; entry.metadata()?.size() as usize];
+            let file = entry.open().context(format!("Opening entry {path:?}"))?;
+            let mut reader = BufReader::new(file);
 
-            let mut file = entry.open().context(format!("Opening entry {path:?}"))?;
-            file.read_exact(&mut buf)
-                .context(format!("Reading {path:?}. Buf: {buf:?}"))?;
-
-            buf
+            std::io::copy(&mut reader, &mut hasher)?;
         } else {
             // We cannot read any other device like socket, pipe, fifo.
             // We shouldn't really find these in /etc in the first place
-            unimplemented!("Found file of type {:?}", entry_type)
+            tracing::debug!("Ignoring non-regular/non-symlink file: {:?}", path);
+            continue;
         };
 
-        let mut hasher = openssl::hash::Hasher::new(openssl::hash::MessageDigest::sha256())?;
-        hasher.update(&buf)?;
         let content_digest = hex::encode(hasher.finish()?);
 
         let meta = entry
@@ -172,7 +216,11 @@ fn recurse_dir(dir: &CapStdDir, mut path: PathBuf, list: &mut Map) -> anyhow::Re
 
         list.insert(
             path.clone(),
-            Metadata::new(content_digest, hex::encode(compute_metadata_hash(&meta)?)),
+            Metadata::new(
+                content_digest,
+                hex::encode(compute_metadata_hash(&meta)?),
+                None,
+            ),
         );
 
         path.pop();
