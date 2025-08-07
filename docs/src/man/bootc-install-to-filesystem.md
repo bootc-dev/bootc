@@ -34,24 +34,12 @@ is currently expected to be empty by default.
 
     If not provided, the UUID of the target filesystem will be used.
 
-    If the value is empty, i.e. passing `--root-mount-spec=`, the mount
-    spec kernel argument will be ommited entirely.
-    In this case the initramfs must have another way to find the rootfs,
-    such as a partition label or follow the Discoverable Partition
-    Specification.
-
 **\--boot-mount-spec**=*BOOT_MOUNT_SPEC*
 
 :   Mount specification for the /boot filesystem.
 
     This is optional. If \`/boot\` is detected as a mounted partition,
     then its UUID will be used.
-
-    If the value is empty, i.e. passing `--boot-mount-spec=`, the mount
-    spec kernel argument will be ommited entirely.
-    In this case the initramfs must have another way to find the boot
-    parition, such as a partition label or follow the Discoverable
-    Partition Specification.
 
 **\--replace**=*REPLACE*
 
@@ -185,4 +173,4 @@ is currently expected to be empty by default.
 
 # VERSION
 
-v1.5.1
+v1.6.0
