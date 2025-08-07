@@ -21,7 +21,7 @@ use ostree_ext::composefs::fsverity;
 use ostree_ext::composefs::fsverity::FsVerityHashValue;
 use ostree_ext::composefs::splitstream::SplitStreamWriter;
 use ostree_ext::container as ostree_container;
-use ostree_ext::container_utils::{composefs_booted, ostree_booted};
+use ostree_ext::container_utils::ostree_booted;
 use ostree_ext::keyfileext::KeyFileExt;
 use ostree_ext::ostree;
 use ostree_ext::sysroot::SysrootLock;
@@ -37,7 +37,7 @@ use crate::lints;
 use crate::progress_jsonl::{ProgressWriter, RawProgressFd};
 use crate::spec::Host;
 use crate::spec::ImageReference;
-use crate::status::composefs_deployment_status;
+use crate::status::{composefs_booted, composefs_deployment_status};
 use crate::utils::sigpolicy_from_opt;
 
 /// Shared progress options
@@ -1211,7 +1211,7 @@ async fn switch(opts: SwitchOpts) -> Result<()> {
 /// Implementation of the `bootc rollback` CLI command.
 #[context("Rollback")]
 async fn rollback(opts: RollbackOpts) -> Result<()> {
-    if composefs_booted()? {
+    if composefs_booted()?.is_some() {
         composefs_rollback().await?
     } else {
         let sysroot = &get_storage().await?;
@@ -1380,14 +1380,14 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
     let root = &Dir::open_ambient_dir("/", cap_std::ambient_authority())?;
     match opt {
         Opt::Upgrade(opts) => {
-            if composefs_booted()? {
+            if composefs_booted()?.is_some() {
                 upgrade_composefs(opts).await
             } else {
                 upgrade(opts).await
             }
         }
         Opt::Switch(opts) => {
-            if composefs_booted()? {
+            if composefs_booted()?.is_some() {
                 switch_composefs(opts).await
             } else {
                 switch(opts).await
