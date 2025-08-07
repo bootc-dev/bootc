@@ -3,39 +3,100 @@
 #![allow(dead_code)]
 
 use std::io::BufReader;
-use std::{collections::BTreeMap, io::Read, path::PathBuf};
+use std::path::PathBuf;
+use std::rc::Rc;
 
 use anyhow::Context;
 use cap_std_ext::cap_std;
-use cap_std_ext::cap_std::fs::{Dir as CapStdDir, PermissionsExt};
+use cap_std_ext::cap_std::fs::{Dir as CapStdDir, MetadataExt};
 use composefs::fsverity::{FsVerityHashValue, Sha256HashValue};
-use openssl::hash::DigestBytes;
+use composefs::generic_tree::{Directory, Inode, Leaf, LeafContent, Stat};
+use composefs::tree::ImageError;
 use rustix::fs::readlinkat;
 
 #[derive(Debug)]
-struct Metadata {
+struct CustomMetadata {
     content_hash: String,
-    metadata_hash: String,
     verity: Option<String>,
 }
 
-impl Metadata {
-    fn new(content_hash: String, metadata_hash: String, verity: Option<String>) -> Self {
+impl CustomMetadata {
+    fn new(content_hash: String, verity: Option<String>) -> Self {
         Self {
             content_hash,
-            metadata_hash,
             verity,
         }
     }
 }
 
-type Map = BTreeMap<PathBuf, Metadata>;
+struct MyStat(Stat);
+
+impl From<&cap_std::fs::Metadata> for MyStat {
+    fn from(value: &cap_std::fs::Metadata) -> Self {
+        Self(Stat {
+            st_mode: value.mode(),
+            st_uid: value.uid(),
+            st_gid: value.gid(),
+            st_mtim_sec: value.mtime(),
+            xattrs: Default::default(),
+        })
+    }
+}
+
+fn stat_eq(this: &Stat, other: &Stat) -> bool {
+    if this.st_uid != other.st_uid {
+        return false;
+    }
+
+    if this.st_gid != other.st_gid {
+        return false;
+    }
+
+    if this.st_mode != other.st_mode {
+        return false;
+    }
+
+    if this.st_mtim_sec != other.st_mtim_sec {
+        return false;
+    }
+
+    if this.xattrs != other.xattrs {
+        return false;
+    }
+
+    return true;
+}
 
 #[derive(Debug)]
 struct Diff {
     added: Vec<PathBuf>,
     modified: Vec<PathBuf>,
     removed: Vec<PathBuf>,
+}
+
+fn collect_all_files(root: &Directory<CustomMetadata>) -> Vec<PathBuf> {
+    fn collect(
+        root: &Directory<CustomMetadata>,
+        mut current_path: PathBuf,
+        files: &mut Vec<PathBuf>,
+    ) {
+        for (path, inode) in root.entries() {
+            current_path.push(path);
+
+            if let Inode::Directory(dir) = inode {
+                collect(dir, current_path.clone(), files);
+            } else {
+                files.push(current_path.clone());
+            }
+
+            current_path.pop();
+        }
+    }
+
+    let mut files = vec![];
+    collect(root, PathBuf::new(), &mut files);
+
+    return files;
 }
 
 // 1. Files in the currently booted deployment’s /etc which were modified from the default /usr/etc (of the same deployment) are retained.
@@ -52,123 +113,141 @@ struct Diff {
 //    b. Permissions/ownership changed
 //    c. Was a file but changed to directory/symlink etc or vice versa
 //    d. xattrs changed - we don't include this right now
+fn compute_diff_root(
+    pristine: &mut Directory<CustomMetadata>,
+    current: &Directory<CustomMetadata>,
+    mut current_path: PathBuf,
+    diff: &mut Diff,
+) -> anyhow::Result<()> {
+    for (path, inode) in current.entries() {
+        current_path.push(path);
+
+        match inode {
+            Inode::Directory(curr_dir) => {
+                match pristine.get_directory_mut(path) {
+                    Ok(old_dir) => {
+                        compute_diff_root(old_dir, &curr_dir, current_path.clone(), diff)?
+                    }
+
+                    Err(ImageError::NotFound(..)) => {
+                        // Dir not found in original /etc, dir was added
+                        diff.added.push(current_path.clone());
+
+                        // Also add every file inside that dir
+                        diff.added.extend(collect_all_files(&curr_dir));
+                    }
+
+                    Err(ImageError::NotADirectory(..)) => {
+                        // A file was changed to a directory
+                        diff.modified.push(current_path.clone());
+                    }
+
+                    Err(e) => Err(e)?,
+                }
+            }
+
+            Inode::Leaf(leaf) => match pristine.ref_leaf(path) {
+                Ok(old_leaf) => {
+                    let LeafContent::Regular(current_meta) = &leaf.content else {
+                        unreachable!("File types do not match");
+                    };
+
+                    let LeafContent::Regular(old_meta) = &old_leaf.content else {
+                        unreachable!("File types do not match");
+                    };
+
+                    if old_meta.content_hash != current_meta.content_hash
+                        || !stat_eq(&old_leaf.stat, &leaf.stat)
+                    {
+                        // File modified in some way
+                        diff.modified.push(current_path.clone());
+                    }
+
+                    pristine.remove(path);
+                }
+
+                Err(ImageError::IsADirectory(..)) => {
+                    // A directory was changed to a file
+                    diff.modified.push(current_path.clone());
+                }
+
+                Err(ImageError::NotFound(..)) => {
+                    // File not found in original /etc, file was added
+                    diff.added.push(current_path.clone());
+                }
+
+                Err(e) => Err(e)?,
+            },
+        }
+
+        current_path.pop();
+    }
+
+    Ok(())
+}
 
 fn compute_diff(
     pristine_etc: &CapStdDir,
     current_etc: &CapStdDir,
     new_etc: &CapStdDir,
 ) -> anyhow::Result<Diff> {
-    let mut pristine_etc_files = BTreeMap::new();
-    recurse_dir(pristine_etc, PathBuf::new(), &mut pristine_etc_files)
+    let mut pristine_etc_files = Directory::default();
+    recurse_dir(pristine_etc, &mut pristine_etc_files)
         .context(format!("Recursing {pristine_etc:?}"))?;
 
-    let mut current_etc_files = BTreeMap::new();
-    recurse_dir(current_etc, PathBuf::new(), &mut current_etc_files)
+    let mut current_etc_files = Directory::default();
+    recurse_dir(current_etc, &mut current_etc_files)
         .context(format!("Recursing {current_etc:?}"))?;
 
-    let mut new_etc_files = BTreeMap::new();
-    recurse_dir(new_etc, PathBuf::new(), &mut new_etc_files)
-        .context(format!("Recursing {new_etc:?}"))?;
+    let mut new_etc_files = Directory::default();
+    recurse_dir(new_etc, &mut new_etc_files).context(format!("Recursing {new_etc:?}"))?;
 
-    let mut added = vec![];
-    let mut modified = vec![];
+    let mut diff = Diff {
+        added: vec![],
+        modified: vec![],
+        removed: vec![],
+    };
 
-    for (current_file, current_meta) in current_etc_files {
-        let Some(old_meta) = pristine_etc_files.get(&current_file) else {
-            // File was created
-            added.push(current_file);
-            continue;
-        };
+    compute_diff_root(
+        &mut pristine_etc_files,
+        &current_etc_files,
+        PathBuf::new(),
+        &mut diff,
+    )?;
 
-        match (&current_meta.verity, &old_meta.verity) {
-            (Some(v1), Some(v2)) => {
-                if v1 != v2 {
-                    modified.push(current_file.clone());
-                    pristine_etc_files.remove(&current_file);
-                    continue;
-                }
-            }
+    diff.removed = collect_all_files(&pristine_etc_files);
 
-            (None, None) => {
-                // No verity enabled for files, so we move forward to checking metadata + content
-                // checksum
-            }
-
-            // This has to be some kind of error?
-            (None, Some(_)) | (Some(_), None) => {
-                anyhow::bail!("File did not have fs-verity now it does or vice-versa")
-            }
-        }
-
-        if old_meta.metadata_hash != current_meta.metadata_hash
-            || old_meta.content_hash != current_meta.content_hash
-        {
-            modified.push(current_file.clone());
-        }
-
-        pristine_etc_files.remove(&current_file);
-    }
-
-    let removed = pristine_etc_files.into_keys().collect::<Vec<PathBuf>>();
-
-    Ok(Diff {
-        added,
-        modified,
-        removed,
-    })
+    Ok(diff)
 }
 
-fn compute_metadata_hash(meta: &cap_std::fs::Metadata) -> anyhow::Result<DigestBytes> {
-    let mut hasher = openssl::hash::Hasher::new(openssl::hash::MessageDigest::sha256())?;
-
-    let mut ty = vec![];
-
-    ty.push(meta.is_file() as u8);
-    ty.push(meta.is_dir() as u8);
-    ty.push(meta.is_symlink() as u8);
-
-    hasher.update(&ty)?;
-
-    if !meta.is_dir() {
-        hasher.update(&meta.len().to_le_bytes())?;
-    }
-
-    hasher.update(&meta.permissions().mode().to_le_bytes())?;
-
-    Ok(hasher.finish()?)
-}
-
-fn recurse_dir(dir: &CapStdDir, mut path: PathBuf, list: &mut Map) -> anyhow::Result<()> {
+fn recurse_dir(dir: &CapStdDir, root: &mut Directory<CustomMetadata>) -> anyhow::Result<()> {
     for entry in dir.entries()? {
-        let entry = entry.context(format!("Getting entry for {path:?}"))?;
+        let entry = entry.context(format!("Getting entry"))?;
         let entry_name = entry.file_name();
 
-        path.push(&entry_name);
-
         let entry_type = entry.file_type()?;
+        let entry_meta = entry
+            .metadata()
+            .context(format!("Getting metadata for {entry_name:?}"))?;
 
         if entry_type.is_dir() {
             let dir = dir
                 .open_dir(&entry_name)
-                .with_context(|| format!("Opening dir {path:?} inside {dir:?}"))?;
+                .with_context(|| format!("Opening dir {entry_name:?} inside {dir:?}"))?;
 
-            let metadata = dir
-                .metadata(".")
-                .context(format!("Getting dir meta for {path:?}"))?;
+            let mut directory = Directory::default();
 
-            list.insert(
-                path.clone(),
-                Metadata::new(
-                    "".into(),
-                    hex::encode(compute_metadata_hash(&metadata)?),
-                    // fs-verity is not enabled for directories
-                    None,
-                ),
-            );
+            recurse_dir(&dir, &mut directory)?;
 
-            recurse_dir(&dir, path.clone(), list).context(format!("Recursing {path:?}"))?;
+            root.insert(&entry_name, Inode::Directory(Box::new(directory)));
 
-            path.pop();
+            continue;
+        }
+
+        if !(entry_type.is_symlink() || entry_type.is_file()) {
+            // We cannot read any other device like socket, pipe, fifo.
+            // We shouldn't really find these in /etc in the first place
+            tracing::debug!("Ignoring non-regular/non-symlink file: {:?}", entry_name);
             continue;
         }
 
@@ -178,12 +257,16 @@ fn recurse_dir(dir: &CapStdDir, mut path: PathBuf, list: &mut Map) -> anyhow::Re
             composefs::fsverity::measure_verity_opt::<Sha256HashValue>(entry.open()?)?;
 
         if let Some(measured_verity) = measured_verity {
-            list.insert(
-                path.clone(),
-                Metadata::new("".into(), "".into(), Some(measured_verity.to_hex())),
+            root.insert(
+                &entry_name,
+                Inode::Leaf(Rc::new(Leaf {
+                    stat: MyStat::from(&entry_meta).0,
+                    content: LeafContent::Regular(CustomMetadata::new(
+                        "".into(),
+                        Some(measured_verity.to_hex()),
+                    )),
+                })),
             );
-
-            path.pop();
 
             // file has fs-verity enabled. We don't need to check the content/metadata
             continue;
@@ -197,33 +280,23 @@ fn recurse_dir(dir: &CapStdDir, mut path: PathBuf, list: &mut Map) -> anyhow::Re
 
             hasher.update(readlinkat_result.as_bytes())?;
         } else if entry_type.is_file() {
-            let file = entry.open().context(format!("Opening entry {path:?}"))?;
-            let mut reader = BufReader::new(file);
+            let file = entry
+                .open()
+                .context(format!("Opening entry {entry_name:?}"))?;
 
+            let mut reader = BufReader::new(file);
             std::io::copy(&mut reader, &mut hasher)?;
-        } else {
-            // We cannot read any other device like socket, pipe, fifo.
-            // We shouldn't really find these in /etc in the first place
-            tracing::debug!("Ignoring non-regular/non-symlink file: {:?}", path);
-            continue;
         };
 
         let content_digest = hex::encode(hasher.finish()?);
 
-        let meta = entry
-            .metadata()
-            .context(format!("Getting metadata for {path:?}"))?;
-
-        list.insert(
-            path.clone(),
-            Metadata::new(
-                content_digest,
-                hex::encode(compute_metadata_hash(&meta)?),
-                None,
-            ),
+        root.insert(
+            &entry_name,
+            Inode::Leaf(Rc::new(Leaf {
+                stat: MyStat::from(&entry_meta).0,
+                content: LeafContent::Regular(CustomMetadata::new(content_digest, None)),
+            })),
         );
-
-        path.pop();
     }
 
     Ok(())
