@@ -4,6 +4,7 @@
 //! to provide a fully "container native" tool for using
 //! bootable container images.
 
+mod bls_config;
 pub(crate) mod bootc_kargs;
 mod boundimage;
 mod cfsctl;
