@@ -80,6 +80,13 @@ pub(crate) struct UpgradeOpts {
     #[clap(long, conflicts_with = "check")]
     pub(crate) apply: bool,
 
+    /// Queue a soft reboot after staging the deployment.
+    ///
+    /// This will prepare the system for a soft reboot instead of a full reboot,
+    /// which allows userspace to restart without rebooting the kernel.
+    #[clap(long, conflicts_with = "check")]
+    pub(crate) queue_soft_reboot: bool,
+
     #[clap(flatten)]
     pub(crate) progress: ProgressOptions,
 }
@@ -98,6 +105,13 @@ pub(crate) struct SwitchOpts {
     /// a userspace-only restart.
     #[clap(long)]
     pub(crate) apply: bool,
+
+    /// Queue a soft reboot after staging the deployment.
+    ///
+    /// This will prepare the system for a soft reboot instead of a full reboot,
+    /// which allows userspace to restart without rebooting the kernel.
+    #[clap(long)]
+    pub(crate) queue_soft_reboot: bool,
 
     /// The transport; e.g. oci, oci-archive, containers-storage.  Defaults to `registry`.
     #[clap(long, default_value = "registry")]
@@ -142,6 +156,13 @@ pub(crate) struct RollbackOpts {
     /// a userspace-only restart.
     #[clap(long)]
     pub(crate) apply: bool,
+
+    /// Queue a soft reboot after performing the rollback.
+    ///
+    /// This will prepare the system for a soft reboot instead of a full reboot,
+    /// which allows userspace to restart without rebooting the kernel.
+    #[clap(long)]
+    pub(crate) queue_soft_reboot: bool,
 }
 
 /// Perform an edit operation
@@ -562,7 +583,7 @@ pub(crate) enum Opt {
         Note on Rollbacks and the `/etc` Directory:
 
         When you perform a rollback (e.g., with `bootc rollback`), any
-        changes made to files in the `/etc` directory won’t carry over
+        changes made to files in the `/etc` directory won't carry over
         to the rolled-back deployment.  The `/etc` files will revert
         to their state from that previous deployment instead.
 
@@ -741,6 +762,40 @@ pub(crate) fn require_root(is_container: bool) -> Result<()> {
     Ok(())
 }
 
+/// Check if a deployment has soft reboot capability
+fn has_soft_reboot_capability(deployment: Option<&crate::spec::BootEntry>) -> bool {
+    deployment.map(|d| d.soft_reboot_capable).unwrap_or(false)
+}
+
+/// Prepare a soft reboot for the given deployment
+#[context("Preparing soft reboot")]
+fn prepare_soft_reboot(
+    sysroot: &crate::store::Storage,
+    deployment: &ostree::Deployment,
+) -> Result<()> {
+    let cancellable = ostree::gio::Cancellable::NONE;
+    sysroot
+        .sysroot
+        .deployment_set_soft_reboot(deployment, false, cancellable)
+        .context("Failed to prepare soft-reboot")?;
+    Ok(())
+}
+
+/// Perform a soft reboot for a staged deployment
+#[context("Soft reboot staged deployment")]
+fn soft_reboot_staged(sysroot: &crate::store::Storage) -> Result<()> {
+    println!("Staged deployment is soft-reboot capable, preparing for soft-reboot...");
+
+    let deployments_list = sysroot.deployments();
+    let staged_deployment = deployments_list
+        .iter()
+        .find(|d| d.is_staged())
+        .ok_or_else(|| anyhow::anyhow!("Failed to find staged deployment"))?;
+
+    prepare_soft_reboot(sysroot, staged_deployment)?;
+    Ok(())
+}
+
 /// A few process changes that need to be made for writing.
 /// IMPORTANT: This may end up re-executing the current process,
 /// so anything that happens before this should be idempotent.
@@ -859,7 +914,11 @@ async fn upgrade(opts: UpgradeOpts) -> Result<()> {
             .unwrap_or_default();
         if staged_unchanged {
             println!("Staged update present, not changed.");
-
+            if opts.queue_soft_reboot {
+                if has_soft_reboot_capability(host.status.staged.as_ref()) {
+                    soft_reboot_staged(sysroot)?;
+                }
+            }
             if opts.apply {
                 crate::reboot::reboot()?;
             }
@@ -880,6 +939,15 @@ async fn upgrade(opts: UpgradeOpts) -> Result<()> {
     }
     if changed {
         sysroot.update_mtime()?;
+
+        if opts.queue_soft_reboot {
+            // At this point we have new staged deployment and the host definition has changed.
+            // We need the updated host status before we check if we can prepare the soft-reboot.
+            let updated_host = crate::status::get_status(sysroot, Some(&booted_deployment))?.1;
+            if has_soft_reboot_capability(updated_host.status.staged.as_ref()) {
+                soft_reboot_staged(sysroot)?;
+            }
+        }
 
         if opts.apply {
             crate::reboot::reboot()?;
@@ -956,6 +1024,15 @@ async fn switch(opts: SwitchOpts) -> Result<()> {
 
     sysroot.update_mtime()?;
 
+    if opts.queue_soft_reboot {
+        // At this point we have staged the deployment and the host definition has changed.
+        // We need the updated host status before we check if we can prepare the soft-reboot.
+        let updated_host = crate::status::get_status(sysroot, Some(&booted_deployment))?.1;
+        if has_soft_reboot_capability(updated_host.status.staged.as_ref()) {
+            soft_reboot_staged(sysroot)?;
+        }
+    }
+
     if opts.apply {
         crate::reboot::reboot()?;
     }
@@ -968,6 +1045,22 @@ async fn switch(opts: SwitchOpts) -> Result<()> {
 async fn rollback(opts: RollbackOpts) -> Result<()> {
     let sysroot = &get_storage().await?;
     crate::deploy::rollback(sysroot).await?;
+
+    if opts.queue_soft_reboot {
+        // Get status of rollback deployment to check soft-reboot capability
+        let host = crate::status::get_status_require_booted(sysroot)?.2;
+
+        if has_soft_reboot_capability(host.status.rollback.as_ref()) {
+            println!("Rollback deployment is soft-reboot capable, preparing for soft-reboot...");
+
+            let deployments_list = sysroot.deployments();
+            let target_deployment = deployments_list
+                .first()
+                .ok_or_else(|| anyhow::anyhow!("No rollback deployment found!"))?;
+
+            prepare_soft_reboot(sysroot, target_deployment)?;
+        }
+    }
 
     if opts.apply {
         crate::reboot::reboot()?;

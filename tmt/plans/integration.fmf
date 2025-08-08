@@ -62,3 +62,11 @@ execute:
     test:
         - /tmt/tests/bootc-install-provision
         - /tmt/tests/test-24-local-upgrade-reboot
+
+/test-25-soft-reboot:
+  summary: Soft reboot support
+  discover:
+    how: fmf
+    test:
+        - /tmt/tests/bootc-install-provision
+        - /tmt/tests/test-25-soft-reboot

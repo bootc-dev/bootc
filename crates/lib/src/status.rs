@@ -86,6 +86,11 @@ impl From<ImageReference> for OstreeImageReference {
     }
 }
 
+/// Check if a deployment has soft reboot capability
+fn has_soft_reboot_capability(sysroot: &Storage, deployment: &ostree::Deployment) -> bool {
+    ostree_ext::systemd_has_soft_reboot() && sysroot.deployment_can_soft_reboot(deployment)
+}
+
 /// Parse an ostree origin file (a keyfile) and extract the targeted
 /// container image reference.
 fn get_image_origin(origin: &glib::KeyFile) -> Result<Option<OstreeImageReference>> {
@@ -144,10 +149,13 @@ fn boot_entry_from_deployment(
         (None, CachedImageStatus::default(), false)
     };
 
+    let soft_reboot_capable = has_soft_reboot_capability(sysroot, deployment);
+
     let r = BootEntry {
         image,
         cached_update,
         incompatible,
+        soft_reboot_capable,
         store,
         pinned: deployment.is_pinned(),
         ostree: Some(crate::spec::BootEntryOstree {
@@ -381,6 +389,27 @@ fn render_verbose_ostree_info(
     Ok(())
 }
 
+/// Helper function to render if soft-reboot capable
+fn write_soft_reboot(
+    mut out: impl Write,
+    entry: &crate::spec::BootEntry,
+    prefix_len: usize,
+) -> Result<()> {
+    // Show soft-reboot capability
+    write_row_name(&mut out, "Soft-reboot", prefix_len)?;
+    writeln!(
+        out,
+        "{}",
+        if entry.soft_reboot_capable {
+            "yes"
+        } else {
+            "no"
+        }
+    )?;
+
+    Ok(())
+}
+
 /// Write the data for a container image based status.
 fn human_render_slot(
     mut out: impl Write,
@@ -463,6 +492,9 @@ fn human_render_slot(
                 }
             }
         }
+
+        // Show soft-reboot capability
+        write_soft_reboot(&mut out, entry, prefix_len)?;
     }
 
     tracing::debug!("pinned={}", entry.pinned);
@@ -500,6 +532,9 @@ fn human_render_slot_ostree(
         if let Some(ostree) = &entry.ostree {
             render_verbose_ostree_info(&mut out, ostree, slot, prefix_len)?;
         }
+
+        // Show soft-reboot capability
+        write_soft_reboot(&mut out, entry, prefix_len)?;
     }
 
     tracing::debug!("pinned={}", entry.pinned);
@@ -721,5 +756,6 @@ mod tests {
         assert!(w.contains("Deploy serial:"));
         assert!(w.contains("Staged:"));
         assert!(w.contains("Commit:"));
+        assert!(w.contains("Soft-reboot:"));
     }
 }

@@ -176,6 +176,9 @@ pub struct BootEntry {
     pub incompatible: bool,
     /// Whether this entry will be subject to garbage collection
     pub pinned: bool,
+    /// This is true if (relative to the booted system) this is a possible target for a soft reboot
+    #[serde(default)]
+    pub soft_reboot_capable: bool,
     /// The container storage backend
     #[serde(default)]
     pub store: Option<Store>,
@@ -517,6 +520,7 @@ mod tests {
                 image: None,
                 cached_update: None,
                 incompatible: false,
+                soft_reboot_capable: false,
                 pinned: false,
                 store: None,
                 ostree: None,
