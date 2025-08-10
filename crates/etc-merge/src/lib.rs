@@ -99,6 +99,51 @@ fn collect_all_files(root: &Directory<CustomMetadata>) -> Vec<PathBuf> {
     return files;
 }
 
+fn get_deletions(
+    pristine: &Directory<CustomMetadata>,
+    current: &Directory<CustomMetadata>,
+    mut current_path: PathBuf,
+    diff: &mut Diff,
+) -> anyhow::Result<()> {
+    for (file_name, inode) in pristine.entries() {
+        current_path.push(file_name);
+
+        match inode {
+            Inode::Directory(pristine_dir) => {
+                match current.get_directory(file_name) {
+                    Ok(curr_dir) => {
+                        get_deletions(pristine_dir, curr_dir, current_path.clone(), diff)?
+                    }
+
+                    Err(ImageError::NotFound(..)) => {
+                        // Directory was deleted
+                        diff.removed.push(current_path.clone());
+                    }
+
+                    Err(e) => Err(e)?,
+                }
+            }
+
+            Inode::Leaf(..) => match current.ref_leaf(file_name) {
+                Ok(..) => {
+                    // Empty as all additions/modifications are tracked above
+                }
+
+                Err(ImageError::NotFound(..)) => {
+                    // File was deleted
+                    diff.removed.push(current_path.clone());
+                }
+
+                Err(e) => Err(e)?,
+            },
+        }
+
+        current_path.pop();
+    }
+
+    Ok(())
+}
+
 // 1. Files in the currently booted deployment’s /etc which were modified from the default /usr/etc (of the same deployment) are retained.
 //
 // 2. Files in the currently booted deployment’s /etc which were not modified from the default /usr/etc (of the same deployment)
@@ -215,7 +260,12 @@ fn compute_diff(
         &mut diff,
     )?;
 
-    diff.removed = collect_all_files(&pristine_etc_files);
+    get_deletions(
+        &pristine_etc_files,
+        &current_etc_files,
+        PathBuf::new(),
+        &mut diff,
+    )?;
 
     Ok(diff)
 }
@@ -333,9 +383,6 @@ mod tests {
 
         p.create_dir_all("a/b/c")?;
         c.create_dir_all("a/b/c")?;
-
-        let mut open_options = cap_std::fs::OpenOptions::new();
-        open_options.create(true).write(true);
 
         for (file, content) in FILES {
             p.write(file, content.as_bytes())?;
