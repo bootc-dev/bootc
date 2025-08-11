@@ -950,6 +950,7 @@ dependencies = [
  "anyhow",
  "cap-std-ext",
  "composefs",
+ "fn-error-context",
  "hex",
  "openssl",
  "rustix 1.0.3",
