@@ -16,7 +16,7 @@ use cap_std_ext::dirext::CapStdExtDirExt;
 use composefs::fsverity::{FsVerityHashValue, Sha256HashValue, Sha512HashValue};
 use composefs::generic_tree::{Directory, Inode, Leaf, LeafContent, Stat};
 use composefs::tree::ImageError;
-use rustix::fs::readlinkat;
+use rustix::fs::{AtFlags, Gid, Uid, readlinkat};
 
 #[derive(Debug)]
 struct CustomMetadata {
@@ -195,7 +195,6 @@ fn get_modifications(
                             .extend(collect_all_files(&curr_dir, current_path.clone()));
                     }
 
-                    // TODO: Test if a file was changed to a directory
                     Err(e) => Err(e)?,
                 }
             }
@@ -439,19 +438,14 @@ fn create_dir_with_perms(
         .set_permissions(&dir_name, Permissions::from_mode(stat.st_mode))
         .context(format!("Changing permissions for dir {dir_name:?}"))?;
 
-    println!(
-        "Set permission of {dir_name:?} to {:?}",
-        Permissions::from_mode(stat.st_mode)
-    );
-
-    // TODO: Handle ownership
-    //
-    // rustix::fs::chown(
-    //     &modified,
-    //     Some(Uid::from_raw(current_inode.stat().st_uid)),
-    //     Some(Gid::from_raw(current_inode.stat().st_gid)),
-    // )
-    // .context(format!("chown {modified:?}"))?;
+    rustix::fs::chownat(
+        &new_etc_fd,
+        dir_name,
+        Some(Uid::from_raw(stat.st_uid)),
+        Some(Gid::from_raw(stat.st_gid)),
+        AtFlags::SYMLINK_NOFOLLOW,
+    )
+    .context(format!("chown {dir_name:?}"))?;
 
     Ok(())
 }
@@ -478,6 +472,15 @@ fn handle_leaf(
                 .copy(&file, new_etc_fd, &file)
                 .context(format!("Copying file {file:?}"))?;
 
+            rustix::fs::chownat(
+                &new_etc_fd,
+                file,
+                Some(Uid::from_raw(leaf.stat.st_uid)),
+                Some(Gid::from_raw(leaf.stat.st_gid)),
+                AtFlags::SYMLINK_NOFOLLOW,
+            )
+            .context(format!("chown {file:?}"))?;
+
             "file"
         }
 
@@ -494,6 +497,15 @@ fn handle_leaf(
             new_etc_fd
                 .symlink(PathBuf::from(os_str), &file)
                 .context(format!("Creating symlink {file:?}"))?;
+
+            rustix::fs::chownat(
+                &new_etc_fd,
+                file,
+                Some(Uid::from_raw(leaf.stat.st_uid)),
+                Some(Gid::from_raw(leaf.stat.st_gid)),
+                AtFlags::SYMLINK_NOFOLLOW,
+            )
+            .context(format!("chown {file:?}"))?;
 
             "symlink"
         }
@@ -528,22 +540,8 @@ fn handle_modified_files(
             // Directory exists in the new /etc, but was modified in some way
             Ok((dir, filename)) => {
                 let new_inode = dir.lookup(filename);
-                // println!("new_inode: {new_inode:?}");
-
                 let ty = match current_inode {
                     Inode::Directory(..) => {
-                        // let remove = match new_inode {
-                        //     // Dir with the same name is present in new /etc
-                        //     // We delete this dir and create a new one
-                        //     Some(Inode::Directory(..)) => true,
-
-                        //     // Dir doesn't exist in the new /etc, so create it
-                        //     // Nothing to remove
-                        //     None => false,
-
-                        //     _ => anyhow::bail!("Dir {file:?} converted to file"),
-                        // };
-
                         create_dir_with_perms(new_etc_fd, file, current_inode.stat(), true)?;
 
                         "dir"
@@ -852,12 +850,22 @@ mod tests {
         c.create_dir_all("dir/perms")?;
         c.set_permissions("dir/perms", Permissions::from_mode(0o777))?;
 
+        // Directory ownership
+        p.create_dir_all("dir/owner")?;
+
+        c.create_dir_all("dir/owner")?;
+        rustix::fs::chownat(
+            &c,
+            "dir/owner",
+            Some(Uid::from_raw(u16::MAX as u32)),
+            Some(Gid::from_raw(u16::MAX as u32)),
+            AtFlags::SYMLINK_NOFOLLOW,
+        )?;
+
         let (pristine_etc_files, current_etc_files, new_etc_files) = traverse_etc(&p, &c, &n)?;
         let diff = compute_diff(&pristine_etc_files, &current_etc_files)?;
         println!("current_etc_files: {current_etc_files:#?}");
         merge(&c, &current_etc_files, &n, &new_etc_files, diff)?;
-
-        // std::thread::sleep(std::time::Duration::from_secs(4434));
 
         assert!(files_eq(&c, &n, "new_file.txt")?);
         assert!(files_eq(&c, &n, "a/new_file.txt")?);
@@ -890,6 +898,11 @@ mod tests {
         assert!(compare_meta(
             c.metadata("dir/perms")?,
             n.metadata("dir/perms")?
+        ));
+
+        assert!(compare_meta(
+            c.metadata("dir/owner")?,
+            n.metadata("dir/owner")?
         ));
 
         Ok(())
