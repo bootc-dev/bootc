@@ -52,7 +52,7 @@ impl From<(&cap_std::fs::Metadata, Xattrs)> for MyStat {
     }
 }
 
-fn stat_eq(this: &Stat, other: &Stat) -> bool {
+fn stat_eq_ignore_mtime(this: &Stat, other: &Stat) -> bool {
     if this.st_uid != other.st_uid {
         return false;
     }
@@ -62,10 +62,6 @@ fn stat_eq(this: &Stat, other: &Stat) -> bool {
     }
 
     if this.st_mode != other.st_mode {
-        return false;
-    }
-
-    if this.st_mtim_sec != other.st_mtim_sec {
         return false;
     }
 
@@ -97,8 +93,6 @@ fn collect_all_files(root: &Directory<CustomMetadata>, current_path: PathBuf) ->
 
             if let Inode::Directory(dir) = inode {
                 collect(dir, current_path.clone(), files);
-            } else {
-                // files.push(current_path.clone());
             }
 
             current_path.pop();
@@ -183,7 +177,7 @@ fn get_modifications(
             Inode::Directory(curr_dir) => {
                 match pristine.get_directory(path) {
                     Ok(old_dir) => {
-                        if !stat_eq(&curr_dir.stat, &old_dir.stat) {
+                        if !stat_eq_ignore_mtime(&curr_dir.stat, &old_dir.stat) {
                             // Directory permissions/owner modified
                             diff.modified.push(current_path.clone());
                         }
@@ -215,7 +209,7 @@ fn get_modifications(
                     };
 
                     if old_meta.content_hash != current_meta.content_hash
-                        || !stat_eq(&old_leaf.stat, &leaf.stat)
+                        || !stat_eq_ignore_mtime(&old_leaf.stat, &leaf.stat)
                     {
                         // File modified in some way
                         diff.modified.push(current_path.clone());
