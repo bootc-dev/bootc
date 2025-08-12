@@ -3,10 +3,13 @@
 #![allow(dead_code)]
 
 use fn_error_context::context;
-use std::ffi::OsStr;
+use std::cell::RefCell;
+use std::collections::BTreeMap;
+use std::ffi::{OsStr, OsString};
 use std::io::BufReader;
+use std::os::fd::{AsFd, AsRawFd};
 use std::os::unix::ffi::OsStrExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use anyhow::Context;
@@ -16,7 +19,7 @@ use cap_std_ext::dirext::CapStdExtDirExt;
 use composefs::fsverity::{FsVerityHashValue, Sha256HashValue, Sha512HashValue};
 use composefs::generic_tree::{Directory, Inode, Leaf, LeafContent, Stat};
 use composefs::tree::ImageError;
-use rustix::fs::{AtFlags, Gid, Uid, readlinkat};
+use rustix::fs::{AtFlags, Gid, Uid, XattrFlags, getxattr, listxattr, lsetxattr, readlinkat};
 
 #[derive(Debug)]
 struct CustomMetadata {
@@ -33,16 +36,18 @@ impl CustomMetadata {
     }
 }
 
+type Xattrs = RefCell<BTreeMap<Box<OsStr>, Box<[u8]>>>;
+
 struct MyStat(Stat);
 
-impl From<&cap_std::fs::Metadata> for MyStat {
-    fn from(value: &cap_std::fs::Metadata) -> Self {
+impl From<(&cap_std::fs::Metadata, Xattrs)> for MyStat {
+    fn from(value: (&cap_std::fs::Metadata, Xattrs)) -> Self {
         Self(Stat {
-            st_mode: value.mode(),
-            st_uid: value.uid(),
-            st_gid: value.gid(),
-            st_mtim_sec: value.mtime(),
-            xattrs: Default::default(),
+            st_mode: value.0.mode(),
+            st_uid: value.0.uid(),
+            st_gid: value.0.gid(),
+            st_mtim_sec: value.0.mtime(),
+            xattrs: value.1,
         })
     }
 }
@@ -288,6 +293,58 @@ fn compute_diff(
     Ok(diff)
 }
 
+#[context("Collecting xattrs")]
+fn collect_xattrs(etc_fd: &CapStdDir, rel_path: &OsString) -> anyhow::Result<Xattrs> {
+    let link = format!("/proc/self/fd/{}", etc_fd.as_fd().as_raw_fd());
+    let path = Path::new(&link).join(rel_path);
+
+    const DEFAULT_SIZE: usize = 128;
+
+    // Start with a guess for size
+    let mut buf: Vec<u8> = vec![0; DEFAULT_SIZE];
+    let size = listxattr(&path, &mut buf).context("listxattr")?;
+
+    if size > DEFAULT_SIZE {
+        buf = vec![0; size];
+        listxattr(&path, &mut buf).context("listxattr")?;
+    }
+
+    let xattrs: Xattrs = RefCell::new(BTreeMap::new());
+
+    for name_buf in buf[..size]
+        .split_inclusive(|&b| b == 0)
+        .filter(|x| !x.is_empty())
+    {
+        let name = OsStr::from_bytes(name_buf);
+
+        let mut buf = vec![0; DEFAULT_SIZE];
+        let size = getxattr(&path, name_buf, &mut buf).context("getxattr")?;
+
+        if size > DEFAULT_SIZE {
+            buf = vec![0; size];
+            getxattr(&path, name_buf, &mut buf).context("getxattr")?;
+        }
+
+        xattrs
+            .borrow_mut()
+            .insert(Box::<OsStr>::from(name), Box::<[u8]>::from(&buf[..size]));
+    }
+
+    Ok(xattrs)
+}
+
+#[context("Copying xattrs")]
+fn copy_xattrs(xattrs: &Xattrs, new_etc_fd: &CapStdDir, file: &PathBuf) -> anyhow::Result<()> {
+    for (attr, value) in xattrs.borrow().iter() {
+        let path = Path::new(&format!("/proc/self/fd/{}", new_etc_fd.as_raw_fd())).join(file);
+
+        lsetxattr(path, attr.as_ref(), value, XattrFlags::empty())
+            .context(format!("setxattr for {file:?}"))?;
+    }
+
+    Ok(())
+}
+
 fn recurse_dir(dir: &CapStdDir, root: &mut Directory<CustomMetadata>) -> anyhow::Result<()> {
     for entry in dir.entries()? {
         let entry = entry.context(format!("Getting entry"))?;
@@ -298,12 +355,14 @@ fn recurse_dir(dir: &CapStdDir, root: &mut Directory<CustomMetadata>) -> anyhow:
             .metadata()
             .context(format!("Getting metadata for {entry_name:?}"))?;
 
+        let xattrs = collect_xattrs(&dir, &entry_name)?;
+
         if entry_type.is_dir() {
             let dir = dir
                 .open_dir(&entry_name)
                 .with_context(|| format!("Opening dir {entry_name:?} inside {dir:?}"))?;
 
-            let mut directory = Directory::new(MyStat::from(&entry_meta).0);
+            let mut directory = Directory::new(MyStat::from((&entry_meta, xattrs)).0);
 
             recurse_dir(&dir, &mut directory)?;
 
@@ -328,7 +387,7 @@ fn recurse_dir(dir: &CapStdDir, root: &mut Directory<CustomMetadata>) -> anyhow:
             root.insert(
                 &entry_name,
                 Inode::Leaf(Rc::new(Leaf {
-                    stat: MyStat::from(&entry_meta).0,
+                    stat: MyStat::from((&entry_meta, xattrs)).0,
                     content: LeafContent::Symlink(Box::from(os_str)),
                 })),
             );
@@ -357,7 +416,7 @@ fn recurse_dir(dir: &CapStdDir, root: &mut Directory<CustomMetadata>) -> anyhow:
             root.insert(
                 &entry_name,
                 Inode::Leaf(Rc::new(Leaf {
-                    stat: MyStat::from(&entry_meta).0,
+                    stat: MyStat::from((&entry_meta, xattrs)).0,
                     content: LeafContent::Regular(CustomMetadata::new(
                         "".into(),
                         Some(measured_verity),
@@ -382,7 +441,7 @@ fn recurse_dir(dir: &CapStdDir, root: &mut Directory<CustomMetadata>) -> anyhow:
         root.insert(
             &entry_name,
             Inode::Leaf(Rc::new(Leaf {
-                stat: MyStat::from(&entry_meta).0,
+                stat: MyStat::from((&entry_meta, xattrs)).0,
                 content: LeafContent::Regular(CustomMetadata::new(content_digest, None)),
             })),
         );
@@ -447,6 +506,8 @@ fn create_dir_with_perms(
     )
     .context(format!("chown {dir_name:?}"))?;
 
+    copy_xattrs(&stat.xattrs, new_etc_fd, dir_name)?;
+
     Ok(())
 }
 
@@ -481,6 +542,8 @@ fn handle_leaf(
             )
             .context(format!("chown {file:?}"))?;
 
+            copy_xattrs(&leaf.stat.xattrs, new_etc_fd, file)?;
+
             "file"
         }
 
@@ -506,6 +569,8 @@ fn handle_leaf(
                 AtFlags::SYMLINK_NOFOLLOW,
             )
             .context(format!("chown {file:?}"))?;
+
+            copy_xattrs(&leaf.stat.xattrs, new_etc_fd, file)?;
 
             "symlink"
         }
@@ -864,7 +929,6 @@ mod tests {
 
         let (pristine_etc_files, current_etc_files, new_etc_files) = traverse_etc(&p, &c, &n)?;
         let diff = compute_diff(&pristine_etc_files, &current_etc_files)?;
-        println!("current_etc_files: {current_etc_files:#?}");
         merge(&c, &current_etc_files, &n, &new_etc_files, diff)?;
 
         assert!(files_eq(&c, &n, "new_file.txt")?);
