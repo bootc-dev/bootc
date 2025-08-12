@@ -10,7 +10,7 @@ SSH_KEY=${BOOTC_TEMPDIR}/id_rsa
 ARCH=$(uname -m)
 case "$ARCH" in
 "aarch64")
-  sudo qemu-system-aarch64 \
+  qemu-system-aarch64 \
     -name bootc-vm \
     -enable-kvm \
     -machine virt \
@@ -24,7 +24,7 @@ case "$ARCH" in
     -daemonize
   ;;
 "x86_64")
-  sudo qemu-system-x86_64 \
+  qemu-system-x86_64 \
     -name bootc-vm \
     -enable-kvm \
     -cpu host \

@@ -82,7 +82,7 @@ EORUN
 CONTAINERFILEOF
 
 LOCAL_IMAGE="localhost/bootc:test"
-sudo podman build \
+podman build \
     --retry 5 \
     --retry-delay 5s \
     -v "$(pwd)":/code:z \
@@ -93,14 +93,14 @@ sudo podman build \
 SSH_KEY=${BOOTC_TEMPDIR}/id_rsa
 ssh-keygen -f "${SSH_KEY}" -N "" -q -t rsa-sha2-256 -b 2048
 
-sudo truncate -s 10G "${BOOTC_TEMPDIR}/disk.raw"
+truncate -s 10G "${BOOTC_TEMPDIR}/disk.raw"
 
 # For test-22-logically-bound-install
-sudo podman pull --retry 5 --retry-delay 5s quay.io/curl/curl:latest
-sudo podman pull --retry 5 --retry-delay 5s quay.io/curl/curl-base:latest
-sudo podman pull --retry 5 --retry-delay 5s registry.access.redhat.com/ubi9/podman:latest
+podman pull --retry 5 --retry-delay 5s quay.io/curl/curl:latest
+podman pull --retry 5 --retry-delay 5s quay.io/curl/curl-base:latest
+podman pull --retry 5 --retry-delay 5s registry.access.redhat.com/ubi9/podman:latest
 
-sudo podman run \
+podman run \
   --rm \
   --privileged \
   --pid=host \

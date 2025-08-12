@@ -24,7 +24,11 @@ jobs:
       - name: Build bootc and bootc image
         env:
           TEST_OS: ${{ matrix.test_os }}
-        run: tests/build.sh
+        run: sudo -E TEST_OS=$TEST_OS tests/build.sh
+
+      - name: Grant sudo user permission to archive files
+        run: |
+          sudo chmod 0755 /tmp/tmp-bootc-build/id_rsa
 
       - name: Archive bootc disk image - disk.raw
         uses: actions/upload-artifact@v4
@@ -72,6 +76,13 @@ jobs:
         with:
           name: PR-${{ github.event.number }}-${{ matrix.test_os }}-id_rsa
           path: /tmp/tmp-bootc-build
+
+      - name: Enable KVM group perms
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm
 
       - name: Run test
         env:
