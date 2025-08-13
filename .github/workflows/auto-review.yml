@@ -2,7 +2,8 @@ name: Auto Assign Reviewer
 
 on:
   pull_request_target:
-    types: [opened, ready_for_review]
+    types: [opened, ready_for_review, synchronize]
+  workflow_dispatch:  {}# Manual trigger for testing
 
 permissions:
   pull-requests: write
@@ -27,12 +28,17 @@ jobs:
           pip install pyyaml
           
       - name: Authenticate with GitHub
-        run: echo "${{ secrets.GH_PAT }}" | gh auth login --with-token
-        env:
-          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          if [ -z "${{ secrets.GH_PAT }}" ]; then
+            echo "Error: GH_PAT secret is not set"
+            exit 1
+          fi
+          # Use PAT directly without gh auth login
+          echo "Using PAT for authentication"
           
       - name: Assign reviewer
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
           python .github/scripts/assign_reviewer.py
