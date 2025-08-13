@@ -36,9 +36,9 @@ anyhow = "1.0.82"
 camino = "1.1.6"
 canon-json = "0.2.1"
 cap-std-ext = "4.0.3"
-composefs = { git = "https://github.com/containers/composefs-rs", rev = "28d4721f77f973f0e394d60d6a69d9b39cb38d7f", package = "composefs", features = ["rhel9"] }
-composefs-boot = { git = "https://github.com/containers/composefs-rs", rev = "28d4721f77f973f0e394d60d6a69d9b39cb38d7f", package = "composefs-boot" }
-composefs-oci = { git = "https://github.com/containers/composefs-rs", rev = "28d4721f77f973f0e394d60d6a69d9b39cb38d7f", package = "composefs-oci" }
+composefs = { git = "https://github.com/containers/composefs-rs", rev = "8d1e570275621531d39b8f01681584bcc85ce01c", package = "composefs", features = ["rhel9"] }
+composefs-boot = { git = "https://github.com/containers/composefs-rs", rev = "8d1e570275621531d39b8f01681584bcc85ce01c", package = "composefs-boot" }
+composefs-oci = { git = "https://github.com/containers/composefs-rs", rev = "8d1e570275621531d39b8f01681584bcc85ce01c", package = "composefs-oci" }
 chrono = { version = "0.4.38", default-features = false }
 clap = "4.5.4"
 clap_mangen = { version = "0.2.20" }

@@ -245,7 +245,8 @@ where
                 println!("{}", image_id.to_id());
             }
             OciCommand::Pull { ref image, name } => {
-                let (sha256, verity) = composefs_oci::pull(&repo, image, name.as_deref()).await?;
+                let (sha256, verity) =
+                    composefs_oci::pull(&repo, image, name.as_deref(), None).await?;
 
                 println!("sha256 {}", hex::encode(sha256));
                 println!("verity {}", verity.to_hex());

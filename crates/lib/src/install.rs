@@ -1564,7 +1564,13 @@ async fn initialize_composefs_repository(
     } = &state.source.imageref;
 
     // transport's display is already of type "<transport_type>:"
-    composefs_oci_pull(&Arc::new(repo), &format!("{transport}{image_name}"), None).await
+    composefs_oci_pull(
+        &Arc::new(repo),
+        &format!("{transport}{image_name}"),
+        None,
+        None,
+    )
+    .await
 }
 
 fn get_booted_bls() -> Result<BLSConfig> {
@@ -2081,9 +2087,10 @@ pub(crate) async fn pull_composefs_repo(
 
     let repo = open_composefs_repo(&rootfs_dir).context("Opening compoesfs repo")?;
 
-    let (id, verity) = composefs_oci_pull(&Arc::new(repo), &format!("{transport}:{image}"), None)
-        .await
-        .context("Pulling composefs repo")?;
+    let (id, verity) =
+        composefs_oci_pull(&Arc::new(repo), &format!("{transport}:{image}"), None, None)
+            .await
+            .context("Pulling composefs repo")?;
 
     tracing::debug!(
         "id = {id}, verity = {verity}",
