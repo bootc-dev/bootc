@@ -230,6 +230,28 @@ impl Chunk {
             false
         }
     }
+
+    pub(crate) fn move_path(&mut self, dest: &mut Self, checksum: &str, path: Utf8PathBuf) -> bool {
+        if let Some((_size, paths)) = self.content.get_mut(checksum) {
+            let path_index = paths.iter().position(|p| *p == path);
+            if let Some(index) = path_index {
+                let removed_path = paths.remove(index);
+
+                let dest_entry = dest
+                    .content
+                    .entry(RcStr::from(checksum))
+                    .or_insert((0, Vec::new()));
+                dest_entry.1.push(removed_path);
+
+                if paths.is_empty() {
+                    self.content.remove(checksum);
+                }
+
+                return true;
+            }
+        }
+        false
+    }
 }
 
 impl Chunking {
@@ -287,7 +309,7 @@ impl Chunking {
         meta: &ObjectMetaSized,
         max_layers: &Option<NonZeroU32>,
         prior_build_metadata: Option<&oci_spec::image::ImageManifest>,
-        specific_contentmeta: Option<&ObjectMetaSized>,
+        specific_contentmeta: Option<&BTreeMap<ContentID, Vec<(Utf8PathBuf, String)>>>,
     ) -> Result<Self> {
         let mut r = Self::new(repo, rev)?;
         r.process_mapping(meta, max_layers, prior_build_metadata, specific_contentmeta)?;
@@ -306,7 +328,7 @@ impl Chunking {
         meta: &ObjectMetaSized,
         max_layers: &Option<NonZeroU32>,
         prior_build_metadata: Option<&oci_spec::image::ImageManifest>,
-        specific_contentmeta: Option<&ObjectMetaSized>,
+        specific_contentmeta: Option<&BTreeMap<ContentID, Vec<(Utf8PathBuf, String)>>>,
     ) -> Result<()> {
         self.max = max_layers
             .unwrap_or(NonZeroU32::new(MAX_CHUNKS).unwrap())
@@ -324,21 +346,18 @@ impl Chunking {
         // Create exclusive chunks first if specified
         let mut processed_specific_components = BTreeSet::new();
         if let Some(specific_meta) = specific_contentmeta {
-            let specific_map = Self::create_content_id_map(&specific_meta.map);
-
-            for component in &specific_meta.sizes {
-                let mut chunk = Chunk::new(&component.meta.name);
-                chunk.packages = vec![component.meta.name.to_string()];
+            for (component, files) in specific_meta {
+                let mut chunk = Chunk::new(&component);
+                chunk.packages = vec![component.to_string()];
 
                 // Move all objects belonging to this exclusive component
-                if let Some(objects) = specific_map.get(&component.meta.identifier) {
-                    for &obj in objects {
-                        self.remainder.move_obj(&mut chunk, obj);
-                    }
+                for (path, checksum) in files {
+                    self.remainder
+                        .move_path(&mut chunk, checksum.as_str(), path.clone());
                 }
 
                 self.chunks.push(chunk);
-                processed_specific_components.insert(&*component.meta.identifier);
+                processed_specific_components.insert(component.clone());
             }
         }
 
@@ -1051,7 +1070,7 @@ mod test {
     ) -> Result<(
         Vec<ObjectSourceMetaSized>,
         ObjectMetaSized,
-        ObjectMetaSized,
+        BTreeMap<ContentID, Vec<(Utf8PathBuf, String)>>,
         Chunking,
     )> {
         // Create content metadata from provided data
@@ -1071,24 +1090,19 @@ mod test {
 
         // Create object maps with fake checksums
         let mut object_map = IndexMap::new();
-        let mut regular_map = IndexMap::new();
 
         for (i, component) in contentmeta.iter().enumerate() {
             let checksum = format!("checksum_{}", i);
-            regular_map.insert(checksum.clone(), component.meta.identifier.clone());
             object_map.insert(checksum, component.meta.identifier.clone());
         }
 
         let regular_meta = ObjectMetaSized {
-            map: regular_map,
+            map: object_map,
             sizes: contentmeta.clone(),
         };
 
         // Create exclusive metadata (initially empty, to be populated by individual tests)
-        let exclusive_meta = ObjectMetaSized {
-            map: object_map,
-            sizes: Vec::new(),
-        };
+        let specific_contentmeta = BTreeMap::new();
 
         // Set up chunking with remainder chunk
         let mut chunking = Chunking::default();
@@ -1099,15 +1113,18 @@ mod test {
         if let Some(num_objects) = num_fake_objects {
             for i in 0..num_objects {
                 let checksum = format!("checksum_{}", i);
-                chunking
-                    .remainder
-                    .content
-                    .insert(RcStr::from(checksum), (1000, vec![]));
+                chunking.remainder.content.insert(
+                    RcStr::from(checksum),
+                    (
+                        1000,
+                        vec![Utf8PathBuf::from(format!("/path/to/checksum_{}", i))],
+                    ),
+                );
                 chunking.remainder.size += 1000;
             }
         }
 
-        Ok((contentmeta, regular_meta, exclusive_meta, chunking))
+        Ok((contentmeta, regular_meta, specific_contentmeta, chunking))
     }
 
     #[test]
@@ -1121,27 +1138,38 @@ mod test {
             (5, 500, 10000),
         ];
 
-        let (contentmeta, regular_meta, mut exclusive_meta, mut chunking) =
+        let (contentmeta, regular_meta, mut specific_contentmeta, mut chunking) =
             setup_exclusive_test(&component_data, 8, Some(5))?;
 
-        // Create exclusive content metadata for pkg1 and pkg2
-        let exclusive_content: Vec<ObjectSourceMetaSized> =
-            vec![contentmeta[0].clone(), contentmeta[1].clone()];
-        exclusive_meta.sizes = exclusive_content;
+        // Create specific content metadata for pkg1 and pkg2
+        specific_contentmeta.insert(
+            contentmeta[0].meta.identifier.clone(),
+            vec![(
+                Utf8PathBuf::from("/path/to/checksum_0"),
+                "checksum_0".to_string(),
+            )],
+        );
+        specific_contentmeta.insert(
+            contentmeta[1].meta.identifier.clone(),
+            vec![(
+                Utf8PathBuf::from("/path/to/checksum_1"),
+                "checksum_1".to_string(),
+            )],
+        );
 
         chunking.process_mapping(
             &regular_meta,
             &Some(NonZeroU32::new(8).unwrap()),
             None,
-            Some(&exclusive_meta),
+            Some(&specific_contentmeta),
         )?;
 
         // Verify exclusive chunks are created first
         assert!(chunking.chunks.len() >= 2);
-        assert_eq!(chunking.chunks[0].name, "pkg1");
-        assert_eq!(chunking.chunks[1].name, "pkg2");
-        assert_eq!(chunking.chunks[0].packages, vec!["pkg1".to_string()]);
-        assert_eq!(chunking.chunks[1].packages, vec!["pkg2".to_string()]);
+        assert_eq!(chunking.chunks[0].name, "pkg1.0");
+        assert_eq!(chunking.chunks[1].name, "pkg2.0");
+        assert_eq!(chunking.chunks[0].packages, vec!["pkg1.0".to_string()]);
+        assert_eq!(chunking.chunks[1].packages, vec!["pkg2.0".to_string()]);
 
         Ok(())
     }
@@ -1158,32 +1186,43 @@ mod test {
             (6, 600, 5000),  // regular
         ];
 
-        let (contentmeta, regular_meta, mut exclusive_meta, mut chunking) =
+        let (contentmeta, regular_meta, mut specific_contentmeta, mut chunking) =
             setup_exclusive_test(&component_data, 8, Some(6))?;
 
-        // Create exclusive content metadata for pkg1 and pkg2
-        let exclusive_content: Vec<ObjectSourceMetaSized> =
-            vec![contentmeta[0].clone(), contentmeta[1].clone()];
-        exclusive_meta.sizes = exclusive_content;
+        // Create specific content metadata for pkg1 and pkg2
+        specific_contentmeta.insert(
+            contentmeta[0].meta.identifier.clone(),
+            vec![(
+                Utf8PathBuf::from("/path/to/checksum_0"),
+                "checksum_0".to_string(),
+            )],
+        );
+        specific_contentmeta.insert(
+            contentmeta[1].meta.identifier.clone(),
+            vec![(
+                Utf8PathBuf::from("/path/to/checksum_1"),
+                "checksum_1".to_string(),
+            )],
+        );
 
         chunking.process_mapping(
             &regular_meta,
             &Some(NonZeroU32::new(8).unwrap()),
             None,
-            Some(&exclusive_meta),
+            Some(&specific_contentmeta),
         )?;
 
         // Verify exclusive chunks are created first
         assert!(chunking.chunks.len() >= 2);
-        assert_eq!(chunking.chunks[0].name, "pkg1");
-        assert_eq!(chunking.chunks[1].name, "pkg2");
-        assert_eq!(chunking.chunks[0].packages, vec!["pkg1".to_string()]);
-        assert_eq!(chunking.chunks[1].packages, vec!["pkg2".to_string()]);
+        assert_eq!(chunking.chunks[0].name, "pkg1.0");
+        assert_eq!(chunking.chunks[1].name, "pkg2.0");
+        assert_eq!(chunking.chunks[0].packages, vec!["pkg1.0".to_string()]);
+        assert_eq!(chunking.chunks[1].packages, vec!["pkg2.0".to_string()]);
 
         // Verify regular components are not in exclusive chunks
         for chunk in &chunking.chunks[2..] {
-            assert!(!chunk.packages.contains(&"pkg1".to_string()));
-            assert!(!chunk.packages.contains(&"pkg2".to_string()));
+            assert!(!chunk.packages.contains(&"pkg1.0".to_string()));
+            assert!(!chunk.packages.contains(&"pkg2.0".to_string()));
         }
 
         Ok(())
@@ -1194,24 +1233,29 @@ mod test {
         // Test that exclusive chunks properly isolate components
         let component_data = [(1, 100, 50000), (2, 200, 40000), (3, 300, 30000)];
 
-        let (contentmeta, regular_meta, mut exclusive_meta, mut chunking) =
+        let (contentmeta, regular_meta, mut specific_contentmeta, mut chunking) =
             setup_exclusive_test(&component_data, 8, Some(3))?;
 
-        // Create exclusive content metadata for pkg1 only
-        let exclusive_content: Vec<ObjectSourceMetaSized> = vec![contentmeta[0].clone()];
-        exclusive_meta.sizes = exclusive_content;
+        // Create specific content metadata for pkg1 only
+        specific_contentmeta.insert(
+            contentmeta[0].meta.identifier.clone(),
+            vec![(
+                Utf8PathBuf::from("/path/to/checksum_0"),
+                "checksum_0".to_string(),
+            )],
+        );
 
         chunking.process_mapping(
             &regular_meta,
             &Some(NonZeroU32::new(8).unwrap()),
             None,
-            Some(&exclusive_meta),
+            Some(&specific_contentmeta),
         )?;
 
         // Verify pkg1 is in its own exclusive chunk
-        assert!(chunking.chunks.len() >= 1);
-        assert_eq!(chunking.chunks[0].name, "pkg1");
-        assert_eq!(chunking.chunks[0].packages, vec!["pkg1".to_string()]);
+        assert!(!chunking.chunks.is_empty());
+        assert_eq!(chunking.chunks[0].name, "pkg1.0");
+        assert_eq!(chunking.chunks[0].packages, vec!["pkg1.0".to_string()]);
 
         // Verify pkg2 and pkg3 are in regular chunks, not mixed with pkg1
         let mut found_pkg2 = false;
@@ -1219,11 +1263,11 @@ mod test {
         for chunk in &chunking.chunks[1..] {
             if chunk.packages.contains(&"pkg2".to_string()) {
                 found_pkg2 = true;
-                assert!(!chunk.packages.contains(&"pkg1".to_string()));
+                assert!(!chunk.packages.contains(&"pkg1.0".to_string()));
             }
             if chunk.packages.contains(&"pkg3".to_string()) {
                 found_pkg3 = true;
-                assert!(!chunk.packages.contains(&"pkg1".to_string()));
+                assert!(!chunk.packages.contains(&"pkg1.0".to_string()));
             }
         }
         assert!(found_pkg2 && found_pkg3);
@@ -1247,29 +1291,23 @@ mod test {
             (5, 500, 10000), // pkg5 - regular package
         ];
 
-        let (contentmeta, mut system_metadata, mut specific_components_meta, mut chunking) =
+        let (contentmeta, mut system_metadata, mut specific_contentmeta, mut chunking) =
             setup_exclusive_test(&packages, 8, None)?;
 
         // Create object mappings
         // - system_objects_map: Contains ALL objects in the system (both specific and regular)
-        // - specific_components_objects_map: Contains ONLY objects from specific components
         let mut system_objects_map = IndexMap::new();
-        let mut specific_components_objects_map = IndexMap::new();
 
         // SPECIFIC COMPONENT 1 (pkg1): owns 3 objects
         let pkg1_objects = ["checksum_1_a", "checksum_1_b", "checksum_1_c"];
         for obj in &pkg1_objects {
             system_objects_map.insert(obj.to_string(), contentmeta[0].meta.identifier.clone());
-            specific_components_objects_map
-                .insert(obj.to_string(), contentmeta[0].meta.identifier.clone());
         }
 
         // SPECIFIC COMPONENT 2 (pkg2): owns 2 objects
         let pkg2_objects = ["checksum_2_a", "checksum_2_b"];
         for obj in &pkg2_objects {
             system_objects_map.insert(obj.to_string(), contentmeta[1].meta.identifier.clone());
-            specific_components_objects_map
-                .insert(obj.to_string(), contentmeta[1].meta.identifier.clone());
         }
 
         // REGULAR PACKAGE 1 (pkg3): owns 2 objects
@@ -1292,8 +1330,32 @@ mod test {
 
         // Set up metadata
         system_metadata.map = system_objects_map;
-        specific_components_meta.map = specific_components_objects_map;
-        specific_components_meta.sizes = vec![contentmeta[0].clone(), contentmeta[1].clone()];
+
+        // Create specific content metadata for pkg1 and pkg2
+        specific_contentmeta.insert(
+            contentmeta[0].meta.identifier.clone(),
+            pkg1_objects
+                .iter()
+                .map(|obj| {
+                    (
+                        Utf8PathBuf::from(format!("/path/to/{}", obj)),
+                        obj.to_string(),
+                    )
+                })
+                .collect(),
+        );
+        specific_contentmeta.insert(
+            contentmeta[1].meta.identifier.clone(),
+            pkg2_objects
+                .iter()
+                .map(|obj| {
+                    (
+                        Utf8PathBuf::from(format!("/path/to/{}", obj)),
+                        obj.to_string(),
+                    )
+                })
+                .collect(),
+        );
 
         // Initialize: Add ALL objects to the remainder chunk before processing
         // This includes both specific component objects and regular package objects
@@ -1311,12 +1373,12 @@ mod test {
 
         // Process the mapping
         // - system_metadata contains ALL objects in the system
-        // - specific_components_meta tells process_mapping which objects belong to specific components
+        // - specific_contentmeta tells process_mapping which objects belong to specific components
         chunking.process_mapping(
             &system_metadata,
             &Some(NonZeroU32::new(8).unwrap()),
             None,
-            Some(&specific_components_meta),
+            Some(&specific_contentmeta),
         )?;
 
         // VALIDATION PART 1: Specific components get their own dedicated chunks
@@ -1327,8 +1389,8 @@ mod test {
 
         // Specific Component Layer 1: pkg1 only
         let specific_component_1_layer = &chunking.chunks[0];
-        assert_eq!(specific_component_1_layer.name, "pkg1");
-        assert_eq!(specific_component_1_layer.packages, vec!["pkg1"]);
+        assert_eq!(specific_component_1_layer.name, "pkg1.0");
+        assert_eq!(specific_component_1_layer.packages, vec!["pkg1.0"]);
         assert_eq!(specific_component_1_layer.content.len(), 3);
         for obj in &pkg1_objects {
             assert!(
@@ -1340,8 +1402,8 @@ mod test {
 
         // Specific Component Layer 2: pkg2 only
         let specific_component_2_layer = &chunking.chunks[1];
-        assert_eq!(specific_component_2_layer.name, "pkg2");
-        assert_eq!(specific_component_2_layer.packages, vec!["pkg2"]);
+        assert_eq!(specific_component_2_layer.name, "pkg2.0");
+        assert_eq!(specific_component_2_layer.packages, vec!["pkg2.0"]);
         assert_eq!(specific_component_2_layer.content.len(), 2);
         for obj in &pkg2_objects {
             assert!(
@@ -1382,7 +1444,7 @@ mod test {
         // VALIDATION PART 4: All regular package objects are in some regular layer
         let mut found_regular_objects = BTreeSet::new();
         for regular_layer in regular_package_layers {
-            for (obj, _) in &regular_layer.content {
+            for obj in regular_layer.content.keys() {
                 found_regular_objects.insert(obj.as_ref());
             }
         }

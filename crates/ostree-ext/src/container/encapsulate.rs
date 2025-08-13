@@ -4,9 +4,10 @@ use super::{ImageReference, SignatureSource, OSTREE_COMMIT_LABEL};
 use super::{OstreeImageReference, Transport, COMPONENT_SEPARATOR, CONTENT_ANNOTATION};
 use crate::chunking::{Chunk, Chunking, ObjectMetaSized};
 use crate::container::skopeo;
+use crate::objectsource::ContentID;
 use crate::tar as ostree_tar;
 use anyhow::{anyhow, Context, Result};
-use camino::Utf8Path;
+use camino::{Utf8Path, Utf8PathBuf};
 use cap_std::fs::Dir;
 use cap_std_ext::cap_std;
 use chrono::DateTime;
@@ -430,7 +431,8 @@ pub struct ExportOpts<'m, 'o> {
     /// used to optimize packing.
     pub package_contentmeta: Option<&'o ObjectMetaSized>,
     /// Metadata for exclusive components that should have their own layers.
-    pub specific_contentmeta: Option<&'o ObjectMetaSized>,
+    /// Map from component -> (path, checksum)
+    pub specific_contentmeta: Option<&'o BTreeMap<ContentID, Vec<(Utf8PathBuf, String)>>>,
     /// Sets the created tag in the image manifest.
     pub created: Option<String>,
     /// Whether to explicitly create all parent directories in the tar layers.
