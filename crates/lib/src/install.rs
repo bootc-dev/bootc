@@ -16,7 +16,7 @@ pub(crate) mod osconfig;
 
 use std::collections::HashMap;
 use std::fs::create_dir_all;
-use std::io::{Read, Write};
+use std::io::Write;
 use std::os::fd::{AsFd, AsRawFd};
 use std::os::unix::fs::symlink;
 use std::os::unix::process::CommandExt;
@@ -41,9 +41,9 @@ use cap_std_ext::cap_tempfile::TempDir;
 use cap_std_ext::cmdext::CapStdExtCommandExt;
 use cap_std_ext::prelude::CapStdExtDirExt;
 use clap::ValueEnum;
+use composefs_boot::bootloader::read_file;
 use fn_error_context::context;
 use ostree::gio;
-use ostree_ext::composefs::tree::RegularFile;
 use ostree_ext::composefs::{
     fsverity::{FsVerityHashValue, Sha256HashValue},
     repository::Repository as ComposefsRepository,
@@ -1545,24 +1545,6 @@ fn get_booted_bls() -> Result<BLSConfig> {
     }
 
     Err(anyhow::anyhow!("Booted BLS not found"))
-}
-
-pub fn read_file<ObjectID: FsVerityHashValue>(
-    file: &RegularFile<ObjectID>,
-    repo: &ComposefsRepository<ObjectID>,
-) -> Result<Box<[u8]>> {
-    match file {
-        RegularFile::Inline(data) => Ok(data.clone()),
-        RegularFile::External(id, size) => {
-            let mut data = vec![];
-            std::fs::File::from(repo.open_object(id)?).read_to_end(&mut data)?;
-            ensure!(
-                *size == data.len() as u64,
-                "File content doesn't have the expected length"
-            );
-            Ok(data.into_boxed_slice())
-        }
-    }
 }
 
 pub(crate) enum BootSetupType<'a> {
