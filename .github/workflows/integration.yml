@@ -8,8 +8,9 @@ jobs:
     strategy:
       matrix:
         test_os: [fedora-42]
+        test_runner: [ubuntu-latest, ubuntu-24.04-arm]
 
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.test_runner }}
 
     steps:
       - name: Install podman for heredoc support
@@ -31,6 +32,7 @@ jobs:
           sudo chmod 0755 /tmp/tmp-bootc-build/id_rsa
 
       - name: Archive bootc disk image - disk.raw
+        if: matrix.test_runner == 'ubuntu-latest'
         uses: actions/upload-artifact@v4
         with:
           name: PR-${{ github.event.number }}-${{ matrix.test_os }}-disk
@@ -38,6 +40,7 @@ jobs:
           retention-days: 1
 
       - name: Archive SSH private key - id_rsa
+        if: matrix.test_runner == 'ubuntu-latest'
         uses: actions/upload-artifact@v4
         with:
           name: PR-${{ github.event.number }}-${{ matrix.test_os }}-id_rsa
