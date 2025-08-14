@@ -8,6 +8,7 @@ pub(crate) mod bootc_kargs;
 mod boundimage;
 mod cfsctl;
 pub mod cli;
+mod composefs_consts;
 pub(crate) mod deploy;
 pub(crate) mod fsck;
 pub(crate) mod generator;
