@@ -36,7 +36,7 @@ pub(crate) struct Storage {
     pub physical_root: Dir,
 
     /// The OSTree storage
-    pub sysroot: SysrootLock,
+    ostree: SysrootLock,
     /// The composefs storage
     pub composefs: OnceCell<Arc<ComposefsRepository>>,
     /// The containers-image storage used foR LBIs
@@ -56,7 +56,7 @@ impl Deref for Storage {
     type Target = SysrootLock;
 
     fn deref(&self) -> &Self::Target {
-        &self.sysroot
+        &self.ostree
     }
 }
 
@@ -82,11 +82,22 @@ impl Storage {
 
         Ok(Self {
             physical_root,
-            sysroot,
+            ostree: sysroot,
             run,
             composefs: Default::default(),
             imgstore: Default::default(),
         })
+    }
+
+    /// Access the underlying ostree repository
+    pub(crate) fn get_ostree(&self) -> Result<&SysrootLock> {
+        Ok(&self.ostree)
+    }
+
+    /// Access the underlying ostree repository
+    pub(crate) fn get_ostree_cloned(&self) -> Result<ostree::Sysroot> {
+        let r = self.get_ostree()?;
+        Ok((*r).clone())
     }
 
     /// Access the image storage; will automatically initialize it if necessary.
@@ -94,9 +105,9 @@ impl Storage {
         if let Some(imgstore) = self.imgstore.get() {
             return Ok(imgstore);
         }
-        let sysroot_dir = crate::utils::sysroot_dir(&self.sysroot)?;
+        let sysroot_dir = crate::utils::sysroot_dir(&self.ostree)?;
 
-        let sepolicy = if self.sysroot.booted_deployment().is_none() {
+        let sepolicy = if self.ostree.booted_deployment().is_none() {
             // fallback to policy from container root
             // this should only happen during cleanup of a broken install
             tracing::trace!("falling back to container root's selinux policy");
@@ -106,8 +117,8 @@ impl Storage {
             // load the sepolicy from the booted ostree deployment so the imgstorage can be
             // properly labeled with /var/lib/container/storage labels
             tracing::trace!("loading sepolicy from booted ostree deployment");
-            let dep = self.sysroot.booted_deployment().unwrap();
-            let dep_fs = deployment_fd(&self.sysroot, &dep)?;
+            let dep = self.ostree.booted_deployment().unwrap();
+            let dep_fs = deployment_fd(&self.ostree, &dep)?;
             lsm::new_sepolicy_at(&dep_fs)?
         };
 
@@ -132,7 +143,7 @@ impl Storage {
 
         // Bootstrap verity off of the ostree state. In practice this means disabled by
         // default right now.
-        let ostree_repo = &self.sysroot.repo();
+        let ostree_repo = &self.ostree.repo();
         let ostree_verity = ostree_ext::fsverity::is_verity_enabled(ostree_repo)?;
         if !ostree_verity.enabled {
             tracing::debug!("Setting insecure mode for composefs repo");
@@ -147,7 +158,7 @@ impl Storage {
     #[context("Updating storage root mtime")]
     pub(crate) fn update_mtime(&self) -> Result<()> {
         let sysroot_dir =
-            crate::utils::sysroot_dir(&self.sysroot).context("Reopen sysroot directory")?;
+            crate::utils::sysroot_dir(&self.ostree).context("Reopen sysroot directory")?;
 
         sysroot_dir
             .update_timestamps(std::path::Path::new(BOOTC_ROOT))

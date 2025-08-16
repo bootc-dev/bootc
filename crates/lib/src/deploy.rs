@@ -464,7 +464,7 @@ pub(crate) async fn cleanup(sysroot: &Storage) -> Result<()> {
 
     // We create clones (just atomic reference bumps) here to move to the thread.
     let repo = sysroot.repo();
-    let sysroot = sysroot.sysroot.clone();
+    let sysroot = sysroot.get_ostree_cloned()?;
     let repo_prune =
         ostree_ext::tokio_util::spawn_blocking_cancellable_flatten(move |cancellable| {
             let locked_sysroot = &SysrootLock::from_assumed_locked(&sysroot);
@@ -543,7 +543,7 @@ async fn deploy(
         None
     };
     // Clone all the things to move to worker thread
-    let sysroot_clone = sysroot.sysroot.clone();
+    let ostree = sysroot.get_ostree_cloned()?;
     // ostree::Deployment is incorrectly !Send 😢 so convert it to an integer
     let merge_deployment = merge_deployment.map(|d| d.index() as usize);
     let stateroot = stateroot.to_string();
@@ -553,7 +553,7 @@ async fn deploy(
     let r = async_task_with_spinner(
         "Deploying",
         spawn_blocking_cancellable_flatten(move |cancellable| -> Result<_> {
-            let sysroot = sysroot_clone;
+            let ostree = ostree;
             let stateroot = Some(stateroot);
             let mut opts = ostree::SysrootDeployTreeOpts::default();
 
@@ -565,11 +565,11 @@ async fn deploy(
             if let Some(kargs) = override_kargs.as_deref() {
                 opts.override_kernel_argv = Some(&kargs);
             }
-            let deployments = sysroot.deployments();
+            let deployments = ostree.deployments();
             let merge_deployment = merge_deployment.map(|m| &deployments[m]);
             let origin = glib::KeyFile::new();
             origin.load_from_data(&origin_data, glib::KeyFileFlags::NONE)?;
-            let d = sysroot.stage_tree_with_options(
+            let d = ostree.stage_tree_with_options(
                 stateroot.as_deref(),
                 &ostree_commit,
                 Some(&origin),
