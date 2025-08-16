@@ -6,6 +6,7 @@ use std::os::fd::BorrowedFd;
 
 use anyhow::Result;
 use fn_error_context::context;
+use libsystemd::logging::Priority;
 use ostree::glib;
 
 use super::store::{gc_image_layers, LayeredImageState};
@@ -70,6 +71,25 @@ pub async fn deploy(
     imgref: &OstreeImageReference,
     options: Option<DeployOpts<'_>>,
 ) -> Result<Box<LayeredImageState>> {
+    // Log the deployment operation to systemd journal
+    const DEPLOY_JOURNAL_ID: &str = "9e8d7c6b5a4f3e2d1c0b9a8f7e6d5c4b3";
+    let msg = format!("Deploying container image: {}", imgref);
+    crate::logging::system_repo_journal_send(
+        &sysroot.repo(),
+        Priority::Info,
+        &msg,
+        [
+            ("MESSAGE_ID", DEPLOY_JOURNAL_ID),
+            ("BOOTC_IMAGE_REFERENCE", &imgref.imgref.name),
+            (
+                "BOOTC_IMAGE_TRANSPORT",
+                &imgref.imgref.transport.to_string(),
+            ),
+            ("BOOTC_STATEROOT", stateroot),
+        ]
+        .into_iter(),
+    );
+
     let cancellable = ostree::gio::Cancellable::NONE;
     let options = options.unwrap_or_default();
     let repo = &sysroot.repo();

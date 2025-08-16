@@ -7,6 +7,7 @@ use std::io::Write;
 use anyhow::{Context, Result};
 use canon_json::CanonJsonSerialize;
 use fn_error_context::context;
+use libsystemd::logging::Priority;
 use ostree::glib;
 use ostree_container::OstreeImageReference;
 use ostree_ext::container as ostree_container;
@@ -338,6 +339,33 @@ pub(crate) fn get_status(
 /// Implementation of the `bootc status` CLI command.
 #[context("Status")]
 pub(crate) async fn status(opts: super::cli::StatusOpts) -> Result<()> {
+    // Log the status query operation to systemd journal
+    const STATUS_JOURNAL_ID: &str = "5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b9";
+    let msg = "Status query requested";
+    crate::journal::journal_send(
+        Priority::Debug,
+        msg,
+        [
+            ("MESSAGE_ID", STATUS_JOURNAL_ID),
+            ("BOOTC_OPERATION", "status_query"),
+            (
+                "BOOTC_FORMAT",
+                match opts.format {
+                    Some(super::cli::OutputFormat::Json) => "json",
+                    Some(super::cli::OutputFormat::Yaml) => "yaml",
+                    Some(super::cli::OutputFormat::HumanReadable) => "human",
+                    None => "auto",
+                },
+            ),
+            ("BOOTC_VERBOSE", if opts.verbose { "true" } else { "false" }),
+            (
+                "BOOTC_BOOTED_ONLY",
+                if opts.booted { "true" } else { "false" },
+            ),
+        ]
+        .into_iter(),
+    );
+
     match opts.format_version.unwrap_or_default() {
         // For historical reasons, both 0 and 1 mean "v1".
         0 | 1 => {}

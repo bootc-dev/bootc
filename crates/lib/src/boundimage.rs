@@ -10,6 +10,7 @@ use camino::Utf8Path;
 use cap_std_ext::cap_std::fs::Dir;
 use cap_std_ext::dirext::CapStdExtDirExt;
 use fn_error_context::context;
+use libsystemd::logging::Priority;
 use ostree_ext::containers_image_proxy;
 use ostree_ext::ostree::Deployment;
 
@@ -39,7 +40,36 @@ pub(crate) struct ResolvedBoundImage {
 
 /// Given a deployment, pull all container images it references.
 pub(crate) async fn pull_bound_images(sysroot: &Storage, deployment: &Deployment) -> Result<()> {
+    // Log the bound images operation to systemd journal
+    const BOUND_IMAGES_JOURNAL_ID: &str = "1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5";
+    let msg = "Starting pull of bound images for deployment";
+    crate::journal::journal_send(
+        Priority::Info,
+        msg,
+        [
+            ("MESSAGE_ID", BOUND_IMAGES_JOURNAL_ID),
+            ("BOOTC_OPERATION", "pull_bound_images"),
+            ("BOOTC_DEPLOYMENT_OSNAME", &deployment.osname()),
+            ("BOOTC_DEPLOYMENT_CHECKSUM", &deployment.csum()),
+        ]
+        .into_iter(),
+    );
+
     let bound_images = query_bound_images_for_deployment(sysroot, deployment)?;
+
+    if !bound_images.is_empty() {
+        let msg = format!("Found {} bound images to pull", bound_images.len());
+        crate::journal::journal_send(
+            Priority::Info,
+            &msg,
+            [
+                ("MESSAGE_ID", BOUND_IMAGES_JOURNAL_ID),
+                ("BOOTC_BOUND_IMAGES_COUNT", &bound_images.len().to_string()),
+            ]
+            .into_iter(),
+        );
+    }
+
     pull_images(sysroot, bound_images).await
 }
 

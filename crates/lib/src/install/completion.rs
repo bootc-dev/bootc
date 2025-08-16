@@ -10,6 +10,7 @@ use bootc_utils::CommandRunExt;
 use camino::Utf8Path;
 use cap_std_ext::{cap_std::fs::Dir, dirext::CapStdExtDirExt};
 use fn_error_context::context;
+use libsystemd::logging::Priority;
 use ostree_ext::{gio, ostree};
 use rustix::fs::Mode;
 use rustix::fs::OFlags;
@@ -275,6 +276,20 @@ pub(crate) async fn impl_completion(
     sysroot: &ostree::Sysroot,
     stateroot: Option<&str>,
 ) -> Result<()> {
+    // Log the completion operation to systemd journal
+    const COMPLETION_JOURNAL_ID: &str = "0f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4";
+    let msg = "Starting bootc installation completion";
+    crate::journal::journal_send(
+        Priority::Info,
+        msg,
+        [
+            ("MESSAGE_ID", COMPLETION_JOURNAL_ID),
+            ("BOOTC_OPERATION", "install_completion"),
+            ("BOOTC_STATEROOT", stateroot.unwrap_or("default")),
+        ]
+        .into_iter(),
+    );
+
     let deployment = &sysroot
         .merge_deployment(stateroot)
         .ok_or_else(|| anyhow::anyhow!("Failed to find deployment (stateroot={stateroot:?}"))?;
@@ -291,6 +306,18 @@ pub(crate) async fn impl_completion(
     // ostree-ext doesn't do logically bound images
     let bound_images = crate::boundimage::query_bound_images_for_deployment(sysroot, deployment)?;
     if !bound_images.is_empty() {
+        // Log bound images found
+        let msg = format!("Found {} bound images for completion", bound_images.len());
+        crate::journal::journal_send(
+            Priority::Info,
+            &msg,
+            [
+                ("MESSAGE_ID", COMPLETION_JOURNAL_ID),
+                ("BOOTC_BOUND_IMAGES_COUNT", &bound_images.len().to_string()),
+            ]
+            .into_iter(),
+        );
+
         // load the selinux policy from the target ostree deployment
         let deployment_fd = deployment_fd(sysroot, deployment)?;
         let sepolicy = crate::lsm::new_sepolicy_at(deployment_fd)?;
@@ -303,6 +330,19 @@ pub(crate) async fn impl_completion(
             .await
             .context("pulling bound images")?;
     }
+
+    // Log completion success
+    let msg = "Successfully completed bootc installation";
+    crate::journal::journal_send(
+        Priority::Info,
+        msg,
+        [
+            ("MESSAGE_ID", COMPLETION_JOURNAL_ID),
+            ("BOOTC_OPERATION", "install_completion"),
+            ("BOOTC_STATUS", "completed"),
+        ]
+        .into_iter(),
+    );
 
     Ok(())
 }
