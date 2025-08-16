@@ -1,0 +1,100 @@
+name: bootc integration test
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        test_os: [fedora-41, fedora-42, fedora-43, centos-9]
+        test_runner: [ubuntu-latest, ubuntu-24.04-arm]
+
+    runs-on: ${{ matrix.test_runner }}
+
+    steps:
+      - name: Install podman for heredoc support
+        run: |
+          set -eux
+          echo 'deb [trusted=yes] https://ftp.debian.org/debian/ testing main' | sudo tee /etc/apt/sources.list.d/testing.list
+          sudo apt update
+          sudo apt install -y crun/testing podman/testing
+
+      - uses: actions/checkout@v4
+
+      - name: Build bootc and bootc image
+        env:
+          TEST_OS: ${{ matrix.test_os }}
+        run: sudo -E TEST_OS=$TEST_OS tests/build.sh
+
+      - name: Grant sudo user permission to archive files
+        run: |
+          sudo chmod 0755 /tmp/tmp-bootc-build/id_rsa
+
+      - name: Archive bootc disk image - disk.raw
+        if: matrix.test_runner == 'ubuntu-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: PR-${{ github.event.number }}-${{ matrix.test_os }}-disk
+          path: /tmp/tmp-bootc-build/disk.raw
+          retention-days: 1
+
+      - name: Archive SSH private key - id_rsa
+        if: matrix.test_runner == 'ubuntu-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: PR-${{ github.event.number }}-${{ matrix.test_os }}-id_rsa
+          path: /tmp/tmp-bootc-build/id_rsa
+          retention-days: 1
+
+  test:
+    needs: build
+    strategy:
+      matrix:
+        test_os: [fedora-41, fedora-42, fedora-43, centos-9]
+        tmt_plan: [test-01-readonly, test-20-local-upgrade, test-21-logically-bound-switch, test-22-logically-bound-install, test-23-install-outside-container, test-24-local-upgrade-reboot]
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependence
+        run: |
+          sudo apt-get update
+          sudo apt install -y qemu-kvm qemu-system
+          pip install --user tmt
+
+      - name: Create folder to save disk image
+        run: mkdir -p /tmp/tmp-bootc-build
+
+      - name: Download disk.raw
+        uses: actions/download-artifact@v4
+        with:
+          name: PR-${{ github.event.number }}-${{ matrix.test_os }}-disk
+          path: /tmp/tmp-bootc-build
+
+      - name: Download id_rsa
+        uses: actions/download-artifact@v4
+        with:
+          name: PR-${{ github.event.number }}-${{ matrix.test_os }}-id_rsa
+          path: /tmp/tmp-bootc-build
+
+      - name: Enable KVM group perms
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm
+
+      - name: Run test
+        env:
+          TMT_PLAN_NAME: ${{ matrix.tmt_plan }}
+        run: chmod 600 /tmp/tmp-bootc-build/id_rsa && tests/test.sh
+
+      - name: Archive TMT logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tmt-log-PR-${{ github.event.number }}-${{ matrix.test_os }}-${{ matrix.tmt_plan }}
+          path: /var/tmp/tmt
