@@ -6,6 +6,7 @@
 
 // This sub-module is the "basic" installer that handles creating basic block device
 // and filesystem setup.
+mod aleph;
 #[cfg(feature = "install-to-disk")]
 pub(crate) mod baseline;
 pub(crate) mod completion;
@@ -23,6 +24,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use aleph::InstallAleph;
 use anyhow::{anyhow, ensure, Context, Result};
 use bootc_utils::CommandRunExt;
 use camino::Utf8Path;
@@ -35,11 +37,9 @@ use cap_std_ext::cap_std::fs_utf8::DirEntry as DirEntryUtf8;
 use cap_std_ext::cap_tempfile::TempDir;
 use cap_std_ext::cmdext::CapStdExtCommandExt;
 use cap_std_ext::prelude::CapStdExtDirExt;
-use chrono::prelude::*;
 use clap::ValueEnum;
 use fn_error_context::context;
 use ostree::gio;
-use ostree_ext::oci_spec;
 use ostree_ext::ostree;
 use ostree_ext::ostree_prepareroot::{ComposefsState, Tristate};
 use ostree_ext::prelude::Cast;
@@ -417,27 +417,6 @@ impl State {
     }
 }
 
-/// Path to initially deployed version information
-const BOOTC_ALEPH_PATH: &str = ".bootc-aleph.json";
-
-/// The "aleph" version information is injected into /root/.bootc-aleph.json
-/// and contains the image ID that was initially used to install.  This can
-/// be used to trace things like the specific version of `mkfs.ext4` or
-/// kernel version that was used.
-#[derive(Debug, Serialize)]
-struct InstallAleph {
-    /// Digested pull spec for installed image
-    image: String,
-    /// The version number
-    version: Option<String>,
-    /// The timestamp
-    timestamp: Option<chrono::DateTime<Utc>>,
-    /// The `uname -r` of the kernel doing the installation
-    kernel: String,
-    /// The state of SELinux at install time
-    selinux: String,
-}
-
 /// A mount specification is a subset of a line in `/etc/fstab`.
 ///
 /// There are 3 (ASCII) whitespace separated values:
@@ -526,32 +505,6 @@ impl FromStr for MountSpec {
             target: target.to_string(),
             options,
         })
-    }
-}
-
-impl InstallAleph {
-    #[context("Creating aleph data")]
-    pub(crate) fn new(
-        src_imageref: &ostree_container::OstreeImageReference,
-        imgstate: &ostree_container::store::LayeredImageState,
-        selinux_state: &SELinuxFinalState,
-    ) -> Result<Self> {
-        let uname = rustix::system::uname();
-        let labels = crate::status::labels_of_config(&imgstate.configuration);
-        let timestamp = labels
-            .and_then(|l| {
-                l.get(oci_spec::image::ANNOTATION_CREATED)
-                    .map(|s| s.as_str())
-            })
-            .and_then(bootc_utils::try_deserialize_timestamp);
-        let r = InstallAleph {
-            image: src_imageref.imgref.name.clone(),
-            version: imgstate.version().as_ref().map(|s| s.to_string()),
-            timestamp,
-            kernel: uname.release().to_str()?.to_string(),
-            selinux: selinux_state.to_aleph().to_string(),
-        };
-        Ok(r)
     }
 }
 
@@ -1346,12 +1299,7 @@ async fn install_with_sysroot(
     // the aleph state (see below).
     let (deployment, aleph) = install_container(state, rootfs, &sysroot, has_ostree).await?;
     // Write the aleph data that captures the system state at the time of provisioning for aid in future debugging.
-    rootfs
-        .physical_root
-        .atomic_replace_with(BOOTC_ALEPH_PATH, |f| {
-            anyhow::Ok(aleph.to_canon_json_writer(f)?)
-        })
-        .context("Writing aleph version")?;
+    aleph.write_to(&rootfs.physical_root)?;
 
     let deployment_path = sysroot.deployment_dirpath(&deployment);
 
