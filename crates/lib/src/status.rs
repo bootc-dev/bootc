@@ -63,19 +63,47 @@ impl From<ImageSignature> for ostree_container::SignatureSource {
     }
 }
 
+/// A parsed composefs command line
+pub(crate) struct ComposefsCmdline {
+    #[allow(dead_code)]
+    pub insecure: bool,
+    pub digest: Box<str>,
+}
+
+impl ComposefsCmdline {
+    pub(crate) fn new(s: &str) -> Self {
+        let (insecure, digest_str) = s
+            .strip_prefix('?')
+            .map(|v| (true, v))
+            .unwrap_or_else(|| (false, s));
+        ComposefsCmdline {
+            insecure,
+            digest: digest_str.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for ComposefsCmdline {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let insecure = if self.insecure { "?" } else { "" };
+        write!(f, "{}={}{}", COMPOSEFS_CMDLINE, insecure, self.digest)
+    }
+}
+
 /// Detect if we have composefs=<digest> in /proc/cmdline
-pub(crate) fn composefs_booted() -> Result<Option<&'static str>> {
-    static CACHED_DIGEST_VALUE: OnceLock<Option<String>> = OnceLock::new();
+pub(crate) fn composefs_booted() -> Result<Option<&'static ComposefsCmdline>> {
+    static CACHED_DIGEST_VALUE: OnceLock<Option<ComposefsCmdline>> = OnceLock::new();
     if let Some(v) = CACHED_DIGEST_VALUE.get() {
-        return Ok(v.as_deref());
+        return Ok(v.as_ref());
     }
     let cmdline = Cmdline::from_proc()?;
     let Some(kv) = cmdline.find_str(COMPOSEFS_CMDLINE) else {
         return Ok(None);
     };
     let Some(v) = kv.value else { return Ok(None) };
-    let r = CACHED_DIGEST_VALUE.get_or_init(|| Some(v.to_owned()));
-    Ok(r.as_deref())
+    let v = ComposefsCmdline::new(v);
+    let r = CACHED_DIGEST_VALUE.get_or_init(|| Some(v));
+    Ok(r.as_ref())
 }
 
 /// Fixme lower serializability into ostree-ext
@@ -461,13 +489,9 @@ async fn boot_entry_from_composefs_deployment(
 
 #[context("Getting composefs deployment status")]
 pub(crate) async fn composefs_deployment_status() -> Result<Host> {
-    let cmdline = Cmdline::from_proc()?;
-    let composefs_arg = cmdline
-        .find_str(COMPOSEFS_CMDLINE)
+    let composefs_state = composefs_booted()?
         .ok_or_else(|| anyhow::anyhow!("Failed to find composefs parameter in kernel cmdline"))?;
-    let booted_image_verity = composefs_arg
-        .value
-        .ok_or_else(|| anyhow::anyhow!("Missing value for composefs"))?;
+    let composefs_digest = &composefs_state.digest;
 
     let sysroot = cap_std::fs::Dir::open_ambient_dir("/sysroot", cap_std::ambient_authority())
         .context("Opening sysroot")?;
@@ -532,7 +556,7 @@ pub(crate) async fn composefs_deployment_status() -> Result<Host> {
             }
         };
 
-        if depl.file_name() == booted_image_verity {
+        if depl.file_name() == composefs_digest.as_ref() {
             host.spec.image = boot_entry.image.as_ref().map(|x| x.image.clone());
             host.status.booted = Some(boot_entry);
             continue;
@@ -563,7 +587,7 @@ pub(crate) async fn composefs_deployment_status() -> Result<Host> {
                 .options
                 .as_ref()
                 .ok_or(anyhow::anyhow!("options key not found in bls config"))?
-                .contains(composefs_arg.as_ref());
+                .contains(composefs_digest.as_ref());
         }
 
         BootType::Uki => {
@@ -574,7 +598,7 @@ pub(crate) async fn composefs_deployment_status() -> Result<Host> {
                 .ok_or(anyhow::anyhow!("First boot entry not found"))?
                 .body
                 .chainloader
-                .contains(composefs_arg.as_ref())
+                .contains(composefs_digest.as_ref())
         }
     };
 
@@ -1082,5 +1106,16 @@ mod tests {
         assert!(w.contains("Staged:"));
         assert!(w.contains("Commit:"));
         assert!(w.contains("Soft-reboot:"));
+    }
+
+    #[test]
+    fn test_composefs_parsing() {
+        const DIGEST: &str = "8b7df143d91c716ecfa5fc1730022f6b421b05cedee8fd52b1fc65a96030ad52";
+        let v = ComposefsCmdline::new(DIGEST);
+        assert!(!v.insecure);
+        assert_eq!(v.digest.as_ref(), DIGEST);
+        let v = ComposefsCmdline::new(&format!("?{}", DIGEST));
+        assert!(v.insecure);
+        assert_eq!(v.digest.as_ref(), DIGEST);
     }
 }
