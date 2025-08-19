@@ -70,7 +70,7 @@ pub(crate) fn composefs_booted() -> Result<Option<&'static str>> {
         return Ok(v.as_deref());
     }
     let cmdline = Cmdline::from_proc()?;
-    let Some(kv) = cmdline.find_str("composefs") else {
+    let Some(kv) = cmdline.find_str(COMPOSEFS_CMDLINE) else {
         return Ok(None);
     };
     let Some(v) = kv.value else { return Ok(None) };
