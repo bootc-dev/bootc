@@ -7,6 +7,7 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
 use std::io::BufReader;
+use std::io::Write;
 use std::os::fd::{AsFd, AsRawFd};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
@@ -19,11 +20,14 @@ use cap_std_ext::dirext::CapStdExtDirExt;
 use composefs::fsverity::{FsVerityHashValue, Sha256HashValue, Sha512HashValue};
 use composefs::generic_tree::{Directory, Inode, Leaf, LeafContent, Stat};
 use composefs::tree::ImageError;
-use rustix::fs::{AtFlags, Gid, Uid, XattrFlags, getxattr, listxattr, lsetxattr, readlinkat};
+use rustix::fs::{lgetxattr, llistxattr, lsetxattr, readlinkat, AtFlags, Gid, Uid, XattrFlags};
 
+/// Metadata associated with a file, directory, or symlink entry.
 #[derive(Debug)]
-struct CustomMetadata {
+pub struct CustomMetadata {
+    /// A SHA256 sum representing the file contents.
     content_hash: String,
+    /// Optional verity for the file
     verity: Option<String>,
 }
 
@@ -72,14 +76,18 @@ fn stat_eq_ignore_mtime(this: &Stat, other: &Stat) -> bool {
     return true;
 }
 
+/// Represents the differences between two directory trees.
 #[derive(Debug)]
-struct Diff {
+pub struct Diff {
+    /// Paths that exist in the current /etc but not in the pristine
     added: Vec<PathBuf>,
+    /// Paths that exist in both pristine and current /etc but differ in metadata
+    /// (e.g., file contents, permissions, symlink targets)
     modified: Vec<PathBuf>,
+    /// Paths that exist in the pristine /etc but not in the current one
     removed: Vec<PathBuf>,
 }
 
-// if  /outer/inner.txt is removed, then we only add /outer iff it's empty
 fn collect_all_files(root: &Directory<CustomMetadata>, current_path: PathBuf) -> Vec<PathBuf> {
     fn collect(
         root: &Directory<CustomMetadata>,
@@ -132,7 +140,7 @@ fn get_deletions(
 
             Inode::Leaf(..) => match current.ref_leaf(file_name) {
                 Ok(..) => {
-                    // Empty as all additions/modifications are tracked above
+                    // Empty as all additions/modifications are tracked earlier in `get_modifications`
                 }
 
                 Err(ImageError::NotFound(..)) => {
@@ -170,6 +178,8 @@ fn get_modifications(
     mut current_path: PathBuf,
     diff: &mut Diff,
 ) -> anyhow::Result<()> {
+    use composefs::generic_tree::LeafContent::*;
+
     for (path, inode) in current.sorted_entries() {
         current_path.push(path);
 
@@ -200,19 +210,33 @@ fn get_modifications(
 
             Inode::Leaf(leaf) => match pristine.ref_leaf(path) {
                 Ok(old_leaf) => {
-                    let LeafContent::Regular(current_meta) = &leaf.content else {
-                        unreachable!("File types do not match");
-                    };
+                    match (&old_leaf.content, &leaf.content) {
+                        (Regular(old_meta), Regular(current_meta)) => {
+                            if old_meta.content_hash != current_meta.content_hash
+                                || !stat_eq_ignore_mtime(&old_leaf.stat, &leaf.stat)
+                            {
+                                // File modified in some way
+                                diff.modified.push(current_path.clone());
+                            }
+                        }
 
-                    let LeafContent::Regular(old_meta) = &old_leaf.content else {
-                        unreachable!("File types do not match");
-                    };
+                        (Symlink(old_link), Symlink(current_link)) => {
+                            if old_link != current_link
+                                || !stat_eq_ignore_mtime(&old_leaf.stat, &leaf.stat)
+                            {
+                                // Symlink modified in some way
+                                diff.modified.push(current_path.clone());
+                            }
+                        }
 
-                    if old_meta.content_hash != current_meta.content_hash
-                        || !stat_eq_ignore_mtime(&old_leaf.stat, &leaf.stat)
-                    {
-                        // File modified in some way
-                        diff.modified.push(current_path.clone());
+                        (Symlink(..), Regular(..)) | (Regular(..), Symlink(..)) => {
+                            // File changed to symlink or vice-versa
+                            diff.modified.push(current_path.clone());
+                        }
+
+                        (a, b) => {
+                            unreachable!("{a:?} modified to {b:?}")
+                        }
                     }
                 }
 
@@ -236,8 +260,34 @@ fn get_modifications(
     Ok(())
 }
 
-/// (Pristine, Current, New)
-fn traverse_etc(
+/// Traverses and collects directory trees for three etc states.
+///
+/// Recursively walks through the given *pristine*, *current*, and *new* etc directories,
+/// building filesystem trees that capture files, directories, and symlinks.
+/// Device files, sockets, pipes etc are ignored
+///
+/// It is primarily used to prepare inputs for later diff computations and
+/// comparisons between different etc states.
+///
+/// # Arguments
+///
+/// * `pristine_etc` - The reference directory representing the unmodified version or current /etc.
+/// Usually this will be obtained by remounting the EROFS image to a temporary location
+///
+/// * `current_etc` - The current `/etc` directory
+///
+/// * `new_etc` - The directory representing the `/etc` directory for a new deployment. This will
+/// again be usually obtained by mounting the new EROFS image to a temporary location. If merging
+/// it will be necessary to make the `/etc` for the deployment writeable
+///
+/// # Returns
+///
+/// [`anyhow::Result`] containing a tuple of directory trees in the order:
+///
+/// 1. `pristine_etc_files` – Dirtree of the pristine etc state
+/// 2. `current_etc_files` – Dirtree of the current etc state
+/// 3. `new_etc_files` – Dirtree of the new etc state
+pub fn traverse_etc(
     pristine_etc: &CapStdDir,
     current_etc: &CapStdDir,
     new_etc: &CapStdDir,
@@ -260,7 +310,8 @@ fn traverse_etc(
     return Ok((pristine_etc_files, current_etc_files, new_etc_files));
 }
 
-fn compute_diff(
+/// Computes the differences between two directory snapshots.
+pub fn compute_diff(
     pristine_etc_files: &Directory<CustomMetadata>,
     current_etc_files: &Directory<CustomMetadata>,
 ) -> anyhow::Result<Diff> {
@@ -287,6 +338,25 @@ fn compute_diff(
     Ok(diff)
 }
 
+/// Prints a colorized summary of differences to standard output.
+pub fn print_diff(diff: &Diff) {
+    use owo_colors::OwoColorize;
+
+    let mut stdout = anstream::stdout();
+
+    for added in &diff.added {
+        let _ = writeln!(stdout, "{} {added:?}", ModificationType::Added.green());
+    }
+
+    for modified in &diff.modified {
+        let _ = writeln!(stdout, "{} {modified:?}", ModificationType::Modified.cyan());
+    }
+
+    for removed in &diff.removed {
+        let _ = writeln!(stdout, "{} {removed:?}", ModificationType::Removed.red());
+    }
+}
+
 #[context("Collecting xattrs")]
 fn collect_xattrs(etc_fd: &CapStdDir, rel_path: &OsString) -> anyhow::Result<Xattrs> {
     let link = format!("/proc/self/fd/{}", etc_fd.as_fd().as_raw_fd());
@@ -296,27 +366,24 @@ fn collect_xattrs(etc_fd: &CapStdDir, rel_path: &OsString) -> anyhow::Result<Xat
 
     // Start with a guess for size
     let mut buf: Vec<u8> = vec![0; DEFAULT_SIZE];
-    let size = listxattr(&path, &mut buf).context("listxattr")?;
+    let size = llistxattr(&path, &mut buf).context("llistxattr")?;
 
     if size > DEFAULT_SIZE {
         buf = vec![0; size];
-        listxattr(&path, &mut buf).context("listxattr")?;
+        llistxattr(&path, &mut buf).context("llistxattr")?;
     }
 
     let xattrs: Xattrs = RefCell::new(BTreeMap::new());
 
-    for name_buf in buf[..size]
-        .split_inclusive(|&b| b == 0)
-        .filter(|x| !x.is_empty())
-    {
+    for name_buf in buf[..size].split(|&b| b == 0).filter(|x| !x.is_empty()) {
         let name = OsStr::from_bytes(name_buf);
 
         let mut buf = vec![0; DEFAULT_SIZE];
-        let size = getxattr(&path, name_buf, &mut buf).context("getxattr")?;
+        let size = lgetxattr(&path, name_buf, &mut buf).context("lgetxattr")?;
 
         if size > DEFAULT_SIZE {
             buf = vec![0; size];
-            getxattr(&path, name_buf, &mut buf).context("getxattr")?;
+            lgetxattr(&path, name_buf, &mut buf).context("lgetxattr")?;
         }
 
         xattrs
@@ -345,11 +412,30 @@ fn recurse_dir(dir: &CapStdDir, root: &mut Directory<CustomMetadata>) -> anyhow:
         let entry_name = entry.file_name();
 
         let entry_type = entry.file_type()?;
+
         let entry_meta = entry
             .metadata()
             .context(format!("Getting metadata for {entry_name:?}"))?;
 
         let xattrs = collect_xattrs(&dir, &entry_name)?;
+
+        // Do symlinks first as we don't want to follow back up any symlinks
+        if entry_type.is_symlink() {
+            let readlinkat_result = readlinkat(&dir, &entry_name, vec![])
+                .context(format!("readlinkat {entry_name:?}"))?;
+
+            let os_str = OsStr::from_bytes(readlinkat_result.as_bytes());
+
+            root.insert(
+                &entry_name,
+                Inode::Leaf(Rc::new(Leaf {
+                    stat: MyStat::from((&entry_meta, xattrs)).0,
+                    content: LeafContent::Symlink(Box::from(os_str)),
+                })),
+            );
+
+            continue;
+        }
 
         if entry_type.is_dir() {
             let dir = dir
@@ -369,23 +455,6 @@ fn recurse_dir(dir: &CapStdDir, root: &mut Directory<CustomMetadata>) -> anyhow:
             // We cannot read any other device like socket, pipe, fifo.
             // We shouldn't really find these in /etc in the first place
             tracing::debug!("Ignoring non-regular/non-symlink file: {:?}", entry_name);
-            continue;
-        }
-
-        if entry_type.is_symlink() {
-            let readlinkat_result = readlinkat(&dir, &entry_name, vec![])
-                .context(format!("readlinkat {entry_name:?}"))?;
-
-            let os_str = OsStr::from_bytes(readlinkat_result.as_bytes());
-
-            root.insert(
-                &entry_name,
-                Inode::Leaf(Rc::new(Leaf {
-                    stat: MyStat::from((&entry_meta, xattrs)).0,
-                    content: LeafContent::Symlink(Box::from(os_str)),
-                })),
-            );
-
             continue;
         }
 
