@@ -1796,14 +1796,20 @@ pub(crate) fn setup_composefs_bls_boot(
 
     loader_entries_dir.atomic_write(
         // SAFETY: We set sort_key above
-        format!("bootc-composefs-{}.conf", bls_config.sort_key.as_ref().unwrap()),
+        format!(
+            "bootc-composefs-{}.conf",
+            bls_config.sort_key.as_ref().unwrap()
+        ),
         bls_config.to_string().as_bytes(),
     )?;
 
     if let Some(booted_bls) = booted_bls {
         loader_entries_dir.atomic_write(
             // SAFETY: We set sort_key above
-            format!("bootc-composefs-{}.conf", booted_bls.sort_key.as_ref().unwrap()),
+            format!(
+                "bootc-composefs-{}.conf",
+                booted_bls.sort_key.as_ref().unwrap()
+            ),
             booted_bls.to_string().as_bytes(),
         )?;
     }
