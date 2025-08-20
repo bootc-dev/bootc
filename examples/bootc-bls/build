@@ -1,0 +1,17 @@
+#!/bin/bash
+
+set -eux
+
+cd "${0%/*}"
+
+cargo build --release --features=pre-6.15 --bin cfsctl --bin composefs-setup-root
+
+cp ../../target/release/cfsctl .
+cp ../../target/release/composefs-setup-root extra/usr/lib/dracut/modules.d/37composefs/
+
+mkdir -p tmp
+
+sudo podman build \
+    -t quay.io/fedora/fedora-bootc-bls:42 \
+    -f Containerfile \
+    --iidfile=tmp/iid \
