@@ -1,10 +1,9 @@
 //! Perform initial setup for a container image based system root
 
-use std::collections::HashSet;
-
 use anyhow::Result;
 use fn_error_context::context;
 use ostree::glib;
+use std::collections::HashSet;
 
 use super::store::{gc_image_layers, LayeredImageState};
 use super::{ImageReference, OstreeImageReference};
@@ -49,13 +48,6 @@ pub struct DeployOpts<'a> {
 
     /// Do not cleanup deployments
     pub no_clean: bool,
-}
-
-// Access the file descriptor for a sysroot
-#[allow(unsafe_code)]
-#[cfg(feature = "bootc")]
-pub(crate) fn sysroot_fd(sysroot: &ostree::Sysroot) -> BorrowedFd<'_> {
-    unsafe { BorrowedFd::borrow_raw(sysroot.fd()) }
 }
 
 /// Write a container image to an OSTree deployment.
