@@ -60,7 +60,6 @@ use crate::containerenv::ContainerExecutionInfo;
 use crate::deploy::{
     prepare_for_pull, pull_from_prepared, MergeState, PreparedImportMeta, PreparedPullResult,
 };
-use crate::kernel_cmdline::Cmdline;
 use crate::lsm;
 use crate::progress_jsonl::ProgressWriter;
 use crate::spec::{Bootloader, ImageReference};
@@ -2208,17 +2207,16 @@ pub(crate) async fn install_reset(opts: InstallResetOpts) -> Result<()> {
     let prog: ProgressWriter = opts.progress.try_into()?;
 
     let sysroot = &crate::cli::get_storage().await?;
-    let repo = &sysroot.repo();
-    let (booted_deployment, _deployments, host) =
-        crate::status::get_status_require_booted(sysroot)?;
+    let ostree = sysroot.get_ostree()?;
+    let repo = &ostree.repo();
+    let (booted_deployment, _deployments, host) = crate::status::get_status_require_booted(ostree)?;
 
-    let stateroots = list_stateroots(sysroot)?;
-    dbg!(&stateroots);
+    let stateroots = list_stateroots(ostree)?;
     let target_stateroot = if let Some(s) = opts.stateroot {
         s
     } else {
         let now = chrono::Utc::now();
-        let r = allocate_new_stateroot(&sysroot, &stateroots, now)?;
+        let r = allocate_new_stateroot(&ostree, &stateroots, now)?;
         r.name
     };
 
@@ -2258,7 +2256,7 @@ pub(crate) async fn install_reset(opts: InstallResetOpts) -> Result<()> {
             .ok_or_else(|| anyhow!("Missing bootcfg for booted deployment"))?;
         if let Some(options) = bootcfg.get("options") {
             let options = options.split_ascii_whitespace().collect::<Vec<_>>();
-            crate::kernel::root_args_from_cmdline(&options)
+            crate::bootc_kargs::root_args_from_cmdline(&options)
                 .into_iter()
                 .map(ToOwned::to_owned)
                 .collect::<Vec<_>>()
@@ -2267,7 +2265,7 @@ pub(crate) async fn install_reset(opts: InstallResetOpts) -> Result<()> {
         }
     };
 
-    let kargs = crate::kargs::get_kargs_in_root(rootfs, std::env::consts::ARCH)?
+    let kargs = crate::bootc_kargs::get_kargs_in_root(rootfs, std::env::consts::ARCH)?
         .into_iter()
         .chain(root_kargs.into_iter())
         .chain(opts.karg.unwrap_or_default())

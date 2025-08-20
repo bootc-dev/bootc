@@ -587,7 +587,7 @@ async fn deploy(
     // doesn't use this API).
     let (stateroot, override_kargs) = match &from {
         MergeState::MergeDeployment(deployment) => {
-            let kargs = crate::kargs::get_kargs(sysroot, &deployment, image)?;
+            let kargs = crate::bootc_kargs::get_kargs(sysroot, &deployment, image)?;
             (deployment.stateroot().into(), kargs)
         }
         MergeState::Reset { stateroot, kargs } => (stateroot.clone(), kargs.clone()),
@@ -614,7 +614,7 @@ async fn deploy(
                 .map(|s| s.as_str())
                 .collect::<Vec<_>>();
             opts.override_kernel_argv = Some(&override_kargs);
-            let deployments = sysroot.deployments();
+            let deployments = ostree.deployments();
             let merge_deployment = merge_deployment.map(|m| &deployments[m]);
             let origin = glib::KeyFile::new();
             origin.load_from_data(&origin_data, glib::KeyFileFlags::NONE)?;
@@ -664,7 +664,8 @@ pub(crate) enum MergeState {
 impl MergeState {
     /// Initialize using the default merge deployment for the given stateroot.
     pub(crate) fn from_stateroot(sysroot: &Storage, stateroot: &str) -> Result<Self> {
-        let merge_deployment = sysroot.merge_deployment(Some(stateroot)).ok_or_else(|| {
+        let ostree = sysroot.get_ostree()?;
+        let merge_deployment = ostree.merge_deployment(Some(stateroot)).ok_or_else(|| {
             anyhow::anyhow!("No merge deployment found for stateroot {stateroot}")
         })?;
         Ok(Self::MergeDeployment(merge_deployment))
@@ -696,13 +697,11 @@ pub(crate) async fn stage(
         bootc.image.reference = &spec.image.image,
         bootc.image.transport = &spec.image.transport,
         bootc.manifest_digest = image.manifest_digest.as_ref(),
-        bootc.stateroot = stateroot,
         "Staging image for deployment: {} (digest: {})",
         spec.image,
         image.manifest_digest
     );
 
-    let ostree = sysroot.get_ostree()?;
     let mut subtask = SubTaskStep {
         subtask: "merging".into(),
         description: "Merging Image".into(),
