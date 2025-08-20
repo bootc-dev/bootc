@@ -40,7 +40,7 @@ impl Deref for SysrootLock {
 
 /// Access the file descriptor for a sysroot
 #[allow(unsafe_code)]
-pub fn sysroot_fd(sysroot: &ostree::Sysroot) -> BorrowedFd {
+pub fn sysroot_fd(sysroot: &ostree::Sysroot) -> BorrowedFd<'_> {
     unsafe { BorrowedFd::borrow_raw(sysroot.fd()) }
 }
 
