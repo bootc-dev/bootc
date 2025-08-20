@@ -1,8 +1,9 @@
-use std::future::Future;
 use std::io::Write;
 use std::os::fd::BorrowedFd;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
+use std::{future::Future, path::Component};
 
 use anyhow::{Context, Result};
 use bootc_utils::CommandRunExt;
@@ -186,6 +187,28 @@ pub(crate) fn digested_pullspec(image: &str, digest: &str) -> String {
     format!("{image}@{digest}")
 }
 
+/// Computes a relative path from `from` to `to`.
+///
+/// Both `from` and `to` must be absolute paths.
+pub(crate) fn path_relative_to(from: &Path, to: &Path) -> Result<PathBuf> {
+    if !from.is_absolute() || !to.is_absolute() {
+        anyhow::bail!("Paths must be absolute");
+    }
+
+    let from = from.components().collect::<Vec<_>>();
+    let to = to.components().collect::<Vec<_>>();
+
+    let common = from.iter().zip(&to).take_while(|(a, b)| a == b).count();
+
+    let up = std::iter::repeat(Component::ParentDir).take(from.len() - common);
+
+    let mut final_path = PathBuf::new();
+    final_path.extend(up);
+    final_path.extend(&to[common..]);
+
+    return Ok(final_path);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -221,6 +244,23 @@ mod tests {
         assert_eq!(
             sigpolicy_from_opt(false),
             SignatureSource::ContainerPolicyAllowInsecure
+        );
+    }
+
+    #[test]
+    fn test_relative_path() {
+        let from = Path::new("/sysroot/state/deploy/image_id");
+        let to = Path::new("/sysroot/state/os/default/var");
+
+        assert_eq!(
+            path_relative_to(from, to).unwrap(),
+            PathBuf::from("../../os/default/var")
+        );
+        assert_eq!(
+            path_relative_to(&Path::new("state/deploy"), to)
+                .unwrap_err()
+                .to_string(),
+            "Paths must be absolute"
         );
     }
 }

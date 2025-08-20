@@ -8,6 +8,7 @@ pub(crate) mod bootc_kargs;
 mod boundimage;
 mod cfsctl;
 pub mod cli;
+mod composefs_consts;
 pub(crate) mod deploy;
 pub(crate) mod fsck;
 pub(crate) mod generator;
@@ -41,6 +42,8 @@ mod kernel_cmdline;
 pub(crate) mod parsers;
 #[cfg(feature = "rhsm")]
 mod rhsm;
+
+mod parsers;
 
 // Re-export blockdev crate for internal use
 pub(crate) use bootc_blockdev as blockdev;
