@@ -29,7 +29,7 @@ not \`null\`.
 
 # OPTIONS
 
-**\--format**=*FORMAT*
+**\--format** *\<FORMAT\>*
 
 :   The output format\
 
@@ -42,7 +42,7 @@ not \`null\`.
 
     -   json: Output in JSON format
 
-**\--format-version**=*FORMAT_VERSION*
+**\--format-version** *\<FORMAT_VERSION\>*
 
 :   The desired format version. There is currently one supported
     version, which is exposed as both \`0\` and \`1\`. Pass this option
@@ -63,4 +63,4 @@ not \`null\`.
 
 # VERSION
 
-v1.6.0
+v1.7.0

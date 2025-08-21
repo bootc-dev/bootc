@@ -26,7 +26,7 @@ to be cleaned up if desired when rebooted into the new root.
 
 # OPTIONS
 
-**\--replace**=*REPLACE* \[default: alongside\]
+**\--replace** *\<REPLACE\>* \[default: alongside\]
 
 :   Configure how existing data is treated\
 
@@ -42,7 +42,7 @@ to be cleaned up if desired when rebooted into the new root.
         However, the running system (and all files) will remain in place
         until reboot
 
-**\--source-imgref**=*SOURCE_IMGREF*
+**\--source-imgref** *\<SOURCE_IMGREF\>*
 
 :   Install the system from an explicitly given source.
 
@@ -53,12 +53,12 @@ to be cleaned up if desired when rebooted into the new root.
     behaviour explained in the previous paragraph. See skopeo(1) for
     accepted formats.
 
-**\--target-transport**=*TARGET_TRANSPORT* \[default: registry\]
+**\--target-transport** *\<TARGET_TRANSPORT\>* \[default: registry\]
 
 :   The transport; e.g. oci, oci-archive, containers-storage. Defaults
     to \`registry\`
 
-**\--target-imgref**=*TARGET_IMGREF*
+**\--target-imgref** *\<TARGET_IMGREF\>*
 
 :   Specify the image to fetch for subsequent updates
 
@@ -88,13 +88,13 @@ to be cleaned up if desired when rebooted into the new root.
     This is currently necessary to install \*from\* a system with
     SELinux disabled but where the target does have SELinux enabled.
 
-**\--karg**=*KARG*
+**\--karg** *\<KARG\>*
 
 :   Add a kernel argument. This option can be provided multiple times.
 
     Example: \--karg=nosmt \--karg=console=ttyS0,114800n8
 
-**\--root-ssh-authorized-keys**=*ROOT_SSH_AUTHORIZED_KEYS*
+**\--root-ssh-authorized-keys** *\<ROOT_SSH_AUTHORIZED_KEYS\>*
 
 :   The path to an \`authorized_keys\` that will be injected into the
     \`root\` account.
@@ -114,7 +114,7 @@ to be cleaned up if desired when rebooted into the new root.
     \- All bootloader types will be installed - Changes to the system
     firmware will be skipped
 
-**\--bound-images**=*BOUND_IMAGES* \[default: stored\]
+**\--bound-images** *\<BOUND_IMAGES\>* \[default: stored\]
 
 :   How should logically bound images be retrieved\
 
@@ -127,7 +127,7 @@ to be cleaned up if desired when rebooted into the new root.
     -   pull: Bound images will be pulled and stored directly in the
         target\'s bootc container storage
 
-**\--stateroot**=*STATEROOT*
+**\--stateroot** *\<STATEROOT\>*
 
 :   The stateroot name to use. Defaults to \`default\`
 
@@ -152,4 +152,4 @@ to be cleaned up if desired when rebooted into the new root.
 
 # VERSION
 
-v1.6.0
+v1.7.0

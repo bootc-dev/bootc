@@ -45,7 +45,7 @@ rollback invocation.
 Note on Rollbacks and the \`/etc\` Directory:
 
 When you perform a rollback (e.g., with \`bootc rollback\`), any changes
-made to files in the \`/etc\` directory won't carry over to the
+made to files in the \`/etc\` directory won\'t carry over to the
 rolled-back deployment. The \`/etc\` files will revert to their state
 from that previous deployment instead.
 
@@ -55,4 +55,4 @@ happen when new deployments are created.
 
 # VERSION
 
-v1.6.0
+v1.7.0

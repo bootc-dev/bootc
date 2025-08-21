@@ -38,7 +38,7 @@ updates via container image tags; for example,
     will detect the case where no kernel changes are queued, and perform
     a userspace-only restart.
 
-**\--transport**=*TRANSPORT* \[default: registry\]
+**\--transport** *\<TRANSPORT\>* \[default: registry\]
 
 :   The transport; e.g. oci, oci-archive, containers-storage. Defaults
     to \`registry\`
@@ -65,4 +65,4 @@ updates via container image tags; for example,
 
 # VERSION
 
-v1.6.0
+v1.7.0

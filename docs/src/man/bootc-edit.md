@@ -22,7 +22,7 @@ Only changes to the \`spec\` section are honored.
 
 # OPTIONS
 
-**-f**, **\--filename**=*FILENAME*
+**-f**, **\--filename** *\<FILENAME\>*
 
 :   Use filename to edit system specification
 
@@ -36,4 +36,4 @@ Only changes to the \`spec\` section are honored.
 
 # VERSION
 
-v1.6.0
+v1.7.0

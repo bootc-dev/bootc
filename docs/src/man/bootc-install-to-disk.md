@@ -32,7 +32,7 @@ more complex such as RAID, LVM, LUKS etc.
 
 :   Automatically wipe all existing data on device
 
-**\--block-setup**=*BLOCK_SETUP*
+**\--block-setup** *\<BLOCK_SETUP\>*
 
 :   Target root block device setup.
 
@@ -42,21 +42,21 @@ more complex such as RAID, LVM, LUKS etc.
     \
     \[*possible values: *direct, tpm2-luks\]
 
-**\--filesystem**=*FILESYSTEM*
+**\--filesystem** *\<FILESYSTEM\>*
 
 :   Target root filesystem type\
 
     \
     \[*possible values: *xfs, ext4, btrfs\]
 
-**\--root-size**=*ROOT_SIZE*
+**\--root-size** *\<ROOT_SIZE\>*
 
 :   Size of the root partition (default specifier: M). Allowed
     specifiers: M (mebibytes), G (gibibytes), T (tebibytes).
 
     By default, all remaining space on the disk will be used.
 
-**\--source-imgref**=*SOURCE_IMGREF*
+**\--source-imgref** *\<SOURCE_IMGREF\>*
 
 :   Install the system from an explicitly given source.
 
@@ -67,12 +67,12 @@ more complex such as RAID, LVM, LUKS etc.
     behaviour explained in the previous paragraph. See skopeo(1) for
     accepted formats.
 
-**\--target-transport**=*TARGET_TRANSPORT* \[default: registry\]
+**\--target-transport** *\<TARGET_TRANSPORT\>* \[default: registry\]
 
 :   The transport; e.g. oci, oci-archive, containers-storage. Defaults
     to \`registry\`
 
-**\--target-imgref**=*TARGET_IMGREF*
+**\--target-imgref** *\<TARGET_IMGREF\>*
 
 :   Specify the image to fetch for subsequent updates
 
@@ -102,13 +102,13 @@ more complex such as RAID, LVM, LUKS etc.
     This is currently necessary to install \*from\* a system with
     SELinux disabled but where the target does have SELinux enabled.
 
-**\--karg**=*KARG*
+**\--karg** *\<KARG\>*
 
 :   Add a kernel argument. This option can be provided multiple times.
 
     Example: \--karg=nosmt \--karg=console=ttyS0,114800n8
 
-**\--root-ssh-authorized-keys**=*ROOT_SSH_AUTHORIZED_KEYS*
+**\--root-ssh-authorized-keys** *\<ROOT_SSH_AUTHORIZED_KEYS\>*
 
 :   The path to an \`authorized_keys\` that will be injected into the
     \`root\` account.
@@ -128,7 +128,7 @@ more complex such as RAID, LVM, LUKS etc.
     \- All bootloader types will be installed - Changes to the system
     firmware will be skipped
 
-**\--bound-images**=*BOUND_IMAGES* \[default: stored\]
+**\--bound-images** *\<BOUND_IMAGES\>* \[default: stored\]
 
 :   How should logically bound images be retrieved\
 
@@ -141,7 +141,7 @@ more complex such as RAID, LVM, LUKS etc.
     -   pull: Bound images will be pulled and stored directly in the
         target\'s bootc container storage
 
-**\--stateroot**=*STATEROOT*
+**\--stateroot** *\<STATEROOT\>*
 
 :   The stateroot name to use. Defaults to \`default\`
 
@@ -160,4 +160,4 @@ more complex such as RAID, LVM, LUKS etc.
 
 # VERSION
 
-v1.6.0
+v1.7.0

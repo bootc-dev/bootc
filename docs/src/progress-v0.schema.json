@@ -1,239 +1,233 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Event",
   "description": "An event emitted as JSON.",
   "oneOf": [
     {
       "type": "object",
-      "required": [
-        "type",
-        "version"
-      ],
       "properties": {
         "type": {
           "type": "string",
-          "enum": [
-            "Start"
-          ]
+          "const": "Start"
         },
         "version": {
           "description": "The semantic version of the progress protocol.",
           "type": "string"
         }
-      }
+      },
+      "required": [
+        "type",
+        "version"
+      ]
     },
     {
       "description": "An incremental update to a container image layer download",
       "type": "object",
-      "required": [
-        "bytes",
-        "bytes_cached",
-        "bytes_total",
-        "description",
-        "id",
-        "steps",
-        "steps_cached",
-        "steps_total",
-        "subtasks",
-        "task",
-        "type"
-      ],
       "properties": {
         "bytes": {
           "description": "The number of bytes already fetched.",
           "type": "integer",
           "format": "uint64",
-          "minimum": 0.0
+          "minimum": 0
         },
-        "bytes_cached": {
+        "bytesCached": {
           "description": "The number of bytes fetched by a previous run.",
           "type": "integer",
           "format": "uint64",
-          "minimum": 0.0
+          "minimum": 0
         },
-        "bytes_total": {
+        "bytesTotal": {
           "description": "Total number of bytes. If zero, then this should be considered \"unspecified\".",
           "type": "integer",
           "format": "uint64",
-          "minimum": 0.0
+          "minimum": 0
         },
         "description": {
           "description": "A human readable description of the task if i18n is not available.",
           "type": "string"
         },
         "id": {
-          "description": "A human and machine readable unique identifier for the task (e.g., the image name). For tasks that only happen once, it can be set to the same value as task.",
+          "description": "A human and machine readable unique identifier for the task\n(e.g., the image name). For tasks that only happen once,\nit can be set to the same value as task.",
           "type": "string"
         },
         "steps": {
           "description": "The initial position of progress.",
           "type": "integer",
           "format": "uint64",
-          "minimum": 0.0
+          "minimum": 0
         },
-        "steps_cached": {
+        "stepsCached": {
           "description": "The number of steps fetched by a previous run.",
           "type": "integer",
           "format": "uint64",
-          "minimum": 0.0
+          "minimum": 0
         },
-        "steps_total": {
+        "stepsTotal": {
           "description": "The total number of steps (e.g. container image layers, RPMs)",
           "type": "integer",
           "format": "uint64",
-          "minimum": 0.0
+          "minimum": 0
         },
         "subtasks": {
           "description": "The currently running subtasks.",
           "type": "array",
           "items": {
-            "$ref": "#/definitions/SubTaskBytes"
+            "$ref": "#/$defs/SubTaskBytes"
           }
         },
         "task": {
-          "description": "A machine readable type (e.g., pulling) for the task (used for i18n and UI customization).",
+          "description": "A machine readable type (e.g., pulling) for the task (used for i18n\nand UI customization).",
           "type": "string"
         },
         "type": {
           "type": "string",
-          "enum": [
-            "ProgressBytes"
-          ]
+          "const": "ProgressBytes"
         }
-      }
+      },
+      "required": [
+        "type",
+        "task",
+        "description",
+        "id",
+        "bytesCached",
+        "bytes",
+        "bytesTotal",
+        "stepsCached",
+        "steps",
+        "stepsTotal",
+        "subtasks"
+      ]
     },
     {
       "description": "An incremental update with discrete steps",
       "type": "object",
-      "required": [
-        "description",
-        "id",
-        "steps",
-        "steps_cached",
-        "steps_total",
-        "subtasks",
-        "task",
-        "type"
-      ],
       "properties": {
         "description": {
           "description": "A human readable description of the task if i18n is not available.",
           "type": "string"
         },
         "id": {
-          "description": "A human and machine readable unique identifier for the task (e.g., the image name). For tasks that only happen once, it can be set to the same value as task.",
+          "description": "A human and machine readable unique identifier for the task\n(e.g., the image name). For tasks that only happen once,\nit can be set to the same value as task.",
           "type": "string"
         },
         "steps": {
           "description": "The initial position of progress.",
           "type": "integer",
           "format": "uint64",
-          "minimum": 0.0
+          "minimum": 0
         },
-        "steps_cached": {
+        "stepsCached": {
           "description": "The number of steps fetched by a previous run.",
           "type": "integer",
           "format": "uint64",
-          "minimum": 0.0
+          "minimum": 0
         },
-        "steps_total": {
+        "stepsTotal": {
           "description": "The total number of steps (e.g. container image layers, RPMs)",
           "type": "integer",
           "format": "uint64",
-          "minimum": 0.0
+          "minimum": 0
         },
         "subtasks": {
           "description": "The currently running subtasks.",
           "type": "array",
           "items": {
-            "$ref": "#/definitions/SubTaskStep"
+            "$ref": "#/$defs/SubTaskStep"
           }
         },
         "task": {
-          "description": "A machine readable type (e.g., pulling) for the task (used for i18n and UI customization).",
+          "description": "A machine readable type (e.g., pulling) for the task (used for i18n\nand UI customization).",
           "type": "string"
         },
         "type": {
           "type": "string",
-          "enum": [
-            "ProgressSteps"
-          ]
+          "const": "ProgressSteps"
         }
-      }
-    }
-  ],
-  "definitions": {
-    "SubTaskBytes": {
-      "description": "An incremental update to e.g. a container image layer download. The first time a given \"subtask\" name is seen, a new progress bar should be created. If bytes == bytes_total, then the subtask is considered complete.",
-      "type": "object",
+      },
       "required": [
-        "bytes",
-        "bytesCached",
-        "bytesTotal",
+        "type",
+        "task",
         "description",
         "id",
-        "subtask"
-      ],
+        "stepsCached",
+        "steps",
+        "stepsTotal",
+        "subtasks"
+      ]
+    }
+  ],
+  "$defs": {
+    "SubTaskBytes": {
+      "description": "An incremental update to e.g. a container image layer download.\nThe first time a given \"subtask\" name is seen, a new progress bar should be created.\nIf bytes == bytes_total, then the subtask is considered complete.",
+      "type": "object",
       "properties": {
         "bytes": {
           "description": "Updated byte level progress",
           "type": "integer",
           "format": "uint64",
-          "minimum": 0.0
+          "minimum": 0
         },
         "bytesCached": {
           "description": "The number of bytes fetched by a previous run (e.g., zstd_chunked).",
           "type": "integer",
           "format": "uint64",
-          "minimum": 0.0
+          "minimum": 0
         },
         "bytesTotal": {
           "description": "Total number of bytes",
           "type": "integer",
           "format": "uint64",
-          "minimum": 0.0
+          "minimum": 0
         },
         "description": {
-          "description": "A human readable description of the task if i18n is not available. (e.g., \"OSTree Chunk:\", \"Derived Layer:\")",
+          "description": "A human readable description of the task if i18n is not available.\n(e.g., \"OSTree Chunk:\", \"Derived Layer:\")",
           "type": "string"
         },
         "id": {
-          "description": "A human and machine readable identifier for the task (e.g., ostree chunk/layer hash).",
+          "description": "A human and machine readable identifier for the task\n(e.g., ostree chunk/layer hash).",
           "type": "string"
         },
         "subtask": {
-          "description": "A machine readable type for the task (used for i18n). (e.g., \"ostree_chunk\", \"ostree_derived\")",
+          "description": "A machine readable type for the task (used for i18n).\n(e.g., \"ostree_chunk\", \"ostree_derived\")",
           "type": "string"
         }
-      }
+      },
+      "required": [
+        "subtask",
+        "description",
+        "id",
+        "bytesCached",
+        "bytes",
+        "bytesTotal"
+      ]
     },
     "SubTaskStep": {
       "description": "Marks the beginning and end of a dictrete step",
       "type": "object",
-      "required": [
-        "completed",
-        "description",
-        "id",
-        "subtask"
-      ],
       "properties": {
         "completed": {
           "description": "Starts as false when beginning to execute and turns true when completed.",
           "type": "boolean"
         },
         "description": {
-          "description": "A human readable description of the task if i18n is not available. (e.g., \"OSTree Chunk:\", \"Derived Layer:\")",
+          "description": "A human readable description of the task if i18n is not available.\n(e.g., \"OSTree Chunk:\", \"Derived Layer:\")",
           "type": "string"
         },
         "id": {
-          "description": "A human and machine readable identifier for the task (e.g., ostree chunk/layer hash).",
+          "description": "A human and machine readable identifier for the task\n(e.g., ostree chunk/layer hash).",
           "type": "string"
         },
         "subtask": {
-          "description": "A machine readable type for the task (used for i18n). (e.g., \"ostree_chunk\", \"ostree_derived\")",
+          "description": "A machine readable type for the task (used for i18n).\n(e.g., \"ostree_chunk\", \"ostree_derived\")",
           "type": "string"
         }
-      }
+      },
+      "required": [
+        "subtask",
+        "description",
+        "id",
+        "completed"
+      ]
     }
   }
 }

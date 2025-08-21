@@ -19,7 +19,7 @@ part of a build process; it will error if any problems are detected.
 
 # OPTIONS
 
-**\--rootfs**=*ROOTFS* \[default: /\]
+**\--rootfs** *\<ROOTFS\>* \[default: /\]
 
 :   Operate on the provided rootfs
 
@@ -34,7 +34,7 @@ part of a build process; it will error if any problems are detected.
     reasonably human friendly. However, there is no commitment to
     maintaining this exact format; do not parse it via code or scripts
 
-**\--skip**=*SKIP*
+**\--skip** *\<SKIP\>*
 
 :   Skip checking the targeted lints, by name. Use \`\--list\` to
     discover the set of available lints.
@@ -53,4 +53,4 @@ part of a build process; it will error if any problems are detected.
 
 # VERSION
 
-v1.6.0
+v1.7.0

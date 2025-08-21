@@ -27,4 +27,4 @@ string-valued filesystem name suitable for passing to \`mkfs.\$type\`.
 
 # VERSION
 
-v1.6.0
+v1.7.0

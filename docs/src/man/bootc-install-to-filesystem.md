@@ -27,21 +27,21 @@ is currently expected to be empty by default.
 
 # OPTIONS
 
-**\--root-mount-spec**=*ROOT_MOUNT_SPEC*
+**\--root-mount-spec** *\<ROOT_MOUNT_SPEC\>*
 
 :   Source device specification for the root filesystem. For example,
     UUID=2e9f4241-229b-4202-8429-62d2302382e1
 
     If not provided, the UUID of the target filesystem will be used.
 
-**\--boot-mount-spec**=*BOOT_MOUNT_SPEC*
+**\--boot-mount-spec** *\<BOOT_MOUNT_SPEC\>*
 
 :   Mount specification for the /boot filesystem.
 
     This is optional. If \`/boot\` is detected as a mounted partition,
     then its UUID will be used.
 
-**\--replace**=*REPLACE*
+**\--replace** *\<REPLACE\>*
 
 :   Initialize the system in-place; at the moment, only one mode for
     this is implemented. In the future, it may also be supported to set
@@ -71,7 +71,7 @@ is currently expected to be empty by default.
     readonly. This option skips those operations. It is then the
     responsibility of the invoking code to perform those operations
 
-**\--source-imgref**=*SOURCE_IMGREF*
+**\--source-imgref** *\<SOURCE_IMGREF\>*
 
 :   Install the system from an explicitly given source.
 
@@ -82,12 +82,12 @@ is currently expected to be empty by default.
     behaviour explained in the previous paragraph. See skopeo(1) for
     accepted formats.
 
-**\--target-transport**=*TARGET_TRANSPORT* \[default: registry\]
+**\--target-transport** *\<TARGET_TRANSPORT\>* \[default: registry\]
 
 :   The transport; e.g. oci, oci-archive, containers-storage. Defaults
     to \`registry\`
 
-**\--target-imgref**=*TARGET_IMGREF*
+**\--target-imgref** *\<TARGET_IMGREF\>*
 
 :   Specify the image to fetch for subsequent updates
 
@@ -117,13 +117,13 @@ is currently expected to be empty by default.
     This is currently necessary to install \*from\* a system with
     SELinux disabled but where the target does have SELinux enabled.
 
-**\--karg**=*KARG*
+**\--karg** *\<KARG\>*
 
 :   Add a kernel argument. This option can be provided multiple times.
 
     Example: \--karg=nosmt \--karg=console=ttyS0,114800n8
 
-**\--root-ssh-authorized-keys**=*ROOT_SSH_AUTHORIZED_KEYS*
+**\--root-ssh-authorized-keys** *\<ROOT_SSH_AUTHORIZED_KEYS\>*
 
 :   The path to an \`authorized_keys\` that will be injected into the
     \`root\` account.
@@ -143,7 +143,7 @@ is currently expected to be empty by default.
     \- All bootloader types will be installed - Changes to the system
     firmware will be skipped
 
-**\--bound-images**=*BOUND_IMAGES* \[default: stored\]
+**\--bound-images** *\<BOUND_IMAGES\>* \[default: stored\]
 
 :   How should logically bound images be retrieved\
 
@@ -156,7 +156,7 @@ is currently expected to be empty by default.
     -   pull: Bound images will be pulled and stored directly in the
         target\'s bootc container storage
 
-**\--stateroot**=*STATEROOT*
+**\--stateroot** *\<STATEROOT\>*
 
 :   The stateroot name to use. Defaults to \`default\`
 
@@ -173,4 +173,4 @@ is currently expected to be empty by default.
 
 # VERSION
 
-v1.6.0
+v1.7.0
