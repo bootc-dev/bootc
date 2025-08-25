@@ -152,4 +152,4 @@ to be cleaned up if desired when rebooted into the new root.
 
 # VERSION
 
-v1.7.0
+v1.8.0

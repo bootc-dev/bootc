@@ -65,4 +65,4 @@ updates via container image tags; for example,
 
 # VERSION
 
-v1.7.0
+v1.8.0

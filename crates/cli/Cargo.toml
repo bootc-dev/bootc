@@ -15,7 +15,7 @@ platforms = ["*-unknown-linux-gnu"]
 
 [dependencies]
 # Internal crates
-bootc-lib = { version = "1.7", path = "../lib" }
+bootc-lib = { version = "1.8", path = "../lib" }
 bootc-utils = { package = "bootc-internal-utils", path = "../utils", version = "0.0.0" }
 
 # Workspace dependencies
