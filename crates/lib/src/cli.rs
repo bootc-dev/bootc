@@ -1519,7 +1519,6 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
 
                 Ok(())
             }
-
         },
         #[cfg(feature = "docgen")]
         Opt::Man(manopts) => crate::docgen::generate_manpages(&manopts.directory),
