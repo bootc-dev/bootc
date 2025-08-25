@@ -276,6 +276,14 @@ pub(crate) async fn impl_completion(
     sysroot: &ostree::Sysroot,
     stateroot: Option<&str>,
 ) -> Result<()> {
+    // Log the completion operation to systemd journal
+    const COMPLETION_JOURNAL_ID: &str = "0f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4";
+    tracing::info!(
+        message_id = COMPLETION_JOURNAL_ID,
+        bootc.stateroot = stateroot.unwrap_or("default"),
+        "Starting bootc installation completion"
+    );
+
     let deployment = &sysroot
         .merge_deployment(stateroot)
         .ok_or_else(|| anyhow::anyhow!("Failed to find deployment (stateroot={stateroot:?}"))?;
@@ -292,6 +300,14 @@ pub(crate) async fn impl_completion(
     // ostree-ext doesn't do logically bound images
     let bound_images = crate::boundimage::query_bound_images_for_deployment(sysroot, deployment)?;
     if !bound_images.is_empty() {
+        // Log bound images found
+        tracing::info!(
+            message_id = COMPLETION_JOURNAL_ID,
+            bootc.bound_images_count = bound_images.len(),
+            "Found {} bound images for completion",
+            bound_images.len()
+        );
+
         // load the selinux policy from the target ostree deployment
         let deployment_fd = deployment_fd(sysroot, deployment)?;
         let sepolicy = crate::lsm::new_sepolicy_at(deployment_fd)?;
@@ -303,6 +319,13 @@ pub(crate) async fn impl_completion(
             .await
             .context("pulling bound images")?;
     }
+
+    // Log completion success
+    tracing::info!(
+        message_id = COMPLETION_JOURNAL_ID,
+        bootc.stateroot = stateroot.unwrap_or("default"),
+        "Successfully completed bootc installation"
+    );
 
     Ok(())
 }

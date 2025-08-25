@@ -11,6 +11,7 @@ use cap_std::fs::{Dir, MetadataExt};
 use cap_std_ext::cap_std;
 use cap_std_ext::dirext::CapStdExtDirExt;
 use fn_error_context::context;
+use libsystemd::logging::Priority;
 use ostree::{gio, glib};
 use ostree_container::OstreeImageReference;
 use ostree_ext::container as ostree_container;
@@ -99,7 +100,7 @@ pub(crate) fn check_bootc_label(config: &ostree_ext::oci_spec::image::ImageConfi
         match label.as_str() {
             crate::metadata::COMPAT_LABEL_V1 => {}
             o => crate::journal::journal_print(
-                libsystemd::logging::Priority::Warning,
+                Priority::Warning,
                 &format!(
                     "notice: Unknown {} value {}",
                     crate::metadata::BOOTC_COMPAT_LABEL,
@@ -109,7 +110,7 @@ pub(crate) fn check_bootc_label(config: &ostree_ext::oci_spec::image::ImageConfi
         }
     } else {
         crate::journal::journal_print(
-            libsystemd::logging::Priority::Warning,
+            Priority::Warning,
             &format!(
                 "notice: Image is missing label: {}",
                 crate::metadata::BOOTC_COMPAT_LABEL
@@ -424,11 +425,27 @@ pub(crate) async fn pull_from_prepared(
     let imgref_canonicalized = imgref.clone().canonicalize()?;
     tracing::debug!("Canonicalized image reference: {imgref_canonicalized:#}");
 
+    // Log successful import completion
+    const IMPORT_COMPLETE_JOURNAL_ID: &str = "4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8";
+    let msg = format!("Successfully imported image: {}", imgref);
+    crate::journal::journal_send(
+        Priority::Info,
+        &msg,
+        [
+            ("MESSAGE_ID", IMPORT_COMPLETE_JOURNAL_ID),
+            ("BOOTC_IMAGE_REFERENCE", &imgref.image),
+            ("BOOTC_IMAGE_TRANSPORT", &imgref.transport),
+            ("BOOTC_MANIFEST_DIGEST", import.manifest_digest.as_ref()),
+            ("BOOTC_OSTREE_COMMIT", &import.merge_commit),
+        ]
+        .into_iter(),
+    );
+
     if let Some(msg) =
         ostree_container::store::image_filtered_content_warning(&import.filtered_files)
             .context("Image content warning")?
     {
-        crate::journal::journal_print(libsystemd::logging::Priority::Notice, &msg);
+        crate::journal::journal_print(Priority::Notice, &msg);
     }
     Ok(Box::new((*import).into()))
 }
@@ -442,8 +459,30 @@ pub(crate) async fn pull(
     prog: ProgressWriter,
 ) -> Result<Box<ImageState>> {
     match prepare_for_pull(repo, imgref, target_imgref).await? {
-        PreparedPullResult::AlreadyPresent(existing) => Ok(existing),
+        PreparedPullResult::AlreadyPresent(existing) => {
+            // Log that the image was already present (Debug level since it's not actionable)
+            const IMAGE_ALREADY_PRESENT_ID: &str = "5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9";
+            tracing::debug!(
+                message_id = IMAGE_ALREADY_PRESENT_ID,
+                bootc.image.reference = &imgref.image,
+                bootc.image.transport = &imgref.transport,
+                bootc.status = "already_present",
+                "Image already present: {}",
+                imgref
+            );
+            Ok(existing)
+        }
         PreparedPullResult::Ready(prepared_image_meta) => {
+            // Log that we're pulling a new image
+            const PULLING_NEW_IMAGE_ID: &str = "6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0";
+            tracing::info!(
+                message_id = PULLING_NEW_IMAGE_ID,
+                bootc.image.reference = &imgref.image,
+                bootc.image.transport = &imgref.transport,
+                bootc.status = "pulling_new",
+                "Pulling new image: {}",
+                imgref
+            );
             Ok(pull_from_prepared(imgref, quiet, prog, prepared_image_meta).await?)
         }
     }
@@ -461,6 +500,15 @@ pub(crate) async fn wipe_ostree(sysroot: Sysroot) -> Result<()> {
 }
 
 pub(crate) async fn cleanup(sysroot: &Storage) -> Result<()> {
+    // Log the cleanup operation to systemd journal
+    const CLEANUP_JOURNAL_ID: &str = "2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6";
+    let msg = "Starting cleanup of old images and deployments";
+    crate::journal::journal_send(
+        Priority::Info,
+        msg,
+        [("MESSAGE_ID", CLEANUP_JOURNAL_ID)].into_iter(),
+    );
+
     let bound_prune = prune_container_store(sysroot);
 
     // We create clones (just atomic reference bumps) here to move to the thread.
@@ -610,6 +658,25 @@ pub(crate) async fn stage(
     spec: &RequiredHostSpec<'_>,
     prog: ProgressWriter,
 ) -> Result<()> {
+    // Log the staging operation to systemd journal with comprehensive upgrade information
+    const STAGE_JOURNAL_ID: &str = "8f7a2b1c3d4e5f6a7b8c9d0e1f2a3b4c";
+    let msg = format!(
+        "Staging image for deployment: {} (digest: {})",
+        spec.image, image.manifest_digest
+    );
+    crate::journal::journal_send(
+        Priority::Info,
+        &msg,
+        [
+            ("MESSAGE_ID", STAGE_JOURNAL_ID),
+            ("BOOTC_IMAGE_REFERENCE", &spec.image.image),
+            ("BOOTC_IMAGE_TRANSPORT", &spec.image.transport),
+            ("BOOTC_MANIFEST_DIGEST", image.manifest_digest.as_ref()),
+            ("BOOTC_STATEROOT", stateroot),
+        ]
+        .into_iter(),
+    );
+
     let ostree = sysroot.get_ostree()?;
     let mut subtask = SubTaskStep {
         subtask: "merging".into(),
@@ -768,9 +835,17 @@ pub(crate) async fn rollback(sysroot: &Storage) -> Result<()> {
     let rollback_image = rollback_status
         .query_image(repo)?
         .ok_or_else(|| anyhow!("Rollback is not container image based"))?;
+
+    // Get current booted image for comparison
+    let current_image = host
+        .status
+        .booted
+        .as_ref()
+        .and_then(|b| b.query_image(repo).ok()?);
+
     let msg = format!("Rolling back to image: {}", rollback_image.manifest_digest);
-    libsystemd::logging::journal_send(
-        libsystemd::logging::Priority::Info,
+    crate::journal::journal_send(
+        Priority::Info,
         &msg,
         [
             ("MESSAGE_ID", ROLLBACK_JOURNAL_ID),
@@ -778,9 +853,21 @@ pub(crate) async fn rollback(sysroot: &Storage) -> Result<()> {
                 "BOOTC_MANIFEST_DIGEST",
                 rollback_image.manifest_digest.as_ref(),
             ),
+            ("BOOTC_OSTREE_COMMIT", &rollback_image.merge_commit),
+            (
+                "BOOTC_ROLLBACK_TYPE",
+                if reverting { "revert" } else { "rollback" },
+            ),
+            (
+                "BOOTC_CURRENT_MANIFEST_DIGEST",
+                current_image
+                    .as_ref()
+                    .map(|i| i.manifest_digest.as_ref())
+                    .unwrap_or("none"),
+            ),
         ]
         .into_iter(),
-    )?;
+    );
     // SAFETY: If there's a rollback status, then there's a deployment
     let rollback_deployment = deployments.rollback.expect("rollback deployment");
     let new_deployments = if reverting {
@@ -828,6 +915,21 @@ fn find_newest_deployment_name(deploysdir: &Dir) -> Result<String> {
 
 // Implementation of `bootc switch --in-place`
 pub(crate) fn switch_origin_inplace(root: &Dir, imgref: &ImageReference) -> Result<String> {
+    // Log the in-place switch operation to systemd journal
+    const SWITCH_INPLACE_JOURNAL_ID: &str = "3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7";
+    let msg = format!("Performing in-place switch to image: {}", imgref);
+    crate::journal::journal_send(
+        Priority::Info,
+        &msg,
+        [
+            ("MESSAGE_ID", SWITCH_INPLACE_JOURNAL_ID),
+            ("BOOTC_IMAGE_REFERENCE", &imgref.image),
+            ("BOOTC_IMAGE_TRANSPORT", &imgref.transport),
+            ("BOOTC_SWITCH_TYPE", "in_place"),
+        ]
+        .into_iter(),
+    );
+
     // First, just create the new origin file
     let origin = origin_from_imageref(imgref)?;
     let serialized_origin = origin.to_data();

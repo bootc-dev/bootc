@@ -65,6 +65,7 @@ tokio-util = { features = ["io-util"], version = "0.7.10" }
 toml = "0.9.5"
 tracing = "0.1.40"
 tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
+tracing-journald = "0.3.1"
 uzers = "0.12"
 xshell = "0.2.6"
 

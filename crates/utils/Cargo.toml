@@ -18,6 +18,7 @@ tempfile = { workspace = true }
 tokio = { workspace = true, features = ["process", "rt", "macros"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+tracing-journald = { workspace = true }
 
 [dev-dependencies]
 similar-asserts = { workspace = true }

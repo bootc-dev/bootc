@@ -15,6 +15,7 @@ use clap::Parser;
 use clap::ValueEnum;
 use fn_error_context::context;
 use indoc::indoc;
+use libsystemd::logging::Priority;
 use ostree::gio;
 use ostree_container::store::PrepareResult;
 use ostree_ext::composefs::fsverity;
@@ -998,6 +999,9 @@ async fn upgrade(opts: UpgradeOpts) -> Result<()> {
         } else if booted_unchanged {
             println!("No update available.")
         } else {
+            // Note: Individual operation logging (pull, stage, deploy) will provide detailed information
+            // No need for a separate "upgrading" message here since we're not adding new information
+
             let osname = booted_deployment.osname();
             crate::deploy::stage(sysroot, &osname, &fetched, &spec, prog.clone()).await?;
             changed = true;
@@ -1075,6 +1079,28 @@ async fn switch(opts: SwitchOpts) -> Result<()> {
         println!("Image specification is unchanged.");
         return Ok(());
     }
+
+    // Log the switch operation to systemd journal
+    const SWITCH_JOURNAL_ID: &str = "7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d1";
+    let old_image = host
+        .spec
+        .image
+        .as_ref()
+        .map(|i| i.image.as_str())
+        .unwrap_or("none");
+    let msg = format!("Switching from image {} to {}", old_image, target.image);
+    crate::journal::journal_send(
+        Priority::Info,
+        &msg,
+        [
+            ("MESSAGE_ID", SWITCH_JOURNAL_ID),
+            ("BOOTC_OLD_IMAGE_REFERENCE", old_image),
+            ("BOOTC_NEW_IMAGE_REFERENCE", &target.image),
+            ("BOOTC_NEW_IMAGE_TRANSPORT", &target.transport),
+        ]
+        .into_iter(),
+    );
+
     let new_spec = RequiredHostSpec::from_spec(&new_spec)?;
 
     let fetched = crate::deploy::pull(repo, &target, None, opts.quiet, prog.clone()).await?;

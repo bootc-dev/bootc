@@ -39,7 +39,23 @@ pub(crate) struct ResolvedBoundImage {
 
 /// Given a deployment, pull all container images it references.
 pub(crate) async fn pull_bound_images(sysroot: &Storage, deployment: &Deployment) -> Result<()> {
-    let bound_images = query_bound_images_for_deployment(sysroot.get_ostree()?, deployment)?;
+    // Log the bound images operation to systemd journal
+    const BOUND_IMAGES_JOURNAL_ID: &str = "1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5";
+    tracing::info!(
+        message_id = BOUND_IMAGES_JOURNAL_ID,
+        bootc.deployment.osname = deployment.osname().as_str(),
+        bootc.deployment.checksum = deployment.csum().as_str(),
+        "Starting pull of bound images for deployment"
+    );
+
+    let ostree = sysroot.get_ostree()?;
+    let bound_images = query_bound_images_for_deployment(ostree, deployment)?;
+    tracing::info!(
+        message_id = BOUND_IMAGES_JOURNAL_ID,
+        bootc.bound_images_count = bound_images.len(),
+        "Found {} bound images to pull",
+        bound_images.len()
+    );
     pull_images(sysroot, bound_images).await
 }
 

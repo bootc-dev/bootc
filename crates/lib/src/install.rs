@@ -40,6 +40,7 @@ use cap_std_ext::cmdext::CapStdExtCommandExt;
 use cap_std_ext::prelude::CapStdExtDirExt;
 use clap::ValueEnum;
 use fn_error_context::context;
+use libsystemd::logging::Priority;
 use ostree::gio;
 use ostree_ext::ostree;
 use ostree_ext::ostree_prepareroot::{ComposefsState, Tristate};
@@ -1476,6 +1477,34 @@ fn installation_complete() {
 #[context("Installing to disk")]
 #[cfg(feature = "install-to-disk")]
 pub(crate) async fn install_to_disk(mut opts: InstallToDiskOpts) -> Result<()> {
+    // Log the disk installation operation to systemd journal
+    const INSTALL_DISK_JOURNAL_ID: &str = "8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2";
+    let source_image = opts
+        .source_opts
+        .source_imgref
+        .as_ref()
+        .map(|s| s.as_str())
+        .unwrap_or("none");
+    let target_device = opts.block_opts.device.as_str();
+    let msg = format!(
+        "Starting disk installation from {} to {}",
+        source_image, target_device
+    );
+    crate::journal::journal_send(
+        Priority::Info,
+        &msg,
+        [
+            ("MESSAGE_ID", INSTALL_DISK_JOURNAL_ID),
+            ("BOOTC_SOURCE_IMAGE", source_image),
+            ("BOOTC_TARGET_DEVICE", target_device),
+            (
+                "BOOTC_VIA_LOOPBACK",
+                if opts.via_loopback { "true" } else { "false" },
+            ),
+        ]
+        .into_iter(),
+    );
+
     let mut block_opts = opts.block_opts;
     let target_blockdev_meta = block_opts
         .device
@@ -1701,6 +1730,34 @@ pub(crate) async fn install_to_filesystem(
     targeting_host_root: bool,
     cleanup: Cleanup,
 ) -> Result<()> {
+    // Log the installation operation to systemd journal
+    const INSTALL_FILESYSTEM_JOURNAL_ID: &str = "9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3";
+    let source_image = opts
+        .source_opts
+        .source_imgref
+        .as_ref()
+        .map(|s| s.as_str())
+        .unwrap_or("none");
+    let target_path = opts.filesystem_opts.root_path.as_str();
+    let msg = format!(
+        "Starting filesystem installation from {} to {}",
+        source_image, target_path
+    );
+    crate::journal::journal_send(
+        Priority::Info,
+        &msg,
+        [
+            ("MESSAGE_ID", INSTALL_FILESYSTEM_JOURNAL_ID),
+            ("BOOTC_SOURCE_IMAGE", source_image),
+            ("BOOTC_TARGET_PATH", target_path),
+            (
+                "BOOTC_TARGETING_HOST_ROOT",
+                if targeting_host_root { "true" } else { "false" },
+            ),
+        ]
+        .into_iter(),
+    );
+
     // Gather global state, destructuring the provided options.
     // IMPORTANT: We might re-execute the current process in this function (for SELinux among other things)
     // IMPORTANT: and hence anything that is done before MUST BE IDEMPOTENT.
@@ -1933,6 +1990,38 @@ pub(crate) async fn install_to_filesystem(
 }
 
 pub(crate) async fn install_to_existing_root(opts: InstallToExistingRootOpts) -> Result<()> {
+    // Log the existing root installation operation to systemd journal
+    const INSTALL_EXISTING_ROOT_JOURNAL_ID: &str = "7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1";
+    let source_image = opts
+        .source_opts
+        .source_imgref
+        .as_ref()
+        .map(|s| s.as_str())
+        .unwrap_or("none");
+    let target_path = opts.root_path.as_str();
+    let msg = format!(
+        "Starting installation to existing root from {} to {}",
+        source_image, target_path
+    );
+    crate::journal::journal_send(
+        Priority::Info,
+        &msg,
+        [
+            ("MESSAGE_ID", INSTALL_EXISTING_ROOT_JOURNAL_ID),
+            ("BOOTC_SOURCE_IMAGE", source_image),
+            ("BOOTC_TARGET_PATH", target_path),
+            (
+                "BOOTC_CLEANUP",
+                if opts.cleanup {
+                    "trigger_on_next_boot"
+                } else {
+                    "skip"
+                },
+            ),
+        ]
+        .into_iter(),
+    );
+
     let cleanup = match opts.cleanup {
         true => Cleanup::TriggerOnNextBoot,
         false => Cleanup::Skip,
@@ -1957,6 +2046,19 @@ pub(crate) async fn install_to_existing_root(opts: InstallToExistingRootOpts) ->
 
 /// Implementation of `bootc install finalize`.
 pub(crate) async fn install_finalize(target: &Utf8Path) -> Result<()> {
+    // Log the installation finalization operation to systemd journal
+    const INSTALL_FINALIZE_JOURNAL_ID: &str = "6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0";
+    let msg = format!("Starting installation finalization for target: {}", target);
+    crate::journal::journal_send(
+        Priority::Info,
+        &msg,
+        [
+            ("MESSAGE_ID", INSTALL_FINALIZE_JOURNAL_ID),
+            ("BOOTC_TARGET_PATH", target.as_str()),
+        ]
+        .into_iter(),
+    );
+
     crate::cli::require_root(false)?;
     let sysroot = ostree::Sysroot::new(Some(&gio::File::for_path(target)));
     sysroot.load(gio::Cancellable::NONE)?;
@@ -1965,6 +2067,18 @@ pub(crate) async fn install_finalize(target: &Utf8Path) -> Result<()> {
     if deployments.is_empty() {
         anyhow::bail!("Failed to find deployment in {target}");
     }
+
+    // Log successful finalization
+    let msg = format!("Successfully finalized installation for target: {}", target);
+    crate::journal::journal_send(
+        Priority::Info,
+        &msg,
+        [
+            ("MESSAGE_ID", INSTALL_FINALIZE_JOURNAL_ID),
+            ("BOOTC_TARGET_PATH", target.as_str()),
+        ]
+        .into_iter(),
+    );
 
     // For now that's it! We expect to add more validation/postprocessing
     // later, such as munging `etc/fstab` if needed. See
