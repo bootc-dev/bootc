@@ -5,7 +5,7 @@
 use fn_error_context::context;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsStr;
 use std::io::BufReader;
 use std::io::Write;
 use std::os::fd::{AsFd, AsRawFd};
@@ -20,7 +20,7 @@ use cap_std_ext::dirext::CapStdExtDirExt;
 use composefs::fsverity::{FsVerityHashValue, Sha256HashValue, Sha512HashValue};
 use composefs::generic_tree::{Directory, Inode, Leaf, LeafContent, Stat};
 use composefs::tree::ImageError;
-use rustix::fs::{lgetxattr, llistxattr, lsetxattr, readlinkat, AtFlags, Gid, Uid, XattrFlags};
+use rustix::fs::{AtFlags, Gid, Uid, XattrFlags, lgetxattr, llistxattr, lsetxattr, readlinkat};
 
 /// Metadata associated with a file, directory, or symlink entry.
 #[derive(Debug)]
@@ -113,6 +113,7 @@ fn collect_all_files(root: &Directory<CustomMetadata>, current_path: PathBuf) ->
     return files;
 }
 
+#[context("Getting deletions")]
 fn get_deletions(
     pristine: &Directory<CustomMetadata>,
     current: &Directory<CustomMetadata>,
@@ -134,6 +135,10 @@ fn get_deletions(
                         diff.removed.push(current_path.clone());
                     }
 
+                    Err(ImageError::NotADirectory(..)) => {
+                        // Already tracked in modifications
+                    }
+
                     Err(e) => Err(e)?,
                 }
             }
@@ -148,7 +153,11 @@ fn get_deletions(
                     diff.removed.push(current_path.clone());
                 }
 
-                Err(e) => Err(e)?,
+                Err(ImageError::IsADirectory(..)) => {
+                    // Already tracked in modifications
+                }
+
+                Err(e) => Err(e).context(format!("{file_name:?}"))?,
             },
         }
 
@@ -172,6 +181,7 @@ fn get_deletions(
 //    b. Permissions/ownership changed
 //    c. Was a file but changed to directory/symlink etc or vice versa
 //    d. xattrs changed - we don't include this right now
+#[context("Getting modifications")]
 fn get_modifications(
     pristine: &Directory<CustomMetadata>,
     current: &Directory<CustomMetadata>,
@@ -202,6 +212,12 @@ fn get_modifications(
                         // Also add every file inside that dir
                         diff.added
                             .extend(collect_all_files(&curr_dir, current_path.clone()));
+                    }
+
+                    Err(ImageError::NotADirectory(..)) => {
+                        // Some directory was changed to a file/symlink
+                        // This should be counted in the diff, but we don't really merge this
+                        diff.modified.push(current_path.clone());
                     }
 
                     Err(e) => Err(e)?,
@@ -250,7 +266,7 @@ fn get_modifications(
                     diff.added.push(current_path.clone());
                 }
 
-                Err(e) => Err(e)?,
+                Err(e) => Err(e).context(format!("{path:?}"))?,
             },
         }
 
@@ -311,6 +327,7 @@ pub fn traverse_etc(
 }
 
 /// Computes the differences between two directory snapshots.
+#[context("Computing diff")]
 pub fn compute_diff(
     pristine_etc_files: &Directory<CustomMetadata>,
     current_etc_files: &Directory<CustomMetadata>,
@@ -358,37 +375,41 @@ pub fn print_diff(diff: &Diff) {
 }
 
 #[context("Collecting xattrs")]
-fn collect_xattrs(etc_fd: &CapStdDir, rel_path: &OsString) -> anyhow::Result<Xattrs> {
+fn collect_xattrs(etc_fd: &CapStdDir, rel_path: impl AsRef<Path>) -> anyhow::Result<Xattrs> {
     let link = format!("/proc/self/fd/{}", etc_fd.as_fd().as_raw_fd());
     let path = Path::new(&link).join(rel_path);
 
     const DEFAULT_SIZE: usize = 128;
 
     // Start with a guess for size
-    let mut buf: Vec<u8> = vec![0; DEFAULT_SIZE];
-    let size = llistxattr(&path, &mut buf).context("llistxattr")?;
+    let mut xattrs_name_buf: Vec<u8> = vec![0; DEFAULT_SIZE];
+    let size = llistxattr(&path, &mut xattrs_name_buf).context("llistxattr")?;
 
     if size > DEFAULT_SIZE {
-        buf = vec![0; size];
-        llistxattr(&path, &mut buf).context("llistxattr")?;
+        xattrs_name_buf.resize(size, 0);
+        llistxattr(&path, &mut xattrs_name_buf).context("llistxattr")?;
     }
 
     let xattrs: Xattrs = RefCell::new(BTreeMap::new());
 
-    for name_buf in buf[..size].split(|&b| b == 0).filter(|x| !x.is_empty()) {
+    for name_buf in xattrs_name_buf[..size]
+        .split(|&b| b == 0)
+        .filter(|x| !x.is_empty())
+    {
         let name = OsStr::from_bytes(name_buf);
 
-        let mut buf = vec![0; DEFAULT_SIZE];
-        let size = lgetxattr(&path, name_buf, &mut buf).context("lgetxattr")?;
+        let mut xattrs_value_buf = vec![0; DEFAULT_SIZE];
+        let size = lgetxattr(&path, name_buf, &mut xattrs_value_buf).context("lgetxattr")?;
 
         if size > DEFAULT_SIZE {
-            buf = vec![0; size];
-            lgetxattr(&path, name_buf, &mut buf).context("lgetxattr")?;
+            xattrs_value_buf.resize(size, 0);
+            lgetxattr(&path, name_buf, &mut xattrs_value_buf).context("lgetxattr")?;
         }
 
-        xattrs
-            .borrow_mut()
-            .insert(Box::<OsStr>::from(name), Box::<[u8]>::from(&buf[..size]));
+        xattrs.borrow_mut().insert(
+            Box::<OsStr>::from(name),
+            Box::<[u8]>::from(&xattrs_value_buf[..size]),
+        );
     }
 
     Ok(xattrs)
@@ -540,21 +561,26 @@ fn create_dir_with_perms(
     new_etc_fd: &CapStdDir,
     dir_name: &PathBuf,
     stat: &Stat,
-    remove_existing: bool,
+    new_inode: Option<&Inode<CustomMetadata>>,
 ) -> anyhow::Result<()> {
-    if remove_existing {
-        let res = new_etc_fd.remove_all_optional(&dir_name);
-
-        match res {
-            Ok(_) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => Err(e).context(format!("Removing {dir_name:?}"))?,
-        };
+    // The new directory is not present in the new_etc, so we create it, else we only copy the
+    // metadata
+    if new_inode.is_none() {
+        // Here we use `create_dir_all` to create every parent as we will set the permissions later
+        // on. Due to the fact that we have an ordered (sorted) list of directories and directory
+        // entries and we have a DFS traversal, we will aways have directory creation starting from
+        // the parent anyway.
+        //
+        // The exception being, if a directory is modified in the current_etc, and a new directory
+        // is added inside the modified directory, say `dir/prems` has its premissions modified and
+        // `dir/prems/new` is the new directory created. Since we handle added files/directories first,
+        // we will create the directories `perms/new` with directory `new` also getting its
+        // permissions set, but `perms` will not. `perms` will have its premissions set up when we
+        // handle the modified directories.
+        new_etc_fd
+            .create_dir_all(&dir_name)
+            .context(format!("Failed to create dir {dir_name:?}"))?;
     }
-
-    new_etc_fd
-        .create_dir_all(&dir_name)
-        .context(format!("Failed to create dir {dir_name:?}"))?;
 
     new_etc_fd
         .set_permissions(&dir_name, Permissions::from_mode(stat.st_mode))
@@ -574,83 +600,62 @@ fn create_dir_with_perms(
     Ok(())
 }
 
-fn handle_leaf(
+fn merge_leaf(
     current_etc_fd: &CapStdDir,
     new_etc_fd: &CapStdDir,
     leaf: &Rc<Leaf<CustomMetadata>>,
     new_inode: Option<&Inode<CustomMetadata>>,
     file: &PathBuf,
-) -> anyhow::Result<&'static str> {
-    let ty = match &leaf.content {
-        LeafContent::Regular(..) => {
-            if matches!(new_inode, Some(Inode::Directory(..))) {
-                anyhow::bail!("File {file:?} converted to dir");
-            };
+) -> anyhow::Result<()> {
+    let symlink = match &leaf.content {
+        LeafContent::Regular(..) => None,
+        LeafContent::Symlink(target) => Some(target),
 
-            // If a new file with the same path exists, we delete it
-            new_etc_fd
-                .remove_all_optional(&file)
-                .context(format!("Deleting {file:?}"))?;
-
-            current_etc_fd
-                .copy(&file, new_etc_fd, &file)
-                .context(format!("Copying file {file:?}"))?;
-
-            rustix::fs::chownat(
-                &new_etc_fd,
-                file,
-                Some(Uid::from_raw(leaf.stat.st_uid)),
-                Some(Gid::from_raw(leaf.stat.st_gid)),
-                AtFlags::SYMLINK_NOFOLLOW,
-            )
-            .context(format!("chown {file:?}"))?;
-
-            copy_xattrs(&leaf.stat.xattrs, new_etc_fd, file)?;
-
-            "file"
+        _ => {
+            tracing::debug!("Found non file/symlink while merging. Ignoring");
+            return Ok(());
         }
-
-        LeafContent::Symlink(os_str) => {
-            if matches!(new_inode, Some(Inode::Directory(..))) {
-                anyhow::bail!("Symlink {file:?} coverted to dir");
-            };
-
-            // A new file with the same path exists, we delete this
-            new_etc_fd
-                .remove_all_optional(&file)
-                .context(format!("Deleting {file:?}"))?;
-
-            new_etc_fd
-                .symlink(PathBuf::from(os_str), &file)
-                .context(format!("Creating symlink {file:?}"))?;
-
-            rustix::fs::chownat(
-                &new_etc_fd,
-                file,
-                Some(Uid::from_raw(leaf.stat.st_uid)),
-                Some(Gid::from_raw(leaf.stat.st_gid)),
-                AtFlags::SYMLINK_NOFOLLOW,
-            )
-            .context(format!("chown {file:?}"))?;
-
-            copy_xattrs(&leaf.stat.xattrs, new_etc_fd, file)?;
-
-            "symlink"
-        }
-
-        _ => unreachable!(),
     };
 
-    Ok(ty)
+    if matches!(new_inode, Some(Inode::Directory(..))) {
+        anyhow::bail!("Modified config file {file:?} newly defaults to directory. Cannot merge")
+    };
+
+    // If a new file with the same path exists, we delete it
+    new_etc_fd
+        .remove_all_optional(&file)
+        .context(format!("Deleting {file:?}"))?;
+
+    if let Some(target) = symlink {
+        new_etc_fd
+            .symlink(target.as_ref(), &file)
+            .context(format!("Creating symlink {file:?}"))?;
+    } else {
+        current_etc_fd
+            .copy(&file, new_etc_fd, &file)
+            .context(format!("Copying file {file:?}"))?;
+    };
+
+    rustix::fs::chownat(
+        &new_etc_fd,
+        file,
+        Some(Uid::from_raw(leaf.stat.st_uid)),
+        Some(Gid::from_raw(leaf.stat.st_gid)),
+        AtFlags::SYMLINK_NOFOLLOW,
+    )
+    .context(format!("chown {file:?}"))?;
+
+    copy_xattrs(&leaf.stat.xattrs, new_etc_fd, file)?;
+
+    Ok(())
 }
 
-fn handle_modified_files(
+fn merge_modified_files(
     files: &Vec<PathBuf>,
     current_etc_fd: &CapStdDir,
     current_etc_dirtree: &Directory<CustomMetadata>,
     new_etc_fd: &CapStdDir,
     new_etc_dirtree: &Directory<CustomMetadata>,
-    m_type: ModificationType,
 ) -> anyhow::Result<()> {
     for file in files {
         let (dir, filename) = current_etc_dirtree
@@ -665,32 +670,28 @@ fn handle_modified_files(
         let res = new_etc_dirtree.split(OsStr::new(&file));
 
         match res {
-            // Directory exists in the new /etc, but was modified in some way
-            Ok((dir, filename)) => {
-                let new_inode = dir.lookup(filename);
-                let ty = match current_inode {
-                    Inode::Directory(..) => {
-                        create_dir_with_perms(new_etc_fd, file, current_inode.stat(), true)?;
+            Ok((new_dir, filename)) => {
+                let new_inode = new_dir.lookup(filename);
 
-                        "dir"
+                match current_inode {
+                    Inode::Directory(..) => {
+                        create_dir_with_perms(new_etc_fd, file, current_inode.stat(), new_inode)?;
                     }
 
                     Inode::Leaf(leaf) => {
-                        handle_leaf(current_etc_fd, new_etc_fd, leaf, new_inode, file)?
+                        merge_leaf(current_etc_fd, new_etc_fd, leaf, new_inode, file)?
                     }
                 };
-
-                println!("{} {m_type} {ty} {file:?}", m_type.symbol());
             }
 
             // Directory/File does not exist in the new /etc
             Err(ImageError::NotFound(..)) => match current_inode {
                 Inode::Directory(..) => {
-                    create_dir_with_perms(new_etc_fd, file, current_inode.stat(), false)?
+                    create_dir_with_perms(new_etc_fd, file, current_inode.stat(), None)?
                 }
 
                 Inode::Leaf(leaf) => {
-                    handle_leaf(current_etc_fd, new_etc_fd, leaf, None, file)?;
+                    merge_leaf(current_etc_fd, new_etc_fd, leaf, None, file)?;
                 }
             },
 
@@ -701,36 +702,34 @@ fn handle_modified_files(
     Ok(())
 }
 
-// Goes through the added, modified, removed files and apply those changes to the new_etc
-// This will overwrite, remove, modify files in new_etc
-// Paths in `diff` are relative to `etc`
+/// Goes through the added, modified, removed files and apply those changes to the new_etc
+/// This will overwrite, remove, modify files in new_etc
+/// Paths in `diff` are relative to `etc`
 #[context("Merging")]
-fn merge(
+pub fn merge(
     current_etc_fd: &CapStdDir,
     current_etc_dirtree: &Directory<CustomMetadata>,
     new_etc_fd: &CapStdDir,
     new_etc_dirtree: &Directory<CustomMetadata>,
     diff: Diff,
 ) -> anyhow::Result<()> {
-    handle_modified_files(
+    merge_modified_files(
         &diff.added,
         current_etc_fd,
         current_etc_dirtree,
         new_etc_fd,
         new_etc_dirtree,
-        ModificationType::Added,
     )
-    .context("Handling added files")?;
+    .context("Merging added files")?;
 
-    handle_modified_files(
+    merge_modified_files(
         &diff.modified,
         current_etc_fd,
         current_etc_dirtree,
         new_etc_fd,
         new_etc_dirtree,
-        ModificationType::Modified,
     )
-    .context("Handling modified files")?;
+    .context("Merging modified files")?;
 
     for removed in diff.removed {
         match new_etc_fd.remove_file(&removed) {
@@ -974,21 +973,23 @@ mod tests {
 
         // Directory permissions
         p.create_dir_all("dir/perms")?;
+        p.create_dir_all("dir/perms/wo")?;
+        p.create_dir_all("dir/perms/wo/ro")?;
 
         c.create_dir_all("dir/perms")?;
         c.set_permissions("dir/perms", Permissions::from_mode(0o777))?;
 
-        // Directory ownership
-        // p.create_dir_all("dir/owner")?;
+        c.create_dir_all("dir/perms/rwx")?;
+        c.set_permissions("dir/perms/rwx", Permissions::from_mode(0o777))?;
 
-        // c.create_dir_all("dir/owner")?;
-        // rustix::fs::chownat(
-        //     &c,
-        //     "dir/owner",
-        //     Some(Uid::from_raw(u16::MAX as u32)),
-        //     Some(Gid::from_raw(u16::MAX as u32)),
-        //     AtFlags::SYMLINK_NOFOLLOW,
-        // )?;
+        c.create_dir_all("dir/perms/wo")?;
+        c.set_permissions("dir/perms/wo", Permissions::from_mode(0o733))?;
+
+        c.create_dir_all("dir/perms/wo/ro")?;
+        c.set_permissions("dir/perms/wo/ro", Permissions::from_mode(0o775))?;
+
+        n.create_dir_all("dir/perms")?;
+        n.write("dir/perms/some-file", "Some-file")?;
 
         let (pristine_etc_files, current_etc_files, new_etc_files) = traverse_etc(&p, &c, &n)?;
         let diff = compute_diff(&pristine_etc_files, &current_etc_files)?;
@@ -1027,10 +1028,51 @@ mod tests {
             n.metadata("dir/perms")?
         ));
 
-        // assert!(compare_meta(
-        //     c.metadata("dir/owner")?,
-        //     n.metadata("dir/owner")?
-        // ));
+        // Make sure nothing is deleted from a directory
+        assert!(n.exists("dir/perms/some-file"));
+
+        const DIR_BITS: u32 = 0o040000;
+
+        assert_eq!(
+            n.metadata("dir/perms/rwx").unwrap().mode(),
+            DIR_BITS | 0o777
+        );
+        assert_eq!(n.metadata("dir/perms/wo").unwrap().mode(), DIR_BITS | 0o733);
+        assert_eq!(
+            n.metadata("dir/perms/wo/ro").unwrap().mode(),
+            DIR_BITS | 0o775
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn file_to_dir() -> anyhow::Result<()> {
+        let tempdir = cap_std_ext::cap_tempfile::tempdir(cap_std::ambient_authority())?;
+
+        tempdir.create_dir("pristine_etc")?;
+        tempdir.create_dir("current_etc")?;
+        tempdir.create_dir("new_etc")?;
+
+        let p = tempdir.open_dir("pristine_etc")?;
+        let c = tempdir.open_dir("current_etc")?;
+        let n = tempdir.open_dir("new_etc")?;
+
+        p.write("file-to-dir", "some text")?;
+        c.write("file-to-dir", "some text 1")?;
+
+        n.create_dir_all("file-to-dir")?;
+
+        let (pristine_etc_files, current_etc_files, new_etc_files) = traverse_etc(&p, &c, &n)?;
+        let diff = compute_diff(&pristine_etc_files, &current_etc_files)?;
+
+        let merge_res = merge(&c, &current_etc_files, &n, &new_etc_files, diff);
+
+        assert!(merge_res.is_err());
+        assert_eq!(
+            merge_res.unwrap_err().root_cause().to_string(),
+            "Modified config file \"file-to-dir\" newly defaults to directory. Cannot merge"
+        );
 
         Ok(())
     }

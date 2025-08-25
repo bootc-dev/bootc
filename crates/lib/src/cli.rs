@@ -13,6 +13,7 @@ use cap_std_ext::cap_std;
 use cap_std_ext::cap_std::fs::Dir;
 use clap::Parser;
 use clap::ValueEnum;
+use etc_merge::{compute_diff, print_diff};
 use fn_error_context::context;
 use indoc::indoc;
 use ostree::gio;
@@ -533,6 +534,18 @@ pub(crate) enum InternalsOpts {
     #[cfg(feature = "rhsm")]
     /// Publish subscription-manager facts to /etc/rhsm/facts/bootc.facts
     PublishRhsmFacts,
+    /// Internal command for testing etc-diff/etc-merge
+    DirDiff {
+        /// Directory path to the pristine_etc
+        pristine_etc: Utf8PathBuf,
+        /// Directory path to the current_etc
+        current_etc: Utf8PathBuf,
+        /// Directory path to the new_etc
+        new_etc: Utf8PathBuf,
+        /// Whether to perform the three way merge or not
+        #[clap(long)]
+        merge: bool,
+    },
 }
 
 #[derive(Debug, clap::Subcommand, PartialEq, Eq)]
@@ -1484,6 +1497,29 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
             }
             #[cfg(feature = "rhsm")]
             InternalsOpts::PublishRhsmFacts => crate::rhsm::publish_facts(&root).await,
+            InternalsOpts::DirDiff {
+                pristine_etc,
+                current_etc,
+                new_etc,
+                merge,
+            } => {
+                let pristine_etc =
+                    Dir::open_ambient_dir(pristine_etc, cap_std::ambient_authority())?;
+                let current_etc = Dir::open_ambient_dir(current_etc, cap_std::ambient_authority())?;
+                let new_etc = Dir::open_ambient_dir(new_etc, cap_std::ambient_authority())?;
+
+                let (p, c, n) = etc_merge::traverse_etc(&pristine_etc, &current_etc, &new_etc)?;
+
+                let diff = compute_diff(&p, &c)?;
+                print_diff(&diff);
+
+                if merge {
+                    etc_merge::merge(&current_etc, &c, &new_etc, &n, diff)?;
+                }
+
+                Ok(())
+            }
+
         },
         #[cfg(feature = "docgen")]
         Opt::Man(manopts) => crate::docgen::generate_manpages(&manopts.directory),
