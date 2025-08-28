@@ -15,6 +15,7 @@ mod osbuild;
 pub(crate) mod osconfig;
 
 use std::collections::HashMap;
+use std::ffi::OsStr;
 use std::fs::create_dir_all;
 use std::io::Write;
 use std::os::fd::{AsFd, AsRawFd};
@@ -43,6 +44,7 @@ use cap_std_ext::cmdext::CapStdExtCommandExt;
 use cap_std_ext::prelude::CapStdExtDirExt;
 use clap::ValueEnum;
 use composefs::fs::read_file;
+use composefs::tree::FileSystem;
 use fn_error_context::context;
 use ostree::gio;
 use ostree_ext::composefs::{
@@ -52,7 +54,8 @@ use ostree_ext::composefs::{
 };
 use ostree_ext::composefs_boot::bootloader::UsrLibModulesVmlinuz;
 use ostree_ext::composefs_boot::{
-    bootloader::BootEntry as ComposefsBootEntry, cmdline::get_cmdline_composefs, uki, BootOps,
+    bootloader::BootEntry as ComposefsBootEntry, cmdline::get_cmdline_composefs,
+    os_release::OsReleaseInfo, uki, BootOps,
 };
 use ostree_ext::composefs_oci::{
     image::create_filesystem as create_composefs_filesystem, pull as composefs_oci_pull,
@@ -1575,9 +1578,9 @@ fn get_booted_bls() -> Result<BLSConfig> {
 
 pub(crate) enum BootSetupType<'a> {
     /// For initial setup, i.e. install to-disk
-    Setup((&'a RootSetup, &'a State)),
+    Setup((&'a RootSetup, &'a State, &'a FileSystem<Sha256HashValue>)),
     /// For `bootc upgrade`
-    Upgrade,
+    Upgrade(&'a FileSystem<Sha256HashValue>),
 }
 
 /// Compute SHA256Sum of VMlinuz + Initrd
@@ -1717,8 +1720,8 @@ pub(crate) fn setup_composefs_bls_boot(
 ) -> Result<String> {
     let id_hex = id.to_hex();
 
-    let (esp_device, cmdline_refs) = match setup_type {
-        BootSetupType::Setup((root_setup, state)) => {
+    let (esp_device, cmdline_refs, fs) = match setup_type {
+        BootSetupType::Setup((root_setup, state, fs)) => {
             // root_setup.kargs has [root=UUID=<UUID>, "rw"]
             let mut cmdline_options = String::from(root_setup.kargs.join(" "));
 
@@ -1739,10 +1742,10 @@ pub(crate) fn setup_composefs_bls_boot(
                 .find(|p| p.parttype.as_str() == ESP_GUID)
                 .ok_or_else(|| anyhow::anyhow!("ESP partition not found"))?;
 
-            (esp_part.node.clone(), cmdline_options)
+            (esp_part.node.clone(), cmdline_options, fs)
         }
 
-        BootSetupType::Upgrade => {
+        BootSetupType::Upgrade(fs) => {
             let sysroot = Utf8PathBuf::from("/sysroot");
 
             let fsinfo = inspect_filesystem(&sysroot)?;
@@ -1760,6 +1763,7 @@ pub(crate) fn setup_composefs_bls_boot(
                     format!("{COMPOSEFS_CMDLINE}={id_hex}"),
                 ]
                 .join(" "),
+                fs,
             )
         }
     };
@@ -1774,10 +1778,11 @@ pub(crate) fn setup_composefs_bls_boot(
         .run_inherited_with_cmd_context()
         .context("Mounting EFI")?;
 
-    let is_upgrade = matches!(setup_type, BootSetupType::Upgrade);
+    let is_upgrade = matches!(setup_type, BootSetupType::Upgrade(..));
 
     let efi_dir = Utf8PathBuf::from_path_buf(mounted_efi.join(EFI_LINUX))
         .map_err(|_| anyhow::anyhow!("EFI dir is not valid UTF-8"))?;
+
     let (bls_config, boot_digest) = match &entry {
         ComposefsBootEntry::Type1(..) => unimplemented!(),
         ComposefsBootEntry::Type2(..) => unimplemented!(),
@@ -1787,14 +1792,47 @@ pub(crate) fn setup_composefs_bls_boot(
             let boot_digest = compute_boot_digest(usr_lib_modules_vmlinuz, &repo)
                 .context("Computing boot digest")?;
 
+            // Every update should have its own /usr/lib/os-release
+            let (dir, fname) = fs
+                .root
+                .split(OsStr::new("/usr/lib/os-release"))
+                .context("Getting /usr/lib/os-release")?;
+
+            let os_release = dir
+                .get_file_opt(fname)
+                .context("Getting /usr/lib/os-release")?;
+
+            let version = os_release.and_then(|os_rel_file| {
+                let file_contents = match read_file(os_rel_file, &repo) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        tracing::warn!("Could not read /usr/lib/os-release: {e:?}");
+                        return None;
+                    }
+                };
+
+                let file_contents = match std::str::from_utf8(&file_contents) {
+                    Ok(c) => c,
+                    Err(..) => {
+                        tracing::warn!("/usr/lib/os-release did not have valid UTF-8");
+                        return None;
+                    }
+                };
+
+                OsReleaseInfo::parse(file_contents).get_version()
+            });
+
+            let default_sort_key = "1";
+
             let mut bls_config = BLSConfig::default();
-            bls_config.title = Some(id_hex.clone());
-            bls_config.sort_key = Some("1".into());
-            bls_config.machine_id = None;
-            bls_config.linux = format!("/{EFI_LINUX}/{id_hex}/vmlinuz");
-            bls_config.initrd = vec![format!("/{EFI_LINUX}/{id_hex}/initrd")];
-            bls_config.options = Some(cmdline_refs);
-            bls_config.extra = HashMap::new();
+
+            bls_config
+                .with_title(id_hex.clone())
+                .with_sort_key(default_sort_key.into())
+                .with_version(version.unwrap_or(default_sort_key.into()))
+                .with_linux(format!("/{EFI_LINUX}/{id_hex}/vmlinuz"))
+                .with_initrd(vec![format!("/{EFI_LINUX}/{id_hex}/initrd")])
+                .with_options(cmdline_refs);
 
             if let Some(symlink_to) = find_vmlinuz_initrd_duplicates(&boot_digest)? {
                 bls_config.linux = format!("/{EFI_LINUX}/{symlink_to}/vmlinuz");
@@ -1901,7 +1939,7 @@ pub(crate) fn setup_composefs_uki_boot(
     entry: ComposefsBootEntry<Sha256HashValue>,
 ) -> Result<()> {
     let (root_path, esp_device, is_insecure_from_opts) = match setup_type {
-        BootSetupType::Setup((root_setup, state)) => {
+        BootSetupType::Setup((root_setup, state, ..)) => {
             if let Some(v) = &state.config_opts.karg {
                 if v.len() > 0 {
                     tracing::warn!("kargs passed for UKI will be ignored");
@@ -1922,7 +1960,7 @@ pub(crate) fn setup_composefs_uki_boot(
             )
         }
 
-        BootSetupType::Upgrade => {
+        BootSetupType::Upgrade(..) => {
             let sysroot = Utf8PathBuf::from("/sysroot");
 
             let fsinfo = inspect_filesystem(&sysroot)?;
@@ -2014,7 +2052,7 @@ pub(crate) fn setup_composefs_uki_boot(
     let boot_dir = root_path.join("boot");
     create_dir_all(&boot_dir).context("Failed to create boot dir")?;
 
-    let is_upgrade = matches!(setup_type, BootSetupType::Upgrade);
+    let is_upgrade = matches!(setup_type, BootSetupType::Upgrade(..));
 
     let efi_uuid_source = get_efi_uuid_source();
 
@@ -2102,6 +2140,7 @@ pub(crate) async fn pull_composefs_repo(
     ComposefsRepository<Sha256HashValue>,
     Vec<ComposefsBootEntry<Sha256HashValue>>,
     Sha256HashValue,
+    FileSystem<Sha256HashValue>,
 )> {
     let rootfs_dir = cap_std::fs::Dir::open_ambient_dir("/sysroot", cap_std::ambient_authority())?;
 
@@ -2125,7 +2164,7 @@ pub(crate) async fn pull_composefs_repo(
     let entries = fs.transform_for_boot(&repo)?;
     let id = fs.commit_image(&repo, None)?;
 
-    Ok((repo, entries, id))
+    Ok((repo, entries, id, fs))
 }
 
 #[context("Setting up composefs boot")]
@@ -2164,7 +2203,7 @@ fn setup_composefs_boot(root_setup: &RootSetup, state: &State, image_id: &str) -
     match boot_type {
         BootType::Bls => {
             let digest = setup_composefs_bls_boot(
-                BootSetupType::Setup((&root_setup, &state)),
+                BootSetupType::Setup((&root_setup, &state, &fs)),
                 repo,
                 &id,
                 entry,
@@ -2173,7 +2212,7 @@ fn setup_composefs_boot(root_setup: &RootSetup, state: &State, image_id: &str) -
             boot_digest = Some(digest);
         }
         BootType::Uki => setup_composefs_uki_boot(
-            BootSetupType::Setup((&root_setup, &state)),
+            BootSetupType::Setup((&root_setup, &state, &fs)),
             repo,
             &id,
             entry,
@@ -2309,7 +2348,7 @@ async fn install_to_filesystem_impl(
         // Load a fd for the mounted target physical root
         let (id, verity) = initialize_composefs_repository(state, rootfs).await?;
 
-        tracing::warn!(
+        tracing::info!(
             "id = {id}, verity = {verity}",
             id = hex::encode(id),
             verity = verity.to_hex()

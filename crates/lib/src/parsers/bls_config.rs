@@ -103,6 +103,41 @@ impl BLSConfig {
     pub(crate) fn version(&self) -> Version {
         Version::from(&self.version)
     }
+
+    pub(crate) fn with_title(&mut self, new_val: String) -> &mut Self {
+        self.title = Some(new_val);
+        self
+    }
+    pub(crate) fn with_version(&mut self, new_val: String) -> &mut Self {
+        self.version = new_val;
+        self
+    }
+    pub(crate) fn with_linux(&mut self, new_val: String) -> &mut Self {
+        self.linux = new_val;
+        self
+    }
+    pub(crate) fn with_initrd(&mut self, new_val: Vec<String>) -> &mut Self {
+        self.initrd = new_val;
+        self
+    }
+    pub(crate) fn with_options(&mut self, new_val: String) -> &mut Self {
+        self.options = Some(new_val);
+        self
+    }
+    #[allow(dead_code)]
+    pub(crate) fn with_machine_id(&mut self, new_val: String) -> &mut Self {
+        self.machine_id = Some(new_val);
+        self
+    }
+    pub(crate) fn with_sort_key(&mut self, new_val: String) -> &mut Self {
+        self.sort_key = Some(new_val);
+        self
+    }
+    #[allow(dead_code)]
+    pub(crate) fn with_extra(&mut self, new_val: HashMap<String, String>) -> &mut Self {
+        self.extra = new_val;
+        self
+    }
 }
 
 pub(crate) fn parse_bls_config(input: &str) -> Result<BLSConfig> {
