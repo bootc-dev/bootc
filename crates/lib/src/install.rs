@@ -42,7 +42,7 @@ use cap_std_ext::cap_tempfile::TempDir;
 use cap_std_ext::cmdext::CapStdExtCommandExt;
 use cap_std_ext::prelude::CapStdExtDirExt;
 use clap::ValueEnum;
-use composefs_boot::bootloader::read_file;
+use composefs::fs::read_file;
 use fn_error_context::context;
 use ostree::gio;
 use ostree_ext::composefs::{
