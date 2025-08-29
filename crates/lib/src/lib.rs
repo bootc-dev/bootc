@@ -4,6 +4,7 @@
 //! to provide a fully "container native" tool for using
 //! bootable container images.
 
+mod bootc_composefs;
 pub(crate) mod bootc_kargs;
 mod bootloader;
 mod boundimage;
