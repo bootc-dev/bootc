@@ -1,0 +1,21 @@
+[package]
+name = "etc-merge"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[dependencies]
+anyhow = { workspace = true }
+cap-std-ext = { workspace = true }
+rustix = { workspace = true }
+openssl = { workspace = true }
+hex = { workspace = true }
+tracing = { workspace = true }
+composefs = { workspace = true }
+fn-error-context = { workspace = true }
+owo-colors = { workspace = true }
+anstream = { workspace = true }
+
+[lints]
+workspace = true
