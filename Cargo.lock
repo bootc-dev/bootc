@@ -253,6 +253,7 @@ dependencies = [
  "anstream",
  "anstyle",
  "anyhow",
+ "bootc-initramfs-setup",
  "bootc-internal-blockdev",
  "bootc-internal-utils",
  "bootc-kernel-cmdline",
