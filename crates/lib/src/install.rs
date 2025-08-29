@@ -77,6 +77,7 @@ use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "install-to-disk")]
 use self::baseline::InstallBlockDeviceOpts;
+use crate::bootc_composefs::state::copy_etc_to_state;
 use crate::boundimage::{BoundImage, ResolvedBoundImage};
 use crate::composefs_consts::{
     BOOT_LOADER_ENTRIES, COMPOSEFS_CMDLINE, COMPOSEFS_STAGED_DEPLOYMENT_FNAME,
@@ -2247,8 +2248,9 @@ pub(crate) fn write_composefs_state(
 ) -> Result<()> {
     let state_path = root_path.join(format!("{STATE_DIR_RELATIVE}/{}", deployment_id.to_hex()));
 
-    create_dir_all(state_path.join("etc/upper"))?;
-    create_dir_all(state_path.join("etc/work"))?;
+    create_dir_all(state_path.join("etc"))?;
+
+    copy_etc_to_state(&root_path, &deployment_id.to_hex(), &state_path)?;
 
     let actual_var_path = root_path.join(SHARED_VAR_PATH);
     create_dir_all(&actual_var_path)?;

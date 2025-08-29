@@ -22,6 +22,7 @@ bootc-sysusers = { path = "../sysusers" }
 bootc-tmpfiles = { path = "../tmpfiles" }
 bootc-utils = { package = "bootc-internal-utils", path = "../utils", version = "0.0.0" }
 ostree-ext = { path = "../ostree-ext", features = ["bootc"] }
+bootc-initramfs-setup = { path = "../initramfs" }
 
 # Workspace dependencies
 anstream = { workspace = true }
