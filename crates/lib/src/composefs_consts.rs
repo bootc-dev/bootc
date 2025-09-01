@@ -19,6 +19,8 @@ pub(crate) const ORIGIN_KEY_BOOT: &str = "boot";
 pub(crate) const ORIGIN_KEY_BOOT_TYPE: &str = "boot_type";
 /// Key to store the SHA256 sum of vmlinuz + initrd for a deployment
 pub(crate) const ORIGIN_KEY_BOOT_DIGEST: &str = "digest";
+/// Bootloader, Grub or Systemd
+pub(crate) const ORIGIN_KEY_BOOTLOADER: &str = "bootloader";
 
 /// Filename for `loader/entries`
 pub(crate) const BOOT_LOADER_ENTRIES: &str = "entries";
