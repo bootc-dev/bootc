@@ -507,15 +507,6 @@ fn tmpfiles_entry_get_path(line: &str) -> Result<PathBuf> {
     unescape_path(&mut it)
 }
 
-/// A parsed tmpfiles entry kind and path of interest.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TmpfilesEntryRef {
-    /// The entry type character (e.g. 'd', 'L', 'z', 'Z', ...)
-    pub kind: char,
-    /// The target path for the entry
-    pub path: PathBuf,
-}
-
 /// Chown-affecting tmpfiles.d entries summary
 #[derive(Debug, Default, Clone)]
 pub struct TmpfilesChowners {
@@ -528,28 +519,12 @@ pub struct TmpfilesChowners {
 impl TmpfilesChowners {
     /// Returns true if a chown entry would apply to the specified absolute path
     pub fn covers(&self, p: &Path) -> bool {
-        if self.exact.contains(p) {
-            return true;
-        }
-        // For recursive entries, any ancestor match qualifies
-        for anc in p.ancestors() {
-            if self.recursive.contains(anc) {
-                return true;
-            }
-        }
-        false
+        self.exact.contains(p) || p.ancestors().any(|anc| self.recursive.contains(anc))
     }
 }
 
 fn tmpfiles_entry_get_kind(line: &str) -> Option<char> {
-    let mut it = line.bytes();
-    // Skip leading whitespace
-    while let Some(c) = it.next() {
-        if !c.is_ascii_whitespace() {
-            return Some(c as char);
-        }
-    }
-    None
+    line.trim_start().chars().next()
 }
 
 /// Read tmpfiles.d entries and return only those affecting chown operations (z/Z)
