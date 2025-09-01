@@ -507,6 +507,90 @@ fn tmpfiles_entry_get_path(line: &str) -> Result<PathBuf> {
     unescape_path(&mut it)
 }
 
+/// A parsed tmpfiles entry kind and path of interest.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TmpfilesEntryRef {
+    /// The entry type character (e.g. 'd', 'L', 'z', 'Z', ...)
+    pub kind: char,
+    /// The target path for the entry
+    pub path: PathBuf,
+}
+
+/// Chown-affecting tmpfiles.d entries summary
+#[derive(Debug, Default, Clone)]
+pub struct TmpfilesChowners {
+    /// Exact chown entries (non-recursive) i.e. kind 'z'
+    pub exact: BTreeSet<PathBuf>,
+    /// Recursive chown entries (apply to all children) i.e. kind 'Z'
+    pub recursive: BTreeSet<PathBuf>,
+}
+
+impl TmpfilesChowners {
+    /// Returns true if a chown entry would apply to the specified absolute path
+    pub fn covers(&self, p: &Path) -> bool {
+        if self.exact.contains(p) {
+            return true;
+        }
+        // For recursive entries, any ancestor match qualifies
+        for anc in p.ancestors() {
+            if self.recursive.contains(anc) {
+                return true;
+            }
+        }
+        false
+    }
+}
+
+fn tmpfiles_entry_get_kind(line: &str) -> Option<char> {
+    let mut it = line.bytes();
+    // Skip leading whitespace
+    while let Some(c) = it.next() {
+        if !c.is_ascii_whitespace() {
+            return Some(c as char);
+        }
+    }
+    None
+}
+
+/// Read tmpfiles.d entries and return only those affecting chown operations (z/Z)
+pub fn read_tmpfiles_chowners(rootfs: &Dir) -> Result<TmpfilesChowners> {
+    let Some(tmpfiles_dir) = rootfs.open_dir_optional(TMPFILESD)? else {
+        return Ok(Default::default());
+    };
+    let mut out = TmpfilesChowners::default();
+    for entry in tmpfiles_dir.entries()? {
+        let entry = entry?;
+        // Only process .conf files
+        let name = entry.file_name();
+        let path = Path::new(&name);
+        if path.extension() != Some(OsStr::new("conf")) {
+            continue;
+        }
+        let r = BufReader::new(entry.open()?);
+        for line in r.lines() {
+            let line = line?;
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let Some(kind) = tmpfiles_entry_get_kind(&line) else { continue };
+            if kind != 'z' && kind != 'Z' {
+                continue;
+            }
+            let path = tmpfiles_entry_get_path(&line)?;
+            match kind {
+                'z' => {
+                    out.exact.insert(path);
+                }
+                'Z' => {
+                    out.recursive.insert(path);
+                }
+                _ => unreachable!(),
+            }
+        }
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
