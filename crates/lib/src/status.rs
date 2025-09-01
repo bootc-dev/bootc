@@ -11,6 +11,8 @@ use bootc_kernel_cmdline::Cmdline;
 use bootc_utils::try_deserialize_timestamp;
 use canon_json::CanonJsonSerialize;
 use cap_std_ext::cap_std;
+use cap_std_ext::cap_std::ambient_authority;
+use cap_std_ext::cap_std::fs::Dir;
 use fn_error_context::context;
 use ostree::glib;
 use ostree_container::OstreeImageReference;
@@ -36,6 +38,8 @@ use crate::composefs_consts::{
 use crate::deploy::get_sorted_bls_boot_entries;
 use crate::deploy::get_sorted_uki_boot_entries;
 use crate::install::BootType;
+use crate::install::EFIVARFS;
+use crate::spec::Bootloader;
 use crate::spec::ImageStatus;
 use crate::spec::{BootEntry, BootOrder, Host, HostSpec, HostStatus, HostType};
 use crate::spec::{ImageReference, ImageSignature};
@@ -419,6 +423,32 @@ async fn get_container_manifest_and_config(
     Ok((manifest, config))
 }
 
+#[context("Getting bootloader")]
+fn get_bootloader() -> Result<Bootloader> {
+    let efivarfs = match Dir::open_ambient_dir(EFIVARFS, ambient_authority()) {
+        Ok(dir) => dir,
+        // Most likely using BIOS
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Bootloader::Grub),
+        Err(e) => Err(e).context(format!("Opening {EFIVARFS}"))?,
+    };
+
+    const EFI_LOADER_INFO: &str = "LoaderInfo-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f";
+
+    match efivarfs.read_to_string(EFI_LOADER_INFO) {
+        Ok(loader) => {
+            if loader.to_lowercase().contains("systemd-boot") {
+                return Ok(Bootloader::Systemd);
+            }
+
+            return Ok(Bootloader::Grub);
+        }
+
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Bootloader::Grub),
+
+        Err(e) => Err(e).context(format!("Opening {EFI_LOADER_INFO}"))?,
+    }
+}
+
 #[context("Getting composefs deployment metadata")]
 async fn boot_entry_from_composefs_deployment(
     origin: tini::Ini,
@@ -480,7 +510,11 @@ async fn boot_entry_from_composefs_deployment(
         pinned: false,
         store: None,
         ostree: None,
-        composefs: Some(crate::spec::BootEntryComposefs { verity, boot_type }),
+        composefs: Some(crate::spec::BootEntryComposefs {
+            verity,
+            boot_type,
+            bootloader: get_bootloader()?,
+        }),
         soft_reboot_capable: false,
     };
 

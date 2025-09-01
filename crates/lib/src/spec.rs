@@ -1,6 +1,7 @@
 //! The definition for host system state.
 
 use std::fmt::Display;
+use std::str::FromStr;
 
 use anyhow::Result;
 use ostree_ext::container::Transport;
@@ -161,14 +162,49 @@ pub struct BootEntryOstree {
     pub deploy_serial: u32,
 }
 
+/// Bootloader type to determine whether system was booted via Grub or Systemd
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
+pub enum Bootloader {
+    /// Booted via Grub
+    #[default]
+    Grub,
+    /// Booted via Systemd
+    Systemd,
+}
+
+impl Display for Bootloader {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let string = match self {
+            Bootloader::Grub => "grub",
+            Bootloader::Systemd => "systemd",
+        };
+
+        write!(f, "{}", string)
+    }
+}
+
+impl FromStr for Bootloader {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> Result<Self> {
+        match value {
+            "grub" => Ok(Self::Grub),
+            "systemd" => Ok(Self::Systemd),
+            unrecognized => Err(anyhow::anyhow!("Unrecognized bootloader: '{unrecognized}'")),
+        }
+    }
+}
+
 /// A bootable entry
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct BootEntryComposefs {
     /// The erofs verity
     pub verity: String,
-    /// Whether this deployment is to be booted via BLS or UKI
+    /// Whether this deployment is to be booted via Type1 (vmlinuz + initrd) or Type2 (UKI) entry
     pub boot_type: BootType,
+    /// Whether we boot using systemd or grub
+    pub bootloader: Bootloader,
 }
 
 /// A bootable entry
@@ -262,6 +298,19 @@ impl Host {
                 self.status.booted = None;
             }
         }
+    }
+
+    pub(crate) fn require_composefs_booted(&self) -> anyhow::Result<&BootEntryComposefs> {
+        let cfs = self
+            .status
+            .booted
+            .as_ref()
+            .ok_or(anyhow::anyhow!("Could not find booted deployment"))?
+            .composefs
+            .as_ref()
+            .ok_or(anyhow::anyhow!("Could not find booted image"))?;
+
+        Ok(cfs)
     }
 }
 
