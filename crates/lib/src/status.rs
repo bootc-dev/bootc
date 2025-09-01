@@ -29,6 +29,7 @@ use ostree_ext::ostree;
 use tokio::io::AsyncReadExt;
 
 use crate::cli::OutputFormat;
+use crate::composefs_consts::ORIGIN_KEY_BOOTLOADER;
 use crate::composefs_consts::{
     COMPOSEFS_CMDLINE, COMPOSEFS_STAGED_DEPLOYMENT_FNAME, COMPOSEFS_TRANSIENT_STATE_DIR,
     ORIGIN_KEY_BOOT, ORIGIN_KEY_BOOT_TYPE, STATE_DIR_RELATIVE,
@@ -36,6 +37,7 @@ use crate::composefs_consts::{
 use crate::deploy::get_sorted_bls_boot_entries;
 use crate::deploy::get_sorted_uki_boot_entries;
 use crate::install::BootType;
+use crate::spec::Bootloader;
 use crate::spec::ImageStatus;
 use crate::spec::{BootEntry, BootOrder, Host, HostSpec, HostStatus, HostType};
 use crate::spec::{ImageReference, ImageSignature};
@@ -473,6 +475,11 @@ async fn boot_entry_from_composefs_deployment(
         None => anyhow::bail!("{ORIGIN_KEY_BOOT} not found"),
     };
 
+    let bootloader = match origin.get::<String>(ORIGIN_KEY_BOOT, ORIGIN_KEY_BOOTLOADER) {
+        Some(s) => Bootloader::from_str(s.as_str())?,
+        None => anyhow::bail!("{ORIGIN_KEY_BOOTLOADER} not found"),
+    };
+
     let e = BootEntry {
         image,
         cached_update: None,
@@ -480,7 +487,11 @@ async fn boot_entry_from_composefs_deployment(
         pinned: false,
         store: None,
         ostree: None,
-        composefs: Some(crate::spec::BootEntryComposefs { verity, boot_type }),
+        composefs: Some(crate::spec::BootEntryComposefs {
+            verity,
+            boot_type,
+            bootloader,
+        }),
         soft_reboot_capable: false,
     };
 
