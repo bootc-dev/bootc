@@ -945,11 +945,11 @@ async fn upgrade_composefs(_opts: UpgradeOpts) -> Result<()> {
 
     let (repo, entries, id, fs) = pull_composefs_repo(&imgref.transport, &imgref.image).await?;
 
-    let Some(entry) = entries.into_iter().next() else {
+    let Some(entry) = entries.iter().next() else {
         anyhow::bail!("No boot entries!");
     };
 
-    let boot_type = BootType::from(&entry);
+    let boot_type = BootType::from(entry);
     let mut boot_digest = None;
 
     match boot_type {
@@ -962,7 +962,7 @@ async fn upgrade_composefs(_opts: UpgradeOpts) -> Result<()> {
             )?)
         }
 
-        BootType::Uki => setup_composefs_uki_boot(BootSetupType::Upgrade(&fs), repo, &id, entry)?,
+        BootType::Uki => setup_composefs_uki_boot(BootSetupType::Upgrade(&fs), repo, &id, entries)?,
     };
 
     write_composefs_state(
@@ -1130,11 +1130,11 @@ async fn switch_composefs(opts: SwitchOpts) -> Result<()> {
     let (repo, entries, id, fs) =
         pull_composefs_repo(&"docker".into(), &target_imgref.image).await?;
 
-    let Some(entry) = entries.into_iter().next() else {
+    let Some(entry) = entries.iter().next() else {
         anyhow::bail!("No boot entries!");
     };
 
-    let boot_type = BootType::from(&entry);
+    let boot_type = BootType::from(entry);
     let mut boot_digest = None;
 
     match boot_type {
@@ -1143,10 +1143,10 @@ async fn switch_composefs(opts: SwitchOpts) -> Result<()> {
                 BootSetupType::Upgrade(&fs),
                 repo,
                 &id,
-                entry,
+                &entry,
             )?)
         }
-        BootType::Uki => setup_composefs_uki_boot(BootSetupType::Upgrade(&fs), repo, &id, entry)?,
+        BootType::Uki => setup_composefs_uki_boot(BootSetupType::Upgrade(&fs), repo, &id, entries)?,
     };
 
     write_composefs_state(
