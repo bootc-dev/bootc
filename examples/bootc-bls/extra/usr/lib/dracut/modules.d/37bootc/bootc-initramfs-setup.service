@@ -27,7 +27,7 @@ OnFailureJobMode=isolate
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/composefs-setup-root
+ExecStart=/usr/bin/bootc-initramfs-setup
 StandardInput=null
 StandardOutput=journal
 StandardError=journal+console

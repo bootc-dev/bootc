@@ -4,16 +4,16 @@ set -eux
 
 cd "${0%/*}"
 
-cargo build --release --features=pre-6.15 --bin cfsctl --bin composefs-setup-root
+cargo build --release --bin bootc
 
-cp ../../target/release/cfsctl .
+cp ../../target/release/bootc .
 
 rm -rf tmp/sysroot
 mkdir -p tmp/sysroot/composefs
 
 IMAGE_ID="$(sed s/sha256:// tmp/iid)"
-./cfsctl --repo tmp/sysroot/composefs oci pull containers-storage:"${IMAGE_ID}"
-COMPOSEFS_FSVERITY="$(./cfsctl --repo tmp/sysroot/composefs oci compute-id --bootable "${IMAGE_ID}")"
+./bootc internals cfs --repo tmp/sysroot/composefs oci pull containers-storage:"${IMAGE_ID}"
+COMPOSEFS_FSVERITY="$(./bootc internals cfs --repo tmp/sysroot/composefs oci compute-id --bootable "${IMAGE_ID}")"
 
 # See: https://wiki.archlinux.org/title/Unified_Extensible_Firmware_Interface/Secure_Boot
 # Alternative to generate keys for testing: `sbctl create-keys`
@@ -42,6 +42,6 @@ sudo podman build \
 
 rm -rf tmp/efi
 mkdir -p tmp/efi
-./cfsctl --repo tmp/sysroot/composefs oci pull containers-storage:"${IMAGE_ID}"
-./cfsctl --repo tmp/sysroot/composefs oci compute-id --bootable "${IMAGE_ID}"
-./cfsctl --repo tmp/sysroot/composefs oci prepare-boot "${IMAGE_ID}" --bootdir tmp/efi
+./bootc internals cfs --repo tmp/sysroot/composefs oci pull containers-storage:"${IMAGE_ID}"
+./bootc internals cfs --repo tmp/sysroot/composefs oci compute-id --bootable "${IMAGE_ID}"
+./bootc internals cfs --repo tmp/sysroot/composefs oci prepare-boot "${IMAGE_ID}" --bootdir tmp/efi

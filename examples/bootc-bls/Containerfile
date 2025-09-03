@@ -1,10 +1,10 @@
 FROM quay.io/fedora/fedora-bootc:42
 COPY extra /
-COPY cfsctl /usr/bin
+COPY bootc /usr/bin
 
 RUN passwd -d root
 
-# need to have composefs setup root in the initramfs so we need this
+# need to have bootc-initramfs-setup in the initramfs so we need this
 RUN set -x; \
     kver=$(cd /usr/lib/modules && echo *); \
     dracut -vf --install "/etc/passwd /etc/group" /usr/lib/modules/$kver/initramfs.img $kver;

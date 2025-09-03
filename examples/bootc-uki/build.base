@@ -4,14 +4,14 @@ set -eux
 
 cd "${0%/*}"
 
-cargo build --release --features=pre-6.15 --bin cfsctl --bin composefs-setup-root
+cargo build --release --bin bootc --bin bootc-initramfs-setup
 
-cp ../../target/release/cfsctl .
-cp ../../target/release/composefs-setup-root extra/usr/lib/dracut/modules.d/37composefs/
+cp ../../target/release/bootc .
+cp ../../target/release/bootc-initramfs-setup extra/usr/lib/dracut/modules.d/37bootc/
 
 mkdir -p tmp
 
-sudo podman build \
+podman build \
     -t quay.io/fedora/fedora-bootc-base-uki:42 \
     -f Containerfile.stage1 \
     --iidfile=tmp/iid \
