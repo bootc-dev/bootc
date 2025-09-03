@@ -1,6 +1,6 @@
 FROM quay.io/fedora/fedora-bootc:42
 COPY extra /
-COPY cfsctl /usr/bin
+COPY bootc /usr/bin
 
 RUN passwd -d root
 
