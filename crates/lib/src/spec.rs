@@ -10,6 +10,7 @@ use ostree_ext::{container::OstreeImageReference, oci_spec};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::install::BootType;
 use crate::{k8sapitypes, status::Slot};
 
 const API_VERSION: &str = "org.containers.bootc/v1";
@@ -163,6 +164,16 @@ pub struct BootEntryOstree {
 /// A bootable entry
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
 #[serde(rename_all = "camelCase")]
+pub struct BootEntryComposefs {
+    /// The erofs verity
+    pub verity: String,
+    /// Whether this deployment is to be booted via BLS or UKI
+    pub boot_type: BootType,
+}
+
+/// A bootable entry
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct BootEntry {
     /// The image reference
     pub image: Option<ImageStatus>,
@@ -180,6 +191,8 @@ pub struct BootEntry {
     pub store: Option<Store>,
     /// If this boot entry is ostree based, the corresponding state
     pub ostree: Option<BootEntryOstree>,
+    /// If this boot entry is composefs based, the corresponding state
+    pub composefs: Option<BootEntryComposefs>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
@@ -520,6 +533,7 @@ mod tests {
                 pinned: false,
                 store: None,
                 ostree: None,
+                composefs: None,
             }
         }
 
