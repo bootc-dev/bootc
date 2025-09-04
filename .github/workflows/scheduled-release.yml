@@ -85,7 +85,7 @@ jobs:
         env:
           INPUT_VERSION: ${{ github.event.inputs.version }}
         run: |
-          dnf -y install pandoc
+          dnf -y install go-md2man
           cargo install cargo-edit
 
           # If version is provided via workflow dispatch, validate and use it

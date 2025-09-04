@@ -31,3 +31,7 @@ are:
 # SEE ALSO
 
 **bootc(1)**
+
+# VERSION
+
+<!-- VERSION PLACEHOLDER -->

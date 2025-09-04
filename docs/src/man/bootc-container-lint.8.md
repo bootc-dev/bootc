@@ -5,19 +5,20 @@ checks as part of a container build
 
 # SYNOPSIS
 
-**bootc container lint** \[**\--rootfs**\] \[**\--fatal-warnings**\]
-\[**\--list**\] \[**\--skip**\] \[**\--no-truncate**\]
-\[**-h**\|**\--help**\]
+**bootc container lint** [*OPTIONS*]
 
 # DESCRIPTION
 
 Perform relatively inexpensive static analysis checks as part of a
 container build.
 
-This is intended to be invoked via e.g. \`RUN bootc container lint\` as
+This is intended to be invoked via e.g. `RUN bootc container lint` as
 part of a build process; it will error if any problems are detected.
 
 # OPTIONS
+
+<!-- BEGIN GENERATED OPTIONS -->
+<!-- END GENERATED OPTIONS -->
 
 **\--rootfs** *\<ROOTFS\>* \[default: /\]
 
@@ -36,7 +37,7 @@ part of a build process; it will error if any problems are detected.
 
 **\--skip** *\<SKIP\>*
 
-:   Skip checking the targeted lints, by name. Use \`\--list\` to
+:   Skip checking the targeted lints, by name. Use `\--list` to
     discover the set of available lints.
 
     Example: \--skip nonempty-boot \--skip baseimage-root
@@ -53,4 +54,5 @@ part of a build process; it will error if any problems are detected.
 
 # VERSION
 
-v1.8.0
+<!-- VERSION PLACEHOLDER -->
+

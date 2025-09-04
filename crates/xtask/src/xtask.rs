@@ -5,10 +5,12 @@ use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::process::Command;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result};
 use camino::{Utf8Path, Utf8PathBuf};
 use fn_error_context::context;
 use xshell::{cmd, Shell};
+
+mod man;
 
 const NAME: &str = "bootc";
 const TEST_IMAGES: &[&str] = &[
@@ -33,7 +35,10 @@ fn main() {
 
 #[allow(clippy::type_complexity)]
 const TASKS: &[(&str, fn(&Shell) -> Result<()>)] = &[
-    ("manpages", manpages),
+    ("manpages", man::generate_man_pages),
+    ("sync-manpages", man::sync_all_man_pages),
+    ("test-sync-manpages", man::test_sync_workflow),
+    ("update-json-schemas", update_json_schemas),
     ("update-generated", update_generated),
     ("package", package),
     ("package-srpm", package_srpm),
@@ -93,89 +98,6 @@ fn gitrev(sh: &Shell) -> Result<String> {
         // We always inject the timestamp first to ensure that newer is better.
         Ok(format!("{timestamp}.g{abbrev_commit}"))
     }
-}
-
-#[context("Manpages")]
-fn manpages(sh: &Shell) -> Result<()> {
-    // We currently go: clap (Rust) -> man -> markdown for the CLI
-    sh.create_dir("target/man")?;
-    cmd!(
-        sh,
-        "cargo run --features=docgen -- man --directory target/man"
-    )
-    .run()?;
-
-    // Post-process hack to unconditionally define the roff string for
-    // apostrophe, See:
-    // https://github.com/bootc-dev/bootc/pull/1385#discussion_r2172661872
-    for page in std::fs::read_dir(sh.current_dir().join("target/man"))? {
-        let page = page?;
-        let path = page.path();
-        let groffsub = r"1i .ds Aq \\(aq";
-        let dropif = r"/\.g \.ds Aq/d";
-        let dropelse = r"/.el .ds Aq '/d";
-        cmd!(sh, "sed -i -e {groffsub} -e {dropif} -e {dropelse} {path}").run()?;
-    }
-
-    // We also have some man pages for the systemd units which are canonically
-    // maintained as markdown; convert them to man pages.
-    let extradir = sh.current_dir().join("docs/src/man-md");
-    for ent in std::fs::read_dir(extradir)? {
-        let ent = ent?;
-        let srcpath = ent.path();
-        let Some(extension) = srcpath.extension() else {
-            continue;
-        };
-        if extension != "md" {
-            continue;
-        }
-        let base_filename = srcpath
-            .file_stem()
-            .and_then(|name| name.to_str())
-            .ok_or_else(|| anyhow!("Expected filename in {srcpath:?}"))?;
-        let src =
-            std::fs::read_to_string(&srcpath).with_context(|| format!("Reading {srcpath:?}"))?;
-        let section = 5;
-        let buf = mandown::convert(&src, base_filename, section);
-        let target = format!("target/man/{base_filename}.{section}");
-        std::fs::write(&target, buf).with_context(|| format!("Writing {target}"))?;
-    }
-    Ok(())
-}
-
-/// Update generated files, such as converting the man pages to markdown.
-/// This process is currently manual.
-#[context("Updating generated files")]
-fn update_generated(sh: &Shell) -> Result<()> {
-    manpages(sh)?;
-    // And convert the man pages into markdown, so they can be included
-    // in the docs.
-    for ent in std::fs::read_dir("target/man")? {
-        let ent = ent?;
-        let path = &ent.path();
-        if path.extension().and_then(|s| s.to_str()) != Some("8") {
-            continue;
-        }
-        let filename = path
-            .file_stem()
-            .and_then(|name| name.to_str())
-            .ok_or_else(|| anyhow!("Expected filename in {path:?}"))?;
-        let target = format!("docs/src/man/{filename}.md");
-        cmd!(
-            sh,
-            "pandoc --from=man --to=markdown --output={target} {path}"
-        )
-        .run()?;
-    }
-    for (of, target) in [
-        ("host", "docs/src/host-v1.schema.json"),
-        ("progress", "docs/src/progress-v0.schema.json"),
-    ] {
-        let schema = cmd!(sh, "cargo run -q -- internals print-json-schema --of={of}").read()?;
-        std::fs::write(target, &schema)?;
-        println!("Updated {target}");
-    }
-    Ok(())
 }
 
 #[context("test-integration")]
@@ -301,7 +223,7 @@ fn edit_vendor_config(config: &str) -> Result<String> {
 #[context("Packaging")]
 fn impl_package(sh: &Shell) -> Result<Package> {
     let source_date_epoch = git_source_date_epoch(".".into())?;
-    manpages(sh)?;
+    man::generate_man_pages(sh)?;
     let v = gitrev(sh)?;
 
     let namev = format!("{NAME}-{v}");
@@ -461,6 +383,28 @@ fn impl_srpm(sh: &Shell) -> Result<Utf8PathBuf> {
 fn package_srpm(sh: &Shell) -> Result<()> {
     let srpm = impl_srpm(sh)?;
     println!("Generated: {srpm}");
+    Ok(())
+}
+
+/// Update JSON schema files
+#[context("Updating JSON schemas")]
+fn update_json_schemas(sh: &Shell) -> Result<()> {
+    for (of, target) in [
+        ("host", "docs/src/host-v1.schema.json"),
+        ("progress", "docs/src/progress-v0.schema.json"),
+    ] {
+        let schema = cmd!(sh, "cargo run -q -- internals print-json-schema --of={of}").read()?;
+        std::fs::write(target, &schema)?;
+        println!("Updated {target}");
+    }
+    Ok(())
+}
+
+/// Update generated files using the new sync approach
+#[context("Updating generated files")]
+fn update_generated(sh: &Shell) -> Result<()> {
+    man::update_manpages(sh)?;
+    update_json_schemas(sh)?;
     Ok(())
 }
 

@@ -51,3 +51,7 @@ kargs = ["nosmt", "console=tty0"]
 # SEE ALSO
 
 **bootc(1)**
+
+# VERSION
+
+<!-- VERSION PLACEHOLDER -->

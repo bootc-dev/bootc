@@ -279,14 +279,6 @@ pub(crate) enum InstallOpts {
     PrintConfiguration,
 }
 
-/// Options for man page generation
-#[derive(Debug, Parser, PartialEq, Eq)]
-pub(crate) struct ManOpts {
-    #[clap(long)]
-    /// Output to this directory
-    pub(crate) directory: Utf8PathBuf,
-}
-
 /// Subcommands which can be executed as part of a container build.
 #[derive(Debug, clap::Subcommand, PartialEq, Eq)]
 pub(crate) enum ContainerOpts {
@@ -540,6 +532,9 @@ pub(crate) enum InternalsOpts {
         #[clap(long)]
         merge: bool,
     },
+    #[cfg(feature = "docgen")]
+    /// Dump CLI structure as JSON for documentation generation
+    DumpCliJson,
 }
 
 #[derive(Debug, clap::Subcommand, PartialEq, Eq)]
@@ -704,9 +699,6 @@ pub(crate) enum Opt {
     #[clap(subcommand)]
     #[clap(hide = true)]
     Internals(InternalsOpts),
-    #[clap(hide(true))]
-    #[cfg(feature = "docgen")]
-    Man(ManOpts),
 }
 
 /// Ensure we've entered a mount namespace, so that we can remount
@@ -1500,6 +1492,14 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
             }
             #[cfg(feature = "rhsm")]
             InternalsOpts::PublishRhsmFacts => crate::rhsm::publish_facts(&root).await,
+            #[cfg(feature = "docgen")]
+            InternalsOpts::DumpCliJson => {
+                use clap::CommandFactory;
+                let cmd = Opt::command();
+                let json = crate::cli_json::dump_cli_json(&cmd)?;
+                println!("{}", json);
+                Ok(())
+            }
             InternalsOpts::DirDiff {
                 pristine_etc,
                 current_etc,
@@ -1523,8 +1523,6 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
                 Ok(())
             }
         },
-        #[cfg(feature = "docgen")]
-        Opt::Man(manopts) => crate::docgen::generate_manpages(&manopts.directory),
         Opt::State(opts) => match opts {
             StateOpts::WipeOstree => {
                 let sysroot = ostree::Sysroot::new_default();

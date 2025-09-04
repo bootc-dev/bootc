@@ -39,7 +39,7 @@ jobs:
       - name: Run tests
         run: cargo test -- --nocapture --quiet
       - name: Manpage generation
-        run: mkdir -p target/man && cargo run --features=docgen -- man --directory target/man
+        run: cargo xtask update-generated
       - name: Clippy (gate on correctness and suspicous)
         run: make validate-rust
   fedora-container-tests:

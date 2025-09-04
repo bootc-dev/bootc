@@ -1,34 +1,45 @@
 # NAME
 
-bootc-install-to-existing-root - Install to the host root filesystem
+bootc-install-to-filesystem - Install to an externally created
+filesystem structure
 
 # SYNOPSIS
 
-**bootc install to-existing-root** \[**\--replace**\]
-\[**\--source-imgref**\] \[**\--target-transport**\]
-\[**\--target-imgref**\] \[**\--enforce-container-sigpolicy**\]
-\[**\--run-fetch-check**\] \[**\--skip-fetch-check**\]
-\[**\--disable-selinux**\] \[**\--karg**\]
-\[**\--root-ssh-authorized-keys**\] \[**\--generic-image**\]
-\[**\--bound-images**\] \[**\--stateroot**\]
-\[**\--acknowledge-destructive**\] \[**\--cleanup**\]
-\[**-h**\|**\--help**\] \[*ROOT_PATH*\]
+**bootc install to-filesystem** [*OPTIONS*] <*ROOT_PATH*>
 
 # DESCRIPTION
 
-Install to the host root filesystem.
+Install to an externally created filesystem structure.
 
-This is a variant of \`install to-filesystem\` that is designed to
-install \"alongside\" the running host root filesystem. Currently, the
-host root filesystem\'s \`/boot\` partition will be wiped, but the
-content of the existing root will otherwise be retained, and will need
-to be cleaned up if desired when rebooted into the new root.
+In this variant of installation, the root filesystem alongside any
+necessary platform partitions (such as the EFI system partition) are
+prepared and mounted by an external tool or script. The root filesystem
+is currently expected to be empty by default.
 
 # OPTIONS
 
-**\--replace** *\<REPLACE\>* \[default: alongside\]
+<!-- BEGIN GENERATED OPTIONS -->
+<!-- END GENERATED OPTIONS -->
 
-:   Configure how existing data is treated\
+**\--root-mount-spec** *\<ROOT_MOUNT_SPEC\>*
+
+:   Source device specification for the root filesystem. For example,
+    UUID=2e9f4241-229b-4202-8429-62d2302382e1
+
+    If not provided, the UUID of the target filesystem will be used.
+
+**\--boot-mount-spec** *\<BOOT_MOUNT_SPEC\>*
+
+:   Mount specification for the /boot filesystem.
+
+    This is optional. If `/boot` is detected as a mounted partition,
+    then its UUID will be used.
+
+**\--replace** *\<REPLACE\>*
+
+:   Initialize the system in-place; at the moment, only one mode for
+    this is implemented. In the future, it may also be supported to set
+    up an explicit \"dual boot\" system\
 
     \
     *Possible values:*
@@ -41,6 +52,18 @@ to be cleaned up if desired when rebooted into the new root.
         bootloader state will have its contents wiped and replaced.
         However, the running system (and all files) will remain in place
         until reboot
+
+**\--acknowledge-destructive**
+
+:   If the target is the running system\'s root filesystem, this will
+    skip any warnings
+
+**\--skip-finalize**
+
+:   The default mode is to \"finalize\" the target filesystem by
+    invoking `fstrim` and similar operations, and finally mounting it
+    readonly. This option skips those operations. It is then the
+    responsibility of the invoking code to perform those operations
 
 **\--source-imgref** *\<SOURCE_IMGREF\>*
 
@@ -56,7 +79,7 @@ to be cleaned up if desired when rebooted into the new root.
 **\--target-transport** *\<TARGET_TRANSPORT\>* \[default: registry\]
 
 :   The transport; e.g. oci, oci-archive, containers-storage. Defaults
-    to \`registry\`
+    to `registry`
 
 **\--target-imgref** *\<TARGET_IMGREF\>*
 
@@ -65,8 +88,8 @@ to be cleaned up if desired when rebooted into the new root.
 **\--enforce-container-sigpolicy**
 
 :   This is the inverse of the previous
-    \`\--target-no-signature-verification\` (which is now a no-op).
-    Enabling this option enforces that \`/etc/containers/policy.json\`
+    `\--target-no-signature-verification` (which is now a no-op).
+    Enabling this option enforces that `/etc/containers/policy.json`
     includes a default policy which requires signatures
 
 **\--run-fetch-check**
@@ -96,14 +119,14 @@ to be cleaned up if desired when rebooted into the new root.
 
 **\--root-ssh-authorized-keys** *\<ROOT_SSH_AUTHORIZED_KEYS\>*
 
-:   The path to an \`authorized_keys\` that will be injected into the
-    \`root\` account.
+:   The path to an `authorized_keys` that will be injected into the
+    `root` account.
 
-    The implementation of this uses systemd \`tmpfiles.d\`, writing to a
-    file named \`/etc/tmpfiles.d/bootc-root-ssh.conf\`. This will have
+    The implementation of this uses systemd `tmpfiles.d`, writing to a
+    file named `/etc/tmpfiles.d/bootc-root-ssh.conf`. This will have
     the effect that by default, the SSH credentials will be set if not
     present. The intention behind this is to allow mounting the whole
-    \`/root\` home directory as a \`tmpfs\`, while still getting the SSH
+    `/root` home directory as a `tmpfs`, while still getting the SSH
     key replaced on boot.
 
 **\--generic-image**
@@ -129,27 +152,20 @@ to be cleaned up if desired when rebooted into the new root.
 
 **\--stateroot** *\<STATEROOT\>*
 
-:   The stateroot name to use. Defaults to \`default\`
-
-**\--acknowledge-destructive**
-
-:   Accept that this is a destructive action and skip a warning timer
-
-**\--cleanup**
-
-:   Add the bootc-destructive-cleanup systemd service to delete files
-    from the previous install on first boot
+:   The stateroot name to use. Defaults to `default`
 
 **-h**, **\--help**
 
 :   Print help (see a summary with \'-h\')
 
-\[*ROOT_PATH*\] \[default: /target\]
+\<*ROOT_PATH*\>
 
-:   Path to the mounted root; this is now not necessary to provide.
-    Historically it was necessary to ensure the host rootfs was mounted
-    at here via e.g. \`-v /:/target\`
+:   Path to the mounted root filesystem.
+
+    By default, the filesystem UUID will be discovered and used for
+    mounting. To override this, use `\--root-mount-spec`.
 
 # VERSION
 
-v1.8.0
+<!-- VERSION PLACEHOLDER -->
+

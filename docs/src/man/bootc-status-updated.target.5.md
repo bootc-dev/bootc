@@ -21,3 +21,7 @@ WantedBy=bootc-status-updated.target
 # SEE ALSO
 
 **bootc**(1), **bootc-status-updated.path**(8)
+
+# VERSION
+
+<!-- VERSION PLACEHOLDER -->

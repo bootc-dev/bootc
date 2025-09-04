@@ -13,6 +13,9 @@ Operations which can be executed as part of a container build
 
 # OPTIONS
 
+<!-- BEGIN GENERATED OPTIONS -->
+<!-- END GENERATED OPTIONS -->
+
 **-h**, **\--help**
 
 :   Print help
@@ -30,4 +33,5 @@ bootc-container-help(8)
 
 # VERSION
 
-v1.8.0
+<!-- VERSION PLACEHOLDER -->
+

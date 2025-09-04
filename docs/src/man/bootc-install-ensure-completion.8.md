@@ -15,11 +15,14 @@ installation, not bootc.
 In this scenario the installation may be missing bootc specific features
 such as kernel arguments, logically bound images and more. This command
 can be used to attempt to reconcile. At the current time, the only
-tested environment is Anaconda using \`ostreecontainer\` and it is
+tested environment is Anaconda using `ostreecontainer` and it is
 recommended to avoid usage outside of that environment. Instead, ensure
-your code is using \`bootc install to-filesystem\` from the start.
+your code is using `bootc install to-filesystem` from the start.
 
 # OPTIONS
+
+<!-- BEGIN GENERATED OPTIONS -->
+<!-- END GENERATED OPTIONS -->
 
 **-h**, **\--help**
 
@@ -27,4 +30,5 @@ your code is using \`bootc install to-filesystem\` from the start.
 
 # VERSION
 
-v1.8.0
+<!-- VERSION PLACEHOLDER -->
+

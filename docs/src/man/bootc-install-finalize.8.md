@@ -1,7 +1,7 @@
 # NAME
 
 bootc-install-finalize - Execute this as the penultimate step of an
-installation using \`install to-filesystem\`
+installation using `install to-filesystem`
 
 # SYNOPSIS
 
@@ -9,10 +9,13 @@ installation using \`install to-filesystem\`
 
 # DESCRIPTION
 
-Execute this as the penultimate step of an installation using \`install
-to-filesystem\`
+Execute this as the penultimate step of an installation using `install
+to-filesystem`
 
 # OPTIONS
+
+<!-- BEGIN GENERATED OPTIONS -->
+<!-- END GENERATED OPTIONS -->
 
 **-h**, **\--help**
 
@@ -24,4 +27,5 @@ to-filesystem\`
 
 # VERSION
 
-v1.8.0
+<!-- VERSION PLACEHOLDER -->
+
