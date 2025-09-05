@@ -29,6 +29,22 @@ impl<'a, T: AsRef<[u8]> + ?Sized> From<&'a T> for Cmdline<'a> {
     }
 }
 
+/// An iterator over kernel command line parameters.
+///
+/// This is created by the `iter` method on `Cmdline`.
+#[derive(Debug)]
+pub struct CmdlineIter<'a>(&'a [u8]);
+
+impl<'a> Iterator for CmdlineIter<'a> {
+    type Item = Parameter<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let (param, rest) = Parameter::parse(self.0);
+        self.0 = rest;
+        param
+    }
+}
+
 impl<'a> Cmdline<'a> {
     /// Reads the kernel command line from `/proc/cmdline`.
     ///
@@ -42,17 +58,8 @@ impl<'a> Cmdline<'a> {
     /// Properly handles quoted values containing whitespace and splits on
     /// unquoted whitespace characters. Parameters are parsed as either
     /// key-only switches or key=value pairs.
-    pub fn iter(&'a self) -> impl Iterator<Item = Parameter<'a>> + 'a {
-        let mut in_quotes = false;
-
-        self.0
-            .split(move |c| {
-                if *c == b'"' {
-                    in_quotes = !in_quotes;
-                }
-                !in_quotes && c.is_ascii_whitespace()
-            })
-            .map(Parameter::from)
+    pub fn iter(&'a self) -> CmdlineIter<'a> {
+        CmdlineIter(&self.0)
     }
 
     /// Locate a kernel argument with the given key name.
@@ -138,23 +145,11 @@ impl<'a> std::ops::Deref for ParameterKey<'a> {
     }
 }
 
-impl<'a> From<&'a [u8]> for ParameterKey<'a> {
-    fn from(value: &'a [u8]) -> Self {
-        Self(value)
-    }
-}
-
 /// A single kernel command line parameter key that is known to be UTF-8.
 ///
 /// Otherwise the same as [`ParameterKey`].
 #[derive(Debug, Eq)]
 pub struct ParameterKeyStr<'a>(&'a str);
-
-impl<'a> From<&'a str> for ParameterKeyStr<'a> {
-    fn from(value: &'a str) -> Self {
-        Self(value)
-    }
-}
 
 /// A single kernel command line parameter.
 #[derive(Debug, Eq)]
@@ -179,34 +174,41 @@ pub struct ParameterStr<'a> {
 }
 
 impl<'a> Parameter<'a> {
-    /// Convert this parameter to a UTF-8 string parameter, if possible.
+    /// Attempt to parse a single command line parameter from a slice
+    /// of bytes.
     ///
-    /// Returns `None` if the parameter contains invalid UTF-8.
-    pub fn to_str(&self) -> Option<ParameterStr<'a>> {
-        let Ok(parameter) = std::str::from_utf8(self.parameter) else {
-            return None;
+    /// The first tuple item contains the parsed parameter, or `None`
+    /// if a Parameter could not be constructed from the input.  This
+    /// occurs when the input is either empty or contains only
+    /// whitespace.
+    ///
+    /// Any remaining bytes not consumed from the input are returned
+    /// as the second tuple item.
+    pub fn parse(input: &'a [u8]) -> (Option<Self>, &'a [u8]) {
+        let input = input.trim_ascii_start();
+
+        if input.is_empty() {
+            return (None, input);
+        }
+
+        let mut in_quotes = false;
+        let end = input.iter().position(move |c| {
+            if *c == b'"' {
+                in_quotes = !in_quotes;
+            }
+            !in_quotes && c.is_ascii_whitespace()
+        });
+
+        let end = match end {
+            Some(end) => end,
+            None => input.len(),
         };
-        Some(ParameterStr::from(parameter))
-    }
-}
 
-impl<'a> AsRef<str> for ParameterStr<'a> {
-    fn as_ref(&self) -> &str {
-        self.parameter
-    }
-}
+        let (input, rest) = input.split_at(end);
 
-impl<'a, T: AsRef<[u8]> + ?Sized> From<&'a T> for Parameter<'a> {
-    /// Parses a parameter from raw bytes.
-    ///
-    /// Splits on the first `=` character to separate key and value.
-    /// Strips only the outermost pair of double quotes from values.
-    /// If no `=` is found, treats the entire input as a key-only parameter.
-    fn from(input: &'a T) -> Self {
-        let input = input.as_ref();
         let equals = input.iter().position(|b| *b == b'=');
 
-        match equals {
+        let ret = match equals {
             None => Self {
                 parameter: input,
                 key: ParameterKey(input),
@@ -233,7 +235,25 @@ impl<'a, T: AsRef<[u8]> + ?Sized> From<&'a T> for Parameter<'a> {
                     value: Some(value),
                 }
             }
-        }
+        };
+
+        (Some(ret), rest)
+    }
+
+    /// Convert this parameter to a UTF-8 string parameter, if possible.
+    ///
+    /// Returns `None` if the parameter contains invalid UTF-8.
+    pub fn to_str(&self) -> Option<ParameterStr<'a>> {
+        let Ok(parameter) = std::str::from_utf8(self.parameter) else {
+            return None;
+        };
+        Some(ParameterStr::from(parameter))
+    }
+}
+
+impl<'a> AsRef<str> for ParameterStr<'a> {
+    fn as_ref(&self) -> &str {
+        self.parameter
     }
 }
 
@@ -261,7 +281,12 @@ impl PartialEq for ParameterKey<'_> {
     }
 }
 
-impl<'a> From<&'a str> for ParameterStr<'a> {
+impl<'a> ParameterStr<'a> {
+    /// This intentionally does not implement From<&'a str> to prevent
+    /// external users from constructing instances of `ParameterStr`.
+    /// We rely on the fact that it is derived from `Parameter` to
+    /// ensure that the input has already been split properly and that
+    /// the input contains only one command line parameter.
     fn from(parameter: &'a str) -> Self {
         let (key, value) = if let Some((key, value)) = parameter.split_once('=') {
             let value = value
@@ -299,21 +324,66 @@ impl<'a> PartialEq for ParameterKeyStr<'a> {
 mod tests {
     use super::*;
 
+    // convenience method for tests
+    fn param(s: &str) -> Parameter<'_> {
+        Parameter::parse(s.as_bytes()).0.unwrap()
+    }
+
+    #[test]
+    fn test_parameter_parse() {
+        let (p, rest) = Parameter::parse(b"foo");
+        let p = p.unwrap();
+        assert_eq!(p.key.0, b"foo");
+        assert_eq!(p.value, None);
+        assert_eq!(rest, "".as_bytes());
+
+        // should consume one parameter and return the rest of the input
+        let (p, rest) = Parameter::parse(b"foo=bar baz");
+        let p = p.unwrap();
+        assert_eq!(p.key.0, b"foo");
+        assert_eq!(p.value, Some(b"bar".as_slice()));
+        assert_eq!(rest, " baz".as_bytes());
+
+        // should return None on empty or whitespace inputs
+        let (p, rest) = Parameter::parse(b"");
+        assert!(p.is_none());
+        assert_eq!(rest, b"".as_slice());
+        let (p, rest) = Parameter::parse(b"   ");
+        assert!(p.is_none());
+        assert_eq!(rest, b"".as_slice());
+    }
+
     #[test]
     fn test_parameter_simple() {
-        let switch = Parameter::from("foo");
+        let switch = param("foo");
         assert_eq!(switch.key.0, b"foo");
         assert_eq!(switch.value, None);
 
-        let kv = Parameter::from("bar=baz");
+        let kv = param("bar=baz");
         assert_eq!(kv.key.0, b"bar");
         assert_eq!(kv.value, Some(b"baz".as_slice()));
     }
 
     #[test]
     fn test_parameter_quoted() {
-        let p = Parameter::from("foo=\"quoted value\"");
+        let p = param("foo=\"quoted value\"");
         assert_eq!(p.value, Some(b"quoted value".as_slice()));
+    }
+
+    #[test]
+    fn test_parameter_extra_whitespace() {
+        let p = param("  foo=bar  ");
+        assert_eq!(p.key.0, b"foo");
+        assert_eq!(p.value, Some(b"bar".as_slice()));
+    }
+
+    #[test]
+    fn test_parameter_internal_key_whitespace() {
+        let (p, rest) = Parameter::parse("foo bar=baz".as_bytes());
+        let p = p.unwrap();
+        assert_eq!(p.key.0, b"foo");
+        assert_eq!(p.value, None);
+        assert_eq!(rest, b" bar=baz");
     }
 
     #[test]
@@ -321,12 +391,12 @@ mod tests {
         // valid things that certified insane people would do
 
         // quotes don't get removed from keys
-        let p = Parameter::from("\"\"\"");
+        let p = param("\"\"\"");
         assert_eq!(p.key.0, b"\"\"\"");
 
         // quotes only get stripped from the absolute ends of values
-        let p = Parameter::from("foo=\"internal \" quotes \" are ok\"");
-        assert_eq!(p.value, Some(b"internal \" quotes \" are ok".as_slice()));
+        let p = param("foo=\"internal\"quotes\"are\"ok\"");
+        assert_eq!(p.value, Some(b"internal\"quotes\"are\"ok".as_slice()));
 
         // non-UTF8 things are in fact valid
         let non_utf8_byte = b"\xff";
@@ -335,36 +405,37 @@ mod tests {
         assert!(failed_conversion.is_err());
         let mut p = b"foo=".to_vec();
         p.push(non_utf8_byte[0]);
-        let p = Parameter::from(&p);
+        let (p, _rest) = Parameter::parse(&p);
+        let p = p.unwrap();
         assert_eq!(p.value, Some(non_utf8_byte.as_slice()));
     }
 
     #[test]
     fn test_parameter_equality() {
         // substrings are not equal
-        let foo = Parameter::from("foo");
-        let bar = Parameter::from("foobar");
+        let foo = param("foo");
+        let bar = param("foobar");
         assert_ne!(foo, bar);
         assert_ne!(bar, foo);
 
         // dashes and underscores are treated equally
-        let dashes = Parameter::from("a-delimited-param");
-        let underscores = Parameter::from("a_delimited_param");
+        let dashes = param("a-delimited-param");
+        let underscores = param("a_delimited_param");
         assert_eq!(dashes, underscores);
 
         // same key, same values is equal
-        let dashes = Parameter::from("a-delimited-param=same_values");
-        let underscores = Parameter::from("a_delimited_param=same_values");
+        let dashes = param("a-delimited-param=same_values");
+        let underscores = param("a_delimited_param=same_values");
         assert_eq!(dashes, underscores);
 
         // same key, different values is not equal
-        let dashes = Parameter::from("a-delimited-param=different_values");
-        let underscores = Parameter::from("a_delimited_param=DiFfErEnT_valUEZ");
+        let dashes = param("a-delimited-param=different_values");
+        let underscores = param("a_delimited_param=DiFfErEnT_valUEZ");
         assert_ne!(dashes, underscores);
 
         // mixed variants are never equal
-        let switch = Parameter::from("same_key");
-        let keyvalue = Parameter::from("same_key=but_with_a_value");
+        let switch = param("same_key");
+        let keyvalue = param("same_key=but_with_a_value");
         assert_ne!(switch, keyvalue);
     }
 
@@ -375,9 +446,9 @@ mod tests {
         let kargs = Cmdline::from(b"foo=bar,bar2 baz=fuz wiz".as_slice());
         let mut iter = kargs.iter();
 
-        assert_eq!(iter.next(), Some(Parameter::from(b"foo=bar,bar2")));
-        assert_eq!(iter.next(), Some(Parameter::from(b"baz=fuz")));
-        assert_eq!(iter.next(), Some(Parameter::from(b"wiz")));
+        assert_eq!(iter.next(), Some(param("foo=bar,bar2")));
+        assert_eq!(iter.next(), Some(param("baz=fuz")));
+        assert_eq!(iter.next(), Some(param("wiz")));
         assert_eq!(iter.next(), None);
 
         // Test the find API
@@ -414,6 +485,17 @@ mod tests {
         let p = kargs.find("a-b").unwrap();
         assert_eq!(p.key.0, b"a_b");
         assert_eq!(p.value.unwrap(), b"2");
+    }
+
+    #[test]
+    fn test_kargs_extra_whitespace() {
+        let kargs = Cmdline::from(b"  foo=bar    baz=fuz  wiz   ".as_slice());
+        let mut iter = kargs.iter();
+
+        assert_eq!(iter.next(), Some(param("foo=bar")));
+        assert_eq!(iter.next(), Some(param("baz=fuz")));
+        assert_eq!(iter.next(), Some(param("wiz")));
+        assert_eq!(iter.next(), None);
     }
 
     #[test]
@@ -546,13 +628,14 @@ mod tests {
 
     #[test]
     fn test_param_to_str() {
-        let p = Parameter::from("foo=bar");
+        let p = param("foo=bar");
         let p_str = p.to_str().unwrap();
         assert_eq!(p_str, ParameterStr::from("foo=bar"));
         let non_utf8_byte = b"\xff";
         let mut p_u8 = b"foo=".to_vec();
         p_u8.push(non_utf8_byte[0]);
-        let p = Parameter::from(&p_u8);
+        let (p, _rest) = Parameter::parse(&p_u8);
+        let p = p.unwrap();
         assert!(p.to_str().is_none());
     }
 
