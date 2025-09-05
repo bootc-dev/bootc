@@ -1,6 +1,5 @@
 //! Perform initial setup for a container image based system root
 
-#[cfg(feature = "bootc")]
 use anyhow::Result;
 use fn_error_context::context;
 use ostree::glib;

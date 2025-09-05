@@ -634,6 +634,18 @@ async fn deploy(
     let ostree = sysroot.get_ostree()?;
     let staged = ostree.staged_deployment().unwrap();
     assert_eq!(staged.index(), r);
+
+    // This file is used to signal to other CLI commands that this deployment is a factory reset
+    // (e.g. bootc status)
+    if matches!(from, MergeState::Reset { .. }) {
+        let deployment_dir = ostree.deployment_dirpath(&staged);
+        let deployment_dir = std::path::Path::new(deployment_dir.as_str());
+        if deployment_dir.exists() {
+            let marker_path = deployment_dir.join(".bootc-factory-reset");
+            std::fs::write(&marker_path, b"")?;
+        }
+    }
+
     Ok(staged)
 }
 
