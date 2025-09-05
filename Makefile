@@ -10,8 +10,27 @@ TAR_REPRODUCIBLE = tar --mtime="@${SOURCE_DATE_EPOCH}" --sort=name --owner=0 --g
 # (Note we should also make installation of the units conditional on the rhsm feature)
 CARGO_FEATURES ?= $(shell . /usr/lib/os-release; if echo "$$ID_LIKE" |grep -qF rhel; then echo rhsm; fi)
 
-all:
+all: bin manpages
+
+bin:
 	cargo build --release --features "$(CARGO_FEATURES)"
+
+# Generate man pages from markdown sources
+MAN5_SOURCES := $(wildcard docs/src/man/*.5.md)
+MAN8_SOURCES := $(wildcard docs/src/man/*.8.md)
+TARGETMAN := target/man
+MAN5_TARGETS := $(patsubst docs/src/man/%.5.md,$(TARGETMAN)/%.5,$(MAN5_SOURCES))
+MAN8_TARGETS := $(patsubst docs/src/man/%.8.md,$(TARGETMAN)/%.8,$(MAN8_SOURCES))
+
+$(TARGETMAN)/%.5: docs/src/man/%.5.md
+	@mkdir -p $(TARGETMAN)
+	go-md2man -in $< -out $@
+
+$(TARGETMAN)/%.8: docs/src/man/%.8.md
+	@mkdir -p $(TARGETMAN)
+	go-md2man -in $< -out $@
+
+manpages: $(MAN5_TARGETS) $(MAN8_TARGETS)
 
 STORAGE_RELATIVE_PATH ?= $(shell realpath -m -s --relative-to="$(prefix)/lib/bootc/storage" /sysroot/ostree/bootc/storage)
 install:
@@ -22,15 +41,12 @@ install:
 	ln -s "$(STORAGE_RELATIVE_PATH)" "$(DESTDIR)$(prefix)/lib/bootc/storage"
 	install -D -m 0755 crates/cli/bootc-generator-stub $(DESTDIR)$(prefix)/lib/systemd/system-generators/bootc-systemd-generator 
 	install -d $(DESTDIR)$(prefix)/lib/bootc/install
-	# Support installing pre-generated man pages shipped in source tarball, to avoid
-	# a dependency on pandoc downstream.  But in local builds these end up in target/man,
-	# so we honor that too.
-	for d in man target/man; do \
-	  if test -d $$d; then \
-	    install -D -m 0644 -t $(DESTDIR)$(prefix)/share/man/man5 $$d/*.5; \
-	    install -D -m 0644 -t $(DESTDIR)$(prefix)/share/man/man8 $$d/*.8; \
-	  fi; \
-	  done
+	if [ -n "$(MAN5_TARGETS)" ]; then \
+	  install -D -m 0644 -t $(DESTDIR)$(prefix)/share/man/man5 $(MAN5_TARGETS); \
+	fi
+	if [ -n "$(MAN8_TARGETS)" ]; then \
+	  install -D -m 0644 -t $(DESTDIR)$(prefix)/share/man/man8 $(MAN8_TARGETS); \
+	fi
 	install -D -m 0644 -t $(DESTDIR)/$(prefix)/lib/systemd/system systemd/*.service systemd/*.timer systemd/*.path systemd/*.target
 	install -d -m 0755 $(DESTDIR)/$(prefix)/lib/systemd/system/multi-user.target.wants
 	ln -s ../bootc-status-updated.path $(DESTDIR)/$(prefix)/lib/systemd/system/multi-user.target.wants/bootc-status-updated.path

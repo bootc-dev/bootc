@@ -12,13 +12,16 @@ images
 
 Deploy and transactionally in-place with bootable container images.
 
-The \`bootc\` project currently uses ostree-containers as a backend to
+The `bootc` project currently uses ostree-containers as a backend to
 support a model of bootable container images. Once installed, whether
-directly via \`bootc install\` (executed as part of a container) or via
+directly via `bootc install` (executed as part of a container) or via
 another mechanism such as an OS installer tool, further updates can be
-pulled and \`bootc upgrade\`.
+pulled and `bootc upgrade`.
 
 # OPTIONS
+
+<!-- BEGIN GENERATED OPTIONS -->
+<!-- END GENERATED OPTIONS -->
 
 **-h**, **\--help**
 
@@ -41,8 +44,8 @@ bootc-switch(8)
 bootc-rollback(8)
 
 :   Change the bootloader entry ordering; the deployment under
-    \`rollback\` will be queued for the next boot, and the current will
-    become rollback. If there is a \`staged\` entry (an unapplied,
+    `rollback` will be queued for the next boot, and the current will
+    become rollback. If there is a `staged` entry (an unapplied,
     queued upgrade) then it will be discarded
 
 bootc-edit(8)
@@ -55,7 +58,7 @@ bootc-status(8)
 
 bootc-usr-overlay(8)
 
-:   Adds a transient writable overlayfs on \`/usr\` that will be
+:   Adds a transient writable overlayfs on `/usr` that will be
     discarded on reboot
 
 bootc-install(8)
@@ -72,4 +75,5 @@ bootc-help(8)
 
 # VERSION
 
-v1.8.0
+<!-- VERSION PLACEHOLDER -->
+

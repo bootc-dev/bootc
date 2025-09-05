@@ -29,7 +29,7 @@ mod task;
 mod utils;
 
 #[cfg(feature = "docgen")]
-mod docgen;
+mod cli_json;
 
 mod bootloader;
 mod containerenv;

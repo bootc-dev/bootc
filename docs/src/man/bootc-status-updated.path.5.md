@@ -17,3 +17,7 @@ update/upgrade/edit/switch/rollback operation.
 # SEE ALSO
 
 **bootc**(1), **bootc-status-updated.target**(8)
+
+# VERSION
+
+<!-- VERSION PLACEHOLDER -->

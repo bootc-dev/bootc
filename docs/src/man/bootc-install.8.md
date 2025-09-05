@@ -10,10 +10,10 @@ bootc-install - Install the running container to a target
 
 Install the running container to a target.
 
-\## Understanding installations
+## Understanding installations
 
 OCI containers are effectively layers of tarballs with JSON for
-metadata; they cannot be booted directly. The \`bootc install\` flow is
+metadata; they cannot be booted directly. The `bootc install` flow is
 a highly opinionated method to take the contents of the container image
 and install it to a target block device (or an existing filesystem) in
 such a way that it can be booted.
@@ -22,13 +22,16 @@ For example, a Linux partition table and filesystem is used, and the
 bootloader and kernel embedded in the container image are also prepared.
 
 A bootc installed container currently uses OSTree as a backend, and this
-sets it up such that a subsequent \`bootc upgrade\` can perform in-place
+sets it up such that a subsequent `bootc upgrade` can perform in-place
 updates.
 
 An installation is not simply a copy of the container filesystem, but
 includes other setup and metadata.
 
 # OPTIONS
+
+<!-- BEGIN GENERATED OPTIONS -->
+<!-- END GENERATED OPTIONS -->
 
 **-h**, **\--help**
 
@@ -51,7 +54,7 @@ bootc-install-to-existing-root(8)
 bootc-install-finalize(8)
 
 :   Execute this as the penultimate step of an installation using
-    \`install to-filesystem\`
+    `install to-filesystem`
 
 bootc-install-ensure-completion(8)
 
@@ -62,7 +65,7 @@ bootc-install-print-configuration(8)
 
 :   Output JSON to stdout that contains the merged installation
     configuration as it may be relevant to calling processes using
-    \`install to-filesystem\` that in particular want to discover the
+    `install to-filesystem` that in particular want to discover the
     desired root filesystem type from the container image
 
 bootc-install-help(8)
@@ -71,4 +74,5 @@ bootc-install-help(8)
 
 # VERSION
 
-v1.8.0
+<!-- VERSION PLACEHOLDER -->
+

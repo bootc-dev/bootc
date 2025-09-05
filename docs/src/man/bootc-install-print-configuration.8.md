@@ -2,7 +2,7 @@
 
 bootc-install-print-configuration - Output JSON to stdout that contains
 the merged installation configuration as it may be relevant to calling
-processes using \`install to-filesystem\` that in particular want to
+processes using `install to-filesystem` that in particular want to
 discover the desired root filesystem type from the container image
 
 # SYNOPSIS
@@ -12,14 +12,17 @@ discover the desired root filesystem type from the container image
 # DESCRIPTION
 
 Output JSON to stdout that contains the merged installation
-configuration as it may be relevant to calling processes using \`install
-to-filesystem\` that in particular want to discover the desired root
+configuration as it may be relevant to calling processes using `install
+to-filesystem` that in particular want to discover the desired root
 filesystem type from the container image.
 
-At the current time, the only output key is \`root-fs-type\` which is a
-string-valued filesystem name suitable for passing to \`mkfs.\$type\`.
+At the current time, the only output key is `root-fs-type` which is a
+string-valued filesystem name suitable for passing to `mkfs.\$type`.
 
 # OPTIONS
+
+<!-- BEGIN GENERATED OPTIONS -->
+<!-- END GENERATED OPTIONS -->
 
 **-h**, **\--help**
 
@@ -27,4 +30,5 @@ string-valued filesystem name suitable for passing to \`mkfs.\$type\`.
 
 # VERSION
 
-v1.8.0
+<!-- VERSION PLACEHOLDER -->
+
