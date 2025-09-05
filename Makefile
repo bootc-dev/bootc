@@ -83,6 +83,9 @@ test-bin-archive: all
 test-tmt:
 	cargo xtask test-tmt
 
+test:
+	tests/build.sh && tests/test.sh
+
 # This gates CI by default. Note that for clippy, we gate on
 # only the clippy correctness and suspicious lints, plus a select
 # set of default rustc warnings.
