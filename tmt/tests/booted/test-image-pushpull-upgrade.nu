@@ -69,7 +69,10 @@ RUN echo test content > /usr/share/blah.txt
     let rr_meta = (ls /run/reboot-required | first)
     assert ($rr_meta.size > 0b)
 
-    # Also test that the mtime changes on modification
+    # Verify that we logged to the journal
+    journalctl _MESSAGE_ID=3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7
+
+    # The mtime should change on modification
     let new_root_mtime = ls -Dl /ostree/bootc | get modified
     assert ($new_root_mtime > $orig_root_mtime)
 
