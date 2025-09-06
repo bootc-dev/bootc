@@ -1,6 +1,3 @@
 {
-  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": [
-    "github>platform-engineering-org/.github"
-  ]
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json"
 }
