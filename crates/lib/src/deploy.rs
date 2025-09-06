@@ -792,9 +792,19 @@ pub(crate) async fn stage(
     })
     .await;
 
+    let bootc_action: String = String::from("deploy");
+
     // Unconditionally create or update /run/reboot-required to signal a reboot is needed.
     // This is monitored by kured (Kubernetes Reboot Daemon).
-    let reboot_message = format!("bootc: Reboot required for image: {}", &spec.image.image);
+    write_reboot_required(&image.manifest_digest.as_ref(), bootc_action.as_str())?;
+
+    Ok(())
+}
+
+/// Update the /run/reboot-required file with the action we're performing,
+/// and the image that will be active after the reboot.
+fn write_reboot_required(image: &str, action: &str) -> Result<()> {
+    let reboot_message = format!("bootc {}: Reboot required for image: {}", action, image);
     let run_dir = Dir::open_ambient_dir("/run", cap_std::ambient_authority())?;
     run_dir
         .atomic_write("reboot-required", reboot_message.as_bytes())
@@ -869,6 +879,12 @@ pub(crate) async fn rollback(sysroot: &Storage) -> Result<()> {
     } else {
         println!("Next boot: rollback deployment");
     }
+
+    let bootc_action: String = String::from("rollback");
+    write_reboot_required(
+        rollback_image.manifest_digest.as_ref(),
+        bootc_action.as_str(),
+    )?;
 
     sysroot.update_mtime()?;
 
