@@ -57,7 +57,7 @@ tokio-stream = { features = ["sync"], version = "0.1.8" }
 zstd = { version = "0.13.1", features = ["pkg-config"] }
 
 [dev-dependencies]
-quickcheck = "1"
+quickcheck = "=1.0.3"
 # https://github.com/rust-lang/cargo/issues/2911
 # https://github.com/rust-lang/rfcs/pull/1956
 ostree-ext = { path = ".", features = ["internal-testing-api"] }
