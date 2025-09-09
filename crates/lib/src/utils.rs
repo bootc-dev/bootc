@@ -277,6 +277,18 @@ pub(crate) fn path_relative_to(from: &Path, to: &Path) -> Result<PathBuf> {
     return Ok(final_path);
 }
 
+/// Converts an ImageReference to a container reference string suitable for use with container storage APIs.
+/// For registry transport, returns just the image name. For other transports, prepends the transport.
+pub(crate) fn imageref_to_container_ref(imgref: &crate::spec::ImageReference) -> String {
+    if imgref.transport == "registry" {
+        // For registry transport, the image name is already in the right format
+        imgref.image.clone()
+    } else {
+        // For other transports (containers-storage, oci, etc.), prepend the transport
+        format!("{}:{}", imgref.transport, imgref.image)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -336,5 +348,40 @@ mod tests {
     fn test_have_executable() {
         assert!(have_executable("true").unwrap());
         assert!(!have_executable("someexethatdoesnotexist").unwrap());
+    }
+
+    #[test]
+    fn test_imageref_to_container_ref() {
+        use crate::spec::ImageReference;
+
+        // Test registry transport (should return only the image name)
+        let registry_ref = ImageReference {
+            transport: "registry".to_string(),
+            image: "quay.io/example/foo:latest".to_string(),
+            signature: None,
+        };
+        assert_eq!(
+            imageref_to_container_ref(&registry_ref),
+            "quay.io/example/foo:latest"
+        );
+
+        // Test containers-storage transport
+        let storage_ref = ImageReference {
+            transport: "containers-storage".to_string(),
+            image: "localhost/bootc".to_string(),
+            signature: None,
+        };
+        assert_eq!(
+            imageref_to_container_ref(&storage_ref),
+            "containers-storage:localhost/bootc"
+        );
+
+        // Test oci transport
+        let oci_ref = ImageReference {
+            transport: "oci".to_string(),
+            image: "/path/to/image".to_string(),
+            signature: None,
+        };
+        assert_eq!(imageref_to_container_ref(&oci_ref), "oci:/path/to/image");
     }
 }
