@@ -181,3 +181,59 @@ pub(crate) async fn imgcmd_entrypoint(
     cmd.args(args);
     cmd.run_capture_stderr()
 }
+
+/// Re-pull the currently booted image into the bootc-owned container storage.
+///
+/// This onboards the system to unified storage for host images so that
+/// upgrade/switch can use the unified path automatically when the image is present.
+#[context("Setting unified storage for booted image")]
+pub(crate) async fn set_unified_entrypoint() -> Result<()> {
+    let sysroot = crate::cli::get_storage().await?;
+    let ostree = sysroot.get_ostree()?;
+    let repo = &ostree.repo();
+
+    // Discover the currently booted image reference
+    let (_booted_deployment, _deployments, host) =
+        crate::status::get_status_require_booted(ostree)?;
+    let imgref = host
+        .spec
+        .image
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("No image source specified in host spec"))?;
+
+    // Canonicalize for pull display only, but we want to preserve original pullspec
+    let imgref_display = imgref.clone().canonicalize()?;
+
+    // Pull the image from its original source into bootc storage using LBI machinery
+    let imgstore = sysroot.get_ensure_imgstore()?;
+    let img_string = format!("{:#}", imgref);
+    const SET_UNIFIED_JOURNAL_ID: &str = "1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d";
+    tracing::info!(
+        message_id = SET_UNIFIED_JOURNAL_ID,
+        bootc.image.reference = &imgref_display.image,
+        bootc.image.transport = &imgref_display.transport,
+        "Re-pulling booted image into bootc storage via unified path: {}",
+        imgref_display
+    );
+    imgstore
+        .pull(&img_string, crate::podstorage::PullMode::Always)
+        .await?;
+
+    // Optionally verify we can import from containers-storage by preparing in a temp importer
+    // without actually importing into the main repo; this is a lightweight validation.
+    let containers_storage_imgref = crate::spec::ImageReference {
+        transport: "containers-storage".to_string(),
+        image: imgref.image.clone(),
+        signature: imgref.signature.clone(),
+    };
+    let ostree_imgref = ostree_ext::container::OstreeImageReference::from(containers_storage_imgref);
+    let _ = ostree_ext::container::store::ImageImporter::new(repo, &ostree_imgref, Default::default())
+        .await?;
+
+    tracing::info!(
+        message_id = SET_UNIFIED_JOURNAL_ID,
+        bootc.status = "set_unified_complete",
+        "Unified storage set for current image. Future upgrade/switch will use it automatically."
+    );
+    Ok(())
+}
