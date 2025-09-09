@@ -928,7 +928,19 @@ async fn upgrade(opts: UpgradeOpts) -> Result<()> {
             }
         }
     } else {
-        let fetched = crate::deploy::pull(repo, imgref, None, opts.quiet, prog.clone()).await?;
+        // Check if image exists in bootc storage (/usr/lib/bootc/storage)
+        let imgstore = sysroot.get_ensure_imgstore()?;
+        let use_unified = imgstore
+            .exists(&format!("{imgref:#}"))
+            .await
+            .unwrap_or(false);
+
+        let fetched = if use_unified {
+            crate::deploy::pull_unified(repo, imgref, None, opts.quiet, prog.clone(), sysroot)
+                .await?
+        } else {
+            crate::deploy::pull(repo, imgref, None, opts.quiet, prog.clone()).await?
+        };
         let staged_digest = staged_image.map(|s| s.digest().expect("valid digest in status"));
         let fetched_digest = &fetched.manifest_digest;
         tracing::debug!("staged: {staged_digest:?}");
@@ -1056,7 +1068,18 @@ async fn switch(opts: SwitchOpts) -> Result<()> {
 
     let new_spec = RequiredHostSpec::from_spec(&new_spec)?;
 
-    let fetched = crate::deploy::pull(repo, &target, None, opts.quiet, prog.clone()).await?;
+    // Check if image exists in bootc storage (/usr/lib/bootc/storage)
+    let imgstore = sysroot.get_ensure_imgstore()?;
+    let use_unified = imgstore
+        .exists(&format!("{target:#}"))
+        .await
+        .unwrap_or(false);
+
+    let fetched = if use_unified {
+        crate::deploy::pull_unified(repo, &target, None, opts.quiet, prog.clone(), sysroot).await?
+    } else {
+        crate::deploy::pull(repo, &target, None, opts.quiet, prog.clone()).await?
+    };
 
     if !opts.retain {
         // By default, we prune the previous ostree ref so it will go away after later upgrades
@@ -1422,7 +1445,10 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
                 let mut w = SplitStreamWriter::new(&cfs, None, Some(testdata_digest));
                 w.write_inline(testdata);
                 let object = cfs.write_stream(w, Some("testobject"))?.to_hex();
-                assert_eq!(object, "5d94ceb0b2bb3a78237e0a74bc030a262239ab5f47754a5eb2e42941056b64cb21035d64a8f7c2f156e34b820802fa51884de2b1f7dc3a41b9878fc543cd9b07");
+                assert_eq!(
+                    object,
+                    "5d94ceb0b2bb3a78237e0a74bc030a262239ab5f47754a5eb2e42941056b64cb21035d64a8f7c2f156e34b820802fa51884de2b1f7dc3a41b9878fc543cd9b07"
+                );
                 Ok(())
             }
             // We don't depend on fsverity-utils today, so re-expose some helpful CLI tools.
