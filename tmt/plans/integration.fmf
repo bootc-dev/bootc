@@ -130,4 +130,19 @@ execute:
     how: fmf
     test:
       - /tmt/tests/tests/test-29-soft-reboot-selinux-policy
+
+/test-30-install-unified-flag:
+  summary: Verify install help exposes experimental unified storage flag
+  discover:
+    how: fmf
+    test:
+        - /tmt/tests/test-30-install-unified-flag
+
+/test-31-switch-to-unified:
+  summary: Onboard to unified storage and verify subsequent operations use it
+  discover:
+    how: fmf
+    test:
+        - /tmt/tests/test-31-switch-to-unified
+
 # END GENERATED PLANS
