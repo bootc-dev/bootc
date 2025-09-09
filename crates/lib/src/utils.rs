@@ -1,9 +1,10 @@
+use std::future::Future;
 use std::io::Write;
 use std::os::fd::BorrowedFd;
-use std::path::{Path, PathBuf};
+#[cfg(feature = "composefs-backend")]
+use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
-use std::{future::Future, path::Component};
 
 use anyhow::{Context, Result};
 use bootc_utils::CommandRunExt;
@@ -190,6 +191,7 @@ pub(crate) fn digested_pullspec(image: &str, digest: &str) -> String {
 /// Computes a relative path from `from` to `to`.
 ///
 /// Both `from` and `to` must be absolute paths.
+#[cfg(feature = "composefs-backend")]
 pub(crate) fn path_relative_to(from: &Path, to: &Path) -> Result<PathBuf> {
     if !from.is_absolute() || !to.is_absolute() {
         anyhow::bail!("Paths must be absolute");
@@ -248,6 +250,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "composefs-backend")]
     fn test_relative_path() {
         let from = Path::new("/sysroot/state/deploy/image_id");
         let to = Path::new("/sysroot/state/os/default/var");

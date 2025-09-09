@@ -3,10 +3,8 @@ use std::collections::VecDeque;
 use std::io::IsTerminal;
 use std::io::Read;
 use std::io::Write;
-use std::sync::OnceLock;
 
 use anyhow::{Context, Result};
-use bootc_kernel_cmdline::Cmdline;
 use canon_json::CanonJsonSerialize;
 use fn_error_context::context;
 use ostree::glib;
@@ -21,9 +19,9 @@ use ostree_ext::sysroot::SysrootLock;
 
 use ostree_ext::ostree;
 
-use crate::bootc_composefs::status::composefs_deployment_status;
+#[cfg(feature = "composefs-backend")]
+use crate::bootc_composefs::status::{composefs_booted, composefs_deployment_status};
 use crate::cli::OutputFormat;
-use crate::composefs_consts::COMPOSEFS_CMDLINE;
 use crate::spec::ImageStatus;
 use crate::spec::{BootEntry, BootOrder, Host, HostSpec, HostStatus, HostType};
 use crate::spec::{ImageReference, ImageSignature};
@@ -49,49 +47,6 @@ impl From<ImageSignature> for ostree_container::SignatureSource {
             ImageSignature::Insecure => Self::ContainerPolicyAllowInsecure,
         }
     }
-}
-
-/// A parsed composefs command line
-pub(crate) struct ComposefsCmdline {
-    #[allow(dead_code)]
-    pub insecure: bool,
-    pub digest: Box<str>,
-}
-
-impl ComposefsCmdline {
-    pub(crate) fn new(s: &str) -> Self {
-        let (insecure, digest_str) = s
-            .strip_prefix('?')
-            .map(|v| (true, v))
-            .unwrap_or_else(|| (false, s));
-        ComposefsCmdline {
-            insecure,
-            digest: digest_str.into(),
-        }
-    }
-}
-
-impl std::fmt::Display for ComposefsCmdline {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let insecure = if self.insecure { "?" } else { "" };
-        write!(f, "{}={}{}", COMPOSEFS_CMDLINE, insecure, self.digest)
-    }
-}
-
-/// Detect if we have composefs=<digest> in /proc/cmdline
-pub(crate) fn composefs_booted() -> Result<Option<&'static ComposefsCmdline>> {
-    static CACHED_DIGEST_VALUE: OnceLock<Option<ComposefsCmdline>> = OnceLock::new();
-    if let Some(v) = CACHED_DIGEST_VALUE.get() {
-        return Ok(v.as_ref());
-    }
-    let cmdline = Cmdline::from_proc()?;
-    let Some(kv) = cmdline.find_str(COMPOSEFS_CMDLINE) else {
-        return Ok(None);
-    };
-    let Some(v) = kv.value else { return Ok(None) };
-    let v = ComposefsCmdline::new(v);
-    let r = CACHED_DIGEST_VALUE.get_or_init(|| Some(v));
-    Ok(r.as_ref())
 }
 
 /// Fixme lower serializability into ostree-ext
@@ -255,6 +210,7 @@ fn boot_entry_from_deployment(
             deploy_serial: deployment.deployserial().try_into().unwrap(),
             stateroot: deployment.stateroot().into(),
         }),
+        #[cfg(feature = "composefs-backend")]
         composefs: None,
     };
     Ok(r)
@@ -384,15 +340,9 @@ pub(crate) fn get_status(
     Ok((deployments, host))
 }
 
-/// Implementation of the `bootc status` CLI command.
-#[context("Status")]
-pub(crate) async fn status(opts: super::cli::StatusOpts) -> Result<()> {
-    match opts.format_version.unwrap_or_default() {
-        // For historical reasons, both 0 and 1 mean "v1".
-        0 | 1 => {}
-        o => anyhow::bail!("Unsupported format version: {o}"),
-    };
-    let mut host = if ostree_booted()? {
+#[cfg(feature = "composefs-backend")]
+async fn get_host() -> Result<Host> {
+    let host = if ostree_booted()? {
         let sysroot = super::cli::get_storage().await?;
         let ostree = sysroot.get_ostree()?;
         let booted_deployment = ostree.booted_deployment();
@@ -403,6 +353,34 @@ pub(crate) async fn status(opts: super::cli::StatusOpts) -> Result<()> {
     } else {
         Default::default()
     };
+
+    Ok(host)
+}
+
+#[cfg(not(feature = "composefs-backend"))]
+async fn get_host() -> Result<Host> {
+    let host = if ostree_booted()? {
+        let sysroot = super::cli::get_storage().await?;
+        let ostree = sysroot.get_ostree()?;
+        let booted_deployment = ostree.booted_deployment();
+        let (_deployments, host) = get_status(&ostree, booted_deployment.as_ref())?;
+        host
+    } else {
+        Default::default()
+    };
+
+    Ok(host)
+}
+
+/// Implementation of the `bootc status` CLI command.
+#[context("Status")]
+pub(crate) async fn status(opts: super::cli::StatusOpts) -> Result<()> {
+    match opts.format_version.unwrap_or_default() {
+        // For historical reasons, both 0 and 1 mean "v1".
+        0 | 1 => {}
+        o => anyhow::bail!("Unsupported format version: {o}"),
+    };
+    let mut host = get_host().await?;
 
     // We could support querying the staged or rollback deployments
     // here too, but it's not a common use case at the moment.
@@ -537,6 +515,7 @@ fn human_render_slot(
     writeln!(out, "{digest} ({arch})")?;
 
     // Write the EROFS verity if present
+    #[cfg(feature = "composefs-backend")]
     if let Some(composefs) = &entry.composefs {
         write_row_name(&mut out, "Verity", prefix_len)?;
         writeln!(out, "{}", composefs.verity)?;
@@ -643,6 +622,7 @@ fn human_render_slot_ostree(
 }
 
 /// Output a rendering of a non-container composefs boot entry.
+#[cfg(feature = "composefs-backend")]
 fn human_render_slot_composefs(
     mut out: impl Write,
     slot: Slot,
@@ -676,6 +656,8 @@ fn human_readable_output_booted(mut out: impl Write, host: &Host, verbose: bool)
             } else {
                 writeln!(out)?;
             }
+
+            #[cfg(feature = "composefs-backend")]
             if let Some(image) = &host_status.image {
                 human_render_slot(&mut out, Some(slot_name), host_status, image, verbose)?;
             } else if let Some(ostree) = host_status.ostree.as_ref() {
@@ -688,6 +670,21 @@ fn human_readable_output_booted(mut out: impl Write, host: &Host, verbose: bool)
                 )?;
             } else if let Some(composefs) = &host_status.composefs {
                 human_render_slot_composefs(&mut out, slot_name, host_status, &composefs.verity)?;
+            } else {
+                writeln!(out, "Current {slot_name} state is unknown")?;
+            }
+
+            #[cfg(not(feature = "composefs-backend"))]
+            if let Some(image) = &host_status.image {
+                human_render_slot(&mut out, Some(slot_name), host_status, image, verbose)?;
+            } else if let Some(ostree) = host_status.ostree.as_ref() {
+                human_render_slot_ostree(
+                    &mut out,
+                    Some(slot_name),
+                    host_status,
+                    &ostree.checksum,
+                    verbose,
+                )?;
             } else {
                 writeln!(out, "Current {slot_name} state is unknown")?;
             }
@@ -881,16 +878,5 @@ mod tests {
         assert!(w.contains("Staged:"));
         assert!(w.contains("Commit:"));
         assert!(w.contains("Soft-reboot:"));
-    }
-
-    #[test]
-    fn test_composefs_parsing() {
-        const DIGEST: &str = "8b7df143d91c716ecfa5fc1730022f6b421b05cedee8fd52b1fc65a96030ad52";
-        let v = ComposefsCmdline::new(DIGEST);
-        assert!(!v.insecure);
-        assert_eq!(v.digest.as_ref(), DIGEST);
-        let v = ComposefsCmdline::new(&format!("?{}", DIGEST));
-        assert!(v.insecure);
-        assert_eq!(v.digest.as_ref(), DIGEST);
     }
 }

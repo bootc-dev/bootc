@@ -1,17 +1,17 @@
-use std::io::Read;
+use std::{io::Read, sync::OnceLock};
 
 use anyhow::{Context, Result};
+use bootc_kernel_cmdline::Cmdline;
 use fn_error_context::context;
 
 use crate::{
     bootc_composefs::boot::BootType,
-    composefs_consts::{BOOT_LOADER_ENTRIES, USER_CFG},
+    composefs_consts::{BOOT_LOADER_ENTRIES, COMPOSEFS_CMDLINE, USER_CFG},
     parsers::{
         bls_config::{parse_bls_config, BLSConfig},
         grub_menuconfig::{parse_grub_menuentry_file, MenuEntry},
     },
     spec::{BootEntry, BootOrder, Host, HostSpec, ImageReference, ImageStatus},
-    status::composefs_booted,
 };
 
 use std::str::FromStr;
@@ -34,6 +34,49 @@ use crate::composefs_consts::{
 };
 use crate::install::EFIVARFS;
 use crate::spec::Bootloader;
+
+/// A parsed composefs command line
+pub(crate) struct ComposefsCmdline {
+    #[allow(dead_code)]
+    pub insecure: bool,
+    pub digest: Box<str>,
+}
+
+impl ComposefsCmdline {
+    pub(crate) fn new(s: &str) -> Self {
+        let (insecure, digest_str) = s
+            .strip_prefix('?')
+            .map(|v| (true, v))
+            .unwrap_or_else(|| (false, s));
+        ComposefsCmdline {
+            insecure,
+            digest: digest_str.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for ComposefsCmdline {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let insecure = if self.insecure { "?" } else { "" };
+        write!(f, "{}={}{}", COMPOSEFS_CMDLINE, insecure, self.digest)
+    }
+}
+
+/// Detect if we have composefs=<digest> in /proc/cmdline
+pub(crate) fn composefs_booted() -> Result<Option<&'static ComposefsCmdline>> {
+    static CACHED_DIGEST_VALUE: OnceLock<Option<ComposefsCmdline>> = OnceLock::new();
+    if let Some(v) = CACHED_DIGEST_VALUE.get() {
+        return Ok(v.as_ref());
+    }
+    let cmdline = Cmdline::from_proc()?;
+    let Some(kv) = cmdline.find_str(COMPOSEFS_CMDLINE) else {
+        return Ok(None);
+    };
+    let Some(v) = kv.value else { return Ok(None) };
+    let v = ComposefsCmdline::new(v);
+    let r = CACHED_DIGEST_VALUE.get_or_init(|| Some(v));
+    Ok(r.as_ref())
+}
 
 // Need str to store lifetime
 pub(crate) fn get_sorted_uki_boot_entries<'a>(
@@ -335,6 +378,17 @@ mod tests {
     use crate::parsers::grub_menuconfig::MenuentryBody;
 
     use super::*;
+
+    #[test]
+    fn test_composefs_parsing() {
+        const DIGEST: &str = "8b7df143d91c716ecfa5fc1730022f6b421b05cedee8fd52b1fc65a96030ad52";
+        let v = ComposefsCmdline::new(DIGEST);
+        assert!(!v.insecure);
+        assert_eq!(v.digest.as_ref(), DIGEST);
+        let v = ComposefsCmdline::new(&format!("?{}", DIGEST));
+        assert!(v.insecure);
+        assert_eq!(v.digest.as_ref(), DIGEST);
+    }
 
     #[test]
     fn test_sorted_bls_boot_entries() -> Result<()> {

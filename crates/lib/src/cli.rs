@@ -28,15 +28,16 @@ use ostree_ext::sysroot::SysrootLock;
 use schemars::schema_for;
 use serde::{Deserialize, Serialize};
 
-use crate::bootc_composefs::rollback::composefs_rollback;
-use crate::bootc_composefs::switch::switch_composefs;
-use crate::bootc_composefs::update::upgrade_composefs;
+#[cfg(feature = "composefs-backend")]
+use crate::bootc_composefs::{
+    rollback::composefs_rollback, status::composefs_booted, switch::switch_composefs,
+    update::upgrade_composefs,
+};
 use crate::deploy::RequiredHostSpec;
 use crate::lints;
 use crate::progress_jsonl::{ProgressWriter, RawProgressFd};
 use crate::spec::Host;
 use crate::spec::ImageReference;
-use crate::status::composefs_booted;
 use crate::utils::sigpolicy_from_opt;
 
 /// Shared progress options
@@ -1128,29 +1129,21 @@ async fn switch(opts: SwitchOpts) -> Result<()> {
 
 /// Implementation of the `bootc rollback` CLI command.
 #[context("Rollback")]
-async fn rollback(opts: RollbackOpts) -> Result<()> {
-    if composefs_booted()?.is_some() {
-        composefs_rollback().await?
-    } else {
-        let sysroot = &get_storage().await?;
-        let ostree = sysroot.get_ostree()?;
-        crate::deploy::rollback(sysroot).await?;
+async fn rollback(opts: &RollbackOpts) -> Result<()> {
+    let sysroot = &get_storage().await?;
+    let ostree = sysroot.get_ostree()?;
+    crate::deploy::rollback(sysroot).await?;
 
-        if opts.soft_reboot.is_some() {
-            // Get status of rollback deployment to check soft-reboot capability
-            let host = crate::status::get_status_require_booted(ostree)?.2;
+    if opts.soft_reboot.is_some() {
+        // Get status of rollback deployment to check soft-reboot capability
+        let host = crate::status::get_status_require_booted(ostree)?.2;
 
-            handle_soft_reboot(
-                opts.soft_reboot,
-                host.status.rollback.as_ref(),
-                "rollback",
-                || soft_reboot_rollback(ostree),
-            )?;
-        }
-    };
-
-    if opts.apply {
-        crate::reboot::reboot()?;
+        handle_soft_reboot(
+            opts.soft_reboot,
+            host.status.rollback.as_ref(),
+            "rollback",
+            || soft_reboot_rollback(ostree),
+        )?;
     }
 
     Ok(())
@@ -1298,20 +1291,44 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
     let root = &Dir::open_ambient_dir("/", cap_std::ambient_authority())?;
     match opt {
         Opt::Upgrade(opts) => {
+            #[cfg(feature = "composefs-backend")]
             if composefs_booted()?.is_some() {
                 upgrade_composefs(opts).await
             } else {
                 upgrade(opts).await
             }
+
+            #[cfg(not(feature = "composefs-backend"))]
+            upgrade(opts).await
         }
         Opt::Switch(opts) => {
+            #[cfg(feature = "composefs-backend")]
             if composefs_booted()?.is_some() {
                 switch_composefs(opts).await
             } else {
                 switch(opts).await
             }
+
+            #[cfg(not(feature = "composefs-backend"))]
+            switch(opts).await
         }
-        Opt::Rollback(opts) => rollback(opts).await,
+        Opt::Rollback(opts) => {
+            #[cfg(feature = "composefs-backend")]
+            if composefs_booted()?.is_some() {
+                composefs_rollback().await?
+            } else {
+                rollback(&opts).await?
+            }
+
+            #[cfg(not(feature = "composefs-backend"))]
+            rollback(&opts).await?;
+
+            if opts.apply {
+                crate::reboot::reboot()?;
+            }
+
+            Ok(())
+        }
         Opt::Edit(opts) => edit(opts).await,
         Opt::UsrOverlay => usroverlay().await,
         Opt::Container(opts) => match opts {

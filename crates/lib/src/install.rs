@@ -41,7 +41,6 @@ use cap_std_ext::prelude::CapStdExtDirExt;
 use clap::ValueEnum;
 use fn_error_context::context;
 use ostree::gio;
-use ostree_ext::composefs::fsverity::FsVerityHashValue;
 use ostree_ext::ostree;
 use ostree_ext::ostree_prepareroot::{ComposefsState, Tristate};
 use ostree_ext::prelude::Cast;
@@ -54,8 +53,8 @@ use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "install-to-disk")]
 use self::baseline::InstallBlockDeviceOpts;
-use crate::bootc_composefs::boot::setup_composefs_boot;
-use crate::bootc_composefs::repo::initialize_composefs_repository;
+#[cfg(feature = "composefs-backend")]
+use crate::bootc_composefs::{boot::setup_composefs_boot, repo::initialize_composefs_repository};
 use crate::boundimage::{BoundImage, ResolvedBoundImage};
 use crate::containerenv::ContainerExecutionInfo;
 use crate::deploy::{prepare_for_pull, pull_from_prepared, PreparedImportMeta, PreparedPullResult};
@@ -67,6 +66,8 @@ use crate::task::Task;
 use crate::utils::sigpolicy_from_opt;
 use bootc_kernel_cmdline::Cmdline;
 use bootc_mount::Filesystem;
+#[cfg(feature = "composefs-backend")]
+use composefs::fsverity::FsVerityHashValue;
 
 /// The toplevel boot directory
 const BOOT: &str = "boot";
@@ -263,10 +264,12 @@ pub(crate) struct InstallToDiskOpts {
 
     #[clap(long)]
     #[serde(default)]
+    #[cfg(feature = "composefs-backend")]
     pub(crate) composefs_native: bool,
 
     #[clap(flatten)]
     #[serde(flatten)]
+    #[cfg(feature = "composefs-backend")]
     pub(crate) composefs_opts: InstallComposefsOpts,
 }
 
@@ -410,6 +413,7 @@ pub(crate) struct State {
     pub(crate) tempdir: TempDir,
 
     // If Some, then --composefs_native is passed
+    #[cfg(feature = "composefs-backend")]
     pub(crate) composefs_options: Option<InstallComposefsOpts>,
 }
 
@@ -537,7 +541,7 @@ impl FromStr for MountSpec {
     }
 }
 
-#[cfg(feature = "install-to-disk")]
+#[cfg(all(feature = "install-to-disk", feature = "composefs-backend"))]
 impl InstallToDiskOpts {
     pub(crate) fn validate(&self) -> Result<()> {
         if !self.composefs_native {
@@ -1196,7 +1200,7 @@ async fn prepare_install(
     config_opts: InstallConfigOpts,
     source_opts: InstallSourceOpts,
     target_opts: InstallTargetOpts,
-    composefs_opts: Option<InstallComposefsOpts>,
+    _composefs_opts: Option<InstallComposefsOpts>,
 ) -> Result<Arc<State>> {
     tracing::trace!("Preparing install");
     let rootfs = cap_std::fs::Dir::open_ambient_dir("/", cap_std::ambient_authority())
@@ -1341,7 +1345,8 @@ async fn prepare_install(
         container_root: rootfs,
         tempdir,
         host_is_container,
-        composefs_options: composefs_opts,
+        #[cfg(feature = "composefs-backend")]
+        composefs_options: _composefs_opts,
     });
 
     Ok(state)
@@ -1440,6 +1445,48 @@ impl BoundImages {
     }
 }
 
+async fn ostree_install(state: &State, rootfs: &RootSetup, cleanup: Cleanup) -> Result<()> {
+    // We verify this upfront because it's currently required by bootupd
+    let boot_uuid = rootfs
+        .get_boot_uuid()?
+        .or(rootfs.rootfs_uuid.as_deref())
+        .ok_or_else(|| anyhow!("No uuid for boot/root"))?;
+    tracing::debug!("boot uuid={boot_uuid}");
+
+    let bound_images = BoundImages::from_state(state).await?;
+
+    // Initialize the ostree sysroot (repo, stateroot, etc.)
+
+    {
+        let (sysroot, has_ostree) = initialize_ostree_root(state, rootfs).await?;
+
+        install_with_sysroot(
+            state,
+            rootfs,
+            &sysroot,
+            &boot_uuid,
+            bound_images,
+            has_ostree,
+        )
+        .await?;
+        let ostree = sysroot.get_ostree()?;
+
+        if matches!(cleanup, Cleanup::TriggerOnNextBoot) {
+            let sysroot_dir = crate::utils::sysroot_dir(ostree)?;
+            tracing::debug!("Writing {DESTRUCTIVE_CLEANUP}");
+            sysroot_dir.atomic_write(format!("etc/{}", DESTRUCTIVE_CLEANUP), b"")?;
+        }
+
+        // We must drop the sysroot here in order to close any open file
+        // descriptors.
+    };
+
+    // Run this on every install as the penultimate step
+    install_finalize(&rootfs.physical_root_path).await?;
+
+    Ok(())
+}
+
 async fn install_to_filesystem_impl(
     state: &State,
     rootfs: &mut RootSetup,
@@ -1463,56 +1510,19 @@ async fn install_to_filesystem_impl(
         }
     }
 
-    // We verify this upfront because it's currently required by bootupd
-    let boot_uuid = rootfs
-        .get_boot_uuid()?
-        .or(rootfs.rootfs_uuid.as_deref())
-        .ok_or_else(|| anyhow!("No uuid for boot/root"))?;
-    tracing::debug!("boot uuid={boot_uuid}");
-
-    let bound_images = BoundImages::from_state(state).await?;
-
+    #[cfg(feature = "composefs-backend")]
     if state.composefs_options.is_some() {
         // Load a fd for the mounted target physical root
+
         let (id, verity) = initialize_composefs_repository(state, rootfs).await?;
-
-        tracing::info!(
-            "id = {id}, verity = {verity}",
-            id = hex::encode(id),
-            verity = verity.to_hex()
-        );
-
+        tracing::info!("id: {}, verity: {}", hex::encode(id), verity.to_hex());
         setup_composefs_boot(rootfs, state, &hex::encode(id))?;
     } else {
-        // Initialize the ostree sysroot (repo, stateroot, etc.)
-
-        {
-            let (sysroot, has_ostree) = initialize_ostree_root(state, rootfs).await?;
-
-            install_with_sysroot(
-                state,
-                rootfs,
-                &sysroot,
-                &boot_uuid,
-                bound_images,
-                has_ostree,
-            )
-            .await?;
-            let ostree = sysroot.get_ostree()?;
-
-            if matches!(cleanup, Cleanup::TriggerOnNextBoot) {
-                let sysroot_dir = crate::utils::sysroot_dir(ostree)?;
-                tracing::debug!("Writing {DESTRUCTIVE_CLEANUP}");
-                sysroot_dir.atomic_write(format!("etc/{}", DESTRUCTIVE_CLEANUP), b"")?;
-            }
-
-            // We must drop the sysroot here in order to close any open file
-            // descriptors.
-        };
-
-        // Run this on every install as the penultimate step
-        install_finalize(&rootfs.physical_root_path).await?;
+        ostree_install(state, rootfs, cleanup).await?;
     }
+
+    #[cfg(not(feature = "composefs-backend"))]
+    ostree_install(state, rootfs, cleanup).await?;
 
     // Finalize mounted filesystems
     if !rootfs.skip_finalize {
@@ -1533,6 +1543,7 @@ fn installation_complete() {
 #[context("Installing to disk")]
 #[cfg(feature = "install-to-disk")]
 pub(crate) async fn install_to_disk(mut opts: InstallToDiskOpts) -> Result<()> {
+    #[cfg(feature = "composefs-backend")]
     opts.validate()?;
 
     // Log the disk installation operation to systemd journal
@@ -1576,15 +1587,22 @@ pub(crate) async fn install_to_disk(mut opts: InstallToDiskOpts) -> Result<()> {
     } else if !target_blockdev_meta.file_type().is_block_device() {
         anyhow::bail!("Not a block device: {}", block_opts.device);
     }
+
+    #[cfg(feature = "composefs-backend")]
+    let composefs_arg = if opts.composefs_native {
+        Some(opts.composefs_opts)
+    } else {
+        None
+    };
+
+    #[cfg(not(feature = "composefs-backend"))]
+    let composefs_arg = None;
+
     let state = prepare_install(
         opts.config_opts,
         opts.source_opts,
         opts.target_opts,
-        if opts.composefs_native {
-            Some(opts.composefs_opts)
-        } else {
-            None
-        },
+        composefs_arg,
     )
     .await?;
 
