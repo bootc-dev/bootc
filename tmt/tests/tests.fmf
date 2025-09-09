@@ -68,3 +68,13 @@
   summary: Test soft reboot with SELinux policy changes
   duration: 30m
   test: nu booted/test-soft-reboot-selinux-policy.nu
+
+/test-30-install-unified-flag:
+  summary: Test bootc install with experimental unified storage flag
+  duration: 30m
+  test: nu booted/test-install-unified-flag.nu
+
+/test-31-switch-to-unified:
+  summary: Onboard to unified storage, build derived image, and switch to it
+  duration: 30m
+  test: nu booted/test-switch-to-unified.nu

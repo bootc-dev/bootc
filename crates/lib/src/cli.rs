@@ -149,6 +149,14 @@ pub(crate) struct SwitchOpts {
     #[clap(long)]
     pub(crate) retain: bool,
 
+    /// Use unified storage path to pull images (experimental)
+    ///
+    /// When enabled, this uses bootc's container storage (/usr/lib/bootc/storage) to pull
+    /// the image first, then imports it from there. This is the same approach used for
+    /// logically bound images.
+    #[clap(long = "experimental-unified-storage", hide = true)]
+    pub(crate) unified_storage_exp: bool,
+
     /// Target image to use for the next boot.
     pub(crate) target: String,
 
@@ -445,6 +453,11 @@ pub(crate) enum ImageOpts {
         /// this will make the image accessible via e.g. `podman run localhost/bootc` and for builds.
         target: Option<String>,
     },
+    /// Re-pull the currently booted image into the bootc-owned container storage.
+    ///
+    /// This onboards the system to the unified storage path so that future
+    /// upgrade/switch operations can read from the bootc storage directly.
+    SetUnified,
     /// Copy a container image from the default `containers-storage:` to the bootc-owned container storage.
     PullFromDefaultStorage {
         /// The image to pull
@@ -948,7 +961,15 @@ async fn upgrade(
             }
         }
     } else {
-        let fetched = crate::deploy::pull(repo, imgref, None, opts.quiet, prog.clone()).await?;
+        // Auto-detect whether to use unified storage based on image presence in bootc storage
+        let use_unified = crate::deploy::image_exists_in_unified_storage(storage, imgref).await?;
+
+        let fetched = if use_unified {
+            crate::deploy::pull_unified(repo, imgref, None, opts.quiet, prog.clone(), storage, None)
+                .await?
+        } else {
+            crate::deploy::pull(repo, imgref, None, opts.quiet, prog.clone()).await?
+        };
         let staged_digest = staged_image.map(|s| s.digest().expect("valid digest in status"));
         let fetched_digest = &fetched.manifest_digest;
         tracing::debug!("staged: {staged_digest:?}");
@@ -1062,7 +1083,21 @@ async fn switch_ostree(
 
     let new_spec = RequiredHostSpec::from_spec(&new_spec)?;
 
-    let fetched = crate::deploy::pull(repo, &target, None, opts.quiet, prog.clone()).await?;
+    // Determine whether to use unified storage path.
+    // If explicitly requested via flag, use unified storage directly.
+    // Otherwise, auto-detect based on whether the image exists in bootc storage.
+    let use_unified = if opts.unified_storage_exp {
+        true
+    } else {
+        crate::deploy::image_exists_in_unified_storage(storage, &target).await?
+    };
+
+    let fetched = if use_unified {
+        crate::deploy::pull_unified(repo, &target, None, opts.quiet, prog.clone(), storage, None)
+            .await?
+    } else {
+        crate::deploy::pull(repo, &target, None, opts.quiet, prog.clone()).await?
+    };
 
     if !opts.retain {
         // By default, we prune the previous ostree ref so it will go away after later upgrades
@@ -1422,7 +1457,9 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
                     tracing::debug!("Computing digest of {iid}");
 
                     if !host_container_store.try_exists()? {
-                        anyhow::bail!("Must be readonly mount of host container store: {host_container_store}");
+                        anyhow::bail!(
+                            "Must be readonly mount of host container store: {host_container_store}"
+                        );
                     }
                     // And ensure we're finding the image in the host storage
                     let mut cmd = Command::new("skopeo");
@@ -1460,6 +1497,7 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
             ImageOpts::CopyToStorage { source, target } => {
                 crate::image::push_entrypoint(source.as_deref(), target.as_deref()).await
             }
+            ImageOpts::SetUnified => crate::image::set_unified_entrypoint().await,
             ImageOpts::PullFromDefaultStorage { image } => {
                 let storage = get_storage().await?;
                 storage
@@ -1539,7 +1577,10 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
                 let mut w = SplitStreamWriter::new(&cfs, None, Some(testdata_digest));
                 w.write_inline(testdata);
                 let object = cfs.write_stream(w, Some("testobject"))?.to_hex();
-                assert_eq!(object, "5d94ceb0b2bb3a78237e0a74bc030a262239ab5f47754a5eb2e42941056b64cb21035d64a8f7c2f156e34b820802fa51884de2b1f7dc3a41b9878fc543cd9b07");
+                assert_eq!(
+                    object,
+                    "5d94ceb0b2bb3a78237e0a74bc030a262239ab5f47754a5eb2e42941056b64cb21035d64a8f7c2f156e34b820802fa51884de2b1f7dc3a41b9878fc543cd9b07"
+                );
                 Ok(())
             }
             // We don't depend on fsverity-utils today, so re-expose some helpful CLI tools.

@@ -132,6 +132,24 @@ impl ImageReference {
             }
         }
     }
+
+    /// Parse the transport string into a Transport enum.
+    pub fn transport(&self) -> Result<Transport> {
+        Transport::try_from(self.transport.as_str())
+            .map_err(|e| anyhow::anyhow!("Invalid transport '{}': {}", self.transport, e))
+    }
+
+    /// Convert to a container reference string suitable for use with container storage APIs.
+    /// For registry transport, returns just the image name. For other transports, prepends the transport.
+    pub fn to_transport_image(&self) -> Result<String> {
+        if self.transport()? == Transport::Registry {
+            // For registry transport, the image name is already in the right format
+            Ok(self.image.clone())
+        } else {
+            // For other transports (containers-storage, oci, etc.), prepend the transport
+            Ok(format!("{}:{}", self.transport, self.image))
+        }
+    }
 }
 
 /// The status of the booted image
@@ -664,5 +682,38 @@ mod tests {
         let mut host = create_host();
         host.filter_to_slot(Slot::Rollback);
         assert_host_state(&host, None, None, Some(default_boot_entry()));
+    }
+
+    #[test]
+    fn test_to_transport_image() {
+        // Test registry transport (should return only the image name)
+        let registry_ref = ImageReference {
+            transport: "registry".to_string(),
+            image: "quay.io/example/foo:latest".to_string(),
+            signature: None,
+        };
+        assert_eq!(
+            registry_ref.to_transport_image().unwrap(),
+            "quay.io/example/foo:latest"
+        );
+
+        // Test containers-storage transport
+        let storage_ref = ImageReference {
+            transport: "containers-storage".to_string(),
+            image: "localhost/bootc".to_string(),
+            signature: None,
+        };
+        assert_eq!(
+            storage_ref.to_transport_image().unwrap(),
+            "containers-storage:localhost/bootc"
+        );
+
+        // Test oci transport
+        let oci_ref = ImageReference {
+            transport: "oci".to_string(),
+            image: "/path/to/image".to_string(),
+            signature: None,
+        };
+        assert_eq!(oci_ref.to_transport_image().unwrap(), "oci:/path/to/image");
     }
 }

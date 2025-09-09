@@ -147,6 +147,15 @@ pub(crate) struct InstallTargetOpts {
     #[clap(long)]
     #[serde(default)]
     pub(crate) skip_fetch_check: bool,
+
+    /// Use unified storage path to pull images (experimental)
+    ///
+    /// When enabled, this uses bootc's container storage (/usr/lib/bootc/storage) to pull
+    /// the image first, then imports it from there. This is the same approach used for
+    /// logically bound images.
+    #[clap(long = "experimental-unified-storage", hide = true)]
+    #[serde(default)]
+    pub(crate) unified_storage_exp: bool,
 }
 
 #[derive(clap::Args, Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -467,6 +476,7 @@ pub(crate) struct State {
     pub(crate) selinux_state: SELinuxFinalState,
     #[allow(dead_code)]
     pub(crate) config_opts: InstallConfigOpts,
+    pub(crate) target_opts: InstallTargetOpts,
     pub(crate) target_imgref: ostree_container::OstreeImageReference,
     #[allow(dead_code)]
     pub(crate) prepareroot_config: HashMap<String, String>,
@@ -872,6 +882,7 @@ async fn install_container(
     state: &State,
     root_setup: &RootSetup,
     sysroot: &ostree::Sysroot,
+    storage: &Storage,
     has_ostree: bool,
 ) -> Result<(ostree::Deployment, InstallAleph)> {
     let sepolicy = state.load_policy()?;
@@ -912,9 +923,26 @@ async fn install_container(
     let repo = &sysroot.repo();
     repo.set_disable_fsync(true);
 
-    let pulled_image = match prepare_for_pull(repo, &spec_imgref, Some(&state.target_imgref))
+    // Determine whether to use unified storage path.
+    // During install, we only use unified storage if explicitly requested.
+    // Auto-detection (None) is only appropriate for upgrade/switch on a running system.
+    let use_unified = state.target_opts.unified_storage_exp;
+
+    let prepared = if use_unified {
+        tracing::info!("Using unified storage path for installation");
+        crate::deploy::prepare_for_pull_unified(
+            repo,
+            &spec_imgref,
+            Some(&state.target_imgref),
+            storage,
+            Some(&root_setup.physical_root_path),
+        )
         .await?
-    {
+    } else {
+        prepare_for_pull(repo, &spec_imgref, Some(&state.target_imgref)).await?
+    };
+
+    let pulled_image = match prepared {
         PreparedPullResult::AlreadyPresent(existing) => existing,
         PreparedPullResult::Ready(image_meta) => {
             check_disk_space(root_setup.physical_root.as_fd(), &image_meta, &spec_imgref)?;
@@ -1475,6 +1503,7 @@ async fn prepare_install(
         selinux_state,
         source,
         config_opts,
+        target_opts,
         target_imgref,
         install_config,
         prepareroot_config,
@@ -1529,7 +1558,7 @@ async fn install_with_sysroot(
 
     // And actually set up the container in that root, returning a deployment and
     // the aleph state (see below).
-    let (deployment, aleph) = install_container(state, rootfs, ostree, has_ostree).await?;
+    let (deployment, aleph) = install_container(state, rootfs, ostree, storage, has_ostree).await?;
     // Write the aleph data that captures the system state at the time of provisioning for aid in future debugging.
     aleph.write_to(&rootfs.physical_root)?;
 
