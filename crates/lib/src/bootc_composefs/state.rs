@@ -145,7 +145,7 @@ pub(crate) fn write_composefs_state(
             format!("{}.origin", deployment_id.to_hex()),
             config.to_string().as_bytes(),
         )
-        .context("Falied to write to .origin file")?;
+        .context("Failed to write to .origin file")?;
 
     if staged {
         std::fs::create_dir_all(COMPOSEFS_TRANSIENT_STATE_DIR)

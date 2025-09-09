@@ -37,7 +37,7 @@ pub(crate) async fn switch_composefs(opts: SwitchOpts) -> Result<()> {
     };
 
     let (repo, entries, id, fs) =
-        pull_composefs_repo(&"docker".into(), &target_imgref.image).await?;
+        pull_composefs_repo(&target_imgref.transport, &target_imgref.image).await?;
 
     let Some(entry) = entries.into_iter().next() else {
         anyhow::bail!("No boot entries!");
