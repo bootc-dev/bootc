@@ -3,10 +3,7 @@
 //! Create a merged filesystem tree with the image and mounted configmaps.
 
 use std::collections::HashSet;
-use std::fmt::Write as _;
-use std::fs::create_dir_all;
-use std::io::{BufRead, Read, Write};
-use std::path::PathBuf;
+use std::io::{BufRead, Write};
 
 use anyhow::Ok;
 use anyhow::{anyhow, Context, Result};
@@ -23,18 +20,11 @@ use ostree_ext::ostree::Deployment;
 use ostree_ext::ostree::{self, Sysroot};
 use ostree_ext::sysroot::SysrootLock;
 use ostree_ext::tokio_util::spawn_blocking_cancellable_flatten;
-use rustix::fs::{fsync, renameat_with, AtFlags, RenameFlags};
 
-use crate::composefs_consts::{
-    BOOT_LOADER_ENTRIES, ROLLBACK_BOOT_LOADER_ENTRIES, USER_CFG, USER_CFG_ROLLBACK,
-};
-use crate::install::{get_efi_uuid_source, BootType};
-use crate::parsers::bls_config::{parse_bls_config, BLSConfig};
-use crate::parsers::grub_menuconfig::{parse_grub_menuentry_file, MenuEntry};
 use crate::progress_jsonl::{Event, ProgressWriter, SubTaskBytes, SubTaskStep};
 use crate::spec::ImageReference;
 use crate::spec::{BootOrder, HostSpec};
-use crate::status::{composefs_deployment_status, labels_of_config};
+use crate::status::labels_of_config;
 use crate::store::Storage;
 use crate::utils::async_task_with_spinner;
 
@@ -812,233 +802,6 @@ pub(crate) async fn stage(
     Ok(())
 }
 
-#[context("Rolling back UKI")]
-pub(crate) fn rollback_composefs_uki() -> Result<()> {
-    let user_cfg_path = PathBuf::from("/sysroot/boot/grub2");
-
-    let mut str = String::new();
-    let boot_dir =
-        cap_std::fs::Dir::open_ambient_dir("/sysroot/boot", cap_std::ambient_authority())
-            .context("Opening boot dir")?;
-    let mut menuentries =
-        get_sorted_uki_boot_entries(&boot_dir, &mut str).context("Getting UKI boot entries")?;
-
-    // TODO(Johan-Liebert): Currently assuming there are only two deployments
-    assert!(menuentries.len() == 2);
-
-    let (first, second) = menuentries.split_at_mut(1);
-    std::mem::swap(&mut first[0], &mut second[0]);
-
-    let mut buffer = get_efi_uuid_source();
-
-    for entry in menuentries {
-        write!(buffer, "{entry}")?;
-    }
-
-    let entries_dir =
-        cap_std::fs::Dir::open_ambient_dir(&user_cfg_path, cap_std::ambient_authority())
-            .with_context(|| format!("Opening {user_cfg_path:?}"))?;
-
-    entries_dir
-        .atomic_write(USER_CFG_ROLLBACK, buffer)
-        .with_context(|| format!("Writing to {USER_CFG_ROLLBACK}"))?;
-
-    tracing::debug!("Atomically exchanging for {USER_CFG_ROLLBACK} and {USER_CFG}");
-    renameat_with(
-        &entries_dir,
-        USER_CFG_ROLLBACK,
-        &entries_dir,
-        USER_CFG,
-        RenameFlags::EXCHANGE,
-    )
-    .context("renameat")?;
-
-    tracing::debug!("Removing {USER_CFG_ROLLBACK}");
-    rustix::fs::unlinkat(&entries_dir, USER_CFG_ROLLBACK, AtFlags::empty()).context("unlinkat")?;
-
-    tracing::debug!("Syncing to disk");
-    fsync(
-        entries_dir
-            .reopen_as_ownedfd()
-            .with_context(|| format!("Reopening {user_cfg_path:?} as owned fd"))?,
-    )
-    .with_context(|| format!("fsync {user_cfg_path:?}"))?;
-
-    Ok(())
-}
-
-// Need str to store lifetime
-pub(crate) fn get_sorted_uki_boot_entries<'a>(
-    boot_dir: &Dir,
-    str: &'a mut String,
-) -> Result<Vec<MenuEntry<'a>>> {
-    let mut file = boot_dir
-        .open(format!("grub2/{USER_CFG}"))
-        .with_context(|| format!("Opening {USER_CFG}"))?;
-    file.read_to_string(str)?;
-    parse_grub_menuentry_file(str)
-}
-
-#[context("Getting sorted BLS entries")]
-pub(crate) fn get_sorted_bls_boot_entries(
-    boot_dir: &Dir,
-    ascending: bool,
-) -> Result<Vec<BLSConfig>> {
-    let mut all_configs = vec![];
-
-    for entry in boot_dir.read_dir(format!("loader/{BOOT_LOADER_ENTRIES}"))? {
-        let entry = entry?;
-
-        let file_name = entry.file_name();
-
-        let file_name = file_name
-            .to_str()
-            .ok_or(anyhow::anyhow!("Found non UTF-8 characters in filename"))?;
-
-        if !file_name.ends_with(".conf") {
-            continue;
-        }
-
-        let mut file = entry
-            .open()
-            .with_context(|| format!("Failed to open {:?}", file_name))?;
-
-        let mut contents = String::new();
-        file.read_to_string(&mut contents)
-            .with_context(|| format!("Failed to read {:?}", file_name))?;
-
-        let config = parse_bls_config(&contents).context("Parsing bls config")?;
-
-        all_configs.push(config);
-    }
-
-    all_configs.sort_by(|a, b| if ascending { a.cmp(b) } else { b.cmp(a) });
-
-    return Ok(all_configs);
-}
-
-#[context("Rolling back BLS")]
-pub(crate) fn rollback_composefs_bls() -> Result<()> {
-    let boot_dir =
-        cap_std::fs::Dir::open_ambient_dir("/sysroot/boot", cap_std::ambient_authority())
-            .context("Opening boot dir")?;
-
-    // Sort in descending order as that's the order they're shown on the boot screen
-    // After this:
-    // all_configs[0] -> booted depl
-    // all_configs[1] -> rollback depl
-    let mut all_configs = get_sorted_bls_boot_entries(&boot_dir, false)?;
-
-    // Update the indicies so that they're swapped
-    for (idx, cfg) in all_configs.iter_mut().enumerate() {
-        cfg.sort_key = Some(idx.to_string());
-    }
-
-    // TODO(Johan-Liebert): Currently assuming there are only two deployments
-    assert!(all_configs.len() == 2);
-
-    // Write these
-    let dir_path = PathBuf::from(format!(
-        "/sysroot/boot/loader/{ROLLBACK_BOOT_LOADER_ENTRIES}"
-    ));
-    create_dir_all(&dir_path).with_context(|| format!("Failed to create dir: {dir_path:?}"))?;
-
-    let rollback_entries_dir =
-        cap_std::fs::Dir::open_ambient_dir(&dir_path, cap_std::ambient_authority())
-            .with_context(|| format!("Opening {dir_path:?}"))?;
-
-    // Write the BLS configs in there
-    for cfg in all_configs {
-        // SAFETY: We set sort_key above
-        let file_name = format!("bootc-composefs-{}.conf", cfg.sort_key.as_ref().unwrap());
-
-        rollback_entries_dir
-            .atomic_write(&file_name, cfg.to_string())
-            .with_context(|| format!("Writing to {file_name}"))?;
-    }
-
-    // Should we sync after every write?
-    fsync(
-        rollback_entries_dir
-            .reopen_as_ownedfd()
-            .with_context(|| format!("Reopening {dir_path:?} as owned fd"))?,
-    )
-    .with_context(|| format!("fsync {dir_path:?}"))?;
-
-    // Atomically exchange "entries" <-> "entries.rollback"
-    let dir = Dir::open_ambient_dir("/sysroot/boot/loader", cap_std::ambient_authority())
-        .context("Opening loader dir")?;
-
-    tracing::debug!(
-        "Atomically exchanging for {ROLLBACK_BOOT_LOADER_ENTRIES} and {BOOT_LOADER_ENTRIES}"
-    );
-    renameat_with(
-        &dir,
-        ROLLBACK_BOOT_LOADER_ENTRIES,
-        &dir,
-        BOOT_LOADER_ENTRIES,
-        RenameFlags::EXCHANGE,
-    )
-    .context("renameat")?;
-
-    tracing::debug!("Removing {ROLLBACK_BOOT_LOADER_ENTRIES}");
-    rustix::fs::unlinkat(&dir, ROLLBACK_BOOT_LOADER_ENTRIES, AtFlags::empty())
-        .context("unlinkat")?;
-
-    tracing::debug!("Syncing to disk");
-    fsync(
-        dir.reopen_as_ownedfd()
-            .with_context(|| format!("Reopening /sysroot/boot/loader as owned fd"))?,
-    )
-    .context("fsync")?;
-
-    Ok(())
-}
-
-#[context("Rolling back composefs")]
-pub(crate) async fn composefs_rollback() -> Result<()> {
-    let host = composefs_deployment_status().await?;
-
-    let new_spec = {
-        let mut new_spec = host.spec.clone();
-        new_spec.boot_order = new_spec.boot_order.swap();
-        new_spec
-    };
-
-    // Just to be sure
-    host.spec.verify_transition(&new_spec)?;
-
-    let reverting = new_spec.boot_order == BootOrder::Default;
-    if reverting {
-        println!("notice: Reverting queued rollback state");
-    }
-
-    let rollback_status = host
-        .status
-        .rollback
-        .ok_or_else(|| anyhow!("No rollback available"))?;
-
-    // TODO: Handle staged deployment
-    // Ostree will drop any staged deployment on rollback but will keep it if it is the first item
-    // in the new deployment list
-    let Some(rollback_composefs_entry) = &rollback_status.composefs else {
-        anyhow::bail!("Rollback deployment not a composefs deployment")
-    };
-
-    match rollback_composefs_entry.boot_type {
-        BootType::Bls => rollback_composefs_bls(),
-        BootType::Uki => rollback_composefs_uki(),
-    }?;
-
-    if reverting {
-        println!("Next boot: current deployment");
-    } else {
-        println!("Next boot: rollback deployment");
-    }
-
-    Ok(())
-}
-
 /// Implementation of rollback functionality
 pub(crate) async fn rollback(sysroot: &Storage) -> Result<()> {
     const ROLLBACK_JOURNAL_ID: &str = "26f3b1eb24464d12aa5e7b544a6b5468";
@@ -1269,8 +1032,6 @@ pub(crate) fn fixup_etc_fstab(root: &Dir) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use crate::parsers::grub_menuconfig::MenuentryBody;
-
     use super::*;
 
     #[test]
@@ -1363,119 +1124,6 @@ UUID=6907-17CA          /boot/efi               vfat    umask=0077,shortname=win
         tempdir.atomic_write("etc/fstab", default)?;
         fixup_etc_fstab(&tempdir).unwrap();
         assert_eq!(tempdir.read_to_string("etc/fstab")?, modified);
-        Ok(())
-    }
-
-    #[test]
-    fn test_sorted_bls_boot_entries() -> Result<()> {
-        let tempdir = cap_std_ext::cap_tempfile::tempdir(cap_std::ambient_authority())?;
-
-        let entry1 = r#"
-            title Fedora 42.20250623.3.1 (CoreOS)
-            version fedora-42.0
-            sort-key 1
-            linux /boot/7e11ac46e3e022053e7226a20104ac656bf72d1a84e3a398b7cce70e9df188b6/vmlinuz-5.14.10
-            initrd /boot/7e11ac46e3e022053e7226a20104ac656bf72d1a84e3a398b7cce70e9df188b6/initramfs-5.14.10.img
-            options root=UUID=abc123 rw composefs=7e11ac46e3e022053e7226a20104ac656bf72d1a84e3a398b7cce70e9df188b6
-        "#;
-
-        let entry2 = r#"
-            title Fedora 41.20250214.2.0 (CoreOS)
-            version fedora-42.0
-            sort-key 2
-            linux /boot/febdf62805de2ae7b6b597f2a9775d9c8a753ba1e5f09298fc8fbe0b0d13bf01/vmlinuz-5.14.10
-            initrd /boot/febdf62805de2ae7b6b597f2a9775d9c8a753ba1e5f09298fc8fbe0b0d13bf01/initramfs-5.14.10.img
-            options root=UUID=abc123 rw composefs=febdf62805de2ae7b6b597f2a9775d9c8a753ba1e5f09298fc8fbe0b0d13bf01
-        "#;
-
-        tempdir.create_dir_all("loader/entries")?;
-        tempdir.atomic_write(
-            "loader/entries/random_file.txt",
-            "Random file that we won't parse",
-        )?;
-        tempdir.atomic_write("loader/entries/entry1.conf", entry1)?;
-        tempdir.atomic_write("loader/entries/entry2.conf", entry2)?;
-
-        let result = get_sorted_bls_boot_entries(&tempdir, true).unwrap();
-
-        let mut config1 = BLSConfig::default();
-        config1.title = Some("Fedora 42.20250623.3.1 (CoreOS)".into());
-        config1.sort_key = Some("1".into());
-        config1.linux = "/boot/7e11ac46e3e022053e7226a20104ac656bf72d1a84e3a398b7cce70e9df188b6/vmlinuz-5.14.10".into();
-        config1.initrd = vec!["/boot/7e11ac46e3e022053e7226a20104ac656bf72d1a84e3a398b7cce70e9df188b6/initramfs-5.14.10.img".into()];
-        config1.options = Some("root=UUID=abc123 rw composefs=7e11ac46e3e022053e7226a20104ac656bf72d1a84e3a398b7cce70e9df188b6".into());
-
-        let mut config2 = BLSConfig::default();
-        config2.title = Some("Fedora 41.20250214.2.0 (CoreOS)".into());
-        config2.sort_key = Some("2".into());
-        config2.linux = "/boot/febdf62805de2ae7b6b597f2a9775d9c8a753ba1e5f09298fc8fbe0b0d13bf01/vmlinuz-5.14.10".into();
-        config2.initrd = vec!["/boot/febdf62805de2ae7b6b597f2a9775d9c8a753ba1e5f09298fc8fbe0b0d13bf01/initramfs-5.14.10.img".into()];
-        config2.options = Some("root=UUID=abc123 rw composefs=febdf62805de2ae7b6b597f2a9775d9c8a753ba1e5f09298fc8fbe0b0d13bf01".into());
-
-        assert_eq!(result[0].sort_key.as_ref().unwrap(), "1");
-        assert_eq!(result[1].sort_key.as_ref().unwrap(), "2");
-
-        let result = get_sorted_bls_boot_entries(&tempdir, false).unwrap();
-        assert_eq!(result[0].sort_key.as_ref().unwrap(), "2");
-        assert_eq!(result[1].sort_key.as_ref().unwrap(), "1");
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_sorted_uki_boot_entries() -> Result<()> {
-        let user_cfg = r#"
-            if [ -f ${config_directory}/efiuuid.cfg ]; then
-                    source ${config_directory}/efiuuid.cfg
-            fi
-
-            menuentry "Fedora Bootc UKI: (f7415d75017a12a387a39d2281e033a288fc15775108250ef70a01dcadb93346)" {
-                insmod fat
-                insmod chain
-                search --no-floppy --set=root --fs-uuid "${EFI_PART_UUID}"
-                chainloader /EFI/Linux/f7415d75017a12a387a39d2281e033a288fc15775108250ef70a01dcadb93346.efi
-            }
-
-            menuentry "Fedora Bootc UKI: (7e11ac46e3e022053e7226a20104ac656bf72d1a84e3a398b7cce70e9df188b6)" {
-                insmod fat
-                insmod chain
-                search --no-floppy --set=root --fs-uuid "${EFI_PART_UUID}"
-                chainloader /EFI/Linux/7e11ac46e3e022053e7226a20104ac656bf72d1a84e3a398b7cce70e9df188b6.efi
-            }
-        "#;
-
-        let bootdir = cap_std_ext::cap_tempfile::tempdir(cap_std::ambient_authority())?;
-        bootdir.create_dir_all(format!("grub2"))?;
-        bootdir.atomic_write(format!("grub2/{USER_CFG}"), user_cfg)?;
-
-        let mut s = String::new();
-        let result = get_sorted_uki_boot_entries(&bootdir, &mut s)?;
-
-        let expected = vec![
-            MenuEntry {
-                title: "Fedora Bootc UKI: (f7415d75017a12a387a39d2281e033a288fc15775108250ef70a01dcadb93346)".into(),
-                body: MenuentryBody {
-                    insmod: vec!["fat", "chain"],
-                    chainloader: "/EFI/Linux/f7415d75017a12a387a39d2281e033a288fc15775108250ef70a01dcadb93346.efi".into(),
-                    search: "--no-floppy --set=root --fs-uuid \"${EFI_PART_UUID}\"",
-                    version: 0,
-                    extra: vec![],
-                },
-            },
-            MenuEntry {
-                title: "Fedora Bootc UKI: (7e11ac46e3e022053e7226a20104ac656bf72d1a84e3a398b7cce70e9df188b6)".into(),
-                body: MenuentryBody {
-                    insmod: vec!["fat", "chain"],
-                    chainloader: "/EFI/Linux/7e11ac46e3e022053e7226a20104ac656bf72d1a84e3a398b7cce70e9df188b6.efi".into(),
-                    search: "--no-floppy --set=root --fs-uuid \"${EFI_PART_UUID}\"",
-                    version: 0,
-                    extra: vec![],
-                },
-            },
-        ];
-
-        assert_eq!(result, expected);
-
         Ok(())
     }
 }

@@ -11,7 +11,8 @@ use ostree_ext::{container::OstreeImageReference, oci_spec};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::install::BootType;
+#[cfg(feature = "composefs-backend")]
+use crate::bootc_composefs::boot::BootType;
 use crate::{k8sapitypes, status::Slot};
 
 const API_VERSION: &str = "org.containers.bootc/v1";
@@ -198,6 +199,7 @@ impl FromStr for Bootloader {
 /// A bootable entry
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
 #[serde(rename_all = "camelCase")]
+#[cfg(feature = "composefs-backend")]
 pub struct BootEntryComposefs {
     /// The erofs verity
     pub verity: String,
@@ -228,6 +230,7 @@ pub struct BootEntry {
     /// If this boot entry is ostree based, the corresponding state
     pub ostree: Option<BootEntryOstree>,
     /// If this boot entry is composefs based, the corresponding state
+    #[cfg(feature = "composefs-backend")]
     pub composefs: Option<BootEntryComposefs>,
 }
 
@@ -300,6 +303,7 @@ impl Host {
         }
     }
 
+    #[cfg(feature = "composefs-backend")]
     pub(crate) fn require_composefs_booted(&self) -> anyhow::Result<&BootEntryComposefs> {
         let cfs = self
             .status
@@ -582,6 +586,7 @@ mod tests {
                 pinned: false,
                 store: None,
                 ostree: None,
+                #[cfg(feature = "composefs-backend")]
                 composefs: None,
             }
         }

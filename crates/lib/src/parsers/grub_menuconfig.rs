@@ -1,5 +1,7 @@
 //! Parser for GRUB menuentry configuration files using nom combinators.
 
+#![allow(dead_code)]
+
 use std::fmt::Display;
 
 use nom::{

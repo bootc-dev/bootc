@@ -2,6 +2,8 @@
 //!
 //! This module parses the config files for the spec.
 
+#![allow(dead_code)]
+
 use anyhow::{anyhow, Result};
 use std::collections::HashMap;
 use std::fmt::Display;

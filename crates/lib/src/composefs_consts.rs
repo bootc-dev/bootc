@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 /// composefs= paramter in kernel cmdline
 pub const COMPOSEFS_CMDLINE: &str = "composefs";
 
