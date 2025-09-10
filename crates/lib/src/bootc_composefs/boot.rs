@@ -8,7 +8,10 @@ use bootc_blockdev::find_parent_devices;
 use bootc_mount::inspect_filesystem;
 use bootc_utils::CommandRunExt;
 use camino::{Utf8Path, Utf8PathBuf};
-use cap_std_ext::{cap_std, dirext::CapStdExtDirExt};
+use cap_std_ext::{
+    cap_std::{ambient_authority, fs::Dir},
+    dirext::CapStdExtDirExt,
+};
 use clap::ValueEnum;
 use composefs::fs::read_file;
 use composefs::tree::{FileSystem, RegularFile};
@@ -174,8 +177,7 @@ fn compute_boot_digest(
 /// Returns the verity of the deployment that has a boot digest same as the one passed in
 #[context("Checking boot entry duplicates")]
 fn find_vmlinuz_initrd_duplicates(digest: &str) -> Result<Option<String>> {
-    let deployments =
-        cap_std::fs::Dir::open_ambient_dir(STATE_DIR_ABS, cap_std::ambient_authority());
+    let deployments = Dir::open_ambient_dir(STATE_DIR_ABS, ambient_authority());
 
     let deployments = match deployments {
         Ok(d) => d,
@@ -231,7 +233,7 @@ fn write_bls_boot_entries_to_disk(
     let path = boot_dir.join(&id_hex);
     create_dir_all(&path)?;
 
-    let entries_dir = cap_std::fs::Dir::open_ambient_dir(&path, cap_std::ambient_authority())
+    let entries_dir = Dir::open_ambient_dir(&path, ambient_authority())
         .with_context(|| format!("Opening {path}"))?;
 
     entries_dir
@@ -486,9 +488,8 @@ pub(crate) fn setup_composefs_bls_boot(
 
     // Scope to allow for proper unmounting
     {
-        let loader_entries_dir =
-            cap_std::fs::Dir::open_ambient_dir(&config_path, cap_std::ambient_authority())
-                .with_context(|| format!("Opening {config_path:?}"))?;
+        let loader_entries_dir = Dir::open_ambient_dir(&config_path, ambient_authority())
+            .with_context(|| format!("Opening {config_path:?}"))?;
 
         loader_entries_dir.atomic_write(
             // SAFETY: We set sort_key above
@@ -600,7 +601,7 @@ fn write_pe_to_esp(
         None => efi_linux_path,
     };
 
-    let pe_dir = cap_std::fs::Dir::open_ambient_dir(&final_pe_path, cap_std::ambient_authority())
+    let pe_dir = Dir::open_ambient_dir(&final_pe_path, ambient_authority())
         .with_context(|| format!("Opening {final_pe_path:?}"))?;
 
     let pe_name = match pe_type {
@@ -622,6 +623,94 @@ fn write_pe_to_esp(
     Ok(boot_label)
 }
 
+#[context("Writing Grub menuentry")]
+fn write_grub_uki_menuentry(
+    root_path: Utf8PathBuf,
+    setup_type: &BootSetupType,
+    boot_label: &String,
+    id: &Sha256HashValue,
+    esp_device: &String,
+) -> Result<()> {
+    let boot_dir = root_path.join("boot");
+    create_dir_all(&boot_dir).context("Failed to create boot dir")?;
+
+    let is_upgrade = matches!(setup_type, BootSetupType::Upgrade(..));
+
+    let efi_uuid_source = get_efi_uuid_source();
+
+    let user_cfg_name = if is_upgrade {
+        USER_CFG_STAGED
+    } else {
+        USER_CFG
+    };
+
+    let grub_dir = Dir::open_ambient_dir(boot_dir.join("grub2"), ambient_authority())
+        .context("opening boot/grub2")?;
+
+    // Iterate over all available deployments, and generate a menuentry for each
+    //
+    // TODO: We might find a staged deployment here
+    if is_upgrade {
+        let mut buffer = vec![];
+
+        // Shouldn't really fail so no context here
+        buffer.write_all(efi_uuid_source.as_bytes())?;
+        buffer.write_all(
+            MenuEntry::new(&boot_label, &id.to_hex())
+                .to_string()
+                .as_bytes(),
+        )?;
+
+        let mut str_buf = String::new();
+        let boot_dir =
+            Dir::open_ambient_dir(boot_dir, ambient_authority()).context("Opening boot dir")?;
+        let entries = get_sorted_uki_boot_entries(&boot_dir, &mut str_buf)?;
+
+        // Write out only the currently booted entry, which should be the very first one
+        // Even if we have booted into the second menuentry "boot entry", the default will be the
+        // first one
+        buffer.write_all(entries[0].to_string().as_bytes())?;
+
+        grub_dir
+            .atomic_write(user_cfg_name, buffer)
+            .with_context(|| format!("Writing to {user_cfg_name}"))?;
+
+        rustix::fs::fsync(grub_dir.reopen_as_ownedfd()?).context("fsync")?;
+
+        return Ok(());
+    }
+
+    // Open grub2/efiuuid.cfg and write the EFI partition fs-UUID in there
+    // This will be sourced by grub2/user.cfg to be used for `--fs-uuid`
+    let esp_uuid = Task::new("blkid for ESP UUID", "blkid")
+        .args(["-s", "UUID", "-o", "value", &esp_device])
+        .read()?;
+
+    grub_dir.atomic_write(
+        EFI_UUID_FILE,
+        format!("set EFI_PART_UUID=\"{}\"", esp_uuid.trim()).as_bytes(),
+    )?;
+
+    // Write to grub2/user.cfg
+    let mut buffer = vec![];
+
+    // Shouldn't really fail so no context here
+    buffer.write_all(efi_uuid_source.as_bytes())?;
+    buffer.write_all(
+        MenuEntry::new(&boot_label, &id.to_hex())
+            .to_string()
+            .as_bytes(),
+    )?;
+
+    grub_dir
+        .atomic_write(user_cfg_name, buffer)
+        .with_context(|| format!("Writing to {user_cfg_name}"))?;
+
+    rustix::fs::fsync(grub_dir.reopen_as_ownedfd()?).context("fsync")?;
+
+    Ok(())
+}
+
 #[context("Setting up UKI boot")]
 pub(crate) fn setup_composefs_uki_boot(
     setup_type: BootSetupType,
@@ -630,7 +719,7 @@ pub(crate) fn setup_composefs_uki_boot(
     id: &Sha256HashValue,
     entries: Vec<ComposefsBootEntry<Sha256HashValue>>,
 ) -> Result<()> {
-    let (root_path, esp_device, is_insecure_from_opts) = match setup_type {
+    let (root_path, esp_device, bootloader, is_insecure_from_opts) = match setup_type {
         BootSetupType::Setup((root_setup, state, ..)) => {
             if let Some(v) = &state.config_opts.karg {
                 if v.len() > 0 {
@@ -645,22 +734,37 @@ pub(crate) fn setup_composefs_uki_boot(
                 .find(|p| p.parttype.as_str() == ESP_GUID)
                 .ok_or_else(|| anyhow!("ESP partition not found"))?;
 
+            let bootloader = state
+                .composefs_options
+                .as_ref()
+                .map(|opts| opts.bootloader.clone())
+                .unwrap_or(Bootloader::default());
+
+            let is_insecure = state
+                .composefs_options
+                .as_ref()
+                .map(|x| x.insecure)
+                .unwrap_or(false);
+
             (
                 root_setup.physical_root_path.clone(),
                 esp_part.node.clone(),
-                state
-                    .composefs_options
-                    .as_ref()
-                    .map(|x| x.insecure)
-                    .unwrap_or(false),
+                bootloader,
+                is_insecure,
             )
         }
 
-        BootSetupType::Upgrade(..) => {
+        BootSetupType::Upgrade((_, host)) => {
             let sysroot = Utf8PathBuf::from("/sysroot");
             let sysroot_parent = get_sysroot_parent_dev()?;
+            let bootloader = host.require_composefs_booted()?.bootloader.clone();
 
-            (sysroot, get_esp_partition(&sysroot_parent)?.0, false)
+            (
+                sysroot,
+                get_esp_partition(&sysroot_parent)?.0,
+                bootloader,
+                false,
+            )
         }
     };
 
@@ -705,83 +809,16 @@ pub(crate) fn setup_composefs_uki_boot(
         .run_inherited_with_cmd_context()
         .context("Unmounting ESP")?;
 
-    let boot_dir = root_path.join("boot");
-    create_dir_all(&boot_dir).context("Failed to create boot dir")?;
+    match bootloader {
+        Bootloader::Grub => {
+            write_grub_uki_menuentry(root_path, &setup_type, &boot_label, id, &esp_device)?
+        }
 
-    let is_upgrade = matches!(setup_type, BootSetupType::Upgrade(..));
-
-    let efi_uuid_source = get_efi_uuid_source();
-
-    let user_cfg_name = if is_upgrade {
-        USER_CFG_STAGED
-    } else {
-        USER_CFG
+        Bootloader::Systemd => {
+            // No-op for now, but later we want to have .conf files so we can control the order of
+            // entries.
+        }
     };
-
-    let grub_dir =
-        cap_std::fs::Dir::open_ambient_dir(boot_dir.join("grub2"), cap_std::ambient_authority())
-            .context("opening boot/grub2")?;
-
-    // Iterate over all available deployments, and generate a menuentry for each
-    //
-    // TODO: We might find a staged deployment here
-    if is_upgrade {
-        let mut buffer = vec![];
-
-        // Shouldn't really fail so no context here
-        buffer.write_all(efi_uuid_source.as_bytes())?;
-        buffer.write_all(
-            MenuEntry::new(&boot_label, &id.to_hex())
-                .to_string()
-                .as_bytes(),
-        )?;
-
-        let mut str_buf = String::new();
-        let boot_dir = cap_std::fs::Dir::open_ambient_dir(boot_dir, cap_std::ambient_authority())
-            .context("Opening boot dir")?;
-        let entries = get_sorted_uki_boot_entries(&boot_dir, &mut str_buf)?;
-
-        // Write out only the currently booted entry, which should be the very first one
-        // Even if we have booted into the second menuentry "boot entry", the default will be the
-        // first one
-        buffer.write_all(entries[0].to_string().as_bytes())?;
-
-        grub_dir
-            .atomic_write(user_cfg_name, buffer)
-            .with_context(|| format!("Writing to {user_cfg_name}"))?;
-
-        rustix::fs::fsync(grub_dir.reopen_as_ownedfd()?).context("fsync")?;
-
-        return Ok(());
-    }
-
-    // Open grub2/efiuuid.cfg and write the EFI partition fs-UUID in there
-    // This will be sourced by grub2/user.cfg to be used for `--fs-uuid`
-    let esp_uuid = Task::new("blkid for ESP UUID", "blkid")
-        .args(["-s", "UUID", "-o", "value", &esp_device])
-        .read()?;
-
-    grub_dir.atomic_write(
-        EFI_UUID_FILE,
-        format!("set EFI_PART_UUID=\"{}\"", esp_uuid.trim()).as_bytes(),
-    )?;
-
-    // Write to grub2/user.cfg
-    let mut buffer = vec![];
-
-    // Shouldn't really fail so no context here
-    buffer.write_all(efi_uuid_source.as_bytes())?;
-    buffer.write_all(
-        MenuEntry::new(&boot_label, &id.to_hex())
-            .to_string()
-            .as_bytes(),
-    )?;
-
-    grub_dir
-        .atomic_write(user_cfg_name, buffer)
-        .with_context(|| format!("Writing to {user_cfg_name}"))?;
-
-    rustix::fs::fsync(grub_dir.reopen_as_ownedfd()?).context("fsync")?;
 
     Ok(())
 }
