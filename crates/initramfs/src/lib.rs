@@ -112,7 +112,7 @@ pub fn mount_at_wrapper(
         .with_context(|| format!("Mounting at path {path:?}"))
 }
 
-/// Wrapper around [`rustix::openat`]
+/// Wrapper around [`rustix::fs::openat`]
 #[context("Opening dir {name:?}")]
 pub fn open_dir(dirfd: impl AsFd, name: impl AsRef<Path> + Debug) -> Result<OwnedFd> {
     let res = openat(

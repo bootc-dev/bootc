@@ -87,7 +87,9 @@ const SELINUXFS: &str = "/sys/fs/selinux";
 /// The mount path for uefi
 pub(crate) const EFIVARFS: &str = "/sys/firmware/efi/efivars";
 pub(crate) const ARCH_USES_EFI: bool = cfg!(any(target_arch = "x86_64", target_arch = "aarch64"));
+#[cfg(any(feature = "composefs-backend", feature = "install-to-disk"))]
 pub(crate) const ESP_GUID: &str = "C12A7328-F81F-11D2-BA4B-00A0C93EC93B";
+#[cfg(any(feature = "composefs-backend", feature = "install-to-disk"))]
 pub(crate) const DPS_UUID: &str = "6523f8ae-3eb1-4e2a-a05a-18b695ae656f";
 
 const DEFAULT_REPO_CONFIG: &[(&str, &str)] = &[
