@@ -1,0 +1,6 @@
+# This is not symlinked to bound-images.d so it should not be pulled.
+# It's here to represent an app image that exists
+# in a bootc image but is not logically bound.
+[Image]
+Image=registry.redhat.io/jboss-webserver-5/jws5-rhel8-operator:latest
+AuthFile=/root/auth.json

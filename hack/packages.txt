@@ -1,0 +1,4 @@
+# Needed by tmt
+rsync
+/usr/bin/flock
+/usr/bin/awk
