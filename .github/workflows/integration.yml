@@ -8,8 +8,9 @@ jobs:
   build:
     strategy:
       matrix:
-        test_os: [centos-9]
-        test_runner: [ubuntu-24.04-arm]
+        #test_os: [fedora-42, fedora-43, centos-9, centos-10]
+        test_os: [centos-10]
+        test_runner: [ubuntu-24.04]
 
     runs-on: ${{ matrix.test_runner }}
 
@@ -23,34 +24,36 @@ jobs:
 
       - uses: actions/checkout@v4
 
-      - name: Build bootc and bootc image
-        run: sudo tests/build.sh ${{ matrix.test_os }}
+      - name: Set architecture variable
+        id: set_arch
+        run: echo "ARCH=$(arch)" >> $GITHUB_ENV
 
-      - name: Grant sudo user permission to archive files
+      - name: Build bootc and bootc image
         run: |
-          sudo chmod 0755 /tmp/tmp-bootc-build/id_rsa
+          sudo tests/build.sh ${{ matrix.test_os }}
+          # So the archiver works
+          sudo chmod 0755 target/id_rsa
 
       - name: Archive bootc disk image - disk.raw
-        if: matrix.test_runner == 'ubuntu-latest'
         uses: actions/upload-artifact@v4
         with:
-          name: PR-${{ github.event.number }}-${{ matrix.test_os }}-disk
-          path: /tmp/tmp-bootc-build/disk.raw
+          name: PR-${{ github.event.number }}-${{ matrix.test_os }}-${{ env.ARCH }}-disk
+          path: target/disk.raw
           retention-days: 1
 
       - name: Archive SSH private key - id_rsa
-        if: matrix.test_runner == 'ubuntu-latest'
         uses: actions/upload-artifact@v4
         with:
-          name: PR-${{ github.event.number }}-${{ matrix.test_os }}-id_rsa
-          path: /tmp/tmp-bootc-build/id_rsa
+          name: PR-${{ github.event.number }}-${{ matrix.test_os }}-${{ env.ARCH }}-id_rsa
+          path: target/id_rsa
           retention-days: 1
 
   test:
     needs: build
     strategy:
       matrix:
-        test_os: [fedora-41, fedora-42, fedora-43, centos-9]
+        #test_os: [fedora-42, fedora-43, centos-9, centos-10]
+        test_os: [centos-10]
         tmt_plan: [test-01-readonly, test-20-local-upgrade, test-21-logically-bound-switch, test-22-logically-bound-install, test-23-install-outside-container, test-24-local-upgrade-reboot]
 
     runs-on: ubuntu-latest
@@ -58,26 +61,30 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Set architecture variable
+        id: set_arch
+        run: echo "ARCH=$(arch)" >> $GITHUB_ENV
+
       - name: Install dependence
         run: |
           sudo apt-get update
-          sudo apt install -y qemu-kvm qemu-system
-          pip install --user tmt
+          sudo apt install -y qemu-kvm qemu-system just
+          sudo pip install --user tmt
 
       - name: Create folder to save disk image
-        run: mkdir -p /tmp/tmp-bootc-build
+        run: mkdir -p target
 
       - name: Download disk.raw
         uses: actions/download-artifact@v4
         with:
-          name: PR-${{ github.event.number }}-${{ matrix.test_os }}-disk
-          path: /tmp/tmp-bootc-build
+          name: PR-${{ github.event.number }}-${{ matrix.test_os }}-${{ env.ARCH }}-disk
+          path: target
 
       - name: Download id_rsa
         uses: actions/download-artifact@v4
         with:
-          name: PR-${{ github.event.number }}-${{ matrix.test_os }}-id_rsa
-          path: /tmp/tmp-bootc-build
+          name: PR-${{ github.event.number }}-${{ matrix.test_os }}-${{ env.ARCH }}-id_rsa
+          path: target
 
       - name: Enable KVM group perms
         run: |
@@ -87,11 +94,11 @@ jobs:
           ls -l /dev/kvm
 
       - name: Run test
-        run: tests/test.sh ${{ matrix.tmt_plan }}
+        run: sudo tests/test.sh ${{ matrix.tmt_plan }}
 
       - name: Archive TMT logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: tmt-log-PR-${{ github.event.number }}-${{ matrix.test_os }}-${{ matrix.tmt_plan }}
+          name: tmt-log-PR-${{ github.event.number }}-${{ matrix.test_os }}-${{ env.ARCH }}-${{ matrix.tmt_plan }}
           path: /var/tmp/tmt
