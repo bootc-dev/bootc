@@ -39,11 +39,11 @@ pub(crate) async fn switch_composefs(opts: SwitchOpts) -> Result<()> {
     let (repo, entries, id, fs) =
         pull_composefs_repo(&target_imgref.transport, &target_imgref.image).await?;
 
-    let Some(entry) = entries.into_iter().next() else {
+    let Some(entry) = entries.iter().next() else {
         anyhow::bail!("No boot entries!");
     };
 
-    let boot_type = BootType::from(&entry);
+    let boot_type = BootType::from(entry);
     let mut boot_digest = None;
 
     match boot_type {
@@ -56,7 +56,7 @@ pub(crate) async fn switch_composefs(opts: SwitchOpts) -> Result<()> {
             )?)
         }
         BootType::Uki => {
-            setup_composefs_uki_boot(BootSetupType::Upgrade((&fs, &host)), repo, &id, entry)?
+            setup_composefs_uki_boot(BootSetupType::Upgrade((&fs, &host)), repo, &id, entries)?
         }
     };
 

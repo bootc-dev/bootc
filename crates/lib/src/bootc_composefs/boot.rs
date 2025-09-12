@@ -8,10 +8,14 @@ use bootc_blockdev::find_parent_devices;
 use bootc_mount::inspect_filesystem;
 use bootc_utils::CommandRunExt;
 use camino::{Utf8Path, Utf8PathBuf};
-use cap_std_ext::{cap_std, dirext::CapStdExtDirExt};
+use cap_std_ext::{
+    cap_std::{ambient_authority, fs::Dir},
+    dirext::CapStdExtDirExt,
+};
 use clap::ValueEnum;
 use composefs::fs::read_file;
-use composefs::tree::FileSystem;
+use composefs::tree::{FileSystem, RegularFile};
+use composefs_boot::bootloader::{PEType, EFI_ADDON_DIR_EXT, EFI_ADDON_FILE_EXT, EFI_EXT};
 use composefs_boot::BootOps;
 use fn_error_context::context;
 use ostree_ext::composefs::{
@@ -173,8 +177,7 @@ fn compute_boot_digest(
 /// Returns the verity of the deployment that has a boot digest same as the one passed in
 #[context("Checking boot entry duplicates")]
 fn find_vmlinuz_initrd_duplicates(digest: &str) -> Result<Option<String>> {
-    let deployments =
-        cap_std::fs::Dir::open_ambient_dir(STATE_DIR_ABS, cap_std::ambient_authority());
+    let deployments = Dir::open_ambient_dir(STATE_DIR_ABS, ambient_authority());
 
     let deployments = match deployments {
         Ok(d) => d,
@@ -230,7 +233,7 @@ fn write_bls_boot_entries_to_disk(
     let path = boot_dir.join(&id_hex);
     create_dir_all(&path)?;
 
-    let entries_dir = cap_std::fs::Dir::open_ambient_dir(&path, cap_std::ambient_authority())
+    let entries_dir = Dir::open_ambient_dir(&path, ambient_authority())
         .with_context(|| format!("Opening {path}"))?;
 
     entries_dir
@@ -283,7 +286,7 @@ pub(crate) fn setup_composefs_bls_boot(
     // TODO: Make this generic
     repo: ComposefsRepository<Sha256HashValue>,
     id: &Sha256HashValue,
-    entry: ComposefsBootEntry<Sha256HashValue>,
+    entry: &ComposefsBootEntry<Sha256HashValue>,
 ) -> Result<String> {
     let id_hex = id.to_hex();
 
@@ -485,9 +488,8 @@ pub(crate) fn setup_composefs_bls_boot(
 
     // Scope to allow for proper unmounting
     {
-        let loader_entries_dir =
-            cap_std::fs::Dir::open_ambient_dir(&config_path, cap_std::ambient_authority())
-                .with_context(|| format!("Opening {config_path:?}"))?;
+        let loader_entries_dir = Dir::open_ambient_dir(&config_path, ambient_authority())
+            .with_context(|| format!("Opening {config_path:?}"))?;
 
         loader_entries_dir.atomic_write(
             // SAFETY: We set sort_key above
@@ -527,118 +529,108 @@ pub(crate) fn setup_composefs_bls_boot(
     Ok(boot_digest)
 }
 
-#[context("Setting up UKI boot")]
-pub(crate) fn setup_composefs_uki_boot(
-    setup_type: BootSetupType,
-    // TODO: Make this generic
-    repo: ComposefsRepository<Sha256HashValue>,
+/// Writes a PortableExecutable to ESP along with any PE specific or Global addons
+fn write_pe_to_esp(
+    repo: &ComposefsRepository<Sha256HashValue>,
+    file: &RegularFile<Sha256HashValue>,
+    file_path: &PathBuf,
+    pe_type: PEType,
+    uki_id: &String,
+    is_insecure_from_opts: bool,
+    mounted_efi: &PathBuf,
+) -> Result<Option<String>> {
+    let efi_bin = read_file(file, &repo).context("Reading .efi binary")?;
+
+    let mut boot_label = None;
+
+    // UKI Extension might not even have a cmdline
+    // TODO: UKI Addon might also have a composefs= cmdline?
+    if matches!(pe_type, PEType::Uki) {
+        let cmdline = uki::get_cmdline(&efi_bin).context("Getting UKI cmdline")?;
+
+        let (composefs_cmdline, insecure) = get_cmdline_composefs::<Sha256HashValue>(cmdline)?;
+
+        // If the UKI cmdline does not match what the user has passed as cmdline option
+        // NOTE: This will only be checked for new installs and now upgrades/switches
+        match is_insecure_from_opts {
+            true if !insecure => {
+                tracing::warn!("--insecure passed as option but UKI cmdline does not support it");
+            }
+
+            false if insecure => {
+                tracing::warn!("UKI cmdline has composefs set as insecure");
+            }
+
+            _ => { /* no-op */ }
+        }
+
+        if composefs_cmdline.to_hex() != *uki_id {
+            anyhow::bail!(
+                "The UKI has the wrong composefs= parameter (is '{composefs_cmdline:?}', should be {uki_id:?})"
+            );
+        }
+
+        boot_label = Some(uki::get_boot_label(&efi_bin).context("Getting UKI boot label")?);
+    }
+
+    // Write the UKI to ESP
+    let efi_linux_path = mounted_efi.join(EFI_LINUX);
+    create_dir_all(&efi_linux_path).context("Creating EFI/Linux")?;
+
+    let final_pe_path = match file_path.parent() {
+        Some(parent) => {
+            let renamed_path = match parent.as_str()?.ends_with(EFI_ADDON_DIR_EXT) {
+                true => {
+                    let dir_name = format!("{}{}", uki_id, EFI_ADDON_DIR_EXT);
+
+                    parent
+                        .parent()
+                        .map(|p| p.join(&dir_name))
+                        .unwrap_or(dir_name.into())
+                }
+
+                false => parent.to_path_buf(),
+            };
+
+            let full_path = efi_linux_path.join(renamed_path);
+            create_dir_all(&full_path)?;
+
+            full_path
+        }
+
+        None => efi_linux_path,
+    };
+
+    let pe_dir = Dir::open_ambient_dir(&final_pe_path, ambient_authority())
+        .with_context(|| format!("Opening {final_pe_path:?}"))?;
+
+    let pe_name = match pe_type {
+        PEType::Uki => format!("{}{}", uki_id, EFI_EXT),
+        PEType::UkiAddon => format!("{}{}", uki_id, EFI_ADDON_FILE_EXT),
+    };
+
+    pe_dir
+        .atomic_write(pe_name, efi_bin)
+        .context("Writing UKI")?;
+
+    rustix::fs::fsync(
+        pe_dir
+            .reopen_as_ownedfd()
+            .context("Reopening as owned fd")?,
+    )
+    .context("fsync")?;
+
+    Ok(boot_label)
+}
+
+#[context("Writing Grub menuentry")]
+fn write_grub_uki_menuentry(
+    root_path: Utf8PathBuf,
+    setup_type: &BootSetupType,
+    boot_label: &String,
     id: &Sha256HashValue,
-    entry: ComposefsBootEntry<Sha256HashValue>,
+    esp_device: &String,
 ) -> Result<()> {
-    let (root_path, esp_device, is_insecure_from_opts) = match setup_type {
-        BootSetupType::Setup((root_setup, state, ..)) => {
-            if let Some(v) = &state.config_opts.karg {
-                if v.len() > 0 {
-                    tracing::warn!("kargs passed for UKI will be ignored");
-                }
-            }
-
-            let esp_part = root_setup
-                .device_info
-                .partitions
-                .iter()
-                .find(|p| p.parttype.as_str() == ESP_GUID)
-                .ok_or_else(|| anyhow!("ESP partition not found"))?;
-
-            (
-                root_setup.physical_root_path.clone(),
-                esp_part.node.clone(),
-                state.composefs_options.as_ref().map(|x| x.insecure),
-            )
-        }
-
-        BootSetupType::Upgrade(..) => {
-            let sysroot = Utf8PathBuf::from("/sysroot");
-            let sysroot_parent = get_sysroot_parent_dev()?;
-
-            (sysroot, get_esp_partition(&sysroot_parent)?.0, None)
-        }
-    };
-
-    let temp_efi_dir = tempfile::tempdir()
-        .map_err(|e| anyhow::anyhow!("Failed to create temporary directory for EFI mount: {e}"))?;
-    let mounted_efi = temp_efi_dir.path().to_path_buf();
-
-    Task::new("Mounting ESP", "mount")
-        .args([&PathBuf::from(&esp_device), &mounted_efi.clone()])
-        .run()?;
-
-    let boot_label = match entry {
-        ComposefsBootEntry::Type1(..) => unimplemented!(),
-        ComposefsBootEntry::UsrLibModulesVmLinuz(..) => unimplemented!(),
-
-        ComposefsBootEntry::Type2(type2_entry) => {
-            let uki = read_file(&type2_entry.file, &repo).context("Reading UKI")?;
-            let cmdline = uki::get_cmdline(&uki).context("Getting UKI cmdline")?;
-            let (composefs_cmdline, insecure) = get_cmdline_composefs::<Sha256HashValue>(cmdline)?;
-
-            // If the UKI cmdline does not match what the user has passed as cmdline option
-            // NOTE: This will only be checked for new installs and now upgrades/switches
-            if let Some(is_insecure_from_opts) = is_insecure_from_opts {
-                match is_insecure_from_opts {
-                    true => {
-                        if !insecure {
-                            tracing::warn!(
-                                "--insecure passed as option but UKI cmdline does not support it"
-                            )
-                        }
-                    }
-
-                    false => {
-                        if insecure {
-                            tracing::warn!("UKI cmdline has composefs set as insecure")
-                        }
-                    }
-                }
-            }
-
-            let boot_label = uki::get_boot_label(&uki).context("Getting UKI boot label")?;
-
-            if composefs_cmdline != *id {
-                anyhow::bail!(
-                    "The UKI has the wrong composefs= parameter (is '{composefs_cmdline:?}', should be {id:?})"
-                );
-            }
-
-            // Write the UKI to ESP
-            let efi_linux_path = mounted_efi.join(EFI_LINUX);
-            create_dir_all(&efi_linux_path).context("Creating EFI/Linux")?;
-
-            let efi_linux =
-                cap_std::fs::Dir::open_ambient_dir(&efi_linux_path, cap_std::ambient_authority())
-                    .with_context(|| format!("Opening {efi_linux_path:?}"))?;
-
-            efi_linux
-                .atomic_write(format!("{}.efi", id.to_hex()), uki)
-                .context("Writing UKI")?;
-
-            rustix::fs::fsync(
-                efi_linux
-                    .reopen_as_ownedfd()
-                    .context("Reopening as owned fd")?,
-            )
-            .context("fsync")?;
-
-            boot_label
-        }
-    };
-
-    Command::new("umount")
-        .arg(&mounted_efi)
-        .log_debug()
-        .run_inherited_with_cmd_context()
-        .context("Unmounting ESP")?;
-
     let boot_dir = root_path.join("boot");
     create_dir_all(&boot_dir).context("Failed to create boot dir")?;
 
@@ -652,9 +644,8 @@ pub(crate) fn setup_composefs_uki_boot(
         USER_CFG
     };
 
-    let grub_dir =
-        cap_std::fs::Dir::open_ambient_dir(boot_dir.join("grub2"), cap_std::ambient_authority())
-            .context("opening boot/grub2")?;
+    let grub_dir = Dir::open_ambient_dir(boot_dir.join("grub2"), ambient_authority())
+        .context("opening boot/grub2")?;
 
     // Iterate over all available deployments, and generate a menuentry for each
     //
@@ -671,8 +662,8 @@ pub(crate) fn setup_composefs_uki_boot(
         )?;
 
         let mut str_buf = String::new();
-        let boot_dir = cap_std::fs::Dir::open_ambient_dir(boot_dir, cap_std::ambient_authority())
-            .context("Opening boot dir")?;
+        let boot_dir =
+            Dir::open_ambient_dir(boot_dir, ambient_authority()).context("Opening boot dir")?;
         let entries = get_sorted_uki_boot_entries(&boot_dir, &mut str_buf)?;
 
         // Write out only the currently booted entry, which should be the very first one
@@ -720,6 +711,118 @@ pub(crate) fn setup_composefs_uki_boot(
     Ok(())
 }
 
+#[context("Setting up UKI boot")]
+pub(crate) fn setup_composefs_uki_boot(
+    setup_type: BootSetupType,
+    // TODO: Make this generic
+    repo: ComposefsRepository<Sha256HashValue>,
+    id: &Sha256HashValue,
+    entries: Vec<ComposefsBootEntry<Sha256HashValue>>,
+) -> Result<()> {
+    let (root_path, esp_device, bootloader, is_insecure_from_opts) = match setup_type {
+        BootSetupType::Setup((root_setup, state, ..)) => {
+            if let Some(v) = &state.config_opts.karg {
+                if v.len() > 0 {
+                    tracing::warn!("kargs passed for UKI will be ignored");
+                }
+            }
+
+            let esp_part = root_setup
+                .device_info
+                .partitions
+                .iter()
+                .find(|p| p.parttype.as_str() == ESP_GUID)
+                .ok_or_else(|| anyhow!("ESP partition not found"))?;
+
+            let bootloader = state
+                .composefs_options
+                .as_ref()
+                .map(|opts| opts.bootloader.clone())
+                .unwrap_or(Bootloader::default());
+
+            let is_insecure = state
+                .composefs_options
+                .as_ref()
+                .map(|x| x.insecure)
+                .unwrap_or(false);
+
+            (
+                root_setup.physical_root_path.clone(),
+                esp_part.node.clone(),
+                bootloader,
+                is_insecure,
+            )
+        }
+
+        BootSetupType::Upgrade((_, host)) => {
+            let sysroot = Utf8PathBuf::from("/sysroot");
+            let sysroot_parent = get_sysroot_parent_dev()?;
+            let bootloader = host.require_composefs_booted()?.bootloader.clone();
+
+            (
+                sysroot,
+                get_esp_partition(&sysroot_parent)?.0,
+                bootloader,
+                false,
+            )
+        }
+    };
+
+    let temp_efi_dir = tempfile::tempdir()
+        .map_err(|e| anyhow::anyhow!("Failed to create temporary directory for EFI mount: {e}"))?;
+    let mounted_efi = temp_efi_dir.path().to_path_buf();
+
+    Task::new("Mounting ESP", "mount")
+        .args([&PathBuf::from(&esp_device), &mounted_efi.clone()])
+        .run()?;
+
+    let mut boot_label = String::new();
+
+    for entry in entries {
+        match entry {
+            ComposefsBootEntry::Type1(..) => tracing::debug!("Skipping Type1 Entry"),
+            ComposefsBootEntry::UsrLibModulesVmLinuz(..) => {
+                tracing::debug!("Skipping vmlinuz in /usr/lib/modules")
+            }
+
+            ComposefsBootEntry::Type2(entry) => {
+                let ret = write_pe_to_esp(
+                    &repo,
+                    &entry.file,
+                    &entry.file_path,
+                    entry.pe_type,
+                    &id.to_hex(),
+                    is_insecure_from_opts,
+                    &mounted_efi,
+                )?;
+
+                if let Some(label) = ret {
+                    boot_label = label;
+                }
+            }
+        };
+    }
+
+    Command::new("umount")
+        .arg(&mounted_efi)
+        .log_debug()
+        .run_inherited_with_cmd_context()
+        .context("Unmounting ESP")?;
+
+    match bootloader {
+        Bootloader::Grub => {
+            write_grub_uki_menuentry(root_path, &setup_type, &boot_label, id, &esp_device)?
+        }
+
+        Bootloader::Systemd => {
+            // No-op for now, but later we want to have .conf files so we can control the order of
+            // entries.
+        }
+    };
+
+    Ok(())
+}
+
 #[context("Setting up composefs boot")]
 pub(crate) fn setup_composefs_boot(
     root_setup: &RootSetup,
@@ -750,11 +853,11 @@ pub(crate) fn setup_composefs_boot(
     let entries = fs.transform_for_boot(&repo)?;
     let id = fs.commit_image(&repo, None)?;
 
-    let Some(entry) = entries.into_iter().next() else {
+    let Some(entry) = entries.iter().next() else {
         anyhow::bail!("No boot entries!");
     };
 
-    let boot_type = BootType::from(&entry);
+    let boot_type = BootType::from(entry);
     let mut boot_digest: Option<String> = None;
 
     match boot_type {
@@ -772,7 +875,7 @@ pub(crate) fn setup_composefs_boot(
             BootSetupType::Setup((&root_setup, &state, &fs)),
             repo,
             &id,
-            entry,
+            entries,
         )?,
     };
 
