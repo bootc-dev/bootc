@@ -92,7 +92,19 @@ impl From<ImageReference> for OstreeImageReference {
 
 /// Check if a deployment has soft reboot capability
 fn has_soft_reboot_capability(sysroot: &SysrootLock, deployment: &ostree::Deployment) -> bool {
-    ostree_ext::systemd_has_soft_reboot() && sysroot.deployment_can_soft_reboot(deployment)
+    let deployment_dir = sysroot.deployment_dirpath(deployment);
+    let deployment_dir = std::path::Path::new(deployment_dir.as_str());
+    let is_factory_reset = deployment_dir.join(".bootc-factory-reset").exists();
+
+    if is_factory_reset {
+        // Factory reset deployments don't support soft reboots
+        // this is primarily because the kargs validation will fail when checking for soft reboot
+        // compatibility in the ostree code, which will cause bootc status and upgrade to fail.
+        // (see ostree_sysroot_deployment_can_soft_reboot in ostree)
+        false
+    } else {
+        ostree_ext::systemd_has_soft_reboot() && sysroot.deployment_can_soft_reboot(deployment)
+    }
 }
 
 /// Parse an ostree origin file (a keyfile) and extract the targeted
