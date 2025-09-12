@@ -4,20 +4,27 @@
 //! to provide a fully "container native" tool for using
 //! bootable container images.
 
+#[cfg(feature = "composefs-backend")]
+mod bootc_composefs;
 pub(crate) mod bootc_kargs;
+mod bootloader;
 mod boundimage;
 mod cfsctl;
 pub mod cli;
+mod composefs_consts;
+mod containerenv;
 pub(crate) mod deploy;
 pub(crate) mod fsck;
 pub(crate) mod generator;
 mod glyph;
 mod image;
+mod install;
 pub(crate) mod journal;
 mod k8sapitypes;
 mod lints;
 mod lsm;
 pub(crate) mod metadata;
+mod parsers;
 mod podman;
 mod podstorage;
 mod progress_jsonl;
@@ -31,13 +38,6 @@ mod utils;
 #[cfg(feature = "docgen")]
 mod docgen;
 
-mod bootloader;
-mod containerenv;
-mod install;
-
-#[cfg(feature = "composefs-backend")]
-#[allow(dead_code)]
-pub(crate) mod parsers;
 #[cfg(feature = "rhsm")]
 mod rhsm;
 

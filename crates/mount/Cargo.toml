@@ -20,6 +20,8 @@ libc = { workspace = true }
 rustix = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 tracing = { workspace = true }
+tempfile = { workspace = true }
+cap-std-ext = { workspace = true }
 
 [dev-dependencies]
 indoc = { workspace = true }

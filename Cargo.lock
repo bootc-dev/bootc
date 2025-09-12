@@ -255,6 +255,7 @@ dependencies = [
  "anstream",
  "anstyle",
  "anyhow",
+ "bootc-initramfs-setup",
  "bootc-internal-blockdev",
  "bootc-internal-utils",
  "bootc-kernel-cmdline",
@@ -311,11 +312,13 @@ dependencies = [
  "anyhow",
  "bootc-internal-utils",
  "camino",
+ "cap-std-ext",
  "fn-error-context",
  "indoc",
  "libc",
  "rustix 1.0.8",
  "serde",
+ "tempfile",
  "tracing",
 ]
 

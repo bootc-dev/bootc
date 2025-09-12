@@ -1,6 +1,7 @@
 //! The definition for host system state.
 
 use std::fmt::Display;
+use std::str::FromStr;
 
 use anyhow::Result;
 use ostree_ext::container::Transport;
@@ -10,6 +11,8 @@ use ostree_ext::{container::OstreeImageReference, oci_spec};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+#[cfg(feature = "composefs-backend")]
+use crate::bootc_composefs::boot::BootType;
 use crate::{k8sapitypes, status::Slot};
 
 const API_VERSION: &str = "org.containers.bootc/v1";
@@ -160,6 +163,52 @@ pub struct BootEntryOstree {
     pub deploy_serial: u32,
 }
 
+/// Bootloader type to determine whether system was booted via Grub or Systemd
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
+pub enum Bootloader {
+    /// Booted via Grub
+    #[default]
+    Grub,
+    /// Booted via Systemd
+    Systemd,
+}
+
+impl Display for Bootloader {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let string = match self {
+            Bootloader::Grub => "grub",
+            Bootloader::Systemd => "systemd",
+        };
+
+        write!(f, "{}", string)
+    }
+}
+
+impl FromStr for Bootloader {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> Result<Self> {
+        match value {
+            "grub" => Ok(Self::Grub),
+            "systemd" => Ok(Self::Systemd),
+            unrecognized => Err(anyhow::anyhow!("Unrecognized bootloader: '{unrecognized}'")),
+        }
+    }
+}
+
+/// A bootable entry
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+#[cfg(feature = "composefs-backend")]
+pub struct BootEntryComposefs {
+    /// The erofs verity
+    pub verity: String,
+    /// Whether this deployment is to be booted via Type1 (vmlinuz + initrd) or Type2 (UKI) entry
+    pub boot_type: BootType,
+    /// Whether we boot using systemd or grub
+    pub bootloader: Bootloader,
+}
+
 /// A bootable entry
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -180,6 +229,9 @@ pub struct BootEntry {
     pub store: Option<Store>,
     /// If this boot entry is ostree based, the corresponding state
     pub ostree: Option<BootEntryOstree>,
+    /// If this boot entry is composefs based, the corresponding state
+    #[cfg(feature = "composefs-backend")]
+    pub composefs: Option<BootEntryComposefs>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
@@ -249,6 +301,20 @@ impl Host {
                 self.status.booted = None;
             }
         }
+    }
+
+    #[cfg(feature = "composefs-backend")]
+    pub(crate) fn require_composefs_booted(&self) -> anyhow::Result<&BootEntryComposefs> {
+        let cfs = self
+            .status
+            .booted
+            .as_ref()
+            .ok_or(anyhow::anyhow!("Could not find booted deployment"))?
+            .composefs
+            .as_ref()
+            .ok_or(anyhow::anyhow!("Could not find booted image"))?;
+
+        Ok(cfs)
     }
 }
 
@@ -520,6 +586,8 @@ mod tests {
                 pinned: false,
                 store: None,
                 ostree: None,
+                #[cfg(feature = "composefs-backend")]
+                composefs: None,
             }
         }
 

@@ -42,8 +42,6 @@ pub(crate) const LINUX_PARTTYPE: &str = "0FC63DAF-8483-4772-8E79-3D69D8477DE4";
 pub(crate) const PREPBOOT_GUID: &str = "9E1A2D38-C612-4316-AA26-8B49521E5A8B";
 #[cfg(feature = "install-to-disk")]
 pub(crate) const PREPBOOT_LABEL: &str = "PowerPC-PReP-boot";
-#[cfg(feature = "install-to-disk")]
-pub(crate) const ESP_GUID: &str = "C12A7328-F81F-11D2-BA4B-00A0C93EC93B";
 
 #[derive(clap::ValueEnum, Default, Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -106,10 +104,15 @@ fn mkfs<'a>(
     label: &str,
     wipe: bool,
     opts: impl IntoIterator<Item = &'a str>,
+    dps_uuid: Option<uuid::Uuid>,
 ) -> Result<uuid::Uuid> {
     let devinfo = bootc_blockdev::list_dev(dev.into())?;
     let size = ostree_ext::glib::format_size(devinfo.size);
-    let u = uuid::Uuid::new_v4();
+    let u = if let Some(u) = dps_uuid {
+        u
+    } else {
+        uuid::Uuid::new_v4()
+    };
     let mut t = Task::new(
         &format!("Creating {label} filesystem ({fs}) on device {dev} (size={size})"),
         format!("mkfs.{fs}"),
@@ -275,7 +278,7 @@ pub(crate) fn install_create_rootfs(
     }
 
     let esp_partno = if super::ARCH_USES_EFI {
-        let esp_guid = ESP_GUID;
+        let esp_guid = crate::install::ESP_GUID;
         partno += 1;
         writeln!(
             &mut partitioning_buf,
@@ -383,6 +386,7 @@ pub(crate) fn install_create_rootfs(
                 "boot",
                 opts.wipe,
                 [],
+                None,
             )
             .context("Initializing /boot")?,
         )
@@ -403,6 +407,8 @@ pub(crate) fn install_create_rootfs(
         "root",
         opts.wipe,
         mkfs_options.iter().copied(),
+        // TODO: Add cli option for this
+        Some(uuid::uuid!(crate::install::DPS_UUID)),
     )?;
     let rootarg = format!("root=UUID={root_uuid}");
     let bootsrc = boot_uuid.as_ref().map(|uuid| format!("UUID={uuid}"));
@@ -418,6 +424,7 @@ pub(crate) fn install_create_rootfs(
         .flatten()
         .chain([rootarg, RW_KARG.to_string()].into_iter())
         .chain(bootarg)
+        .chain(state.config_opts.karg.clone().into_iter().flatten())
         .collect::<Vec<_>>();
 
     bootc_mount::mount(&rootdev, &physical_root_path)?;

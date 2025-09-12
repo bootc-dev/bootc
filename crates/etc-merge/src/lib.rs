@@ -20,7 +20,9 @@ use cap_std_ext::dirext::CapStdExtDirExt;
 use composefs::fsverity::{FsVerityHashValue, Sha256HashValue, Sha512HashValue};
 use composefs::generic_tree::{Directory, Inode, Leaf, LeafContent, Stat};
 use composefs::tree::ImageError;
-use rustix::fs::{AtFlags, Gid, Uid, XattrFlags, lgetxattr, llistxattr, lsetxattr, readlinkat};
+use rustix::fs::{
+    AtFlags, Gid, Uid, XattrFlags, lgetxattr, llistxattr, lsetxattr, readlinkat, symlinkat,
+};
 
 /// Metadata associated with a file, directory, or symlink entry.
 #[derive(Debug)]
@@ -627,9 +629,8 @@ fn merge_leaf(
         .context(format!("Deleting {file:?}"))?;
 
     if let Some(target) = symlink {
-        new_etc_fd
-            .symlink(target.as_ref(), &file)
-            .context(format!("Creating symlink {file:?}"))?;
+        // Using rustix's symlinkat here as we might have absolute symlinks which clash with ambient_authority
+        symlinkat(&**target, new_etc_fd, file).context(format!("Creating symlink {file:?}"))?;
     } else {
         current_etc_fd
             .copy(&file, new_etc_fd, &file)

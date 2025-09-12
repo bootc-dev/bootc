@@ -15,9 +15,12 @@ use ostree_ext::keyfileext::KeyFileExt;
 use ostree_ext::oci_spec;
 use ostree_ext::oci_spec::image::Digest;
 use ostree_ext::oci_spec::image::ImageConfiguration;
-use ostree_ext::ostree;
 use ostree_ext::sysroot::SysrootLock;
 
+use ostree_ext::ostree;
+
+#[cfg(feature = "composefs-backend")]
+use crate::bootc_composefs::status::{composefs_booted, composefs_deployment_status};
 use crate::cli::OutputFormat;
 use crate::spec::ImageStatus;
 use crate::spec::{BootEntry, BootOrder, Host, HostSpec, HostStatus, HostType};
@@ -207,6 +210,8 @@ fn boot_entry_from_deployment(
             deploy_serial: deployment.deployserial().try_into().unwrap(),
             stateroot: deployment.stateroot().into(),
         }),
+        #[cfg(feature = "composefs-backend")]
+        composefs: None,
     };
     Ok(r)
 }
@@ -335,6 +340,38 @@ pub(crate) fn get_status(
     Ok((deployments, host))
 }
 
+#[cfg(feature = "composefs-backend")]
+async fn get_host() -> Result<Host> {
+    let host = if ostree_booted()? {
+        let sysroot = super::cli::get_storage().await?;
+        let ostree = sysroot.get_ostree()?;
+        let booted_deployment = ostree.booted_deployment();
+        let (_deployments, host) = get_status(&ostree, booted_deployment.as_ref())?;
+        host
+    } else if composefs_booted()?.is_some() {
+        composefs_deployment_status().await?
+    } else {
+        Default::default()
+    };
+
+    Ok(host)
+}
+
+#[cfg(not(feature = "composefs-backend"))]
+async fn get_host() -> Result<Host> {
+    let host = if ostree_booted()? {
+        let sysroot = super::cli::get_storage().await?;
+        let ostree = sysroot.get_ostree()?;
+        let booted_deployment = ostree.booted_deployment();
+        let (_deployments, host) = get_status(&ostree, booted_deployment.as_ref())?;
+        host
+    } else {
+        Default::default()
+    };
+
+    Ok(host)
+}
+
 /// Implementation of the `bootc status` CLI command.
 #[context("Status")]
 pub(crate) async fn status(opts: super::cli::StatusOpts) -> Result<()> {
@@ -343,15 +380,7 @@ pub(crate) async fn status(opts: super::cli::StatusOpts) -> Result<()> {
         0 | 1 => {}
         o => anyhow::bail!("Unsupported format version: {o}"),
     };
-    let mut host = if !ostree_booted()? {
-        Default::default()
-    } else {
-        let sysroot = super::cli::get_storage().await?;
-        let ostree = sysroot.get_ostree()?;
-        let booted_deployment = ostree.booted_deployment();
-        let (_deployments, host) = get_status(&ostree, booted_deployment.as_ref())?;
-        host
-    };
+    let mut host = get_host().await?;
 
     // We could support querying the staged or rollback deployments
     // here too, but it's not a common use case at the moment.
@@ -485,6 +514,13 @@ fn human_render_slot(
     let digest = &image.image_digest;
     writeln!(out, "{digest} ({arch})")?;
 
+    // Write the EROFS verity if present
+    #[cfg(feature = "composefs-backend")]
+    if let Some(composefs) = &entry.composefs {
+        write_row_name(&mut out, "Verity", prefix_len)?;
+        writeln!(out, "{}", composefs.verity)?;
+    }
+
     // Format the timestamp without nanoseconds since those are just irrelevant noise for human
     // consumption - that time scale should basically never matter for container builds.
     let timestamp = image
@@ -585,6 +621,28 @@ fn human_render_slot_ostree(
     Ok(())
 }
 
+/// Output a rendering of a non-container composefs boot entry.
+#[cfg(feature = "composefs-backend")]
+fn human_render_slot_composefs(
+    mut out: impl Write,
+    slot: Slot,
+    entry: &crate::spec::BootEntry,
+    erofs_verity: &str,
+) -> Result<()> {
+    // TODO consider rendering more ostree stuff here like rpm-ostree status does
+    let prefix = match slot {
+        Slot::Staged => "  Staged composefs".into(),
+        Slot::Booted => format!("{} Booted composefs", crate::glyph::Glyph::BlackCircle),
+        Slot::Rollback => "  Rollback composefs".into(),
+    };
+    let prefix_len = prefix.len();
+    writeln!(out, "{prefix}")?;
+    write_row_name(&mut out, "Commit", prefix_len)?;
+    writeln!(out, "{erofs_verity}")?;
+    tracing::debug!("pinned={}", entry.pinned);
+    Ok(())
+}
+
 fn human_readable_output_booted(mut out: impl Write, host: &Host, verbose: bool) -> Result<()> {
     let mut first = true;
     for (slot_name, status) in [
@@ -598,6 +656,25 @@ fn human_readable_output_booted(mut out: impl Write, host: &Host, verbose: bool)
             } else {
                 writeln!(out)?;
             }
+
+            #[cfg(feature = "composefs-backend")]
+            if let Some(image) = &host_status.image {
+                human_render_slot(&mut out, Some(slot_name), host_status, image, verbose)?;
+            } else if let Some(ostree) = host_status.ostree.as_ref() {
+                human_render_slot_ostree(
+                    &mut out,
+                    Some(slot_name),
+                    host_status,
+                    &ostree.checksum,
+                    verbose,
+                )?;
+            } else if let Some(composefs) = &host_status.composefs {
+                human_render_slot_composefs(&mut out, slot_name, host_status, &composefs.verity)?;
+            } else {
+                writeln!(out, "Current {slot_name} state is unknown")?;
+            }
+
+            #[cfg(not(feature = "composefs-backend"))]
             if let Some(image) = &host_status.image {
                 human_render_slot(&mut out, Some(slot_name), host_status, image, verbose)?;
             } else if let Some(ostree) = host_status.ostree.as_ref() {
