@@ -15,13 +15,10 @@ case "${ID}-${VERSION_ID}" in
     "centos-9")
         dnf config-manager --set-enabled crb
         dnf -y install epel-release epel-next-release
-        dnf -y install nu
-        dnf clean all
         ;;
     "rhel-9."*)
         dnf -y install https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm
         dnf -y install nu
-        dnf clean all
         ;;
     "centos-10"|"rhel-10."*)
         # nu is not available in CS10
@@ -32,9 +29,12 @@ case "${ID}-${VERSION_ID}" in
         ;;
     "fedora-"*)
         dnf -y install nu
-        dnf clean all
         ;;
 esac
+
+# Extra packages we install
+grep -Ev -e '^#' packages.txt | xargs dnf -y install
+dnf clean all
 
 # Stock extra cleaning of logs and caches in general (mostly dnf)
 rm /var/log/* /var/cache /var/lib/{dnf,rpm-state,rhsm} -rf

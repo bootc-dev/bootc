@@ -1,4 +1,7 @@
-# This injects some extra testing stuff into our image
+# Build a container image that has extra testing stuff in it, such
+# as nushell, some preset logically bound images, etc. This expects
+# to create an image derived FROM localhost/bootc which was created
+# by the Dockerfile at top.
 
 FROM scratch as context
 # We only need this stuff in the initial context
@@ -11,7 +14,15 @@ ARG variant=
 # And this layer has additional stuff for testing, such as nushell etc.
 RUN --mount=type=bind,from=context,target=/run/context <<EORUN
 set -xeuo pipefail
-/run/context/hack/provision-derived.sh "$variant"
+cd /run/context/hack
+./provision-derived.sh "$variant"
+
+# For test-22-logically-bound-install
+cp -a lbi/usr/. /usr
+for x in curl.container curl-base.image podman.image; do
+    ln -s /usr/share/containers/systemd/$x /usr/lib/bootc/bound-images.d/$x
+done
+
 # Add some testing kargs into our dev builds
 install -D -t /usr/lib/bootc/kargs.d /run/context/hack/test-kargs/*
 # Also copy in some default install configs we use for testing
