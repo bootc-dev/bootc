@@ -43,7 +43,7 @@ impl<'a> Iterator for CmdlineIter<'a> {
     type Item = Parameter<'a>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let (param, rest) = Parameter::parse(self.0);
+        let (param, rest) = Parameter::parse_one(self.0);
         self.0 = rest;
         param
     }
@@ -77,7 +77,7 @@ impl<'a> Cmdline<'a> {
     ///
     /// Returns the first parameter matching the given key, or `None` if not found.
     /// Key comparison treats dashes and underscores as equivalent.
-    pub fn find(&'a self, key: impl AsRef<[u8]>) -> Option<Parameter<'a>> {
+    pub fn find<T: AsRef<[u8]> + ?Sized>(&'a self, key: &T) -> Option<Parameter<'a>> {
         let key = ParameterKey(key.as_ref());
         self.iter().find(|p| p.key == key)
     }
@@ -90,7 +90,10 @@ impl<'a> Cmdline<'a> {
     /// Otherwise, returns the first parameter matching the given key,
     /// or `None` if not found.  Key comparison treats dashes and
     /// underscores as equivalent.
-    pub fn find_utf8(&'a self, key: impl AsRef<str>) -> Result<Option<utf8::Parameter<'a>>> {
+    pub fn find_utf8<T: AsRef<[u8]> + ?Sized>(
+        &'a self,
+        key: &T,
+    ) -> Result<Option<utf8::Parameter<'a>>> {
         let bytes = match self.find(key.as_ref()) {
             Some(p) => p,
             None => return Ok(None),
@@ -114,14 +117,14 @@ impl<'a> Cmdline<'a> {
     ///
     /// Returns the first value matching the given key, or `None` if not found.
     /// Key comparison treats dashes and underscores as equivalent.
-    pub fn value_of(&'a self, key: impl AsRef<[u8]>) -> Option<&'a [u8]> {
-        self.find(key).and_then(|p| p.value)
+    pub fn value_of<T: AsRef<[u8]> + ?Sized>(&'a self, key: &T) -> Option<&'a [u8]> {
+        self.find(&key).and_then(|p| p.value)
     }
 
     /// Find the value of the kernel argument with the provided name, which must be present.
     ///
     /// Otherwise the same as [`Self::value_of`].
-    pub fn require_value_of(&'a self, key: impl AsRef<[u8]>) -> Result<&'a [u8]> {
+    pub fn require_value_of<T: AsRef<[u8]> + ?Sized>(&'a self, key: &T) -> Result<&'a [u8]> {
         let key = key.as_ref();
         self.value_of(key).ok_or_else(|| {
             let key = String::from_utf8_lossy(key);
@@ -135,7 +138,7 @@ impl<'a> Cmdline<'a> {
     ///
     /// Returns `false` if the parameter already existed with the same
     /// content.
-    pub fn add_or_modify(&mut self, param: Parameter) -> bool {
+    pub fn add_or_modify(&mut self, param: &Parameter) -> bool {
         let mut new_params = Vec::new();
         let mut modified = false;
         let mut seen_key = false;
@@ -145,7 +148,7 @@ impl<'a> Cmdline<'a> {
                 if !seen_key {
                     // This is the first time we've seen this key.
                     // We will replace it with the new parameter.
-                    if p != param {
+                    if p != *param {
                         modified = true;
                     }
                     new_params.push(param.parameter);
@@ -181,12 +184,12 @@ impl<'a> Cmdline<'a> {
     /// Remove parameter(s) with the given key from the command line
     ///
     /// Returns `true` if parameter(s) were removed.
-    pub fn remove(&mut self, key: ParameterKey) -> bool {
+    pub fn remove(&mut self, key: &ParameterKey) -> bool {
         let mut removed = false;
         let mut new_params = Vec::new();
 
         for p in self.iter() {
-            if p.key == key {
+            if p.key == *key {
                 removed = true;
             } else {
                 new_params.push(p.parameter);
@@ -266,6 +269,18 @@ impl<'a> Parameter<'a> {
     /// Attempt to parse a single command line parameter from a slice
     /// of bytes.
     ///
+    /// Returns `Some(Parameter)`, or `None` if a Parameter could not
+    /// be constructed from the input.  This occurs when the input is
+    /// either empty or contains only whitespace.
+    ///
+    /// Any remaining bytes not consumed from the input are discarded.
+    pub fn parse<T: AsRef<[u8]> + ?Sized>(input: &'a T) -> Option<Self> {
+        Self::parse_one(input).0
+    }
+
+    /// Attempt to parse a single command line parameter from a slice
+    /// of bytes.
+    ///
     /// The first tuple item contains the parsed parameter, or `None`
     /// if a Parameter could not be constructed from the input.  This
     /// occurs when the input is either empty or contains only
@@ -273,8 +288,8 @@ impl<'a> Parameter<'a> {
     ///
     /// Any remaining bytes not consumed from the input are returned
     /// as the second tuple item.
-    pub fn parse(input: &'a [u8]) -> (Option<Self>, &'a [u8]) {
-        let input = input.trim_ascii_start();
+    pub fn parse_one<T: AsRef<[u8]> + ?Sized>(input: &'a T) -> (Option<Self>, &'a [u8]) {
+        let input = input.as_ref().trim_ascii_start();
 
         if input.is_empty() {
             return (None, input);
@@ -352,33 +367,33 @@ mod tests {
 
     // convenience methods for tests
     fn param(s: &str) -> Parameter<'_> {
-        Parameter::parse(s.as_bytes()).0.unwrap()
+        Parameter::parse(s.as_bytes()).unwrap()
     }
 
     fn param_utf8(s: &str) -> utf8::Parameter<'_> {
-        utf8::Parameter::parse(s).0.unwrap()
+        utf8::Parameter::parse(s).unwrap()
     }
 
     #[test]
-    fn test_parameter_parse() {
-        let (p, rest) = Parameter::parse(b"foo");
+    fn test_parameter_parse_one() {
+        let (p, rest) = Parameter::parse_one(b"foo");
         let p = p.unwrap();
         assert_eq!(p.key.0, b"foo");
         assert_eq!(p.value, None);
         assert_eq!(rest, "".as_bytes());
 
         // should consume one parameter and return the rest of the input
-        let (p, rest) = Parameter::parse(b"foo=bar baz");
+        let (p, rest) = Parameter::parse_one(b"foo=bar baz");
         let p = p.unwrap();
         assert_eq!(p.key.0, b"foo");
         assert_eq!(p.value, Some(b"bar".as_slice()));
         assert_eq!(rest, " baz".as_bytes());
 
         // should return None on empty or whitespace inputs
-        let (p, rest) = Parameter::parse(b"");
+        let (p, rest) = Parameter::parse_one(b"");
         assert!(p.is_none());
         assert_eq!(rest, b"".as_slice());
-        let (p, rest) = Parameter::parse(b"   ");
+        let (p, rest) = Parameter::parse_one(b"   ");
         assert!(p.is_none());
         assert_eq!(rest, b"".as_slice());
     }
@@ -415,7 +430,7 @@ mod tests {
 
     #[test]
     fn test_parameter_internal_key_whitespace() {
-        let (p, rest) = Parameter::parse("foo bar=baz".as_bytes());
+        let (p, rest) = Parameter::parse_one("foo bar=baz".as_bytes());
         let p = p.unwrap();
         assert_eq!(p.key.0, b"foo");
         assert_eq!(p.value, None);
@@ -441,8 +456,7 @@ mod tests {
         assert!(failed_conversion.is_err());
         let mut p = b"foo=".to_vec();
         p.push(non_utf8_byte[0]);
-        let (p, _rest) = Parameter::parse(&p);
-        let p = p.unwrap();
+        let p = Parameter::parse(&p).unwrap();
         assert_eq!(p.value, Some(non_utf8_byte.as_slice()));
     }
 
@@ -630,14 +644,14 @@ mod tests {
         let mut kargs = Cmdline::from(b"foo=bar");
 
         // add new
-        assert!(kargs.add_or_modify(param("baz")));
+        assert!(kargs.add_or_modify(&param("baz")));
         let mut iter = kargs.iter();
         assert_eq!(iter.next(), Some(param("foo=bar")));
         assert_eq!(iter.next(), Some(param("baz")));
         assert_eq!(iter.next(), None);
 
         // modify existing
-        assert!(kargs.add_or_modify(param("foo=fuz")));
+        assert!(kargs.add_or_modify(&param("foo=fuz")));
         iter = kargs.iter();
         assert_eq!(iter.next(), Some(param("foo=fuz")));
         assert_eq!(iter.next(), Some(param("baz")));
@@ -645,7 +659,7 @@ mod tests {
 
         // already exists with same value returns false and doesn't
         // modify anything
-        assert!(!kargs.add_or_modify(param("foo=fuz")));
+        assert!(!kargs.add_or_modify(&param("foo=fuz")));
         iter = kargs.iter();
         assert_eq!(iter.next(), Some(param("foo=fuz")));
         assert_eq!(iter.next(), Some(param("baz")));
@@ -655,14 +669,14 @@ mod tests {
     #[test]
     fn test_add_or_modify_empty_cmdline() {
         let mut kargs = Cmdline::from(b"");
-        assert!(kargs.add_or_modify(param("foo")));
+        assert!(kargs.add_or_modify(&param("foo")));
         assert_eq!(kargs.0, b"foo".as_slice());
     }
 
     #[test]
     fn test_add_or_modify_duplicate_parameters() {
         let mut kargs = Cmdline::from(b"a=1 a=2");
-        assert!(kargs.add_or_modify(param("a=3")));
+        assert!(kargs.add_or_modify(&param("a=3")));
         let mut iter = kargs.iter();
         assert_eq!(iter.next(), Some(param("a=3")));
         assert_eq!(iter.next(), None);
@@ -673,14 +687,14 @@ mod tests {
         let mut kargs = Cmdline::from(b"foo bar baz");
 
         // remove existing
-        assert!(kargs.remove("bar".into()));
+        assert!(kargs.remove(&"bar".into()));
         let mut iter = kargs.iter();
         assert_eq!(iter.next(), Some(param("foo")));
         assert_eq!(iter.next(), Some(param("baz")));
         assert_eq!(iter.next(), None);
 
         // doesn't exist? returns false and doesn't modify anything
-        assert!(!kargs.remove("missing".into()));
+        assert!(!kargs.remove(&"missing".into()));
         iter = kargs.iter();
         assert_eq!(iter.next(), Some(param("foo")));
         assert_eq!(iter.next(), Some(param("baz")));
@@ -690,7 +704,7 @@ mod tests {
     #[test]
     fn test_remove_duplicates() {
         let mut kargs = Cmdline::from(b"a=1 b=2 a=3");
-        assert!(kargs.remove("a".into()));
+        assert!(kargs.remove(&"a".into()));
         let mut iter = kargs.iter();
         assert_eq!(iter.next(), Some(param("b=2")));
         assert_eq!(iter.next(), None);

@@ -72,7 +72,7 @@ impl<'a> Cmdline<'a> {
     ///
     /// Returns the first parameter matching the given key, or `None` if not found.
     /// Key comparison treats dashes and underscores as equivalent.
-    pub fn find(&'a self, key: impl AsRef<str>) -> Option<Parameter<'a>> {
+    pub fn find<T: AsRef<str> + ?Sized>(&'a self, key: &T) -> Option<Parameter<'a>> {
         let key = ParameterKey::from(key.as_ref());
         self.iter().find(|p| p.key() == key)
     }
@@ -80,18 +80,19 @@ impl<'a> Cmdline<'a> {
     /// Find all kernel arguments starting with the given UTF-8 prefix.
     ///
     /// This is a variant of [`Self::find`].
-    pub fn find_all_starting_with(
+    pub fn find_all_starting_with<T: AsRef<str> + ?Sized>(
         &'a self,
-        prefix: &'a str,
+        prefix: &'a T,
     ) -> impl Iterator<Item = Parameter<'a>> + 'a {
-        self.iter().filter(move |p| p.key().starts_with(prefix))
+        self.iter()
+            .filter(move |p| p.key().starts_with(prefix.as_ref()))
     }
 
     /// Locate the value of the kernel argument with the given key name.
     ///
     /// Returns the first value matching the given key, or `None` if not found.
     /// Key comparison treats dashes and underscores as equivalent.
-    pub fn value_of(&'a self, key: impl AsRef<str>) -> Option<&'a str> {
+    pub fn value_of<T: AsRef<str> + ?Sized>(&'a self, key: &T) -> Option<&'a str> {
         self.0.value_of(key.as_ref().as_bytes()).map(|v| {
             // SAFETY: We know this is valid UTF-8 since we only
             // construct the underlying `bytes` from valid UTF-8
@@ -102,7 +103,7 @@ impl<'a> Cmdline<'a> {
     /// Find the value of the kernel argument with the provided name, which must be present.
     ///
     /// Otherwise the same as [`Self::value_of`].
-    pub fn require_value_of(&'a self, key: impl AsRef<str>) -> Result<&'a str> {
+    pub fn require_value_of<T: AsRef<str> + ?Sized>(&'a self, key: &T) -> Result<&'a str> {
         let key = key.as_ref();
         self.value_of(key)
             .ok_or_else(|| anyhow::anyhow!("Failed to find kernel argument '{key}'"))
@@ -114,15 +115,15 @@ impl<'a> Cmdline<'a> {
     ///
     /// Returns `false` if the parameter already existed with the same
     /// content.
-    pub fn add_or_modify(&mut self, param: Parameter) -> bool {
-        self.0.add_or_modify(param.0)
+    pub fn add_or_modify(&mut self, param: &Parameter) -> bool {
+        self.0.add_or_modify(&param.0)
     }
 
     /// Remove parameter(s) with the given key from the command line
     ///
     /// Returns `true` if parameter(s) were removed.
-    pub fn remove(&mut self, key: ParameterKey) -> bool {
-        self.0.remove(key.0)
+    pub fn remove(&mut self, key: &ParameterKey) -> bool {
+        self.0.remove(&key.0)
     }
 }
 
@@ -130,6 +131,13 @@ impl<'a> AsRef<str> for Cmdline<'a> {
     fn as_ref(&self) -> &str {
         str::from_utf8(self.0.as_ref())
             .expect("We only construct the underlying bytes from valid UTF-8")
+    }
+}
+
+impl<'a> std::fmt::Display for Cmdline<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
+        let as_str: &str = self.as_ref();
+        write!(f, "{as_str}")
     }
 }
 
@@ -159,9 +167,9 @@ impl<'a> ParameterKey<'a> {
     }
 }
 
-impl<'a> From<&'a str> for ParameterKey<'a> {
-    fn from(input: &'a str) -> Self {
-        Self(bytes::ParameterKey(input.as_bytes()))
+impl<'a, T: AsRef<str> + ?Sized> From<&'a T> for ParameterKey<'a> {
+    fn from(input: &'a T) -> Self {
+        Self(bytes::ParameterKey(input.as_ref().as_bytes()))
     }
 }
 
@@ -190,6 +198,19 @@ impl<'a> Parameter<'a> {
     /// Attempt to parse a single command line parameter from a UTF-8
     /// string.
     ///
+    /// Returns `Some(Parameter)`, or `None` if a Parameter could not
+    /// be constructed from the input.  This occurs when the input is
+    /// either empty or contains only whitespace.
+    ///
+    /// Any remaining characters not consumed from the input are
+    /// discarded.
+    pub fn parse<T: AsRef<str> + ?Sized>(input: &'a T) -> Option<Self> {
+        Self::parse_one(input).0
+    }
+
+    /// Attempt to parse a single command line parameter from a UTF-8
+    /// string.
+    ///
     /// The first tuple item contains the parsed parameter, or `None`
     /// if a Parameter could not be constructed from the input.  This
     /// occurs when the input is either empty or contains only
@@ -197,8 +218,8 @@ impl<'a> Parameter<'a> {
     ///
     /// Any remaining characters not consumed from the input are
     /// returned as the second tuple item.
-    pub fn parse(input: &'a str) -> (Option<Self>, &'a str) {
-        let (bytes, rest) = bytes::Parameter::parse(input.as_bytes());
+    pub fn parse_one<T: AsRef<str> + ?Sized>(input: &'a T) -> (Option<Self>, &'a str) {
+        let (bytes, rest) = bytes::Parameter::parse_one(input.as_ref().as_bytes());
 
         // SAFETY: we know this is valid UTF-8 since input is &str,
         // and `rest` is a subslice of that &str which was split on
@@ -280,29 +301,29 @@ mod tests {
 
     // convenience method for tests
     fn param(s: &str) -> Parameter<'_> {
-        Parameter::parse(s).0.unwrap()
+        Parameter::parse(s).unwrap()
     }
 
     #[test]
-    fn test_parameter_parse() {
-        let (p, rest) = Parameter::parse("foo");
+    fn test_parameter_parse_one() {
+        let (p, rest) = Parameter::parse_one("foo");
         let p = p.unwrap();
         assert_eq!(p.key(), "foo".into());
         assert_eq!(p.value(), None);
         assert_eq!(rest, "");
 
         // should consume one parameter and return the rest of the input
-        let (p, rest) = Parameter::parse("foo=bar baz");
+        let (p, rest) = Parameter::parse_one("foo=bar baz");
         let p = p.unwrap();
         assert_eq!(p.key(), "foo".into());
         assert_eq!(p.value(), Some("bar"));
         assert_eq!(rest, " baz");
 
         // should return None on empty or whitespace inputs
-        let (p, rest) = Parameter::parse("");
+        let (p, rest) = Parameter::parse_one("");
         assert!(p.is_none());
         assert_eq!(rest, "");
-        let (p, rest) = Parameter::parse("   ");
+        let (p, rest) = Parameter::parse_one("   ");
         assert!(p.is_none());
         assert_eq!(rest, "");
     }
@@ -333,7 +354,7 @@ mod tests {
 
     #[test]
     fn test_parameter_internal_key_whitespace() {
-        let (p, rest) = Parameter::parse("foo bar=baz");
+        let (p, rest) = Parameter::parse_one("foo bar=baz");
         let p = p.unwrap();
         assert_eq!(p.key(), "foo".into());
         assert_eq!(p.value(), None);
@@ -385,19 +406,19 @@ mod tests {
     #[test]
     fn test_parameter_tryfrom() {
         // ok switch
-        let p = bytes::Parameter::parse(b"foo").0.unwrap();
+        let p = bytes::Parameter::parse(b"foo").unwrap();
         let utf = Parameter::try_from(p).unwrap();
         assert_eq!(utf.key(), "foo".into());
         assert_eq!(utf.value(), None);
 
         // ok key/value
-        let p = bytes::Parameter::parse(b"foo=bar").0.unwrap();
+        let p = bytes::Parameter::parse(b"foo=bar").unwrap();
         let utf = Parameter::try_from(p).unwrap();
         assert_eq!(utf.key(), "foo".into());
         assert_eq!(utf.value(), Some("bar".into()));
 
         // bad switch
-        let p = bytes::Parameter::parse(b"f\xffoo").0.unwrap();
+        let p = bytes::Parameter::parse(b"f\xffoo").unwrap();
         let e = Parameter::try_from(p);
         assert_eq!(
             e.unwrap_err().to_string(),
@@ -405,7 +426,7 @@ mod tests {
         );
 
         // bad key/value
-        let p = bytes::Parameter::parse(b"foo=b\xffar").0.unwrap();
+        let p = bytes::Parameter::parse(b"foo=b\xffar").unwrap();
         let e = Parameter::try_from(p);
         assert_eq!(
             e.unwrap_err().to_string(),
@@ -555,14 +576,14 @@ mod tests {
         let mut kargs = Cmdline::from("foo=bar");
 
         // add new
-        assert!(kargs.add_or_modify(param("baz")));
+        assert!(kargs.add_or_modify(&param("baz")));
         let mut iter = kargs.iter();
         assert_eq!(iter.next(), Some(param("foo=bar")));
         assert_eq!(iter.next(), Some(param("baz")));
         assert_eq!(iter.next(), None);
 
         // modify existing
-        assert!(kargs.add_or_modify(param("foo=fuz")));
+        assert!(kargs.add_or_modify(&param("foo=fuz")));
         iter = kargs.iter();
         assert_eq!(iter.next(), Some(param("foo=fuz")));
         assert_eq!(iter.next(), Some(param("baz")));
@@ -570,7 +591,7 @@ mod tests {
 
         // already exists with same value returns false and doesn't
         // modify anything
-        assert!(!kargs.add_or_modify(param("foo=fuz")));
+        assert!(!kargs.add_or_modify(&param("foo=fuz")));
         iter = kargs.iter();
         assert_eq!(iter.next(), Some(param("foo=fuz")));
         assert_eq!(iter.next(), Some(param("baz")));
@@ -580,14 +601,14 @@ mod tests {
     #[test]
     fn test_add_or_modify_empty_cmdline() {
         let mut kargs = Cmdline::from("");
-        assert!(kargs.add_or_modify(param("foo")));
+        assert!(kargs.add_or_modify(&param("foo")));
         assert_eq!(kargs.as_ref(), "foo");
     }
 
     #[test]
     fn test_add_or_modify_duplicate_parameters() {
         let mut kargs = Cmdline::from("a=1 a=2");
-        assert!(kargs.add_or_modify(param("a=3")));
+        assert!(kargs.add_or_modify(&param("a=3")));
         let mut iter = kargs.iter();
         assert_eq!(iter.next(), Some(param("a=3")));
         assert_eq!(iter.next(), None);
@@ -598,14 +619,14 @@ mod tests {
         let mut kargs = Cmdline::from("foo bar baz");
 
         // remove existing
-        assert!(kargs.remove("bar".into()));
+        assert!(kargs.remove(&"bar".into()));
         let mut iter = kargs.iter();
         assert_eq!(iter.next(), Some(param("foo")));
         assert_eq!(iter.next(), Some(param("baz")));
         assert_eq!(iter.next(), None);
 
         // doesn't exist? returns false and doesn't modify anything
-        assert!(!kargs.remove("missing".into()));
+        assert!(!kargs.remove(&"missing".into()));
         iter = kargs.iter();
         assert_eq!(iter.next(), Some(param("foo")));
         assert_eq!(iter.next(), Some(param("baz")));
@@ -615,7 +636,7 @@ mod tests {
     #[test]
     fn test_remove_duplicates() {
         let mut kargs = Cmdline::from("a=1 b=2 a=3");
-        assert!(kargs.remove("a".into()));
+        assert!(kargs.remove(&"a".into()));
         let mut iter = kargs.iter();
         assert_eq!(iter.next(), Some(param("b=2")));
         assert_eq!(iter.next(), None);
