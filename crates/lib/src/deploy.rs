@@ -380,6 +380,98 @@ pub(crate) async fn prepare_for_pull(
     Ok(PreparedPullResult::Ready(Box::new(prepared_image)))
 }
 
+/// Unified approach: First pull with podman to containers-storage, then prepare from containers-storage
+pub(crate) async fn prepare_for_pull_unified(
+    repo: &ostree::Repo,
+    imgref: &ImageReference,
+    target_imgref: Option<&OstreeImageReference>,
+    store: &Storage,
+) -> Result<PreparedPullResult> {
+    // Ensure bootc storage is properly initialized before using unified storage
+    let _imgstore = store.get_ensure_imgstore()?;
+    
+    // First, pull the image using podman with unified storage
+    crate::podman::pull_image_unified(&format!("{imgref:#}")).await?;
+    
+    // Now create a containers-storage reference to the pulled image
+    let containers_storage_imgref = ImageReference {
+        transport: "containers-storage".to_string(),
+        image: imgref.image.clone(),
+        signature: imgref.signature.clone(),
+    };
+    let ostree_imgref = &OstreeImageReference::from(containers_storage_imgref);
+    
+    // Use the standard preparation flow but reading from containers-storage
+    let mut imp = new_importer(repo, ostree_imgref).await?;
+    if let Some(target) = target_imgref {
+        imp.set_target(target);
+    }
+    let prep = match imp.prepare().await? {
+        PrepareResult::AlreadyPresent(c) => {
+            println!("No changes in {imgref:#} => {}", c.manifest_digest);
+            return Ok(PreparedPullResult::AlreadyPresent(Box::new((*c).into())));
+        }
+        PrepareResult::Ready(p) => p,
+    };
+    check_bootc_label(&prep.config);
+    if let Some(warning) = prep.deprecated_warning() {
+        ostree_ext::cli::print_deprecated_warning(warning).await;
+    }
+    ostree_ext::cli::print_layer_status(&prep);
+    let layers_to_fetch = prep.layers_to_fetch().collect::<Result<Vec<_>>>()?;
+
+    let prepared_image = PreparedImportMeta {
+        imp,
+        n_layers_to_fetch: layers_to_fetch.len(),
+        layers_total: prep.all_layers().count(),
+        bytes_to_fetch: layers_to_fetch.iter().map(|(l, _)| l.layer.size()).sum(),
+        bytes_total: prep.all_layers().map(|l| l.layer.size()).sum(),
+        digest: prep.manifest_digest.clone(),
+        prep,
+    };
+
+    Ok(PreparedPullResult::Ready(Box::new(prepared_image)))
+}
+
+/// Unified pull: Use podman to pull to containers-storage, then read from there
+pub(crate) async fn pull_unified(
+    repo: &ostree::Repo,
+    imgref: &ImageReference,
+    target_imgref: Option<&OstreeImageReference>,
+    quiet: bool,
+    prog: ProgressWriter,
+    store: &Storage,
+) -> Result<Box<ImageState>> {
+    match prepare_for_pull_unified(repo, imgref, target_imgref, store).await? {
+        PreparedPullResult::AlreadyPresent(existing) => {
+            // Log that the image was already present (Debug level since it's not actionable)
+            const IMAGE_ALREADY_PRESENT_ID: &str = "5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9";
+            tracing::debug!(
+                message_id = IMAGE_ALREADY_PRESENT_ID,
+                bootc.image.reference = &imgref.image,
+                bootc.image.transport = &imgref.transport,
+                bootc.status = "already_present",
+                "Image already present: {}",
+                imgref
+            );
+            Ok(existing)
+        }
+        PreparedPullResult::Ready(prepared_image_meta) => {
+            // Log that we're pulling a new image
+            const PULLING_NEW_IMAGE_ID: &str = "6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0";
+            tracing::info!(
+                message_id = PULLING_NEW_IMAGE_ID,
+                bootc.image.reference = &imgref.image,
+                bootc.image.transport = &imgref.transport,
+                bootc.status = "pulling_new",
+                "Pulling new image: {}",
+                imgref
+            );
+            pull_from_prepared(imgref, quiet, prog, *prepared_image_meta).await
+        }
+    }
+}
+
 #[context("Pulling")]
 pub(crate) async fn pull_from_prepared(
     imgref: &ImageReference,

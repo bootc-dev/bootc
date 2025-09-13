@@ -51,3 +51,27 @@ pub(crate) fn storage_exists(root: &Dir, path: impl AsRef<Utf8Path>) -> Result<b
 pub(crate) fn storage_exists_default(root: &Dir) -> Result<bool> {
     storage_exists(root, CONTAINER_STORAGE.trim_start_matches('/'))
 }
+
+/// Pull an image using podman with additionalimagestore pointing to bootc storage.
+/// This allows the image to be available in both regular container storage and bootc storage.
+pub(crate) async fn pull_image_unified(imgref: &str) -> Result<()> {
+    use bootc_utils::CommandRunExt;
+    
+    // Use podman pull with additionalimagestore pointing to bootc storage
+    let bootc_storage_path = "/usr/lib/bootc/storage";
+    
+    tracing::info!("Pulling image via podman with unified storage: {}", imgref);
+    
+    std::process::Command::new("podman")
+        .args([
+            "pull",
+            "--storage-opt",
+            &format!("additionalimagestore={}", bootc_storage_path),
+            imgref,
+        ])
+        .run_capture_stderr()
+        .map_err(|e| anyhow::anyhow!("Failed to pull image via podman: {}", e))?;
+        
+    tracing::info!("Successfully pulled image to unified storage: {}", imgref);
+    Ok(())
+}
