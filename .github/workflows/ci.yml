@@ -23,7 +23,7 @@ jobs:
     runs-on: ubuntu-latest
     container: quay.io/coreos-assembler/fcos-buildroot:testing-devel
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install deps
         run: ./ci/installdeps.sh
       - name: Mark git checkout as safe
@@ -54,7 +54,7 @@ jobs:
           sudo apt install -y crun/testing podman/testing skopeo/testing
       - name: Installdeps
         run: sudo apt update && sudo apt install just
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Build and run container integration tests
         run: sudo just run-container-integration run-container-external-tests
   container-continuous:
@@ -69,13 +69,13 @@ jobs:
           sudo apt install -y crun/testing podman/testing skopeo/testing
       - name: Installdeps
         run: sudo apt update && sudo apt install just
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Build with continuous repo enabled
         run: sudo just build --build-arg=continuous_repo=1
   cargo-deny:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v5
     - uses: EmbarkStudios/cargo-deny-action@v2
       with:
         log-level: warn
@@ -93,7 +93,7 @@ jobs:
           sudo apt update
           sudo apt install -y crun/testing podman/testing skopeo/testing
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
       - name: Free up disk space on runner
         run: sudo ./ci/clean-gha-runner.sh
       - name: Enable fsverity for /
@@ -147,7 +147,7 @@ jobs:
     env:
       MDBOOK_VERSION: 0.4.37
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install mdBook
         run: |
           tag=$(curl 'https://api.github.com/repos/rust-lang/mdbook/releases/latest' | jq -r '.tag_name')
