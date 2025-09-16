@@ -1,0 +1,57 @@
+name: e2e test
+
+on:
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  e2e-test:
+    name: Run e2e test in Github Runner
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Enable KVM group perms
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          sudo apt-get update
+          sudo apt-get install -y qemu-kvm libvirt-clients libvirt-daemon-system libvirt-daemon virtinst bridge-utils qemu-system-x86 network-manager
+          sudo usermod -a -G kvm,libvirt $USER
+          sudo adduser `id -un` libvirt
+
+      - name: reload the terminal to load the libvirt group
+        run: |
+          sudo -E bash -c 'exec su -l '$USER
+
+      - name: Check kvm
+        run: |
+          sudo apt-get install cpu-checker
+          egrep -c '(vmx|svm)' /proc/cpuinfo
+          kvm-ok
+
+      - name: Check if user is part of libvirt group
+        run: |
+          groups
+          sudo usermod -a -G libvirt $USER
+          groups
+
+      - name: Check libvirtd status
+        run: |
+          sudo systemctl status libvirtd
+
+      - name: Install TMT
+        run: |
+          pip install --user "tmt[provision]"
+          tmt --version
+
+      - name: Checkout workflow test code
+        run: |
+          git clone https://gitlab.com/fedora/bootc/tests/bootc-workflow-test.git
+
+      - name: Run test
+        run: |
+          sudo setenforce 0
+          tmt run -vvvv provision --how virtual --image fedora-42 plans --name "/tmt/plans/baseline/bootc-install$"
+        working-directory: ./bootc-workflow-test
