@@ -372,6 +372,14 @@ pub(crate) struct InstallToFilesystemOpts {
 
     #[clap(flatten)]
     pub(crate) config_opts: InstallConfigOpts,
+
+    #[clap(long)]
+    #[cfg(feature = "composefs-backend")]
+    pub(crate) composefs_native: bool,
+
+    #[cfg(feature = "composefs-backend")]
+    #[clap(flatten)]
+    pub(crate) compoesfs_opts: InstallComposefsOpts,
 }
 
 #[derive(Debug, Clone, clap::Parser, PartialEq, Eq)]
@@ -993,6 +1001,7 @@ pub(crate) fn exec_in_host_mountns(args: &[std::ffi::OsString]) -> Result<()> {
     Err(Command::new(cmd).args(args).arg0(bootc_utils::NAME).exec()).context("exec")?
 }
 
+#[derive(Debug)]
 pub(crate) struct RootSetup {
     #[cfg(feature = "install-to-disk")]
     luks_device: Option<String>,
@@ -1536,6 +1545,9 @@ async fn install_to_filesystem_impl(
         }
     }
 
+    println!("state: {state:#?}");
+    println!("root_setup: {rootfs:#?}");
+
     #[cfg(feature = "composefs-backend")]
     if state.composefs_options.is_some() {
         // Load a fd for the mounted target physical root
@@ -1571,6 +1583,8 @@ fn installation_complete() {
 pub(crate) async fn install_to_disk(mut opts: InstallToDiskOpts) -> Result<()> {
     #[cfg(feature = "composefs-backend")]
     opts.validate()?;
+
+    println!("install to disk opts: {opts:#?}");
 
     // Log the disk installation operation to systemd journal
     const INSTALL_DISK_JOURNAL_ID: &str = "8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2";
@@ -1856,12 +1870,28 @@ pub(crate) async fn install_to_filesystem(
         target_path
     );
 
+    println!("opts: {opts:#?}");
+
     // Gather global state, destructuring the provided options.
     // IMPORTANT: We might re-execute the current process in this function (for SELinux among other things)
     // IMPORTANT: and hence anything that is done before MUST BE IDEMPOTENT.
     // IMPORTANT: In practice, we should only be gathering information before this point,
     // IMPORTANT: and not performing any mutations at all.
-    let state = prepare_install(opts.config_opts, opts.source_opts, opts.target_opts, None).await?;
+    let state = prepare_install(
+        opts.config_opts,
+        opts.source_opts,
+        opts.target_opts,
+        #[cfg(feature = "composefs-backend")]
+        if opts.composefs_native {
+            Some(opts.compoesfs_opts)
+        } else {
+            None
+        },
+        #[cfg(not(feature = "composefs-backend"))]
+        None,
+    )
+    .await?;
+
     // And the last bit of state here is the fsopts, which we also destructure now.
     let mut fsopts = opts.filesystem_opts;
 
@@ -2129,6 +2159,13 @@ pub(crate) async fn install_to_existing_root(opts: InstallToExistingRootOpts) ->
         source_opts: opts.source_opts,
         target_opts: opts.target_opts,
         config_opts: opts.config_opts,
+        #[cfg(feature = "composefs-backend")]
+        composefs_native: false,
+        #[cfg(feature = "composefs-backend")]
+        compoesfs_opts: InstallComposefsOpts {
+            insecure: false,
+            bootloader: Bootloader::Grub,
+        },
     };
 
     install_to_filesystem(opts, true, cleanup).await

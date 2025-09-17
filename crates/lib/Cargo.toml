@@ -73,7 +73,7 @@ similar-asserts = { workspace = true }
 static_assertions = { workspace = true }
 
 [features]
-default = ["install-to-disk"]
+default = ["install-to-disk", "composefs-backend"]
 # This feature enables `bootc install to-disk`, which is considered just a "demo"
 # or reference installer; we expect most nontrivial use cases to be using
 # `bootc install to-filesystem`.
