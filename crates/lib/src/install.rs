@@ -370,6 +370,14 @@ pub(crate) struct InstallToFilesystemOpts {
 
     #[clap(flatten)]
     pub(crate) config_opts: InstallConfigOpts,
+
+    #[clap(long)]
+    #[cfg(feature = "composefs-backend")]
+    pub(crate) composefs_native: bool,
+
+    #[cfg(feature = "composefs-backend")]
+    #[clap(flatten)]
+    pub(crate) composefs_opts: InstallComposefsOpts,
 }
 
 #[derive(Debug, Clone, clap::Parser, PartialEq, Eq)]
@@ -1916,7 +1924,17 @@ pub(crate) async fn install_to_filesystem(
     // IMPORTANT: and hence anything that is done before MUST BE IDEMPOTENT.
     // IMPORTANT: In practice, we should only be gathering information before this point,
     // IMPORTANT: and not performing any mutations at all.
-    let state = prepare_install(opts.config_opts, opts.source_opts, opts.target_opts, None).await?;
+    let state = prepare_install(
+        opts.config_opts,
+        opts.source_opts,
+        opts.target_opts,
+        #[cfg(feature = "composefs-backend")]
+        opts.composefs_native.then_some(opts.composefs_opts),
+        #[cfg(not(feature = "composefs-backend"))]
+        None,
+    )
+    .await?;
+
     // And the last bit of state here is the fsopts, which we also destructure now.
     let mut fsopts = opts.filesystem_opts;
 
@@ -2184,6 +2202,14 @@ pub(crate) async fn install_to_existing_root(opts: InstallToExistingRootOpts) ->
         source_opts: opts.source_opts,
         target_opts: opts.target_opts,
         config_opts: opts.config_opts,
+        #[cfg(feature = "composefs-backend")]
+        composefs_native: false,
+        #[cfg(feature = "composefs-backend")]
+        composefs_opts: InstallComposefsOpts {
+            insecure: false,
+            bootloader: Bootloader::Grub,
+            uki_addon: None,
+        },
     };
 
     install_to_filesystem(opts, true, cleanup).await

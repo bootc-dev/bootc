@@ -81,7 +81,7 @@ pub(crate) async fn pull_composefs_repo(
 )> {
     let rootfs_dir = Dir::open_ambient_dir("/sysroot", ambient_authority())?;
 
-    let repo = open_composefs_repo(&rootfs_dir).context("Opening compoesfs repo")?;
+    let repo = open_composefs_repo(&rootfs_dir).context("Opening composefs repo")?;
 
     let final_imgref = get_imgref(transport, image);
 
