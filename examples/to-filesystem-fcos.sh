@@ -2,5 +2,5 @@
 
 set -euxo pipefail
 
-export IMAGE="quay.io/fedora/fedora-coreos-uki:stable"
+export IMAGE="quay.io/fedora/fedora-coreos-bls:stable"
 exec ./to-filesystem.sh

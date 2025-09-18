@@ -47,6 +47,8 @@ podman run \
         --karg "selinux=1" \
         --karg "enforcing=0" \
         --karg "audit=0" \
+        --karg "ignition.firstboot" \
+        --karg "ignition.platform.id=qemu" \
         /output/test.img
 
 # Manual systemd-boot installation

@@ -63,7 +63,7 @@ mount /dev/loop0p1 ./mnt
 cp systemd-bootx64.efi ./mnt/EFI/fedora/grubx64.efi
 echo "timeout 5" > ./mnt//loader/loader.conf
 # ignition.firstboot ignition.platform.id=qemu
-sed -i "s;options ;options console=tty0 console=ttyS0,115000n selinux=1 enforcing=0 audit=0 ;" ./mnt/loader/entries/bootc-composefs-1.conf
+sed -i "s;options ;options console=tty0 console=ttyS0,115000n selinux=1 enforcing=0 audit=0 ignition.firstboot ignition.platform.id=qemu ;" ./mnt/loader/entries/bootc-composefs-1.conf
 
 umount -R ./mnt
 losetup -d /dev/loop0
