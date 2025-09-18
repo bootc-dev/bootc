@@ -5,8 +5,8 @@ DefaultDependencies=false
 ConditionKernelCommandLine=composefs
 ConditionPathExists=!/run/ostree-live
 After=ignition-ostree-growfs.service
-After=ostree-prepare-root.service
-Requires=ostree-prepare-root.service
+After=bootc-initramfs-setup.service
+Requires=bootc-initramfs-setup.service
 # Allow Ignition config to blank out the warning
 Before=ignition-files.service
 

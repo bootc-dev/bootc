@@ -23,4 +23,5 @@ Before=sysroot.mount
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/usr/sbin/ignition-ostree-firstboot-uuid root
+# ExecStart=/usr/sbin/ignition-ostree-firstboot-uuid root
+ExecStart=true
