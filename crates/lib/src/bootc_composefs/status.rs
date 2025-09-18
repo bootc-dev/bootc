@@ -162,8 +162,20 @@ fn get_bootloader() -> Result<Bootloader> {
 
     const EFI_LOADER_INFO: &str = "LoaderInfo-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f";
 
-    match efivarfs.read_to_string(EFI_LOADER_INFO) {
-        Ok(loader) => {
+    match efivarfs.read(EFI_LOADER_INFO) {
+        Ok(loader_bytes) => {
+            if loader_bytes.len() % 2 != 0 {
+                anyhow::bail!("EFI var length is not valid UTF-16 LE");
+            }
+
+            // EFI vars are UTF-16 LE
+            let loader_u16_bytes: Vec<u16> = loader_bytes
+                .chunks_exact(2)
+                .map(|x| u16::from_le_bytes([x[0], x[1]]))
+                .collect();
+
+            let loader = String::from_utf16(&loader_u16_bytes).context("EFI var is not UTF-16")?;
+
             if loader.to_lowercase().contains("systemd-boot") {
                 return Ok(Bootloader::Systemd);
             }
