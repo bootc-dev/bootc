@@ -1,12 +1,12 @@
 use std::fs::create_dir_all;
 use std::io::Write;
-use std::process::Command;
+use std::path::Path;
 use std::{ffi::OsStr, path::PathBuf};
 
 use anyhow::{anyhow, Context, Result};
 use bootc_blockdev::find_parent_devices;
 use bootc_mount::inspect_filesystem;
-use bootc_utils::CommandRunExt;
+use bootc_mount::tempmount::TempMount;
 use camino::{Utf8Path, Utf8PathBuf};
 use cap_std_ext::{
     cap_std::{ambient_authority, fs::Dir},
@@ -272,8 +272,6 @@ struct BLSEntryPath<'a> {
     abs_entries_path: &'a str,
     /// Where to write the .conf files
     config_path: Utf8PathBuf,
-    /// If we mounted EFI, the target path
-    mount_path: Option<Utf8PathBuf>,
 }
 
 /// Sets up and writes BLS entries and binaries (VMLinuz + Initrd) to disk
@@ -352,25 +350,14 @@ pub(crate) fn setup_composefs_bls_boot(
                 entries_path: root_path.join("boot"),
                 config_path: root_path.join("boot"),
                 abs_entries_path: "boot",
-                mount_path: None,
             },
             None,
         ),
 
         Bootloader::Systemd => {
-            let temp_efi_dir = tempfile::tempdir().map_err(|e| {
-                anyhow::anyhow!("Failed to create temporary directory for EFI mount: {e}")
-            })?;
+            let efi_mount = TempMount::mount_dev(&esp_device).context("Mounting ESP")?;
 
-            let mounted_efi = Utf8PathBuf::from_path_buf(temp_efi_dir.path().to_path_buf())
-                .map_err(|_| anyhow::anyhow!("EFI dir is not valid UTF-8"))?;
-
-            Command::new("mount")
-                .args([&PathBuf::from(&esp_device), mounted_efi.as_std_path()])
-                .log_debug()
-                .run_inherited_with_cmd_context()
-                .context("Mounting EFI")?;
-
+            let mounted_efi = Utf8PathBuf::from(efi_mount.dir.path().as_str()?);
             let efi_linux_dir = mounted_efi.join(EFI_LINUX);
 
             (
@@ -378,9 +365,8 @@ pub(crate) fn setup_composefs_bls_boot(
                     entries_path: efi_linux_dir,
                     config_path: mounted_efi.clone(),
                     abs_entries_path: EFI_LINUX,
-                    mount_path: Some(mounted_efi),
                 },
-                Some(temp_efi_dir),
+                Some(efi_mount),
             )
         }
     };
@@ -518,14 +504,6 @@ pub(crate) fn setup_composefs_bls_boot(
         rustix::fs::fsync(owned_loader_entries_fd).context("fsync")?;
     }
 
-    if let Some(mounted_efi) = entry_paths.mount_path {
-        Command::new("umount")
-            .arg(mounted_efi)
-            .log_debug()
-            .run_inherited_with_cmd_context()
-            .context("Unmounting EFI")?;
-    }
-
     Ok(boot_digest)
 }
 
@@ -537,7 +515,7 @@ fn write_pe_to_esp(
     pe_type: PEType,
     uki_id: &String,
     is_insecure_from_opts: bool,
-    mounted_efi: &PathBuf,
+    mounted_efi: impl AsRef<Path>,
 ) -> Result<Option<String>> {
     let efi_bin = read_file(file, &repo).context("Reading .efi binary")?;
 
@@ -574,7 +552,7 @@ fn write_pe_to_esp(
     }
 
     // Write the UKI to ESP
-    let efi_linux_path = mounted_efi.join(EFI_LINUX);
+    let efi_linux_path = mounted_efi.as_ref().join(EFI_LINUX);
     create_dir_all(&efi_linux_path).context("Creating EFI/Linux")?;
 
     let final_pe_path = match file_path.parent() {
@@ -768,13 +746,7 @@ pub(crate) fn setup_composefs_uki_boot(
         }
     };
 
-    let temp_efi_dir = tempfile::tempdir()
-        .map_err(|e| anyhow::anyhow!("Failed to create temporary directory for EFI mount: {e}"))?;
-    let mounted_efi = temp_efi_dir.path().to_path_buf();
-
-    Task::new("Mounting ESP", "mount")
-        .args([&PathBuf::from(&esp_device), &mounted_efi.clone()])
-        .run()?;
+    let esp_mount = TempMount::mount_dev(&esp_device).context("Mounting ESP")?;
 
     let mut boot_label = String::new();
 
@@ -793,7 +765,7 @@ pub(crate) fn setup_composefs_uki_boot(
                     entry.pe_type,
                     &id.to_hex(),
                     is_insecure_from_opts,
-                    &mounted_efi,
+                    esp_mount.dir.path(),
                 )?;
 
                 if let Some(label) = ret {
@@ -802,12 +774,6 @@ pub(crate) fn setup_composefs_uki_boot(
             }
         };
     }
-
-    Command::new("umount")
-        .arg(&mounted_efi)
-        .log_debug()
-        .run_inherited_with_cmd_context()
-        .context("Unmounting ESP")?;
 
     match bootloader {
         Bootloader::Grub => {

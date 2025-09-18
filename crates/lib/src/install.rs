@@ -90,7 +90,8 @@ pub(crate) const ARCH_USES_EFI: bool = cfg!(any(target_arch = "x86_64", target_a
 #[cfg(any(feature = "composefs-backend", feature = "install-to-disk"))]
 pub(crate) const ESP_GUID: &str = "C12A7328-F81F-11D2-BA4B-00A0C93EC93B";
 #[cfg(any(feature = "composefs-backend", feature = "install-to-disk"))]
-pub(crate) const DPS_UUID: &str = "6523f8ae-3eb1-4e2a-a05a-18b695ae656f";
+// TODO (Johan-Liebert1): We'd want this for all archs
+pub(crate) const DPS_UUID: &str = "4f68bce3-e8cd-4db1-96e7-fbcaf984b709";
 
 const DEFAULT_REPO_CONFIG: &[(&str, &str)] = &[
     // Default to avoiding grub2-mkconfig etc.
