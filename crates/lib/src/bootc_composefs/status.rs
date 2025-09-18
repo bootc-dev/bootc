@@ -1,4 +1,4 @@
-use std::{io::Read, sync::OnceLock, u16};
+use std::{io::Read, sync::OnceLock};
 
 use anyhow::{Context, Result};
 use bootc_kernel_cmdline::utf8::Cmdline;

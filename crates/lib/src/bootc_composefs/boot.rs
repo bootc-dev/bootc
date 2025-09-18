@@ -142,6 +142,10 @@ pub fn get_sysroot_parent_dev() -> Result<String> {
     return Ok(parent);
 }
 
+pub fn type1_entry_conf_file_name(sort_key: impl std::fmt::Display) -> String {
+    format!("bootc-composefs-{sort_key}.conf")
+}
+
 /// Compute SHA256Sum of VMlinuz + Initrd
 ///
 /// # Arguments
@@ -264,6 +268,51 @@ fn write_bls_boot_entries_to_disk(
     Ok(())
 }
 
+/// Parses /usr/lib/os-release and returns title and version fields
+/// # Returns
+/// - (title, version)
+fn osrel_title_and_version(
+    fs: &FileSystem<Sha256HashValue>,
+    repo: &ComposefsRepository<Sha256HashValue>,
+) -> Result<Option<(Option<String>, Option<String>)>> {
+    // Every update should have its own /usr/lib/os-release
+    let (dir, fname) = fs
+        .root
+        .split(OsStr::new("/usr/lib/os-release"))
+        .context("Getting /usr/lib/os-release")?;
+
+    let os_release = dir
+        .get_file_opt(fname)
+        .context("Getting /usr/lib/os-release")?;
+
+    let Some(os_rel_file) = os_release else {
+        return Ok(None);
+    };
+
+    let file_contents = match read_file(os_rel_file, repo) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!("Could not read /usr/lib/os-release: {e:?}");
+            return Ok(None);
+        }
+    };
+
+    let file_contents = match std::str::from_utf8(&file_contents) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!("/usr/lib/os-release did not have valid UTF-8: {e}");
+            return Ok(None);
+        }
+    };
+
+    let parsed_contents = OsReleaseInfo::parse(file_contents);
+
+    let title = parsed_contents.get_pretty_name();
+    let version = parsed_contents.get_version();
+
+    Ok(Some((title, version)))
+}
+
 struct BLSEntryPath<'a> {
     /// Where to write vmlinuz/initrd
     entries_path: Utf8PathBuf,
@@ -372,51 +421,33 @@ pub(crate) fn setup_composefs_bls_boot(
     };
 
     let (bls_config, boot_digest) = match &entry {
-        ComposefsBootEntry::Type1(..) => unimplemented!(),
-        ComposefsBootEntry::Type2(..) => unimplemented!(),
+        ComposefsBootEntry::Type1(..) => anyhow::bail!("Found Type1 entries in /boot"),
+        ComposefsBootEntry::Type2(..) => anyhow::bail!("Found UKI"),
 
         ComposefsBootEntry::UsrLibModulesVmLinuz(usr_lib_modules_vmlinuz) => {
             let boot_digest = compute_boot_digest(usr_lib_modules_vmlinuz, &repo)
                 .context("Computing boot digest")?;
 
-            // Every update should have its own /usr/lib/os-release
-            let (dir, fname) = fs
-                .root
-                .split(OsStr::new("/usr/lib/os-release"))
-                .context("Getting /usr/lib/os-release")?;
-
-            let os_release = dir
-                .get_file_opt(fname)
-                .context("Getting /usr/lib/os-release")?;
-
-            let version = os_release.and_then(|os_rel_file| {
-                let file_contents = match read_file(os_rel_file, &repo) {
-                    Ok(c) => c,
-                    Err(e) => {
-                        tracing::warn!("Could not read /usr/lib/os-release: {e:?}");
-                        return None;
-                    }
-                };
-
-                let file_contents = match std::str::from_utf8(&file_contents) {
-                    Ok(c) => c,
-                    Err(..) => {
-                        tracing::warn!("/usr/lib/os-release did not have valid UTF-8");
-                        return None;
-                    }
-                };
-
-                OsReleaseInfo::parse(file_contents).get_version()
-            });
-
             let default_sort_key = "1";
+            let default_title_version = (id.to_hex(), default_sort_key.to_string());
+
+            let osrel_res = osrel_title_and_version(fs, &repo)?;
+
+            let (title, version) = match osrel_res {
+                Some((t, v)) => (
+                    t.unwrap_or(default_title_version.0),
+                    v.unwrap_or(default_title_version.1),
+                ),
+
+                None => default_title_version,
+            };
 
             let mut bls_config = BLSConfig::default();
 
             bls_config
-                .with_title(id_hex.clone())
+                .with_title(title)
                 .with_sort_key(default_sort_key.into())
-                .with_version(version.unwrap_or(default_sort_key.into()))
+                .with_version(version)
                 .with_linux(format!(
                     "/{}/{id_hex}/vmlinuz",
                     entry_paths.abs_entries_path
@@ -427,26 +458,32 @@ pub(crate) fn setup_composefs_bls_boot(
                 )])
                 .with_options(cmdline_refs);
 
-            if let Some(symlink_to) = find_vmlinuz_initrd_duplicates(&boot_digest)? {
-                bls_config.linux =
-                    format!("/{}/{symlink_to}/vmlinuz", entry_paths.abs_entries_path);
+            match find_vmlinuz_initrd_duplicates(&boot_digest)? {
+                Some(symlink_to) => {
+                    bls_config.linux =
+                        format!("/{}/{symlink_to}/vmlinuz", entry_paths.abs_entries_path);
 
-                bls_config.initrd = vec![format!(
-                    "/{}/{symlink_to}/initrd",
-                    entry_paths.abs_entries_path
-                )];
-            } else {
-                write_bls_boot_entries_to_disk(
-                    &entry_paths.entries_path,
-                    id,
-                    usr_lib_modules_vmlinuz,
-                    &repo,
-                )?;
-            }
+                    bls_config.initrd = vec![format!(
+                        "/{}/{symlink_to}/initrd",
+                        entry_paths.abs_entries_path
+                    )];
+                }
+
+                None => {
+                    write_bls_boot_entries_to_disk(
+                        &entry_paths.entries_path,
+                        id,
+                        usr_lib_modules_vmlinuz,
+                        &repo,
+                    )?;
+                }
+            };
 
             (bls_config, boot_digest)
         }
     };
+
+    let loader_path = entry_paths.config_path.join("loader");
 
     let (config_path, booted_bls) = if is_upgrade {
         let mut booted_bls = get_booted_bls()?;
@@ -454,55 +491,37 @@ pub(crate) fn setup_composefs_bls_boot(
 
         // This will be atomically renamed to 'loader/entries' on shutdown/reboot
         (
-            entry_paths
-                .config_path
-                .join("loader")
-                .join(STAGED_BOOT_LOADER_ENTRIES),
+            loader_path.join(STAGED_BOOT_LOADER_ENTRIES),
             Some(booted_bls),
         )
     } else {
-        (
-            entry_paths
-                .config_path
-                .join("loader")
-                .join(BOOT_LOADER_ENTRIES),
-            None,
-        )
+        (loader_path.join(BOOT_LOADER_ENTRIES), None)
     };
 
     create_dir_all(&config_path).with_context(|| format!("Creating {:?}", config_path))?;
 
-    // Scope to allow for proper unmounting
-    {
-        let loader_entries_dir = Dir::open_ambient_dir(&config_path, ambient_authority())
-            .with_context(|| format!("Opening {config_path:?}"))?;
+    let loader_entries_dir = Dir::open_ambient_dir(&config_path, ambient_authority())
+        .with_context(|| format!("Opening {config_path:?}"))?;
 
+    loader_entries_dir.atomic_write(
+        // SAFETY: We set sort_key above
+        type1_entry_conf_file_name(bls_config.sort_key.as_ref().unwrap()),
+        bls_config.to_string().as_bytes(),
+    )?;
+
+    if let Some(booted_bls) = booted_bls {
         loader_entries_dir.atomic_write(
             // SAFETY: We set sort_key above
-            format!(
-                "bootc-composefs-{}.conf",
-                bls_config.sort_key.as_ref().unwrap()
-            ),
-            bls_config.to_string().as_bytes(),
+            type1_entry_conf_file_name(booted_bls.sort_key.as_ref().unwrap()),
+            booted_bls.to_string().as_bytes(),
         )?;
-
-        if let Some(booted_bls) = booted_bls {
-            loader_entries_dir.atomic_write(
-                // SAFETY: We set sort_key above
-                format!(
-                    "bootc-composefs-{}.conf",
-                    booted_bls.sort_key.as_ref().unwrap()
-                ),
-                booted_bls.to_string().as_bytes(),
-            )?;
-        }
-
-        let owned_loader_entries_fd = loader_entries_dir
-            .reopen_as_ownedfd()
-            .context("Reopening as owned fd")?;
-
-        rustix::fs::fsync(owned_loader_entries_fd).context("fsync")?;
     }
+
+    let owned_loader_entries_fd = loader_entries_dir
+        .reopen_as_ownedfd()
+        .context("Reopening as owned fd")?;
+
+    rustix::fs::fsync(owned_loader_entries_fd).context("fsync")?;
 
     Ok(boot_digest)
 }
