@@ -35,8 +35,10 @@ use crate::spec::ImageStatus;
 use crate::utils::deployment_fd;
 
 /// See https://github.com/containers/composefs-rs/issues/159
+// pub type ComposefsRepository =
+//    composefs::repository::Repository<composefs::fsverity::Sha512HashValue>;
 pub type ComposefsRepository =
-    composefs::repository::Repository<composefs::fsverity::Sha512HashValue>;
+    composefs::repository::Repository<composefs::fsverity::Sha256HashValue>;
 
 /// Path to the physical root
 pub const SYSROOT: &str = "sysroot";

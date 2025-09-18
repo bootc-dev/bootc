@@ -13,7 +13,7 @@ use rustix::fs::CWD;
 use composefs_boot::{write_boot, BootOps};
 
 use composefs::{
-    fsverity::{FsVerityHashValue, Sha512HashValue},
+    fsverity::{FsVerityHashValue, Sha256HashValue, Sha512HashValue},
     repository::Repository,
 };
 
@@ -147,7 +147,7 @@ enum Command {
     },
 }
 
-fn verity_opt(opt: &Option<String>) -> Result<Option<Sha512HashValue>> {
+fn verity_opt(opt: &Option<String>) -> Result<Option<Sha256HashValue>> {
     Ok(opt.as_ref().map(FsVerityHashValue::from_hex).transpose()?)
 }
 
