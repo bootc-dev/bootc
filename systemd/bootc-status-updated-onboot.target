@@ -1,7 +1,4 @@
 [Unit]
-Description=Target for bootc status changes on boot
+Description=Bootc status trigger state sync
 Documentation=man:bootc-status-updated.target(8)
-ConditionPathExists=/run/ostree-booted
-
-[Install]
-WantedBy=multi-user.target
+After=sysinit.target

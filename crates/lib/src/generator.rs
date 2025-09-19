@@ -1,12 +1,16 @@
 use std::io::BufRead;
 
 use anyhow::{Context, Result};
+use camino::Utf8PathBuf;
 use cap_std::fs::Dir;
 use cap_std_ext::{cap_std, dirext::CapStdExtDirExt};
 use fn_error_context::context;
-use ostree_ext::container_utils::is_ostree_booted_in;
+use ostree_ext::container_utils::{is_ostree_booted_in, OSTREE_BOOTED};
 use rustix::{fd::AsFd, fs::StatVfsMountFlags};
 
+const STATUS_ONBOOT_UNIT: &str = "bootc-status-updated-onboot.target";
+const STATUS_PATH_UNIT: &str = "bootc-status-updated.path";
+const MULTI_USER_TARGET: &str = "multi-user.target";
 const EDIT_UNIT: &str = "bootc-fstab-edit.service";
 const FSTAB_ANACONDA_STAMP: &str = "Created by anaconda";
 pub(crate) const BOOTC_EDITED_STAMP: &str = "Updated by bootc-fstab-edit.service";
@@ -47,9 +51,32 @@ pub(crate) fn fstab_generator_impl(root: &Dir, unit_dir: &Dir) -> Result<bool> {
     Ok(false)
 }
 
+/// Enable our units
+pub(crate) fn unit_enablement_impl(unit_dir: &Dir) -> Result<()> {
+    let wants = Utf8PathBuf::from(format!("{MULTI_USER_TARGET}.wants"));
+    unit_dir.create_dir_all(&wants)?;
+    let target = wants.join(STATUS_ONBOOT_UNIT);
+    unit_dir.symlink_contents(
+        format!("/usr/lib/systemd/system/{STATUS_ONBOOT_UNIT}"),
+        &target,
+    )?;
+    unit_dir.symlink_contents(
+        format!("/usr/lib/systemd/system/{STATUS_PATH_UNIT}"),
+        &target,
+    )?;
+    Ok(())
+}
+
 /// Main entrypoint for the generator
 pub(crate) fn generator(root: &Dir, unit_dir: &Dir) -> Result<()> {
-    // Right now we only do something if the root is a read-only overlayfs (a composefs really)
+    // Only run on ostree systems
+    if !root.try_exists(OSTREE_BOOTED)? {
+        return Ok(());
+    }
+
+    unit_enablement_impl(unit_dir)?;
+
+    // Also only run if the root is a read-only overlayfs (a composefs really)
     let st = rustix::fs::fstatfs(root.as_fd())?;
     if st.f_type != libc::OVERLAYFS_SUPER_MAGIC {
         tracing::trace!("Root is not overlayfs");
@@ -62,6 +89,7 @@ pub(crate) fn generator(root: &Dir, unit_dir: &Dir) -> Result<()> {
     }
     let updated = fstab_generator_impl(root, unit_dir)?;
     tracing::trace!("Generated fstab: {updated}");
+
     Ok(())
 }
 
@@ -106,6 +134,19 @@ mod tests {
         fstab_generator_impl(&tempdir, &unit_dir).unwrap();
 
         assert_eq!(unit_dir.entries()?.count(), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn test_units() -> Result<()> {
+        let tempdir = fixture()?;
+        let unit_dir = &tempdir.open_dir("run/systemd/system")?;
+        unit_enablement_impl(&unit_dir).unwrap();
+        let r =
+            unit_dir.read_link_contents(format!("multi-user.target.wants/{STATUS_ONBOOT_UNIT}"))?;
+        let r: Utf8PathBuf = r.try_into().unwrap();
+        assert_eq!(r, format!("/usr/lib/systemd/system/{STATUS_ONBOOT_UNIT}"));
+        assert_eq!(unit_dir.entries()?.count(), 1);
         Ok(())
     }
 

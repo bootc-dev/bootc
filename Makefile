@@ -31,9 +31,6 @@ install:
 	install -D -m 0644 -t $(DESTDIR)$(prefix)/share/man/man5 target/man/*.5; \
 	install -D -m 0644 -t $(DESTDIR)$(prefix)/share/man/man8 target/man/*.8; \
 	install -D -m 0644 -t $(DESTDIR)/$(prefix)/lib/systemd/system systemd/*.service systemd/*.timer systemd/*.path systemd/*.target
-	install -d -m 0755 $(DESTDIR)/$(prefix)/lib/systemd/system/multi-user.target.wants
-	ln -s ../bootc-status-updated.path $(DESTDIR)/$(prefix)/lib/systemd/system/multi-user.target.wants/bootc-status-updated.path
-	ln -s ../bootc-status-updated-onboot.target $(DESTDIR)/$(prefix)/lib/systemd/system/multi-user.target.wants/bootc-status-updated-onboot.target
 	install -D -m 0644 -t $(DESTDIR)/$(prefix)/share/doc/bootc/baseimage/base/usr/lib/ostree/ baseimage/base/usr/lib/ostree/prepare-root.conf
 	install -d -m 755 $(DESTDIR)/$(prefix)/share/doc/bootc/baseimage/base/sysroot
 	cp -PfT baseimage/base/ostree $(DESTDIR)/$(prefix)/share/doc/bootc/baseimage/base/ostree 

@@ -1,11 +1,7 @@
 [Unit]
 Description=Monitor bootc for status changes
 Documentation=man:bootc-status-updated.path(8)
-ConditionPathExists=/run/ostree-booted
 
 [Path]
 PathChanged=/ostree/bootc
 Unit=bootc-status-updated.target
-
-[Install]
-WantedBy=multi-user.target
