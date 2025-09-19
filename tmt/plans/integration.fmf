@@ -53,3 +53,11 @@ execute:
     how: fmf
     test:
         - /tmt/tests/test-25-soft-reboot
+
+/test-26-custom-selinux-policy:
+  summary: Execute restorecon test on system with custom selinux policy
+  discover:
+    how: fmf
+    test:
+        - /tmt/tests/bootc-install-provision
+        - /tmt/tests/test-26-custom-selinux-policy
