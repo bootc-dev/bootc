@@ -27,7 +27,7 @@ main() {
     virsh --connect="qemu:///system" \
         undefine "${name}" --nvram --managed-save || true
 
-    cp "$PWD/bootc-uki/OVMF_VARS_CUSTOM.qcow2" .
+    cp "$PWD/bootc-bls/OVMF_VARS_CUSTOM.qcow2" .
 
     OVMF_CODE="/usr/share/edk2/ovmf/OVMF_CODE_4M.secboot.qcow2"
     OVMF_VARS_TEMPLATE="/usr/share/edk2/ovmf/OVMF_VARS_4M.secboot.qcow2"

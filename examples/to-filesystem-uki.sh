@@ -72,7 +72,7 @@ mkdir -p ./mnt/loader
 echo "timeout 5" > ./mnt//loader/loader.conf
 
 # Remove extra addon
-mv ./mnt/EFI/Linux/*.addon.efi/luks*.addon.efi ./mnt/EFI/luks.addon.efi
+# mv ./mnt/EFI/Linux/*.addon.efi/luks*.addon.efi ./mnt/EFI/luks.addon.efi
 
 umount -R ./mnt
 losetup -d /dev/loop0

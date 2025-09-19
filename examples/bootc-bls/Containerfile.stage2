@@ -44,12 +44,12 @@ RUN --mount=type=secret,id=key \
         --secureboot-certificate "/run/secrets/cert" \
         --output "/boot/EFI/Linux/$kver.efi.extra.d/ignition.addon.efi"
 
-    ukify build \
-        --cmdline "rd.luks.uuid=luks-8ec9cda3-6b77-45d7-bb56-a95cd9e83234" \
-        --signtool sbsign \
-        --secureboot-private-key "/run/secrets/key" \
-        --secureboot-certificate "/run/secrets/cert" \
-        --output "/boot/EFI/Linux/$kver.efi.extra.d/luks.addon.efi"
+    # ukify build \
+    #     --cmdline "rd.luks.uuid=luks-8ec9cda3-6b77-45d7-bb56-a95cd9e83234" \
+    #     --signtool sbsign \
+    #     --secureboot-private-key "/run/secrets/key" \
+    #     --secureboot-certificate "/run/secrets/cert" \
+    #     --output "/boot/EFI/Linux/$kver.efi.extra.d/luks.addon.efi"
 
     sbsign \
         --key "/run/secrets/key" \
