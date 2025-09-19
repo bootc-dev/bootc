@@ -27,6 +27,28 @@ main() {
     virsh --connect="qemu:///system" \
         undefine "${name}" --nvram --managed-save || true
 
+    cp "$PWD/bootc-uki/OVMF_VARS_CUSTOM.qcow2" .
+
+    OVMF_CODE="/usr/share/edk2/ovmf/OVMF_CODE_4M.secboot.qcow2"
+    OVMF_VARS_TEMPLATE="/usr/share/edk2/ovmf/OVMF_VARS_4M.secboot.qcow2"
+    OVMF_VARS="$PWD/OVMF_VARS_CUSTOM.qcow2"
+
+    local args=()
+    secureboot=true
+    if [[ "${secureboot}" == "true" ]]; then
+        loader="loader=${OVMF_CODE},loader.readonly=yes,loader.type=pflash"
+        nvram="nvram=${OVMF_VARS},nvram.template=${OVMF_VARS_TEMPLATE},loader_secure=yes"
+        features="firmware.feature0.name=secure-boot,firmware.feature0.enabled=yes,firmware.feature1.name=enrolled-keys,firmware.feature1.enabled=yes"
+        args+=("--boot")
+        args+=("uefi,${loader},${nvram},${features}")
+        args+=("--tpm")
+        args+=("backend.type=emulator,backend.version=2.0,model=tpm-tis")
+    else
+        args+=("--boot")
+        args+=("uefi,firmware.feature0.name=secure-boot,firmware.feature0.enabled=no")
+    fi
+
+    set -x
     virt-install --connect="qemu:///system" \
         --name="${name}" \
         --vcpus="${VCPUS}" \
@@ -37,7 +59,8 @@ main() {
         --network bridge=virbr0 \
         "${IGNITION_DEVICE_ARG[@]}" \
         --machine q35 \
-        --boot uefi,firmware.feature0.name=secure-boot,firmware.feature0.enabled=no
+        --noautoconsole \
+        "${args[@]}"
 }
 
 main "${@}"
