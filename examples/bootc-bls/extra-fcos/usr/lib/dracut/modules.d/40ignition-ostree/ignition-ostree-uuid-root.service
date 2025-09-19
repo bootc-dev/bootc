@@ -1,0 +1,27 @@
+[Unit]
+Description=Ignition OSTree: Regenerate Filesystem UUID (root)
+# These conditions match those generated in coreos-diskful-generator
+DefaultDependencies=false
+ConditionKernelCommandLine=composefs
+ConditionPathExists=!/run/ostree-live
+Before=sysroot.mount initrd-root-fs.target
+After=ignition-disks.service
+# If we've reprovisioned the rootfs, then there's no need to restamp
+ConditionPathExists=!/run/ignition-ostree-transposefs
+ConditionKernelCommandLine=!rootfs.roothash
+
+After=dev-disk-by\x2dlabel-root.device
+# Avoid racing with fsck
+Before=systemd-fsck@dev-disk-by\x2dlabel-root.service
+Before=systemd-fsck@dev-disk-by\x2dlabel-dm-mpath-root.service
+
+# Note we don't have a Requires: /dev/disk/by-label/root here like
+# the -subsequent service does because ignition-disks may have
+# regenerated it.
+Before=sysroot.mount
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# ExecStart=/usr/sbin/ignition-ostree-firstboot-uuid root
+ExecStart=true

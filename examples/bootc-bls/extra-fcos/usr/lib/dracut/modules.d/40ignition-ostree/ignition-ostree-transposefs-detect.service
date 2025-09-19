@@ -1,0 +1,20 @@
+[Unit]
+Description=Ignition OSTree: Detect Partition Transposition
+DefaultDependencies=false
+After=ignition-fetch.service
+Before=ignition-disks.service
+Before=initrd-root-fs.target
+Before=sysroot.mount
+ConditionKernelCommandLine=composefs
+OnFailure=emergency.target
+OnFailureJobMode=isolate
+
+# This stage requires udevd to detect disks
+Requires=systemd-udevd.service
+After=systemd-udevd.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/ignition-ostree-transposefs detect
+ExecStop=/usr/libexec/ignition-ostree-transposefs cleanup

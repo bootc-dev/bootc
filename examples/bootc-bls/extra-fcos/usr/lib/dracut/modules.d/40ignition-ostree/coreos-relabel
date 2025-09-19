@@ -1,0 +1,35 @@
+#!/bin/bash
+set -euo pipefail
+
+err() {
+    echo "$@" >&2
+}
+
+fatal() {
+    err "$@"
+    exit 1
+}
+
+if [ $# -eq 0 ]; then
+    err "Usage: $0 [PATTERN...]"
+    err " e.g.: $0 /etc/passwd '/etc/group*'"
+fi
+
+if [ ! -f /sysroot/etc/selinux/config ]; then
+    exit 0
+fi
+
+source /sysroot/etc/selinux/config
+
+if [ -z "${SELINUXTYPE:-}" ]; then
+    fatal "Couldn't find SELINUXTYPE in /sysroot/etc/selinux/config"
+fi
+
+file_contexts="/sysroot/etc/selinux/${SELINUXTYPE}/contexts/files/file_contexts"
+
+prefixed_patterns=()
+while [ $# -ne 0 ]; do
+    pattern=$1; shift
+    prefixed_patterns+=("/sysroot/$pattern")
+done
+setfiles -vFi0 -r /sysroot "$file_contexts" "${prefixed_patterns[@]}"

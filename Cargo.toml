@@ -4,13 +4,16 @@ resolver = "2"
 
 [profile.dev]
 opt-level = 1 # No optimizations are too slow for us.
+# https://kobzol.github.io/rust/rustc/2025/05/20/disable-debuginfo-to-improve-rust-compile-times.html
+debug = false
 
 [profile.release]
 lto = "thin"
 # We use FFI so this is safest
 panic = "abort"
 # We assume we're being delivered via e.g. RPM which supports split debuginfo
-debug = true
+# debug = true
+debug = false
 
 [profile.thin]
 # drop bootc size when split debuginfo is not available and go a step

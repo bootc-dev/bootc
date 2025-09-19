@@ -1,0 +1,23 @@
+[Unit]
+Description=Ignition OSTree: Restore Partitions
+DefaultDependencies=false
+After=ignition-disks.service
+# Avoid racing with UUID regeneration
+After=ignition-ostree-uuid-root.service
+After=ignition-ostree-growfs.service
+# https://issues.redhat.com/browse/OCPBUGS-16157
+# On multipath systems mounting the /sysroot before
+# the ignition-ostree services causes the transpose to fail.
+Before=sysroot.mount
+OnFailure=emergency.target
+OnFailureJobMode=isolate
+
+ConditionKernelCommandLine=composefs
+ConditionPathIsDirectory=/run/ignition-ostree-transposefs
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# So we can transiently mount sysroot
+MountFlags=slave
+ExecStart=/usr/libexec/ignition-ostree-transposefs restore

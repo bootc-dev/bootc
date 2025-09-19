@@ -1,0 +1,21 @@
+#!/bin/bash
+
+set -eux
+
+cd "${0%/*}"
+
+FROM="${FROM:-quay.io/fedora/fedora-bootc:42}"
+TAG="${TAG:-quay.io/fedora/fedora-bootc-bls:42}"
+EXTRA="${EXTRA:-extra}"
+
+# cargo build --release --features=composefs-backend
+
+mkdir -p "${EXTRA}/usr/bin/"
+cp ../../target/release/bootc "${EXTRA}/usr/bin/"
+cp ../../target/release/bootc-initramfs-setup "${EXTRA}/usr/lib/dracut/modules.d/37bootc/"
+
+podman build \
+    --from "${FROM}" \
+    -t "${TAG}" \
+    -f Containerfile \
+    "${EXTRA}"

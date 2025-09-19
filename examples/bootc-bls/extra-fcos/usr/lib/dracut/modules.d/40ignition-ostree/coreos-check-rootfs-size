@@ -1,0 +1,38 @@
+#!/bin/bash
+set -euo pipefail
+
+# See also ignition-ostree-check-rootfs-size.service
+# https://github.com/coreos/fedora-coreos-tracker/issues/586#issuecomment-777220000
+
+# /sysroot is the mounted deploy root, /sysroot/sysroot is the physical root filesystem
+srcdev=$(findmnt -nvr -o SOURCE /sysroot/sysroot | tail -n1)
+size=$(lsblk --nodeps --noheadings --bytes -o SIZE "${srcdev}")
+
+MINIMUM_GB=8
+MINIMUM_BYTES=$((1024 * 1024 * 1024 * MINIMUM_GB))
+
+MOTD_DROPIN=/etc/motd.d/60-coreos-rootfs-size.motd
+
+YELLOW=$(echo -e '\033[0;33m')
+RESET=$(echo -e '\033[0m')
+
+if [ "${size}" -lt "${MINIMUM_BYTES}" ]; then
+    mkdir -p "/sysroot/$(dirname "${MOTD_DROPIN}")"
+    cat > "/sysroot/${MOTD_DROPIN}" <<EOF
+${YELLOW}
+############################################################################
+WARNING: The root filesystem is too small. It is strongly recommended to
+allocate at least ${MINIMUM_GB} GiB of space to allow for upgrades. From June 2021, this
+condition will trigger a failure in some cases. For more information, see:
+https://docs.fedoraproject.org/en-US/fedora-coreos/storage/
+
+You may delete this warning using:
+sudo rm ${MOTD_DROPIN}
+############################################################################
+${RESET}
+EOF
+
+    # And also write it on stdout for the journal and console
+    cat "/sysroot/${MOTD_DROPIN}"
+    coreos-relabel "${MOTD_DROPIN}"
+fi

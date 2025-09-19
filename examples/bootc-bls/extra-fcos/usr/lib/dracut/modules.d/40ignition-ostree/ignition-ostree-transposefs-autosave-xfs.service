@@ -1,0 +1,23 @@
+[Unit]
+Description=Ignition OSTree: Autosave XFS Rootfs Partition
+DefaultDependencies=false
+After=ignition-disks.service
+# Avoid racing with UUID regeneration
+After=ignition-ostree-uuid-root.service
+After=ignition-ostree-growfs.service
+# https://issues.redhat.com/browse/OCPBUGS-16157
+# On multipath systems mounting the /sysroot before
+# the ignition-ostree services causes the transpose to fail.
+Before=sysroot.mount
+Before=ignition-ostree-transposefs-restore.service
+OnFailure=emergency.target
+OnFailureJobMode=isolate
+
+ConditionKernelCommandLine=composefs
+# only run if ignition-ostree-growfs ran since that's when pathological cases occur
+ConditionPathExists=/run/ignition-ostree-growfs.stamp
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/ignition-ostree-transposefs autosave-xfs

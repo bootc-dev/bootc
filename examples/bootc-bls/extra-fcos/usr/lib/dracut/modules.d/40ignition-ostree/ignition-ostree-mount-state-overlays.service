@@ -1,0 +1,19 @@
+[Unit]
+Description=Ignition OSTree Mount State Overlays
+DefaultDependencies=false
+ConditionKernelCommandLine=|ostree
+ConditionPathExists=|/run/ostree-live
+
+# Need to do this with all mount points active
+After=ignition-mount.service
+# Not strictly required, but both do /var things
+After=ignition-ostree-populate-var.service
+
+# But *before* we start dumping files in there
+Before=ignition-files.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/ignition-ostree-mount-state-overlays mount
+ExecStop=/usr/libexec/ignition-ostree-mount-state-overlays umount

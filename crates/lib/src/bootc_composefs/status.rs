@@ -1,11 +1,12 @@
-use std::{io::Read, sync::OnceLock};
+use std::{io::Read, sync::OnceLock, u16};
 
 use anyhow::{Context, Result};
 use bootc_kernel_cmdline::utf8::Cmdline;
+use bootc_mount::tempmount::TempMount;
 use fn_error_context::context;
 
 use crate::{
-    bootc_composefs::boot::BootType,
+    bootc_composefs::boot::{get_esp_partition, get_sysroot_parent_dev, BootType},
     composefs_consts::{BOOT_LOADER_ENTRIES, COMPOSEFS_CMDLINE, USER_CFG},
     parsers::{
         bls_config::{parse_bls_config, BLSConfig},
@@ -162,8 +163,20 @@ fn get_bootloader() -> Result<Bootloader> {
 
     const EFI_LOADER_INFO: &str = "LoaderInfo-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f";
 
-    match efivarfs.read_to_string(EFI_LOADER_INFO) {
-        Ok(loader) => {
+    match efivarfs.read(EFI_LOADER_INFO) {
+        Ok(loader_bytes) => {
+            if loader_bytes.len() % 2 != 0 {
+                anyhow::bail!("EFI var length is not valid UTF-16 LE");
+            }
+
+            // EFI vars are UTF-16 LE
+            let loader_u16_bytes: Vec<u16> = loader_bytes
+                .chunks_exact(2)
+                .map(|x| u16::from_le_bytes([x[0], x[1]]))
+                .collect();
+
+            let loader = String::from_utf16(&loader_u16_bytes).context("EFI var is not UTF-16")?;
+
             if loader.to_lowercase().contains("systemd-boot") {
                 return Ok(Bootloader::Systemd);
             }
@@ -339,7 +352,27 @@ pub(crate) async fn composefs_deployment_status() -> Result<Host> {
         anyhow::bail!("Could not determine boot type");
     };
 
-    let boot_dir = sysroot.open_dir("boot").context("Opening boot dir")?;
+    let booted = host.require_composefs_booted()?;
+
+    let (boot_dir, _temp_guard) = match booted.bootloader {
+        Bootloader::Grub => (sysroot.open_dir("boot").context("Opening boot dir")?, None),
+
+        // TODO: This is redundant as we should already have ESP mounted at `/efi/` accoding to
+        // spec; currently we do not
+        //
+        // See: https://uapi-group.org/specifications/specs/boot_loader_specification/#mount-points
+        Bootloader::Systemd => {
+            let parent = get_sysroot_parent_dev()?;
+            let (esp_part, ..) = get_esp_partition(&parent)?;
+
+            let esp_mount = TempMount::mount_dev(&esp_part)?;
+
+            let dir = esp_mount.fd.try_clone().context("Cloning fd")?;
+            let guard = Some(esp_mount);
+
+            (dir, guard)
+        }
+    };
 
     match boot_type {
         BootType::Bls => {

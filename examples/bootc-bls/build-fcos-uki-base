@@ -1,0 +1,6 @@
+#!/bin/bash
+
+export FROM="quay.io/fedora/fedora-coreos:stable"
+export TAG="quay.io/fedora/fedora-coreos-base-uki:stable"
+export EXTRA="extra-fcos"
+exec ./build-bootc-uki-base

@@ -1,0 +1,19 @@
+[Unit]
+Description=Ignition OSTree: Save Partitions
+DefaultDependencies=false
+After=ignition-ostree-transposefs-detect.service
+Before=ignition-disks.service
+ConditionKernelCommandLine=composefs
+ConditionPathIsDirectory=/run/ignition-ostree-transposefs
+# Any services looking at mounts need to order after this
+# because it causes device re-probing.
+After=coreos-gpt-setup.service
+OnFailure=emergency.target
+OnFailureJobMode=isolate
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# So we can transiently mount sysroot
+MountFlags=slave
+ExecStart=/usr/libexec/ignition-ostree-transposefs save

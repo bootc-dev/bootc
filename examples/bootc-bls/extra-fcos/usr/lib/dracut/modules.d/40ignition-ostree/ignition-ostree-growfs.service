@@ -1,0 +1,16 @@
+[Unit]
+Description=Ignition OSTree: Grow Root Filesystem
+DefaultDependencies=false
+ConditionKernelCommandLine=composefs
+ConditionPathExists=!/run/ostree-live
+Before=initrd-root-fs.target
+Before=sysroot.mount
+After=ignition-ostree-uuid-root.service
+
+[Service]
+Type=oneshot
+ExecStart=bash -c "udevadm settle; sleep 1"
+ExecStart=/usr/sbin/ignition-ostree-growfs
+RemainAfterExit=yes
+# So we can transiently mount sysroot
+MountFlags=slave

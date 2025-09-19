@@ -1,0 +1,20 @@
+#!/bin/bash
+
+set -eux
+
+cd "${0%/*}"
+
+if [[ ! -d "secureboot" ]]; then
+    echo "fail"
+    exit 1
+fi
+
+# See: https://github.com/rhuefi/qemu-ovmf-secureboot
+# $ dnf install -y python3-virt-firmware
+GUID=$(cat secureboot/GUID.txt)
+virt-fw-vars --input "/usr/share/edk2/ovmf/OVMF_VARS_4M.secboot.qcow2" \
+    --secure-boot \
+    --set-pk  $GUID "secureboot/PK.crt" \
+    --add-kek $GUID "secureboot/KEK.crt" \
+    --add-db  $GUID "secureboot/db.crt" \
+    -o "OVMF_VARS_CUSTOM.qcow2"

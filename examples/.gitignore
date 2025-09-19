@@ -1,0 +1,14 @@
+*.ign
+*.img
+*.qcow2
+backups
+bootc-bls/*.qcow2
+bootc-bls/bootc
+bootc-bls/extra-fcos/usr/bin/bootc
+bootc-bls/extra-fcos/usr/lib/dracut/modules.d/37bootc/bootc-initramfs-setup
+bootc-bls/extra/usr/bin/bootc
+bootc-bls/extra/usr/lib/dracut/modules.d/37bootc/bootc-initramfs-setup
+bootc-bls/iid
+bootc-bls/secureboot
+bootc-bls/tmp
+systemd-bootx64.efi

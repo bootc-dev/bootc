@@ -49,7 +49,10 @@ pub(crate) async fn initialize_composefs_repository(
         &Arc::new(repo),
         &format!("{transport}{image_name}"),
         None,
-        None,
+        Some(ostree_ext::containers_image_proxy::ImageProxyConfig {
+            insecure_skip_tls_verification: Some(true),
+            ..Default::default()
+        }),
     )
     .await
 }

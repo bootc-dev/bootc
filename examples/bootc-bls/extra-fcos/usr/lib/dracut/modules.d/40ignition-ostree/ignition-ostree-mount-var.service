@@ -1,0 +1,28 @@
+[Unit]
+Description=Mount OSTree /var
+DefaultDependencies=false
+ConditionKernelCommandLine=composefs
+ConditionPathExists=!/run/ostree-live
+
+# Make sure ExecStop= runs before we switch root
+Before=initrd-switch-root.target
+
+# Make sure if ExecStop= fails, the boot fails
+OnFailure=emergency.target
+OnFailureJobMode=isolate
+
+# Make sure /sysroot is mounted first, since we're mounting under there
+Requires=initrd-root-fs.target
+After=initrd-root-fs.target
+
+# Need to do this before Ignition mounts any other filesystems (potentially
+# shadowing our own bind mount).
+Before=ignition-mount.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# ExecStart=/usr/sbin/ignition-ostree-mount-var mount
+# ExecStop=/usr/sbin/ignition-ostree-mount-var umount
+ExecStart=true
+ExecStop=true

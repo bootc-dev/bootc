@@ -1,0 +1,24 @@
+[Unit]
+Description=Ignition OSTree: Regenerate Filesystem UUID (boot)
+ConditionPathExists=/usr/lib/initrd-release
+ConditionKernelCommandLine=composefs
+ConditionPathExists=!/run/ostree-live
+# Any services looking at mounts need to order after this
+# because it causes device re-probing.
+After=coreos-gpt-setup.service
+# This could mount the bootfs rw and the ext4 in el9 at least doesn't seem to
+# like doing that in parallel with restamping the UUID
+Before=ignition-kargs.service
+
+# If we're going to reprovision the bootfs, then there's no need to restamp
+ConditionKernelCommandLine=!bootfs.roothash
+
+Before=systemd-fsck@dev-disk-by\x2dlabel-boot.service
+Requires=dev-disk-by\x2dlabel-boot.device
+After=dev-disk-by\x2dlabel-boot.device
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# ExecStart=/usr/sbin/ignition-ostree-firstboot-uuid boot
+ExecStart=true

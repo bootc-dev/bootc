@@ -1,0 +1,38 @@
+#!/bin/bash
+set -euo pipefail
+# https://github.com/coreos/fedora-coreos-tracker/issues/465
+# coreos-assembler generates disk images which are installed bit-for-bit
+# or booted directly in the cloud.
+# Generate new UUID on firstboot; this is general best practice, but in the future
+# we may use this for mounting by e.g. adding a boot=<uuid> and root=<uuid> kernel args.
+
+label=$1
+
+# Keep this in sync with https://github.com/coreos/coreos-assembler/blob/e3905fd2e138de04184c1cd86b99b0fd83cbe5cf/src/create_disk.sh#L17
+bootfs_uuid="96d15588-3596-4b3c-adca-a2ff7279ea63"
+rootfs_uuid="910678ff-f77e-4a7d-8d53-86f2ac47a823"
+
+target=/dev/disk/by-label/${label}
+if ! [ -b "${target}" ]; then
+  echo "$0: Failed to find block device ${target}" 1>&2
+  exit 1
+fi
+
+eval $(blkid -p -o export ${target})
+case "${label}" in
+  root) orig_uuid="${rootfs_uuid}"; orig_type=xfs ;;
+  boot) orig_uuid="${bootfs_uuid}"; orig_type=ext4 ;;
+  *) echo "unexpected ${label}"; exit 1 ;;
+esac
+
+if [ "${TYPE}" == "${orig_type}" ] && [ "${UUID}" == "${orig_uuid}" ]; then
+  case "${TYPE}" in
+    ext4) tune2fs -U random "${target}"    ;;
+    xfs) xfs_admin -U generate "${target}" ;;
+    *) echo "unexpected filesystem type ${TYPE}" 1>&2; exit 1 ;;
+  esac
+  udevadm settle || :
+  echo "Regenerated UUID for ${target}"
+else
+  echo "No changes required for ${target} TYPE=${TYPE} UUID=${UUID}"
+fi
