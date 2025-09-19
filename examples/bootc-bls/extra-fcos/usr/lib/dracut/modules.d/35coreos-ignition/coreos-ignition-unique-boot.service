@@ -1,0 +1,20 @@
+[Unit]
+Description=CoreOS Ignition Ensure Unique Boot Filesystem
+ConditionPathExists=/etc/initrd-release
+OnFailure=emergency.target
+OnFailureJobMode=isolate
+
+# That's a weak dependency, so service won't fail if boot dissaperears
+Wants=dev-disk-by\x2dlabel-boot.device
+After=dev-disk-by\x2dlabel-boot.device
+
+# Start after ignition has finished with disks but before mounting them
+After=ignition-disks.service
+Before=ignition-mount.service
+Before=ignition-ostree-uuid-root.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# ExecStart=/usr/bin/rdcore verify-unique-fs-label --rereadpt boot
+ExecStart=true

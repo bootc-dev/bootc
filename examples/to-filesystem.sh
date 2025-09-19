@@ -64,7 +64,7 @@ cp systemd-bootx64.efi ./mnt/EFI/fedora/grubx64.efi
 echo "timeout 5" > ./mnt//loader/loader.conf
 # ignition.firstboot ignition.platform.id=qemu
 # rd.systemd.default_debug_tty=ttyS0
-sed -i "s;options ;options console=tty0 console=ttyS0,115000n selinux=1 enforcing=0 audit=0 ignition.firstboot ignition.platform.id=qemu rd.systemd.debug_shell systemd.debug_shell ;" ./mnt/loader/entries/bootc-composefs-1.conf
+sed -i "s;options ;options console=ttyS0,115000n selinux=1 enforcing=0 audit=0 ignition.firstboot ignition.platform.id=qemu rd.systemd.debug_shell=1 rd.systemd.default_debug_tty=tty0 ;" ./mnt/loader/entries/bootc-composefs-1.conf
 
 umount -R ./mnt
 losetup -d /dev/loop0

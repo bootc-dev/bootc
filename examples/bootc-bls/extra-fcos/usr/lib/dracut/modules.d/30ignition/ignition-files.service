@@ -5,8 +5,8 @@ ConditionPathExists=/etc/initrd-release
 DefaultDependencies=false
 Before=ignition-complete.target
 
-After=bootc-initramfs-setup.service
-Requires=bootc-initramfs-setup.service
+# After=bootc-initramfs-setup.service
+# Requires=bootc-initramfs-setup.service
 
 OnFailure=emergency.target
 OnFailureJobMode=isolate

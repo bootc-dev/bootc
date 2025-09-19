@@ -14,11 +14,11 @@ OnFailureJobMode=isolate
 After=sysroot.mount
 ConditionPathIsReadWrite=!/sysroot
 
-After=bootc-initramfs-setup.service
-Requires=bootc-initramfs-setup.service
+# After=bootc-initramfs-setup.service
+# Requires=bootc-initramfs-setup.service
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=true
-# ExecStart=/bin/mount -o remount,rw /sysroot
+# ExecStart=true
+ExecStart=/bin/mount -o remount,rw /sysroot
