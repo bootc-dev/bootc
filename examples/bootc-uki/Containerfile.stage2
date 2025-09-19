@@ -10,16 +10,17 @@ RUN --mount=type=secret,id=key \
 
     mkdir -p /etc/kernel /etc/dracut.conf.d
     {
-    printf "composefs=${COMPOSEFS_FSVERITY} root=UUID=4f68bce3-e8cd-4db1-96e7-fbcaf984b709 rw"
+    printf "composefs=${COMPOSEFS_FSVERITY} root=UUID=910678ff-f77e-4a7d-8d53-86f2ac47a823 rw"
     printf " selinux=1 enforcing=0 audit=0"
     printf " console=ttyS0,115000n rd.systemd.debug_shell=1 rd.systemd.default_debug_tty=tty0"
     printf "\n"
     } > /etc/kernel/cmdline
 
-    rm "/etc/yum.repos.d/fedora-cisco-openh264.repo"
+    rm -f "/etc/yum.repos.d/fedora-cisco-openh264.repo"
     dnf install -y systemd-ukify sbsigntools systemd-boot-unsigned
     kver=$(cd /usr/lib/modules && echo *)
     mkdir -p "/boot/EFI/Linux"
+
     ukify build \
         --linux "/usr/lib/modules/$kver/vmlinuz" \
         --initrd "/usr/lib/modules/$kver/initramfs.img" \
@@ -32,12 +33,21 @@ RUN --mount=type=secret,id=key \
         --measure \
         --json pretty \
         --output "/boot/EFI/Linux/$kver.efi"
+
+    mkdir -p "/boot/EFI/Linux/$kver.efi.extra.d"
     ukify build \
         --cmdline "ignition.firstboot ignition.platform.id=qemu" \
         --signtool sbsign \
         --secureboot-private-key "/run/secrets/key" \
         --secureboot-certificate "/run/secrets/cert" \
-        --output "/boot/$kver.efi.extra.d/ignition.addon.efi"
+        --output "/boot/EFI/Linux/$kver.efi.extra.d/ignition.addon.efi"
+    ukify build \
+        --cmdline "rd.luks.uuid=luks-8ec9cda3-6b77-45d7-bb56-a95cd9e83234" \
+        --signtool sbsign \
+        --secureboot-private-key "/run/secrets/key" \
+        --secureboot-certificate "/run/secrets/cert" \
+        --output "/boot/EFI/Linux/$kver.efi.extra.d/luks.addon.efi"
+
     sbsign \
         --key "/run/secrets/key" \
         --cert "/run/secrets/cert" \
