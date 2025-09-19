@@ -8,7 +8,7 @@ use fn_error_context::context;
 use rustix::fs::{fsync, renameat_with, AtFlags, RenameFlags};
 
 use crate::bootc_composefs::boot::BootType;
-use crate::bootc_composefs::status::{composefs_deployment_status, get_sorted_bls_boot_entries};
+use crate::bootc_composefs::status::{composefs_deployment_status, get_sorted_type1_boot_entries};
 use crate::{
     bootc_composefs::{boot::get_efi_uuid_source, status::get_sorted_uki_boot_entries},
     composefs_consts::{
@@ -110,7 +110,7 @@ pub(crate) fn rollback_composefs_bls() -> Result<()> {
     // After this:
     // all_configs[0] -> booted depl
     // all_configs[1] -> rollback depl
-    let mut all_configs = get_sorted_bls_boot_entries(&boot_dir, false)?;
+    let mut all_configs = get_sorted_type1_boot_entries(&boot_dir, false)?;
 
     // Update the indicies so that they're swapped
     for (idx, cfg) in all_configs.iter_mut().enumerate() {
