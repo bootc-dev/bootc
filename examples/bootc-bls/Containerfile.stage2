@@ -12,14 +12,17 @@ RUN --mount=type=secret,id=key \
     {
     printf "composefs=${COMPOSEFS_FSVERITY} root=UUID=910678ff-f77e-4a7d-8d53-86f2ac47a823 rw"
     printf " selinux=1 enforcing=0 audit=0"
-    printf " console=ttyS0,115000n rd.systemd.debug_shell=1 rd.systemd.default_debug_tty=tty0"
+    printf " console=tty0 console=ttyS0,115000n"
+    # printf " console=ttyS0,115000n rd.systemd.debug_shell=1 rd.systemd.default_debug_tty=tty0"
     printf "\n"
     } > /etc/kernel/cmdline
 
     rm -f "/etc/yum.repos.d/fedora-cisco-openh264.repo"
     dnf install -y systemd-ukify sbsigntools systemd-boot-unsigned
+
     kver=$(cd /usr/lib/modules && echo *)
     mkdir -p "/boot/EFI/Linux"
+    mkdir -p "/boot/EFI/Linux/$kver.efi.extra.d"
 
     ukify build \
         --linux "/usr/lib/modules/$kver/vmlinuz" \
@@ -34,13 +37,13 @@ RUN --mount=type=secret,id=key \
         --json pretty \
         --output "/boot/EFI/Linux/$kver.efi"
 
-    mkdir -p "/boot/EFI/Linux/$kver.efi.extra.d"
     ukify build \
         --cmdline "ignition.firstboot ignition.platform.id=qemu" \
         --signtool sbsign \
         --secureboot-private-key "/run/secrets/key" \
         --secureboot-certificate "/run/secrets/cert" \
         --output "/boot/EFI/Linux/$kver.efi.extra.d/ignition.addon.efi"
+
     ukify build \
         --cmdline "rd.luks.uuid=luks-8ec9cda3-6b77-45d7-bb56-a95cd9e83234" \
         --signtool sbsign \

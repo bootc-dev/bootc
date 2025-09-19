@@ -2,4 +2,4 @@
 
 export FROM="quay.io/fedora/fedora-coreos-base-uki:stable"
 export TAG="quay.io/fedora/fedora-coreos-uki:stable"
-exec ./build.final
+exec ./build-bootc-uki-final
