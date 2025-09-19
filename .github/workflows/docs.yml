@@ -26,7 +26,7 @@ jobs:
     env:
       MDBOOK_VERSION: 0.4.37
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install mdBook
         run: |
           tag=$(curl 'https://api.github.com/repos/rust-lang/mdbook/releases/latest' | jq -r '.tag_name')
@@ -58,7 +58,7 @@ jobs:
       - name: Build with mdBook
         run: cd docs && mdbook-mermaid install && mdbook build
       - name: Upload artifact
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v4
         with:
           path: ./docs/book/html
 
