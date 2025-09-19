@@ -1,0 +1,33 @@
+# This unit will run late in the initrd process after Ignition is completed
+# successfully and temporarily mount /boot read-write to make edits
+# (e.g. removing firstboot networking configuration files if necessary).
+
+[Unit]
+Description=CoreOS Boot Edit
+ConditionPathExists=/usr/lib/initrd-release
+OnFailure=emergency.target
+OnFailureJobMode=isolate
+
+# Since we are mounting /boot, require the device first. This isn't strictly
+# necessary since we run late, but on principle let's make clear the dependency.
+Requires=dev-disk-by\x2dlabel-boot.device
+After=dev-disk-by\x2dlabel-boot.device
+# Start after Ignition has finished
+After=ignition-files.service
+# As above, this isn't strictly necessary, but on principle.
+After=coreos-multipath-wait.target
+# Finish before systemd starts tearing down services
+Before=initrd.target
+# initrd-parse-etc.service starts initrd-cleanup.service which will race
+# with us completing before we get nuked.  Need to get to the bottom of it,
+# but for now we need this.
+Before=initrd-parse-etc.service
+
+[Service]
+Type=oneshot
+# ExecStart=/usr/sbin/coreos-boot-edit
+ExecStart=true
+RemainAfterExit=yes
+# MountFlags=slave is so the umount of /boot is guaranteed to happen.
+# /boot will only be mounted for the lifetime of the unit.
+MountFlags=slave

@@ -86,6 +86,12 @@ install() {
     cp "$moddir/coreos-kargs.sh" "$initdir$binpath"
     install_ignition_unit coreos-kargs-reboot.service
 
+    inst_script "$moddir/coreos-boot-edit.sh" \
+        "/usr/sbin/coreos-boot-edit"
+    # Only start when the system has disks since we are editing /boot.
+    install_ignition_unit "coreos-boot-edit.service" \
+        "ignition-diskful.target"
+
     install_ignition_unit coreos-ignition-unique-boot.service ignition-diskful.target
     install_ignition_unit coreos-unique-boot.service ignition-diskful.target
     install_ignition_unit coreos-ignition-setup-user.service

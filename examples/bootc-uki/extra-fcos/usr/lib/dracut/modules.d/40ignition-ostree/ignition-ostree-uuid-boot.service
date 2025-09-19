@@ -20,4 +20,5 @@ After=dev-disk-by\x2dlabel-boot.device
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/usr/sbin/ignition-ostree-firstboot-uuid boot
+# ExecStart=/usr/sbin/ignition-ostree-firstboot-uuid boot
+ExecStart=true

@@ -22,5 +22,7 @@ Before=ignition-mount.service
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/usr/sbin/ignition-ostree-mount-var mount
-ExecStop=/usr/sbin/ignition-ostree-mount-var umount
+# ExecStart=/usr/sbin/ignition-ostree-mount-var mount
+# ExecStop=/usr/sbin/ignition-ostree-mount-var umount
+ExecStart=true
+ExecStop=true

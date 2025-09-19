@@ -9,6 +9,7 @@ After=ignition-ostree-uuid-root.service
 
 [Service]
 Type=oneshot
+ExecStart=bash -c "udevadm settle; sleep 1"
 ExecStart=/usr/sbin/ignition-ostree-growfs
 RemainAfterExit=yes
 # So we can transiently mount sysroot

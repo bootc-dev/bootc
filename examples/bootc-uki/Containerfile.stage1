@@ -1,6 +1,9 @@
 FROM quay.io/fedora/fedora-bootc:42
 COPY . /
 
+RUN rm /etc/yum.repos.d/fedora-cisco-openh264.repo
+RUN dnf install -y fsverity-utils
+
 RUN passwd -d root
 
 # need to have bootc-initramfs-setup in the initramfs so we need this
