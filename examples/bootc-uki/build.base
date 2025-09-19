@@ -1,0 +1,18 @@
+#!/bin/bash
+
+set -eux
+
+cd "${0%/*}"
+
+cargo build --release --bin bootc --bin bootc-initramfs-setup
+
+cp ../../target/release/bootc .
+cp ../../target/release/bootc-initramfs-setup extra/usr/lib/dracut/modules.d/37bootc/
+
+mkdir -p tmp
+
+podman build \
+    -t quay.io/fedora/fedora-bootc-base-uki:42 \
+    -f Containerfile.stage1 \
+    --iidfile=tmp/iid \
+    .

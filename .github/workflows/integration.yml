@@ -52,7 +52,7 @@ jobs:
     strategy:
       matrix:
         test_os: [fedora-41, fedora-42, fedora-43, centos-9]
-        tmt_plan: [test-01-readonly, test-20-local-upgrade, test-21-logically-bound-switch, test-22-logically-bound-install, test-23-install-outside-container, test-24-local-upgrade-reboot]
+        tmt_plan: [test-01-readonly, test-20-local-upgrade, test-21-logically-bound-switch, test-22-logically-bound-install, test-23-install-outside-container, test-24-local-upgrade-reboot, test-26-examples-build]
 
     runs-on: ubuntu-latest
 

@@ -44,3 +44,10 @@ execute:
     how: fmf
     test:
         - /tmt/tests/test-24-local-upgrade-reboot
+
+/test-26-examples-build:
+  summary: Test bootc examples build scripts
+  discover:
+    how: fmf
+    test:
+        - /tmt/tests/test-26-examples-build
