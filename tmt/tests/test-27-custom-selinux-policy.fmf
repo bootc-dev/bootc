@@ -1,0 +1,3 @@
+summary: Execute custom selinux policy test
+test: nu booted/test-custom-selinux-policy.nu
+duration: 30m

@@ -60,3 +60,11 @@ execute:
     how: fmf
     test:
         - /tmt/tests/test-26-examples-build
+
+/test-27-custom-selinux-policy:
+  summary: Execute restorecon test on system with custom selinux policy
+  discover:
+    how: fmf
+    test:
+        - /tmt/tests/bootc-install-provision
+        - /tmt/tests/test-27-custom-selinux-policy
