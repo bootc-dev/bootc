@@ -1,12 +1,12 @@
 use std::fs::create_dir_all;
 use std::io::Write;
-use std::process::Command;
+use std::path::Path;
 use std::{ffi::OsStr, path::PathBuf};
 
 use anyhow::{anyhow, Context, Result};
 use bootc_blockdev::find_parent_devices;
 use bootc_mount::inspect_filesystem;
-use bootc_utils::CommandRunExt;
+use bootc_mount::tempmount::TempMount;
 use camino::{Utf8Path, Utf8PathBuf};
 use cap_std_ext::{
     cap_std::{ambient_authority, fs::Dir},
@@ -15,7 +15,7 @@ use cap_std_ext::{
 use clap::ValueEnum;
 use composefs::fs::read_file;
 use composefs::tree::{FileSystem, RegularFile};
-use composefs_boot::bootloader::{PEType, EFI_ADDON_DIR_EXT, EFI_ADDON_FILE_EXT, EFI_EXT};
+use composefs_boot::bootloader::{PEType, EFI_ADDON_DIR_EXT, EFI_EXT};
 use composefs_boot::BootOps;
 use fn_error_context::context;
 use ostree_ext::composefs::{
@@ -35,7 +35,8 @@ use serde::{Deserialize, Serialize};
 use crate::bootc_composefs::repo::open_composefs_repo;
 use crate::bootc_composefs::state::{get_booted_bls, write_composefs_state};
 use crate::bootc_composefs::status::get_sorted_uki_boot_entries;
-use crate::parsers::bls_config::BLSConfig;
+use crate::composefs_consts::{TYPE1_ENT_PATH, TYPE1_ENT_PATH_STAGED};
+use crate::parsers::bls_config::{BLSConfig, BLSConfigType};
 use crate::parsers::grub_menuconfig::MenuEntry;
 use crate::spec::ImageReference;
 use crate::task::Task;
@@ -54,6 +55,16 @@ use crate::install::{RootSetup, State};
 pub(crate) const EFI_UUID_FILE: &str = "efiuuid.cfg";
 /// The EFI Linux directory
 const EFI_LINUX: &str = "EFI/Linux";
+
+/// Timeout for systemd-boot bootloader menu
+const SYSTEMD_TIMEOUT: &str = "timeout 5";
+const SYSTEMD_LOADER_CONF_PATH: &str = "loader/loader.conf";
+
+/// We want to be able to control the ordering of UKIs so we put them in a directory that's not the
+/// directory specified by the BLS spec. We do this because we want systemd-boot to only look at
+/// our config files and not show the actual UKIs in the bootloader menu
+/// This is relative to the ESP
+const SYSTEMD_UKI_DIR: &str = "EFI/Linux/uki";
 
 pub(crate) enum BootSetupType<'a> {
     /// For initial setup, i.e. install to-disk
@@ -140,6 +151,16 @@ pub fn get_sysroot_parent_dev() -> Result<String> {
     };
 
     return Ok(parent);
+}
+
+pub fn type1_entry_conf_file_name(
+    sort_key: impl AsRef<str> + std::fmt::Display,
+    efi: bool,
+) -> String {
+    format!(
+        "bootc-composefs-{sort_key}.{}",
+        if efi { "efi" } else { "conf" }
+    )
 }
 
 /// Compute SHA256Sum of VMlinuz + Initrd
@@ -264,6 +285,51 @@ fn write_bls_boot_entries_to_disk(
     Ok(())
 }
 
+/// Parses /usr/lib/os-release and returns title and version fields
+/// # Returns
+/// - (title, version)
+fn osrel_title_and_version(
+    fs: &FileSystem<Sha256HashValue>,
+    repo: &ComposefsRepository<Sha256HashValue>,
+) -> Result<Option<(Option<String>, Option<String>)>> {
+    // Every update should have its own /usr/lib/os-release
+    let (dir, fname) = fs
+        .root
+        .split(OsStr::new("/usr/lib/os-release"))
+        .context("Getting /usr/lib/os-release")?;
+
+    let os_release = dir
+        .get_file_opt(fname)
+        .context("Getting /usr/lib/os-release")?;
+
+    let Some(os_rel_file) = os_release else {
+        return Ok(None);
+    };
+
+    let file_contents = match read_file(os_rel_file, repo) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!("Could not read /usr/lib/os-release: {e:?}");
+            return Ok(None);
+        }
+    };
+
+    let file_contents = match std::str::from_utf8(&file_contents) {
+        Ok(c) => c,
+        Err(..) => {
+            tracing::warn!("/usr/lib/os-release did not have valid UTF-8");
+            return Ok(None);
+        }
+    };
+
+    let parsed_contents = OsReleaseInfo::parse(file_contents);
+
+    let title = parsed_contents.get_pretty_name();
+    let version = parsed_contents.get_version();
+
+    Ok(Some((title, version)))
+}
+
 struct BLSEntryPath<'a> {
     /// Where to write vmlinuz/initrd
     entries_path: Utf8PathBuf,
@@ -272,8 +338,6 @@ struct BLSEntryPath<'a> {
     abs_entries_path: &'a str,
     /// Where to write the .conf files
     config_path: Utf8PathBuf,
-    /// If we mounted EFI, the target path
-    mount_path: Option<Utf8PathBuf>,
 }
 
 /// Sets up and writes BLS entries and binaries (VMLinuz + Initrd) to disk
@@ -352,25 +416,14 @@ pub(crate) fn setup_composefs_bls_boot(
                 entries_path: root_path.join("boot"),
                 config_path: root_path.join("boot"),
                 abs_entries_path: "boot",
-                mount_path: None,
             },
             None,
         ),
 
         Bootloader::Systemd => {
-            let temp_efi_dir = tempfile::tempdir().map_err(|e| {
-                anyhow::anyhow!("Failed to create temporary directory for EFI mount: {e}")
-            })?;
+            let efi_mount = TempMount::mount_dev(&esp_device).context("Mounting ESP")?;
 
-            let mounted_efi = Utf8PathBuf::from_path_buf(temp_efi_dir.path().to_path_buf())
-                .map_err(|_| anyhow::anyhow!("EFI dir is not valid UTF-8"))?;
-
-            Command::new("mount")
-                .args([&PathBuf::from(&esp_device), mounted_efi.as_std_path()])
-                .log_debug()
-                .run_inherited_with_cmd_context()
-                .context("Mounting EFI")?;
-
+            let mounted_efi = Utf8PathBuf::from(efi_mount.dir.path().as_str()?);
             let efi_linux_dir = mounted_efi.join(EFI_LINUX);
 
             (
@@ -378,89 +431,82 @@ pub(crate) fn setup_composefs_bls_boot(
                     entries_path: efi_linux_dir,
                     config_path: mounted_efi.clone(),
                     abs_entries_path: EFI_LINUX,
-                    mount_path: Some(mounted_efi),
                 },
-                Some(temp_efi_dir),
+                Some(efi_mount),
             )
         }
     };
 
     let (bls_config, boot_digest) = match &entry {
-        ComposefsBootEntry::Type1(..) => unimplemented!(),
-        ComposefsBootEntry::Type2(..) => unimplemented!(),
+        ComposefsBootEntry::Type1(..) => anyhow::bail!("Found boot entries in /boot"),
+        ComposefsBootEntry::Type2(..) => anyhow::bail!("Found UKI"),
 
         ComposefsBootEntry::UsrLibModulesVmLinuz(usr_lib_modules_vmlinuz) => {
             let boot_digest = compute_boot_digest(usr_lib_modules_vmlinuz, &repo)
                 .context("Computing boot digest")?;
 
-            // Every update should have its own /usr/lib/os-release
-            let (dir, fname) = fs
-                .root
-                .split(OsStr::new("/usr/lib/os-release"))
-                .context("Getting /usr/lib/os-release")?;
-
-            let os_release = dir
-                .get_file_opt(fname)
-                .context("Getting /usr/lib/os-release")?;
-
-            let version = os_release.and_then(|os_rel_file| {
-                let file_contents = match read_file(os_rel_file, &repo) {
-                    Ok(c) => c,
-                    Err(e) => {
-                        tracing::warn!("Could not read /usr/lib/os-release: {e:?}");
-                        return None;
-                    }
-                };
-
-                let file_contents = match std::str::from_utf8(&file_contents) {
-                    Ok(c) => c,
-                    Err(..) => {
-                        tracing::warn!("/usr/lib/os-release did not have valid UTF-8");
-                        return None;
-                    }
-                };
-
-                OsReleaseInfo::parse(file_contents).get_version()
-            });
-
             let default_sort_key = "1";
+            let default_title_version = (id.to_hex(), default_sort_key.to_string());
+
+            let osrel_res = osrel_title_and_version(fs, &repo)?;
+
+            let (title, version) = match osrel_res {
+                Some((t, v)) => (
+                    t.unwrap_or(default_title_version.0),
+                    v.unwrap_or(default_title_version.1),
+                ),
+
+                None => default_title_version,
+            };
 
             let mut bls_config = BLSConfig::default();
 
             bls_config
-                .with_title(id_hex.clone())
+                .with_title(title)
                 .with_sort_key(default_sort_key.into())
-                .with_version(version.unwrap_or(default_sort_key.into()))
-                .with_linux(format!(
-                    "/{}/{id_hex}/vmlinuz",
-                    entry_paths.abs_entries_path
-                ))
-                .with_initrd(vec![format!(
-                    "/{}/{id_hex}/initrd",
-                    entry_paths.abs_entries_path
-                )])
-                .with_options(cmdline_refs);
+                .with_version(version)
+                .with_cfg(BLSConfigType::NonEFI {
+                    linux: format!("/{}/{id_hex}/vmlinuz", entry_paths.abs_entries_path),
+                    initrd: vec![format!("/{}/{id_hex}/initrd", entry_paths.abs_entries_path)],
+                    options: Some(cmdline_refs),
+                });
 
-            if let Some(symlink_to) = find_vmlinuz_initrd_duplicates(&boot_digest)? {
-                bls_config.linux =
-                    format!("/{}/{symlink_to}/vmlinuz", entry_paths.abs_entries_path);
+            match find_vmlinuz_initrd_duplicates(&boot_digest)? {
+                Some(symlink_to) => {
+                    match bls_config.cfg_type {
+                        BLSConfigType::NonEFI {
+                            ref mut linux,
+                            ref mut initrd,
+                            ..
+                        } => {
+                            *linux =
+                                format!("/{}/{symlink_to}/vmlinuz", entry_paths.abs_entries_path);
 
-                bls_config.initrd = vec![format!(
-                    "/{}/{symlink_to}/initrd",
-                    entry_paths.abs_entries_path
-                )];
-            } else {
-                write_bls_boot_entries_to_disk(
-                    &entry_paths.entries_path,
-                    id,
-                    usr_lib_modules_vmlinuz,
-                    &repo,
-                )?;
-            }
+                            *initrd = vec![format!(
+                                "/{}/{symlink_to}/initrd",
+                                entry_paths.abs_entries_path
+                            )];
+                        }
+
+                        _ => unreachable!(),
+                    };
+                }
+
+                None => {
+                    write_bls_boot_entries_to_disk(
+                        &entry_paths.entries_path,
+                        id,
+                        usr_lib_modules_vmlinuz,
+                        &repo,
+                    )?;
+                }
+            };
 
             (bls_config, boot_digest)
         }
     };
+
+    let loader_path = entry_paths.config_path.join("loader");
 
     let (config_path, booted_bls) = if is_upgrade {
         let mut booted_bls = get_booted_bls()?;
@@ -468,63 +514,37 @@ pub(crate) fn setup_composefs_bls_boot(
 
         // This will be atomically renamed to 'loader/entries' on shutdown/reboot
         (
-            entry_paths
-                .config_path
-                .join("loader")
-                .join(STAGED_BOOT_LOADER_ENTRIES),
+            loader_path.join(STAGED_BOOT_LOADER_ENTRIES),
             Some(booted_bls),
         )
     } else {
-        (
-            entry_paths
-                .config_path
-                .join("loader")
-                .join(BOOT_LOADER_ENTRIES),
-            None,
-        )
+        (loader_path.join(BOOT_LOADER_ENTRIES), None)
     };
 
     create_dir_all(&config_path).with_context(|| format!("Creating {:?}", config_path))?;
 
-    // Scope to allow for proper unmounting
-    {
-        let loader_entries_dir = Dir::open_ambient_dir(&config_path, ambient_authority())
-            .with_context(|| format!("Opening {config_path:?}"))?;
+    let loader_entries_dir = Dir::open_ambient_dir(&config_path, ambient_authority())
+        .with_context(|| format!("Opening {config_path:?}"))?;
 
+    loader_entries_dir.atomic_write(
+        // SAFETY: We set sort_key above
+        type1_entry_conf_file_name(bls_config.sort_key.as_ref().unwrap(), false),
+        bls_config.to_string().as_bytes(),
+    )?;
+
+    if let Some(booted_bls) = booted_bls {
         loader_entries_dir.atomic_write(
             // SAFETY: We set sort_key above
-            format!(
-                "bootc-composefs-{}.conf",
-                bls_config.sort_key.as_ref().unwrap()
-            ),
-            bls_config.to_string().as_bytes(),
+            type1_entry_conf_file_name(booted_bls.sort_key.as_ref().unwrap(), false),
+            booted_bls.to_string().as_bytes(),
         )?;
-
-        if let Some(booted_bls) = booted_bls {
-            loader_entries_dir.atomic_write(
-                // SAFETY: We set sort_key above
-                format!(
-                    "bootc-composefs-{}.conf",
-                    booted_bls.sort_key.as_ref().unwrap()
-                ),
-                booted_bls.to_string().as_bytes(),
-            )?;
-        }
-
-        let owned_loader_entries_fd = loader_entries_dir
-            .reopen_as_ownedfd()
-            .context("Reopening as owned fd")?;
-
-        rustix::fs::fsync(owned_loader_entries_fd).context("fsync")?;
     }
 
-    if let Some(mounted_efi) = entry_paths.mount_path {
-        Command::new("umount")
-            .arg(mounted_efi)
-            .log_debug()
-            .run_inherited_with_cmd_context()
-            .context("Unmounting EFI")?;
-    }
+    let owned_loader_entries_fd = loader_entries_dir
+        .reopen_as_ownedfd()
+        .context("Reopening as owned fd")?;
+
+    rustix::fs::fsync(owned_loader_entries_fd).context("fsync")?;
 
     Ok(boot_digest)
 }
@@ -537,7 +557,8 @@ fn write_pe_to_esp(
     pe_type: PEType,
     uki_id: &String,
     is_insecure_from_opts: bool,
-    mounted_efi: &PathBuf,
+    mounted_efi: impl AsRef<Path>,
+    bootloader: &Bootloader,
 ) -> Result<Option<String>> {
     let efi_bin = read_file(file, &repo).context("Reading .efi binary")?;
 
@@ -574,7 +595,11 @@ fn write_pe_to_esp(
     }
 
     // Write the UKI to ESP
-    let efi_linux_path = mounted_efi.join(EFI_LINUX);
+    let efi_linux_path = mounted_efi.as_ref().join(match bootloader {
+        Bootloader::Grub => EFI_LINUX,
+        Bootloader::Systemd => SYSTEMD_UKI_DIR,
+    });
+
     create_dir_all(&efi_linux_path).context("Creating EFI/Linux")?;
 
     let final_pe_path = match file_path.parent() {
@@ -606,7 +631,12 @@ fn write_pe_to_esp(
 
     let pe_name = match pe_type {
         PEType::Uki => format!("{}{}", uki_id, EFI_EXT),
-        PEType::UkiAddon => format!("{}{}", uki_id, EFI_ADDON_FILE_EXT),
+        PEType::UkiAddon => file_path
+            .components()
+            .last()
+            .unwrap()
+            .to_string_lossy()
+            .to_string(),
     };
 
     pe_dir
@@ -627,7 +657,7 @@ fn write_pe_to_esp(
 fn write_grub_uki_menuentry(
     root_path: Utf8PathBuf,
     setup_type: &BootSetupType,
-    boot_label: &String,
+    boot_label: String,
     id: &Sha256HashValue,
     esp_device: &String,
 ) -> Result<()> {
@@ -711,6 +741,64 @@ fn write_grub_uki_menuentry(
     Ok(())
 }
 
+#[context("Writing systemd UKI config")]
+fn write_systemd_uki_config(
+    esp_dir: &Dir,
+    setup_type: &BootSetupType,
+    boot_label: String,
+    id: &Sha256HashValue,
+) -> Result<()> {
+    let default_sort_key = "0";
+
+    let mut bls_conf = BLSConfig::default();
+    bls_conf
+        .with_title(boot_label)
+        .with_cfg(BLSConfigType::EFI {
+            efi: format!("/{SYSTEMD_UKI_DIR}/{}{}", id.to_hex(), EFI_EXT),
+        })
+        .with_sort_key(default_sort_key.into())
+        .with_version(default_sort_key.into());
+
+    let entries_dir = match setup_type {
+        BootSetupType::Setup(..) => {
+            esp_dir
+                .create_dir_all(TYPE1_ENT_PATH)
+                .with_context(|| format!("Creating {TYPE1_ENT_PATH}"))?;
+
+            esp_dir.open_dir(TYPE1_ENT_PATH)?
+        }
+
+        BootSetupType::Upgrade(_) => {
+            esp_dir
+                .create_dir_all(TYPE1_ENT_PATH_STAGED)
+                .with_context(|| format!("Creating {TYPE1_ENT_PATH_STAGED}"))?;
+
+            esp_dir.open_dir(TYPE1_ENT_PATH_STAGED)?
+        }
+    };
+
+    entries_dir
+        .atomic_write(
+            type1_entry_conf_file_name(default_sort_key, true),
+            bls_conf.to_string().as_bytes(),
+        )
+        .context("Writing conf file")?;
+
+    // Write the timeout for bootloader menu if not exists
+    if !esp_dir.exists(SYSTEMD_LOADER_CONF_PATH) {
+        esp_dir
+            .atomic_write(SYSTEMD_LOADER_CONF_PATH, SYSTEMD_TIMEOUT)
+            .with_context(|| format!("Writing to {SYSTEMD_LOADER_CONF_PATH}"))?;
+    }
+
+    let esp_dir = esp_dir
+        .reopen_as_ownedfd()
+        .context("Reopening as owned fd")?;
+    rustix::fs::fsync(esp_dir).context("fsync")?;
+
+    Ok(())
+}
+
 #[context("Setting up UKI boot")]
 pub(crate) fn setup_composefs_uki_boot(
     setup_type: BootSetupType,
@@ -768,13 +856,7 @@ pub(crate) fn setup_composefs_uki_boot(
         }
     };
 
-    let temp_efi_dir = tempfile::tempdir()
-        .map_err(|e| anyhow::anyhow!("Failed to create temporary directory for EFI mount: {e}"))?;
-    let mounted_efi = temp_efi_dir.path().to_path_buf();
-
-    Task::new("Mounting ESP", "mount")
-        .args([&PathBuf::from(&esp_device), &mounted_efi.clone()])
-        .run()?;
+    let esp_mount = TempMount::mount_dev(&esp_device).context("Mounting ESP")?;
 
     let mut boot_label = String::new();
 
@@ -793,7 +875,8 @@ pub(crate) fn setup_composefs_uki_boot(
                     entry.pe_type,
                     &id.to_hex(),
                     is_insecure_from_opts,
-                    &mounted_efi,
+                    esp_mount.dir.path(),
+                    &bootloader,
                 )?;
 
                 if let Some(label) = ret {
@@ -803,20 +886,13 @@ pub(crate) fn setup_composefs_uki_boot(
         };
     }
 
-    Command::new("umount")
-        .arg(&mounted_efi)
-        .log_debug()
-        .run_inherited_with_cmd_context()
-        .context("Unmounting ESP")?;
-
     match bootloader {
         Bootloader::Grub => {
-            write_grub_uki_menuentry(root_path, &setup_type, &boot_label, id, &esp_device)?
+            write_grub_uki_menuentry(root_path, &setup_type, boot_label, id, &esp_device)?
         }
 
         Bootloader::Systemd => {
-            // No-op for now, but later we want to have .conf files so we can control the order of
-            // entries.
+            write_systemd_uki_config(&esp_mount.fd, &setup_type, boot_label, id)?
         }
     };
 
