@@ -5,9 +5,28 @@
 #![allow(dead_code)]
 
 use anyhow::{anyhow, Result};
+use core::fmt;
 use std::collections::HashMap;
 use std::fmt::Display;
 use uapi_version::Version;
+
+#[derive(Debug, PartialEq, PartialOrd, Eq, Default)]
+pub enum BLSConfigType {
+    EFI {
+        /// The path to the EFI binary, usually a UKI
+        efi: String,
+    },
+    NonEFI {
+        /// The path to the linux kernel to boot.
+        linux: String,
+        /// The paths to the initrd images.
+        initrd: Vec<String>,
+        /// Kernel command line options.
+        options: Option<String>,
+    },
+    #[default]
+    Unknown,
+}
 
 /// Represents a single Boot Loader Specification config file.
 ///
@@ -24,12 +43,9 @@ pub(crate) struct BLSConfig {
     ///
     /// This is hidden and must be accessed via [`Self::version()`];
     version: String,
-    /// The path to the linux kernel to boot.
-    pub(crate) linux: String,
-    /// The paths to the initrd images.
-    pub(crate) initrd: Vec<String>,
-    /// Kernel command line options.
-    pub(crate) options: Option<String>,
+
+    pub(crate) cfg_type: BLSConfigType,
+
     /// The machine ID of the OS.
     pub(crate) machine_id: Option<String>,
     /// The sort key for the boot menu.
@@ -79,13 +95,30 @@ impl Display for BLSConfig {
         }
 
         writeln!(f, "version {}", self.version)?;
-        writeln!(f, "linux {}", self.linux)?;
-        for initrd in self.initrd.iter() {
-            writeln!(f, "initrd {}", initrd)?;
+
+        match &self.cfg_type {
+            BLSConfigType::EFI { efi } => {
+                writeln!(f, "efi {}", efi)?;
+            }
+
+            BLSConfigType::NonEFI {
+                linux,
+                initrd,
+                options,
+            } => {
+                writeln!(f, "linux {}", linux)?;
+                for initrd in initrd.iter() {
+                    writeln!(f, "initrd {}", initrd)?;
+                }
+
+                if let Some(options) = options.as_deref() {
+                    writeln!(f, "options {}", options)?;
+                }
+            }
+
+            BLSConfigType::Unknown => return Err(fmt::Error),
         }
-        if let Some(options) = self.options.as_deref() {
-            writeln!(f, "options {}", options)?;
-        }
+
         if let Some(machine_id) = self.machine_id.as_deref() {
             writeln!(f, "machine-id {}", machine_id)?;
         }
@@ -114,16 +147,8 @@ impl BLSConfig {
         self.version = new_val;
         self
     }
-    pub(crate) fn with_linux(&mut self, new_val: String) -> &mut Self {
-        self.linux = new_val;
-        self
-    }
-    pub(crate) fn with_initrd(&mut self, new_val: Vec<String>) -> &mut Self {
-        self.initrd = new_val;
-        self
-    }
-    pub(crate) fn with_options(&mut self, new_val: String) -> &mut Self {
-        self.options = Some(new_val);
+    pub(crate) fn with_cfg(&mut self, config: BLSConfigType) -> &mut Self {
+        self.cfg_type = config;
         self
     }
     #[allow(dead_code)]
@@ -146,6 +171,7 @@ pub(crate) fn parse_bls_config(input: &str) -> Result<BLSConfig> {
     let mut title = None;
     let mut version = None;
     let mut linux = None;
+    let mut efi = None;
     let mut initrd = Vec::new();
     let mut options = None;
     let mut machine_id = None;
@@ -168,6 +194,7 @@ pub(crate) fn parse_bls_config(input: &str) -> Result<BLSConfig> {
                 "options" => options = Some(value),
                 "machine-id" => machine_id = Some(value),
                 "sort-key" => sort_key = Some(value),
+                "efi" => efi = Some(value),
                 _ => {
                     extra.insert(key.to_string(), value);
                 }
@@ -175,15 +202,27 @@ pub(crate) fn parse_bls_config(input: &str) -> Result<BLSConfig> {
         }
     }
 
-    let linux = linux.ok_or_else(|| anyhow!("Missing 'linux' value"))?;
     let version = version.ok_or_else(|| anyhow!("Missing 'version' value"))?;
+
+    let cfg_type = match (linux, efi) {
+        (None, Some(efi)) => BLSConfigType::EFI { efi },
+
+        (Some(linux), None) => BLSConfigType::NonEFI {
+            linux,
+            initrd,
+            options,
+        },
+
+        // The spec makes no mention of whether both can be present or not
+        // Fow now, for us, we won't have both at the same time
+        (Some(_), Some(_)) => anyhow::bail!("'linux' and 'efi' values present"),
+        (None, None) => anyhow::bail!("Missing 'linux' or 'efi' value"),
+    };
 
     Ok(BLSConfig {
         title,
         version,
-        linux,
-        initrd,
-        options,
+        cfg_type,
         machine_id,
         sort_key,
         extra,
@@ -208,14 +247,23 @@ mod tests {
 
         let config = parse_bls_config(input)?;
 
+        let BLSConfigType::NonEFI {
+            linux,
+            initrd,
+            options,
+        } = config.cfg_type
+        else {
+            panic!("Expected non EFI variant");
+        };
+
         assert_eq!(
             config.title,
             Some("Fedora 42.20250623.3.1 (CoreOS)".to_string())
         );
         assert_eq!(config.version, "2");
-        assert_eq!(config.linux, "/boot/7e11ac46e3e022053e7226a20104ac656bf72d1a84e3a398b7cce70e9df188b6/vmlinuz-5.14.10");
-        assert_eq!(config.initrd, vec!["/boot/7e11ac46e3e022053e7226a20104ac656bf72d1a84e3a398b7cce70e9df188b6/initramfs-5.14.10.img"]);
-        assert_eq!(config.options, Some("root=UUID=abc123 rw composefs=7e11ac46e3e022053e7226a20104ac656bf72d1a84e3a398b7cce70e9df188b6".to_string()));
+        assert_eq!(linux, "/boot/7e11ac46e3e022053e7226a20104ac656bf72d1a84e3a398b7cce70e9df188b6/vmlinuz-5.14.10");
+        assert_eq!(initrd, vec!["/boot/7e11ac46e3e022053e7226a20104ac656bf72d1a84e3a398b7cce70e9df188b6/initramfs-5.14.10.img"]);
+        assert_eq!(options, Some("root=UUID=abc123 rw composefs=7e11ac46e3e022053e7226a20104ac656bf72d1a84e3a398b7cce70e9df188b6".to_string()));
         assert_eq!(config.extra.get("custom1"), Some(&"value1".to_string()));
         assert_eq!(config.extra.get("custom2"), Some(&"value2".to_string()));
 
@@ -235,8 +283,12 @@ mod tests {
 
         let config = parse_bls_config(input)?;
 
+        let BLSConfigType::NonEFI { initrd, .. } = config.cfg_type else {
+            panic!("Expected non EFI variant");
+        };
+
         assert_eq!(
-            config.initrd,
+            initrd,
             vec!["/boot/initramfs-1.img", "/boot/initramfs-2.img"]
         );
 
