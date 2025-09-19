@@ -35,7 +35,7 @@ use serde::{Deserialize, Serialize};
 use crate::bootc_composefs::repo::open_composefs_repo;
 use crate::bootc_composefs::state::{get_booted_bls, write_composefs_state};
 use crate::bootc_composefs::status::get_sorted_uki_boot_entries;
-use crate::parsers::bls_config::BLSConfig;
+use crate::parsers::bls_config::{BLSConfig, BLSConfigType};
 use crate::parsers::grub_menuconfig::MenuEntry;
 use crate::spec::ImageReference;
 use crate::task::Task;
@@ -448,25 +448,31 @@ pub(crate) fn setup_composefs_bls_boot(
                 .with_title(title)
                 .with_sort_key(default_sort_key.into())
                 .with_version(version)
-                .with_linux(format!(
-                    "/{}/{id_hex}/vmlinuz",
-                    entry_paths.abs_entries_path
-                ))
-                .with_initrd(vec![format!(
-                    "/{}/{id_hex}/initrd",
-                    entry_paths.abs_entries_path
-                )])
-                .with_options(cmdline_refs);
+                .with_cfg(BLSConfigType::NonEFI {
+                    linux: format!("/{}/{id_hex}/vmlinuz", entry_paths.abs_entries_path),
+                    initrd: vec![format!("/{}/{id_hex}/initrd", entry_paths.abs_entries_path)],
+                    options: Some(cmdline_refs),
+                });
 
             match find_vmlinuz_initrd_duplicates(&boot_digest)? {
                 Some(symlink_to) => {
-                    bls_config.linux =
-                        format!("/{}/{symlink_to}/vmlinuz", entry_paths.abs_entries_path);
+                    match bls_config.cfg_type {
+                        BLSConfigType::NonEFI {
+                            ref mut linux,
+                            ref mut initrd,
+                            ..
+                        } => {
+                            *linux =
+                                format!("/{}/{symlink_to}/vmlinuz", entry_paths.abs_entries_path);
 
-                    bls_config.initrd = vec![format!(
-                        "/{}/{symlink_to}/initrd",
-                        entry_paths.abs_entries_path
-                    )];
+                            *initrd = vec![format!(
+                                "/{}/{symlink_to}/initrd",
+                                entry_paths.abs_entries_path
+                            )];
+                        }
+
+                        _ => unreachable!(),
+                    };
                 }
 
                 None => {

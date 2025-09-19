@@ -17,6 +17,7 @@ use rustix::{
 };
 
 use crate::bootc_composefs::boot::BootType;
+use crate::parsers::bls_config::BLSConfigType;
 use crate::{
     composefs_consts::{
         COMPOSEFS_CMDLINE, COMPOSEFS_STAGED_DEPLOYMENT_FNAME, COMPOSEFS_TRANSIENT_STATE_DIR,
@@ -43,14 +44,31 @@ pub(crate) fn get_booted_bls() -> Result<BLSConfig> {
 
         let bls = parse_bls_config(&std::fs::read_to_string(&entry.path())?)?;
 
-        let Some(opts) = &bls.options else {
-            anyhow::bail!("options not found in bls config")
-        };
-        let opts = Cmdline::from(opts);
+        match &bls.cfg_type {
+            BLSConfigType::EFI { efi } => {
+                let composfs_param_value = booted.value().ok_or(anyhow::anyhow!(
+                    "Failed to get composefs kernel cmdline value"
+                ))?;
 
-        if opts.iter().any(|v| v == booted) {
-            return Ok(bls);
-        }
+                if efi.contains(composfs_param_value) {
+                    return Ok(bls);
+                }
+            }
+
+            BLSConfigType::NonEFI { options, .. } => {
+                let Some(opts) = options else {
+                    anyhow::bail!("options not found in bls config")
+                };
+
+                let opts = Cmdline::from(opts);
+
+                if opts.iter().any(|v| v == booted) {
+                    return Ok(bls);
+                }
+            }
+
+            BLSConfigType::Unknown => anyhow::bail!("Unknown BLS Config type"),
+        };
     }
 
     Err(anyhow::anyhow!("Booted BLS not found"))
