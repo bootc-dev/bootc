@@ -28,7 +28,7 @@ jobs:
           sudo apt update
           sudo apt install -y crun/testing podman/testing just qemu-utils
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Set architecture variable
         id: set_arch
@@ -55,7 +55,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Set architecture variable
         id: set_arch
@@ -72,7 +72,7 @@ jobs:
         run: mkdir -p target
 
       - name: Download disk.raw
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: PR-${{ github.event.number }}-${{ matrix.test_os }}-${{ env.ARCH }}-disk
           path: target
