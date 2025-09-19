@@ -9,7 +9,7 @@ use crate::{
     bootc_composefs::boot::{get_esp_partition, get_sysroot_parent_dev, BootType},
     composefs_consts::{BOOT_LOADER_ENTRIES, COMPOSEFS_CMDLINE, USER_CFG},
     parsers::{
-        bls_config::{parse_bls_config, BLSConfig},
+        bls_config::{parse_bls_config, BLSConfig, BLSConfigType},
         grub_menuconfig::{parse_grub_menuentry_file, MenuEntry},
     },
     spec::{BootEntry, BootOrder, Host, HostSpec, ImageReference, ImageStatus},
@@ -360,13 +360,25 @@ pub(crate) async fn composefs_deployment_status() -> Result<Host> {
 
     match boot_type {
         BootType::Bls => {
-            host.status.rollback_queued = !get_sorted_bls_boot_entries(&boot_dir, false)?
+            let bls_config = get_sorted_bls_boot_entries(&boot_dir, false)?;
+            let bls_config = bls_config
                 .first()
-                .ok_or(anyhow::anyhow!("First boot entry not found"))?
-                .options
-                .as_ref()
-                .ok_or(anyhow::anyhow!("options key not found in bls config"))?
-                .contains(composefs_digest.as_ref());
+                .ok_or(anyhow::anyhow!("First boot entry not found"))?;
+
+            match &bls_config.cfg_type {
+                BLSConfigType::EFI { efi } => {
+                    host.status.rollback_queued = efi.contains(composefs_digest.as_ref());
+                }
+
+                BLSConfigType::NonEFI { options, .. } => {
+                    host.status.rollback_queued = !options
+                        .as_ref()
+                        .ok_or(anyhow::anyhow!("options key not found in bls config"))?
+                        .contains(composefs_digest.as_ref());
+                }
+
+                BLSConfigType::Unknown => todo!(),
+            };
         }
 
         BootType::Uki => {
@@ -392,7 +404,7 @@ pub(crate) async fn composefs_deployment_status() -> Result<Host> {
 mod tests {
     use cap_std_ext::{cap_std, dirext::CapStdExtDirExt};
 
-    use crate::parsers::grub_menuconfig::MenuentryBody;
+    use crate::parsers::{bls_config::BLSConfigType, grub_menuconfig::MenuentryBody};
 
     use super::*;
 
@@ -442,16 +454,20 @@ mod tests {
         let mut config1 = BLSConfig::default();
         config1.title = Some("Fedora 42.20250623.3.1 (CoreOS)".into());
         config1.sort_key = Some("1".into());
-        config1.linux = "/boot/7e11ac46e3e022053e7226a20104ac656bf72d1a84e3a398b7cce70e9df188b6/vmlinuz-5.14.10".into();
-        config1.initrd = vec!["/boot/7e11ac46e3e022053e7226a20104ac656bf72d1a84e3a398b7cce70e9df188b6/initramfs-5.14.10.img".into()];
-        config1.options = Some("root=UUID=abc123 rw composefs=7e11ac46e3e022053e7226a20104ac656bf72d1a84e3a398b7cce70e9df188b6".into());
+        config1.cfg_type = BLSConfigType::NonEFI {
+            linux: "/boot/7e11ac46e3e022053e7226a20104ac656bf72d1a84e3a398b7cce70e9df188b6/vmlinuz-5.14.10".into(),
+            initrd: vec!["/boot/7e11ac46e3e022053e7226a20104ac656bf72d1a84e3a398b7cce70e9df188b6/initramfs-5.14.10.img".into()],
+            options: Some("root=UUID=abc123 rw composefs=7e11ac46e3e022053e7226a20104ac656bf72d1a84e3a398b7cce70e9df188b6".into()),
+        };
 
         let mut config2 = BLSConfig::default();
         config2.title = Some("Fedora 41.20250214.2.0 (CoreOS)".into());
         config2.sort_key = Some("2".into());
-        config2.linux = "/boot/febdf62805de2ae7b6b597f2a9775d9c8a753ba1e5f09298fc8fbe0b0d13bf01/vmlinuz-5.14.10".into();
-        config2.initrd = vec!["/boot/febdf62805de2ae7b6b597f2a9775d9c8a753ba1e5f09298fc8fbe0b0d13bf01/initramfs-5.14.10.img".into()];
-        config2.options = Some("root=UUID=abc123 rw composefs=febdf62805de2ae7b6b597f2a9775d9c8a753ba1e5f09298fc8fbe0b0d13bf01".into());
+        config2.cfg_type = BLSConfigType::NonEFI {
+            linux: "/boot/febdf62805de2ae7b6b597f2a9775d9c8a753ba1e5f09298fc8fbe0b0d13bf01/vmlinuz-5.14.10".into(),
+            initrd: vec!["/boot/febdf62805de2ae7b6b597f2a9775d9c8a753ba1e5f09298fc8fbe0b0d13bf01/initramfs-5.14.10.img".into()],
+            options: Some("root=UUID=abc123 rw composefs=febdf62805de2ae7b6b597f2a9775d9c8a753ba1e5f09298fc8fbe0b0d13bf01".into())
+        };
 
         assert_eq!(result[0].sort_key.as_ref().unwrap(), "1");
         assert_eq!(result[1].sort_key.as_ref().unwrap(), "2");
