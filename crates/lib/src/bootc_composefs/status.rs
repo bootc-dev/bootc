@@ -7,7 +7,7 @@ use fn_error_context::context;
 
 use crate::{
     bootc_composefs::boot::{get_esp_partition, get_sysroot_parent_dev, BootType},
-    composefs_consts::{BOOT_LOADER_ENTRIES, COMPOSEFS_CMDLINE, USER_CFG},
+    composefs_consts::{COMPOSEFS_CMDLINE, TYPE1_ENT_PATH, USER_CFG},
     parsers::{
         bls_config::{parse_bls_config, BLSConfig, BLSConfigType},
         grub_menuconfig::{parse_grub_menuentry_file, MenuEntry},
@@ -91,14 +91,14 @@ pub(crate) fn get_sorted_uki_boot_entries<'a>(
     parse_grub_menuentry_file(str)
 }
 
-#[context("Getting sorted BLS entries")]
-pub(crate) fn get_sorted_bls_boot_entries(
+#[context("Getting sorted Type1 boot entries")]
+pub(crate) fn get_sorted_type1_boot_entries(
     boot_dir: &Dir,
     ascending: bool,
 ) -> Result<Vec<BLSConfig>> {
     let mut all_configs = vec![];
 
-    for entry in boot_dir.read_dir(format!("loader/{BOOT_LOADER_ENTRIES}"))? {
+    for entry in boot_dir.read_dir(TYPE1_ENT_PATH)? {
         let entry = entry?;
 
         let file_name = entry.file_name();
@@ -358,40 +358,62 @@ pub(crate) async fn composefs_deployment_status() -> Result<Host> {
         }
     };
 
-    match boot_type {
-        BootType::Bls => {
-            let bls_config = get_sorted_bls_boot_entries(&boot_dir, false)?;
+    let is_rollback_queued = match booted.bootloader {
+        Bootloader::Grub => match boot_type {
+            BootType::Bls => {
+                let bls_config = get_sorted_type1_boot_entries(&boot_dir, false)?;
+                let bls_config = bls_config
+                    .first()
+                    .ok_or(anyhow::anyhow!("First boot entry not found"))?;
+
+                match &bls_config.cfg_type {
+                    BLSConfigType::NonEFI { options, .. } => !options
+                        .as_ref()
+                        .ok_or(anyhow::anyhow!("options key not found in bls config"))?
+                        .contains(composefs_digest.as_ref()),
+
+                    BLSConfigType::EFI { .. } => {
+                        anyhow::bail!("Found 'efi' field in Type1 boot entry")
+                    }
+                    BLSConfigType::Unknown => anyhow::bail!("Unknown BLS Config Type"),
+                }
+            }
+
+            BootType::Uki => {
+                let mut s = String::new();
+
+                !get_sorted_uki_boot_entries(&boot_dir, &mut s)?
+                    .first()
+                    .ok_or(anyhow::anyhow!("First boot entry not found"))?
+                    .body
+                    .chainloader
+                    .contains(composefs_digest.as_ref())
+            }
+        },
+
+        // We will have BLS stuff and the UKI stuff in the same DIR
+        Bootloader::Systemd => {
+            let bls_config = get_sorted_type1_boot_entries(&boot_dir, false)?;
             let bls_config = bls_config
                 .first()
                 .ok_or(anyhow::anyhow!("First boot entry not found"))?;
 
             match &bls_config.cfg_type {
-                BLSConfigType::EFI { efi } => {
-                    host.status.rollback_queued = efi.contains(composefs_digest.as_ref());
-                }
+                // For UKI boot
+                BLSConfigType::EFI { efi } => efi.contains(composefs_digest.as_ref()),
 
-                BLSConfigType::NonEFI { options, .. } => {
-                    host.status.rollback_queued = !options
-                        .as_ref()
-                        .ok_or(anyhow::anyhow!("options key not found in bls config"))?
-                        .contains(composefs_digest.as_ref());
-                }
+                // For boot entry Type1
+                BLSConfigType::NonEFI { options, .. } => !options
+                    .as_ref()
+                    .ok_or(anyhow::anyhow!("options key not found in bls config"))?
+                    .contains(composefs_digest.as_ref()),
 
-                BLSConfigType::Unknown => todo!(),
-            };
-        }
-
-        BootType::Uki => {
-            let mut s = String::new();
-
-            host.status.rollback_queued = !get_sorted_uki_boot_entries(&boot_dir, &mut s)?
-                .first()
-                .ok_or(anyhow::anyhow!("First boot entry not found"))?
-                .body
-                .chainloader
-                .contains(composefs_digest.as_ref())
+                BLSConfigType::Unknown => anyhow::bail!("Unknown BLS Config Type"),
+            }
         }
     };
+
+    host.status.rollback_queued = is_rollback_queued;
 
     if host.status.rollback_queued {
         host.spec.boot_order = BootOrder::Rollback
@@ -449,7 +471,7 @@ mod tests {
         tempdir.atomic_write("loader/entries/entry1.conf", entry1)?;
         tempdir.atomic_write("loader/entries/entry2.conf", entry2)?;
 
-        let result = get_sorted_bls_boot_entries(&tempdir, true).unwrap();
+        let result = get_sorted_type1_boot_entries(&tempdir, true).unwrap();
 
         let mut config1 = BLSConfig::default();
         config1.title = Some("Fedora 42.20250623.3.1 (CoreOS)".into());
@@ -472,7 +494,7 @@ mod tests {
         assert_eq!(result[0].sort_key.as_ref().unwrap(), "1");
         assert_eq!(result[1].sort_key.as_ref().unwrap(), "2");
 
-        let result = get_sorted_bls_boot_entries(&tempdir, false).unwrap();
+        let result = get_sorted_type1_boot_entries(&tempdir, false).unwrap();
         assert_eq!(result[0].sort_key.as_ref().unwrap(), "2");
         assert_eq!(result[1].sort_key.as_ref().unwrap(), "1");
 
