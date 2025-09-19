@@ -77,7 +77,8 @@ install() {
         rm        \
         sed       \
         sfdisk    \
-        find
+        find      \
+        fsverity
 
     # In some cases we had to vendor gdisk in Ignition.
     # If this is the case here use that one.
