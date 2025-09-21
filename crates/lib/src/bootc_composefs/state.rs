@@ -6,7 +6,8 @@ use bootc_kernel_cmdline::utf8::Cmdline;
 use bootc_mount::tempmount::TempMount;
 use bootc_utils::CommandRunExt;
 use camino::Utf8PathBuf;
-use cap_std_ext::{cap_std, dirext::CapStdExtDirExt};
+use cap_std_ext::cap_std::ambient_authority;
+use cap_std_ext::{cap_std::fs::Dir, dirext::CapStdExtDirExt};
 use composefs::fsverity::{FsVerityHashValue, Sha256HashValue};
 use fn_error_context::context;
 
@@ -17,6 +18,7 @@ use rustix::{
 };
 
 use crate::bootc_composefs::boot::BootType;
+use crate::bootc_composefs::status::get_sorted_type1_boot_entries;
 use crate::parsers::bls_config::BLSConfigType;
 use crate::{
     composefs_consts::{
@@ -24,34 +26,28 @@ use crate::{
         ORIGIN_KEY_BOOT, ORIGIN_KEY_BOOT_DIGEST, ORIGIN_KEY_BOOT_TYPE, SHARED_VAR_PATH,
         STATE_DIR_RELATIVE,
     },
-    parsers::bls_config::{parse_bls_config, BLSConfig},
+    parsers::bls_config::BLSConfig,
     spec::ImageReference,
     utils::path_relative_to,
 };
 
-pub(crate) fn get_booted_bls() -> Result<BLSConfig> {
+pub(crate) fn get_booted_bls(boot_dir: &Dir) -> Result<BLSConfig> {
     let cmdline = Cmdline::from_proc()?;
     let booted = cmdline
         .find(COMPOSEFS_CMDLINE)
         .ok_or_else(|| anyhow::anyhow!("Failed to find composefs parameter in kernel cmdline"))?;
 
-    for entry in std::fs::read_dir("/sysroot/boot/loader/entries")? {
-        let entry = entry?;
+    let sorted_entries = get_sorted_type1_boot_entries(boot_dir, true)?;
 
-        if !entry.file_name().as_str()?.ends_with(".conf") {
-            continue;
-        }
-
-        let bls = parse_bls_config(&std::fs::read_to_string(&entry.path())?)?;
-
-        match &bls.cfg_type {
+    for entry in sorted_entries {
+        match &entry.cfg_type {
             BLSConfigType::EFI { efi } => {
                 let composfs_param_value = booted.value().ok_or(anyhow::anyhow!(
                     "Failed to get composefs kernel cmdline value"
                 ))?;
 
                 if efi.contains(composfs_param_value) {
-                    return Ok(bls);
+                    return Ok(entry);
                 }
             }
 
@@ -63,7 +59,7 @@ pub(crate) fn get_booted_bls() -> Result<BLSConfig> {
                 let opts = Cmdline::from(opts);
 
                 if opts.iter().any(|v| v == booted) {
-                    return Ok(bls);
+                    return Ok(entry);
                 }
             }
 
@@ -151,8 +147,8 @@ pub(crate) fn write_composefs_state(
             .item(ORIGIN_KEY_BOOT_DIGEST, boot_digest);
     }
 
-    let state_dir = cap_std::fs::Dir::open_ambient_dir(&state_path, cap_std::ambient_authority())
-        .context("Opening state dir")?;
+    let state_dir =
+        Dir::open_ambient_dir(&state_path, ambient_authority()).context("Opening state dir")?;
 
     state_dir
         .atomic_write(
@@ -165,11 +161,9 @@ pub(crate) fn write_composefs_state(
         std::fs::create_dir_all(COMPOSEFS_TRANSIENT_STATE_DIR)
             .with_context(|| format!("Creating {COMPOSEFS_TRANSIENT_STATE_DIR}"))?;
 
-        let staged_depl_dir = cap_std::fs::Dir::open_ambient_dir(
-            COMPOSEFS_TRANSIENT_STATE_DIR,
-            cap_std::ambient_authority(),
-        )
-        .with_context(|| format!("Opening {COMPOSEFS_TRANSIENT_STATE_DIR}"))?;
+        let staged_depl_dir =
+            Dir::open_ambient_dir(COMPOSEFS_TRANSIENT_STATE_DIR, ambient_authority())
+                .with_context(|| format!("Opening {COMPOSEFS_TRANSIENT_STATE_DIR}"))?;
 
         staged_depl_dir
             .atomic_write(
