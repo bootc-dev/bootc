@@ -53,8 +53,9 @@ pub(crate) fn rename_exchange_bls_entries(entries_dir: &Dir) -> Result<()> {
     .context("renameat")?;
 
     tracing::debug!("Removing {STAGED_BOOT_LOADER_ENTRIES}");
-    rustix::fs::unlinkat(&entries_dir, STAGED_BOOT_LOADER_ENTRIES, AtFlags::REMOVEDIR)
-        .context("unlinkat")?;
+    entries_dir
+        .remove_dir_all(STAGED_BOOT_LOADER_ENTRIES)
+        .context("Removing staged dir")?;
 
     tracing::debug!("Syncing to disk");
     let entries_dir = entries_dir

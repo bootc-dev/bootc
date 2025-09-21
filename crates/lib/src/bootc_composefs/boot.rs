@@ -503,7 +503,9 @@ pub(crate) fn setup_composefs_bls_boot(
     let loader_path = entry_paths.config_path.join("loader");
 
     let (config_path, booted_bls) = if is_upgrade {
-        let mut booted_bls = get_booted_bls()?;
+        let boot_dir = Dir::open_ambient_dir(&entry_paths.config_path, ambient_authority())?;
+
+        let mut booted_bls = get_booted_bls(&boot_dir)?;
         booted_bls.sort_key = Some("0".into()); // entries are sorted by their filename in reverse order
 
         // This will be atomically renamed to 'loader/entries' on shutdown/reboot
@@ -751,15 +753,16 @@ fn write_systemd_uki_config(
             efi: format!("/{SYSTEMD_UKI_DIR}/{}{}", id.to_hex(), EFI_EXT),
         })
         .with_sort_key(default_sort_key.into())
+        // TODO (Johan-Liebert1): Get version from UKI like we get boot label
         .with_version(default_sort_key.into());
 
-    let entries_dir = match setup_type {
+    let (entries_dir, booted_bls) = match setup_type {
         BootSetupType::Setup(..) => {
             esp_dir
                 .create_dir_all(TYPE1_ENT_PATH)
                 .with_context(|| format!("Creating {TYPE1_ENT_PATH}"))?;
 
-            esp_dir.open_dir(TYPE1_ENT_PATH)?
+            (esp_dir.open_dir(TYPE1_ENT_PATH)?, None)
         }
 
         BootSetupType::Upgrade(_) => {
@@ -767,7 +770,10 @@ fn write_systemd_uki_config(
                 .create_dir_all(TYPE1_ENT_PATH_STAGED)
                 .with_context(|| format!("Creating {TYPE1_ENT_PATH_STAGED}"))?;
 
-            esp_dir.open_dir(TYPE1_ENT_PATH_STAGED)?
+            let mut booted_bls = get_booted_bls(&esp_dir)?;
+            booted_bls.sort_key = Some("1".into());
+
+            (esp_dir.open_dir(TYPE1_ENT_PATH_STAGED)?, Some(booted_bls))
         }
     };
 
@@ -777,6 +783,14 @@ fn write_systemd_uki_config(
             bls_conf.to_string().as_bytes(),
         )
         .context("Writing conf file")?;
+
+    if let Some(booted_bls) = booted_bls {
+        entries_dir.atomic_write(
+            // SAFETY: We set sort_key above
+            type1_entry_conf_file_name(booted_bls.sort_key.as_ref().unwrap()),
+            booted_bls.to_string().as_bytes(),
+        )?;
+    }
 
     // Write the timeout for bootloader menu if not exists
     if !esp_dir.exists(SYSTEMD_LOADER_CONF_PATH) {
