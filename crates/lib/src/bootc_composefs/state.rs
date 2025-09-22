@@ -20,6 +20,7 @@ use rustix::{
 };
 
 use crate::bootc_composefs::boot::BootType;
+use crate::bootc_composefs::repo::get_imgref;
 use crate::bootc_composefs::status::get_sorted_type1_boot_entries;
 use crate::parsers::bls_config::BLSConfigType;
 use crate::{
@@ -134,9 +135,12 @@ pub(crate) fn write_composefs_state(
         ..
     } = &imgref;
 
+    let imgref = get_imgref(&transport, &image_name);
+
     let mut config = tini::Ini::new().section("origin").item(
         ORIGIN_CONTAINER,
-        format!("ostree-unverified-image:{transport}{image_name}"),
+        // TODO (Johan-Liebert1): The image won't always be unverified
+        format!("ostree-unverified-image:{imgref}"),
     );
 
     config = config
