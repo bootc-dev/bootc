@@ -15,7 +15,7 @@ use cap_std_ext::{
 use clap::ValueEnum;
 use composefs::fs::read_file;
 use composefs::tree::{FileSystem, RegularFile};
-use composefs_boot::bootloader::{PEType, EFI_ADDON_DIR_EXT, EFI_EXT};
+use composefs_boot::bootloader::{PEType, EFI_ADDON_DIR_EXT, EFI_ADDON_FILE_EXT, EFI_EXT};
 use composefs_boot::BootOps;
 use fn_error_context::context;
 use ostree_ext::composefs::{
@@ -815,13 +815,17 @@ pub(crate) fn setup_composefs_uki_boot(
     id: &Sha256HashValue,
     entries: Vec<ComposefsBootEntry<Sha256HashValue>>,
 ) -> Result<()> {
-    let (root_path, esp_device, bootloader, is_insecure_from_opts) = match setup_type {
+    let (root_path, esp_device, bootloader, is_insecure_from_opts, uki_addons) = match setup_type {
         BootSetupType::Setup((root_setup, state, ..)) => {
             if let Some(v) = &state.config_opts.karg {
                 if v.len() > 0 {
                     tracing::warn!("kargs passed for UKI will be ignored");
                 }
             }
+
+            let Some(cfs_opts) = &state.composefs_options else {
+                anyhow::bail!("ComposeFS options not found");
+            };
 
             let esp_part = root_setup
                 .device_info
@@ -830,23 +834,12 @@ pub(crate) fn setup_composefs_uki_boot(
                 .find(|p| p.parttype.as_str() == ESP_GUID)
                 .ok_or_else(|| anyhow!("ESP partition not found"))?;
 
-            let bootloader = state
-                .composefs_options
-                .as_ref()
-                .map(|opts| opts.bootloader.clone())
-                .unwrap_or(Bootloader::default());
-
-            let is_insecure = state
-                .composefs_options
-                .as_ref()
-                .map(|x| x.insecure)
-                .unwrap_or(false);
-
             (
                 root_setup.physical_root_path.clone(),
                 esp_part.node.clone(),
-                bootloader,
-                is_insecure,
+                cfs_opts.bootloader.clone(),
+                cfs_opts.insecure,
+                cfs_opts.uki_addon.as_ref(),
             )
         }
 
@@ -860,6 +853,7 @@ pub(crate) fn setup_composefs_uki_boot(
                 get_esp_partition(&sysroot_parent)?.0,
                 bootloader,
                 false,
+                None,
             )
         }
     };
@@ -876,6 +870,32 @@ pub(crate) fn setup_composefs_uki_boot(
             }
 
             ComposefsBootEntry::Type2(entry) => {
+                // If --uki-addon is not passed, we don't install any addon
+                if matches!(entry.pe_type, PEType::UkiAddon) {
+                    let Some(addons) = uki_addons else {
+                        continue;
+                    };
+
+                    let addon_name = entry
+                        .file_path
+                        .components()
+                        .last()
+                        .ok_or(anyhow::anyhow!("Could not get UKI addon name"))?;
+
+                    let addon_name = addon_name.as_str()?;
+
+                    let addon_name =
+                        addon_name
+                            .strip_suffix(EFI_ADDON_FILE_EXT)
+                            .ok_or(anyhow::anyhow!(
+                                "UKI addon doesn't end with {EFI_ADDON_DIR_EXT}"
+                            ))?;
+
+                    if !addons.iter().any(|passed_addon| passed_addon == addon_name) {
+                        continue;
+                    }
+                }
+
                 let ret = write_pe_to_esp(
                     &repo,
                     &entry.file,
