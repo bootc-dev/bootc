@@ -2165,6 +2165,7 @@ pub(crate) async fn install_to_existing_root(opts: InstallToExistingRootOpts) ->
         compoesfs_opts: InstallComposefsOpts {
             insecure: false,
             bootloader: Bootloader::Grub,
+            uki_addon: None
         },
     };
 
