@@ -104,15 +104,12 @@ fn mkfs<'a>(
     label: &str,
     wipe: bool,
     opts: impl IntoIterator<Item = &'a str>,
-    dps_uuid: Option<uuid::Uuid>,
 ) -> Result<uuid::Uuid> {
     let devinfo = bootc_blockdev::list_dev(dev.into())?;
     let size = ostree_ext::glib::format_size(devinfo.size);
-    let u = if let Some(u) = dps_uuid {
-        u
-    } else {
-        uuid::Uuid::new_v4()
-    };
+
+    let u = uuid::uuid!(crate::install::dps_uuid::DPS_UUID);
+
     let mut t = Task::new(
         &format!("Creating {label} filesystem ({fs}) on device {dev} (size={size})"),
         format!("mkfs.{fs}"),
@@ -386,7 +383,6 @@ pub(crate) fn install_create_rootfs(
                 "boot",
                 opts.wipe,
                 [],
-                None,
             )
             .context("Initializing /boot")?,
         )
@@ -407,8 +403,6 @@ pub(crate) fn install_create_rootfs(
         "root",
         opts.wipe,
         mkfs_options.iter().copied(),
-        // TODO: Add cli option for this
-        Some(uuid::uuid!(crate::install::DPS_UUID)),
     )?;
     let rootarg = format!("root=UUID={root_uuid}");
     let bootsrc = boot_uuid.as_ref().map(|uuid| format!("UUID={uuid}"));

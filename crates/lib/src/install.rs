@@ -89,9 +89,26 @@ pub(crate) const EFIVARFS: &str = "/sys/firmware/efi/efivars";
 pub(crate) const ARCH_USES_EFI: bool = cfg!(any(target_arch = "x86_64", target_arch = "aarch64"));
 #[cfg(any(feature = "composefs-backend", feature = "install-to-disk"))]
 pub(crate) const ESP_GUID: &str = "C12A7328-F81F-11D2-BA4B-00A0C93EC93B";
+
 #[cfg(any(feature = "composefs-backend", feature = "install-to-disk"))]
-// TODO (Johan-Liebert1): We'd want this for all archs
-pub(crate) const DPS_UUID: &str = "4f68bce3-e8cd-4db1-96e7-fbcaf984b709";
+// Architecture-specific DPS UUIDs for install-to-disk flow
+// See: https://uapi-group.org/specifications/specs/discoverable_partitions_specification/#defined-partition-type-uuids
+pub(crate) mod dps_uuid {
+    #[cfg(target_arch = "x86_64")]
+    pub(crate) const DPS_UUID: &str = "4f68bce3-e8cd-4db1-96e7-fbcaf984b709";
+
+    #[cfg(target_arch = "aarch64")]
+    pub(crate) const DPS_UUID: &str = "b921b045-1df0-41c3-af44-4c6f280d3fae";
+
+    #[cfg(target_arch = "s390x")]
+    pub(crate) const DPS_UUID: &str = "5eead9a9-fe09-4a1e-a1d7-520d00531306";
+
+    #[cfg(all(target_arch = "powerpc64", target_endian = "big"))]
+    pub(crate) const DPS_UUID: &str = "912ade1d-c142-4c63-8823-4435540c14a2";
+
+    #[cfg(all(target_arch = "powerpc64", target_endian = "little"))]
+    pub(crate) const DPS_UUID: &str = "c31c45e6-3f39-412e-80fb-4809c4980599";
+}
 
 const DEFAULT_REPO_CONFIG: &[(&str, &str)] = &[
     // Default to avoiding grub2-mkconfig etc.

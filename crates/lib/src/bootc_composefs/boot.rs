@@ -44,7 +44,7 @@ use crate::{
         BOOT_LOADER_ENTRIES, COMPOSEFS_CMDLINE, ORIGIN_KEY_BOOT, ORIGIN_KEY_BOOT_DIGEST,
         STAGED_BOOT_LOADER_ENTRIES, STATE_DIR_ABS, USER_CFG, USER_CFG_STAGED,
     },
-    install::{DPS_UUID, ESP_GUID, RW_KARG},
+    install::{dps_uuid::DPS_UUID, ESP_GUID, RW_KARG},
     spec::{Bootloader, Host},
 };
 
