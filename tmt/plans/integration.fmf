@@ -53,3 +53,10 @@ execute:
     how: fmf
     test:
         - /tmt/tests/test-25-soft-reboot
+
+/test-26-factory-reset:
+  summary: Factory reset
+  discover:
+    how: fmf
+    test:
+        - /tmt/tests/test-26-factory-reset
