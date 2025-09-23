@@ -42,7 +42,7 @@ use crate::bootc_composefs::{
     switch::switch_composefs,
     update::upgrade_composefs,
 };
-use crate::deploy::{MergeState, RequiredHostSpec, RequiredHostSpec};
+use crate::deploy::{MergeState, RequiredHostSpec};
 use crate::lints;
 use crate::podstorage::set_additional_image_store;
 use crate::progress_jsonl::{ProgressWriter, RawProgressFd};
