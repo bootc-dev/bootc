@@ -736,7 +736,10 @@ pub fn merge(
             Ok(..) => { /* no-op */ }
             // Removed file's not present in the new etc dir, nothing to do
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(e) => Err(e)?,
+            Err(e) if e.kind() == std::io::ErrorKind::IsADirectory => {
+                new_etc_fd.remove_dir_all(&removed).context(format!("Failed to remove dir {removed:?}"))?
+            }
+            Err(e) => Err(e).context(format!("Failed to remove file {removed:?}"))?,
         }
 
         println!("- Removed file {removed:?}");
