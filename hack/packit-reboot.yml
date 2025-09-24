@@ -1,0 +1,19 @@
+---
+
+# tmt-reboot and reboot do not work in this case
+# reboot in ansible is the only way to reboot in tmt prepare
+- name: Reboot after system-reinstall-bootc
+  hosts: all
+  tasks:
+    - name: Check system mode
+      shell: bootc status --json | jq -r '.status.type'
+      register: os_mode
+
+    # null type means package mode
+    - name: Reboot system to image mode
+      reboot:
+      when: os_mode.stdout == 'null'
+
+    - name: Wait for connection to become reachable/usable
+      wait_for_connection:
+        delay: 30

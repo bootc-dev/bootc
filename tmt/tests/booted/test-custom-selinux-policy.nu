@@ -23,7 +23,7 @@ RUN mkdir /opt123; echo \"/opt123 /opt\" >> /etc/selinux/targeted/contexts/files
     podman build -t localhost/bootc-derived .
 
     bootc switch --soft-reboot=auto --transport containers-storage localhost/bootc-derived
-    
+
     assert (not ("/opt123" | path exists))
 
     # https://tmt.readthedocs.io/en/stable/stories/features.html#reboot-during-test

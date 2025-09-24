@@ -1,0 +1,44 @@
+# Build image for system-reinstall-bootc test
+
+# Use centos-bootc:stream10 as default
+FROM quay.io/centos-bootc/centos-bootc:stream10
+
+WORKDIR /bootc-test
+
+# Some rhts-*, rstrnt-* and tmt-* commands are in /usr/local/bin
+COPY bin /usr/local/bin
+# Save testing farm run files
+COPY ARTIFACTS /var/ARTIFACTS
+# Copy bootc repo
+COPY test-artifacts /var/share/test-artifacts
+
+RUN <<EORUN
+set -xeuo pipefail
+. /usr/lib/os-release
+if [[ $ID == "rhel" ]]; then
+    cp rhel.repo /etc/yum.repos.d/
+fi
+cp test-artifacts.repo /etc/yum.repos.d/
+dnf -y update bootc
+./provision-derived.sh
+
+# For test-22-logically-bound-install
+cp -a lbi/usr/. /usr
+for x in curl.container curl-base.image podman.image; do
+    ln -s /usr/share/containers/systemd/$x /usr/lib/bootc/bound-images.d/$x
+done
+
+# Add some testing kargs into our dev builds
+install -D -t /usr/lib/bootc/kargs.d test-kargs/*
+# Also copy in some default install configs we use for testing
+install -D -t /usr/lib/bootc/install/ install-test-configs/*
+
+# Remove bootc repo, bootc updated already
+rm -rf /var/share/test-artifacts /etc/yum.repos.d/test-artifacts.repo
+# Clean up dnf
+dnf -y clean all
+rm -rf /var/cache /var/lib/dnf
+
+# Finally, test our own linting
+# bootc container lint --fatal-warnings
+EORUN

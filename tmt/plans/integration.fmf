@@ -1,7 +1,17 @@
 provision:
   how: virtual
-  # Build via `./tests/build.sh`
   image: $@{test_disk_image}
+prepare:
+  # Replace package mode with image mode
+  - how: shell
+    script:
+      - pwd && ls -al
+      - if [[ -d hack ]]; then cd hack && ./provision-packit.sh; fi
+  # tmt-reboot and reboot do not work in this case
+  # reboot in ansible is the only way to reboot in tmt prepare
+  - how: ansible
+    playbook:
+      - https://github.com/henrywang/bootc/raw/refs/heads/gating/hack/packit-reboot.yml
 execute:
   how: tmt
 
@@ -60,11 +70,18 @@ execute:
     how: fmf
     test:
         - /tmt/tests/test-26-examples-build
+  adjust:
+    - when: running_env == packit
+      enabled: false
+      because: packit tests use RPM bootc and does not install /usr/lib/bootc/initramfs-setup
 
 /test-27-custom-selinux-policy:
   summary: Execute restorecon test on system with custom selinux policy
   discover:
     how: fmf
     test:
-        - /tmt/tests/bootc-install-provision
         - /tmt/tests/test-27-custom-selinux-policy
+  adjust:
+    - when: running_env == packit
+      enabled: false
+      because: tmt-reboot does not work with systemd reboot in testing farm environment
