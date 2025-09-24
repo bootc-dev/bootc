@@ -1,0 +1,3 @@
+summary: Run system-reinstall-bootc test
+test: system-reinstall/test-system-reinstall-bootc.sh
+duration: 30m

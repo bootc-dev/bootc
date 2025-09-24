@@ -1,0 +1,31 @@
+#!/usr/bin/expect -f
+
+# Set a timeout
+set timeout 600
+
+spawn system-reinstall-bootc localhost/bootc-integration
+
+expect {
+    "Then you can login as * using those keys. \\\[Y/n\\\]" {
+        send "\r"
+        exp_continue
+    }
+    "NOTICE: This will replace the installed operating system and reboot. Are you sure you want to continue? \\\[y/N\\\]" {
+        send "y"
+        exp_continue
+    }
+    "NOTICE: This will replace the installed operating system and reboot. Are you sure you want to continue? \\\[Y/n\\\]" {
+        send "\r"
+        exp_continue
+    }
+    "Press \\\<enter\\\> to continue" {
+        send "\r"
+        exp_continue
+    }
+    "Operation complete, rebooting in 10 seconds. Press Ctrl-C to cancel reboot, or press enter to continue immediately" {
+        send "\x03"
+    }
+}
+
+# Wait for the program to complete
+expect eof
