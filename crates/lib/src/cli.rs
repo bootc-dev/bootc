@@ -33,6 +33,7 @@ use serde::{Deserialize, Serialize};
 use crate::bootc_composefs::{
     finalize::{composefs_native_finalize, get_etc_diff},
     rollback::composefs_rollback,
+    state::composefs_usr_overlay,
     status::composefs_booted,
     switch::switch_composefs,
     update::upgrade_composefs,
@@ -1289,7 +1290,17 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
             Ok(())
         }
         Opt::Edit(opts) => edit(opts).await,
-        Opt::UsrOverlay => usroverlay().await,
+        Opt::UsrOverlay => {
+            #[cfg(feature = "composefs-backend")]
+            if composefs_booted()?.is_some() {
+                composefs_usr_overlay()
+            } else {
+                usroverlay().await
+            }
+
+            #[cfg(not(feature = "composefs-backend"))]
+            usroverlay().await
+        }
         Opt::Container(opts) => match opts {
             ContainerOpts::Lint {
                 rootfs,

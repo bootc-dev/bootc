@@ -2,10 +2,13 @@ use std::os::unix::fs::symlink;
 use std::{fs::create_dir_all, process::Command};
 
 use anyhow::{Context, Result};
+use bootc_initramfs_setup::overlay_transient;
 use bootc_kernel_cmdline::utf8::Cmdline;
 use bootc_mount::tempmount::TempMount;
 use bootc_utils::CommandRunExt;
 use camino::Utf8PathBuf;
+use cap_std_ext::cap_std::ambient_authority;
+use cap_std_ext::cap_std::fs::Dir;
 use cap_std_ext::{cap_std, dirext::CapStdExtDirExt};
 use composefs::fsverity::{FsVerityHashValue, Sha256HashValue};
 use fn_error_context::context;
@@ -160,6 +163,28 @@ pub(crate) fn write_composefs_state(
             )
             .with_context(|| format!("Writing to {COMPOSEFS_STAGED_DEPLOYMENT_FNAME}"))?;
     }
+
+    Ok(())
+}
+
+pub(crate) fn composefs_usr_overlay() -> Result<()> {
+    let usr = Dir::open_ambient_dir("/usr", ambient_authority()).context("Opening /usr")?;
+    let is_usr_mounted = usr
+        .is_mountpoint(".")
+        .context("Failed to get mount details for /usr")?;
+
+    let is_usr_mounted =
+        is_usr_mounted.ok_or_else(|| anyhow::anyhow!("Falied to get mountinfo"))?;
+
+    if is_usr_mounted {
+        println!("A writeable overlayfs is already mounted on /usr");
+        return Ok(());
+    }
+
+    overlay_transient(usr)?;
+
+    println!("A writeable overlayfs is now mounted on /usr");
+    println!("All changes there will be discarded on reboot.");
 
     Ok(())
 }

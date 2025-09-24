@@ -179,7 +179,9 @@ fn overlay_state(base: impl AsFd, state: impl AsFd, source: &str) -> Result<()> 
     mount_at_wrapper(fs, base, ".").context("Moving mount")
 }
 
-fn overlay_transient(base: impl AsFd) -> Result<()> {
+/// Mounts a transient overlayfs with passed in fd as the lowerdir
+#[context("Mounting transient overlayfs")]
+pub fn overlay_transient(base: impl AsFd) -> Result<()> {
     overlay_state(base, prepare_mount(mount_tmpfs()?)?, "transient")
 }
 
