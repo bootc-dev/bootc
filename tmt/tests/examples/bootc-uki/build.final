@@ -4,9 +4,7 @@ set -eux
 
 cd "${0%/*}"
 
-cargo build --release --bin bootc
-
-cp ../../target/release/bootc .
+cp /usr/bin/bootc .
 
 rm -rf tmp/sysroot
 mkdir -p tmp/sysroot/composefs
