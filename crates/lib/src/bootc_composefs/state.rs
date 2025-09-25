@@ -113,7 +113,9 @@ pub(crate) fn write_composefs_state(
     boot_type: BootType,
     boot_digest: Option<String>,
 ) -> Result<()> {
-    let state_path = root_path.join(format!("{STATE_DIR_RELATIVE}/{}", deployment_id.to_hex()));
+    let state_path = root_path
+        .join(STATE_DIR_RELATIVE)
+        .join(deployment_id.to_hex());
 
     create_dir_all(state_path.join("etc"))?;
 
