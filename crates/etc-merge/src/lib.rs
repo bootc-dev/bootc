@@ -732,14 +732,33 @@ pub fn merge(
     .context("Merging modified files")?;
 
     for removed in diff.removed {
-        match new_etc_fd.remove_file(&removed) {
-            Ok(..) => { /* no-op */ }
-            // Removed file's not present in the new etc dir, nothing to do
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(e) => Err(e)?,
+        let stat = new_etc_fd.metadata_optional(&removed)?;
+
+        let stat = match stat {
+            Some(s) => s,
+
+            None => {
+                // File/dir doesn't exist in new_etc
+                // Basically a no-op
+                continue;
+            }
+        };
+
+        if stat.is_file() || stat.is_symlink() {
+            match new_etc_fd.remove_file(&removed) {
+                Ok(..) => { /* no-op */ }
+                Err(e) => Err(e)?,
+            }
         }
 
-        println!("- Removed file {removed:?}");
+        if stat.is_dir() {
+            // We only add the directory to the removed array, if the entire directory was deleted
+            // So `remove_dir_all` should be okay here
+            match new_etc_fd.remove_dir_all(&removed) {
+                Ok(..) => { /* no-op */ }
+                Err(e) => Err(e)?,
+            }
+        }
     }
 
     Ok(())
