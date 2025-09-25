@@ -108,39 +108,15 @@ jobs:
           sudo find /ostree/repo/objects -name '*.file' -type f | while read f; do
             sudo fsverity measure $f >/dev/null
           done
-  # Build documentation using mdBook (only for PRs with 'documentation' label)
-  # TODO move into Justfile
+  # Test that we can build documentation
   docs:
-    if: ${{ contains(github.event.pull_request.labels.*.name, 'documentation') }}
     runs-on: ubuntu-24.04
-    env:
-      MDBOOK_VERSION: 0.4.37
     steps:
       - uses: actions/checkout@v4
-      - name: Install mdBook
-        run: |
-          tag=$(curl 'https://api.github.com/repos/rust-lang/mdbook/releases/latest' | jq -r '.tag_name')
-          url="https://github.com/rust-lang/mdbook/releases/download/${tag}/mdbook-${tag}-x86_64-unknown-linux-gnu.tar.gz"
-          mkdir mdbook
-          curl -sSL $url | tar -xz --directory=./mdbook
-          echo `pwd`/mdbook >> $GITHUB_PATH
-      - name: Install mdbook-mermaid
-        run: |
-          tag=$(curl 'https://api.github.com/repos/badboy/mdbook-mermaid/releases/latest' | jq -r '.tag_name')
-          url="https://github.com/badboy/mdbook-mermaid/releases/download/${tag}/mdbook-mermaid-${tag}-x86_64-unknown-linux-gnu.tar.gz"
-          mkdir mdbook-mermaid
-          curl -sSL $url | tar -xz --directory=./mdbook-mermaid
-          echo `pwd`/mdbook-mermaid >> $GITHUB_PATH
-      - name: Install mdbook-linkcheck
-        run: |
-          tag=$(curl 'https://api.github.com/repos/Michael-F-Bryan/mdbook-linkcheck/releases/latest' | jq -r '.tag_name')
-          archive="mdbook-linkcheck.x86_64-unknown-linux-gnu.zip"
-          url="https://github.com/Michael-F-Bryan/mdbook-linkcheck/releases/download/${tag}/${archive}"
-          mkdir mdbook-linkcheck
-          curl -sSL -O $url && unzip ${archive} -d ./mdbook-linkcheck && chmod +x ./mdbook-linkcheck/mdbook-linkcheck
-          echo `pwd`/mdbook-linkcheck >> $GITHUB_PATH
-      - name: Build with mdBook
-        run: cd docs && mdbook-mermaid install && mdbook build
+      - name: Bootc Ubuntu Setup
+        uses: ./.github/actions/bootc-ubuntu-setup
+      - name: Build mdbook
+        run: just build-mdbook
   # Build containers and disk images for integration testing across OS matrix
   build-integration:
     strategy:

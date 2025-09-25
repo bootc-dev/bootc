@@ -14,53 +14,22 @@ concurrency:
   group: "pages"
   cancel-in-progress: false
 
-# To build the docs locally you can also do e.g.:
-# cargo install mdbook-mermaid
-# cd docs
-# mdbook-mermaid install
-# mdbook serve
-
 jobs:
   build:
-    runs-on: ubuntu-latest
-    env:
-      MDBOOK_VERSION: 0.4.37
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - name: Install mdBook
-        run: |
-          tag=$(curl 'https://api.github.com/repos/rust-lang/mdbook/releases/latest' | jq -r '.tag_name')
-          url="https://github.com/rust-lang/mdbook/releases/download/${tag}/mdbook-${tag}-x86_64-unknown-linux-gnu.tar.gz"
-          mkdir mdbook
-          curl -sSL $url | tar -xz --directory=./mdbook
-          echo `pwd`/mdbook >> $GITHUB_PATH
-      - name: Install mdbook-mermaid
-        run: |
-          tag=$(curl 'https://api.github.com/repos/badboy/mdbook-mermaid/releases/latest' | jq -r '.tag_name')
-          url="https://github.com/badboy/mdbook-mermaid/releases/download/${tag}/mdbook-mermaid-${tag}-x86_64-unknown-linux-gnu.tar.gz"
-          mkdir mdbook-mermaid
-          curl -sSL $url | tar -xz --directory=./mdbook-mermaid
-          echo `pwd`/mdbook-mermaid >> $GITHUB_PATH
-      - name: Install mdbook-linkcheck
-        run: |
-          tag=$(curl 'https://api.github.com/repos/Michael-F-Bryan/mdbook-linkcheck/releases/latest' | jq -r '.tag_name')
-          archive="mdbook-linkcheck.x86_64-unknown-linux-gnu.zip"
-          url="https://github.com/Michael-F-Bryan/mdbook-linkcheck/releases/download/${tag}/${archive}"
-          mkdir mdbook-linkcheck
-          curl -sSL -O $url && unzip ${archive} -d ./mdbook-linkcheck && chmod +x ./mdbook-linkcheck/mdbook-linkcheck
-          echo `pwd`/mdbook-linkcheck >> $GITHUB_PATH
+      - name: Bootc Ubuntu Setup
+        uses: ./.github/actions/bootc-ubuntu-setup
+      - name: Build mdbook
+        run: mkdir target && just build-mdbook-to target/docs
       - name: Setup Pages
         id: pages
         uses: actions/configure-pages@v5
-      - name: Install mdbook_header_footer
-        run: |
-          cargo install mdbook_header_footer
-      - name: Build with mdBook
-        run: cd docs && mdbook-mermaid install && mdbook build
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: ./docs/book/html
+          path: ./target/docs
 
   deploy:
     environment:

@@ -65,6 +65,24 @@ test-container: build-units build-integration-test-image
     podman run --rm --read-only localhost/bootc-units /usr/bin/bootc-units
     podman run --rm localhost/bootc-integration bootc-integration-tests container
 
+build-mdbook:
+    podman build -t localhost/bootc-mdbook -f docs/Dockerfile.mdbook .
+
+# Generate the rendered HTML to the target DIR directory
+build-mdbook-to DIR: build-mdbook
+    #!/bin/bash
+    set -xeuo pipefail
+    # Create a temporary container to extract the built docs
+    container_id=$(podman create localhost/bootc-mdbook)
+    podman cp ${container_id}:/src/docs/book {{DIR}}
+    podman rm -f ${container_id}
+
+mdbook-serve: build-mdbook
+    #!/bin/bash
+    set -xeuo pipefail
+    podman run --init --replace -d --name bootc-mdbook --rm --publish 127.0.0.1::8000 localhost/bootc-mdbook
+    echo http://$(podman port bootc-mdbook 8000/tcp)
+
 # Update all generated files (man pages and JSON schemas)
 #
 # This is the unified command that:

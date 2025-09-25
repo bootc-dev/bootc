@@ -1,0 +1,33 @@
+FROM registry.access.redhat.com/ubi10/ubi:latest
+# An intermediate layer which caches the RPMS
+RUN <<EORUN
+set -xeuo pipefail
+dnf -y install cargo rust jq unzip
+dnf clean all
+EORUN
+# See main Dockerfile for rust caching
+RUN --mount=type=cache,target=/src/target --mount=type=cache,target=/var/roothome <<EORUN
+set -xeuo pipefail
+
+# Bootstrap cargo-binstall
+export PATH=$HOME/.cargo/bin:$PATH
+curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
+
+deps=(mdbook@0.4.52 
+      mdbook-mermaid@0.16.0 
+      mdbook-linkcheck@0.7.7
+      mdbook_header_footer@0.0.3)
+cargo binstall --no-confirm ${deps[@]}
+mv ~/.cargo/bin/* /usr/bin/
+
+EORUN
+# And now actually build the docs
+WORKDIR /src
+COPY . /src
+RUN <<EORUN
+set -xeuo pipefail
+cd docs && mdbook build
+EORUN
+WORKDIR /src/docs
+CMD ["mdbook", "serve", "-n", "0.0.0.0", "-p", "8000"]
+EXPOSE 8000
