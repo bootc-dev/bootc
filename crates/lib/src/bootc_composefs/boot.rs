@@ -38,7 +38,6 @@ use crate::bootc_composefs::status::get_sorted_uki_boot_entries;
 use crate::composefs_consts::{TYPE1_ENT_PATH, TYPE1_ENT_PATH_STAGED};
 use crate::parsers::bls_config::{BLSConfig, BLSConfigType};
 use crate::parsers::grub_menuconfig::MenuEntry;
-use crate::spec::ImageReference;
 use crate::task::Task;
 use crate::{
     composefs_consts::{
@@ -981,11 +980,7 @@ pub(crate) fn setup_composefs_boot(
     write_composefs_state(
         &root_setup.physical_root_path,
         id,
-        &ImageReference {
-            image: state.source.imageref.name.clone(),
-            transport: state.source.imageref.transport.to_string(),
-            signature: None,
-        },
+        &crate::spec::ImageReference::from(state.target_imgref.clone()),
         false,
         boot_type,
         boot_digest,
