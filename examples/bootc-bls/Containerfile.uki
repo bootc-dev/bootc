@@ -1,0 +1,65 @@
+FROM quay.io/fedora/fedora-bootc-bls:42 AS base
+
+FROM base as kernel
+
+ARG COMPOSEFS_FSVERITY
+
+RUN --mount=type=secret,id=key \
+    --mount=type=secret,id=cert <<EOF
+    set -eux
+
+    mkdir -p /etc/kernel /etc/dracut.conf.d
+    {
+    printf "composefs=${COMPOSEFS_FSVERITY} root=UUID=910678ff-f77e-4a7d-8d53-86f2ac47a823 rw"
+    printf " selinux=1 enforcing=0 audit=0"
+    # printf " console=tty0 console=ttyS0,115000n"
+    printf " console=ttyS0,115000n rd.systemd.debug_shell=1 rd.systemd.default_debug_tty=tty0"
+    printf "\n"
+    } > /etc/kernel/cmdline
+
+    rm -f "/etc/yum.repos.d/fedora-cisco-openh264.repo"
+    dnf install -y systemd-ukify sbsigntools systemd-boot-unsigned
+
+    kver=$(cd /usr/lib/modules && echo *)
+    mkdir -p "/boot/EFI/Linux"
+    mkdir -p "/boot/EFI/Linux/$kver.efi.extra.d"
+
+    ukify build \
+        --linux "/usr/lib/modules/$kver/vmlinuz" \
+        --initrd "/usr/lib/modules/$kver/initramfs.img" \
+        --uname="${kver}" \
+        --cmdline "@/etc/kernel/cmdline" \
+        --os-release "@/etc/os-release" \
+        --signtool sbsign \
+        --secureboot-private-key "/run/secrets/key" \
+        --secureboot-certificate "/run/secrets/cert" \
+        --measure \
+        --json pretty \
+        --output "/boot/EFI/Linux/$kver.efi"
+
+    ukify build \
+        --cmdline "ignition.firstboot ignition.platform.id=qemu" \
+        --signtool sbsign \
+        --secureboot-private-key "/run/secrets/key" \
+        --secureboot-certificate "/run/secrets/cert" \
+        --output "/boot/EFI/Linux/$kver.efi.extra.d/ignition.addon.efi"
+
+    # sbsign \
+    #     --key "/run/secrets/key" \
+    #     --cert "/run/secrets/cert" \
+    #     "/usr/lib/systemd/boot/efi/systemd-bootx64.efi" \
+    #     --output "/boot/systemd-bootx64.efi"
+EOF
+
+FROM base as final
+
+RUN --mount=type=bind,from=kernel,target=/_mount/kernel <<EOF
+    kver=$(cd /usr/lib/modules && echo *)
+    mkdir -p /boot/EFI/Linux
+    # We put the UKI in /boot for now due to composefs verity not being the
+    # same due to mtime of /usr/lib/modules being changed
+    cp -r /_mount/kernel/boot/* /boot/
+EOF
+
+FROM base as final-final
+COPY --from=final /boot /boot

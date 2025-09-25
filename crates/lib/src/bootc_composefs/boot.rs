@@ -35,7 +35,8 @@ use serde::{Deserialize, Serialize};
 use crate::bootc_composefs::repo::open_composefs_repo;
 use crate::bootc_composefs::state::{get_booted_bls, write_composefs_state};
 use crate::bootc_composefs::status::get_sorted_uki_boot_entries;
-use crate::parsers::bls_config::BLSConfig;
+use crate::composefs_consts::{TYPE1_ENT_PATH, TYPE1_ENT_PATH_STAGED};
+use crate::parsers::bls_config::{BLSConfig, BLSConfigType};
 use crate::parsers::grub_menuconfig::MenuEntry;
 use crate::spec::ImageReference;
 use crate::task::Task;
@@ -54,6 +55,16 @@ use crate::install::{RootSetup, State};
 pub(crate) const EFI_UUID_FILE: &str = "efiuuid.cfg";
 /// The EFI Linux directory
 const EFI_LINUX: &str = "EFI/Linux";
+
+/// Timeout for systemd-boot bootloader menu
+const SYSTEMD_TIMEOUT: &str = "timeout 5";
+const SYSTEMD_LOADER_CONF_PATH: &str = "loader/loader.conf";
+
+/// We want to be able to control the ordering of UKIs so we put them in a directory that's not the
+/// directory specified by the BLS spec. We do this because we want systemd-boot to only look at
+/// our config files and not show the actual UKIs in the bootloader menu
+/// This is relative to the ESP
+const SYSTEMD_UKI_DIR: &str = "EFI/Linux/uki";
 
 pub(crate) enum BootSetupType<'a> {
     /// For initial setup, i.e. install to-disk
@@ -448,25 +459,31 @@ pub(crate) fn setup_composefs_bls_boot(
                 .with_title(title)
                 .with_sort_key(default_sort_key.into())
                 .with_version(version)
-                .with_linux(format!(
-                    "/{}/{id_hex}/vmlinuz",
-                    entry_paths.abs_entries_path
-                ))
-                .with_initrd(vec![format!(
-                    "/{}/{id_hex}/initrd",
-                    entry_paths.abs_entries_path
-                )])
-                .with_options(cmdline_refs);
+                .with_cfg(BLSConfigType::NonEFI {
+                    linux: format!("/{}/{id_hex}/vmlinuz", entry_paths.abs_entries_path),
+                    initrd: vec![format!("/{}/{id_hex}/initrd", entry_paths.abs_entries_path)],
+                    options: Some(cmdline_refs),
+                });
 
             match find_vmlinuz_initrd_duplicates(&boot_digest)? {
                 Some(symlink_to) => {
-                    bls_config.linux =
-                        format!("/{}/{symlink_to}/vmlinuz", entry_paths.abs_entries_path);
+                    match bls_config.cfg_type {
+                        BLSConfigType::NonEFI {
+                            ref mut linux,
+                            ref mut initrd,
+                            ..
+                        } => {
+                            *linux =
+                                format!("/{}/{symlink_to}/vmlinuz", entry_paths.abs_entries_path);
 
-                    bls_config.initrd = vec![format!(
-                        "/{}/{symlink_to}/initrd",
-                        entry_paths.abs_entries_path
-                    )];
+                            *initrd = vec![format!(
+                                "/{}/{symlink_to}/initrd",
+                                entry_paths.abs_entries_path
+                            )];
+                        }
+
+                        _ => unreachable!(),
+                    };
                 }
 
                 None => {
@@ -486,7 +503,9 @@ pub(crate) fn setup_composefs_bls_boot(
     let loader_path = entry_paths.config_path.join("loader");
 
     let (config_path, booted_bls) = if is_upgrade {
-        let mut booted_bls = get_booted_bls()?;
+        let boot_dir = Dir::open_ambient_dir(&entry_paths.config_path, ambient_authority())?;
+
+        let mut booted_bls = get_booted_bls(&boot_dir)?;
         booted_bls.sort_key = Some("0".into()); // entries are sorted by their filename in reverse order
 
         // This will be atomically renamed to 'loader/entries' on shutdown/reboot
@@ -535,6 +554,7 @@ fn write_pe_to_esp(
     uki_id: &String,
     is_insecure_from_opts: bool,
     mounted_efi: impl AsRef<Path>,
+    bootloader: &Bootloader,
 ) -> Result<Option<String>> {
     let efi_bin = read_file(file, &repo).context("Reading .efi binary")?;
 
@@ -571,7 +591,11 @@ fn write_pe_to_esp(
     }
 
     // Write the UKI to ESP
-    let efi_linux_path = mounted_efi.as_ref().join(EFI_LINUX);
+    let efi_linux_path = mounted_efi.as_ref().join(match bootloader {
+        Bootloader::Grub => EFI_LINUX,
+        Bootloader::Systemd => SYSTEMD_UKI_DIR,
+    });
+
     create_dir_all(&efi_linux_path).context("Creating EFI/Linux")?;
 
     let final_pe_path = match file_path.parent() {
@@ -603,7 +627,12 @@ fn write_pe_to_esp(
 
     let pe_name = match pe_type {
         PEType::Uki => format!("{}{}", uki_id, EFI_EXT),
-        PEType::UkiAddon => format!("{}{}", uki_id, EFI_ADDON_FILE_EXT),
+        PEType::UkiAddon => file_path
+            .components()
+            .last()
+            .unwrap()
+            .to_string_lossy()
+            .to_string(),
     };
 
     pe_dir
@@ -624,7 +653,7 @@ fn write_pe_to_esp(
 fn write_grub_uki_menuentry(
     root_path: Utf8PathBuf,
     setup_type: &BootSetupType,
-    boot_label: &String,
+    boot_label: String,
     id: &Sha256HashValue,
     esp_device: &String,
 ) -> Result<()> {
@@ -708,6 +737,76 @@ fn write_grub_uki_menuentry(
     Ok(())
 }
 
+#[context("Writing systemd UKI config")]
+fn write_systemd_uki_config(
+    esp_dir: &Dir,
+    setup_type: &BootSetupType,
+    boot_label: String,
+    id: &Sha256HashValue,
+) -> Result<()> {
+    let default_sort_key = "0";
+
+    let mut bls_conf = BLSConfig::default();
+    bls_conf
+        .with_title(boot_label)
+        .with_cfg(BLSConfigType::EFI {
+            efi: format!("/{SYSTEMD_UKI_DIR}/{}{}", id.to_hex(), EFI_EXT),
+        })
+        .with_sort_key(default_sort_key.into())
+        // TODO (Johan-Liebert1): Get version from UKI like we get boot label
+        .with_version(default_sort_key.into());
+
+    let (entries_dir, booted_bls) = match setup_type {
+        BootSetupType::Setup(..) => {
+            esp_dir
+                .create_dir_all(TYPE1_ENT_PATH)
+                .with_context(|| format!("Creating {TYPE1_ENT_PATH}"))?;
+
+            (esp_dir.open_dir(TYPE1_ENT_PATH)?, None)
+        }
+
+        BootSetupType::Upgrade(_) => {
+            esp_dir
+                .create_dir_all(TYPE1_ENT_PATH_STAGED)
+                .with_context(|| format!("Creating {TYPE1_ENT_PATH_STAGED}"))?;
+
+            let mut booted_bls = get_booted_bls(&esp_dir)?;
+            booted_bls.sort_key = Some("1".into());
+
+            (esp_dir.open_dir(TYPE1_ENT_PATH_STAGED)?, Some(booted_bls))
+        }
+    };
+
+    entries_dir
+        .atomic_write(
+            type1_entry_conf_file_name(default_sort_key),
+            bls_conf.to_string().as_bytes(),
+        )
+        .context("Writing conf file")?;
+
+    if let Some(booted_bls) = booted_bls {
+        entries_dir.atomic_write(
+            // SAFETY: We set sort_key above
+            type1_entry_conf_file_name(booted_bls.sort_key.as_ref().unwrap()),
+            booted_bls.to_string().as_bytes(),
+        )?;
+    }
+
+    // Write the timeout for bootloader menu if not exists
+    if !esp_dir.exists(SYSTEMD_LOADER_CONF_PATH) {
+        esp_dir
+            .atomic_write(SYSTEMD_LOADER_CONF_PATH, SYSTEMD_TIMEOUT)
+            .with_context(|| format!("Writing to {SYSTEMD_LOADER_CONF_PATH}"))?;
+    }
+
+    let esp_dir = esp_dir
+        .reopen_as_ownedfd()
+        .context("Reopening as owned fd")?;
+    rustix::fs::fsync(esp_dir).context("fsync")?;
+
+    Ok(())
+}
+
 #[context("Setting up UKI boot")]
 pub(crate) fn setup_composefs_uki_boot(
     setup_type: BootSetupType,
@@ -716,13 +815,17 @@ pub(crate) fn setup_composefs_uki_boot(
     id: &Sha256HashValue,
     entries: Vec<ComposefsBootEntry<Sha256HashValue>>,
 ) -> Result<()> {
-    let (root_path, esp_device, bootloader, is_insecure_from_opts) = match setup_type {
+    let (root_path, esp_device, bootloader, is_insecure_from_opts, uki_addons) = match setup_type {
         BootSetupType::Setup((root_setup, state, ..)) => {
             if let Some(v) = &state.config_opts.karg {
                 if v.len() > 0 {
                     tracing::warn!("kargs passed for UKI will be ignored");
                 }
             }
+
+            let Some(cfs_opts) = &state.composefs_options else {
+                anyhow::bail!("ComposeFS options not found");
+            };
 
             let esp_part = root_setup
                 .device_info
@@ -731,23 +834,12 @@ pub(crate) fn setup_composefs_uki_boot(
                 .find(|p| p.parttype.as_str() == ESP_GUID)
                 .ok_or_else(|| anyhow!("ESP partition not found"))?;
 
-            let bootloader = state
-                .composefs_options
-                .as_ref()
-                .map(|opts| opts.bootloader.clone())
-                .unwrap_or(Bootloader::default());
-
-            let is_insecure = state
-                .composefs_options
-                .as_ref()
-                .map(|x| x.insecure)
-                .unwrap_or(false);
-
             (
                 root_setup.physical_root_path.clone(),
                 esp_part.node.clone(),
-                bootloader,
-                is_insecure,
+                cfs_opts.bootloader.clone(),
+                cfs_opts.insecure,
+                cfs_opts.uki_addon.as_ref(),
             )
         }
 
@@ -761,6 +853,7 @@ pub(crate) fn setup_composefs_uki_boot(
                 get_esp_partition(&sysroot_parent)?.0,
                 bootloader,
                 false,
+                None,
             )
         }
     };
@@ -777,6 +870,32 @@ pub(crate) fn setup_composefs_uki_boot(
             }
 
             ComposefsBootEntry::Type2(entry) => {
+                // If --uki-addon is not passed, we don't install any addon
+                if matches!(entry.pe_type, PEType::UkiAddon) {
+                    let Some(addons) = uki_addons else {
+                        continue;
+                    };
+
+                    let addon_name = entry
+                        .file_path
+                        .components()
+                        .last()
+                        .ok_or(anyhow::anyhow!("Could not get UKI addon name"))?;
+
+                    let addon_name = addon_name.as_str()?;
+
+                    let addon_name =
+                        addon_name
+                            .strip_suffix(EFI_ADDON_FILE_EXT)
+                            .ok_or(anyhow::anyhow!(
+                                "UKI addon doesn't end with {EFI_ADDON_DIR_EXT}"
+                            ))?;
+
+                    if !addons.iter().any(|passed_addon| passed_addon == addon_name) {
+                        continue;
+                    }
+                }
+
                 let ret = write_pe_to_esp(
                     &repo,
                     &entry.file,
@@ -785,6 +904,7 @@ pub(crate) fn setup_composefs_uki_boot(
                     &id.to_hex(),
                     is_insecure_from_opts,
                     esp_mount.dir.path(),
+                    &bootloader,
                 )?;
 
                 if let Some(label) = ret {
@@ -796,12 +916,11 @@ pub(crate) fn setup_composefs_uki_boot(
 
     match bootloader {
         Bootloader::Grub => {
-            write_grub_uki_menuentry(root_path, &setup_type, &boot_label, id, &esp_device)?
+            write_grub_uki_menuentry(root_path, &setup_type, boot_label, id, &esp_device)?
         }
 
         Bootloader::Systemd => {
-            // No-op for now, but later we want to have .conf files so we can control the order of
-            // entries.
+            write_systemd_uki_config(&esp_mount.fd, &setup_type, boot_label, id)?
         }
     };
 

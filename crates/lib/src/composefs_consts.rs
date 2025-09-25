@@ -31,3 +31,8 @@ pub(crate) const STAGED_BOOT_LOADER_ENTRIES: &str = "entries.staged";
 pub(crate) const USER_CFG: &str = "user.cfg";
 /// Filename for staged grub user config
 pub(crate) const USER_CFG_STAGED: &str = "user.cfg.staged";
+
+/// Path to the config files directory for Type1 boot entries
+/// This is relative to the boot/efi directory
+pub(crate) const TYPE1_ENT_PATH: &str = "loader/entries";
+pub(crate) const TYPE1_ENT_PATH_STAGED: &str = "loader/entries.staged";

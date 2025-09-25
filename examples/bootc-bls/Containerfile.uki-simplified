@@ -1,0 +1,33 @@
+FROM quay.io/fedora/fedora-bootc-bls:42 AS base
+
+FROM base as kernel
+
+ARG COMPOSEFS_FSVERITY
+
+RUN --mount=type=secret,id=key \
+    --mount=type=secret,id=cert <<EOF
+
+    echo "composefs=${COMPOSEFS_FSVERITY} rw" > /etc/kernel/cmdline
+
+    dnf install -y \
+        systemd-ukify \
+        sbsigntools \
+        systemd-boot-unsigned
+
+    kver=$(cd /usr/lib/modules && echo *)
+    ukify build \
+        --linux "/usr/lib/modules/$kver/vmlinuz" \
+        --initrd "/usr/lib/modules/$kver/initramfs.img" \
+        --uname="${kver}" \
+        --cmdline "@/etc/kernel/cmdline" \
+        --os-release "@/etc/os-release" \
+        --signtool sbsign \
+        --secureboot-private-key "/run/secrets/key" \
+        --secureboot-certificate "/run/secrets/cert" \
+        --measure \
+        --json pretty \
+        --output "/boot/EFI/Linux/$kver.efi"
+EOF
+
+FROM base as final
+COPY --from=final /boot /boot

@@ -80,7 +80,12 @@ pub(crate) async fn composefs_native_finalize() -> Result<()> {
                 let entries_dir = esp_mount.fd.open_dir("loader")?;
                 rename_exchange_bls_entries(&entries_dir)?;
             }
-            BootType::Uki => rename_staged_uki_entries(&esp_mount.fd)?,
+            BootType::Uki => {
+                rename_staged_uki_entries(&esp_mount.fd)?;
+
+                let entries_dir = esp_mount.fd.open_dir("loader")?;
+                rename_exchange_bls_entries(&entries_dir)?;
+            }
         },
     };
 

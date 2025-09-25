@@ -1,0 +1,3 @@
+#!/bin/bash
+cd ..
+./to-filesystem-uki-cocl.sh

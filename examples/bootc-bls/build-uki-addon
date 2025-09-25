@@ -1,0 +1,26 @@
+#!/bin/bash
+
+set -euxo pipefail
+
+cd "${0%/*}"
+
+mkdir -p ../addons
+
+declare -A addons=(
+    ["luks"]="rd.luks.name=8ec9cda3-6b77-45d7-bb56-a95cd9e83234=root"
+    ["console-tty0"]="console=tty0"
+    ["console-ttyS0"]="console=ttyS0,115000n"
+    ["debug-tty0"]="rd.systemd.debug_shell=1 rd.systemd.default_debug_tty=tty0"
+    ["rd.neednet"]="rd.neednet=1 ip=dhcp"
+)
+
+for addon in "${!addons[@]}"; do
+    echo "Building kernel command line UKI addon '${addon}': ${addons[${addon}]}"
+    ukify build \
+        --cmdline "${addons[${addon}]}" \
+        --signtool sbsign \
+        --secureboot-private-key "secureboot/db.key" \
+        --secureboot-certificate "secureboot/db.crt" \
+        --output "../addons/${addon}.addon.efi"
+
+done

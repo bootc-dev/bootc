@@ -1,0 +1,11 @@
+*.addon.efi
+*.ign
+*.img
+*.qcow2
+backups
+bootc
+bootc-bls/iid
+bootc-bls/secureboot
+bootc-bls/tmp
+bootc-initramfs-setup
+systemd-bootx64.efi

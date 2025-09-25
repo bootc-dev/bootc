@@ -7,9 +7,9 @@ use fn_error_context::context;
 
 use crate::{
     bootc_composefs::boot::{get_esp_partition, get_sysroot_parent_dev, BootType},
-    composefs_consts::{BOOT_LOADER_ENTRIES, COMPOSEFS_CMDLINE, USER_CFG},
+    composefs_consts::{COMPOSEFS_CMDLINE, TYPE1_ENT_PATH, USER_CFG},
     parsers::{
-        bls_config::{parse_bls_config, BLSConfig},
+        bls_config::{parse_bls_config, BLSConfig, BLSConfigType},
         grub_menuconfig::{parse_grub_menuentry_file, MenuEntry},
     },
     spec::{BootEntry, BootOrder, Host, HostSpec, ImageReference, ImageStatus},
@@ -91,14 +91,14 @@ pub(crate) fn get_sorted_uki_boot_entries<'a>(
     parse_grub_menuentry_file(str)
 }
 
-#[context("Getting sorted BLS entries")]
-pub(crate) fn get_sorted_bls_boot_entries(
+#[context("Getting sorted Type1 boot entries")]
+pub(crate) fn get_sorted_type1_boot_entries(
     boot_dir: &Dir,
     ascending: bool,
 ) -> Result<Vec<BLSConfig>> {
     let mut all_configs = vec![];
 
-    for entry in boot_dir.read_dir(format!("loader/{BOOT_LOADER_ENTRIES}"))? {
+    for entry in boot_dir.read_dir(TYPE1_ENT_PATH)? {
         let entry = entry?;
 
         let file_name = entry.file_name();
@@ -358,28 +358,62 @@ pub(crate) async fn composefs_deployment_status() -> Result<Host> {
         }
     };
 
-    match boot_type {
-        BootType::Bls => {
-            host.status.rollback_queued = !get_sorted_bls_boot_entries(&boot_dir, false)?
-                .first()
-                .ok_or(anyhow::anyhow!("First boot entry not found"))?
-                .options
-                .as_ref()
-                .ok_or(anyhow::anyhow!("options key not found in bls config"))?
-                .contains(composefs_digest.as_ref());
-        }
+    let is_rollback_queued = match booted.bootloader {
+        Bootloader::Grub => match boot_type {
+            BootType::Bls => {
+                let bls_config = get_sorted_type1_boot_entries(&boot_dir, false)?;
+                let bls_config = bls_config
+                    .first()
+                    .ok_or(anyhow::anyhow!("First boot entry not found"))?;
 
-        BootType::Uki => {
-            let mut s = String::new();
+                match &bls_config.cfg_type {
+                    BLSConfigType::NonEFI { options, .. } => !options
+                        .as_ref()
+                        .ok_or(anyhow::anyhow!("options key not found in bls config"))?
+                        .contains(composefs_digest.as_ref()),
 
-            host.status.rollback_queued = !get_sorted_uki_boot_entries(&boot_dir, &mut s)?
+                    BLSConfigType::EFI { .. } => {
+                        anyhow::bail!("Found 'efi' field in Type1 boot entry")
+                    }
+                    BLSConfigType::Unknown => anyhow::bail!("Unknown BLS Config Type"),
+                }
+            }
+
+            BootType::Uki => {
+                let mut s = String::new();
+
+                !get_sorted_uki_boot_entries(&boot_dir, &mut s)?
+                    .first()
+                    .ok_or(anyhow::anyhow!("First boot entry not found"))?
+                    .body
+                    .chainloader
+                    .contains(composefs_digest.as_ref())
+            }
+        },
+
+        // We will have BLS stuff and the UKI stuff in the same DIR
+        Bootloader::Systemd => {
+            let bls_config = get_sorted_type1_boot_entries(&boot_dir, false)?;
+            let bls_config = bls_config
                 .first()
-                .ok_or(anyhow::anyhow!("First boot entry not found"))?
-                .body
-                .chainloader
-                .contains(composefs_digest.as_ref())
+                .ok_or(anyhow::anyhow!("First boot entry not found"))?;
+
+            match &bls_config.cfg_type {
+                // For UKI boot
+                BLSConfigType::EFI { efi } => efi.contains(composefs_digest.as_ref()),
+
+                // For boot entry Type1
+                BLSConfigType::NonEFI { options, .. } => !options
+                    .as_ref()
+                    .ok_or(anyhow::anyhow!("options key not found in bls config"))?
+                    .contains(composefs_digest.as_ref()),
+
+                BLSConfigType::Unknown => anyhow::bail!("Unknown BLS Config Type"),
+            }
         }
     };
+
+    host.status.rollback_queued = is_rollback_queued;
 
     if host.status.rollback_queued {
         host.spec.boot_order = BootOrder::Rollback
@@ -392,7 +426,7 @@ pub(crate) async fn composefs_deployment_status() -> Result<Host> {
 mod tests {
     use cap_std_ext::{cap_std, dirext::CapStdExtDirExt};
 
-    use crate::parsers::grub_menuconfig::MenuentryBody;
+    use crate::parsers::{bls_config::BLSConfigType, grub_menuconfig::MenuentryBody};
 
     use super::*;
 
@@ -437,26 +471,30 @@ mod tests {
         tempdir.atomic_write("loader/entries/entry1.conf", entry1)?;
         tempdir.atomic_write("loader/entries/entry2.conf", entry2)?;
 
-        let result = get_sorted_bls_boot_entries(&tempdir, true).unwrap();
+        let result = get_sorted_type1_boot_entries(&tempdir, true).unwrap();
 
         let mut config1 = BLSConfig::default();
         config1.title = Some("Fedora 42.20250623.3.1 (CoreOS)".into());
         config1.sort_key = Some("1".into());
-        config1.linux = "/boot/7e11ac46e3e022053e7226a20104ac656bf72d1a84e3a398b7cce70e9df188b6/vmlinuz-5.14.10".into();
-        config1.initrd = vec!["/boot/7e11ac46e3e022053e7226a20104ac656bf72d1a84e3a398b7cce70e9df188b6/initramfs-5.14.10.img".into()];
-        config1.options = Some("root=UUID=abc123 rw composefs=7e11ac46e3e022053e7226a20104ac656bf72d1a84e3a398b7cce70e9df188b6".into());
+        config1.cfg_type = BLSConfigType::NonEFI {
+            linux: "/boot/7e11ac46e3e022053e7226a20104ac656bf72d1a84e3a398b7cce70e9df188b6/vmlinuz-5.14.10".into(),
+            initrd: vec!["/boot/7e11ac46e3e022053e7226a20104ac656bf72d1a84e3a398b7cce70e9df188b6/initramfs-5.14.10.img".into()],
+            options: Some("root=UUID=abc123 rw composefs=7e11ac46e3e022053e7226a20104ac656bf72d1a84e3a398b7cce70e9df188b6".into()),
+        };
 
         let mut config2 = BLSConfig::default();
         config2.title = Some("Fedora 41.20250214.2.0 (CoreOS)".into());
         config2.sort_key = Some("2".into());
-        config2.linux = "/boot/febdf62805de2ae7b6b597f2a9775d9c8a753ba1e5f09298fc8fbe0b0d13bf01/vmlinuz-5.14.10".into();
-        config2.initrd = vec!["/boot/febdf62805de2ae7b6b597f2a9775d9c8a753ba1e5f09298fc8fbe0b0d13bf01/initramfs-5.14.10.img".into()];
-        config2.options = Some("root=UUID=abc123 rw composefs=febdf62805de2ae7b6b597f2a9775d9c8a753ba1e5f09298fc8fbe0b0d13bf01".into());
+        config2.cfg_type = BLSConfigType::NonEFI {
+            linux: "/boot/febdf62805de2ae7b6b597f2a9775d9c8a753ba1e5f09298fc8fbe0b0d13bf01/vmlinuz-5.14.10".into(),
+            initrd: vec!["/boot/febdf62805de2ae7b6b597f2a9775d9c8a753ba1e5f09298fc8fbe0b0d13bf01/initramfs-5.14.10.img".into()],
+            options: Some("root=UUID=abc123 rw composefs=febdf62805de2ae7b6b597f2a9775d9c8a753ba1e5f09298fc8fbe0b0d13bf01".into())
+        };
 
         assert_eq!(result[0].sort_key.as_ref().unwrap(), "1");
         assert_eq!(result[1].sort_key.as_ref().unwrap(), "2");
 
-        let result = get_sorted_bls_boot_entries(&tempdir, false).unwrap();
+        let result = get_sorted_type1_boot_entries(&tempdir, false).unwrap();
         assert_eq!(result[0].sort_key.as_ref().unwrap(), "2");
         assert_eq!(result[1].sort_key.as_ref().unwrap(), "1");
 

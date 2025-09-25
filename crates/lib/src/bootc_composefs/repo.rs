@@ -49,9 +49,30 @@ pub(crate) async fn initialize_composefs_repository(
         &Arc::new(repo),
         &format!("{transport}{image_name}"),
         None,
-        None,
+        Some(ostree_ext::containers_image_proxy::ImageProxyConfig {
+            insecure_skip_tls_verification: Some(true),
+            ..Default::default()
+        }),
     )
     .await
+}
+
+/// skopeo (in composefs-rs) doesn't understand "registry:"
+/// This function will convert it to "docker://" and return the image ref
+///
+/// Ex
+/// docker://quay.io/some-image
+/// containers-storage:some-image
+pub(crate) fn get_imgref(transport: &String, image: &String) -> String {
+    let img = image.strip_prefix(":").unwrap_or(&image);
+
+    let final_imgref = if transport == "registry" {
+        format!("docker://{img}")
+    } else {
+        format!("{transport}:{img}")
+    };
+
+    final_imgref
 }
 
 /// Pulls the `image` from `transport` into a composefs repository at /sysroot
@@ -70,10 +91,13 @@ pub(crate) async fn pull_composefs_repo(
 
     let repo = open_composefs_repo(&rootfs_dir).context("Opening compoesfs repo")?;
 
-    let (id, verity) =
-        composefs_oci_pull(&Arc::new(repo), &format!("{transport}:{image}"), None, None)
-            .await
-            .context("Pulling composefs repo")?;
+    let final_imgref = get_imgref(transport, image);
+
+    tracing::debug!("Image to pull {final_imgref}");
+
+    let (id, verity) = composefs_oci_pull(&Arc::new(repo), &final_imgref, None, None)
+        .await
+        .context("Pulling composefs repo")?;
 
     tracing::info!("id: {}, verity: {}", hex::encode(id), verity.to_hex());
 

@@ -1,0 +1,3 @@
+FROM quay.io/fedora/fedora-bootc-bls:42 AS base
+
+COPY /systemd-bootx64.efi /usr/lib/bootupd/updates/EFI/fedora/grubx64.efi

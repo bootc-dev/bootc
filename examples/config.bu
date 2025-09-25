@@ -1,0 +1,23 @@
+variant: fcos
+version: 1.6.0
+storage:
+  luks:
+    - name: root
+      label: luks-root
+      device: /dev/disk/by-partlabel/root
+      uuid: "8ec9cda3-6b77-45d7-bb56-a95cd9e83234"
+      clevis:
+        tpm2: true
+      wipe_volume: true
+  filesystems:
+    - device: /dev/mapper/root
+      format: ext4
+      wipe_filesystem: true
+      label: root
+      uuid: "910678ff-f77e-4a7d-8d53-86f2ac47a823"
+      options: [ "-O", "verity"]
+systemd:
+  units:
+    - name: zincati.service
+      enabled: false
+      mask: true

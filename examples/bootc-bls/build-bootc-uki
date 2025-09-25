@@ -1,0 +1,74 @@
+#!/bin/bash
+
+set -eux
+
+cd "${0%/*}"
+
+# cargo build --release --features=composefs-backend
+
+FROM="${FROM:-quay.io/fedora/fedora-bootc-bls:42}"
+TAG="${TAG:-quay.io/fedora/fedora-bootc-uki:42}"
+
+# See: https://wiki.archlinux.org/title/Unified_Extensible_Firmware_Interface/Secure_Boot
+# Alternative to generate keys for testing: `sbctl create-keys`
+if [[ ! -d "secureboot" ]]; then
+    echo "Generating test Secure Boot keys"
+    mkdir secureboot
+    pushd secureboot > /dev/null
+    uuidgen --random > GUID.txt
+    openssl req -newkey rsa:4096 -nodes -keyout PK.key -new -x509 -sha256 -days 3650 -subj "/CN=Test Platform Key/" -out PK.crt
+    openssl x509 -outform DER -in PK.crt -out PK.cer
+    openssl req -newkey rsa:4096 -nodes -keyout KEK.key -new -x509 -sha256 -days 3650 -subj "/CN=Test Key Exchange Key/" -out KEK.crt
+    openssl x509 -outform DER -in KEK.crt -out KEK.cer
+    openssl req -newkey rsa:4096 -nodes -keyout db.key -new -x509 -sha256 -days 3650 -subj "/CN=Test Signature Database key/" -out db.crt
+    openssl x509 -outform DER -in db.crt -out db.cer
+    popd > /dev/null
+fi
+
+if [[ ! -f "systemd-bootx64.efi" ]]; then
+    # Sign systemd-boot once and re-use it for all builds to keep it unchanged
+    sudo podman run --rm \
+        --security-opt label=disable \
+        --volume "$PWD/secureboot/db.key:/run/secrets/key" \
+        --volume "$PWD/secureboot/db.crt:/run/secrets/cert" \
+        --volume "$PWD:/var/srv" \
+        --workdir "/var/srv" \
+        "${FROM}" \
+        bash -c "rm -f '/etc/yum.repos.d/fedora-cisco-openh264.repo'; dnf install -y sbsigntools systemd-boot-unsigned; sbsign --key '/run/secrets/key' --cert '/run/secrets/cert' '/usr/lib/systemd/boot/efi/systemd-bootx64.efi' --output '/var/srv/systemd-bootx64.efi'"
+fi
+
+# Replace GRUB with a signed systemd-boot binary
+sudo podman build \
+    --from "${FROM}" \
+    -t "${FROM}-systemdboot" \
+    --iidfile=iid \
+    -f Containerfile.systemdboot
+
+cp ../../target/release/bootc .
+
+# Workaround: Mount a filesystem where fs-verity is enabled
+mount /dev/vdb3 tmp
+
+# rm -rf tmp/sysroot
+mkdir -p tmp/sysroot/composefs
+
+IMAGE_ID="$(sed s/sha256:// iid)"
+./bootc internals cfs --repo tmp/sysroot/composefs oci pull containers-storage:"${IMAGE_ID}"
+COMPOSEFS_FSVERITY=$(./bootc internals cfs --repo tmp/sysroot/composefs oci compute-id --bootable "${IMAGE_ID}")
+
+# For debugging, add --no-cache to podman command
+sudo podman build \
+    --from "${FROM}-systemdboot" \
+    -t "${TAG}" \
+    --build-arg=COMPOSEFS_FSVERITY="${COMPOSEFS_FSVERITY}" \
+    -f Containerfile.uki \
+    --secret=id=key,src=secureboot/db.key \
+    --secret=id=cert,src=secureboot/db.crt
+
+# rm -rf tmp/efi
+# mkdir -p tmp/efi
+# ./bootc internals cfs --repo tmp/sysroot/composefs oci pull containers-storage:"${IMAGE_ID}"
+# ./bootc internals cfs --repo tmp/sysroot/composefs oci compute-id --bootable "${IMAGE_ID}"
+# ./bootc internals cfs --repo tmp/sysroot/composefs oci prepare-boot "${IMAGE_ID}" --bootdir tmp/efi
+
+umount tmp
