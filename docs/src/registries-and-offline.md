@@ -25,7 +25,7 @@ For more, see [containers-registries.conf](https://github.com/containers/image/b
 
 It's common to use a private repository when deploying a fleet of bootc instances.
 
-In addition to registry configuration, if you want to use a private registry, you'll need to address authentication. Place a `auth.json` file in the directory `/etc/ostree/auth.json`.
+In addition to registry configuration, private registries require authentication. This is configured by placing an `auth.json` file at `/etc/ostree/auth.json`.
 
 For more, see [auth.json](https://man.archlinux.org/man/containers-auth.json.5)
 
