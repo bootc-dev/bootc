@@ -11,11 +11,33 @@ use bootc_initramfs_setup::{mount_composefs_image, open_dir};
 use bootc_mount::tempmount::TempMount;
 use cap_std_ext::cap_std::{ambient_authority, fs::Dir};
 use cap_std_ext::dirext::CapStdExtDirExt;
-use etc_merge::{compute_diff, merge, traverse_etc};
+use etc_merge::{compute_diff, merge, print_diff, traverse_etc};
 use rustix::fs::{fsync, renameat, CWD};
 use rustix::path::Arg;
 
 use fn_error_context::context;
+
+pub(crate) async fn get_etc_diff() -> Result<()> {
+    let host = composefs_deployment_status().await?;
+    let booted_composefs = host.require_composefs_booted()?;
+
+    // Mount the booted EROFS image to get pristine etc
+    let sysroot = open_dir(CWD, "/sysroot").context("Opening /sysroot")?;
+    let composefs_fd = mount_composefs_image(&sysroot, &booted_composefs.verity, false)?;
+
+    let erofs_tmp_mnt = TempMount::mount_fd(&composefs_fd)?;
+
+    let pristine_etc =
+        Dir::open_ambient_dir(erofs_tmp_mnt.dir.path().join("etc"), ambient_authority())?;
+    let current_etc = Dir::open_ambient_dir("/etc", ambient_authority())?;
+
+    let (pristine_files, current_files, _) = traverse_etc(&pristine_etc, &current_etc, None)?;
+    let diff = compute_diff(&pristine_files, &current_files)?;
+
+    print_diff(&diff, &mut std::io::stdout());
+
+    Ok(())
+}
 
 pub(crate) async fn composefs_native_finalize() -> Result<()> {
     let host = composefs_deployment_status().await?;
@@ -49,7 +71,9 @@ pub(crate) async fn composefs_native_finalize() -> Result<()> {
     let new_etc = Dir::open_ambient_dir(new_etc_path, ambient_authority())?;
 
     let (pristine_files, current_files, new_files) =
-        traverse_etc(&pristine_etc, &current_etc, &new_etc)?;
+        traverse_etc(&pristine_etc, &current_etc, Some(&new_etc))?;
+
+    let new_files = new_files.ok_or(anyhow::anyhow!("Failed to get dirtree for new etc"))?;
 
     let diff = compute_diff(&pristine_files, &current_files)?;
     merge(&current_etc, &current_files, &new_etc, &new_files, diff)?;

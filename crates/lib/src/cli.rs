@@ -31,8 +31,11 @@ use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "composefs-backend")]
 use crate::bootc_composefs::{
-    finalize::composefs_native_finalize, rollback::composefs_rollback, status::composefs_booted,
-    switch::switch_composefs, update::upgrade_composefs,
+    finalize::{composefs_native_finalize, get_etc_diff},
+    rollback::composefs_rollback,
+    status::composefs_booted,
+    switch::switch_composefs,
+    update::upgrade_composefs,
 };
 use crate::deploy::RequiredHostSpec;
 use crate::lints;
@@ -653,6 +656,9 @@ pub(crate) enum Opt {
     Internals(InternalsOpts),
     #[cfg(feature = "composefs-backend")]
     ComposefsFinalizeStaged,
+    #[cfg(feature = "composefs-backend")]
+    /// Diff current /etc configuration versus default
+    ConfigDiff,
 }
 
 /// Ensure we've entered a mount namespace, so that we can remount
@@ -1502,12 +1508,15 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
                 let current_etc = Dir::open_ambient_dir(current_etc, cap_std::ambient_authority())?;
                 let new_etc = Dir::open_ambient_dir(new_etc, cap_std::ambient_authority())?;
 
-                let (p, c, n) = etc_merge::traverse_etc(&pristine_etc, &current_etc, &new_etc)?;
+                let (p, c, n) =
+                    etc_merge::traverse_etc(&pristine_etc, &current_etc, Some(&new_etc))?;
 
                 let diff = compute_diff(&p, &c)?;
                 print_diff(&diff, &mut std::io::stdout());
 
                 if merge {
+                    let n =
+                        n.ok_or_else(|| anyhow::anyhow!("Failed to get dirtree for new etc"))?;
                     etc_merge::merge(&current_etc, &c, &new_etc, &n, diff)?;
                 }
 
@@ -1525,6 +1534,9 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
 
         #[cfg(feature = "composefs-backend")]
         Opt::ComposefsFinalizeStaged => composefs_native_finalize().await,
+
+        #[cfg(feature = "composefs-backend")]
+        Opt::ConfigDiff => get_etc_diff().await,
     }
 }
 

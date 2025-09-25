@@ -305,16 +305,16 @@ fn get_modifications(
 /// [`anyhow::Result`] containing a tuple of directory trees in the order:
 ///
 /// 1. `pristine_etc_files` – Dirtree of the pristine etc state
-/// 2. `current_etc_files` – Dirtree of the current etc state
-/// 3. `new_etc_files` – Dirtree of the new etc state
+/// 2. `current_etc_files`  – Dirtree of the current etc state
+/// 3. `new_etc_files`      – Dirtree of the new etc state (if new_etc directory is passed)
 pub fn traverse_etc(
     pristine_etc: &CapStdDir,
     current_etc: &CapStdDir,
-    new_etc: &CapStdDir,
+    new_etc: Option<&CapStdDir>,
 ) -> anyhow::Result<(
     Directory<CustomMetadata>,
     Directory<CustomMetadata>,
-    Directory<CustomMetadata>,
+    Option<Directory<CustomMetadata>>,
 )> {
     let mut pristine_etc_files = Directory::default();
     recurse_dir(pristine_etc, &mut pristine_etc_files)
@@ -324,8 +324,16 @@ pub fn traverse_etc(
     recurse_dir(current_etc, &mut current_etc_files)
         .context(format!("Recursing {current_etc:?}"))?;
 
-    let mut new_etc_files = Directory::default();
-    recurse_dir(new_etc, &mut new_etc_files).context(format!("Recursing {new_etc:?}"))?;
+    let new_etc_files = match new_etc {
+        Some(new_etc) => {
+            let mut new_etc_files = Directory::default();
+            recurse_dir(new_etc, &mut new_etc_files).context(format!("Recursing {new_etc:?}"))?;
+
+            Some(new_etc_files)
+        }
+
+        None => None,
+    };
 
     return Ok((pristine_etc_files, current_etc_files, new_etc_files));
 }
@@ -664,7 +672,7 @@ fn merge_modified_files(
 
         let current_inode = dir
             .lookup(filename)
-            .ok_or(anyhow::anyhow!("{filename:?} not found"))?;
+            .ok_or_else(|| anyhow::anyhow!("{filename:?} not found"))?;
 
         // This will error out if some directory in a chain does not exist
         let res = new_etc_dirtree.split(OsStr::new(&file));
@@ -734,30 +742,18 @@ pub fn merge(
     for removed in diff.removed {
         let stat = new_etc_fd.metadata_optional(&removed)?;
 
-        let stat = match stat {
-            Some(s) => s,
-
-            None => {
-                // File/dir doesn't exist in new_etc
-                // Basically a no-op
-                continue;
-            }
+        let Some(stat) = stat else {
+            // File/dir doesn't exist in new_etc
+            // Basically a no-op
+            continue;
         };
 
         if stat.is_file() || stat.is_symlink() {
-            match new_etc_fd.remove_file(&removed) {
-                Ok(..) => { /* no-op */ }
-                Err(e) => Err(e)?,
-            }
-        }
-
-        if stat.is_dir() {
+            new_etc_fd.remove_file(&removed)?;
+        } else if stat.is_dir() {
             // We only add the directory to the removed array, if the entire directory was deleted
             // So `remove_dir_all` should be okay here
-            match new_etc_fd.remove_dir_all(&removed) {
-                Ok(..) => { /* no-op */ }
-                Err(e) => Err(e)?,
-            }
+            new_etc_fd.remove_dir_all(&removed)?;
         }
     }
 
@@ -826,7 +822,7 @@ mod tests {
         c.remove_file(deleted_files[0])?;
         c.remove_file(deleted_files[1])?;
 
-        let (pristine_etc_files, current_etc_files, _) = traverse_etc(&p, &c, &n)?;
+        let (pristine_etc_files, current_etc_files, _) = traverse_etc(&p, &c, Some(&n))?;
         let res = compute_diff(&pristine_etc_files, &current_etc_files)?;
 
         // Test added files
@@ -1010,9 +1006,10 @@ mod tests {
         n.create_dir_all("dir/perms")?;
         n.write("dir/perms/some-file", "Some-file")?;
 
-        let (pristine_etc_files, current_etc_files, new_etc_files) = traverse_etc(&p, &c, &n)?;
+        let (pristine_etc_files, current_etc_files, new_etc_files) =
+            traverse_etc(&p, &c, Some(&n))?;
         let diff = compute_diff(&pristine_etc_files, &current_etc_files)?;
-        merge(&c, &current_etc_files, &n, &new_etc_files, diff)?;
+        merge(&c, &current_etc_files, &n, &new_etc_files.unwrap(), diff)?;
 
         assert!(files_eq(&c, &n, "new_file.txt")?);
         assert!(files_eq(&c, &n, "a/new_file.txt")?);
@@ -1082,10 +1079,11 @@ mod tests {
 
         n.create_dir_all("file-to-dir")?;
 
-        let (pristine_etc_files, current_etc_files, new_etc_files) = traverse_etc(&p, &c, &n)?;
+        let (pristine_etc_files, current_etc_files, new_etc_files) =
+            traverse_etc(&p, &c, Some(&n))?;
         let diff = compute_diff(&pristine_etc_files, &current_etc_files)?;
 
-        let merge_res = merge(&c, &current_etc_files, &n, &new_etc_files, diff);
+        let merge_res = merge(&c, &current_etc_files, &n, &new_etc_files.unwrap(), diff);
 
         assert!(merge_res.is_err());
         assert_eq!(
