@@ -39,6 +39,16 @@ pub(crate) fn test_bootc_install_config() -> Result<()> {
     drop(config);
     Ok(())
 }
+
+/// Previously system-reinstall-bootc bombed out when run as non-root even if passing --help
+fn test_system_reinstall_help() -> Result<()> {
+    let o = Command::new("runuser")
+        .args(["-u", "bin", "system-reinstall-bootc", "--help"])
+        .output()?;
+    assert!(o.status.success());
+    Ok(())
+}
+
 /// Tests that should be run in a default container image.
 #[context("Container tests")]
 pub(crate) fn run(testargs: libtest_mimic::Arguments) -> Result<()> {
@@ -46,6 +56,7 @@ pub(crate) fn run(testargs: libtest_mimic::Arguments) -> Result<()> {
         new_test("bootc upgrade", test_bootc_upgrade),
         new_test("install config", test_bootc_install_config),
         new_test("status", test_bootc_status),
+        new_test("system-reinstall --help", test_system_reinstall_help),
     ];
 
     libtest_mimic::run(&testargs, tests.into()).exit()

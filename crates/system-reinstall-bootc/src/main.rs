@@ -2,6 +2,7 @@
 
 use anyhow::{ensure, Context, Result};
 use bootc_utils::CommandRunExt;
+use clap::Parser;
 use rustix::process::getuid;
 
 mod btrfs;
@@ -13,19 +14,43 @@ pub(crate) mod users;
 
 const ROOT_KEY_MOUNT_POINT: &str = "/bootc_authorized_ssh_keys/root";
 
+/// Reinstall the system using the provided bootc container.
+///
+/// This will interactively replace the system with the content of the targeted
+/// container image.
+///
+/// If the environment variable BOOTC_REINSTALL_CONFIG is set, it must be a YAML
+/// file with a single member `bootc_image` that specifies the image to install.
+/// This will take precedence over the CLI.
+#[derive(clap::Parser)]
+struct Opts {
+    /// The bootc image to install
+    pub(crate) image: String,
+    // Note if we ever add any other options here,
+}
+
 fn run() -> Result<()> {
+    // We historically supported an environment variable providing a config to override the image, so
+    // keep supporting that. I'm considering deprecating that though.
+    let opts = if let Some(config) = config::ReinstallConfig::load().context("loading config")? {
+        Opts {
+            image: config.bootc_image,
+        }
+    } else {
+        // Otherwise an image is required.
+        Opts::parse()
+    };
+
     bootc_utils::initialize_tracing();
     tracing::trace!("starting {}", env!("CARGO_PKG_NAME"));
 
     // Rootless podman is not supported by bootc
     ensure!(getuid().is_root(), "Must run as the root user");
 
-    let config = config::ReinstallConfig::load().context("loading config")?;
-
     podman::ensure_podman_installed()?;
 
     //pull image early so it can be inspected, e.g. to check for cloud-init
-    podman::pull_if_not_present(&config.bootc_image)?;
+    podman::pull_if_not_present(&opts.image)?;
 
     println!();
 
@@ -41,8 +66,7 @@ fn run() -> Result<()> {
 
     prompt::mount_warning()?;
 
-    let mut reinstall_podman_command =
-        podman::reinstall_command(&config.bootc_image, ssh_key_file_path)?;
+    let mut reinstall_podman_command = podman::reinstall_command(&opts.image, ssh_key_file_path)?;
 
     println!();
     println!("Going to run command:");
