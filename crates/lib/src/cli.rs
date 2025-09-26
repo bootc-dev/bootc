@@ -93,6 +93,11 @@ pub(crate) struct UpgradeOpts {
     #[clap(long = "soft-reboot", conflicts_with = "check")]
     pub(crate) soft_reboot: Option<SoftRebootMode>,
 
+    /// Use podman/skopeo to pull image to additionalimagestore, then read from container storage.
+    /// This provides a unified approach that leverages existing container tooling.
+    #[clap(long)]
+    pub(crate) unified: bool,
+
     #[clap(flatten)]
     pub(crate) progress: ProgressOptions,
 }
@@ -144,6 +149,11 @@ pub(crate) struct SwitchOpts {
 
     /// Target image to use for the next boot.
     pub(crate) target: String,
+
+    /// Use podman/skopeo to pull image to additionalimagestore, then read from container storage.
+    /// This provides a unified approach that leverages existing container tooling.
+    #[clap(long)]
+    pub(crate) unified: bool,
 
     #[clap(flatten)]
     pub(crate) progress: ProgressOptions,
@@ -928,7 +938,11 @@ async fn upgrade(opts: UpgradeOpts) -> Result<()> {
             }
         }
     } else {
-        let fetched = crate::deploy::pull(repo, imgref, None, opts.quiet, prog.clone()).await?;
+        let fetched = if opts.unified {
+            crate::deploy::pull_unified(repo, imgref, None, opts.quiet, prog.clone(), sysroot).await?
+        } else {
+            crate::deploy::pull(repo, imgref, None, opts.quiet, prog.clone()).await?
+        };
         let staged_digest = staged_image.map(|s| s.digest().expect("valid digest in status"));
         let fetched_digest = &fetched.manifest_digest;
         tracing::debug!("staged: {staged_digest:?}");
@@ -1056,7 +1070,11 @@ async fn switch(opts: SwitchOpts) -> Result<()> {
 
     let new_spec = RequiredHostSpec::from_spec(&new_spec)?;
 
-    let fetched = crate::deploy::pull(repo, &target, None, opts.quiet, prog.clone()).await?;
+    let fetched = if opts.unified {
+        crate::deploy::pull_unified(repo, &target, None, opts.quiet, prog.clone(), sysroot).await?
+    } else {
+        crate::deploy::pull(repo, &target, None, opts.quiet, prog.clone()).await?
+    };
 
     if !opts.retain {
         // By default, we prune the previous ostree ref so it will go away after later upgrades
