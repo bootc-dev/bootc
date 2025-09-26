@@ -8,6 +8,11 @@ if (not ("/usr/lib/bootc/initramfs-setup" | path exists)) {
     exit 0
 }
 
+if (not (open /proc/cmdline | str contains composefs)) {
+    print "No composefs in cmdline"
+    exit 0
+}
+
 journalctl -b -t bootc-root-setup.service --grep=OK
 
 tap ok

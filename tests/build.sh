@@ -45,7 +45,7 @@ DISK=target/bootc-integration-test.qcow2
 rm -vf "${DISK}"
 # testcloud barfs on .raw
 if test -n "${bcvk}"; then
-  bcvk to-disk --format=qcow2 --disk-size "${SIZE}" localhost/bootc-integration "${DISK}"
+  bcvk to-disk --format=qcow2 --disk-size "${SIZE}" --filesystem ext4 localhost/bootc-integration "${DISK}"
 else
   TMPDISK=target/bootc-integration-test.raw
   truncate -s "${SIZE}" "${TMPDISK}"
@@ -59,7 +59,7 @@ else
     -v $(pwd)/target:/target \
     localhost/bootc-integration \
     bootc install to-disk \
-    --filesystem "xfs" \
+    --filesystem "ext4" \
     --karg=console=ttyS0,115200n8 \
     --generic-image \
     --via-loopback \

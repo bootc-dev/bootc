@@ -39,8 +39,8 @@ EORUN
 # bootc binaries in /out. The intention is that the target rootfs is extracted from /out
 # back into a final stae (without the build deps etc) below.
 FROM base as build
-# Flip this on to enable initramfs code
-ARG initramfs=0
+# Flip this off to disable initramfs code
+ARG initramfs=1
 # This installs our package dependencies, and we want to cache it independently of the rest.
 # Basically we don't want changing a .rs file to blow out the cache of packages. So we only
 # copy files necessary
