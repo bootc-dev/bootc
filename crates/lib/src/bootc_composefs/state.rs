@@ -45,11 +45,11 @@ pub(crate) fn get_booted_bls(boot_dir: &Dir) -> Result<BLSConfig> {
     for entry in sorted_entries {
         match &entry.cfg_type {
             BLSConfigType::EFI { efi } => {
-                let composfs_param_value = booted.value().ok_or(anyhow::anyhow!(
-                    "Failed to get composefs kernel cmdline value"
-                ))?;
+                let composefs_param_value = booted.value().ok_or_else(|| {
+                    anyhow::anyhow!("Failed to get composefs kernel cmdline value")
+                })?;
 
-                if efi.contains(composfs_param_value) {
+                if efi.as_str().contains(composefs_param_value) {
                     return Ok(entry);
                 }
             }

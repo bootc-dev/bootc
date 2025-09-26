@@ -5,6 +5,7 @@
 #![allow(dead_code)]
 
 use anyhow::{anyhow, Result};
+use camino::Utf8PathBuf;
 use core::fmt;
 use std::collections::HashMap;
 use std::fmt::Display;
@@ -14,13 +15,13 @@ use uapi_version::Version;
 pub enum BLSConfigType {
     EFI {
         /// The path to the EFI binary, usually a UKI
-        efi: String,
+        efi: Utf8PathBuf,
     },
     NonEFI {
         /// The path to the linux kernel to boot.
-        linux: String,
+        linux: Utf8PathBuf,
         /// The paths to the initrd images.
-        initrd: Vec<String>,
+        initrd: Vec<Utf8PathBuf>,
         /// Kernel command line options.
         options: Option<String>,
     },
@@ -189,12 +190,12 @@ pub(crate) fn parse_bls_config(input: &str) -> Result<BLSConfig> {
             match key {
                 "title" => title = Some(value),
                 "version" => version = Some(value),
-                "linux" => linux = Some(value),
-                "initrd" => initrd.push(value),
+                "linux" => linux = Some(Utf8PathBuf::from(value)),
+                "initrd" => initrd.push(Utf8PathBuf::from(value)),
                 "options" => options = Some(value),
                 "machine-id" => machine_id = Some(value),
                 "sort-key" => sort_key = Some(value),
-                "efi" => efi = Some(value),
+                "efi" => efi = Some(Utf8PathBuf::from(value)),
                 _ => {
                     extra.insert(key.to_string(), value);
                 }

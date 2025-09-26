@@ -1,7 +1,7 @@
+use std::ffi::OsStr;
 use std::fs::create_dir_all;
 use std::io::Write;
 use std::path::Path;
-use std::{ffi::OsStr, path::PathBuf};
 
 use anyhow::{anyhow, Context, Result};
 use bootc_blockdev::find_parent_devices;
@@ -64,7 +64,7 @@ const SYSTEMD_LOADER_CONF_PATH: &str = "loader/loader.conf";
 /// directory specified by the BLS spec. We do this because we want systemd-boot to only look at
 /// our config files and not show the actual UKIs in the bootloader menu
 /// This is relative to the ESP
-const SYSTEMD_UKI_DIR: &str = "EFI/Linux/uki";
+const SYSTEMD_UKI_DIR: &str = "EFI/Linux/bootc";
 
 pub(crate) enum BootSetupType<'a> {
     /// For initial setup, i.e. install to-disk
@@ -460,8 +460,10 @@ pub(crate) fn setup_composefs_bls_boot(
                 .with_sort_key(default_sort_key.into())
                 .with_version(version)
                 .with_cfg(BLSConfigType::NonEFI {
-                    linux: format!("/{}/{id_hex}/vmlinuz", entry_paths.abs_entries_path),
-                    initrd: vec![format!("/{}/{id_hex}/initrd", entry_paths.abs_entries_path)],
+                    linux: format!("/{}/{id_hex}/vmlinuz", entry_paths.abs_entries_path).into(),
+                    initrd: vec![
+                        format!("/{}/{id_hex}/initrd", entry_paths.abs_entries_path).into()
+                    ],
                     options: Some(cmdline_refs),
                 });
 
@@ -474,12 +476,14 @@ pub(crate) fn setup_composefs_bls_boot(
                             ..
                         } => {
                             *linux =
-                                format!("/{}/{symlink_to}/vmlinuz", entry_paths.abs_entries_path);
+                                format!("/{}/{symlink_to}/vmlinuz", entry_paths.abs_entries_path)
+                                    .into();
 
                             *initrd = vec![format!(
                                 "/{}/{symlink_to}/initrd",
                                 entry_paths.abs_entries_path
-                            )];
+                            )
+                            .into()];
                         }
 
                         _ => unreachable!(),
@@ -549,7 +553,7 @@ pub(crate) fn setup_composefs_bls_boot(
 fn write_pe_to_esp(
     repo: &ComposefsRepository<Sha256HashValue>,
     file: &RegularFile<Sha256HashValue>,
-    file_path: &PathBuf,
+    file_path: &Utf8Path,
     pe_type: PEType,
     uki_id: &String,
     is_insecure_from_opts: bool,
@@ -600,7 +604,7 @@ fn write_pe_to_esp(
 
     let final_pe_path = match file_path.parent() {
         Some(parent) => {
-            let renamed_path = match parent.as_str()?.ends_with(EFI_ADDON_DIR_EXT) {
+            let renamed_path = match parent.as_str().ends_with(EFI_ADDON_DIR_EXT) {
                 true => {
                     let dir_name = format!("{}{}", uki_id, EFI_ADDON_DIR_EXT);
 
@@ -626,13 +630,12 @@ fn write_pe_to_esp(
         .with_context(|| format!("Opening {final_pe_path:?}"))?;
 
     let pe_name = match pe_type {
-        PEType::Uki => format!("{}{}", uki_id, EFI_EXT),
+        PEType::Uki => &format!("{}{}", uki_id, EFI_EXT),
         PEType::UkiAddon => file_path
             .components()
             .last()
-            .unwrap()
-            .to_string_lossy()
-            .to_string(),
+            .ok_or_else(|| anyhow::anyhow!("Failed to get UKI Addon file name"))?
+            .as_str(),
     };
 
     pe_dir
@@ -750,7 +753,7 @@ fn write_systemd_uki_config(
     bls_conf
         .with_title(boot_label)
         .with_cfg(BLSConfigType::EFI {
-            efi: format!("/{SYSTEMD_UKI_DIR}/{}{}", id.to_hex(), EFI_EXT),
+            efi: format!("/{SYSTEMD_UKI_DIR}/{}{}", id.to_hex(), EFI_EXT).into(),
         })
         .with_sort_key(default_sort_key.into())
         // TODO (Johan-Liebert1): Get version from UKI like we get boot label
@@ -880,26 +883,27 @@ pub(crate) fn setup_composefs_uki_boot(
                         .file_path
                         .components()
                         .last()
-                        .ok_or(anyhow::anyhow!("Could not get UKI addon name"))?;
+                        .ok_or_else(|| anyhow::anyhow!("Could not get UKI addon name"))?;
 
                     let addon_name = addon_name.as_str()?;
 
                     let addon_name =
-                        addon_name
-                            .strip_suffix(EFI_ADDON_FILE_EXT)
-                            .ok_or(anyhow::anyhow!(
-                                "UKI addon doesn't end with {EFI_ADDON_DIR_EXT}"
-                            ))?;
+                        addon_name.strip_suffix(EFI_ADDON_FILE_EXT).ok_or_else(|| {
+                            anyhow::anyhow!("UKI addon doesn't end with {EFI_ADDON_DIR_EXT}")
+                        })?;
 
                     if !addons.iter().any(|passed_addon| passed_addon == addon_name) {
                         continue;
                     }
                 }
 
+                let utf8_file_path = Utf8Path::from_path(&entry.file_path)
+                    .ok_or_else(|| anyhow::anyhow!("Path is not valid UTf8"))?;
+
                 let ret = write_pe_to_esp(
                     &repo,
                     &entry.file,
-                    &entry.file_path,
+                    utf8_file_path,
                     entry.pe_type,
                     &id.to_hex(),
                     is_insecure_from_opts,

@@ -400,7 +400,7 @@ pub(crate) async fn composefs_deployment_status() -> Result<Host> {
 
             match &bls_config.cfg_type {
                 // For UKI boot
-                BLSConfigType::EFI { efi } => efi.contains(composefs_digest.as_ref()),
+                BLSConfigType::EFI { efi } => efi.as_str().contains(composefs_digest.as_ref()),
 
                 // For boot entry Type1
                 BLSConfigType::NonEFI { options, .. } => !options
