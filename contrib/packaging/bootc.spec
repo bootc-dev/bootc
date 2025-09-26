@@ -159,7 +159,7 @@ find %{?buildroot}/%{_docdir} ! -type d -printf '%{_docdir}/%%P\n' > bootcdoclis
 %{_prefix}/libexec/libostree/ext/*
 %endif
 %{_unitdir}/*
-%{_mandir}/man*/bootc*
+%{_mandir}/man*/*bootc*
 
 %files -n system-reinstall-bootc
 %{_bindir}/system-reinstall-bootc
