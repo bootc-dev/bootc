@@ -577,8 +577,7 @@ pub(crate) fn get_base_commit(repo: &ostree::Repo, commit: &str) -> Result<Optio
 #[context("Writing deployment")]
 async fn deploy(
     sysroot: &Storage,
-    merge_deployment: Option<&Deployment>,
-    stateroot: &str,
+    from: MergeState,
     image: &ImageState,
     origin: &glib::KeyFile,
 ) -> Result<Deployment> {
@@ -586,16 +585,18 @@ async fn deploy(
     // a merge deployment. The kargs code also always looks at the booted root (which
     // is a distinct minor issue, but not super important as right now the install path
     // doesn't use this API).
-    let override_kargs = if let Some(deployment) = merge_deployment {
-        Some(crate::bootc_kargs::get_kargs(sysroot, &deployment, image)?)
-    } else {
-        None
+    let (stateroot, override_kargs) = match &from {
+        MergeState::MergeDeployment(deployment) => {
+            let kargs = crate::bootc_kargs::get_kargs(sysroot, &deployment, image)?;
+            (deployment.stateroot().into(), kargs)
+        }
+        MergeState::Reset { stateroot, kargs } => (stateroot.clone(), kargs.clone()),
     };
     // Clone all the things to move to worker thread
     let ostree = sysroot.get_ostree_cloned()?;
     // ostree::Deployment is incorrectly !Send 😢 so convert it to an integer
+    let merge_deployment = from.as_merge_deployment();
     let merge_deployment = merge_deployment.map(|d| d.index() as usize);
-    let stateroot = stateroot.to_string();
     let ostree_commit = image.ostree_commit.to_string();
     // GKeyFile also isn't Send! So we serialize that as a string...
     let origin_data = origin.to_data();
@@ -609,11 +610,10 @@ async fn deploy(
             // Because the C API expects a Vec<&str>, we need to generate a new Vec<>
             // that borrows.
             let override_kargs = override_kargs
-                .as_deref()
-                .map(|v| v.iter().map(|s| s.as_str()).collect::<Vec<_>>());
-            if let Some(kargs) = override_kargs.as_deref() {
-                opts.override_kernel_argv = Some(&kargs);
-            }
+                .iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>();
+            opts.override_kernel_argv = Some(&override_kargs);
             let deployments = ostree.deployments();
             let merge_deployment = merge_deployment.map(|m| &deployments[m]);
             let origin = glib::KeyFile::new();
@@ -634,6 +634,18 @@ async fn deploy(
     let ostree = sysroot.get_ostree()?;
     let staged = ostree.staged_deployment().unwrap();
     assert_eq!(staged.index(), r);
+
+    // This file is used to signal to other CLI commands that this deployment is a factory reset
+    // (e.g. bootc status)
+    if matches!(from, MergeState::Reset { .. }) {
+        let deployment_dir = ostree.deployment_dirpath(&staged);
+        let deployment_dir = std::path::Path::new(deployment_dir.as_str());
+        if deployment_dir.exists() {
+            let marker_path = deployment_dir.join(".bootc-factory-reset");
+            std::fs::write(&marker_path, b"")?;
+        }
+    }
+
     Ok(staged)
 }
 
@@ -649,11 +661,42 @@ fn origin_from_imageref(imgref: &ImageReference) -> Result<glib::KeyFile> {
     Ok(origin)
 }
 
+/// The source of data for staging a new deployment
+#[derive(Debug)]
+pub(crate) enum MergeState {
+    /// Use the provided merge deployment
+    MergeDeployment(Deployment),
+    /// Don't use a merge deployment, but only this
+    /// provided initial state.
+    Reset {
+        stateroot: String,
+        kargs: Vec<String>,
+    },
+}
+impl MergeState {
+    /// Initialize using the default merge deployment for the given stateroot.
+    pub(crate) fn from_stateroot(sysroot: &Storage, stateroot: &str) -> Result<Self> {
+        let ostree = sysroot.get_ostree()?;
+        let merge_deployment = ostree.merge_deployment(Some(stateroot)).ok_or_else(|| {
+            anyhow::anyhow!("No merge deployment found for stateroot {stateroot}")
+        })?;
+        Ok(Self::MergeDeployment(merge_deployment))
+    }
+
+    /// Cast this to a merge deployment case.
+    pub(crate) fn as_merge_deployment(&self) -> Option<&Deployment> {
+        match self {
+            Self::MergeDeployment(d) => Some(d),
+            Self::Reset { .. } => None,
+        }
+    }
+}
+
 /// Stage (queue deployment of) a fetched container image.
 #[context("Staging")]
 pub(crate) async fn stage(
     sysroot: &Storage,
-    stateroot: &str,
+    from: MergeState,
     image: &ImageState,
     spec: &RequiredHostSpec<'_>,
     prog: ProgressWriter,
@@ -666,13 +709,11 @@ pub(crate) async fn stage(
         bootc.image.reference = &spec.image.image,
         bootc.image.transport = &spec.image.transport,
         bootc.manifest_digest = image.manifest_digest.as_ref(),
-        bootc.stateroot = stateroot,
         "Staging image for deployment: {} (digest: {})",
         spec.image,
         image.manifest_digest
     );
 
-    let ostree = sysroot.get_ostree()?;
     let mut subtask = SubTaskStep {
         subtask: "merging".into(),
         description: "Merging Image".into(),
@@ -694,7 +735,6 @@ pub(crate) async fn stage(
             .collect(),
     })
     .await;
-    let merge_deployment = ostree.merge_deployment(Some(stateroot));
 
     subtask.completed = true;
     subtasks.push(subtask.clone());
@@ -717,14 +757,7 @@ pub(crate) async fn stage(
     })
     .await;
     let origin = origin_from_imageref(spec.image)?;
-    let deployment = crate::deploy::deploy(
-        sysroot,
-        merge_deployment.as_ref(),
-        stateroot,
-        image,
-        &origin,
-    )
-    .await?;
+    let deployment = crate::deploy::deploy(sysroot, from, image, &origin).await?;
 
     subtask.completed = true;
     subtasks.push(subtask.clone());
