@@ -54,6 +54,23 @@ pub(crate) async fn initialize_composefs_repository(
     .await
 }
 
+/// skopeo (in composefs-rs) doesn't understand "registry:"
+/// This function will convert it to "docker://" and return the image ref
+///
+/// Ex
+/// docker://quay.io/some-image
+/// containers-storage:some-image
+pub(crate) fn get_imgref(transport: &str, image: &str) -> String {
+    let img = image.strip_prefix(":").unwrap_or(&image);
+    let transport = transport.strip_suffix(":").unwrap_or(&transport);
+
+    if transport == "registry" {
+        format!("docker://{img}")
+    } else {
+        format!("{transport}:{img}")
+    }
+}
+
 /// Pulls the `image` from `transport` into a composefs repository at /sysroot
 /// Checks for boot entries in the image and returns them
 #[context("Pulling composefs repository")]
@@ -70,10 +87,13 @@ pub(crate) async fn pull_composefs_repo(
 
     let repo = open_composefs_repo(&rootfs_dir).context("Opening compoesfs repo")?;
 
-    let (id, verity) =
-        composefs_oci_pull(&Arc::new(repo), &format!("{transport}:{image}"), None, None)
-            .await
-            .context("Pulling composefs repo")?;
+    let final_imgref = get_imgref(transport, image);
+
+    tracing::debug!("Image to pull {final_imgref}");
+
+    let (id, verity) = composefs_oci_pull(&Arc::new(repo), &final_imgref, None, None)
+        .await
+        .context("Pulling composefs repo")?;
 
     tracing::info!("id: {}, verity: {}", hex::encode(id), verity.to_hex());
 
@@ -85,4 +105,40 @@ pub(crate) async fn pull_composefs_repo(
     let id = fs.commit_image(&repo, None)?;
 
     Ok((repo, entries, id, fs))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const IMAGE_NAME: &str = "quay.io/example/image:latest";
+
+    #[test]
+    fn test_get_imgref_registry_transport() {
+        assert_eq!(
+            get_imgref("registry:", IMAGE_NAME),
+            format!("docker://{IMAGE_NAME}")
+        );
+    }
+
+    #[test]
+    fn test_get_imgref_containers_storage() {
+        assert_eq!(
+            get_imgref("containers-storage", IMAGE_NAME),
+            format!("containers-storage:{IMAGE_NAME}")
+        );
+
+        assert_eq!(
+            get_imgref("containers-storage:", IMAGE_NAME),
+            format!("containers-storage:{IMAGE_NAME}")
+        );
+    }
+
+    #[test]
+    fn test_get_imgref_edge_cases() {
+        assert_eq!(
+            get_imgref("registry", IMAGE_NAME),
+            format!("docker://{IMAGE_NAME}")
+        );
+    }
 }

@@ -8,7 +8,7 @@ use fn_error_context::context;
 use rustix::fs::{fsync, renameat_with, AtFlags, RenameFlags};
 
 use crate::bootc_composefs::boot::BootType;
-use crate::bootc_composefs::status::{composefs_deployment_status, get_sorted_bls_boot_entries};
+use crate::bootc_composefs::status::{composefs_deployment_status, get_sorted_type1_boot_entries};
 use crate::{
     bootc_composefs::{boot::get_efi_uuid_source, status::get_sorted_uki_boot_entries},
     composefs_consts::{
@@ -53,8 +53,9 @@ pub(crate) fn rename_exchange_bls_entries(entries_dir: &Dir) -> Result<()> {
     .context("renameat")?;
 
     tracing::debug!("Removing {STAGED_BOOT_LOADER_ENTRIES}");
-    rustix::fs::unlinkat(&entries_dir, STAGED_BOOT_LOADER_ENTRIES, AtFlags::REMOVEDIR)
-        .context("unlinkat")?;
+    entries_dir
+        .remove_dir_all(STAGED_BOOT_LOADER_ENTRIES)
+        .context("Removing staged dir")?;
 
     tracing::debug!("Syncing to disk");
     let entries_dir = entries_dir
@@ -110,7 +111,7 @@ pub(crate) fn rollback_composefs_bls() -> Result<()> {
     // After this:
     // all_configs[0] -> booted depl
     // all_configs[1] -> rollback depl
-    let mut all_configs = get_sorted_bls_boot_entries(&boot_dir, false)?;
+    let mut all_configs = get_sorted_type1_boot_entries(&boot_dir, false)?;
 
     // Update the indicies so that they're swapped
     for (idx, cfg) in all_configs.iter_mut().enumerate() {
