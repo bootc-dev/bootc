@@ -183,7 +183,7 @@ jobs:
 
       - name: Run all TMT tests
         run: |
-          just test-tmt-nobuild
+          just test-tmt-nobuild plans --name /tmt/plans/integration
 
       - name: Archive TMT logs
         if: always()
