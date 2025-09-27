@@ -1,16 +1,25 @@
-documentation:
+# Maybe in the future we have a label-per-crate, but
+# for now this is just a rough cut.
+
+area/documentation:
 - changed-files:
   - any-glob-to-any-file:
     - 'docs/**'
     - README.md
+    - CONTRIBUTING.md
 
 area/install:
 - changed-files:
   - any-glob-to-any-file:
-      - 'lib/src/install.rs'
-      - 'lib/src/install/**'
+      - 'crates/lib/src/install.rs'
+      - 'crates/lib/src/install/**'
 
 area/system-reinstall-bootc:
 - changed-files:
   - any-glob-to-any-file:
-      - 'system-reinstall-bootc/**'
+      - 'crates/system-reinstall-bootc/**'
+
+area/ostree:
+- changed-files:
+  - any-glob-to-any-file:
+      - 'crates/ostree-ext/**'
