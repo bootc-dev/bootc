@@ -169,6 +169,13 @@ pub(crate) async fn push_entrypoint(source: Option<&str>, target: Option<&str>) 
     Ok(())
 }
 
+/// Implementation of `bootc image copy-to-bootc-storage`.
+#[context("Copying image to bootc storage")]
+pub(crate) async fn copy_to_bootc_storage_entrypoint(source: &str) -> Result<()> {
+    let sysroot = crate::cli::get_storage().await?;
+    sysroot.get_ensure_imgstore()?.copy_to_storage(source).await
+}
+
 /// Thin wrapper for invoking `podman image <X>` but set up for our internal
 /// image store (as distinct from /var/lib/containers default).
 pub(crate) async fn imgcmd_entrypoint(

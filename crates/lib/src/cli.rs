@@ -421,6 +421,15 @@ pub(crate) enum ImageOpts {
         /// The image to pull
         image: String,
     },
+    /// Copy a container image to the bootc-owned container storage.
+    ///
+    /// This copies a container image from various sources (registries, OCI archives,
+    /// containers-storage, etc.) to the bootc-owned storage, which is used for
+    /// Logically Bound Images and other bootc functionality.
+    CopyToBootcStorage {
+        /// The source image to copy (supports various transports like registry:, containers-storage:, oci-archive:, etc.)
+        source: String,
+    },
     /// Wrapper for selected `podman image` subcommands in bootc storage.
     #[clap(subcommand)]
     Cmd(ImageCmdOpts),
@@ -1350,6 +1359,9 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
                     .get_ensure_imgstore()?
                     .pull_from_host_storage(&image)
                     .await
+            }
+            ImageOpts::CopyToBootcStorage { source } => {
+                crate::image::copy_to_bootc_storage_entrypoint(&source).await
             }
             ImageOpts::Cmd(opt) => {
                 let storage = get_storage().await?;

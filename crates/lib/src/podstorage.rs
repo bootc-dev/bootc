@@ -376,6 +376,63 @@ impl CStorage {
         Ok(())
     }
 
+    /// Copy an image from any source to this bootc-owned storage.
+    /// This is more generic than pull_from_host_storage and supports various transports.
+    #[context("Copying to bootc storage: {source}")]
+    pub(crate) async fn copy_to_storage(&self, source: &str) -> Result<()> {
+        let temp_runroot = TempDir::new(cap_std::ambient_authority())?;
+        let mut cmd = Command::new("skopeo");
+        cmd.stdin(Stdio::null());
+
+        bind_storage_roots(&mut cmd, &self.storage_root, &temp_runroot)?;
+
+        // Parse the source to determine the transport and image name
+        let source_ref =
+            if source.contains("://") || (source.contains(':') && !source.starts_with('/')) {
+                // Looks like it has a transport specified or is a registry reference
+                source.to_string()
+            } else {
+                // Assume containers-storage if no transport is specified
+                format!("containers-storage:{}", source)
+            };
+
+        // Extract the image name (without transport prefix) for the destination
+        let image_name = if let Some(pos) = source.rfind('/') {
+            &source[pos + 1..]
+        } else if let Some(pos) = source.find(':') {
+            // Handle cases like "containers-storage:imagename" or "registry:imagename"
+            let after_colon = &source[pos + 1..];
+            if after_colon.contains('/') {
+                after_colon.split('/').last().unwrap_or(after_colon)
+            } else {
+                after_colon
+            }
+        } else {
+            source
+        };
+
+        // The destination in our bootc-owned storage
+        let storage_dest = format!(
+            "containers-storage:[overlay@{STORAGE_ALIAS_DIR}+/proc/self/fd/{STORAGE_RUN_FD}]{image_name}"
+        );
+
+        cmd.args(["copy", &source_ref, &storage_dest]);
+
+        // Handle authentication if available
+        let authfile = ostree_ext::globals::get_global_authfile(&self.sysroot)?
+            .map(|(authfile, _fd)| authfile);
+        if let Some(authfile) = authfile {
+            cmd.args(["--authfile", authfile.as_str()]);
+        }
+
+        println!("Copying {source_ref} to bootc storage...");
+        let mut cmd = AsyncCommand::from(cmd);
+        cmd.run().await.context("Failed to copy image")?;
+        temp_runroot.close()?;
+        println!("Successfully copied {image_name} to bootc storage");
+        Ok(())
+    }
+
     fn subpath() -> Utf8PathBuf {
         Utf8Path::new(crate::store::BOOTC_ROOT).join(SUBPATH)
     }
