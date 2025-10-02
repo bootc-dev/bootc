@@ -50,7 +50,7 @@ io-lifetimes = "3"
 libsystemd = "0.7.0"
 ocidir = "0.6.0"
 # We re-export this library too.
-ostree = { features = ["v2025_3"], version = "0.20.3" }
+ostree = { features = ["v2025_3"], version = "0.20.5" }
 pin-project = "1.0"
 tar = "0.4.43"
 tokio-stream = { features = ["sync"], version = "0.1.8" }
