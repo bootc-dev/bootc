@@ -63,14 +63,14 @@ pub(crate) fn check_root_siblings() -> Result<Vec<String>> {
         })
         .flat_map(|root_lv| parse_volumes(Some(root_lv.vg_name.as_str())).unwrap_or_default())
         .try_fold(Vec::new(), |mut acc, r| -> anyhow::Result<_> {
-            let mount = run_findmnt(&["-S", &r.lv_path], None)?;
+            let mount = run_findmnt(&["-S", &r.lv_path], None).unwrap_or_default();
             let mount_path = if let Some(fs) = mount.filesystems.first() {
                 &fs.target
             } else {
                 ""
             };
 
-            if mount_path != "/" {
+            if mount_path != "/" && !mount_path.is_empty() {
                 acc.push(format!(
                     "Type: LVM, Mount Point: {}, LV: {}, VG: {}, Size: {}",
                     mount_path, r.lv_name, r.vg_name, r.lv_size
