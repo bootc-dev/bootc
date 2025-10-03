@@ -22,7 +22,7 @@ use rustix::{
 use serde::Deserialize;
 
 use composefs::{
-    fsverity::{FsVerityHashValue, Sha256HashValue},
+    fsverity::{FsVerityHashValue, Sha512HashValue},
     mount::FsHandle,
     mountcompat::{overlayfs_set_fd, overlayfs_set_lower_and_data_fds, prepare_mount},
     repository::Repository,
@@ -207,7 +207,7 @@ fn open_root_fs(path: &Path) -> Result<OwnedFd> {
 /// * insecure - Whether fsverity is optional or not
 #[context("Mounting composefs image")]
 pub fn mount_composefs_image(sysroot: &OwnedFd, name: &str, insecure: bool) -> Result<OwnedFd> {
-    let mut repo = Repository::<Sha256HashValue>::open_path(sysroot, "composefs")?;
+    let mut repo = Repository::<Sha512HashValue>::open_path(sysroot, "composefs")?;
     repo.set_insecure(insecure);
     repo.mount(name).context("Failed to mount composefs image")
 }
@@ -282,7 +282,7 @@ pub fn setup_root(args: Args) -> Result<()> {
         // TODO: Deduplicate this with composefs branch karg parser
         None => &std::fs::read_to_string("/proc/cmdline")?,
     };
-    let (image, insecure) = get_cmdline_composefs::<Sha256HashValue>(cmdline)?;
+    let (image, insecure) = get_cmdline_composefs::<Sha512HashValue>(cmdline)?;
 
     let new_root = match args.root_fs {
         Some(path) => open_root_fs(&path).context("Failed to clone specified root fs")?,

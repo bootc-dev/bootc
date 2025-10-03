@@ -8,9 +8,10 @@ use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::process::Command;
 
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use camino::{Utf8Path, Utf8PathBuf};
 use fn_error_context::context;
+use serde::Deserialize;
 use xshell::{cmd, Shell};
 
 mod man;
@@ -43,6 +44,7 @@ const TASKS: &[(&str, fn(&Shell) -> Result<()>)] = &[
     ("package", package),
     ("package-srpm", package_srpm),
     ("spec", spec),
+    ("build-sealed", build_sealed),
 ];
 
 fn try_main() -> Result<()> {
@@ -234,6 +236,78 @@ fn update_spec(sh: &Shell) -> Result<Utf8PathBuf> {
 fn spec(sh: &Shell) -> Result<()> {
     let s = update_spec(sh)?;
     println!("Generated: {s}");
+    Ok(())
+}
+
+#[derive(Debug, Deserialize)]
+#[allow(dead_code)]
+#[serde(rename_all = "PascalCase")]
+struct ImageInspect {
+    pub id: String,
+    pub digest: String,
+}
+
+fn build_sealed(sh: &Shell) -> Result<()> {
+    let args = &std::env::args().collect::<Vec<_>>()[2..];
+    let input_image = args.get(0).ok_or_else(|| anyhow!("Missing arg: IMAGE"))?;
+    let output_image = args.get(1).ok_or_else(|| anyhow!("Missing arg: IMAGE"))?;
+    // If present this should be a path to a directory with secureboot keys.
+    // If not provided, one will be generated in target/test-secureboot-keys
+    let secureboot_default = Utf8Path::new("target/test-secureboot");
+    let secureboot = args.get(2);
+    let output = cmd!(sh, "podman image inspect {input_image}").output()?;
+    let inspect: Vec<ImageInspect> = serde_json::from_slice(&output.stdout)?;
+    let inspect = inspect
+        .first()
+        .ok_or_else(|| anyhow!("Failed to get array from inspect"))?;
+    let digest = inspect.id.as_str();
+
+    let tmpdir = sh.create_temp_dir()?;
+    let tmpdir = tmpdir.path();
+    let tmpdir: &Utf8Path = tmpdir.try_into().unwrap();
+    let repoarg = format!("--repo={tmpdir}");
+    // Inject --insecure so we handle systems without fsverity on the build host
+    let cfsargs = ["internals", "cfs", "--insecure", repoarg.as_str()];
+    cmd!(
+        sh,
+        "bootc {cfsargs...} oci pull containers-storage:{digest}"
+    )
+    .run()?;
+    let output = cmd!(sh, "bootc {cfsargs...} oci compute-id --bootable {digest}").output()?;
+    let cfs_digest = String::from_utf8(output.stdout)?;
+    let cfs_digest = cfs_digest.trim();
+
+    let secureboot = if let Some(d) = secureboot.as_deref() {
+        d.to_owned().into()
+    } else {
+        sh.create_dir(secureboot_default)?;
+        let _g = sh.push_dir(secureboot_default);
+        if !sh.path_exists("db.cer") {
+            cmd!(sh, "openssl req -newkey rsa:4096 -nodes -keyout PK.key -new -x509 -sha256 -days 3650 -subj '/CN=Test Platform Key/' -out PK.crt").run()?;
+            cmd!(sh, "openssl x509 -outform DER -in PK.crt -out PK.cer").run()?;
+            cmd!(sh, "openssl req -newkey rsa:4096 -nodes -keyout KEK.key -new -x509 -sha256 -days 3650 -subj '/CN=Test Key Exchange Key/' -out KEK.crt").run()?;
+            cmd!(sh, "openssl x509 -outform DER -in KEK.crt -out KEK.cer").run()?;
+            cmd!(sh, "openssl req -newkey rsa:4096 -nodes -keyout db.key -new -x509 -sha256 -days 3650 -subj '/CN=Test Signature Database key/' -out db.crt").run()?;
+            cmd!(sh, "openssl x509 -outform DER -in db.crt -out db.cer").run()?;
+        }
+        secureboot_default.to_owned()
+    };
+
+    cmd!(sh, "podman build -t {output_image} --build-arg=COMPOSEFS_FSVERITY={cfs_digest} --build-arg=base={input_image} --secret=id=key,src={secureboot}/db.key --secret=id=cert,src={secureboot}/db.crt -f Dockerfile.cfsuki .").run()?;
+
+    sh.create_dir("efi")?;
+    cmd!(
+        sh,
+        "bootc {cfsargs...} oci pull containers-storage:{digest}"
+    )
+    .run()?;
+    cmd!(sh, "bootc {cfsargs...} oci compute-id --bootable {digest}").run()?;
+    cmd!(
+        sh,
+        "bootc {cfsargs...} oci prepare-boot --bootdir tmp/efi {digest}"
+    )
+    .run()?;
+
     Ok(())
 }
 

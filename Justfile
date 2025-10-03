@@ -13,6 +13,10 @@
 build *ARGS:
     podman build --jobs=4 -t localhost/bootc {{ARGS}} .
 
+build-sealed *ARGS:
+    podman build --jobs=4 -t localhost/bootc-unsealed {{ARGS}} .
+    cargo xtask build-sealed localhost/bootc-unsealed localhost/bootc
+
 # This container image has additional testing content and utilities
 build-integration-test-image *ARGS:
     cd hack && podman build --jobs=4 -t localhost/bootc-integration -f Containerfile {{ARGS}} .

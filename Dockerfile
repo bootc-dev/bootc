@@ -1,10 +1,14 @@
-# Build this project from source and drop the updated content on to
-# a bootc container image. By default we use CentOS Stream 9 as a base;
-# use e.g. --build-arg=base=quay.io/fedora/fedora-bootc:41 to target
+# Build this project from source and write the updated content
+# (i.e. /usr/bin/bootc and systemd units) to a new derived container
+# image. See the `Justfile` for an example
+#
+# Use e.g. --build-arg=base=quay.io/fedora/fedora-bootc:42 to target
 # Fedora instead.
 
-ARG base=quay.io/centos-bootc/centos-bootc:stream9
+ARG base=quay.io/centos-bootc/centos-bootc:stream10
 
+# This first image captures a snapshot of the source code,
+# note all the exclusions in .dockerignore.
 FROM scratch as src
 COPY . /src
 
@@ -37,7 +41,7 @@ EORUN
 
 # This image installs build deps, pulls in our source code, and installs updated
 # bootc binaries in /out. The intention is that the target rootfs is extracted from /out
-# back into a final stae (without the build deps etc) below.
+# back into a final stage (without the build deps etc) below.
 FROM base as build
 # Flip this off to disable initramfs code
 ARG initramfs=1

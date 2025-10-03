@@ -10,7 +10,7 @@ use camino::Utf8PathBuf;
 use cap_std_ext::cap_std::ambient_authority;
 use cap_std_ext::cap_std::fs::Dir;
 use cap_std_ext::dirext::CapStdExtDirExt;
-use composefs::fsverity::{FsVerityHashValue, Sha256HashValue};
+use composefs::fsverity::{FsVerityHashValue, Sha512HashValue};
 use fn_error_context::context;
 
 use ostree_ext::container::deploy::ORIGIN_CONTAINER;
@@ -107,7 +107,7 @@ pub(crate) fn copy_etc_to_state(
 #[context("Writing composefs state")]
 pub(crate) fn write_composefs_state(
     root_path: &Utf8PathBuf,
-    deployment_id: Sha256HashValue,
+    deployment_id: Sha512HashValue,
     imgref: &ImageReference,
     staged: bool,
     boot_type: BootType,

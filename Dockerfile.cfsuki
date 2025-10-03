@@ -1,0 +1,63 @@
+# Override via --build-arg=base=<image> to use a different base
+ARG base=localhost/bootc
+# This is where we get the tools to build the UKI
+ARG buildroot=quay.io/fedora/fedora:42
+FROM $base AS base
+
+FROM $buildroot as buildroot-base
+RUN <<EORUN
+set -xeuo pipefail
+dnf install -y systemd-ukify sbsigntools systemd-boot-unsigned
+dnf clean all
+EORUN
+
+# This must be provided and computed via cfs oci compute-id
+ARG COMPOSEFS_FSVERITY
+
+FROM buildroot-base as kernel
+RUN --mount=type=secret,id=key \
+    --mount=type=secret,id=cert \
+    --mount=type=bind,from=base,target=/target \
+     <<EOF
+    set -eux
+
+    # Inject the composefs kernel argument and specify a root with the x86_64 DPS UUID.
+    # TODO: Discoverable partition fleshed out, or drop root UUID as systemd-stub extension
+    cmdline="composefs=${COMPOSEFS_FSVERITY} root=UUID=4f68bce3-e8cd-4db1-96e7-fbcaf984b709 rw"
+
+    kver=$(cd /target/usr/lib/modules && echo *)
+    ukify build \
+        --linux "/target/usr/lib/modules/$kver/vmlinuz" \
+        --initrd "/target/usr/lib/modules/$kver/initramfs.img" \
+        --uname="${kver}" \
+        --cmdline "${cmdline}" \
+        --os-release "@/target/usr/lib/os-release" \
+        --signtool sbsign \
+        --secureboot-private-key "/run/secrets/key" \
+        --secureboot-certificate "/run/secrets/cert" \
+        --measure \
+        --json pretty \
+        --output "/boot/$kver.efi"
+    sbsign \
+        --key "/run/secrets/key" \
+        --cert "/run/secrets/cert" \
+        "/usr/lib/systemd/boot/efi/systemd-bootx64.efi" \
+        --output "/boot/systemd-bootx64.efi"
+
+    rm -vf /tmp/cmdline
+EOF
+
+FROM base as final
+
+RUN --mount=type=bind,from=kernel,target=/run/kernel <<EOF
+    kver=$(cd /usr/lib/modules && echo *)
+    mkdir -p /boot/EFI/Linux
+    # We put the UKI in /boot for now due to composefs verity not being the
+    # same due to mtime of /usr/lib/modules being changed
+    cp /run/kernel/boot/$kver.efi /boot/EFI/Linux/$kver.efi
+EOF
+
+FROM base as final-final
+COPY --from=final /boot /boot
+# Override the default
+LABEL containers.bootc=sealed

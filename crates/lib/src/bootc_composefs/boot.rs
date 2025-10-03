@@ -14,14 +14,11 @@ use cap_std_ext::{
 };
 use clap::ValueEnum;
 use composefs::fs::read_file;
-use composefs::tree::{FileSystem, RegularFile};
+use composefs::tree::RegularFile;
 use composefs_boot::bootloader::{PEType, EFI_ADDON_DIR_EXT, EFI_ADDON_FILE_EXT, EFI_EXT};
 use composefs_boot::BootOps;
 use fn_error_context::context;
-use ostree_ext::composefs::{
-    fsverity::{FsVerityHashValue, Sha256HashValue},
-    repository::Repository as ComposefsRepository,
-};
+use ostree_ext::composefs::fsverity::{FsVerityHashValue, Sha512HashValue};
 use ostree_ext::composefs_boot::bootloader::UsrLibModulesVmlinuz;
 use ostree_ext::composefs_boot::{
     bootloader::BootEntry as ComposefsBootEntry, cmdline::get_cmdline_composefs,
@@ -32,7 +29,6 @@ use rustix::path::Arg;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::bootc_composefs::repo::open_composefs_repo;
 use crate::bootc_composefs::state::{get_booted_bls, write_composefs_state};
 use crate::bootc_composefs::status::get_sorted_uki_boot_entries;
 use crate::composefs_consts::{TYPE1_ENT_PATH, TYPE1_ENT_PATH_STAGED};
@@ -40,6 +36,7 @@ use crate::parsers::bls_config::{BLSConfig, BLSConfigType};
 use crate::parsers::grub_menuconfig::MenuEntry;
 use crate::spec::ImageReference;
 use crate::task::Task;
+use crate::{bootc_composefs::repo::open_composefs_repo, store::ComposefsFilesystem};
 use crate::{
     composefs_consts::{
         BOOT_LOADER_ENTRIES, COMPOSEFS_CMDLINE, ORIGIN_KEY_BOOT, ORIGIN_KEY_BOOT_DIGEST,
@@ -68,9 +65,9 @@ const SYSTEMD_UKI_DIR: &str = "EFI/Linux/bootc";
 
 pub(crate) enum BootSetupType<'a> {
     /// For initial setup, i.e. install to-disk
-    Setup((&'a RootSetup, &'a State, &'a FileSystem<Sha256HashValue>)),
+    Setup((&'a RootSetup, &'a State, &'a ComposefsFilesystem)),
     /// For `bootc upgrade`
-    Upgrade((&'a FileSystem<Sha256HashValue>, &'a Host)),
+    Upgrade((&'a ComposefsFilesystem, &'a Host)),
 }
 
 #[derive(
@@ -107,8 +104,8 @@ impl TryFrom<&str> for BootType {
     }
 }
 
-impl From<&ComposefsBootEntry<Sha256HashValue>> for BootType {
-    fn from(entry: &ComposefsBootEntry<Sha256HashValue>) -> Self {
+impl From<&ComposefsBootEntry<Sha512HashValue>> for BootType {
+    fn from(entry: &ComposefsBootEntry<Sha512HashValue>) -> Self {
         match entry {
             ComposefsBootEntry::Type1(..) => Self::Bls,
             ComposefsBootEntry::Type2(..) => Self::Uki,
@@ -127,6 +124,23 @@ if [ -f ${{config_directory}}/{EFI_UUID_FILE} ]; then
 fi
 "#
     )
+}
+
+/// Returns `true` if detect the target rootfs carries a UKI.
+pub(crate) fn container_root_has_uki(root: &Dir) -> Result<bool> {
+    let Some(efi_linux) = root.open_dir_optional(EFI_LINUX)? else {
+        return Ok(false);
+    };
+    for entry in efi_linux.entries()? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let name = Path::new(&name);
+        let extension = name.extension().and_then(|v| v.to_str());
+        if extension == Some("efi") {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 pub fn get_esp_partition(device: &str) -> Result<(String, Option<String>)> {
@@ -164,8 +178,8 @@ pub fn type1_entry_conf_file_name(sort_key: impl std::fmt::Display) -> String {
 /// * repo - The composefs repository
 #[context("Computing boot digest")]
 fn compute_boot_digest(
-    entry: &UsrLibModulesVmlinuz<Sha256HashValue>,
-    repo: &ComposefsRepository<Sha256HashValue>,
+    entry: &UsrLibModulesVmlinuz<Sha512HashValue>,
+    repo: &crate::store::ComposefsRepository,
 ) -> Result<String> {
     let vmlinuz = read_file(&entry.vmlinuz, &repo).context("Reading vmlinuz")?;
 
@@ -238,9 +252,9 @@ fn find_vmlinuz_initrd_duplicates(digest: &str) -> Result<Option<String>> {
 #[context("Writing BLS entries to disk")]
 fn write_bls_boot_entries_to_disk(
     boot_dir: &Utf8PathBuf,
-    deployment_id: &Sha256HashValue,
-    entry: &UsrLibModulesVmlinuz<Sha256HashValue>,
-    repo: &ComposefsRepository<Sha256HashValue>,
+    deployment_id: &Sha512HashValue,
+    entry: &UsrLibModulesVmlinuz<Sha512HashValue>,
+    repo: &crate::store::ComposefsRepository,
 ) -> Result<()> {
     let id_hex = deployment_id.to_hex();
 
@@ -283,8 +297,8 @@ fn write_bls_boot_entries_to_disk(
 /// # Returns
 /// - (title, version)
 fn osrel_title_and_version(
-    fs: &FileSystem<Sha256HashValue>,
-    repo: &ComposefsRepository<Sha256HashValue>,
+    fs: &crate::store::ComposefsFilesystem,
+    repo: &crate::store::ComposefsRepository,
 ) -> Result<Option<(Option<String>, Option<String>)>> {
     // Every update should have its own /usr/lib/os-release
     let (dir, fname) = fs
@@ -342,9 +356,9 @@ struct BLSEntryPath<'a> {
 pub(crate) fn setup_composefs_bls_boot(
     setup_type: BootSetupType,
     // TODO: Make this generic
-    repo: ComposefsRepository<Sha256HashValue>,
-    id: &Sha256HashValue,
-    entry: &ComposefsBootEntry<Sha256HashValue>,
+    repo: crate::store::ComposefsRepository,
+    id: &Sha512HashValue,
+    entry: &ComposefsBootEntry<Sha512HashValue>,
 ) -> Result<String> {
     let id_hex = id.to_hex();
 
@@ -550,9 +564,10 @@ pub(crate) fn setup_composefs_bls_boot(
 }
 
 /// Writes a PortableExecutable to ESP along with any PE specific or Global addons
+#[context("Writing {file_path} to ESP")]
 fn write_pe_to_esp(
-    repo: &ComposefsRepository<Sha256HashValue>,
-    file: &RegularFile<Sha256HashValue>,
+    repo: &crate::store::ComposefsRepository,
+    file: &RegularFile<Sha512HashValue>,
     file_path: &Utf8Path,
     pe_type: PEType,
     uki_id: &String,
@@ -569,7 +584,8 @@ fn write_pe_to_esp(
     if matches!(pe_type, PEType::Uki) {
         let cmdline = uki::get_cmdline(&efi_bin).context("Getting UKI cmdline")?;
 
-        let (composefs_cmdline, insecure) = get_cmdline_composefs::<Sha256HashValue>(cmdline)?;
+        let (composefs_cmdline, insecure) =
+            get_cmdline_composefs::<Sha512HashValue>(cmdline).context("Parsing composefs=")?;
 
         // If the UKI cmdline does not match what the user has passed as cmdline option
         // NOTE: This will only be checked for new installs and now upgrades/switches
@@ -657,7 +673,7 @@ fn write_grub_uki_menuentry(
     root_path: Utf8PathBuf,
     setup_type: &BootSetupType,
     boot_label: String,
-    id: &Sha256HashValue,
+    id: &Sha512HashValue,
     esp_device: &String,
 ) -> Result<()> {
     let boot_dir = root_path.join("boot");
@@ -745,7 +761,7 @@ fn write_systemd_uki_config(
     esp_dir: &Dir,
     setup_type: &BootSetupType,
     boot_label: String,
-    id: &Sha256HashValue,
+    id: &Sha512HashValue,
 ) -> Result<()> {
     let default_sort_key = "0";
 
@@ -814,9 +830,9 @@ fn write_systemd_uki_config(
 pub(crate) fn setup_composefs_uki_boot(
     setup_type: BootSetupType,
     // TODO: Make this generic
-    repo: ComposefsRepository<Sha256HashValue>,
-    id: &Sha256HashValue,
-    entries: Vec<ComposefsBootEntry<Sha256HashValue>>,
+    repo: crate::store::ComposefsRepository,
+    id: &Sha512HashValue,
+    entries: Vec<ComposefsBootEntry<Sha512HashValue>>,
 ) -> Result<()> {
     let (root_path, esp_device, bootloader, is_insecure_from_opts, uki_addons) = match setup_type {
         BootSetupType::Setup((root_setup, state, ..)) => {
