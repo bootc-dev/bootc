@@ -26,6 +26,17 @@ that make the system appear writable, but it's arguably clearer not to do so by
 default. Detecting `/usr` as read-only here and providing the same information
 would make sense.
 
+To specifically detect if bootc is in use, you can parse its JSON status
+(if the binary is present) to tell if a system is tracking an image.
+The following command succeeds if an image is *not* being tracked:
+`test $(bootc status --format=json | jq .spec.image) = null`.
+
+### The `/run/ostree-booted` file
+
+This is created by ostree, and hence created by bootc (with the ostree)
+backend. You can use it to detect ostree. However, *most* cases
+should instead detect via one of the recommendations above.
+
 ### Running a read-only system via podman/docker
 
 The historical default for docker (inherited into podman) is that
@@ -72,15 +83,6 @@ $ podman run --read-only --rm --tmpfs /var -ti debian /bin/sh -c 'apt update && 
 error: read-only /usr detected, refusing to operate. See `man apt-image-based` for more information.
 ```
 
-### Detecting bootc specifically
-
-You may also reasonably want to detect that the operating system is specifically
-using `bootc`. This can be done via e.g.:
-
-`bootc status --format=json  | jq -r .spec.image`
-
-If the output of that field is non-`null`, then the system is a bootc system
-tracking the specified image.
 
 ## Transient overlays
 

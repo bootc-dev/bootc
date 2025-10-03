@@ -75,10 +75,4 @@ is recommended, along with an `ExecStartPre=mount -o remount,rw /sysroot`.
 
 ### Detecting bootc/ostree systems
 
-For tools like `cloud-init` that want to operate generically,
-conditionally detecting this situation can be done via e.g.:
-
-- Checking for `/` being an `overlay` mount point
-- Checking for `/sysroot/ostree`
-
-
+See the [package managers](package-managers.md) section on "Detecting image based systems".
