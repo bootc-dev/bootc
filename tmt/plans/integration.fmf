@@ -11,7 +11,7 @@ prepare:
   # reboot in ansible is the only way to reboot in tmt prepare
   - how: ansible
     playbook:
-      - https://github.com/henrywang/bootc/raw/refs/heads/gating/hack/packit-reboot.yml
+      - https://github.com/bootc-dev/bootc/raw/refs/heads/main/hack/packit-reboot.yml
 execute:
   how: tmt
 
