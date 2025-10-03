@@ -24,6 +24,15 @@ change over time.
 
 Invoke e.g. `bootc status --json`, and check if `status.booted` is not `null`.
 
+### Detecting rpm-ostree vs bootc
+
+There is no "bootc runtime". When used with the default ostree backend, bootc
+and tools like rpm-ostree end up sharing the same code and doing effectively the same thing.
+Hence, there isn't a mechanism to detect if a system "is bootc" or "is rpm-ostree".
+
+However, if the `incompatible` flag is set on a deployment, then there are layered packages and
+`rpm-ostree` must be used for mutation.
+
 # OPTIONS
 
 <!-- BEGIN GENERATED OPTIONS -->
