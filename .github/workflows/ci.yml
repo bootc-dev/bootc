@@ -29,7 +29,7 @@ jobs:
   validate:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Bootc Ubuntu Setup
         uses: ./.github/actions/bootc-ubuntu-setup
       - name: Validate (default)
@@ -38,7 +38,7 @@ jobs:
   container-continuous:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Bootc Ubuntu Setup
         uses: ./.github/actions/bootc-ubuntu-setup
       - name: Build with continuous repo enabled
@@ -47,7 +47,7 @@ jobs:
   cargo-deny:
     runs-on: ubuntu-24.04
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v5
     - uses: EmbarkStudios/cargo-deny-action@v2
       with:
         log-level: warn
@@ -59,7 +59,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
       - name: Bootc Ubuntu Setup
         uses: ./.github/actions/bootc-ubuntu-setup
       - name: Enable fsverity for /
@@ -112,7 +112,7 @@ jobs:
   docs:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Bootc Ubuntu Setup
         uses: ./.github/actions/bootc-ubuntu-setup
       - name: Build mdbook
@@ -127,7 +127,7 @@ jobs:
     runs-on: ubuntu-24.04
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Bootc Ubuntu Setup
         uses: ./.github/actions/bootc-ubuntu-setup
       - name: Install qemu-utils
@@ -159,7 +159,7 @@ jobs:
     runs-on: ubuntu-24.04
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Bootc Ubuntu Setup
         uses: ./.github/actions/bootc-ubuntu-setup
       - name: Install deps
@@ -173,7 +173,7 @@ jobs:
         run: mkdir -p target
 
       - name: Download disk.raw
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: PR-${{ github.event.number }}-${{ matrix.test_os }}-${{ env.ARCH }}-disk
           path: target
