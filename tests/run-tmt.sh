@@ -23,4 +23,5 @@ rm -vrf /var/tmp/tmt/testcloud/images/bootc-integration-test.qcow2
 
 cd target/tmt-workdir
 # TMT will rsync tmt-* scripts to TMT_SCRIPTS_DIR=/var/lib/tmt/scripts
-exec tmt --context "test_disk_image=${DISK}" run --all -e TMT_SCRIPTS_DIR=/var/lib/tmt/scripts "$@"
+# running_env=image_mode means running tmt on image mode system on Github CI or locally
+exec tmt --context "test_disk_image=${DISK}" --context "running_env=image_mode" run --all -e TMT_SCRIPTS_DIR=/var/lib/tmt/scripts "$@"

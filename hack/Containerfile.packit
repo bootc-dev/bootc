@@ -12,6 +12,7 @@ COPY ARTIFACTS /var/ARTIFACTS
 # Copy bootc repo
 COPY test-artifacts /var/share/test-artifacts
 
+ARG GATING
 RUN <<EORUN
 set -xeuo pipefail
 . /usr/lib/os-release
@@ -21,6 +22,12 @@ fi
 cp test-artifacts.repo /etc/yum.repos.d/
 dnf -y update bootc
 ./provision-derived.sh
+
+if [[ "$GATING" == true ]]; then
+    # Install Fedora CI/OSCI required packages for "Prepare dist-git sources" task
+    dnf install -y  rpm-build @buildsys-build 'dnf-command(builddep)'
+    dnf builddep -y /var/share/test-artifacts/*.src.rpm
+fi
 
 # For test-22-logically-bound-install
 cp -a lbi/usr/. /usr

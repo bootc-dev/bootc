@@ -4,16 +4,6 @@ set -exuo pipefail
 # Check environment
 printenv
 
-# This script only runs on Packit and gating environment
-# Do not run this script for image mode system
-if command -v bootc >/dev/null && bootc status --json | grep '"type":"bootcHost"'; then
-    echo "This system is Image Mode."
-    exit 0
-fi
-
-# Install required packages
-dnf install -y podman skopeo jq bootc system-reinstall-bootc expect ansible-core
-
 # temp folder to save building files and folders
 BOOTC_TEMPDIR=$(mktemp -d)
 trap 'rm -rf -- "$BOOTC_TEMPDIR"' EXIT
@@ -87,6 +77,9 @@ if [[ -v KOJI_TASK_ID ]] || [[ -v CI_KOJI_TASK_ID ]]; then
     echo "$TMT_SOURCE_DIR"
     ls -al "$TMT_SOURCE_DIR"
     ls -al "$TMT_SOURCE_DIR/SRPMS"
+    GATING="true"
+else
+    GATING="false"
 fi
 
 ls -al /etc/yum.repos.d
@@ -100,7 +93,7 @@ cp /etc/yum.repos.d/test-artifacts.repo "$BOOTC_TEMPDIR"
 ls -al "$BOOTC_TEMPDIR" "${BOOTC_TEMPDIR}/bin"
 
 # Do not use just because it's only available on Fedora, not on CS and RHEL
-podman build --jobs=4 --from "$BASE" -v "$BOOTC_TEMPDIR":/bootc-test:z -t localhost/bootc-integration -f "${BOOTC_TEMPDIR}/Containerfile.packit" "$BOOTC_TEMPDIR"
+podman build --jobs=4 --from "$BASE" --build-arg GATING="$GATING" -v "$BOOTC_TEMPDIR":/bootc-test:z -t localhost/bootc-integration -f "${BOOTC_TEMPDIR}/Containerfile.packit" "$BOOTC_TEMPDIR"
 
 # Keep these in sync with what's used in hack/lbi
 podman pull -q --retry 5 --retry-delay 5s quay.io/curl/curl:latest quay.io/curl/curl-base:latest registry.access.redhat.com/ubi9/podman:latest

@@ -2,16 +2,32 @@ provision:
   how: virtual
   image: $@{test_disk_image}
 prepare:
-  # Replace package mode with image mode
+  # Install image mode system on package mode system
+  # Do not run on image mode VM running on Github CI and Locally
+  # Run on package mode VM running on Packit and Gating
+  - how: install
+    package:
+      - podman
+      - skopeo
+      - jq
+      - bootc
+      - system-reinstall-bootc
+      - expect
+      - ansible-core
+      - zstd
+    when: running_env != image_mode
   - how: shell
     script:
-      - pwd && ls -al
-      - if [[ -d hack ]]; then cd hack && ./provision-packit.sh; fi
+      - mkdir -p bootc && cp /var/share/test-artifacts/*.src.rpm bootc
+      - cd bootc && rpm2cpio *.src.rpm | cpio -idmv && rm -f *-vendor.tar.zstd && zstd -d *.tar.zstd && tar -xvf *.tar -C . --strip-components=1 && ls -al
+      - pwd && ls -al && cd bootc/hack && ./provision-packit.sh
+    when: running_env != image_mode
   # tmt-reboot and reboot do not work in this case
   # reboot in ansible is the only way to reboot in tmt prepare
   - how: ansible
     playbook:
       - https://github.com/bootc-dev/bootc/raw/refs/heads/main/hack/packit-reboot.yml
+    when: running_env != image_mode
 execute:
   how: tmt
 
@@ -71,7 +87,7 @@ execute:
     test:
         - /tmt/tests/test-26-examples-build
   adjust:
-    - when: running_env == packit
+    - when: running_env != image_mode
       enabled: false
       because: packit tests use RPM bootc and does not install /usr/lib/bootc/initramfs-setup
 
@@ -82,6 +98,6 @@ execute:
     test:
         - /tmt/tests/test-27-custom-selinux-policy
   adjust:
-    - when: running_env == packit
+    - when: running_env != image_mode
       enabled: false
       because: tmt-reboot does not work with systemd reboot in testing farm environment
