@@ -550,6 +550,7 @@ pub(crate) fn setup_composefs_bls_boot(
 }
 
 /// Writes a PortableExecutable to ESP along with any PE specific or Global addons
+#[context("Writing {file_path} to ESP")]
 fn write_pe_to_esp(
     repo: &ComposefsRepository<Sha256HashValue>,
     file: &RegularFile<Sha256HashValue>,
@@ -569,7 +570,8 @@ fn write_pe_to_esp(
     if matches!(pe_type, PEType::Uki) {
         let cmdline = uki::get_cmdline(&efi_bin).context("Getting UKI cmdline")?;
 
-        let (composefs_cmdline, insecure) = get_cmdline_composefs::<Sha256HashValue>(cmdline)?;
+        let (composefs_cmdline, insecure) =
+            get_cmdline_composefs::<Sha256HashValue>(cmdline).context("Parsing composefs=")?;
 
         // If the UKI cmdline does not match what the user has passed as cmdline option
         // NOTE: This will only be checked for new installs and now upgrades/switches
