@@ -4,16 +4,6 @@ set -exuo pipefail
 # Check environment
 printenv
 
-# This script only runs on Packit and gating environment
-# Do not run this script for image mode system
-if command -v bootc >/dev/null && bootc status --json | grep '"type":"bootcHost"'; then
-    echo "This system is Image Mode."
-    exit 0
-fi
-
-# Install required packages
-dnf install -y podman skopeo jq bootc system-reinstall-bootc expect ansible-core
-
 # temp folder to save building files and folders
 BOOTC_TEMPDIR=$(mktemp -d)
 trap 'rm -rf -- "$BOOTC_TEMPDIR"' EXIT
