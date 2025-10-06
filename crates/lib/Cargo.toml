@@ -6,7 +6,7 @@ name = "bootc-lib"
 repository = "https://github.com/bootc-dev/bootc"
 # The intention is we'll follow semver here, even though this
 # project isn't actually published as a crate.
-version = "1.8.0"
+version = "1.9.0"
 # In general we try to keep this pinned to what's in the latest RHEL9.
 rust-version = "1.84.0"
 
