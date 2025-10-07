@@ -32,6 +32,12 @@ jobs:
       - uses: actions/checkout@v4
       - name: Bootc Ubuntu Setup
         uses: ./.github/actions/bootc-ubuntu-setup
+      - name: Setup Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-all-crates: true
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          lookup-only: ${{ github.ref == 'refs/heads/main' }}
       - name: Validate (default)
         run: just validate
   # Build container with continuous repository enabled
@@ -41,6 +47,12 @@ jobs:
       - uses: actions/checkout@v4
       - name: Bootc Ubuntu Setup
         uses: ./.github/actions/bootc-ubuntu-setup
+      - name: Setup Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-all-crates: true
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          lookup-only: ${{ github.ref == 'refs/heads/main' }}
       - name: Build with continuous repo enabled
         run: sudo just build --build-arg=continuous_repo=1
   # Check for security vulnerabilities and license compliance
@@ -62,6 +74,12 @@ jobs:
         uses: actions/checkout@v4
       - name: Bootc Ubuntu Setup
         uses: ./.github/actions/bootc-ubuntu-setup
+      - name: Setup Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-all-crates: true
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          lookup-only: ${{ github.ref == 'refs/heads/main' }}
       - name: Enable fsverity for /
         run: sudo tune2fs -O verity $(findmnt -vno SOURCE /)
       - name: Install utils
@@ -76,7 +94,6 @@ jobs:
           sudo podman build -t localhost/bootc-fsverity -f ci/Containerfile.install-fsverity
 
           # TODO move into a container, and then have this tool run other containers
-          export CARGO_INCREMENTAL=0  # because we aren't caching the test runner bits
           cargo build --release -p tests-integration
 
           df -h /
@@ -116,6 +133,12 @@ jobs:
       - uses: actions/checkout@v4
       - name: Bootc Ubuntu Setup
         uses: ./.github/actions/bootc-ubuntu-setup
+      - name: Setup Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-all-crates: true
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          lookup-only: ${{ github.ref == 'refs/heads/main' }}
       - name: Build mdbook
         run: just build-mdbook
   # Build containers and disk images for integration testing across OS matrix
@@ -131,6 +154,12 @@ jobs:
       - uses: actions/checkout@v4
       - name: Bootc Ubuntu Setup
         uses: ./.github/actions/bootc-ubuntu-setup
+      - name: Setup Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-all-crates: true
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          lookup-only: ${{ github.ref == 'refs/heads/main' }}
       - name: Install qemu-utils
         run: sudo apt install -y qemu-utils
 
