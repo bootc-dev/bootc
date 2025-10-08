@@ -91,7 +91,7 @@ pub(crate) async fn pull_composefs_repo(
         .await
         .context("Pulling composefs repo")?;
 
-    tracing::info!("id: {}, verity: {}", hex::encode(id), verity.to_hex());
+    tracing::info!("ID: {}, Verity: {}", hex::encode(id), verity.to_hex());
 
     let repo = open_composefs_repo(&rootfs_dir)?;
     let mut fs: crate::store::ComposefsFilesystem =

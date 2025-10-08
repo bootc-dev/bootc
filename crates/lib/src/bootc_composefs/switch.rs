@@ -6,6 +6,7 @@ use crate::{
     bootc_composefs::{
         boot::{setup_composefs_bls_boot, setup_composefs_uki_boot, BootSetupType, BootType},
         repo::pull_composefs_repo,
+        service::start_finalize_stated_svc,
         state::write_composefs_state,
         status::composefs_deployment_status,
     },
@@ -35,6 +36,8 @@ pub(crate) async fn switch_composefs(opts: SwitchOpts) -> Result<()> {
     let Some(target_imgref) = new_spec.image else {
         anyhow::bail!("Target image is undefined")
     };
+
+    start_finalize_stated_svc()?;
 
     let (repo, entries, id, fs) =
         pull_composefs_repo(&target_imgref.transport, &target_imgref.image).await?;
