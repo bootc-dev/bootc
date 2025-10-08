@@ -6,6 +6,7 @@ use crate::{
     bootc_composefs::{
         boot::{setup_composefs_bls_boot, setup_composefs_uki_boot, BootSetupType, BootType},
         repo::pull_composefs_repo,
+        service::start_finalize_stated_svc,
         state::write_composefs_state,
         status::composefs_deployment_status,
     },
@@ -14,11 +15,11 @@ use crate::{
 
 #[context("Upgrading composefs")]
 pub(crate) async fn upgrade_composefs(_opts: UpgradeOpts) -> Result<()> {
-    // TODO: IMPORTANT Have all the checks here that `bootc upgrade` has for an ostree booted system
-
     let host = composefs_deployment_status()
         .await
         .context("Getting composefs deployment status")?;
+
+    start_finalize_stated_svc()?;
 
     // TODO: IMPORTANT We need to check if any deployment is staged and get the image from that
     let imgref = host

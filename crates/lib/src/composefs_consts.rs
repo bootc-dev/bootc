@@ -36,3 +36,5 @@ pub(crate) const USER_CFG_STAGED: &str = "user.cfg.staged";
 /// This is relative to the boot/efi directory
 pub(crate) const TYPE1_ENT_PATH: &str = "loader/entries";
 pub(crate) const TYPE1_ENT_PATH_STAGED: &str = "loader/entries.staged";
+
+pub(crate) const COMPOSEFS_FINALIZE_STAGED_SERVICE: &str = "composefs-finalize-staged.service";
