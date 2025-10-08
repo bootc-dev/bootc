@@ -407,6 +407,10 @@ pub(crate) struct InstallToExistingRootOpts {
     /// via e.g. `-v /:/target`.
     #[clap(default_value = ALONGSIDE_ROOT_MOUNT)]
     pub(crate) root_path: Utf8PathBuf,
+
+    #[cfg(feature = "composefs-backend")]
+    #[clap(flatten)]
+    pub(crate) composefs_opts: InstallComposefsOpts,
 }
 
 /// Global state captured from the container.
@@ -1246,7 +1250,7 @@ async fn prepare_install(
     config_opts: InstallConfigOpts,
     source_opts: InstallSourceOpts,
     target_opts: InstallTargetOpts,
-    #[cfg(feature = "composefs-backend")] composefs_options: InstallComposefsOpts,
+    #[cfg(feature = "composefs-backend")] mut composefs_options: InstallComposefsOpts,
 ) -> Result<Arc<State>> {
     tracing::trace!("Preparing install");
     let rootfs = cap_std::fs::Dir::open_ambient_dir("/", cap_std::ambient_authority())
@@ -1319,6 +1323,9 @@ async fn prepare_install(
         false
     };
     tracing::debug!("Composefs required: {composefs_required}");
+    if composefs_required {
+        composefs_options.composefs_backend = true;
+    }
 
     // We need to access devices that are set up by the host udev
     bootc_mount::ensure_mirrored_host_mount("/dev")?;
@@ -2185,12 +2192,7 @@ pub(crate) async fn install_to_existing_root(opts: InstallToExistingRootOpts) ->
         target_opts: opts.target_opts,
         config_opts: opts.config_opts,
         #[cfg(feature = "composefs-backend")]
-        composefs_opts: InstallComposefsOpts {
-            composefs_backend: true,
-            insecure: false,
-            uki_addon: None,
-            bootloader: None,
-        },
+        composefs_opts: opts.composefs_opts,
     };
 
     install_to_filesystem(opts, true, cleanup).await
