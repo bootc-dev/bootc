@@ -39,7 +39,7 @@ pub(crate) async fn get_etc_diff() -> Result<()> {
     Ok(())
 }
 
-pub(crate) async fn composefs_native_finalize() -> Result<()> {
+pub(crate) async fn composefs_backend_finalize() -> Result<()> {
     let host = composefs_deployment_status().await?;
 
     let booted_composefs = host.require_composefs_booted()?;

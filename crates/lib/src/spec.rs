@@ -164,12 +164,14 @@ pub struct BootEntryOstree {
 }
 
 /// Bootloader type to determine whether system was booted via Grub or Systemd
-#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
+#[derive(
+    clap::ValueEnum, Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema,
+)]
 pub enum Bootloader {
-    /// Booted via Grub
+    /// Use Grub as the booloader
     #[default]
     Grub,
-    /// Booted via Systemd
+    /// Use SystemdBoot as the bootloader
     Systemd,
 }
 

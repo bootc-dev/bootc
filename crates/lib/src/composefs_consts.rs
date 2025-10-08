@@ -8,9 +8,9 @@ pub(crate) const COMPOSEFS_TRANSIENT_STATE_DIR: &str = "/run/composefs";
 /// File created in /run/composefs to record a staged-deployment
 pub(crate) const COMPOSEFS_STAGED_DEPLOYMENT_FNAME: &str = "staged-deployment";
 
-/// Absolute path to composefs-native state directory
+/// Absolute path to composefs-backend state directory
 pub(crate) const STATE_DIR_ABS: &str = "/sysroot/state/deploy";
-/// Relative path to composefs-native state directory. Relative to /sysroot
+/// Relative path to composefs-backend state directory. Relative to /sysroot
 pub(crate) const STATE_DIR_RELATIVE: &str = "state/deploy";
 /// Relative path to the shared 'var' directory. Relative to /sysroot
 pub(crate) const SHARED_VAR_PATH: &str = "state/os/default/var";

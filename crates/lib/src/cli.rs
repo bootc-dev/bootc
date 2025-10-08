@@ -35,7 +35,7 @@ use tempfile::tempdir_in;
 
 #[cfg(feature = "composefs-backend")]
 use crate::bootc_composefs::{
-    finalize::{composefs_native_finalize, get_etc_diff},
+    finalize::{composefs_backend_finalize, get_etc_diff},
     rollback::composefs_rollback,
     state::composefs_usr_overlay,
     status::composefs_booted,
@@ -1605,7 +1605,7 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
         },
 
         #[cfg(feature = "composefs-backend")]
-        Opt::ComposefsFinalizeStaged => composefs_native_finalize().await,
+        Opt::ComposefsFinalizeStaged => composefs_backend_finalize().await,
 
         #[cfg(feature = "composefs-backend")]
         Opt::ConfigDiff => get_etc_diff().await,

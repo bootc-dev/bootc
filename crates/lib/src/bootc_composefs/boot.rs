@@ -369,14 +369,11 @@ pub(crate) fn setup_composefs_bls_boot(
             // root_setup.kargs has [root=UUID=<UUID>, "rw"]
             let mut cmdline_options = String::from(root_setup.kargs.join(" "));
 
-            match &state.composefs_options {
-                Some(opt) if opt.insecure => {
-                    cmdline_options.push_str(&format!(" {COMPOSEFS_CMDLINE}=?{id_hex}"));
-                }
-                None | Some(..) => {
-                    cmdline_options.push_str(&format!(" {COMPOSEFS_CMDLINE}={id_hex}"));
-                }
-            };
+            if state.composefs_options.insecure {
+                cmdline_options.push_str(&format!(" {COMPOSEFS_CMDLINE}=?{id_hex}"));
+            } else {
+                cmdline_options.push_str(&format!(" {COMPOSEFS_CMDLINE}={id_hex}"));
+            }
 
             // Locate ESP partition device
             let esp_part = esp_in(&root_setup.device_info)?;
@@ -835,18 +832,14 @@ pub(crate) fn setup_composefs_uki_boot(
                 }
             }
 
-            let Some(cfs_opts) = &state.composefs_options else {
-                anyhow::bail!("ComposeFS options not found");
-            };
-
             let esp_part = esp_in(&root_setup.device_info)?;
 
             (
                 root_setup.physical_root_path.clone(),
                 esp_part.node.clone(),
                 state.detected_bootloader.clone(),
-                cfs_opts.insecure,
-                cfs_opts.uki_addon.as_ref(),
+                state.composefs_options.insecure,
+                state.composefs_options.uki_addon.as_ref(),
             )
         }
 
