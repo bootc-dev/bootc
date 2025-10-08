@@ -413,6 +413,10 @@ pub(crate) struct InstallToExistingRootOpts {
     /// via e.g. `-v /:/target`.
     #[clap(default_value = ALONGSIDE_ROOT_MOUNT)]
     pub(crate) root_path: Utf8PathBuf,
+
+    #[cfg(feature = "composefs-backend")]
+    #[clap(flatten)]
+    pub(crate) composefs_opts: InstallComposefsOpts,
 }
 
 /// Global state captured from the container.
@@ -2139,12 +2143,7 @@ pub(crate) async fn install_to_existing_root(opts: InstallToExistingRootOpts) ->
         target_opts: opts.target_opts,
         config_opts: opts.config_opts,
         #[cfg(feature = "composefs-backend")]
-        compoesfs_opts: InstallComposefsOpts {
-            composefs_backend: true,
-            insecure: false,
-            bootloader: Bootloader::Grub,
-            uki_addon: None,
-        },
+        compoesfs_opts: opts.composefs_opts,
     };
 
     install_to_filesystem(opts, true, cleanup).await
