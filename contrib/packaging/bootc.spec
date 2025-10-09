@@ -95,6 +95,13 @@ cat vendor-config.toml >> .cargo/config.toml
 rm vendor-config.toml
 
 %build
+# https://issues.redhat.com/browse/RHEL-116881
+%if 0%{?rhel} >= 10
+if test $(arch) = s390x; then
+  export MALLOC_MMAP_MAX_=0
+fi
+%endif
+
 # Build the main bootc binary
 %if %new_cargo_macros
     %cargo_build %{?with_rhsm:-f rhsm}

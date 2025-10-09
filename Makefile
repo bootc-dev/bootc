@@ -27,10 +27,18 @@ TAR_REPRODUCIBLE = tar --mtime="@${SOURCE_DATE_EPOCH}" --sort=name --owner=0 --g
 # (Note we should also make installation of the units conditional on the rhsm feature)
 CARGO_FEATURES ?= $(shell . /usr/lib/os-release; if echo "$$ID_LIKE" |grep -qF rhel; then echo rhsm; fi)
 
+# https://issues.redhat.com/browse/RHEL-116881
+ARCH ?= $(shell uname -m)
+ID ?= $(shell [ -f /etc/os-release ] && . /etc/os-release && echo $$ID)
+VERSION_ID ?= $(shell [ -f /etc/os-release ] && . /etc/os-release && echo $$VERSION_ID)
+ifeq ($(ARCH)-$(ID)-$(VERSION_ID),s390x-centos-10)
+CARGO_BUILD_ENV ?= MALLOC_MMAP_MAX_=0
+endif
+
 all: bin manpages
 
 bin:
-	cargo build --release --features "$(CARGO_FEATURES)"
+	$(CARGO_BUILD_ENV) cargo build --release --features "$(CARGO_FEATURES)"
 
 .PHONY: manpages
 manpages:
