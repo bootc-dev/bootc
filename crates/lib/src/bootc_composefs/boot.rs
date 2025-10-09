@@ -38,7 +38,6 @@ use crate::bootc_composefs::status::get_sorted_uki_boot_entries;
 use crate::composefs_consts::{TYPE1_ENT_PATH, TYPE1_ENT_PATH_STAGED};
 use crate::parsers::bls_config::{BLSConfig, BLSConfigType};
 use crate::parsers::grub_menuconfig::MenuEntry;
-use crate::spec::ImageReference;
 use crate::task::Task;
 use crate::{
     composefs_consts::{
@@ -353,14 +352,11 @@ pub(crate) fn setup_composefs_bls_boot(
             // root_setup.kargs has [root=UUID=<UUID>, "rw"]
             let mut cmdline_options = String::from(root_setup.kargs.join(" "));
 
-            match &state.composefs_options {
-                Some(opt) if opt.insecure => {
-                    cmdline_options.push_str(&format!(" {COMPOSEFS_CMDLINE}=?{id_hex}"));
-                }
-                None | Some(..) => {
-                    cmdline_options.push_str(&format!(" {COMPOSEFS_CMDLINE}={id_hex}"));
-                }
-            };
+            if state.composefs_options.insecure {
+                cmdline_options.push_str(&format!(" {COMPOSEFS_CMDLINE}=?{id_hex}"));
+            } else {
+                cmdline_options.push_str(&format!(" {COMPOSEFS_CMDLINE}={id_hex}"));
+            }
 
             // Locate ESP partition device
             let esp_part = root_setup
@@ -375,11 +371,7 @@ pub(crate) fn setup_composefs_bls_boot(
                 esp_part.node.clone(),
                 cmdline_options,
                 fs,
-                state
-                    .composefs_options
-                    .as_ref()
-                    .map(|opts| opts.bootloader.clone())
-                    .unwrap_or(Bootloader::default()),
+                state.composefs_options.bootloader.clone(),
             )
         }
 
@@ -828,10 +820,6 @@ pub(crate) fn setup_composefs_uki_boot(
                 }
             }
 
-            let Some(cfs_opts) = &state.composefs_options else {
-                anyhow::bail!("ComposeFS options not found");
-            };
-
             let esp_part = root_setup
                 .device_info
                 .partitions
@@ -842,9 +830,9 @@ pub(crate) fn setup_composefs_uki_boot(
             (
                 root_setup.physical_root_path.clone(),
                 esp_part.node.clone(),
-                cfs_opts.bootloader.clone(),
-                cfs_opts.insecure,
-                cfs_opts.uki_addon.as_ref(),
+                state.composefs_options.bootloader.clone(),
+                state.composefs_options.insecure,
+                state.composefs_options.uki_addon.as_ref(),
             )
         }
 
@@ -992,11 +980,7 @@ pub(crate) fn setup_composefs_boot(
     write_composefs_state(
         &root_setup.physical_root_path,
         id,
-        &ImageReference {
-            image: state.source.imageref.name.clone(),
-            transport: state.source.imageref.transport.to_string(),
-            signature: None,
-        },
+        &crate::spec::ImageReference::from(state.target_imgref.clone()),
         false,
         boot_type,
         boot_digest,

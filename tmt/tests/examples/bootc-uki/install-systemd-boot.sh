@@ -24,7 +24,7 @@ podman run \
     --security-opt label=type:unconfined_t \
     "${IMAGE}" \
     bootc install to-disk \
-        --composefs-native \
+        --composefs-backend \
         --boot=uki \
         --source-imgref="containers-storage:${IMAGE}" \
         --target-imgref="${IMAGE}" \
