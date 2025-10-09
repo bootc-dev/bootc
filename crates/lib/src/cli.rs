@@ -6,13 +6,15 @@ use std::ffi::{CString, OsStr, OsString};
 use std::io::Seek;
 use std::os::unix::process::CommandExt;
 use std::process::Command;
+use std::sync::Arc;
 
 use anyhow::{ensure, Context, Result};
-use camino::Utf8PathBuf;
+use camino::{Utf8Path, Utf8PathBuf};
 use cap_std_ext::cap_std;
 use cap_std_ext::cap_std::fs::Dir;
 use clap::Parser;
 use clap::ValueEnum;
+use composefs_boot::BootOps as _;
 use etc_merge::{compute_diff, print_diff};
 use fn_error_context::context;
 use indoc::indoc;
@@ -23,11 +25,13 @@ use ostree_ext::composefs::fsverity::FsVerityHashValue;
 use ostree_ext::composefs::splitstream::SplitStreamWriter;
 use ostree_ext::container as ostree_container;
 use ostree_ext::container_utils::ostree_booted;
+use ostree_ext::containers_image_proxy::ImageProxyConfig;
 use ostree_ext::keyfileext::KeyFileExt;
 use ostree_ext::ostree;
 use ostree_ext::sysroot::SysrootLock;
 use schemars::schema_for;
 use serde::{Deserialize, Serialize};
+use tempfile::tempdir_in;
 
 #[cfg(feature = "composefs-backend")]
 use crate::bootc_composefs::{
@@ -40,9 +44,11 @@ use crate::bootc_composefs::{
 };
 use crate::deploy::RequiredHostSpec;
 use crate::lints;
+use crate::podstorage::set_additional_image_store;
 use crate::progress_jsonl::{ProgressWriter, RawProgressFd};
 use crate::spec::Host;
 use crate::spec::ImageReference;
+use crate::store::ComposefsRepository;
 use crate::utils::sigpolicy_from_opt;
 
 /// Shared progress options
@@ -314,6 +320,12 @@ pub(crate) enum ContainerOpts {
         /// shown for each lint, followed by a count of remaining entries.
         #[clap(long)]
         no_truncate: bool,
+    },
+    /// Output the bootable composefs digest.
+    #[clap(hide = true)]
+    ComputeComposefsDigest {
+        /// Identifier for image; if not provided, the running image will be used.
+        image: Option<String>,
     },
 }
 
@@ -1333,6 +1345,55 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
                     std::io::stdout().lock(),
                     no_truncate,
                 )?;
+                Ok(())
+            }
+            ContainerOpts::ComputeComposefsDigest { image } => {
+                // Allocate a tempdir
+                let td = tempdir_in("/var/tmp")?;
+                let td = td.path();
+                let td = &Dir::open_ambient_dir(td, cap_std::ambient_authority())?;
+
+                td.create_dir("repo")?;
+                let repo = td.open_dir("repo")?;
+                let mut repo =
+                    ComposefsRepository::open_path(&repo, ".").context("Init cfs repo")?;
+                // We don't need to hard require verity on the *host* system, we're just computing a checksum here
+                repo.set_insecure(true);
+                let repo = &Arc::new(repo);
+
+                let mut proxycfg = ImageProxyConfig::default();
+
+                let image = if let Some(image) = image {
+                    image
+                } else {
+                    let host_container_store = Utf8Path::new("/run/host-container-storage");
+                    // If no image is provided, assume that we're running in a container in privileged mode
+                    // with access to the container storage.
+                    let container_info = crate::containerenv::get_container_execution_info(&root)?;
+                    let iid = container_info.imageid;
+                    tracing::debug!("Computing digest of {iid}");
+
+                    if !host_container_store.try_exists()? {
+                        anyhow::bail!("Must be readonly mount of host container store: {host_container_store}");
+                    }
+                    // And ensure we're finding the image in the host storage
+                    let mut cmd = Command::new("skopeo");
+                    set_additional_image_store(&mut cmd, "/run/host-container-storage");
+                    proxycfg.skopeo_cmd = Some(cmd);
+                    iid
+                };
+
+                let imgref = format!("containers-storage:{image}");
+                let (imgid, verity) = composefs_oci::pull(repo, &imgref, None, Some(proxycfg))
+                    .await
+                    .context("Pulling image")?;
+                let imgid = hex::encode(imgid);
+                let mut fs = composefs_oci::image::create_filesystem(repo, &imgid, Some(&verity))
+                    .context("Populating fs")?;
+                fs.transform_for_boot(&repo).context("Preparing for boot")?;
+                let id = fs.compute_image_id();
+                println!("{}", id.to_hex());
+
                 Ok(())
             }
         },

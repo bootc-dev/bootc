@@ -27,6 +27,9 @@ use linkme::distributed_slice;
 use ostree_ext::ostree_prepareroot;
 use serde::Serialize;
 
+#[cfg(feature = "composefs-backend")]
+use crate::bootc_composefs::boot::EFI_LINUX;
+
 /// Reference to embedded default baseimage content that should exist.
 const BASEIMAGE_REF: &str = "usr/share/doc/bootc/baseimage/base";
 // https://systemd.io/API_FILE_SYSTEMS/ with /var added for us
@@ -758,14 +761,27 @@ fn check_boot(root: &Dir, config: &LintExecutionConfig) -> LintResult {
     };
 
     // First collect all entries to determine if the directory is empty
-    let entries: Result<Vec<_>, _> = d.entries()?.collect();
-    let entries = entries?;
+    let entries: Result<BTreeSet<_>, _> = d
+        .entries()?
+        .into_iter()
+        .map(|v| {
+            let v = v?;
+            anyhow::Ok(v.file_name())
+        })
+        .collect();
+    let mut entries = entries?;
+    #[cfg(feature = "composefs-backend")]
+    {
+        // Work around https://github.com/containers/composefs-rs/issues/131
+        let efidir = Utf8Path::new(EFI_LINUX)
+            .parent()
+            .map(|b| b.as_std_path())
+            .unwrap();
+        entries.remove(efidir.as_os_str());
+    }
     if entries.is_empty() {
         return lint_ok();
     }
-    // Gather sorted filenames
-    let mut entries = entries.iter().map(|v| v.file_name()).collect::<Vec<_>>();
-    entries.sort();
 
     let header = "Found non-empty /boot";
     let items = entries.iter().map(PathQuotedDisplay::new);
@@ -973,6 +989,12 @@ mod tests {
         let root = &passing_fixture()?;
         let config = &LintExecutionConfig::default();
         check_boot(&root, config).unwrap().unwrap();
+
+        // Verify creating EFI doesn't error
+        root.create_dir_all("EFI/Linux")?;
+        root.write("EFI/Linux/foo.efi", b"some dummy efi")?;
+        check_boot(&root, config).unwrap().unwrap();
+
         root.create_dir("boot/somesubdir")?;
         let Err(e) = check_boot(&root, config).unwrap() else {
             unreachable!()

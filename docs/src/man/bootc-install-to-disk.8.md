@@ -114,6 +114,26 @@ more complex such as RAID, LVM, LUKS etc.
 
     Instead of targeting a block device, write to a file via loopback
 
+**--composefs-native**
+
+    
+
+**--insecure**
+
+    
+
+    Default: false
+
+**--bootloader**=*BOOTLOADER*
+
+    
+
+    Default: grub
+
+**--uki-addon**=*UKI_ADDON*
+
+    Name of the UKI addons to install without the ".efi.addon" suffix. This option can be provided multiple times if multiple addons are to be installed
+
 <!-- END GENERATED OPTIONS -->
 
 # EXAMPLES

@@ -13,6 +13,11 @@ run a `podman build` with the bootc git sources.
 
 ## Available suites
 
+### `composefs-bcvk`
+
+Intended only right now to be used with a sealed UKI image,
+and sanity checks the composefs backend.
+
 ### `host-privileged`
 
 This suite will run the target container image in a way that expects

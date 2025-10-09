@@ -11,6 +11,7 @@ use std::process::Command;
 use anyhow::{Context, Result};
 use camino::{Utf8Path, Utf8PathBuf};
 use fn_error_context::context;
+use serde::Deserialize;
 use xshell::{cmd, Shell};
 
 mod man;
@@ -235,6 +236,14 @@ fn spec(sh: &Shell) -> Result<()> {
     let s = update_spec(sh)?;
     println!("Generated: {s}");
     Ok(())
+}
+
+#[derive(Debug, Deserialize)]
+#[allow(dead_code)]
+#[serde(rename_all = "PascalCase")]
+struct ImageInspect {
+    pub id: String,
+    pub digest: String,
 }
 
 fn impl_srpm(sh: &Shell) -> Result<Utf8PathBuf> {

@@ -1,0 +1,46 @@
+#!/bin/bash
+set -euo pipefail
+# This should turn into https://github.com/bootc-dev/bootc/issues/1498
+
+# The un-sealed container image we want to use
+input_image=$1
+shift
+# The output container image
+output_image=$1
+shift
+# Optional directory with secure boot keys; if none are provided, then we'll
+# generate some under target/
+secureboot=${1:-}
+
+runv() {
+  set +x
+  "$@"
+}
+
+graphroot=$(podman system info -f '{{.Store.GraphRoot}}')
+echo "Computing composefs digest..."
+cfs_digest=$(podman run --rm --privileged --read-only --security-opt=label=disable -v /sys:/sys:ro --net=none \
+  -v ${graphroot}:/run/host-container-storage:ro --tmpfs /var "$input_image" bootc container compute-composefs-digest)
+
+if test -z "${secureboot}"; then
+  secureboot=$(pwd)/target/test-secureboot
+  mkdir -p ${secureboot}
+  cd $secureboot
+  if test '!' -f db.cer; then
+    echo "Generating test Secure Boot keys"
+    uuidgen --random > GUID.txt
+    openssl req -quiet -newkey rsa:4096 -nodes -keyout PK.key -new -x509 -sha256 -days 3650 -subj '/CN=Test Platform Key/' -out PK.crt
+    openssl x509 -outform DER -in PK.crt -out PK.cer
+    openssl req -quiet -newkey rsa:4096 -nodes -keyout KEK.key -new -x509 -sha256 -days 3650 -subj '/CN=Test Key Exchange Key/' -out KEK.crt
+    openssl x509 -outform DER -in KEK.crt -out KEK.cer
+    openssl req -quiet -newkey rsa:4096 -nodes -keyout db.key -new -x509 -sha256 -days 3650 -subj '/CN=Test Signature Database key/' -out db.crt
+    openssl x509 -outform DER -in db.crt -out db.cer
+  else 
+    echo "Reusing Secure Boot keys in ${secureboot}"
+  fi
+  cd -
+fi
+
+runv podman build -t $output_image --build-arg=COMPOSEFS_FSVERITY=${cfs_digest} --build-arg=base=${input_image} \
+  --secret=id=key,src=${secureboot}/db.key \
+  --secret=id=cert,src=${secureboot}/db.crt -f Dockerfile.cfsuki .

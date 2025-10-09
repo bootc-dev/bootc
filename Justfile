@@ -13,11 +13,20 @@
 build *ARGS:
     podman build --jobs=4 -t localhost/bootc {{ARGS}} .
 
+# Build a sealed image from current sources. This will default to
+# generating Secure Boot keys in target/test-secureboot.
+build-sealed *ARGS:
+    podman build --jobs=4 -t localhost/bootc-unsealed {{ARGS}} .
+    ./tests/build-sealed localhost/bootc-unsealed localhost/bootc
+
 # This container image has additional testing content and utilities
 build-integration-test-image *ARGS:
     cd hack && podman build --jobs=4 -t localhost/bootc-integration -f Containerfile {{ARGS}} .
     # Keep these in sync with what's used in hack/lbi
     podman pull -q --retry 5 --retry-delay 5s quay.io/curl/curl:latest quay.io/curl/curl-base:latest registry.access.redhat.com/ubi9/podman:latest
+
+test-composefs: build-sealed
+    cargo run --release -p tests-integration -- composefs-bcvk localhost/bootc
 
 # Only used by ci.yml right now
 build-install-test-image: build-integration-test-image

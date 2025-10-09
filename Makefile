@@ -107,7 +107,6 @@ validate:
 	cargo test --no-run
 	(cd crates/ostree-ext && cargo check --no-default-features)
 	(cd crates/lib && cargo check --no-default-features)
-	cargo check --features=composefs-backend
 	cargo clippy -- $(CLIPPY_CONFIG)
 	env RUSTDOCFLAGS='-D warnings' cargo doc --lib
 .PHONY: validate

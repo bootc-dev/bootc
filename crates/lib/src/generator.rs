@@ -139,7 +139,6 @@ ExecStart=bootc internals fixup-etc-fstab\n\
 #[cfg(test)]
 mod tests {
     use camino::Utf8Path;
-    use cap_std_ext::cmdext::CapStdExtCommandExt as _;
 
     use super::*;
 

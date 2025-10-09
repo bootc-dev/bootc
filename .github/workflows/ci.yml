@@ -19,6 +19,9 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # Something seems to be setting this in the default GHA runners, which breaks bcvk
+  # as the default runner user doesn't have access
+  LIBVIRT_DEFAULT_URI: "qemu:///session"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -189,3 +192,29 @@ jobs:
         with:
           name: tmt-log-PR-${{ github.event.number }}-${{ matrix.test_os }}-${{ env.ARCH }}-${{ matrix.tmt_plan }}
           path: /var/tmp/tmt
+  # This variant does composefs testing
+  test-integration-cfs:
+    strategy:
+      fail-fast: false
+      matrix:
+        test_os: [centos-10]
+
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v4
+      - name: Bootc Ubuntu Setup
+        uses: ./.github/actions/bootc-ubuntu-setup
+        with:
+          libvirt: true
+
+      - name: Build container
+        run: just build-sealed
+
+      - name: Setup upterm session
+        uses: owenthereal/action-upterm@v1
+        with:
+          limit-access-to-users: cgwalters
+
+      - name: Test
+        run: just test-composefs

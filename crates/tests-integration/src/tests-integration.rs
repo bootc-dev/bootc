@@ -4,6 +4,7 @@ use camino::Utf8PathBuf;
 use cap_std_ext::cap_std::{self, fs::Dir};
 use clap::Parser;
 
+mod composefs_bcvk;
 mod container;
 mod hostpriv;
 mod install;
@@ -27,6 +28,11 @@ pub(crate) enum Opt {
         testargs: libtest_mimic::Arguments,
     },
     HostPrivileged {
+        image: String,
+        #[clap(flatten)]
+        testargs: libtest_mimic::Arguments,
+    },
+    ComposefsBcvk {
         image: String,
         #[clap(flatten)]
         testargs: libtest_mimic::Arguments,
@@ -55,6 +61,7 @@ fn main() {
         Opt::SystemReinstall { image, testargs } => system_reinstall::run(&image, testargs),
         Opt::InstallAlongside { image, testargs } => install::run_alongside(&image, testargs),
         Opt::HostPrivileged { image, testargs } => hostpriv::run_hostpriv(&image, testargs),
+        Opt::ComposefsBcvk { image, testargs } => composefs_bcvk::run(&image, testargs),
         Opt::Container { testargs } => container::run(testargs),
         Opt::RunVM(opts) => runvm::run(opts),
         Opt::VerifySELinux { rootfs, warn } => {

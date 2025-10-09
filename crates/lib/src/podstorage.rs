@@ -127,6 +127,17 @@ fn new_podman_cmd_in(storage_root: &Dir, run_root: &Dir) -> Result<Command> {
     Ok(cmd)
 }
 
+/// Adjust the provided command (skopeo or podman e.g.) to reference
+/// the provided path as an additional image store.
+pub fn set_additional_image_store<'c>(
+    cmd: &'c mut Command,
+    ais: impl AsRef<Utf8Path>,
+) -> &'c mut Command {
+    let ais = ais.as_ref();
+    let storage_opt = format!("additionalimagestore={ais}");
+    cmd.env("STORAGE_OPTS", storage_opt)
+}
+
 /// Ensure that "podman" is the first thing to touch the global storage
 /// instance. This is a workaround for https://github.com/bootc-dev/bootc/pull/1101#issuecomment-2653862974
 /// Basically podman has special upgrade logic for when it is the first thing

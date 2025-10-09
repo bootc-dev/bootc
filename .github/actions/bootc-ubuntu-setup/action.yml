@@ -25,22 +25,22 @@ runs:
     - name: Free up disk space on runner
       shell: bash
       run: |
+        set -xeuo pipefail
         sudo df -h
         unwanted=('^aspnetcore-.*' '^dotnet-.*' '^llvm-.*' 'php.*' '^mongodb-.*' '^mysql-.*'
                   azure-cli google-chrome-stable firefox mono-devel)
         for x in ${unwanted[@]}; do
-          sudo apt-get remove -y $x > /dev/null
+          sudo apt-get remove -y $x
         done
         # Start other removal operations in parallel
-        sudo docker image prune --all --force > /dev/null &
-        sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android &
-        # Wait for all background processes to complete
-        wait
+        sudo docker image prune --all --force
+        sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android
         sudo df -h
     # This is the default on e.g. Fedora derivatives, but not Debian
     - name: Enable unprivileged /dev/kvm access
       shell: bash
       run: |
+        set -xeuo pipefail
         echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
         sudo udevadm control --reload-rules
         sudo udevadm trigger --name-match=kvm
@@ -65,5 +65,17 @@ runs:
       if: ${{ inputs.libvirt == 'true' }}
       shell: bash
       run: |
-        set -eux
-        sudo apt install -y libkrb5-dev pkg-config libvirt-dev genisoimage qemu-utils qemu-kvm qemu-utils libvirt-daemon-system
+        set -xeuo pipefail
+        sudo apt install -y libkrb5-dev pkg-config libvirt-dev genisoimage qemu-utils qemu-kvm virtiofsd libvirt-daemon-system
+        # Something in the stack is overriding this, but we want session right now for bcvk
+        echo LIBVIRT_DEFAULT_URI=qemu:///session >> $GITHUB_ENV
+        td=$(mktemp -d)
+        cd $td
+        # Install bcvk
+        curl -LO https://github.com/bootc-dev/bcvk/releases/download/v0.5.1/bcvk-x86_64-unknown-linux-gnu.tar.gz
+        echo '1c9bb9e2b1e39d64c93b847350dd028832da27e7f7b0296b14ebfc2fb66b5c2c  bcvk-x86_64-unknown-linux-gnu.tar.gz' > sums
+        sha256sum -c sums
+        tar zxvf bcvk*.tar.gz
+        sudo install -T bcvk-$(arch)-*linux-gnu /usr/bin/bcvk
+        cd -
+        rm -rf "$td"

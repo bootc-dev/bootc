@@ -4,9 +4,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 
 use ostree_ext::composefs::{
-    fsverity::{FsVerityHashValue, Sha256HashValue},
-    repository::Repository as ComposefsRepository,
-    tree::FileSystem,
+    fsverity::{FsVerityHashValue, Sha512HashValue},
     util::Sha256Digest,
 };
 use ostree_ext::composefs_boot::{bootloader::BootEntry as ComposefsBootEntry, BootOps};
@@ -20,10 +18,8 @@ use cap_std_ext::cap_std::{ambient_authority, fs::Dir};
 
 use crate::install::{RootSetup, State};
 
-pub(crate) fn open_composefs_repo(
-    rootfs_dir: &Dir,
-) -> Result<ComposefsRepository<Sha256HashValue>> {
-    ComposefsRepository::open_path(rootfs_dir, "composefs")
+pub(crate) fn open_composefs_repo(rootfs_dir: &Dir) -> Result<crate::store::ComposefsRepository> {
+    crate::store::ComposefsRepository::open_path(rootfs_dir, "composefs")
         .context("Failed to open composefs repository")
 }
 
@@ -78,10 +74,10 @@ pub(crate) async fn pull_composefs_repo(
     transport: &String,
     image: &String,
 ) -> Result<(
-    ComposefsRepository<Sha256HashValue>,
-    Vec<ComposefsBootEntry<Sha256HashValue>>,
-    Sha256HashValue,
-    FileSystem<Sha256HashValue>,
+    crate::store::ComposefsRepository,
+    Vec<ComposefsBootEntry<Sha512HashValue>>,
+    Sha512HashValue,
+    crate::store::ComposefsFilesystem,
 )> {
     let rootfs_dir = Dir::open_ambient_dir("/sysroot", ambient_authority())?;
 
@@ -98,8 +94,9 @@ pub(crate) async fn pull_composefs_repo(
     tracing::info!("id: {}, verity: {}", hex::encode(id), verity.to_hex());
 
     let repo = open_composefs_repo(&rootfs_dir)?;
-    let mut fs = create_composefs_filesystem(&repo, &hex::encode(id), None)
-        .context("Failed to create composefs filesystem")?;
+    let mut fs: crate::store::ComposefsFilesystem =
+        create_composefs_filesystem(&repo, &hex::encode(id), None)
+            .context("Failed to create composefs filesystem")?;
 
     let entries = fs.transform_for_boot(&repo)?;
     let id = fs.commit_image(&repo, None)?;
