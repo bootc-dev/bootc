@@ -65,5 +65,17 @@ runs:
       if: ${{ inputs.libvirt == 'true' }}
       shell: bash
       run: |
-        set -eux
-        sudo apt install -y libkrb5-dev pkg-config libvirt-dev genisoimage qemu-utils qemu-kvm qemu-utils libvirt-daemon-system
+        set -xeuo pipefail
+        export BCVK_VERSION=0.5.2
+        sudo apt install -y libkrb5-dev pkg-config libvirt-dev genisoimage qemu-utils qemu-kvm virtiofsd libvirt-daemon-system
+        # Something in the stack is overriding this, but we want session right now for bcvk
+        echo LIBVIRT_DEFAULT_URI=qemu:///session >> $GITHUB_ENV
+        td=$(mktemp -d)
+        cd $td
+        # Install bcvk
+        target=bcvk-$(arch)-unknown-linux-gnu
+        curl -LO https://github.com/bootc-dev/bcvk/releases/download/v${BCVK_VERSION}/${target}.tar.gz
+        tar xzf ${target}.tar.gz
+        sudo install -T ${target} /usr/bin/bcvk
+        cd -
+        rm -rf "$td"

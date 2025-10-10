@@ -19,6 +19,9 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # Something seems to be setting this in the default GHA runners, which breaks bcvk
+  # as the default runner user doesn't have access
+  LIBVIRT_DEFAULT_URI: "qemu:///session"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -135,11 +138,11 @@ jobs:
 
       - name: Build container and disk image
         run: |
-          sudo tests/build.sh ${{ matrix.test_os }}
+          tests/build.sh ${{ matrix.test_os }}
 
       - name: Run container tests
         run:
-          sudo just test-container
+          just test-container
 
       - name: Archive disk image
         uses: actions/upload-artifact@v4

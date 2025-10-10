@@ -24,38 +24,7 @@ build-install-test-image: build-integration-test-image
     cd hack && podman build -t localhost/bootc-integration-install -f Containerfile.drop-lbis
 
 build-disk-image container target:
-    #!/bin/bash
-    set -xeuo pipefail
-    SIZE=20G
-    bcvk=$(which bcvk 2>/dev/null || true)
-    if test -z "${bcvk}" && test "$(id -u)" != 0; then
-        echo "This task currently requires full root"; exit 1
-    fi
-    # testcloud barfs on .raw
-    if test -n "${bcvk}"; then
-      bcvk to-disk --format=qcow2 --disk-size "${SIZE}" --filesystem ext4 {{container}} {{target}}
-    else
-      TMPDISK={{target}}.raw
-      truncate -s "${SIZE}" "${TMPDISK}"
-      podman run \
-        --rm \
-        --privileged \
-        --pid=host \
-        --security-opt label=type:unconfined_t \
-        -v /var/lib/containers:/var/lib/containers \
-        -v /dev:/dev \
-        -v $(pwd)/target:/target \
-        localhost/bootc-integration \
-        bootc install to-disk \
-        --filesystem "ext4" \
-        --karg=console=ttyS0,115200n8 \
-        --generic-image \
-        --via-loopback \
-        /target/$(basename ${TMPDISK})
-      qemu-img convert -f raw -O qcow2 ${TMPDISK} {{target}}
-      rm -f "${TMPDISK}"
-    fi
-
+    bcvk to-disk --format=qcow2 --disk-size 20G --filesystem ext4 {{container}} {{target}}
 
 # These tests accept the container image as input, and may spawn it.
 run-container-external-tests:
