@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version to release (e.g., 1.5.1). Leave empty to auto-increment.'
+        description: 'Version type to release, either "minor" (default) or "patch" for just a bugfix release'
         required: false
         type: string
 
@@ -88,20 +88,9 @@ jobs:
           dnf -y install go-md2man
           cargo install cargo-edit
 
-          # If version is provided via workflow dispatch, validate and use it
-          if [ -n "$INPUT_VERSION" ]; then
-            VERSION="$INPUT_VERSION"
-            # Validate version format strictly
-            if ! echo "$VERSION" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' >/dev/null; then
-              echo "Error: Invalid version format. Expected X.Y.Z (e.g., 1.5.1)"
-              exit 1
-            fi
-            cargo set-version --manifest-path crates/lib/Cargo.toml --package bootc-lib "$VERSION"
-          else
-            # default to bump the minor since that is most common
-            cargo set-version --manifest-path crates/lib/Cargo.toml --package bootc-lib --bump minor
-            VERSION=$(cargo read-manifest --manifest-path crates/lib/Cargo.toml | jq -r '.version')
-          fi
+          # Default to bumping a minor
+          cargo set-version --manifest-path crates/lib/Cargo.toml --package bootc-lib --bump ${INPUT_VERSION:-minor}
+          VERSION=$(cargo read-manifest --manifest-path crates/lib/Cargo.toml | jq -r '.version')
 
           cargo update --workspace
           cargo xtask update-generated
