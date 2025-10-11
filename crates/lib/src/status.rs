@@ -22,6 +22,8 @@ use ostree_ext::ostree;
 #[cfg(feature = "composefs-backend")]
 use crate::bootc_composefs::status::{composefs_booted, composefs_deployment_status};
 use crate::cli::OutputFormat;
+#[cfg(feature = "composefs-backend")]
+use crate::spec::BootEntryComposefs;
 use crate::spec::ImageStatus;
 use crate::spec::{BootEntry, BootOrder, Host, HostSpec, HostStatus, HostType};
 use crate::spec::{ImageReference, ImageSignature};
@@ -230,6 +232,13 @@ impl BootEntry {
         } else {
             Ok(None)
         }
+    }
+
+    #[cfg(feature = "composefs-backend")]
+    pub(crate) fn require_composefs(&self) -> Result<&BootEntryComposefs> {
+        self.composefs.as_ref().ok_or(anyhow::anyhow!(
+            "BootEntry is not a composefs native boot entry"
+        ))
     }
 }
 

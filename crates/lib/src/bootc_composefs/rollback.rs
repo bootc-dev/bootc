@@ -17,6 +17,7 @@ use crate::{
     spec::BootOrder,
 };
 
+#[context("Atomically exchanging grub user config")]
 pub(crate) fn rename_exchange_user_cfg(entries_dir: &Dir) -> Result<()> {
     tracing::debug!("Atomically exchanging {USER_CFG_STAGED} and {USER_CFG}");
     renameat_with(
@@ -41,6 +42,7 @@ pub(crate) fn rename_exchange_user_cfg(entries_dir: &Dir) -> Result<()> {
     Ok(())
 }
 
+#[context("Atomically exchanging boot loader entries")]
 pub(crate) fn rename_exchange_bls_entries(entries_dir: &Dir) -> Result<()> {
     tracing::debug!("Atomically exchanging {STAGED_BOOT_LOADER_ENTRIES} and {BOOT_LOADER_ENTRIES}");
     renameat_with(
