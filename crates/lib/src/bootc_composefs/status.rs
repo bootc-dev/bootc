@@ -6,7 +6,7 @@ use fn_error_context::context;
 
 use crate::{
     bootc_composefs::boot::{get_esp_partition, get_sysroot_parent_dev, mount_esp, BootType},
-    composefs_consts::{COMPOSEFS_CMDLINE, TYPE1_ENT_PATH, USER_CFG},
+    composefs_consts::{COMPOSEFS_CMDLINE, ORIGIN_KEY_BOOT_DIGEST, TYPE1_ENT_PATH, USER_CFG},
     parsers::{
         bls_config::{parse_bls_config, BLSConfig, BLSConfigType},
         grub_menuconfig::{parse_grub_menuentry_file, MenuEntry},
@@ -227,6 +227,8 @@ async fn boot_entry_from_composefs_deployment(
         None => anyhow::bail!("{ORIGIN_KEY_BOOT} not found"),
     };
 
+    let boot_digest = origin.get::<String>(ORIGIN_KEY_BOOT, ORIGIN_KEY_BOOT_DIGEST);
+
     let e = BootEntry {
         image,
         cached_update: None,
@@ -238,6 +240,7 @@ async fn boot_entry_from_composefs_deployment(
             verity,
             boot_type,
             bootloader: get_bootloader()?,
+            boot_digest,
         }),
         soft_reboot_capable: false,
     };

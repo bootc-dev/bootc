@@ -64,7 +64,7 @@ const SYSTEMD_LOADER_CONF_PATH: &str = "loader/loader.conf";
 /// directory specified by the BLS spec. We do this because we want systemd-boot to only look at
 /// our config files and not show the actual UKIs in the bootloader menu
 /// This is relative to the ESP
-const SYSTEMD_UKI_DIR: &str = "EFI/Linux/bootc";
+pub(crate) const SYSTEMD_UKI_DIR: &str = "EFI/Linux/bootc";
 
 pub(crate) enum BootSetupType<'a> {
     /// For initial setup, i.e. install to-disk
@@ -211,9 +211,9 @@ fn compute_boot_digest(
 /// Given the SHA256 sum of current VMlinuz + Initrd combo, find boot entry with the same SHA256Sum
 ///
 /// # Returns
-/// Returns the verity of the deployment that has a boot digest same as the one passed in
+/// Returns the verity of all deployments that have a boot digest same as the one passed in
 #[context("Checking boot entry duplicates")]
-fn find_vmlinuz_initrd_duplicates(digest: &str) -> Result<Option<String>> {
+pub(crate) fn find_vmlinuz_initrd_duplicates(digest: &str) -> Result<Option<Vec<String>>> {
     let deployments = Dir::open_ambient_dir(STATE_DIR_ABS, ambient_authority());
 
     let deployments = match deployments {
@@ -223,7 +223,7 @@ fn find_vmlinuz_initrd_duplicates(digest: &str) -> Result<Option<String>> {
         Err(e) => anyhow::bail!(e),
     };
 
-    let mut symlink_to: Option<String> = None;
+    let mut symlink_to: Option<Vec<String>> = None;
 
     for depl in deployments.entries()? {
         let depl = depl?;
@@ -243,8 +243,10 @@ fn find_vmlinuz_initrd_duplicates(digest: &str) -> Result<Option<String>> {
         match ini.get::<String>(ORIGIN_KEY_BOOT, ORIGIN_KEY_BOOT_DIGEST) {
             Some(hash) => {
                 if hash == digest {
-                    symlink_to = Some(depl_file_name.to_string());
-                    break;
+                    match symlink_to {
+                        Some(ref mut prev) => prev.push(depl_file_name.to_string()),
+                        None => symlink_to = Some(vec![depl_file_name.to_string()]),
+                    }
                 }
             }
 
@@ -479,6 +481,8 @@ pub(crate) fn setup_composefs_bls_boot(
 
             match find_vmlinuz_initrd_duplicates(&boot_digest)? {
                 Some(symlink_to) => {
+                    let symlink_to = &symlink_to[0];
+
                     match bls_config.cfg_type {
                         BLSConfigType::NonEFI {
                             ref mut linux,
