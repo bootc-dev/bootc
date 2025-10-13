@@ -20,8 +20,8 @@ use crate::{
         status::{composefs_deployment_status, get_sorted_uki_boot_entries},
     },
     composefs_consts::{
-        BOOT_LOADER_ENTRIES, COMPOSEFS_STAGED_DEPLOYMENT_FNAME, COMPOSEFS_TRANSIENT_STATE_DIR,
-        STATE_DIR_RELATIVE, USER_CFG_STAGED,
+        COMPOSEFS_STAGED_DEPLOYMENT_FNAME, COMPOSEFS_TRANSIENT_STATE_DIR, STATE_DIR_RELATIVE,
+        TYPE1_ENT_PATH, TYPE1_ENT_PATH_STAGED, USER_CFG_STAGED,
     },
     parsers::bls_config::{parse_bls_config, BLSConfigType},
     spec::{Bootloader, DeploymentEntry},
@@ -34,11 +34,24 @@ struct ObjectRefs {
 }
 
 #[fn_error_context::context("Deleting Type1 Entry {}", depl.deployment.verity)]
-fn delete_type1_entries(depl: &DeploymentEntry, boot_dir: &Dir) -> Result<()> {
+fn delete_type1_entries(
+    depl: &DeploymentEntry,
+    boot_dir: &Dir,
+    deleting_staged: bool,
+) -> Result<()> {
+    let entries_dir_path = if deleting_staged {
+        TYPE1_ENT_PATH_STAGED
+    } else {
+        TYPE1_ENT_PATH
+    };
+
     let entries_dir = boot_dir
-        .open_dir(BOOT_LOADER_ENTRIES)
+        .open_dir(entries_dir_path)
         .context("Opening entries dir")?;
 
+    // We reuse kernel + initrd if they're the same for two deployments
+    // We don't want to delete the (being deleted) deployment's kernel + initrd
+    // if it's in use by any other deployment
     let should_del_kernel = match &depl.deployment.boot_digest {
         Some(digest) => find_vmlinuz_initrd_duplicates(&digest)?
             .is_some_and(|vec| vec.iter().any(|digest| *digest != depl.deployment.verity)),
@@ -95,6 +108,12 @@ fn delete_type1_entries(depl: &DeploymentEntry, boot_dir: &Dir) -> Result<()> {
 
             BLSConfigType::Unknown => anyhow::bail!("Unknown BLS Config Type"),
         }
+    }
+
+    if deleting_staged {
+        boot_dir
+            .remove_dir_all(TYPE1_ENT_PATH_STAGED)
+            .context("Removing staged entries dir")?;
     }
 
     Ok(())
@@ -158,7 +177,15 @@ fn delete_uki(uki_id: &str, esp_mnt: &Dir) -> Result<()> {
 }
 
 #[fn_error_context::context("Removing Grub Menuentry")]
-fn remove_grub_menucfg_entry(id: &str, boot_dir: &Dir) -> Result<()> {
+fn remove_grub_menucfg_entry(id: &str, boot_dir: &Dir, deleting_staged: bool) -> Result<()> {
+    let grub_dir = boot_dir.open_dir("grub2").context("Opening grub2")?;
+
+    if deleting_staged {
+        return grub_dir
+            .remove_file(USER_CFG_STAGED)
+            .context("Deleting staged Menuentry");
+    }
+
     let mut string = String::new();
     let menuentries = get_sorted_uki_boot_entries(boot_dir, &mut string)?;
 
@@ -167,14 +194,12 @@ fn remove_grub_menucfg_entry(id: &str, boot_dir: &Dir) -> Result<()> {
     buffer.write_all(get_efi_uuid_source().as_bytes())?;
 
     for entry in menuentries {
-        if !entry.body.chainloader.contains(id) {
+        if entry.body.chainloader.contains(id) {
             continue;
         }
 
         buffer.write_all(entry.to_string().as_bytes())?;
     }
-
-    let grub_dir = boot_dir.open_dir("grub2").context("Opening grub2")?;
 
     grub_dir
         .atomic_write(USER_CFG_STAGED, buffer)
@@ -192,7 +217,7 @@ fn delete_depl_boot_entries(deployment: &DeploymentEntry, deleting_staged: bool)
                 .context("Opening boot dir")?;
 
             match deployment.deployment.boot_type {
-                BootType::Bls => delete_type1_entries(deployment, &boot_dir),
+                BootType::Bls => delete_type1_entries(deployment, &boot_dir, deleting_staged),
 
                 BootType::Uki => {
                     let device = get_sysroot_parent_dev()?;
@@ -201,7 +226,11 @@ fn delete_depl_boot_entries(deployment: &DeploymentEntry, deleting_staged: bool)
 
                     delete_uki(&deployment.deployment.verity, &esp_mount.fd)?;
 
-                    remove_grub_menucfg_entry(&deployment.deployment.verity, &boot_dir)
+                    remove_grub_menucfg_entry(
+                        &deployment.deployment.verity,
+                        &boot_dir,
+                        deleting_staged,
+                    )
                 }
             }
         }
@@ -213,7 +242,7 @@ fn delete_depl_boot_entries(deployment: &DeploymentEntry, deleting_staged: bool)
             let esp_mount = TempMount::mount_dev(&esp_part)?;
 
             // For Systemd UKI as well, we use .conf files
-            delete_type1_entries(deployment, &esp_mount.fd)
+            delete_type1_entries(deployment, &esp_mount.fd, deleting_staged)
         }
     }
 }
