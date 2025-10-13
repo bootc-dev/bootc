@@ -336,6 +336,25 @@ pub(crate) async fn delete_composefs_deployment(deployment_id: &str, delete: boo
 
     tracing::info!("Deleting {kind}deployment '{deployment_id}'");
 
+    delete_depl_boot_entries(&depl_to_del, deleting_staged)?;
+
+    // Delete the image
+    let img_path = Path::new("composefs").join("images").join(deployment_id);
+    sysroot
+        .remove_file(&img_path)
+        .context("Deleting EROFS image")?;
+
+    if deleting_staged {
+        let file = Path::new(COMPOSEFS_TRANSIENT_STATE_DIR).join(COMPOSEFS_STAGED_DEPLOYMENT_FNAME);
+        tracing::debug!("Deleting staged file {file:?}");
+        std::fs::remove_file(file).context("Removing staged file")?;
+    }
+
+    let state_dir = Path::new(STATE_DIR_RELATIVE).join(deployment_id);
+    sysroot
+        .remove_dir_all(&state_dir)
+        .with_context(|| format!("Removing dir {state_dir:?}"))?;
+
     for sha in diff {
         let object_path = Path::new("composefs")
             .join("objects")
@@ -345,25 +364,6 @@ pub(crate) async fn delete_composefs_deployment(deployment_id: &str, delete: boo
             .remove_file(&object_path)
             .with_context(|| format!("Removing {object_path:?}"))?;
     }
-
-    let state_dir = Path::new(STATE_DIR_RELATIVE).join(deployment_id);
-    sysroot
-        .remove_dir_all(&state_dir)
-        .with_context(|| format!("Removing dir {state_dir:?}"))?;
-
-    if deleting_staged {
-        let file = Path::new(COMPOSEFS_TRANSIENT_STATE_DIR).join(COMPOSEFS_STAGED_DEPLOYMENT_FNAME);
-        tracing::debug!("Deleting staged file {file:?}");
-        std::fs::remove_file(file).context("Removing staged file")?;
-    }
-
-    delete_depl_boot_entries(&depl_to_del, deleting_staged)?;
-
-    // Delete the image
-    let img_path = Path::new("composefs").join("images").join(deployment_id);
-    sysroot
-        .remove_file(&img_path)
-        .context("Deleting EROFS image")?;
 
     Ok(())
 }
