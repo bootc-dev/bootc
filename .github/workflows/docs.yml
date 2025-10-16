@@ -18,7 +18,7 @@ jobs:
   build:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Bootc Ubuntu Setup
         uses: ./.github/actions/bootc-ubuntu-setup
       - name: Build mdbook
@@ -27,7 +27,7 @@ jobs:
         id: pages
         uses: actions/configure-pages@v5
       - name: Upload artifact
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v4
         with:
           path: ./target/docs
 

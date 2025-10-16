@@ -21,7 +21,7 @@ jobs:
     runs-on: ubuntu-latest
     container: quay.io/coreos-assembler/fcos-buildroot:testing-devel
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v5
       - name: Code lints
         run: ./ci/lints.sh
       - name: Install deps
@@ -47,7 +47,7 @@ jobs:
     runs-on: ubuntu-latest
     container: quay.io/coreos-assembler/fcos-buildroot:testing-devel
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v5
       - name: Install deps
         run: ./ci/installdeps.sh
       - name: Cache Dependencies
@@ -67,7 +67,7 @@ jobs:
     container: quay.io/coreos-assembler/fcos-buildroot:testing-devel
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v5
       - name: Install deps
         run: ./ci/installdeps.sh
       - name: Detect crate MSRV
@@ -91,8 +91,8 @@ jobs:
   cargo-deny:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v3
-    - uses: EmbarkStudios/cargo-deny-action@v1
+    - uses: actions/checkout@v5
+    - uses: EmbarkStudios/cargo-deny-action@v2
       with:
         log-level: warn
         command: check bans sources licenses
@@ -103,9 +103,9 @@ jobs:
     container: quay.io/fedora/fedora-coreos:testing-devel
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v5
       - name: Download ostree-ext-cli
-        uses: actions/download-artifact@v4.1.8
+        uses: actions/download-artifact@v5.0.0
         with:
           name: ostree-ext-cli
       - name: Install
@@ -119,9 +119,9 @@ jobs:
     container: quay.io/fedora/fedora-coreos:testing-devel
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v5
       - name: Download ostree-ext-cli
-        uses: actions/download-artifact@v4.1.8
+        uses: actions/download-artifact@v5.0.0
         with:
           name: ostree-ext-cli
       - name: Install
@@ -137,9 +137,9 @@ jobs:
       options: "--privileged --pid=host -v /var/tmp:/var/tmp -v /run/dbus:/run/dbus -v /run/systemd:/run/systemd -v /:/run/host"
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
       - name: Download
-        uses: actions/download-artifact@v4.1.8
+        uses: actions/download-artifact@v5.0.0
         with:
           name: ostree-ext-cli
       - name: Install
@@ -152,14 +152,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v5
       - name: Checkout coreos-layering-examples
-        uses: actions/checkout@v3
+        uses: actions/checkout@v5
         with:
           repository: coreos/coreos-layering-examples
           path: coreos-layering-examples
       - name: Download
-        uses: actions/download-artifact@v4.1.8
+        uses: actions/download-artifact@v5.0.0
         with:
           name: ostree-ext-cli
       - name: Integration tests
