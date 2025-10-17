@@ -19,6 +19,8 @@ A common pattern is to have a management agent control operating system updates 
 for example, `quay.io/exampleos/someuser:v1.0` and `quay.io/exampleos/someuser:v1.1` where some machines
 are tracking `:v1.0`, and as a rollout progresses, machines can be switched to `v:1.1`.
 
+It is also supported to provide explicit digests, via e.g. `bootc switch quay.io/exampleos/someuser@sha256:9cca0703342e24806a9f64e08c053dca7f2cd90f10529af8ea872afb0a0c77d4`. When you do this, `bootc upgrade` will always be a no-op. In this model, upgrades are then always triggered by further `switch` operations.
+
 ## Applying Changes
 
 The `--apply` option will automatically take action (rebooting) if the system has changed after switching to the new image. Currently, this option always reboots the system. In the future, this command may detect cases where no kernel changes are queued and perform a userspace-only restart instead.
