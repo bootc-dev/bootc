@@ -34,6 +34,8 @@ use serde::{Deserialize, Serialize};
 use tempfile::tempdir_in;
 
 #[cfg(feature = "composefs-backend")]
+use crate::bootc_composefs::delete::delete_composefs_deployment;
+#[cfg(feature = "composefs-backend")]
 use crate::bootc_composefs::{
     finalize::{composefs_backend_finalize, get_etc_diff},
     rollback::composefs_rollback,
@@ -672,6 +674,12 @@ pub(crate) enum Opt {
     #[cfg(feature = "composefs-backend")]
     /// Diff current /etc configuration versus default
     ConfigDiff,
+    #[cfg(feature = "composefs-backend")]
+    DeleteDeployment {
+        depl_id: String,
+        #[clap(long, default_value_t)]
+        delete: bool,
+    },
 }
 
 /// Ensure we've entered a mount namespace, so that we can remount
@@ -1609,6 +1617,11 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
 
         #[cfg(feature = "composefs-backend")]
         Opt::ConfigDiff => get_etc_diff().await,
+
+        #[cfg(feature = "composefs-backend")]
+        Opt::DeleteDeployment { depl_id, delete } => {
+            delete_composefs_deployment(&depl_id, delete).await
+        }
     }
 }
 
