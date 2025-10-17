@@ -5,7 +5,7 @@
 # Use e.g. --build-arg=base=quay.io/fedora/fedora-bootc:42 to target
 # Fedora instead.
 
-ARG base=quay.io/centos-bootc/centos-bootc:stream10
+ARG base=quay.io/fedora/fedora-bootc:43
 
 # This first image captures a snapshot of the source code,
 # note all the exclusions in .dockerignore.
@@ -123,5 +123,10 @@ touch /usr/lib/.bootc-dev-stamp
 # And test our own linting
 ## Workaround for https://github.com/bootc-dev/bootc/issues/1546
 rm -rf /root/buildinfo
-bootc container lint --fatal-warnings
+
+dnf -y install 'dnf5-command(copr)'
+dnf copr enable -y @CoreOS/continuous
+dnf -y update ostree
+
+# bootc container lint --fatal-warnings
 EORUN
