@@ -7,6 +7,8 @@ use fn_error_context::context;
 
 use bootc_blockdev::{Partition, PartitionTable};
 use bootc_mount as mount;
+
+#[cfg(any(feature = "composefs-backend", feature = "install-to-disk"))]
 use bootc_mount::tempmount::TempMount;
 
 use crate::utils;

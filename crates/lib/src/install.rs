@@ -1322,7 +1322,10 @@ async fn prepare_install(
     } else {
         false
     };
+
     tracing::debug!("Composefs required: {composefs_required}");
+
+    #[cfg(feature = "composefs-backend")]
     if composefs_required {
         composefs_options.composefs_backend = true;
     }
