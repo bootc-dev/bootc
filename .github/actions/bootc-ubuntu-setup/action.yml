@@ -8,6 +8,32 @@ inputs:
 runs:
   using: 'composite'
   steps:
+    # The default runners have TONS of crud on them...
+    - name: Free up disk space on runner
+      shell: bash
+      run: |
+        set -xeuo pipefail
+        sudo df -h
+        unwanted_pkgs=('^aspnetcore-.*' '^dotnet-.*' '^llvm-.*' 'php.*' '^mongodb-.*' '^mysql-.*'
+                       azure-cli google-chrome-stable firefox mono-devel)
+        unwanted_dirs=(/usr/share/dotnet /opt/ghc /usr/local/lib/android /opt/hostedtoolcache/CodeQL)
+        # Start background removal operations as systemd units; if this causes
+        # races in the future around disk space we can look at waiting for cleanup
+        # before starting further jobs, but right now we spent a lot of time waiting
+        # on the network and scripts and such below, giving these plenty of time to run.
+        n=0
+        runcleanup() {
+          sudo systemd-run -r -u action-cleanup-${n} -- "$@"
+          n=$(($n + 1))
+        }
+        runcleanup docker image prune --all --force
+        for x in ${unwanted_dirs[@]}; do
+          runcleanup rm -rf "$x"
+        done
+        # Apt removals in foreground, as we can't parallelize these
+        for x in ${unwanted_pkgs[@]}; do
+          /bin/time -f '%E %C' sudo apt-get remove -y $x
+        done
     # We really want support for heredocs
     - name: Update podman and install just
       shell: bash
@@ -18,24 +44,9 @@ runs:
         test "${IDV}" = "ubuntu-24.04"
         # plucky is the next release
         echo 'deb http://azure.archive.ubuntu.com/ubuntu plucky universe main' | sudo tee /etc/apt/sources.list.d/plucky.list
-        sudo apt update
+        /bin/time -f '%E %C' sudo apt update
         # skopeo is currently older in plucky for some reason hence --allow-downgrades
-        sudo apt install -y --allow-downgrades crun/plucky podman/plucky skopeo/plucky just
-    # The default runners have TONS of crud on them...
-    - name: Free up disk space on runner
-      shell: bash
-      run: |
-        set -xeuo pipefail
-        sudo df -h
-        unwanted=('^aspnetcore-.*' '^dotnet-.*' '^llvm-.*' 'php.*' '^mongodb-.*' '^mysql-.*'
-                  azure-cli google-chrome-stable firefox mono-devel)
-        for x in ${unwanted[@]}; do
-          sudo apt-get remove -y $x
-        done
-        # Start other removal operations in parallel
-        sudo docker image prune --all --force
-        sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android
-        sudo df -h
+        /bin/time -f '%E %C' sudo apt install -y --allow-downgrades crun/plucky podman/plucky skopeo/plucky just
     # This is the default on e.g. Fedora derivatives, but not Debian
     - name: Enable unprivileged /dev/kvm access
       shell: bash
@@ -67,14 +78,14 @@ runs:
       run: |
         set -xeuo pipefail
         export BCVK_VERSION=0.5.3
-        sudo apt install -y libkrb5-dev pkg-config libvirt-dev genisoimage qemu-utils qemu-kvm virtiofsd libvirt-daemon-system
+        /bin/time -f '%E %C' sudo apt install -y libkrb5-dev pkg-config libvirt-dev genisoimage qemu-utils qemu-kvm virtiofsd libvirt-daemon-system
         # Something in the stack is overriding this, but we want session right now for bcvk
         echo LIBVIRT_DEFAULT_URI=qemu:///session >> $GITHUB_ENV
         td=$(mktemp -d)
         cd $td
         # Install bcvk
         target=bcvk-$(arch)-unknown-linux-gnu
-        curl -LO https://github.com/bootc-dev/bcvk/releases/download/v${BCVK_VERSION}/${target}.tar.gz
+        /bin/time -f '%E %C' curl -LO https://github.com/bootc-dev/bcvk/releases/download/v${BCVK_VERSION}/${target}.tar.gz
         tar xzf ${target}.tar.gz
         sudo install -T ${target} /usr/bin/bcvk
         cd -
@@ -82,3 +93,9 @@ runs:
 
         # Also bump the default fd limit as a workaround for https://github.com/bootc-dev/bcvk/issues/65
         sudo sed -i -e 's,^\* hard nofile 65536,* hard nofile 524288,' /etc/security/limits.conf
+    - name: Cleanup status
+      shell: bash
+      run: |
+        set -xeuo pipefail
+        systemctl list-units 'action-cleanup*'
+        df -h
