@@ -209,6 +209,9 @@ pub struct BootEntryComposefs {
     pub boot_type: BootType,
     /// Whether we boot using systemd or grub
     pub bootloader: Bootloader,
+    /// The sha256sum of vmlinuz + initrd
+    /// Only `Some` for Type1 boot entries
+    pub boot_digest: Option<String>,
 }
 
 /// A bootable entry
@@ -269,6 +272,13 @@ pub struct HostStatus {
     pub ty: Option<HostType>,
 }
 
+#[cfg(feature = "composefs-backend")]
+pub(crate) struct DeploymentEntry<'a> {
+    pub(crate) ty: Option<Slot>,
+    pub(crate) deployment: &'a BootEntryComposefs,
+    pub(crate) pinned: bool,
+}
+
 impl Host {
     /// Create a new host
     pub fn new(spec: HostSpec) -> Self {
@@ -312,11 +322,49 @@ impl Host {
             .booted
             .as_ref()
             .ok_or(anyhow::anyhow!("Could not find booted deployment"))?
-            .composefs
-            .as_ref()
-            .ok_or(anyhow::anyhow!("Could not find booted image"))?;
+            .require_composefs()?;
 
         Ok(cfs)
+    }
+
+    /// Returns all composefs deployments in a list
+    #[cfg(feature = "composefs-backend")]
+    #[fn_error_context::context("Getting all composefs deployments")]
+    pub(crate) fn all_composefs_deployments<'a>(&'a self) -> Result<Vec<DeploymentEntry<'a>>> {
+        let mut all_deps = vec![];
+
+        let booted = self.require_composefs_booted()?;
+        all_deps.push(DeploymentEntry {
+            ty: Some(Slot::Booted),
+            deployment: booted,
+            pinned: false,
+        });
+
+        if let Some(staged) = &self.status.staged {
+            all_deps.push(DeploymentEntry {
+                ty: Some(Slot::Staged),
+                deployment: staged.require_composefs()?,
+                pinned: false,
+            });
+        }
+
+        if let Some(rollback) = &self.status.rollback {
+            all_deps.push(DeploymentEntry {
+                ty: Some(Slot::Rollback),
+                deployment: rollback.require_composefs()?,
+                pinned: false,
+            });
+        }
+
+        for pinned in &self.status.other_deployments {
+            all_deps.push(DeploymentEntry {
+                ty: None,
+                deployment: pinned.require_composefs()?,
+                pinned: true,
+            });
+        }
+
+        Ok(all_deps)
     }
 }
 
