@@ -1,22 +1,30 @@
+use std::fmt::Write;
 use std::path::PathBuf;
-use std::{fmt::Write, fs::create_dir_all};
 
 use anyhow::{anyhow, Context, Result};
+use cap_std_ext::cap_std::ambient_authority;
 use cap_std_ext::cap_std::fs::Dir;
 use cap_std_ext::{cap_std, dirext::CapStdExtDirExt};
 use fn_error_context::context;
 use rustix::fs::{fsync, renameat_with, AtFlags, RenameFlags};
 
-use crate::bootc_composefs::boot::BootType;
+use crate::bootc_composefs::boot::{
+    get_esp_partition, get_sysroot_parent_dev, mount_esp, type1_entry_conf_file_name, BootType,
+};
 use crate::bootc_composefs::status::{composefs_deployment_status, get_sorted_type1_boot_entries};
+use crate::composefs_consts::TYPE1_ENT_PATH_STAGED;
+use crate::spec::Bootloader;
 use crate::{
-    bootc_composefs::{boot::get_efi_uuid_source, status::get_sorted_uki_boot_entries},
+    bootc_composefs::{boot::get_efi_uuid_source, status::get_sorted_grub_uki_boot_entries},
     composefs_consts::{
         BOOT_LOADER_ENTRIES, STAGED_BOOT_LOADER_ENTRIES, USER_CFG, USER_CFG_STAGED,
     },
     spec::BootOrder,
 };
 
+/// Atomically rename exchange grub user.cfg with the staged version
+/// Performed as the last step in rollback/update/switch operation
+#[context("Atomically exchanging user.cfg")]
 pub(crate) fn rename_exchange_user_cfg(entries_dir: &Dir) -> Result<()> {
     tracing::debug!("Atomically exchanging {USER_CFG_STAGED} and {USER_CFG}");
     renameat_with(
@@ -34,13 +42,19 @@ pub(crate) fn rename_exchange_user_cfg(entries_dir: &Dir) -> Result<()> {
     tracing::debug!("Syncing to disk");
     let entries_dir = entries_dir
         .reopen_as_ownedfd()
-        .context(format!("Reopening entries dir as owned fd"))?;
+        .context("Reopening entries dir as owned fd")?;
 
-    fsync(entries_dir).context(format!("fsync entries dir"))?;
+    fsync(entries_dir).context("fsync entries dir")?;
 
     Ok(())
 }
 
+/// Atomically rename exchange "entries" <-> "entries.staged"
+/// Performed as the last step in rollback/update/switch operation
+///
+/// `entries_dir` is the directory that contains the BLS entries directories
+/// Ex: entries_dir = ESP/loader or boot/loader
+#[context("Atomically exchanging BLS entries")]
 pub(crate) fn rename_exchange_bls_entries(entries_dir: &Dir) -> Result<()> {
     tracing::debug!("Atomically exchanging {STAGED_BOOT_LOADER_ENTRIES} and {BOOT_LOADER_ENTRIES}");
     renameat_with(
@@ -60,23 +74,22 @@ pub(crate) fn rename_exchange_bls_entries(entries_dir: &Dir) -> Result<()> {
     tracing::debug!("Syncing to disk");
     let entries_dir = entries_dir
         .reopen_as_ownedfd()
-        .with_context(|| format!("Reopening /sysroot/boot/loader as owned fd"))?;
+        .context("Reopening as owned fd")?;
 
     fsync(entries_dir).context("fsync")?;
 
     Ok(())
 }
 
-#[context("Rolling back UKI")]
-pub(crate) fn rollback_composefs_uki() -> Result<()> {
+#[context("Rolling back Grub UKI")]
+fn rollback_grub_uki_entries() -> Result<()> {
     let user_cfg_path = PathBuf::from("/sysroot/boot/grub2");
 
     let mut str = String::new();
     let boot_dir =
-        cap_std::fs::Dir::open_ambient_dir("/sysroot/boot", cap_std::ambient_authority())
-            .context("Opening boot dir")?;
-    let mut menuentries =
-        get_sorted_uki_boot_entries(&boot_dir, &mut str).context("Getting UKI boot entries")?;
+        Dir::open_ambient_dir("/sysroot/boot", ambient_authority()).context("Opening boot dir")?;
+    let mut menuentries = get_sorted_grub_uki_boot_entries(&boot_dir, &mut str)
+        .context("Getting UKI boot entries")?;
 
     // TODO(Johan-Liebert): Currently assuming there are only two deployments
     assert!(menuentries.len() == 2);
@@ -101,12 +114,14 @@ pub(crate) fn rollback_composefs_uki() -> Result<()> {
     rename_exchange_user_cfg(&entries_dir)
 }
 
-#[context("Rolling back BLS")]
-pub(crate) fn rollback_composefs_bls() -> Result<()> {
-    let boot_dir =
-        cap_std::fs::Dir::open_ambient_dir("/sysroot/boot", cap_std::ambient_authority())
-            .context("Opening boot dir")?;
-
+/// Performs rollback for
+/// - Grub Type1 boot entries
+/// - Systemd Typ1 boot entries
+/// - Systemd UKI (Type2) boot entries [since we use BLS entries for systemd boot]
+///
+/// The bootloader parameter is only for logging purposes
+#[context("Rolling back {bootloader} entries")]
+fn rollback_composefs_entries(boot_dir: &Dir, bootloader: Bootloader) -> Result<()> {
     // Sort in descending order as that's the order they're shown on the boot screen
     // After this:
     // all_configs[0] -> booted depl
@@ -122,34 +137,33 @@ pub(crate) fn rollback_composefs_bls() -> Result<()> {
     assert!(all_configs.len() == 2);
 
     // Write these
-    let dir_path = PathBuf::from(format!("/sysroot/boot/loader/{STAGED_BOOT_LOADER_ENTRIES}",));
-    create_dir_all(&dir_path).with_context(|| format!("Failed to create dir: {dir_path:?}"))?;
+    boot_dir
+        .create_dir_all(TYPE1_ENT_PATH_STAGED)
+        .context("Creating staged dir")?;
 
-    let rollback_entries_dir =
-        cap_std::fs::Dir::open_ambient_dir(&dir_path, cap_std::ambient_authority())
-            .with_context(|| format!("Opening {dir_path:?}"))?;
+    let rollback_entries_dir = boot_dir
+        .open_dir(TYPE1_ENT_PATH_STAGED)
+        .context("Opening staged entries dir")?;
 
     // Write the BLS configs in there
     for cfg in all_configs {
         // SAFETY: We set sort_key above
-        let file_name = format!("bootc-composefs-{}.conf", cfg.sort_key.as_ref().unwrap());
+        let file_name = type1_entry_conf_file_name(cfg.sort_key.as_ref().unwrap());
 
         rollback_entries_dir
             .atomic_write(&file_name, cfg.to_string())
             .with_context(|| format!("Writing to {file_name}"))?;
     }
 
+    let rollback_entries_dir = rollback_entries_dir
+        .reopen_as_ownedfd()
+        .context("Reopening as owned fd")?;
+
     // Should we sync after every write?
-    fsync(
-        rollback_entries_dir
-            .reopen_as_ownedfd()
-            .with_context(|| format!("Reopening {dir_path:?} as owned fd"))?,
-    )
-    .with_context(|| format!("fsync {dir_path:?}"))?;
+    fsync(rollback_entries_dir).context("fsync")?;
 
     // Atomically exchange "entries" <-> "entries.rollback"
-    let dir = Dir::open_ambient_dir("/sysroot/boot/loader", cap_std::ambient_authority())
-        .context("Opening loader dir")?;
+    let dir = boot_dir.open_dir("loader").context("Opening loader dir")?;
 
     rename_exchange_bls_entries(&dir)
 }
@@ -180,14 +194,33 @@ pub(crate) async fn composefs_rollback() -> Result<()> {
     // TODO: Handle staged deployment
     // Ostree will drop any staged deployment on rollback but will keep it if it is the first item
     // in the new deployment list
-    let Some(rollback_composefs_entry) = &rollback_status.composefs else {
+    let Some(rollback_entry) = &rollback_status.composefs else {
         anyhow::bail!("Rollback deployment not a composefs deployment")
     };
 
-    match rollback_composefs_entry.boot_type {
-        BootType::Bls => rollback_composefs_bls(),
-        BootType::Uki => rollback_composefs_uki(),
-    }?;
+    match &rollback_entry.bootloader {
+        Bootloader::Grub => match rollback_entry.boot_type {
+            BootType::Bls => {
+                let boot_dir = Dir::open_ambient_dir("/sysroot/boot", ambient_authority())
+                    .context("Opening boot dir")?;
+
+                rollback_composefs_entries(&boot_dir, rollback_entry.bootloader.clone())?;
+            }
+
+            BootType::Uki => {
+                rollback_grub_uki_entries()?;
+            }
+        },
+
+        Bootloader::Systemd => {
+            let parent = get_sysroot_parent_dev()?;
+            let (esp_part, ..) = get_esp_partition(&parent)?;
+            let esp_mount = mount_esp(&esp_part)?;
+
+            // We use BLS entries for systemd UKI as well
+            rollback_composefs_entries(&esp_mount.fd, rollback_entry.bootloader.clone())?;
+        }
+    }
 
     if reverting {
         println!("Next boot: current deployment");

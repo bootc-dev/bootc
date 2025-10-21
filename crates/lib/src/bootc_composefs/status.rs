@@ -79,7 +79,7 @@ pub(crate) fn composefs_booted() -> Result<Option<&'static ComposefsCmdline>> {
 }
 
 // Need str to store lifetime
-pub(crate) fn get_sorted_uki_boot_entries<'a>(
+pub(crate) fn get_sorted_grub_uki_boot_entries<'a>(
     boot_dir: &Dir,
     str: &'a mut String,
 ) -> Result<Vec<MenuEntry<'a>>> {
@@ -381,7 +381,7 @@ pub(crate) async fn composefs_deployment_status() -> Result<Host> {
             BootType::Uki => {
                 let mut s = String::new();
 
-                !get_sorted_uki_boot_entries(&boot_dir, &mut s)?
+                !get_sorted_grub_uki_boot_entries(&boot_dir, &mut s)?
                     .first()
                     .ok_or(anyhow::anyhow!("First boot entry not found"))?
                     .body
@@ -527,7 +527,7 @@ mod tests {
         bootdir.atomic_write(format!("grub2/{USER_CFG}"), user_cfg)?;
 
         let mut s = String::new();
-        let result = get_sorted_uki_boot_entries(&bootdir, &mut s)?;
+        let result = get_sorted_grub_uki_boot_entries(&bootdir, &mut s)?;
 
         let expected = vec![
             MenuEntry {

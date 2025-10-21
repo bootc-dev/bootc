@@ -29,7 +29,7 @@ use rustix::{mount::MountFlags, path::Arg};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::bootc_composefs::status::get_sorted_uki_boot_entries;
+use crate::bootc_composefs::status::get_sorted_grub_uki_boot_entries;
 use crate::composefs_consts::{TYPE1_ENT_PATH, TYPE1_ENT_PATH_STAGED};
 use crate::parsers::bls_config::{BLSConfig, BLSConfigType};
 use crate::parsers::grub_menuconfig::MenuEntry;
@@ -705,7 +705,7 @@ fn write_grub_uki_menuentry(
         let mut str_buf = String::new();
         let boot_dir =
             Dir::open_ambient_dir(boot_dir, ambient_authority()).context("Opening boot dir")?;
-        let entries = get_sorted_uki_boot_entries(&boot_dir, &mut str_buf)?;
+        let entries = get_sorted_grub_uki_boot_entries(&boot_dir, &mut str_buf)?;
 
         // Write out only the currently booted entry, which should be the very first one
         // Even if we have booted into the second menuentry "boot entry", the default will be the
