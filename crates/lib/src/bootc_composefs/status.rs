@@ -7,6 +7,7 @@ use fn_error_context::context;
 use crate::{
     bootc_composefs::boot::{get_esp_partition, get_sysroot_parent_dev, mount_esp, BootType},
     composefs_consts::{COMPOSEFS_CMDLINE, ORIGIN_KEY_BOOT_DIGEST, TYPE1_ENT_PATH, USER_CFG},
+    install::EFI_LOADER_INFO,
     parsers::{
         bls_config::{parse_bls_config, BLSConfig, BLSConfigType},
         grub_menuconfig::{parse_grub_menuentry_file, MenuEntry},
@@ -152,9 +153,7 @@ async fn get_container_manifest_and_config(
 }
 
 #[context("Getting bootloader")]
-fn get_bootloader() -> Result<Bootloader> {
-    const EFI_LOADER_INFO: &str = "LoaderInfo-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f";
-
+pub(crate) fn get_bootloader() -> Result<Bootloader> {
     match read_uefi_var(EFI_LOADER_INFO) {
         Ok(loader) => {
             if loader.to_lowercase().contains("systemd-boot") {

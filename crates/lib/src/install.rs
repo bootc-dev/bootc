@@ -88,6 +88,9 @@ const SELINUXFS: &str = "/sys/fs/selinux";
 pub(crate) const EFIVARFS: &str = "/sys/firmware/efi/efivars";
 pub(crate) const ARCH_USES_EFI: bool = cfg!(any(target_arch = "x86_64", target_arch = "aarch64"));
 
+#[cfg(feature = "composefs-backend")]
+pub(crate) const EFI_LOADER_INFO: &str = "LoaderInfo-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f";
+
 const DEFAULT_REPO_CONFIG: &[(&str, &str)] = &[
     // Default to avoiding grub2-mkconfig etc.
     ("sysroot.bootloader", "none"),

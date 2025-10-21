@@ -5,7 +5,7 @@ use cap_std_ext::{
     cap_std::{ambient_authority, fs::Dir},
     dirext::CapStdExtDirExt,
 };
-use composefs::fsverity::{FsVerityHashValue, Sha512HashValue};
+use composefs::fsverity::Sha512HashValue;
 use composefs_boot::bootloader::{EFI_ADDON_DIR_EXT, EFI_EXT};
 
 use crate::{
@@ -14,6 +14,7 @@ use crate::{
             find_vmlinuz_initrd_duplicates, get_efi_uuid_source, get_esp_partition,
             get_sysroot_parent_dev, mount_esp, BootType, SYSTEMD_UKI_DIR,
         },
+        gc::composefs_gc,
         repo::open_composefs_repo,
         rollback::{composefs_rollback, rename_exchange_user_cfg},
         status::{composefs_deployment_status, get_sorted_grub_uki_boot_entries},
@@ -23,21 +24,17 @@ use crate::{
         TYPE1_ENT_PATH, TYPE1_ENT_PATH_STAGED, USER_CFG_STAGED,
     },
     parsers::bls_config::{parse_bls_config, BLSConfigType},
-    spec::{Bootloader, DeploymentEntry},
+    spec::{BootEntry, Bootloader, DeploymentEntry},
     status::Slot,
 };
 
-struct ObjectRefs {
-    other_depl: HashSet<Sha512HashValue>,
-    depl_to_del: HashSet<Sha512HashValue>,
+pub(crate) struct ObjectRefs {
+    pub(crate) other_depl: HashSet<Sha512HashValue>,
+    pub(crate) depl_to_del: HashSet<Sha512HashValue>,
 }
 
 #[fn_error_context::context("Deleting Type1 Entry {}", depl.deployment.verity)]
-fn delete_type1_entries(
-    depl: &DeploymentEntry,
-    boot_dir: &Dir,
-    deleting_staged: bool,
-) -> Result<()> {
+fn delete_type1_entry(depl: &DeploymentEntry, boot_dir: &Dir, deleting_staged: bool) -> Result<()> {
     let entries_dir_path = if deleting_staged {
         TYPE1_ENT_PATH_STAGED
     } else {
@@ -81,8 +78,8 @@ fn delete_type1_entries(
                 }
 
                 // Boot dir in case of EFI will be the ESP
-                delete_uki(&depl.deployment.verity, boot_dir)?;
                 entry.remove_file().context("Removing .conf file")?;
+                delete_uki(&depl.deployment.verity, boot_dir)?;
 
                 break;
             }
@@ -96,11 +93,11 @@ fn delete_type1_entries(
                     continue;
                 }
 
+                entry.remove_file().context("Removing .conf file")?;
+
                 if should_del_kernel {
                     delete_kernel_initrd(&bls_config.cfg_type, boot_dir)?;
                 }
-
-                entry.remove_file().context("Removing .conf file")?;
 
                 break;
             }
@@ -156,6 +153,7 @@ fn delete_kernel_initrd(bls_config: &BLSConfigType, boot_dir: &Dir) -> Result<()
 /// Deletes the UKI `uki_id` and any addons specific to it
 #[fn_error_context::context("Deleting UKI and UKI addons {uki_id}")]
 fn delete_uki(uki_id: &str, esp_mnt: &Dir) -> Result<()> {
+    // TODO: We don't delete global addons here
     let ukis = esp_mnt.open_dir(SYSTEMD_UKI_DIR)?;
 
     for entry in ukis.entries_utf8()? {
@@ -209,6 +207,7 @@ fn remove_grub_menucfg_entry(id: &str, boot_dir: &Dir, deleting_staged: bool) ->
     rename_exchange_user_cfg(&grub_dir)
 }
 
+#[fn_error_context::context("Deleting boot entries for deployment {}", deployment.deployment.verity)]
 fn delete_depl_boot_entries(deployment: &DeploymentEntry, deleting_staged: bool) -> Result<()> {
     match deployment.deployment.bootloader {
         Bootloader::Grub => {
@@ -216,20 +215,20 @@ fn delete_depl_boot_entries(deployment: &DeploymentEntry, deleting_staged: bool)
                 .context("Opening boot dir")?;
 
             match deployment.deployment.boot_type {
-                BootType::Bls => delete_type1_entries(deployment, &boot_dir, deleting_staged),
+                BootType::Bls => delete_type1_entry(deployment, &boot_dir, deleting_staged),
 
                 BootType::Uki => {
                     let device = get_sysroot_parent_dev()?;
                     let (esp_part, ..) = get_esp_partition(&device)?;
                     let esp_mount = mount_esp(&esp_part)?;
 
-                    delete_uki(&deployment.deployment.verity, &esp_mount.fd)?;
-
                     remove_grub_menucfg_entry(
                         &deployment.deployment.verity,
                         &boot_dir,
                         deleting_staged,
-                    )
+                    )?;
+
+                    delete_uki(&deployment.deployment.verity, &esp_mount.fd)
                 }
             }
         }
@@ -241,44 +240,12 @@ fn delete_depl_boot_entries(deployment: &DeploymentEntry, deleting_staged: bool)
             let esp_mount = mount_esp(&esp_part)?;
 
             // For Systemd UKI as well, we use .conf files
-            delete_type1_entries(deployment, &esp_mount.fd, deleting_staged)
+            delete_type1_entry(deployment, &esp_mount.fd, deleting_staged)
         }
     }
 }
 
-pub(crate) async fn delete_composefs_deployment(deployment_id: &str, delete: bool) -> Result<()> {
-    let host = composefs_deployment_status().await?;
-
-    let booted = host.require_composefs_booted()?;
-
-    let all_depls = host.all_composefs_deployments()?;
-
-    let depl_to_del = all_depls
-        .iter()
-        .find(|d| d.deployment.verity == deployment_id);
-
-    let Some(depl_to_del) = depl_to_del else {
-        anyhow::bail!("Deployment {deployment_id} not found");
-    };
-
-    let deleting_staged = host
-        .status
-        .staged
-        .as_ref()
-        .and_then(|s| s.composefs.as_ref())
-        .map_or(false, |cfs| cfs.verity == deployment_id);
-
-    // Get all objects referenced by all images
-    // Delete objects that are only referenced by the deployment to be deleted
-
-    // Unqueue rollback. This makes it easier to delete boot entries later on
-    if matches!(depl_to_del.ty, Some(Slot::Rollback)) && host.status.rollback_queued {
-        composefs_rollback().await?;
-    }
-
-    let sysroot =
-        Dir::open_ambient_dir("/sysroot", ambient_authority()).context("Opening sysroot")?;
-
+pub(crate) fn get_image_objects(sysroot: &Dir, deployment_id: Option<&str>) -> Result<ObjectRefs> {
     let repo = open_composefs_repo(&sysroot)?;
 
     let images_dir = sysroot
@@ -303,19 +270,73 @@ pub(crate) async fn delete_composefs_deployment(deployment_id: &str, delete: boo
             .objects_for_image(&img_name)
             .with_context(|| format!("Getting objects for image {img_name}"))?;
 
-        if img_name == deployment_id {
-            object_refs.depl_to_del.extend(objects);
+        if let Some(deployment_id) = deployment_id {
+            if deployment_id == img_name {
+                object_refs.depl_to_del.extend(objects);
+            }
         } else {
             object_refs.other_depl.extend(objects);
         }
     }
 
-    let diff: Vec<&Sha512HashValue> = object_refs
-        .depl_to_del
-        .difference(&object_refs.other_depl)
-        .collect();
+    Ok(object_refs)
+}
 
-    tracing::debug!("diff: {:#?}", diff);
+pub(crate) fn delete_image(sysroot: &Dir, deployment_id: &str) -> Result<()> {
+    let img_path = Path::new("composefs").join("images").join(deployment_id);
+
+    sysroot
+        .remove_file(&img_path)
+        .context("Deleting EROFS image")
+}
+
+pub(crate) fn delete_state_dir(sysroot: &Dir, deployment_id: &str) -> Result<()> {
+    let state_dir = Path::new(STATE_DIR_RELATIVE).join(deployment_id);
+
+    sysroot
+        .remove_dir_all(&state_dir)
+        .with_context(|| format!("Removing dir {state_dir:?}"))
+}
+
+pub(crate) fn delete_staged(staged: &Option<BootEntry>) -> Result<()> {
+    if staged.is_none() {
+        tracing::debug!("No staged deployment");
+        return Ok(());
+    };
+
+    let file = Path::new(COMPOSEFS_TRANSIENT_STATE_DIR).join(COMPOSEFS_STAGED_DEPLOYMENT_FNAME);
+    tracing::debug!("Deleting staged file {file:?}");
+    std::fs::remove_file(file).context("Removing staged file")?;
+
+    Ok(())
+}
+
+pub(crate) async fn delete_composefs_deployment(deployment_id: &str, delete: bool) -> Result<()> {
+    let host = composefs_deployment_status().await?;
+
+    let booted = host.require_composefs_booted()?;
+
+    let all_depls = host.all_composefs_deployments()?;
+
+    let depl_to_del = all_depls
+        .iter()
+        .find(|d| d.deployment.verity == deployment_id);
+
+    let Some(depl_to_del) = depl_to_del else {
+        anyhow::bail!("Deployment {deployment_id} not found");
+    };
+
+    let deleting_staged = host
+        .status
+        .staged
+        .as_ref()
+        .and_then(|s| s.composefs.as_ref())
+        .map_or(false, |cfs| cfs.verity == deployment_id);
+
+    // Unqueue rollback. This makes it easier to delete boot entries later on
+    if matches!(depl_to_del.ty, Some(Slot::Rollback)) && host.status.rollback_queued {
+        composefs_rollback().await?;
+    }
 
     // For debugging, but maybe useful elsewhere?
     if !delete {
@@ -338,32 +359,7 @@ pub(crate) async fn delete_composefs_deployment(deployment_id: &str, delete: boo
 
     delete_depl_boot_entries(&depl_to_del, deleting_staged)?;
 
-    // Delete the image
-    let img_path = Path::new("composefs").join("images").join(deployment_id);
-    sysroot
-        .remove_file(&img_path)
-        .context("Deleting EROFS image")?;
-
-    if deleting_staged {
-        let file = Path::new(COMPOSEFS_TRANSIENT_STATE_DIR).join(COMPOSEFS_STAGED_DEPLOYMENT_FNAME);
-        tracing::debug!("Deleting staged file {file:?}");
-        std::fs::remove_file(file).context("Removing staged file")?;
-    }
-
-    let state_dir = Path::new(STATE_DIR_RELATIVE).join(deployment_id);
-    sysroot
-        .remove_dir_all(&state_dir)
-        .with_context(|| format!("Removing dir {state_dir:?}"))?;
-
-    for sha in diff {
-        let object_path = Path::new("composefs")
-            .join("objects")
-            .join(sha.to_object_pathname());
-
-        sysroot
-            .remove_file(&object_path)
-            .with_context(|| format!("Removing {object_path:?}"))?;
-    }
+    composefs_gc().await?;
 
     Ok(())
 }

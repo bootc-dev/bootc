@@ -4,6 +4,9 @@
 
 use std::fmt::Display;
 
+use anyhow::Result;
+use camino::Utf8PathBuf;
+use composefs_boot::bootloader::EFI_EXT;
 use nom::{
     bytes::complete::{escaped, tag, take_until},
     character::complete::{multispace0, multispace1, none_of},
@@ -98,6 +101,19 @@ impl<'a> MenuEntry<'a> {
                 extra: vec![],
             },
         }
+    }
+
+    pub(crate) fn get_verity(&self) -> Result<String> {
+        let to_path = Utf8PathBuf::from(self.body.chainloader.clone());
+
+        Ok(to_path
+            .components()
+            .last()
+            .ok_or(anyhow::anyhow!("Empty efi field"))?
+            .to_string()
+            .strip_suffix(EFI_EXT)
+            .ok_or(anyhow::anyhow!("efi doesn't end with .efi"))?
+            .to_string())
     }
 }
 

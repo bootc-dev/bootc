@@ -5,11 +5,15 @@
 #![allow(dead_code)]
 
 use anyhow::{anyhow, Result};
+use bootc_kernel_cmdline::utf8::Cmdline;
 use camino::Utf8PathBuf;
+use composefs_boot::bootloader::EFI_EXT;
 use core::fmt;
 use std::collections::HashMap;
 use std::fmt::Display;
 use uapi_version::Version;
+
+use crate::composefs_consts::COMPOSEFS_CMDLINE;
 
 #[derive(Debug, PartialEq, PartialOrd, Eq, Default)]
 pub enum BLSConfigType {
@@ -165,6 +169,39 @@ impl BLSConfig {
     pub(crate) fn with_extra(&mut self, new_val: HashMap<String, String>) -> &mut Self {
         self.extra = new_val;
         self
+    }
+
+    pub(crate) fn get_verity(&self) -> Result<String> {
+        match &self.cfg_type {
+            BLSConfigType::EFI { efi } => Ok(efi
+                .components()
+                .last()
+                .ok_or(anyhow::anyhow!("Empty efi field"))?
+                .to_string()
+                .strip_suffix(EFI_EXT)
+                .ok_or(anyhow::anyhow!("efi doesn't end with .efi"))?
+                .to_string()),
+
+            BLSConfigType::NonEFI { options, .. } => {
+                let options = options.as_ref().ok_or(anyhow::anyhow!("No options"))?;
+
+                let cmdline = Cmdline::from(&options);
+
+                let kv = cmdline
+                    .find(COMPOSEFS_CMDLINE)
+                    .ok_or(anyhow::anyhow!("No composefs= param"))?;
+
+                let value = kv
+                    .value()
+                    .ok_or(anyhow::anyhow!("Empty composefs= param"))?;
+
+                let value = value.to_owned();
+
+                Ok(value)
+            }
+
+            BLSConfigType::Unknown => anyhow::bail!("Unknown config type"),
+        }
     }
 }
 
