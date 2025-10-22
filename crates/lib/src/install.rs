@@ -172,7 +172,7 @@ pub(crate) struct InstallTargetOpts {
     /// When enabled, this uses bootc's container storage (/usr/lib/bootc/storage) to pull
     /// the image first, then imports it from there. This is the same approach used for
     /// logically bound images.
-    #[clap(long)]
+    #[clap(long = "experimental-unified-storage")]
     #[serde(default)]
     pub(crate) unified_storage_exp: bool,
 }

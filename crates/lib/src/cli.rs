@@ -416,6 +416,11 @@ pub(crate) enum ImageOpts {
         /// this will make the image accessible via e.g. `podman run localhost/bootc` and for builds.
         target: Option<String>,
     },
+    /// Re-pull the currently booted image into the bootc-owned container storage.
+    ///
+    /// This onboards the system to the unified storage path so that future
+    /// upgrade/switch operations can read from the bootc storage directly.
+    SetUnified,
     /// Copy a container image from the default `containers-storage:` to the bootc-owned container storage.
     PullFromDefaultStorage {
         /// The image to pull
@@ -1366,6 +1371,9 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
             } => crate::image::list_entrypoint(list_type, list_format).await,
             ImageOpts::CopyToStorage { source, target } => {
                 crate::image::push_entrypoint(source.as_deref(), target.as_deref()).await
+            }
+            ImageOpts::SetUnified => {
+                crate::image::set_unified_entrypoint().await
             }
             ImageOpts::PullFromDefaultStorage { image } => {
                 let sysroot = get_storage().await?;
