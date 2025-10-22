@@ -481,7 +481,13 @@ pub(crate) async fn pull_unified(
             Ok(existing)
         }
         PreparedPullResult::Ready(prepared_image_meta) => {
-            pull_from_prepared(imgref, quiet, prog, *prepared_image_meta).await
+            // To avoid duplicate success logs, pass a containers-storage imgref to the importer
+            let cs_imgref = ImageReference {
+                transport: "containers-storage".to_string(),
+                image: imgref.image.clone(),
+                signature: imgref.signature.clone(),
+            };
+            pull_from_prepared(&cs_imgref, quiet, prog, *prepared_image_meta).await
         }
     }
 }
@@ -597,6 +603,9 @@ pub(crate) async fn pull(
         }
     }
 }
+
+/// Pull selecting unified vs standard path based on persistent storage config.
+// pull_auto was reverted per request; keep explicit callers branching.
 
 pub(crate) async fn wipe_ostree(sysroot: Sysroot) -> Result<()> {
     tokio::task::spawn_blocking(move || {

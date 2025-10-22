@@ -207,7 +207,11 @@ pub(crate) async fn set_unified_entrypoint() -> Result<()> {
     // Pull the image from its original source into bootc storage using LBI machinery
     let imgstore = sysroot.get_ensure_imgstore()?;
     let img_string = format!("{:#}", imgref);
-    println!(
+    const SET_UNIFIED_JOURNAL_ID: &str = "1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d";
+    tracing::info!(
+        message_id = SET_UNIFIED_JOURNAL_ID,
+        bootc.image.reference = &imgref_display.image,
+        bootc.image.transport = &imgref_display.transport,
         "Re-pulling booted image into bootc storage via unified path: {}",
         imgref_display
     );
@@ -226,6 +230,10 @@ pub(crate) async fn set_unified_entrypoint() -> Result<()> {
     let _ = ostree_ext::container::store::ImageImporter::new(repo, &ostree_imgref, Default::default())
         .await?;
 
-    println!("Unified storage set for current image. Future upgrade/switch will use it automatically.");
+    tracing::info!(
+        message_id = SET_UNIFIED_JOURNAL_ID,
+        bootc.status = "set_unified_complete",
+        "Unified storage set for current image. Future upgrade/switch will use it automatically."
+    );
     Ok(())
 }

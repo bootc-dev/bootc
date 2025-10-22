@@ -935,10 +935,13 @@ async fn upgrade(opts: UpgradeOpts) -> Result<()> {
     } else {
         // Check if image exists in bootc storage (/usr/lib/bootc/storage)
         let imgstore = sysroot.get_ensure_imgstore()?;
-        let use_unified = imgstore
-            .exists(&format!("{imgref:#}"))
-            .await
-            .unwrap_or(false);
+        let use_unified = match imgstore.exists(&format!("{imgref:#}")).await {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!("Failed to check bootc storage for image: {e}; falling back to standard pull");
+                false
+            }
+        };
 
         let fetched = if use_unified {
             crate::deploy::pull_unified(repo, imgref, None, opts.quiet, prog.clone(), sysroot)
@@ -1075,10 +1078,13 @@ async fn switch(opts: SwitchOpts) -> Result<()> {
 
     // Check if image exists in bootc storage (/usr/lib/bootc/storage)
     let imgstore = sysroot.get_ensure_imgstore()?;
-    let use_unified = imgstore
-        .exists(&format!("{target:#}"))
-        .await
-        .unwrap_or(false);
+    let use_unified = match imgstore.exists(&format!("{target:#}")).await {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!("Failed to check bootc storage for image: {e}; falling back to standard pull");
+            false
+        }
+    };
 
     let fetched = if use_unified {
         crate::deploy::pull_unified(repo, &target, None, opts.quiet, prog.clone(), sysroot).await?
