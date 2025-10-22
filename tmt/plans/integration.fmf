@@ -85,3 +85,17 @@ execute:
     - when: running_env == packit
       enabled: false
       because: tmt-reboot does not work with systemd reboot in testing farm environment
+
+/test-28-install-unified-flag:
+  summary: Verify install help exposes experimental unified storage flag
+  discover:
+    how: fmf
+    test:
+        - /tmt/tests/test-28-install-unified-flag
+
+/test-29-switch-to-unified:
+  summary: Onboard to unified storage and verify subsequent operations use it
+  discover:
+    how: fmf
+    test:
+        - /tmt/tests/test-29-switch-to-unified
