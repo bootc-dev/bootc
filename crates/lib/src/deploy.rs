@@ -392,7 +392,7 @@ pub(crate) async fn prepare_for_pull_unified(
     // Get or initialize the bootc container storage (same as used for LBIs)
     let imgstore = store.get_ensure_imgstore()?;
 
-    let image_ref_str = format!("{imgref:#}");
+    let image_ref_str = crate::utils::imageref_to_container_ref(imgref);
 
     // Log the original transport being used for the pull
     tracing::info!(

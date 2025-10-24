@@ -206,7 +206,9 @@ pub(crate) async fn set_unified_entrypoint() -> Result<()> {
 
     // Pull the image from its original source into bootc storage using LBI machinery
     let imgstore = sysroot.get_ensure_imgstore()?;
-    let img_string = format!("{:#}", imgref);
+
+    let img_string = crate::utils::imageref_to_container_ref(imgref);
+
     const SET_UNIFIED_JOURNAL_ID: &str = "1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d";
     tracing::info!(
         message_id = SET_UNIFIED_JOURNAL_ID,
@@ -226,9 +228,11 @@ pub(crate) async fn set_unified_entrypoint() -> Result<()> {
         image: imgref.image.clone(),
         signature: imgref.signature.clone(),
     };
-    let ostree_imgref = ostree_ext::container::OstreeImageReference::from(containers_storage_imgref);
-    let _ = ostree_ext::container::store::ImageImporter::new(repo, &ostree_imgref, Default::default())
-        .await?;
+    let ostree_imgref =
+        ostree_ext::container::OstreeImageReference::from(containers_storage_imgref);
+    let _ =
+        ostree_ext::container::store::ImageImporter::new(repo, &ostree_imgref, Default::default())
+            .await?;
 
     tracing::info!(
         message_id = SET_UNIFIED_JOURNAL_ID,

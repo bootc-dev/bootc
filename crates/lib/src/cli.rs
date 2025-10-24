@@ -944,10 +944,15 @@ async fn upgrade(
     } else {
         // Check if image exists in bootc storage (/usr/lib/bootc/storage)
         let imgstore = sysroot.get_ensure_imgstore()?;
-        let use_unified = match imgstore.exists(&format!("{imgref:#}")).await {
+
+        let image_ref_str = crate::utils::imageref_to_container_ref(imgref);
+
+        let use_unified = match imgstore.exists(&image_ref_str).await {
             Ok(v) => v,
             Err(e) => {
-                tracing::warn!("Failed to check bootc storage for image: {e}; falling back to standard pull");
+                tracing::warn!(
+                    "Failed to check bootc storage for image: {e}; falling back to standard pull"
+                );
                 false
             }
         };
@@ -1073,10 +1078,15 @@ async fn switch_ostree(
 
     // Check if image exists in bootc storage (/usr/lib/bootc/storage)
     let imgstore = sysroot.get_ensure_imgstore()?;
-    let use_unified = match imgstore.exists(&format!("{target:#}")).await {
+
+    let target_ref_str = crate::utils::imageref_to_container_ref(&target);
+
+    let use_unified = match imgstore.exists(&target_ref_str).await {
         Ok(v) => v,
         Err(e) => {
-            tracing::warn!("Failed to check bootc storage for image: {e}; falling back to standard pull");
+            tracing::warn!(
+                "Failed to check bootc storage for image: {e}; falling back to standard pull"
+            );
             false
         }
     };
@@ -1473,9 +1483,7 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
             ImageOpts::CopyToStorage { source, target } => {
                 crate::image::push_entrypoint(source.as_deref(), target.as_deref()).await
             }
-            ImageOpts::SetUnified => {
-                crate::image::set_unified_entrypoint().await
-            }
+            ImageOpts::SetUnified => crate::image::set_unified_entrypoint().await,
             ImageOpts::PullFromDefaultStorage { image } => {
                 let storage = get_storage().await?;
                 storage
