@@ -3,6 +3,9 @@
 have_fun: true
 code_review:
   disable: false
+  # Even medium level can be quite noisy, I don't think
+  # we need LOW. Anyone who wants that type of stuff should
+  # be able to get it locally or before review.
   comment_severity_threshold: MEDIUM
   max_review_comments: -1
   pull_request_opened:
