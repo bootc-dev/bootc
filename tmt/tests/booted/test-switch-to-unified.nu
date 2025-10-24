@@ -20,7 +20,7 @@ def first_boot [] {
   # Verify bootc-owned store is usable
   podman --storage-opt=additionalimagestore=/usr/lib/bootc/storage images
   # Stage a no-op upgrade to exercise the unified path; tolerate no-update
-  bootc upgrade || true
+  try { bootc upgrade }
   tmt-reboot
 }
 
