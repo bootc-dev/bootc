@@ -145,7 +145,7 @@ jobs:
           just test-container
 
       - name: Archive disk image
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: PR-${{ github.event.number }}-${{ matrix.test_os }}-${{ env.ARCH }}-disk
           path: target/bootc-integration-test.qcow2
@@ -174,7 +174,7 @@ jobs:
         run: mkdir -p target
 
       - name: Download disk.raw
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v6
         with:
           name: PR-${{ github.event.number }}-${{ matrix.test_os }}-${{ env.ARCH }}-disk
           path: target
@@ -188,7 +188,7 @@ jobs:
 
       - name: Archive TMT logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: tmt-log-PR-${{ github.event.number }}-${{ matrix.test_os }}-${{ env.ARCH }}-${{ matrix.tmt_plan }}
           path: /var/tmp/tmt

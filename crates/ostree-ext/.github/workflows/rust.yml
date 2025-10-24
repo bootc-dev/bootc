@@ -57,7 +57,7 @@ jobs:
       - name: Build
         run: cargo build --release --features=internal-testing-api
       - name: Upload binary
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: ostree-ext-cli
           path: target/release/ostree-ext-cli
@@ -105,7 +105,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v5
       - name: Download ostree-ext-cli
-        uses: actions/download-artifact@v5.0.0
+        uses: actions/download-artifact@v6.0.0
         with:
           name: ostree-ext-cli
       - name: Install
@@ -121,7 +121,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v5
       - name: Download ostree-ext-cli
-        uses: actions/download-artifact@v5.0.0
+        uses: actions/download-artifact@v6.0.0
         with:
           name: ostree-ext-cli
       - name: Install
@@ -139,7 +139,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v5
       - name: Download
-        uses: actions/download-artifact@v5.0.0
+        uses: actions/download-artifact@v6.0.0
         with:
           name: ostree-ext-cli
       - name: Install
@@ -159,7 +159,7 @@ jobs:
           repository: coreos/coreos-layering-examples
           path: coreos-layering-examples
       - name: Download
-        uses: actions/download-artifact@v5.0.0
+        uses: actions/download-artifact@v6.0.0
         with:
           name: ostree-ext-cli
       - name: Integration tests
