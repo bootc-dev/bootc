@@ -1,10 +1,9 @@
 use std::fmt::Write;
-use std::path::PathBuf;
 
 use anyhow::{anyhow, Context, Result};
 use cap_std_ext::cap_std::ambient_authority;
 use cap_std_ext::cap_std::fs::Dir;
-use cap_std_ext::{cap_std, dirext::CapStdExtDirExt};
+use cap_std_ext::dirext::CapStdExtDirExt;
 use fn_error_context::context;
 use rustix::fs::{fsync, renameat_with, AtFlags, RenameFlags};
 
@@ -82,12 +81,8 @@ pub(crate) fn rename_exchange_bls_entries(entries_dir: &Dir) -> Result<()> {
 }
 
 #[context("Rolling back Grub UKI")]
-fn rollback_grub_uki_entries() -> Result<()> {
-    let user_cfg_path = PathBuf::from("/sysroot/boot/grub2");
-
+fn rollback_grub_uki_entries(boot_dir: &Dir) -> Result<()> {
     let mut str = String::new();
-    let boot_dir =
-        Dir::open_ambient_dir("/sysroot/boot", ambient_authority()).context("Opening boot dir")?;
     let mut menuentries = get_sorted_grub_uki_boot_entries(&boot_dir, &mut str)
         .context("Getting UKI boot entries")?;
 
@@ -103,9 +98,7 @@ fn rollback_grub_uki_entries() -> Result<()> {
         write!(buffer, "{entry}")?;
     }
 
-    let entries_dir =
-        cap_std::fs::Dir::open_ambient_dir(&user_cfg_path, cap_std::ambient_authority())
-            .with_context(|| format!("Opening {user_cfg_path:?}"))?;
+    let entries_dir = boot_dir.open_dir("grub2").context("Opening grub dir")?;
 
     entries_dir
         .atomic_write(USER_CFG_STAGED, buffer)
@@ -199,18 +192,20 @@ pub(crate) async fn composefs_rollback() -> Result<()> {
     };
 
     match &rollback_entry.bootloader {
-        Bootloader::Grub => match rollback_entry.boot_type {
-            BootType::Bls => {
-                let boot_dir = Dir::open_ambient_dir("/sysroot/boot", ambient_authority())
-                    .context("Opening boot dir")?;
+        Bootloader::Grub => {
+            let boot_dir = Dir::open_ambient_dir("/sysroot/boot", ambient_authority())
+                .context("Opening boot dir")?;
 
-                rollback_composefs_entries(&boot_dir, rollback_entry.bootloader.clone())?;
-            }
+            match rollback_entry.boot_type {
+                BootType::Bls => {
+                    rollback_composefs_entries(&boot_dir, rollback_entry.bootloader.clone())?;
+                }
 
-            BootType::Uki => {
-                rollback_grub_uki_entries()?;
+                BootType::Uki => {
+                    rollback_grub_uki_entries(&boot_dir)?;
+                }
             }
-        },
+        }
 
         Bootloader::Systemd => {
             let parent = get_sysroot_parent_dev()?;
