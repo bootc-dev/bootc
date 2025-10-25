@@ -1,0 +1,3 @@
+summary: Verify install help exposes experimental unified storage flag
+test: nu booted/test-install-unified-flag.nu
+duration: 5m
