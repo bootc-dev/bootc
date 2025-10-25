@@ -105,3 +105,10 @@ execute:
     - when: running_env != image_mode
       enabled: false
       because: tmt-reboot does not work with systemd reboot in testing farm environment
+
+/test-28-factory-reset:
+  summary: Factory reset
+  discover:
+    how: fmf
+    test:
+        - /tmt/tests/test-28-factory-reset

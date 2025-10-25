@@ -95,7 +95,25 @@ impl From<ImageReference> for OstreeImageReference {
 
 /// Check if a deployment has soft reboot capability
 fn has_soft_reboot_capability(sysroot: &SysrootLock, deployment: &ostree::Deployment) -> bool {
-    ostree_ext::systemd_has_soft_reboot() && sysroot.deployment_can_soft_reboot(deployment)
+    if !ostree_ext::systemd_has_soft_reboot() {
+        return false;
+    }
+
+    // When the ostree version is < 2025.7 and the deployment is
+    // missing the ostree= karg (happens during a factory reset),
+    // there is a bug that causes deployment_can_soft_reboot to crash.
+    // So in this case default to disabling soft reboot.
+    let has_ostree_karg = deployment
+        .bootconfig()
+        .and_then(|bootcfg| bootcfg.get("options"))
+        .map(|options| options.contains("ostree="))
+        .unwrap_or(false);
+
+    if !ostree::check_version(2025, 7) && !has_ostree_karg {
+        return false;
+    }
+
+    sysroot.deployment_can_soft_reboot(deployment)
 }
 
 /// Parse an ostree origin file (a keyfile) and extract the targeted
