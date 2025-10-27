@@ -106,6 +106,30 @@ is currently expected to be empty by default.
 
     The stateroot name to use. Defaults to `default`
 
+**--composefs-backend**
+
+    If true, composefs backend is used, else ostree backend is used
+
+    Default: false
+
+**--insecure**
+
+    Make fs-verity validation optional in case the filesystem doesn't support it
+
+    Default: false
+
+**--bootloader**=*BOOTLOADER*
+
+    The bootloader to use
+
+    Possible values:
+    - grub
+    - systemd
+
+**--uki-addon**=*UKI_ADDON*
+
+    Name of the UKI addons to install without the ".efi.addon" suffix. This option can be provided multiple times if multiple addons are to be installed
+
 <!-- END GENERATED OPTIONS -->
 
 # VERSION

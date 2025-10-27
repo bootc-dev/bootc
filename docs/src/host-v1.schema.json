@@ -54,6 +54,17 @@
             }
           ]
         },
+        "composefs": {
+          "description": "If this boot entry is composefs based, the corresponding state",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BootEntryComposefs"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "image": {
           "description": "The image reference",
           "anyOf": [
@@ -107,6 +118,29 @@
         "pinned"
       ]
     },
+    "BootEntryComposefs": {
+      "description": "A bootable entry",
+      "type": "object",
+      "properties": {
+        "bootType": {
+          "description": "Whether this deployment is to be booted via Type1 (vmlinuz + initrd) or Type2 (UKI) entry",
+          "$ref": "#/$defs/BootType"
+        },
+        "bootloader": {
+          "description": "Whether we boot using systemd or grub",
+          "$ref": "#/$defs/Bootloader"
+        },
+        "verity": {
+          "description": "The erofs verity",
+          "type": "string"
+        }
+      },
+      "required": [
+        "verity",
+        "bootType",
+        "bootloader"
+      ]
+    },
     "BootEntryOstree": {
       "description": "A bootable entry",
       "type": "object",
@@ -144,6 +178,28 @@
           "description": "The rollback deployment will be booted next",
           "type": "string",
           "const": "rollback"
+        }
+      ]
+    },
+    "BootType": {
+      "type": "string",
+      "enum": [
+        "Bls",
+        "Uki"
+      ]
+    },
+    "Bootloader": {
+      "description": "Bootloader type to determine whether system was booted via Grub or Systemd",
+      "oneOf": [
+        {
+          "description": "Use Grub as the booloader",
+          "type": "string",
+          "const": "Grub"
+        },
+        {
+          "description": "Use SystemdBoot as the bootloader",
+          "type": "string",
+          "const": "Systemd"
         }
       ]
     },

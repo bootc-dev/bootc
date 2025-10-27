@@ -114,21 +114,25 @@ more complex such as RAID, LVM, LUKS etc.
 
     Instead of targeting a block device, write to a file via loopback
 
-**--composefs-native**
+**--composefs-backend**
 
-    
+    If true, composefs backend is used, else ostree backend is used
+
+    Default: false
 
 **--insecure**
 
-    
+    Make fs-verity validation optional in case the filesystem doesn't support it
 
     Default: false
 
 **--bootloader**=*BOOTLOADER*
 
-    
+    The bootloader to use
 
-    Default: grub
+    Possible values:
+    - grub
+    - systemd
 
 **--uki-addon**=*UKI_ADDON*
 

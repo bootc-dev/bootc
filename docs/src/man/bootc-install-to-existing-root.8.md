@@ -98,6 +98,30 @@ to be cleaned up if desired when rebooted into the new root.
 
     Add the bootc-destructive-cleanup systemd service to delete files from the previous install on first boot
 
+**--composefs-backend**
+
+    If true, composefs backend is used, else ostree backend is used
+
+    Default: false
+
+**--insecure**
+
+    Make fs-verity validation optional in case the filesystem doesn't support it
+
+    Default: false
+
+**--bootloader**=*BOOTLOADER*
+
+    The bootloader to use
+
+    Possible values:
+    - grub
+    - systemd
+
+**--uki-addon**=*UKI_ADDON*
+
+    Name of the UKI addons to install without the ".efi.addon" suffix. This option can be provided multiple times if multiple addons are to be installed
+
 <!-- END GENERATED OPTIONS -->
 
 # VERSION
