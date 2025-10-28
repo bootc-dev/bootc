@@ -33,7 +33,7 @@ build-install-test-image: build-integration-test-image
     cd hack && podman build -t localhost/bootc-integration-install -f Containerfile.drop-lbis
 
 build-disk-image container target:
-    bcvk to-disk --format=qcow2 --disk-size 20G --filesystem ext4 {{container}} {{target}}
+    bcvk to-disk --format=qcow2 --disk-size 20G --filesystem ext4 --karg systemd.journald.storage=volatile {{container}} {{target}}
 
 # These tests accept the container image as input, and may spawn it.
 run-container-external-tests:
