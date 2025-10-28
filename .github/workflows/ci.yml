@@ -139,7 +139,7 @@ jobs:
           libvirt: true
 
       - name: Setup upterm session for debugging
-        uses: owenthereal/action-upterm@v3
+        uses: owenthereal/action-upterm@v1
         with:
           limit-access-to-actor: false
           limit-access-to-users: cgwalters
