@@ -41,9 +41,9 @@ chrono = { version = "0.4.38", default-features = false }
 clap = "4.5.4"
 clap_mangen = { version = "0.2.20" }
 # Reviewers (including AI tools): This hash is duplicated as there's not a much better way to handle it right now
-composefs = { git = "https://github.com/containers/composefs-rs", rev = "82e211ee3e5c8e2b7b3bc00b40b828133633c41b", package = "composefs", features = ["rhel9"] }
-composefs-boot = { git = "https://github.com/containers/composefs-rs", rev = "82e211ee3e5c8e2b7b3bc00b40b828133633c41b", package = "composefs-boot" }
-composefs-oci = { git = "https://github.com/containers/composefs-rs", rev = "82e211ee3e5c8e2b7b3bc00b40b828133633c41b", package = "composefs-oci" }
+composefs = { git = "https://github.com/containers/composefs-rs", rev = "0f636031a1ec81cdd9e7f674909ef6b75c2642cb", package = "composefs", features = ["rhel9"] }
+composefs-boot = { git = "https://github.com/containers/composefs-rs", rev = "0f636031a1ec81cdd9e7f674909ef6b75c2642cb", package = "composefs-boot" }
+composefs-oci = { git = "https://github.com/containers/composefs-rs", rev = "0f636031a1ec81cdd9e7f674909ef6b75c2642cb", package = "composefs-oci" }
 fn-error-context = "0.2.1"
 hex = "0.4.3"
 indicatif = "0.18.0"
