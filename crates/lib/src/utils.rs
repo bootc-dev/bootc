@@ -1,7 +1,6 @@
 use std::future::Future;
 use std::io::Write;
 use std::os::fd::BorrowedFd;
-#[cfg(feature = "composefs-backend")]
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
@@ -202,7 +201,6 @@ pub(crate) fn digested_pullspec(image: &str, digest: &str) -> String {
     format!("{image}@{digest}")
 }
 
-#[cfg(feature = "composefs-backend")]
 #[derive(Debug)]
 pub enum EfiError {
     SystemNotUEFI,
@@ -213,14 +211,12 @@ pub enum EfiError {
     Io(std::io::Error),
 }
 
-#[cfg(feature = "composefs-backend")]
 impl From<std::io::Error> for EfiError {
     fn from(e: std::io::Error) -> Self {
         EfiError::Io(e)
     }
 }
 
-#[cfg(feature = "composefs-backend")]
 pub fn read_uefi_var(var_name: &str) -> Result<String, EfiError> {
     use crate::install::EFIVARFS;
     use cap_std_ext::cap_std::ambient_authority;
@@ -262,7 +258,6 @@ pub fn read_uefi_var(var_name: &str) -> Result<String, EfiError> {
 /// Computes a relative path from `from` to `to`.
 ///
 /// Both `from` and `to` must be absolute paths.
-#[cfg(feature = "composefs-backend")]
 pub(crate) fn path_relative_to(from: &Path, to: &Path) -> Result<PathBuf> {
     if !from.is_absolute() || !to.is_absolute() {
         anyhow::bail!("Paths must be absolute");
@@ -321,7 +316,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "composefs-backend")]
     fn test_relative_path() {
         let from = Path::new("/sysroot/state/deploy/image_id");
         let to = Path::new("/sysroot/state/os/default/var");

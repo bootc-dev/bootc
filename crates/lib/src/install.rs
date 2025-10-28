@@ -53,7 +53,6 @@ use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "install-to-disk")]
 use self::baseline::InstallBlockDeviceOpts;
-#[cfg(feature = "composefs-backend")]
 use crate::bootc_composefs::{boot::setup_composefs_boot, repo::initialize_composefs_repository};
 use crate::boundimage::{BoundImage, ResolvedBoundImage};
 use crate::containerenv::ContainerExecutionInfo;
@@ -66,7 +65,6 @@ use crate::task::Task;
 use crate::utils::sigpolicy_from_opt;
 use bootc_kernel_cmdline::{bytes, utf8, INITRD_ARG_PREFIX, ROOTFLAGS};
 use bootc_mount::Filesystem;
-#[cfg(feature = "composefs-backend")]
 use composefs::fsverity::FsVerityHashValue;
 
 /// The toplevel boot directory
@@ -275,7 +273,6 @@ pub(crate) struct InstallToDiskOpts {
 
     #[clap(flatten)]
     #[serde(flatten)]
-    #[cfg(feature = "composefs-backend")]
     pub(crate) composefs_opts: InstallComposefsOpts,
 }
 
@@ -353,7 +350,6 @@ pub(crate) struct InstallToFilesystemOpts {
     #[clap(flatten)]
     pub(crate) config_opts: InstallConfigOpts,
 
-    #[cfg(feature = "composefs-backend")]
     #[clap(flatten)]
     pub(crate) composefs_opts: InstallComposefsOpts,
 }
@@ -388,7 +384,6 @@ pub(crate) struct InstallToExistingRootOpts {
     #[clap(default_value = ALONGSIDE_ROOT_MOUNT)]
     pub(crate) root_path: Utf8PathBuf,
 
-    #[cfg(feature = "composefs-backend")]
     #[clap(flatten)]
     pub(crate) composefs_opts: InstallComposefsOpts,
 }
@@ -431,7 +426,6 @@ pub(crate) struct State {
     pub(crate) composefs_required: bool,
 
     // If Some, then --composefs_native is passed
-    #[cfg(feature = "composefs-backend")]
     pub(crate) composefs_options: InstallComposefsOpts,
 
     /// Detected bootloader type for the target system
@@ -562,7 +556,7 @@ impl FromStr for MountSpec {
     }
 }
 
-#[cfg(all(feature = "install-to-disk", feature = "composefs-backend"))]
+#[cfg(feature = "install-to-disk")]
 impl InstallToDiskOpts {
     pub(crate) fn validate(&self) -> Result<()> {
         if !self.composefs_opts.composefs_backend {
@@ -1218,11 +1212,7 @@ async fn verify_target_fetch(
 }
 
 fn root_has_uki(root: &Dir) -> Result<bool> {
-    #[cfg(feature = "composefs-backend")]
-    return crate::bootc_composefs::boot::container_root_has_uki(root);
-
-    #[cfg(not(feature = "composefs-backend"))]
-    Ok(false)
+    crate::bootc_composefs::boot::container_root_has_uki(root)
 }
 
 /// Preparation for an install; validates and prepares some (thereafter immutable) global state.
@@ -1230,7 +1220,7 @@ async fn prepare_install(
     config_opts: InstallConfigOpts,
     source_opts: InstallSourceOpts,
     target_opts: InstallTargetOpts,
-    #[cfg(feature = "composefs-backend")] mut composefs_options: InstallComposefsOpts,
+    mut composefs_options: InstallComposefsOpts,
 ) -> Result<Arc<State>> {
     tracing::trace!("Preparing install");
     let rootfs = cap_std::fs::Dir::open_ambient_dir("/", cap_std::ambient_authority())
@@ -1305,7 +1295,6 @@ async fn prepare_install(
 
     tracing::debug!("Composefs required: {composefs_required}");
 
-    #[cfg(feature = "composefs-backend")]
     if composefs_required {
         composefs_options.composefs_backend = true;
     }
@@ -1378,7 +1367,6 @@ async fn prepare_install(
 
     // Determine bootloader type for the target system
     // Priority: user-specified > bootupd availability > systemd-boot fallback
-    #[cfg(feature = "composefs-backend")]
     let detected_bootloader = {
         if let Some(bootloader) = composefs_options.bootloader.clone() {
             bootloader
@@ -1390,8 +1378,6 @@ async fn prepare_install(
             }
         }
     };
-    #[cfg(not(feature = "composefs-backend"))]
-    let detected_bootloader = crate::spec::Bootloader::Grub;
     println!("Bootloader: {detected_bootloader}");
 
     // Create our global (read-only) state which gets wrapped in an Arc
@@ -1410,7 +1396,6 @@ async fn prepare_install(
         host_is_container,
         composefs_required,
         detected_bootloader,
-        #[cfg(feature = "composefs-backend")]
         composefs_options,
     });
 
@@ -1582,7 +1567,6 @@ async fn install_to_filesystem_impl(
         }
     }
 
-    #[cfg(feature = "composefs-backend")]
     if state.composefs_options.composefs_backend {
         // Load a fd for the mounted target physical root
 
@@ -1592,9 +1576,6 @@ async fn install_to_filesystem_impl(
     } else {
         ostree_install(state, rootfs, cleanup).await?;
     }
-
-    #[cfg(not(feature = "composefs-backend"))]
-    ostree_install(state, rootfs, cleanup).await?;
 
     // Finalize mounted filesystems
     if !rootfs.skip_finalize {
@@ -1615,7 +1596,6 @@ fn installation_complete() {
 #[context("Installing to disk")]
 #[cfg(feature = "install-to-disk")]
 pub(crate) async fn install_to_disk(mut opts: InstallToDiskOpts) -> Result<()> {
-    #[cfg(feature = "composefs-backend")]
     opts.validate()?;
 
     // Log the disk installation operation to systemd journal
@@ -1664,7 +1644,6 @@ pub(crate) async fn install_to_disk(mut opts: InstallToDiskOpts) -> Result<()> {
         opts.config_opts,
         opts.source_opts,
         opts.target_opts,
-        #[cfg(feature = "composefs-backend")]
         opts.composefs_opts,
     )
     .await?;
@@ -1902,7 +1881,6 @@ pub(crate) async fn install_to_filesystem(
         opts.config_opts,
         opts.source_opts,
         opts.target_opts,
-        #[cfg(feature = "composefs-backend")]
         opts.composefs_opts,
     )
     .await?;
@@ -2174,7 +2152,6 @@ pub(crate) async fn install_to_existing_root(opts: InstallToExistingRootOpts) ->
         source_opts: opts.source_opts,
         target_opts: opts.target_opts,
         config_opts: opts.config_opts,
-        #[cfg(feature = "composefs-backend")]
         composefs_opts: opts.composefs_opts,
     };
 

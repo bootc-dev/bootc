@@ -9,7 +9,7 @@ Tracking issue: <https://github.com/bootc-dev/bootc/issues/1190>
 
 The composefs backend is an experimental alternative storage backend that uses [composefs-rs](https://github.com/containers/composefs-rs) instead of ostree for storing and managing bootc system deployments.
 
-**Status**: Experimental. The composefs backend is under active development and not yet suitable for production use. The feature is currently gated behind the `composefs-backend` compile-time feature flag, which in current git main is enabled by default.
+**Status**: Experimental. The composefs backend is under active development and not yet suitable for production use. The feature is always compiled in as of bootc v1.10.1.
 
 ## Key Benefits
 

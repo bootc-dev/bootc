@@ -8,7 +8,6 @@ use fn_error_context::context;
 use bootc_blockdev::{Partition, PartitionTable};
 use bootc_mount as mount;
 
-#[cfg(any(feature = "composefs-backend", feature = "install-to-disk"))]
 use crate::bootc_composefs::boot::mount_esp;
 use crate::{discoverable_partition_specification, utils};
 
@@ -72,7 +71,6 @@ pub(crate) fn install_via_bootupd(
 }
 
 #[context("Installing bootloader")]
-#[cfg(any(feature = "composefs-backend", feature = "install-to-disk"))]
 pub(crate) fn install_systemd_boot(
     device: &PartitionTable,
     _rootfs: &Utf8Path,

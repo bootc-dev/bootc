@@ -27,7 +27,6 @@ use linkme::distributed_slice;
 use ostree_ext::ostree_prepareroot;
 use serde::Serialize;
 
-#[cfg(feature = "composefs-backend")]
 use crate::bootc_composefs::boot::EFI_LINUX;
 
 /// Reference to embedded default baseimage content that should exist.
@@ -770,7 +769,6 @@ fn check_boot(root: &Dir, config: &LintExecutionConfig) -> LintResult {
         })
         .collect();
     let mut entries = entries?;
-    #[cfg(feature = "composefs-backend")]
     {
         // Work around https://github.com/containers/composefs-rs/issues/131
         let efidir = Utf8Path::new(EFI_LINUX)
