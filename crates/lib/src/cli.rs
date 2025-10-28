@@ -675,11 +675,7 @@ pub(crate) enum Opt {
     /// Diff current /etc configuration versus default
     ConfigDiff,
     #[cfg(feature = "composefs-backend")]
-    DeleteDeployment {
-        depl_id: String,
-        #[clap(long, default_value_t)]
-        delete: bool,
-    },
+    DeleteDeployment { depl_id: String },
 }
 
 /// Ensure we've entered a mount namespace, so that we can remount
@@ -1619,9 +1615,7 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
         Opt::ConfigDiff => get_etc_diff().await,
 
         #[cfg(feature = "composefs-backend")]
-        Opt::DeleteDeployment { depl_id, delete } => {
-            delete_composefs_deployment(&depl_id, delete).await
-        }
+        Opt::DeleteDeployment { depl_id } => delete_composefs_deployment(&depl_id).await,
     }
 }
 

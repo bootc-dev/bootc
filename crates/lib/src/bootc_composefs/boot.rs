@@ -696,28 +696,27 @@ fn write_grub_uki_menuentry(
     //
     // TODO: We might find a staged deployment here
     if is_upgrade {
-        let mut buffer = vec![];
-
-        // Shouldn't really fail so no context here
-        buffer.write_all(efi_uuid_source.as_bytes())?;
-        buffer.write_all(
-            MenuEntry::new(&boot_label, &id.to_hex())
-                .to_string()
-                .as_bytes(),
-        )?;
-
         let mut str_buf = String::new();
         let boot_dir =
             Dir::open_ambient_dir(boot_dir, ambient_authority()).context("Opening boot dir")?;
         let entries = get_sorted_grub_uki_boot_entries(&boot_dir, &mut str_buf)?;
 
-        // Write out only the currently booted entry, which should be the very first one
-        // Even if we have booted into the second menuentry "boot entry", the default will be the
-        // first one
-        buffer.write_all(entries[0].to_string().as_bytes())?;
-
         grub_dir
-            .atomic_write(user_cfg_name, buffer)
+            .atomic_replace_with(user_cfg_name, |f| -> std::io::Result<_> {
+                f.write_all(efi_uuid_source.as_bytes())?;
+                f.write_all(
+                    MenuEntry::new(&boot_label, &id.to_hex())
+                        .to_string()
+                        .as_bytes(),
+                )?;
+
+                // Write out only the currently booted entry, which should be the very first one
+                // Even if we have booted into the second menuentry "boot entry", the default will be the
+                // first one
+                f.write_all(entries[0].to_string().as_bytes())?;
+
+                Ok(())
+            })
             .with_context(|| format!("Writing to {user_cfg_name}"))?;
 
         rustix::fs::fsync(grub_dir.reopen_as_ownedfd()?).context("fsync")?;
@@ -737,18 +736,17 @@ fn write_grub_uki_menuentry(
     )?;
 
     // Write to grub2/user.cfg
-    let mut buffer = vec![];
-
-    // Shouldn't really fail so no context here
-    buffer.write_all(efi_uuid_source.as_bytes())?;
-    buffer.write_all(
-        MenuEntry::new(&boot_label, &id.to_hex())
-            .to_string()
-            .as_bytes(),
-    )?;
-
     grub_dir
-        .atomic_write(user_cfg_name, buffer)
+        .atomic_replace_with(user_cfg_name, |f| -> std::io::Result<_> {
+            f.write_all(efi_uuid_source.as_bytes())?;
+            f.write_all(
+                MenuEntry::new(&boot_label, &id.to_hex())
+                    .to_string()
+                    .as_bytes(),
+            )?;
+
+            Ok(())
+        })
         .with_context(|| format!("Writing to {user_cfg_name}"))?;
 
     rustix::fs::fsync(grub_dir.reopen_as_ownedfd()?).context("fsync")?;

@@ -28,11 +28,6 @@ use crate::{
     status::Slot,
 };
 
-pub(crate) struct ObjectRefs {
-    pub(crate) other_depl: HashSet<Sha512HashValue>,
-    pub(crate) depl_to_del: HashSet<Sha512HashValue>,
-}
-
 #[fn_error_context::context("Deleting Type1 Entry {}", depl.deployment.verity)]
 fn delete_type1_entry(depl: &DeploymentEntry, boot_dir: &Dir, deleting_staged: bool) -> Result<()> {
     let entries_dir_path = if deleting_staged {
@@ -78,6 +73,7 @@ fn delete_type1_entry(depl: &DeploymentEntry, boot_dir: &Dir, deleting_staged: b
                 }
 
                 // Boot dir in case of EFI will be the ESP
+                tracing::debug!("Deleting EFI .conf file: {}", file_name);
                 entry.remove_file().context("Removing .conf file")?;
                 delete_uki(&depl.deployment.verity, boot_dir)?;
 
@@ -93,6 +89,7 @@ fn delete_type1_entry(depl: &DeploymentEntry, boot_dir: &Dir, deleting_staged: b
                     continue;
                 }
 
+                tracing::debug!("Deleting non-EFI .conf file: {}", file_name);
                 entry.remove_file().context("Removing .conf file")?;
 
                 if should_del_kernel {
@@ -107,6 +104,10 @@ fn delete_type1_entry(depl: &DeploymentEntry, boot_dir: &Dir, deleting_staged: b
     }
 
     if deleting_staged {
+        tracing::debug!(
+            "Deleting staged entries directory: {}",
+            TYPE1_ENT_PATH_STAGED
+        );
         boot_dir
             .remove_dir_all(TYPE1_ENT_PATH_STAGED)
             .context("Removing staged entries dir")?;
@@ -122,11 +123,13 @@ fn delete_kernel_initrd(bls_config: &BLSConfigType, boot_dir: &Dir) -> Result<()
     };
 
     // "linux" and "initrd" are relative to the boot_dir in our config files
+    tracing::debug!("Deleting kernel: {:?}", linux);
     boot_dir
         .remove_file(linux)
         .with_context(|| format!("Removing {linux:?}"))?;
 
     for ird in initrd {
+        tracing::debug!("Deleting initrd: {:?}", ird);
         boot_dir
             .remove_file(ird)
             .with_context(|| format!("Removing {ird:?}"))?;
@@ -144,6 +147,7 @@ fn delete_kernel_initrd(bls_config: &BLSConfigType, boot_dir: &Dir) -> Result<()
     if kernel_parent_dir.entries().iter().len() == 0 {
         // We don't have anything other than kernel and initrd in this directory for now
         // So this directory should *always* be empty, for now at least
+        tracing::debug!("Deleting empty kernel directory: {:?}", dir);
         kernel_parent_dir.remove_open_dir()?;
     };
 
@@ -162,9 +166,11 @@ fn delete_uki(uki_id: &str, esp_mnt: &Dir) -> Result<()> {
 
         // The actual UKI PE binary
         if entry_name == format!("{}{}", uki_id, EFI_EXT) {
+            tracing::debug!("Deleting UKI: {}", entry_name);
             entry.remove_file().context("Deleting UKI")?;
         } else if entry_name == format!("{}{}", uki_id, EFI_ADDON_DIR_EXT) {
             // Addons dir
+            tracing::debug!("Deleting UKI addons directory: {}", entry_name);
             ukis.remove_dir_all(entry_name)
                 .context("Deleting UKI addons dir")?;
         }
@@ -178,6 +184,7 @@ fn remove_grub_menucfg_entry(id: &str, boot_dir: &Dir, deleting_staged: bool) ->
     let grub_dir = boot_dir.open_dir("grub2").context("Opening grub2")?;
 
     if deleting_staged {
+        tracing::debug!("Deleting staged grub menuentry file: {}", USER_CFG_STAGED);
         return grub_dir
             .remove_file(USER_CFG_STAGED)
             .context("Deleting staged Menuentry");
@@ -186,20 +193,20 @@ fn remove_grub_menucfg_entry(id: &str, boot_dir: &Dir, deleting_staged: bool) ->
     let mut string = String::new();
     let menuentries = get_sorted_grub_uki_boot_entries(boot_dir, &mut string)?;
 
-    let mut buffer = vec![];
-
-    buffer.write_all(get_efi_uuid_source().as_bytes())?;
-
-    for entry in menuentries {
-        if entry.body.chainloader.contains(id) {
-            continue;
-        }
-
-        buffer.write_all(entry.to_string().as_bytes())?;
-    }
-
     grub_dir
-        .atomic_write(USER_CFG_STAGED, buffer)
+        .atomic_replace_with(USER_CFG_STAGED, move |f| -> std::io::Result<_> {
+            f.write_all(get_efi_uuid_source().as_bytes())?;
+
+            for entry in menuentries {
+                if entry.body.chainloader.contains(id) {
+                    continue;
+                }
+
+                f.write_all(entry.to_string().as_bytes())?;
+            }
+
+            Ok(())
+        })
         .with_context(|| format!("Writing to {USER_CFG_STAGED}"))?;
 
     rustix::fs::fsync(grub_dir.reopen_as_ownedfd().context("Reopening")?).context("fsync")?;
@@ -245,7 +252,8 @@ fn delete_depl_boot_entries(deployment: &DeploymentEntry, deleting_staged: bool)
     }
 }
 
-pub(crate) fn get_image_objects(sysroot: &Dir, deployment_id: Option<&str>) -> Result<ObjectRefs> {
+#[fn_error_context::context("Getting image objects")]
+pub(crate) fn get_image_objects(sysroot: &Dir) -> Result<HashSet<Sha512HashValue>> {
     let repo = open_composefs_repo(&sysroot)?;
 
     let images_dir = sysroot
@@ -256,10 +264,7 @@ pub(crate) fn get_image_objects(sysroot: &Dir, deployment_id: Option<&str>) -> R
         .entries_utf8()
         .context("Reading entries in images dir")?;
 
-    let mut object_refs = ObjectRefs {
-        other_depl: HashSet::new(),
-        depl_to_del: HashSet::new(),
-    };
+    let mut object_refs = HashSet::new();
 
     for image in image_entries {
         let image = image?;
@@ -270,34 +275,33 @@ pub(crate) fn get_image_objects(sysroot: &Dir, deployment_id: Option<&str>) -> R
             .objects_for_image(&img_name)
             .with_context(|| format!("Getting objects for image {img_name}"))?;
 
-        if let Some(deployment_id) = deployment_id {
-            if deployment_id == img_name {
-                object_refs.depl_to_del.extend(objects);
-            }
-        } else {
-            object_refs.other_depl.extend(objects);
-        }
+        object_refs.extend(objects);
     }
 
     Ok(object_refs)
 }
 
+#[fn_error_context::context("Deleting image for deployment {}", deployment_id)]
 pub(crate) fn delete_image(sysroot: &Dir, deployment_id: &str) -> Result<()> {
     let img_path = Path::new("composefs").join("images").join(deployment_id);
 
+    tracing::debug!("Deleting EROFS image: {:?}", img_path);
     sysroot
         .remove_file(&img_path)
         .context("Deleting EROFS image")
 }
 
+#[fn_error_context::context("Deleting state directory for deployment {}", deployment_id)]
 pub(crate) fn delete_state_dir(sysroot: &Dir, deployment_id: &str) -> Result<()> {
     let state_dir = Path::new(STATE_DIR_RELATIVE).join(deployment_id);
 
+    tracing::debug!("Deleting state directory: {:?}", state_dir);
     sysroot
         .remove_dir_all(&state_dir)
         .with_context(|| format!("Removing dir {state_dir:?}"))
 }
 
+#[fn_error_context::context("Deleting staged deployment")]
 pub(crate) fn delete_staged(staged: &Option<BootEntry>) -> Result<()> {
     if staged.is_none() {
         tracing::debug!("No staged deployment");
@@ -305,16 +309,21 @@ pub(crate) fn delete_staged(staged: &Option<BootEntry>) -> Result<()> {
     };
 
     let file = Path::new(COMPOSEFS_TRANSIENT_STATE_DIR).join(COMPOSEFS_STAGED_DEPLOYMENT_FNAME);
-    tracing::debug!("Deleting staged file {file:?}");
+    tracing::debug!("Deleting staged deployment file: {file:?}");
     std::fs::remove_file(file).context("Removing staged file")?;
 
     Ok(())
 }
 
-pub(crate) async fn delete_composefs_deployment(deployment_id: &str, delete: bool) -> Result<()> {
+#[fn_error_context::context("Deleting composefs deployment {}", deployment_id)]
+pub(crate) async fn delete_composefs_deployment(deployment_id: &str) -> Result<()> {
     let host = composefs_deployment_status().await?;
 
     let booted = host.require_composefs_booted()?;
+
+    if deployment_id == &booted.verity {
+        anyhow::bail!("Cannot delete currently booted deployment");
+    }
 
     let all_depls = host.all_composefs_deployments()?;
 
@@ -336,15 +345,6 @@ pub(crate) async fn delete_composefs_deployment(deployment_id: &str, delete: boo
     // Unqueue rollback. This makes it easier to delete boot entries later on
     if matches!(depl_to_del.ty, Some(Slot::Rollback)) && host.status.rollback_queued {
         composefs_rollback().await?;
-    }
-
-    // For debugging, but maybe useful elsewhere?
-    if !delete {
-        return Ok(());
-    }
-
-    if deployment_id == &booted.verity {
-        anyhow::bail!("Cannot delete currently booted deployment");
     }
 
     let kind = if depl_to_del.pinned {

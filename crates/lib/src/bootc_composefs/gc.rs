@@ -24,6 +24,7 @@ use crate::{
     spec::Bootloader,
 };
 
+#[fn_error_context::context("Listing EROFS images")]
 fn list_erofs_images(sysroot: &Dir) -> Result<Vec<String>> {
     let images_dir = sysroot
         .open_dir("composefs/images")
@@ -44,6 +45,7 @@ fn list_erofs_images(sysroot: &Dir) -> Result<Vec<String>> {
 ///
 /// # Returns
 /// The fsverity of EROFS images corresponding to boot entries
+#[fn_error_context::context("Listing bootloader entries")]
 fn list_bootloader_entries() -> Result<Vec<String>> {
     let bootloader = get_bootloader()?;
 
@@ -92,6 +94,7 @@ fn list_bootloader_entries() -> Result<Vec<String>> {
     Ok(entries)
 }
 
+#[fn_error_context::context("Listing state directories")]
 fn list_state_dirs(sysroot: &Dir) -> Result<Vec<String>> {
     let state = sysroot
         .open_dir(STATE_DIR_RELATIVE)
@@ -116,9 +119,13 @@ fn list_state_dirs(sysroot: &Dir) -> Result<Vec<String>> {
 /// present EROFS images
 ///
 /// We do not delete streams though
+#[fn_error_context::context("Garbage collecting objects")]
+// TODO(Johan-Liebert1): This will be moved to composefs-rs
 pub(crate) fn gc_objects(sysroot: &Dir) -> Result<()> {
+    tracing::debug!("Running garbage collection on unreferenced objects");
+
     // Get all the objects referenced by all available images
-    let obj_refs = get_image_objects(sysroot, None)?;
+    let obj_refs = get_image_objects(sysroot)?;
 
     // List all objects in the objects directory
     let objects_dir = sysroot
@@ -141,8 +148,8 @@ pub(crate) fn gc_objects(sysroot: &Dir) -> Result<()> {
             let id = Sha512HashValue::from_object_dir_and_basename(dir_name, filename.as_bytes())?;
 
             // If this object is not referenced by any image, delete it
-            if !obj_refs.other_depl.contains(&id) {
-                tracing::trace!("Removed unreferenced object: {filename}");
+            if !obj_refs.contains(&id) {
+                tracing::trace!("Deleting unreferenced object: {filename}");
 
                 entry
                     .remove_file()
@@ -164,6 +171,7 @@ pub(crate) fn gc_objects(sysroot: &Dir) -> Result<()> {
 ///
 /// Similarly if EROFS image B1 doesn't exist, but state dir does, then delete the state dir and
 /// perform GC
+#[fn_error_context::context("Running composefs garbage collection")]
 pub(crate) async fn composefs_gc() -> Result<()> {
     let host = composefs_deployment_status().await?;
     let booted_cfs = host.require_composefs_booted()?;
@@ -207,8 +215,6 @@ pub(crate) async fn composefs_gc() -> Result<()> {
         .collect::<Vec<_>>();
 
     for verity in &state_img_diff {
-        tracing::debug!("Cleaning up orphaned state directory: {verity}");
-
         delete_staged(staged)?;
         delete_state_dir(&sysroot, verity)?;
     }

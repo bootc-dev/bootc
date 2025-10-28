@@ -1,4 +1,4 @@
-use std::fmt::Write;
+use std::io::Write;
 
 use anyhow::{anyhow, Context, Result};
 use cap_std_ext::cap_std::ambient_authority;
@@ -92,16 +92,18 @@ fn rollback_grub_uki_entries(boot_dir: &Dir) -> Result<()> {
     let (first, second) = menuentries.split_at_mut(1);
     std::mem::swap(&mut first[0], &mut second[0]);
 
-    let mut buffer = get_efi_uuid_source();
-
-    for entry in menuentries {
-        write!(buffer, "{entry}")?;
-    }
-
     let entries_dir = boot_dir.open_dir("grub2").context("Opening grub dir")?;
 
     entries_dir
-        .atomic_write(USER_CFG_STAGED, buffer)
+        .atomic_replace_with(USER_CFG_STAGED, |f| -> std::io::Result<_> {
+            f.write_all(get_efi_uuid_source().as_bytes())?;
+
+            for entry in menuentries {
+                f.write_all(entry.to_string().as_bytes())?;
+            }
+
+            Ok(())
+        })
         .with_context(|| format!("Writing to {USER_CFG_STAGED}"))?;
 
     rename_exchange_user_cfg(&entries_dir)
