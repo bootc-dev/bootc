@@ -36,6 +36,10 @@ use bootc_mount::is_mounted_in_pid1_mountns;
 // This ensures we end up under 512 to be small-sized.
 pub(crate) const BOOTPN_SIZE_MB: u32 = 510;
 pub(crate) const EFIPN_SIZE_MB: u32 = 512;
+/// EFI Partition size for composefs installations
+/// We need more space than ostree as we have UKIs and UKI addons
+/// We might also need to store UKIs for pinned deployments
+pub(crate) const CFS_EFIPN_SIZE_MB: u32 = 1024;
 /// The GPT type for "linux"
 pub(crate) const LINUX_PARTTYPE: &str = "0FC63DAF-8483-4772-8E79-3D69D8477DE4";
 #[cfg(feature = "install-to-disk")]
@@ -277,9 +281,16 @@ pub(crate) fn install_create_rootfs(
     let esp_partno = if super::ARCH_USES_EFI {
         let esp_guid = crate::discoverable_partition_specification::ESP;
         partno += 1;
+
+        let esp_size = if state.composefs_options.composefs_backend {
+            CFS_EFIPN_SIZE_MB
+        } else {
+            EFIPN_SIZE_MB
+        };
+
         writeln!(
             &mut partitioning_buf,
-            r#"size={EFIPN_SIZE_MB}MiB, type={esp_guid}, name="EFI-SYSTEM""#
+            r#"size={esp_size}MiB, type={esp_guid}, name="EFI-SYSTEM""#
         )?;
         Some(partno)
     } else {
