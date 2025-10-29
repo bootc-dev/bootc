@@ -124,7 +124,10 @@ pub(crate) fn get_kargs(
     // Get the kargs used for the merge in the bootloader config
     if let Some(bootconfig) = ostree::Deployment::bootconfig(merge_deployment) {
         if let Some(options) = ostree::BootconfigParser::get(&bootconfig, "options") {
-            let options = options.split_whitespace().map(|s| s.to_owned());
+            let options = bootc_kernel_cmdline::utf8::Cmdline::from(options.as_str())
+                .iter()
+                .map(|s| s.to_string())
+                .collect::<Vec<String>>();
             kargs.extend(options);
         }
     };
