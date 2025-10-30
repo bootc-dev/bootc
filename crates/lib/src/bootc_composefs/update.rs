@@ -21,12 +21,7 @@ use cap_std_ext::cap_std::{ambient_authority, fs::Dir};
 
 #[context("Getting SHA256 Digest for {id}")]
 pub fn str_to_sha256digest(id: &str) -> Result<Sha256Digest> {
-    let id = if id.starts_with("sha256:") {
-        id.strip_prefix("sha256:").unwrap()
-    } else {
-        id
-    };
-
+    let id = id.strip_prefix("sha256:").unwrap_or(id);
     Ok(parse_sha256(&id)?)
 }
 

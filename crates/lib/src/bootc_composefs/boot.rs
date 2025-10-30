@@ -15,8 +15,11 @@ use cap_std_ext::{
 use clap::ValueEnum;
 use composefs::fs::read_file;
 use composefs::tree::RegularFile;
-use composefs_boot::bootloader::{PEType, EFI_ADDON_DIR_EXT, EFI_ADDON_FILE_EXT, EFI_EXT};
 use composefs_boot::BootOps;
+use composefs_boot::{
+    bootloader::{PEType, EFI_ADDON_DIR_EXT, EFI_ADDON_FILE_EXT, EFI_EXT},
+    uki::UkiError,
+};
 use fn_error_context::context;
 use ostree_ext::composefs::fsverity::{FsVerityHashValue, Sha512HashValue};
 use ostree_ext::composefs_boot::bootloader::UsrLibModulesVmlinuz;
@@ -365,7 +368,6 @@ struct BLSEntryPath<'a> {
 #[context("Setting up BLS boot")]
 pub(crate) fn setup_composefs_bls_boot(
     setup_type: BootSetupType,
-    // TODO: Make this generic
     repo: crate::store::ComposefsRepository,
     id: &Sha512HashValue,
     entry: &ComposefsBootEntry<Sha512HashValue>,
@@ -563,6 +565,11 @@ pub(crate) fn setup_composefs_bls_boot(
     Ok(boot_digest)
 }
 
+struct UKILabels {
+    boot_label: String,
+    version: Option<String>,
+}
+
 /// Writes a PortableExecutable to ESP along with any PE specific or Global addons
 #[context("Writing {file_path} to ESP")]
 fn write_pe_to_esp(
@@ -574,10 +581,10 @@ fn write_pe_to_esp(
     is_insecure_from_opts: bool,
     mounted_efi: impl AsRef<Path>,
     bootloader: &Bootloader,
-) -> Result<Option<String>> {
+) -> Result<Option<UKILabels>> {
     let efi_bin = read_file(file, &repo).context("Reading .efi binary")?;
 
-    let mut boot_label = None;
+    let mut boot_label: Option<UKILabels> = None;
 
     // UKI Extension might not even have a cmdline
     // TODO: UKI Addon might also have a composefs= cmdline?
@@ -607,7 +614,15 @@ fn write_pe_to_esp(
             );
         }
 
-        boot_label = Some(uki::get_boot_label(&efi_bin).context("Getting UKI boot label")?);
+        let osrel = uki::get_text_section(&efi_bin, ".osrel")
+            .ok_or(UkiError::PortableExecutableError)??;
+
+        let parsed_osrel = OsReleaseInfo::parse(osrel);
+
+        boot_label = Some(UKILabels {
+            boot_label: uki::get_boot_label(&efi_bin).context("Getting UKI boot label")?,
+            version: parsed_osrel.get_version(),
+        });
     }
 
     // Write the UKI to ESP
@@ -693,8 +708,6 @@ fn write_grub_uki_menuentry(
         .context("opening boot/grub2")?;
 
     // Iterate over all available deployments, and generate a menuentry for each
-    //
-    // TODO: We might find a staged deployment here
     if is_upgrade {
         let mut str_buf = String::new();
         let boot_dir =
@@ -758,20 +771,19 @@ fn write_grub_uki_menuentry(
 fn write_systemd_uki_config(
     esp_dir: &Dir,
     setup_type: &BootSetupType,
-    boot_label: String,
+    boot_label: UKILabels,
     id: &Sha512HashValue,
 ) -> Result<()> {
     let default_sort_key = "0";
 
     let mut bls_conf = BLSConfig::default();
     bls_conf
-        .with_title(boot_label)
+        .with_title(boot_label.boot_label)
         .with_cfg(BLSConfigType::EFI {
             efi: format!("/{SYSTEMD_UKI_DIR}/{}{}", id.to_hex(), EFI_EXT).into(),
         })
         .with_sort_key(default_sort_key.into())
-        // TODO (Johan-Liebert1): Get version from UKI like we get boot label
-        .with_version(default_sort_key.into());
+        .with_version(boot_label.version.unwrap_or(default_sort_key.into()));
 
     let (entries_dir, booted_bls) = match setup_type {
         BootSetupType::Setup(..) => {
@@ -827,7 +839,6 @@ fn write_systemd_uki_config(
 #[context("Setting up UKI boot")]
 pub(crate) fn setup_composefs_uki_boot(
     setup_type: BootSetupType,
-    // TODO: Make this generic
     repo: crate::store::ComposefsRepository,
     id: &Sha512HashValue,
     entries: Vec<ComposefsBootEntry<Sha512HashValue>>,
@@ -868,7 +879,7 @@ pub(crate) fn setup_composefs_uki_boot(
 
     let esp_mount = mount_esp(&esp_device).context("Mounting ESP")?;
 
-    let mut boot_label = String::new();
+    let mut uki_label: Option<UKILabels> = None;
 
     for entry in entries {
         match entry {
@@ -917,20 +928,25 @@ pub(crate) fn setup_composefs_uki_boot(
                 )?;
 
                 if let Some(label) = ret {
-                    boot_label = label;
+                    uki_label = Some(label);
                 }
             }
         };
     }
 
-    match bootloader {
-        Bootloader::Grub => {
-            write_grub_uki_menuentry(root_path, &setup_type, boot_label, id, &esp_device)?
-        }
+    let uki_label = uki_label
+        .ok_or_else(|| anyhow::anyhow!("Failed to get version and boot label from UKI"))?;
 
-        Bootloader::Systemd => {
-            write_systemd_uki_config(&esp_mount.fd, &setup_type, boot_label, id)?
-        }
+    match bootloader {
+        Bootloader::Grub => write_grub_uki_menuentry(
+            root_path,
+            &setup_type,
+            uki_label.boot_label,
+            id,
+            &esp_device,
+        )?,
+
+        Bootloader::Systemd => write_systemd_uki_config(&esp_mount.fd, &setup_type, uki_label, id)?,
     };
 
     Ok(())
