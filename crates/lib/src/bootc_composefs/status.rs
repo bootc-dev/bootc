@@ -131,7 +131,7 @@ pub(crate) fn get_sorted_type1_boot_entries(
 
 /// imgref = transport:image_name
 #[context("Getting container info")]
-async fn get_container_manifest_and_config(
+pub(crate) async fn get_container_manifest_and_config(
     imgref: &String,
 ) -> Result<(ImageManifest, oci_spec::image::ImageConfiguration)> {
     let config = containers_image_proxy::ImageProxyConfig::default();
