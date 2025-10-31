@@ -1,0 +1,28 @@
+{
+  "name": "bootc-devenv-debian",
+  // TODO override this back to prod image
+  "image": "ghcr.io/bootc-dev/devenv-debian",
+  "customizations": {
+    "vscode": {
+      // Abitrary, but most of our code is in one of these two
+      "extensions": [
+        "rust-lang.rust-analyzer",
+        "golang.Go"
+      ]
+    }
+  },
+  "features": {},
+  "runArgs": [
+    // Because we want to be able to run podman and also use e.g. /dev/kvm
+    // among other things
+    "--privileged"
+  ],
+  "postCreateCommand": {
+    // Our init script
+    "devenv-init": "sudo /usr/local/bin/devenv-init.sh"
+  },
+  "remoteEnv": {
+    "PATH": "${containerEnv:PATH}:/usr/local/cargo/bin"
+  }
+}
+
