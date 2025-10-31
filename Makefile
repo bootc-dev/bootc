@@ -1,19 +1,27 @@
 # Understanding Makefile vs Justfile:
 #
-# This file MUST NOT:
+# This file should primarily *only* involve
+# invoking tools which *do not* have side effects outside
+# of the current working directory. In particular, this file MUST NOT:
 # - Spawn podman or virtualization tools
 # - Invoke `sudo`
 #
 # Stated positively, the code invoked from here is only expected to
 # operate as part of "a build" that results in a bootc binary
 # plus data files. The two key operations are `make`
-# and `make install`.
+# and `make install`. As this is Rust, the generated binaries are in
+# the current directory under `target/` by default. Some rules may place
+# other generated files there.
+#
 # We expect code run from here is (or can be) inside a container with low
 # privileges - running as a nonzero UID even.
 #
 # Understanding Makefile vs xtask.rs: Basically use xtask.rs if what
 # you're doing would turn into a mess of bash code, whether inline here
 # or externally in e.g. ./ci/somebashmess.sh etc.
+#
+# In particular, the Justfile contains rules for things like integration
+# tests which might spawn VMs, etc.
 
 prefix ?= /usr
 

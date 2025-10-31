@@ -3,7 +3,11 @@
 # other tools like `bcvk` which might launch local virtual machines.
 # 
 # See also `Makefile` and `xtask.rs`. Commands which end in `-local`
-# skip containerization or virtualization.
+# skip containerization or virtualization (and typically just proxy `make`).
+#
+# Rules written here are *often* used by the Github Action flows,
+# and should support being configurable where that makes sense (e.g.
+# the `build` rule supports being provided a base image).
 
 # --------------------------------------------------------------------
 

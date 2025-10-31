@@ -2,7 +2,8 @@
 #
 # Core principles:
 # - Everything done here should be easy to replicate locally. Most tasks
-#   should invoke `just <something>`.
+#   should invoke `just <something>`. Read the Justfile for more explanation
+#   of this.
 # - Most additions to this should be extending existing tasks; e.g.
 #   there's places for unit and integration tests already.
 name: CI
