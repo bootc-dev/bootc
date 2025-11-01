@@ -905,7 +905,7 @@ async fn install_container(
         merged_ostree_root.downcast_ref().unwrap(),
         std::env::consts::ARCH,
     )?;
-    let kargsd = kargsd.iter().map(|s| s.as_str());
+    let kargsd: Vec<String> = kargsd.iter().map(|s| s.to_string()).collect();
 
     // If the target uses aboot, then we need to set that bootloader in the ostree
     // config before deploying the commit
@@ -944,7 +944,7 @@ async fn install_container(
         .iter()
         .map(|v| v.as_str())
         .chain(install_config_kargs)
-        .chain(kargsd)
+        .chain(kargsd.iter().map(|s| s.as_str()))
         .chain(state.config_opts.karg.iter().flatten().map(|v| v.as_str()))
         .collect::<Vec<_>>();
     let mut options = ostree_container::deploy::DeployOpts::default();

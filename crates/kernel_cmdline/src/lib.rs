@@ -17,3 +17,16 @@ pub mod utf8;
 pub const INITRD_ARG_PREFIX: &str = "rd.";
 /// The kernel argument for configuring the rootfs flags.
 pub const ROOTFLAGS: &str = "rootflags";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// Possible outcomes for `add_or_modify` operations.
+pub enum Action {
+    /// The parameter did not exist before and was added
+    Added,
+    /// The parameter existed before, but contained a different value.
+    /// The value was updated to the newly-requested value.
+    Modified,
+    /// The parameter existed before, and contained the same value as
+    /// the newly-requested value.  No modification was made.
+    Existed,
+}

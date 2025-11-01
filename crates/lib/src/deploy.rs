@@ -608,12 +608,16 @@ async fn deploy(
             let mut opts = ostree::SysrootDeployTreeOpts::default();
 
             // Because the C API expects a Vec<&str>, we need to generate a new Vec<>
-            // that borrows.
-            let override_kargs = override_kargs
-                .iter()
-                .map(|s| s.as_str())
-                .collect::<Vec<_>>();
-            opts.override_kernel_argv = Some(&override_kargs);
+            // that borrows from owned strings.
+            let override_kargs_owned: Option<Vec<String>> =
+                override_kargs.map(|v| v.iter().map(|s| s.to_string()).collect());
+            let override_kargs_refs: Option<Vec<&str>> = override_kargs_owned
+                .as_ref()
+                .map(|v| v.iter().map(|s| s.as_str()).collect());
+            if let Some(kargs) = override_kargs_refs.as_deref() {
+                opts.override_kernel_argv = Some(&kargs);
+            }
+
             let deployments = ostree.deployments();
             let merge_deployment = merge_deployment.map(|m| &deployments[m]);
             let origin = glib::KeyFile::new();

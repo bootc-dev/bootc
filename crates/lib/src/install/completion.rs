@@ -67,10 +67,11 @@ fn reconcile_kargs(sysroot: &ostree::Sysroot, deployment: &ostree::Deployment) -
         .map(|s| s.as_str())
         .collect::<Vec<_>>();
     let kargsd = crate::bootc_kargs::get_kargs_in_root(deployment_root, std::env::consts::ARCH)?;
-    let kargsd = kargsd.iter().map(|s| s.as_str()).collect::<Vec<_>>();
+    let kargsd_strings: Vec<String> = kargsd.iter().map(|p| p.to_string()).collect();
+    let kargsd_strs: Vec<&str> = kargsd_strings.iter().map(|s| s.as_str()).collect();
 
     current_kargs.append_argv(&install_config_kargs);
-    current_kargs.append_argv(&kargsd);
+    current_kargs.append_argv(&kargsd_strs);
     let new_kargs = current_kargs.to_string();
     tracing::debug!("new_kargs={new_kargs}");
 

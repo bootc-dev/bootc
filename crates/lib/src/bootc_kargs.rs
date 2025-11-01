@@ -1,5 +1,6 @@
 //! This module handles the bootc-owned kernel argument lists in `/usr/lib/bootc/kargs.d`.
 use anyhow::{Context, Result};
+use bootc_kernel_cmdline::utf8::Cmdline;
 use camino::Utf8Path;
 use cap_std_ext::cap_std::fs::Dir;
 use cap_std_ext::cap_std::fs_utf8::Dir as DirUtf8;
@@ -46,17 +47,20 @@ impl Config {
 
 /// Load and parse all bootc kargs.d files in the specified root, returning
 /// a combined list.
-pub(crate) fn get_kargs_in_root(d: &Dir, sys_arch: &str) -> Result<Vec<String>> {
+pub(crate) fn get_kargs_in_root(d: &Dir, sys_arch: &str) -> Result<Cmdline<'static>> {
     // If the directory doesn't exist, that's OK.
     let Some(d) = d.open_dir_optional(KARGS_PATH)?.map(DirUtf8::from_cap_std) else {
         return Ok(Default::default());
     };
-    let mut ret = Vec::new();
+    let mut ret: Cmdline = Default::default();
     let entries = d.filenames_filtered_sorted(|_, name| Config::filename_matches(name))?;
     for name in entries {
         let buf = d.read_to_string(&name)?;
-        let kargs = parse_kargs_toml(&buf, sys_arch).with_context(|| format!("Parsing {name}"))?;
-        ret.extend(kargs)
+        if let Some(kargs) =
+            parse_kargs_toml(&buf, sys_arch).with_context(|| format!("Parsing {name}"))?
+        {
+            ret.extend(&kargs)
+        }
     }
     Ok(ret)
 }
@@ -78,7 +82,7 @@ pub(crate) fn get_kargs_from_ostree_root(
     repo: &ostree::Repo,
     root: &ostree::RepoFile,
     sys_arch: &str,
-) -> Result<Vec<String>> {
+) -> Result<Cmdline<'static>> {
     let kargsd = root.resolve_relative_path(KARGS_PATH);
     let kargsd = kargsd.downcast_ref::<ostree::RepoFile>().expect("downcast");
     if !kargsd.query_exists(gio::Cancellable::NONE) {
@@ -92,12 +96,12 @@ fn get_kargs_from_ostree(
     repo: &ostree::Repo,
     fetched_tree: &ostree::RepoFile,
     sys_arch: &str,
-) -> Result<Vec<String>> {
+) -> Result<Cmdline<'static>> {
     let cancellable = gio::Cancellable::NONE;
     let queryattrs = "standard::name,standard::type";
     let queryflags = gio::FileQueryInfoFlags::NOFOLLOW_SYMLINKS;
     let fetched_iter = fetched_tree.enumerate_children(queryattrs, queryflags, cancellable)?;
-    let mut ret = Vec::new();
+    let mut ret: Cmdline = Default::default();
     while let Some(fetched_info) = fetched_iter.next_file(cancellable)? {
         // only read and parse the file if it is a toml file
         let name = fetched_info.name();
@@ -119,9 +123,11 @@ fn get_kargs_from_ostree(
         let mut reader =
             ostree_ext::prelude::InputStreamExtManual::into_read(file_content.unwrap());
         let s = std::io::read_to_string(&mut reader)?;
-        let parsed_kargs =
-            parse_kargs_toml(&s, sys_arch).with_context(|| format!("Parsing {name}"))?;
-        ret.extend(parsed_kargs);
+        if let Some(parsed_kargs) =
+            parse_kargs_toml(&s, sys_arch).with_context(|| format!("Parsing {name}"))?
+        {
+            ret.extend(&parsed_kargs);
+        }
     }
     Ok(ret)
 }
@@ -133,20 +139,20 @@ pub(crate) fn get_kargs(
     sysroot: &Storage,
     merge_deployment: &Deployment,
     fetched: &ImageState,
-) -> Result<Vec<String>> {
+) -> Result<Cmdline<'static>> {
     let cancellable = gio::Cancellable::NONE;
     let ostree = sysroot.get_ostree()?;
     let repo = &ostree.repo();
-    let mut kargs = vec![];
     let sys_arch = std::env::consts::ARCH;
 
     // Get the kargs used for the merge in the bootloader config
-    if let Some(bootconfig) = ostree::Deployment::bootconfig(merge_deployment) {
-        if let Some(options) = ostree::BootconfigParser::get(&bootconfig, "options") {
-            let options = options.split_whitespace().map(|s| s.to_owned());
-            kargs.extend(options);
-        }
-    };
+    let mut kargs = ostree::Deployment::bootconfig(merge_deployment)
+        .map(|bootconfig| {
+            ostree::BootconfigParser::get(&bootconfig, "options")
+                .map(|options| Cmdline::from(options.to_string()))
+        })
+        .flatten()
+        .unwrap_or_default();
 
     // Get the kargs in kargs.d of the merge
     let merge_root = &crate::utils::deployment_fd(ostree, merge_deployment)?;
@@ -161,7 +167,7 @@ pub(crate) fn get_kargs(
     // A special case: if there's no kargs.d directory in the pending (fetched) image,
     // then we can just use the combined current kargs + kargs from booted
     if !fetched_tree.query_exists(cancellable) {
-        kargs.extend(existing_kargs);
+        kargs.extend(&existing_kargs);
         return Ok(kargs);
     }
 
@@ -169,15 +175,13 @@ pub(crate) fn get_kargs(
     let remote_kargs = get_kargs_from_ostree(repo, &fetched_tree, sys_arch)?;
 
     // get the diff between the existing and remote kargs
-    let mut added_kargs = remote_kargs
-        .clone()
+    let added_kargs = &remote_kargs
         .into_iter()
-        .filter(|item| !existing_kargs.contains(item))
+        .filter(|item| existing_kargs.find(&item.key()).is_none())
         .collect::<Vec<_>>();
-    let removed_kargs = existing_kargs
-        .clone()
+    let removed_kargs = &existing_kargs
         .into_iter()
-        .filter(|item| !remote_kargs.contains(item))
+        .filter(|item| remote_kargs.find(&item.key()).is_none())
         .collect::<Vec<_>>();
 
     tracing::debug!(
@@ -187,8 +191,13 @@ pub(crate) fn get_kargs(
     );
 
     // apply the diff to the system kargs
-    kargs.retain(|x| !removed_kargs.contains(x));
-    kargs.append(&mut added_kargs);
+    //kargs.retain(|x| !removed_kargs.contains(x));
+    for arg in removed_kargs {
+        kargs.remove(&arg.key());
+    }
+
+    //kargs.extend(added_kargs.iter().map(|p| *p));
+    kargs.extend(added_kargs.iter().cloned());
 
     Ok(kargs)
 }
@@ -196,7 +205,7 @@ pub(crate) fn get_kargs(
 /// This parses a bootc kargs.d toml file, returning the resulting
 /// vector of kernel arguments. Architecture matching is performed using
 /// `sys_arch`.
-fn parse_kargs_toml(contents: &str, sys_arch: &str) -> Result<Vec<String>> {
+fn parse_kargs_toml(contents: &str, sys_arch: &str) -> Result<Option<Cmdline<'static>>> {
     let de: Config = toml::from_str(contents)?;
     // if arch specified, apply kargs only if the arch matches
     // if arch not specified, apply kargs unconditionally
@@ -204,7 +213,11 @@ fn parse_kargs_toml(contents: &str, sys_arch: &str) -> Result<Vec<String>> {
         .match_architectures
         .map(|arches| arches.iter().any(|s| s == sys_arch))
         .unwrap_or(true);
-    let r = if matched { de.kargs } else { Vec::new() };
+    let r = if matched {
+        Some(Cmdline::from(de.kargs.join(" ")))
+    } else {
+        None
+    };
     Ok(r)
 }
 
@@ -216,17 +229,24 @@ mod tests {
 
     use super::*;
 
+    use bootc_kernel_cmdline::utf8::Parameter;
+
     #[test]
     /// Verify that kargs are only applied to supported architectures
     fn test_arch() {
         // no arch specified, kargs ensure that kargs are applied unconditionally
         let sys_arch = "x86_64";
         let file_content = r##"kargs = ["console=tty0", "nosmt"]"##.to_string();
-        let parsed_kargs = parse_kargs_toml(&file_content, sys_arch).unwrap();
-        assert_eq!(parsed_kargs, ["console=tty0", "nosmt"]);
+        let parsed_kargs = parse_kargs_toml(&file_content, sys_arch).unwrap().unwrap();
+        let mut iter = parsed_kargs.iter();
+        assert_eq!(iter.next(), Some(Parameter::parse("console=tty0").unwrap()));
+        assert_eq!(iter.next(), Some(Parameter::parse("nosmt").unwrap()));
+
         let sys_arch = "aarch64";
-        let parsed_kargs = parse_kargs_toml(&file_content, sys_arch).unwrap();
-        assert_eq!(parsed_kargs, ["console=tty0", "nosmt"]);
+        let parsed_kargs = parse_kargs_toml(&file_content, sys_arch).unwrap().unwrap();
+        let mut iter = parsed_kargs.iter();
+        assert_eq!(iter.next(), Some(Parameter::parse("console=tty0").unwrap()));
+        assert_eq!(iter.next(), Some(Parameter::parse("nosmt").unwrap()));
 
         // one arch matches and one doesn't, ensure that kargs are only applied for the matching arch
         let sys_arch = "aarch64";
@@ -235,13 +255,15 @@ match-architectures = ["x86_64"]
 "##
         .to_string();
         let parsed_kargs = parse_kargs_toml(&file_content, sys_arch).unwrap();
-        assert_eq!(parsed_kargs, [] as [String; 0]);
+        assert!(parsed_kargs.is_none());
         let file_content = r##"kargs = ["console=tty0", "nosmt"]
 match-architectures = ["aarch64"]
 "##
         .to_string();
-        let parsed_kargs = parse_kargs_toml(&file_content, sys_arch).unwrap();
-        assert_eq!(parsed_kargs, ["console=tty0", "nosmt"]);
+        let parsed_kargs = parse_kargs_toml(&file_content, sys_arch).unwrap().unwrap();
+        let mut iter = parsed_kargs.iter();
+        assert_eq!(iter.next(), Some(Parameter::parse("console=tty0").unwrap()));
+        assert_eq!(iter.next(), Some(Parameter::parse("nosmt").unwrap()));
 
         // multiple arch specified, ensure that kargs are applied to both archs
         let sys_arch = "x86_64";
@@ -249,11 +271,16 @@ match-architectures = ["aarch64"]
 match-architectures = ["x86_64", "aarch64"]
 "##
         .to_string();
-        let parsed_kargs = parse_kargs_toml(&file_content, sys_arch).unwrap();
-        assert_eq!(parsed_kargs, ["console=tty0", "nosmt"]);
+        let parsed_kargs = parse_kargs_toml(&file_content, sys_arch).unwrap().unwrap();
+        let mut iter = parsed_kargs.iter();
+        assert_eq!(iter.next(), Some(Parameter::parse("console=tty0").unwrap()));
+        assert_eq!(iter.next(), Some(Parameter::parse("nosmt").unwrap()));
+
         let sys_arch = "aarch64";
-        let parsed_kargs = parse_kargs_toml(&file_content, sys_arch).unwrap();
-        assert_eq!(parsed_kargs, ["console=tty0", "nosmt"]);
+        let parsed_kargs = parse_kargs_toml(&file_content, sys_arch).unwrap().unwrap();
+        let mut iter = parsed_kargs.iter();
+        assert_eq!(iter.next(), Some(Parameter::parse("console=tty0").unwrap()));
+        assert_eq!(iter.next(), Some(Parameter::parse("nosmt").unwrap()));
     }
 
     #[test]
@@ -285,18 +312,24 @@ match-architectures = ["x86_64", "aarch64"]
         let td = cap_std_ext::cap_tempfile::TempDir::new(cap_std::ambient_authority())?;
 
         // No directory
-        assert_eq!(get_kargs_in_root(&td, "x86_64").unwrap().len(), 0);
+        assert_eq!(get_kargs_in_root(&td, "x86_64").unwrap().iter().count(), 0);
         // Empty directory
         td.create_dir_all("usr/lib/bootc/kargs.d")?;
-        assert_eq!(get_kargs_in_root(&td, "x86_64").unwrap().len(), 0);
+        assert_eq!(get_kargs_in_root(&td, "x86_64").unwrap().iter().count(), 0);
         // Non-toml file
         td.write("usr/lib/bootc/kargs.d/somegarbage", "garbage")?;
-        assert_eq!(get_kargs_in_root(&td, "x86_64").unwrap().len(), 0);
+        assert_eq!(get_kargs_in_root(&td, "x86_64").unwrap().iter().count(), 0);
 
         write_test_kargs(&td)?;
 
         let args = get_kargs_in_root(&td, "x86_64").unwrap();
-        similar_asserts::assert_eq!(args, ["console=tty0", "nosmt", "console=ttyS1"]);
+        let mut iter = args.iter();
+        assert_eq!(iter.next(), Some(Parameter::parse("console=tty0").unwrap()));
+        assert_eq!(iter.next(), Some(Parameter::parse("nosmt").unwrap()));
+        assert_eq!(
+            iter.next(),
+            Some(Parameter::parse("console=ttyS1").unwrap())
+        );
 
         Ok(())
     }
@@ -354,7 +387,7 @@ match-architectures = ["x86_64", "aarch64"]
 
         ostree_commit(repo, &test_rootfs, ".".into(), "testref")?;
         // Helper closure to read the kargs
-        let get_kargs = |sys_arch: &str| -> Result<Vec<String>> {
+        let get_kargs = |sys_arch: &str| -> Result<Cmdline<'static>> {
             let rootfs = repo.read_commit("testref", cancellable)?.0;
             let rootfs = rootfs.downcast_ref::<ostree::RepoFile>().unwrap();
             let fetched_tree = rootfs.resolve_relative_path("/usr/lib/bootc/kargs.d");
@@ -368,14 +401,20 @@ match-architectures = ["x86_64", "aarch64"]
         };
 
         // rootfs is empty
-        assert_eq!(get_kargs("x86_64").unwrap().len(), 0);
+        assert_eq!(get_kargs("x86_64").unwrap().iter().count(), 0);
 
         test_rootfs.create_dir_all("usr/lib/bootc/kargs.d")?;
         write_test_kargs(&test_rootfs).unwrap();
         ostree_commit(repo, &test_rootfs, ".".into(), "testref")?;
 
         let args = get_kargs("x86_64").unwrap();
-        similar_asserts::assert_eq!(args, ["console=tty0", "nosmt", "console=ttyS1"]);
+        let mut iter = args.iter();
+        assert_eq!(iter.next(), Some(Parameter::parse("console=tty0").unwrap()));
+        assert_eq!(iter.next(), Some(Parameter::parse("nosmt").unwrap()));
+        assert_eq!(
+            iter.next(),
+            Some(Parameter::parse("console=ttyS1").unwrap())
+        );
 
         Ok(())
     }
