@@ -17,6 +17,7 @@
 //! This lives in `/composefs` in the physical root.
 
 use std::cell::OnceCell;
+use std::ops::Deref;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -25,10 +26,11 @@ use cap_std_ext::cap_std::fs::{Dir, DirBuilder, DirBuilderExt as _};
 use cap_std_ext::dirext::CapStdExtDirExt;
 use fn_error_context::context;
 
-use ostree_ext::ostree;
 use ostree_ext::sysroot::SysrootLock;
+use ostree_ext::{gio, ostree};
 use rustix::fs::Mode;
 
+use crate::bootc_composefs::status::{composefs_booted, ComposefsCmdline};
 use crate::lsm;
 use crate::podstorage::CStorage;
 use crate::spec::ImageStatus;
@@ -44,29 +46,152 @@ pub const SYSROOT: &str = "sysroot";
 
 /// The toplevel composefs directory path
 pub const COMPOSEFS: &str = "composefs";
+#[allow(dead_code)]
 pub const COMPOSEFS_MODE: Mode = Mode::from_raw_mode(0o700);
 
 /// The path to the bootc root directory, relative to the physical
 /// system root
 pub(crate) const BOOTC_ROOT: &str = "ostree/bootc";
 
+/// Storage accessor for a booted system.
+///
+/// This wraps [`Storage`] and can determine whether the system is booted
+/// via ostree or composefs, providing a unified interface for both.
+pub(crate) struct BootedStorage {
+    pub(crate) storage: Storage,
+}
+
+impl Deref for BootedStorage {
+    type Target = Storage;
+
+    fn deref(&self) -> &Self::Target {
+        &self.storage
+    }
+}
+
+/// Represents an ostree-based boot environment
+pub struct BootedOstree<'a> {
+    pub(crate) sysroot: &'a SysrootLock,
+    pub(crate) deployment: ostree::Deployment,
+}
+
+impl<'a> BootedOstree<'a> {
+    /// Get the ostree repository
+    pub(crate) fn repo(&self) -> ostree::Repo {
+        self.sysroot.repo()
+    }
+
+    /// Get the stateroot name
+    pub(crate) fn stateroot(&self) -> ostree::glib::GString {
+        self.deployment.osname()
+    }
+}
+
+/// Represents a composefs-based boot environment
+#[allow(dead_code)]
+pub struct BootedComposefs {
+    pub repo: Arc<ComposefsRepository>,
+    pub cmdline: &'static ComposefsCmdline,
+}
+
+/// Discriminated union representing the boot storage backend.
+///
+/// A system can boot via either ostree or composefs; this enum
+/// allows code to handle both cases while maintaining type safety.
+pub(crate) enum BootedStorageKind<'a> {
+    Ostree(BootedOstree<'a>),
+    Composefs(BootedComposefs),
+}
+
+impl BootedStorage {
+    /// Create a new booted storage accessor.
+    ///
+    /// This detects whether the system is booted via composefs or ostree
+    /// and initializes the appropriate storage backend.
+    pub(crate) async fn new() -> Result<Self> {
+        let physical_root = Dir::open_ambient_dir("/sysroot", cap_std::ambient_authority())
+            .context("Opening /sysroot")?;
+        let run =
+            Dir::open_ambient_dir("/run", cap_std::ambient_authority()).context("Opening /run")?;
+        if let Some(cmdline) = composefs_booted()? {
+            let mut composefs =
+                ComposefsRepository::open_path(physical_root.open_dir(COMPOSEFS)?, ".")?;
+            if cmdline.insecure {
+                composefs.set_insecure(true);
+            }
+            let composefs = Arc::new(composefs);
+
+            let storage = Storage {
+                physical_root,
+                run,
+                ostree: Default::default(),
+                composefs: OnceCell::from(composefs),
+                imgstore: Default::default(),
+            };
+            Ok(Self { storage })
+        } else {
+            let sysroot = ostree::Sysroot::new_default();
+            sysroot.set_mount_namespace_in_use();
+            let sysroot = ostree_ext::sysroot::SysrootLock::new_from_sysroot(&sysroot).await?;
+            sysroot.load(gio::Cancellable::NONE)?;
+            // Verify this is a booted system
+            let _ = sysroot.require_booted_deployment()?;
+
+            let storage = Storage {
+                physical_root,
+                run,
+                ostree: OnceCell::from(sysroot),
+                composefs: Default::default(),
+                imgstore: Default::default(),
+            };
+            Ok(Self { storage })
+        }
+    }
+
+    /// Determine the boot storage backend kind.
+    ///
+    /// Returns information about whether the system booted via ostree or composefs,
+    /// along with the relevant sysroot/deployment or repository/cmdline data.
+    pub(crate) fn kind(&self) -> Result<BootedStorageKind<'_>> {
+        if let Some(cmdline) = composefs_booted()? {
+            // SAFETY: This must have been set above in new()
+            let repo = self.composefs.get().unwrap();
+            Ok(BootedStorageKind::Composefs(BootedComposefs {
+                repo: Arc::clone(repo),
+                cmdline,
+            }))
+        } else {
+            // SAFETY: This must have been set above in new()
+            let sysroot = self.ostree.get().unwrap();
+            let deployment = sysroot.require_booted_deployment()?;
+            Ok(BootedStorageKind::Ostree(BootedOstree {
+                sysroot,
+                deployment,
+            }))
+        }
+    }
+}
+
 /// A reference to a physical filesystem root, plus
 /// accessors for the different types of container storage.
 pub(crate) struct Storage {
     /// Directory holding the physical root
     pub physical_root: Dir,
+    /// Our runtime state
+    run: Dir,
 
     /// The OSTree storage
-    ostree: SysrootLock,
+    ostree: OnceCell<SysrootLock>,
     /// The composefs storage
     composefs: OnceCell<Arc<ComposefsRepository>>,
     /// The containers-image storage used foR LBIs
     imgstore: OnceCell<CStorage>,
-
-    /// Our runtime state
-    run: Dir,
 }
 
+/// Cached image status data used for optimization.
+///
+/// This stores the current image status and any cached update information
+/// to avoid redundant fetches during status operations.
 #[derive(Default)]
 pub(crate) struct CachedImageStatus {
     pub image: Option<ImageStatus>,
@@ -74,7 +199,11 @@ pub(crate) struct CachedImageStatus {
 }
 
 impl Storage {
-    pub fn new(sysroot: SysrootLock, run: &Dir) -> Result<Self> {
+    /// Create a new storage accessor from an existing ostree sysroot.
+    ///
+    /// This is used for non-booted scenarios (e.g., `bootc install`) where
+    /// we're operating on a target filesystem rather than the running system.
+    pub fn new_ostree(sysroot: SysrootLock, run: &Dir) -> Result<Self> {
         let run = run.try_clone()?;
 
         // ostree has historically always relied on
@@ -93,10 +222,13 @@ impl Storage {
             ostree_sysroot_dir
         };
 
+        let ostree_cell = OnceCell::new();
+        let _ = ostree_cell.set(sysroot);
+
         Ok(Self {
             physical_root,
-            ostree: sysroot,
             run,
+            ostree: ostree_cell,
             composefs: Default::default(),
             imgstore: Default::default(),
         })
@@ -104,10 +236,15 @@ impl Storage {
 
     /// Access the underlying ostree repository
     pub(crate) fn get_ostree(&self) -> Result<&SysrootLock> {
-        Ok(&self.ostree)
+        self.ostree
+            .get()
+            .ok_or_else(|| anyhow::anyhow!("OSTree storage not initialized"))
     }
 
-    /// Access the underlying ostree repository
+    /// Get a cloned reference to the ostree sysroot.
+    ///
+    /// This is used when code needs an owned `ostree::Sysroot` rather than
+    /// a reference to the `SysrootLock`.
     pub(crate) fn get_ostree_cloned(&self) -> Result<ostree::Sysroot> {
         let r = self.get_ostree()?;
         Ok((*r).clone())
@@ -118,9 +255,10 @@ impl Storage {
         if let Some(imgstore) = self.imgstore.get() {
             return Ok(imgstore);
         }
-        let sysroot_dir = crate::utils::sysroot_dir(&self.ostree)?;
+        let ostree = self.get_ostree()?;
+        let sysroot_dir = crate::utils::sysroot_dir(ostree)?;
 
-        let sepolicy = if self.ostree.booted_deployment().is_none() {
+        let sepolicy = if ostree.booted_deployment().is_none() {
             // fallback to policy from container root
             // this should only happen during cleanup of a broken install
             tracing::trace!("falling back to container root's selinux policy");
@@ -130,8 +268,8 @@ impl Storage {
             // load the sepolicy from the booted ostree deployment so the imgstorage can be
             // properly labeled with /var/lib/container/storage labels
             tracing::trace!("loading sepolicy from booted ostree deployment");
-            let dep = self.ostree.booted_deployment().unwrap();
-            let dep_fs = deployment_fd(&self.ostree, &dep)?;
+            let dep = ostree.booted_deployment().unwrap();
+            let dep_fs = deployment_fd(ostree, &dep)?;
             lsm::new_sepolicy_at(&dep_fs)?
         };
 
@@ -141,6 +279,10 @@ impl Storage {
         Ok(self.imgstore.get_or_init(|| imgstore))
     }
 
+    /// Access the composefs repository; will automatically initialize it if necessary.
+    ///
+    /// This lazily opens the composefs repository, creating the directory if needed
+    /// and bootstrapping verity settings from the ostree configuration.
     pub(crate) fn get_ensure_composefs(&self) -> Result<Arc<ComposefsRepository>> {
         if let Some(composefs) = self.composefs.get() {
             return Ok(Arc::clone(composefs));
@@ -150,13 +292,13 @@ impl Storage {
         db.mode(COMPOSEFS_MODE.as_raw_mode());
         self.physical_root.ensure_dir_with(COMPOSEFS, &db)?;
 
-        let mut composefs =
-            ComposefsRepository::open_path(&self.physical_root.open_dir(COMPOSEFS)?, ".")?;
-
         // Bootstrap verity off of the ostree state. In practice this means disabled by
         // default right now.
-        let ostree_repo = &self.ostree.repo();
+        let ostree = self.get_ostree()?;
+        let ostree_repo = &ostree.repo();
         let ostree_verity = ostree_ext::fsverity::is_verity_enabled(ostree_repo)?;
+        let mut composefs =
+            ComposefsRepository::open_path(self.physical_root.open_dir(COMPOSEFS)?, ".")?;
         if !ostree_verity.enabled {
             tracing::debug!("Setting insecure mode for composefs repo");
             composefs.set_insecure(true);
@@ -169,8 +311,8 @@ impl Storage {
     /// Update the mtime on the storage root directory
     #[context("Updating storage root mtime")]
     pub(crate) fn update_mtime(&self) -> Result<()> {
-        let sysroot_dir =
-            crate::utils::sysroot_dir(&self.ostree).context("Reopen sysroot directory")?;
+        let ostree = self.get_ostree()?;
+        let sysroot_dir = crate::utils::sysroot_dir(ostree).context("Reopen sysroot directory")?;
 
         sysroot_dir
             .update_timestamps(std::path::Path::new(BOOTC_ROOT))

@@ -19,7 +19,6 @@ use crate::{
 use std::str::FromStr;
 
 use bootc_utils::try_deserialize_timestamp;
-use cap_std_ext::cap_std::ambient_authority;
 use cap_std_ext::cap_std::fs::Dir;
 use ostree_container::OstreeImageReference;
 use ostree_ext::container::deploy::ORIGIN_CONTAINER;
@@ -247,14 +246,23 @@ async fn boot_entry_from_composefs_deployment(
     return Ok(e);
 }
 
+/// Get composefs status using provided storage and booted composefs data
+/// instead of scraping global state.
 #[context("Getting composefs deployment status")]
-pub(crate) async fn composefs_deployment_status() -> Result<Host> {
-    let composefs_state = composefs_booted()?
-        .ok_or_else(|| anyhow::anyhow!("Failed to find composefs parameter in kernel cmdline"))?;
-    let composefs_digest = &composefs_state.digest;
+pub(crate) async fn get_composefs_status(
+    storage: &crate::store::Storage,
+    booted_cfs: &crate::store::BootedComposefs,
+) -> Result<Host> {
+    composefs_deployment_status_from(&storage.physical_root, booted_cfs.cmdline).await
+}
 
-    let sysroot =
-        Dir::open_ambient_dir("/sysroot", ambient_authority()).context("Opening sysroot")?;
+#[context("Getting composefs deployment status")]
+pub(crate) async fn composefs_deployment_status_from(
+    sysroot: &Dir,
+    cmdline: &ComposefsCmdline,
+) -> Result<Host> {
+    let composefs_digest = &cmdline.digest;
+
     let deployments = sysroot
         .read_dir(STATE_DIR_RELATIVE)
         .with_context(|| format!("Reading sysroot {STATE_DIR_RELATIVE}"))?;
@@ -347,7 +355,7 @@ pub(crate) async fn composefs_deployment_status() -> Result<Host> {
         //
         // See: https://uapi-group.org/specifications/specs/boot_loader_specification/#mount-points
         Bootloader::Systemd => {
-            let parent = get_sysroot_parent_dev()?;
+            let parent = get_sysroot_parent_dev(sysroot)?;
             let (esp_part, ..) = get_esp_partition(&parent)?;
 
             let esp_mount = mount_esp(&esp_part)?;

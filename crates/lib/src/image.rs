@@ -72,7 +72,7 @@ async fn list_images(list_type: ImageListType) -> Result<Vec<ImageOutput>> {
     let rootfs = cap_std::fs::Dir::open_ambient_dir("/", cap_std::ambient_authority())
         .context("Opening /")?;
 
-    let sysroot: Option<crate::store::Storage> =
+    let sysroot: Option<crate::store::BootedStorage> =
         if ostree_ext::container_utils::running_in_container() {
             None
         } else {

@@ -19,7 +19,6 @@ use ostree_ext::sysroot::SysrootLock;
 
 use ostree_ext::ostree;
 
-use crate::bootc_composefs::status::{composefs_booted, composefs_deployment_status};
 use crate::cli::OutputFormat;
 use crate::spec::BootEntryComposefs;
 use crate::spec::ImageStatus;
@@ -259,19 +258,24 @@ impl BootEntry {
 /// A variant of [`get_status`] that requires a booted deployment.
 pub(crate) fn get_status_require_booted(
     sysroot: &SysrootLock,
-) -> Result<(ostree::Deployment, Deployments, Host)> {
+) -> Result<(crate::store::BootedOstree<'_>, Deployments, Host)> {
     let booted_deployment = sysroot.require_booted_deployment()?;
-    let (deployments, host) = get_status(sysroot, Some(&booted_deployment))?;
-    Ok((booted_deployment, deployments, host))
+    let booted_ostree = crate::store::BootedOstree {
+        sysroot,
+        deployment: booted_deployment,
+    };
+    let (deployments, host) = get_status(&booted_ostree)?;
+    Ok((booted_ostree, deployments, host))
 }
 
 /// Gather the ostree deployment objects, but also extract metadata from them into
 /// a more native Rust structure.
 #[context("Computing status")]
 pub(crate) fn get_status(
-    sysroot: &SysrootLock,
-    booted_deployment: Option<&ostree::Deployment>,
+    booted_ostree: &crate::store::BootedOstree<'_>,
 ) -> Result<(Deployments, Host)> {
+    let sysroot = booted_ostree.sysroot;
+    let booted_deployment = Some(&booted_ostree.deployment);
     let stateroot = booted_deployment.as_ref().map(|d| d.osname());
     let (mut related_deployments, other_deployments) = sysroot
         .deployments()
@@ -365,13 +369,16 @@ pub(crate) fn get_status(
 
 async fn get_host() -> Result<Host> {
     let host = if ostree_booted()? {
-        let sysroot = super::cli::get_storage().await?;
-        let ostree = sysroot.get_ostree()?;
-        let booted_deployment = ostree.booted_deployment();
-        let (_deployments, host) = get_status(&ostree, booted_deployment.as_ref())?;
-        host
-    } else if composefs_booted()?.is_some() {
-        composefs_deployment_status().await?
+        let storage = super::cli::get_storage().await?;
+        match storage.kind()? {
+            crate::store::BootedStorageKind::Ostree(booted_ostree) => {
+                let (_deployments, host) = get_status(&booted_ostree)?;
+                host
+            }
+            crate::store::BootedStorageKind::Composefs(booted_cfs) => {
+                crate::bootc_composefs::status::get_composefs_status(&storage, &booted_cfs).await?
+            }
+        }
     } else {
         Default::default()
     };

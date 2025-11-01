@@ -5,7 +5,7 @@ use std::path::Path;
 
 use anyhow::{anyhow, Context, Result};
 use bootc_blockdev::find_parent_devices;
-use bootc_mount::inspect_filesystem;
+use bootc_mount::inspect_filesystem_of_dir;
 use bootc_mount::tempmount::TempMount;
 use camino::{Utf8Path, Utf8PathBuf};
 use cap_std_ext::{
@@ -37,7 +37,10 @@ use crate::composefs_consts::{TYPE1_ENT_PATH, TYPE1_ENT_PATH_STAGED};
 use crate::parsers::bls_config::{BLSConfig, BLSConfigType};
 use crate::parsers::grub_menuconfig::MenuEntry;
 use crate::task::Task;
-use crate::{bootc_composefs::repo::open_composefs_repo, store::ComposefsFilesystem};
+use crate::{
+    bootc_composefs::repo::open_composefs_repo,
+    store::{ComposefsFilesystem, Storage},
+};
 use crate::{
     bootc_composefs::state::{get_booted_bls, write_composefs_state},
     bootloader::esp_in,
@@ -73,7 +76,7 @@ pub(crate) enum BootSetupType<'a> {
     /// For initial setup, i.e. install to-disk
     Setup((&'a RootSetup, &'a State, &'a ComposefsFilesystem)),
     /// For `bootc upgrade`
-    Upgrade((&'a ComposefsFilesystem, &'a Host)),
+    Upgrade((&'a Storage, &'a ComposefsFilesystem, &'a Host)),
 }
 
 #[derive(
@@ -165,14 +168,12 @@ pub fn mount_esp(device: &str) -> Result<TempMount> {
     TempMount::mount_dev(device, "vfat", flags, Some(c"fmask=0177,dmask=0077"))
 }
 
-pub fn get_sysroot_parent_dev() -> Result<String> {
-    let sysroot = Utf8PathBuf::from("/sysroot");
-
-    let fsinfo = inspect_filesystem(&sysroot)?;
+pub fn get_sysroot_parent_dev(physical_root: &Dir) -> Result<String> {
+    let fsinfo = inspect_filesystem_of_dir(physical_root)?;
     let parent_devices = find_parent_devices(&fsinfo.source)?;
 
     let Some(parent) = parent_devices.into_iter().next() else {
-        anyhow::bail!("Could not find parent device for mountpoint /sysroot");
+        anyhow::bail!("Could not find parent device of system root");
     };
 
     return Ok(parent);
@@ -397,8 +398,8 @@ pub(crate) fn setup_composefs_bls_boot(
             )
         }
 
-        BootSetupType::Upgrade((fs, host)) => {
-            let sysroot_parent = get_sysroot_parent_dev()?;
+        BootSetupType::Upgrade((storage, fs, host)) => {
+            let sysroot_parent = get_sysroot_parent_dev(&storage.physical_root)?;
             let bootloader = host.require_composefs_booted()?.bootloader.clone();
 
             (
@@ -862,9 +863,9 @@ pub(crate) fn setup_composefs_uki_boot(
             )
         }
 
-        BootSetupType::Upgrade((_, host)) => {
-            let sysroot = Utf8PathBuf::from("/sysroot");
-            let sysroot_parent = get_sysroot_parent_dev()?;
+        BootSetupType::Upgrade((storage, _, host)) => {
+            let sysroot = Utf8PathBuf::from("/sysroot"); // Still needed for root_path
+            let sysroot_parent = get_sysroot_parent_dev(&storage.physical_root)?;
             let bootloader = host.require_composefs_booted()?.bootloader.clone();
 
             (

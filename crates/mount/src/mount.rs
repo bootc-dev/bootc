@@ -10,6 +10,7 @@ use std::{
 use anyhow::{anyhow, Context, Result};
 use bootc_utils::CommandRunExt;
 use camino::Utf8Path;
+use cap_std_ext::{cap_std::fs::Dir, cmdext::CapStdExtCommandExt};
 use fn_error_context::context;
 use rustix::{
     mount::{MoveMountFlags, OpenTreeFlags},
@@ -52,8 +53,11 @@ pub struct Findmnt {
     pub filesystems: Vec<Filesystem>,
 }
 
-pub fn run_findmnt(args: &[&str], path: Option<&str>) -> Result<Findmnt> {
+pub fn run_findmnt(args: &[&str], cwd: Option<&Dir>, path: Option<&str>) -> Result<Findmnt> {
     let mut cmd = Command::new("findmnt");
+    if let Some(cwd) = cwd {
+        cmd.cwd_dir(cwd.try_clone()?);
+    }
     cmd.args([
         "-J",
         "-v",
@@ -67,8 +71,8 @@ pub fn run_findmnt(args: &[&str], path: Option<&str>) -> Result<Findmnt> {
 }
 
 // Retrieve a mounted filesystem from a device given a matching path
-fn findmnt_filesystem(args: &[&str], path: &str) -> Result<Filesystem> {
-    let o = run_findmnt(args, Some(path))?;
+fn findmnt_filesystem(args: &[&str], cwd: Option<&Dir>, path: &str) -> Result<Filesystem> {
+    let o = run_findmnt(args, cwd, Some(path))?;
     o.filesystems
         .into_iter()
         .next()
@@ -79,19 +83,26 @@ fn findmnt_filesystem(args: &[&str], path: &str) -> Result<Filesystem> {
 /// Inspect a target which must be a mountpoint root - it is an error
 /// if the target is not the mount root.
 pub fn inspect_filesystem(path: &Utf8Path) -> Result<Filesystem> {
-    findmnt_filesystem(&["--mountpoint"], path.as_str())
+    findmnt_filesystem(&["--mountpoint"], None, path.as_str())
+}
+
+#[context("Inspecting filesystem")]
+/// Inspect a target which must be a mountpoint root - it is an error
+/// if the target is not the mount root.
+pub fn inspect_filesystem_of_dir(d: &Dir) -> Result<Filesystem> {
+    findmnt_filesystem(&["--mountpoint"], Some(d), ".")
 }
 
 #[context("Inspecting filesystem by UUID {uuid}")]
 /// Inspect a filesystem by partition UUID
 pub fn inspect_filesystem_by_uuid(uuid: &str) -> Result<Filesystem> {
-    findmnt_filesystem(&["--source"], &(format!("UUID={uuid}")))
+    findmnt_filesystem(&["--source"], None, &(format!("UUID={uuid}")))
 }
 
 // Check if a specified device contains an already mounted filesystem
 // in the root mount namespace
 pub fn is_mounted_in_pid1_mountns(path: &str) -> Result<bool> {
-    let o = run_findmnt(&["-N"], Some("1"))?;
+    let o = run_findmnt(&["-N"], None, Some("1"))?;
 
     let mounted = o.filesystems.iter().any(|fs| is_source_mounted(path, fs));
 

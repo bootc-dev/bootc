@@ -5,10 +5,7 @@
 //! - We delete bootloader + image but fail to delete the state/unrefenced objects etc
 
 use anyhow::{Context, Result};
-use cap_std_ext::{
-    cap_std::{ambient_authority, fs::Dir},
-    dirext::CapStdExtDirExt,
-};
+use cap_std_ext::{cap_std::fs::Dir, dirext::CapStdExtDirExt};
 use composefs::fsverity::{FsVerityHashValue, Sha512HashValue};
 
 use crate::{
@@ -16,12 +13,13 @@ use crate::{
         boot::{get_esp_partition, get_sysroot_parent_dev, mount_esp},
         delete::{delete_image, delete_staged, delete_state_dir, get_image_objects},
         status::{
-            composefs_deployment_status, get_bootloader, get_sorted_grub_uki_boot_entries,
+            get_bootloader, get_composefs_status, get_sorted_grub_uki_boot_entries,
             get_sorted_type1_boot_entries,
         },
     },
     composefs_consts::{STATE_DIR_RELATIVE, USER_CFG},
     spec::Bootloader,
+    store::{BootedComposefs, Storage},
 };
 
 #[fn_error_context::context("Listing EROFS images")]
@@ -46,13 +44,12 @@ fn list_erofs_images(sysroot: &Dir) -> Result<Vec<String>> {
 /// # Returns
 /// The fsverity of EROFS images corresponding to boot entries
 #[fn_error_context::context("Listing bootloader entries")]
-fn list_bootloader_entries() -> Result<Vec<String>> {
+fn list_bootloader_entries(physical_root: &Dir) -> Result<Vec<String>> {
     let bootloader = get_bootloader()?;
 
     let entries = match bootloader {
         Bootloader::Grub => {
-            let boot_dir = Dir::open_ambient_dir("/sysroot/boot", ambient_authority())
-                .context("Opening boot dir")?;
+            let boot_dir = physical_root.open_dir("boot").context("Opening boot dir")?;
 
             // Grub entries are always in boot
             let grub_dir = boot_dir.open_dir("grub2").context("Opening grub dir")?;
@@ -78,7 +75,7 @@ fn list_bootloader_entries() -> Result<Vec<String>> {
         }
 
         Bootloader::Systemd => {
-            let device = get_sysroot_parent_dev()?;
+            let device = get_sysroot_parent_dev(physical_root)?;
             let (esp_part, ..) = get_esp_partition(&device)?;
             let esp_mount = mount_esp(&esp_part)?;
 
@@ -172,14 +169,13 @@ pub(crate) fn gc_objects(sysroot: &Dir) -> Result<()> {
 /// Similarly if EROFS image B1 doesn't exist, but state dir does, then delete the state dir and
 /// perform GC
 #[fn_error_context::context("Running composefs garbage collection")]
-pub(crate) async fn composefs_gc() -> Result<()> {
-    let host = composefs_deployment_status().await?;
-    let booted_cfs = host.require_composefs_booted()?;
+pub(crate) async fn composefs_gc(storage: &Storage, booted_cfs: &BootedComposefs) -> Result<()> {
+    let host = get_composefs_status(storage, booted_cfs).await?;
+    let booted_cfs_status = host.require_composefs_booted()?;
 
-    let sysroot =
-        Dir::open_ambient_dir("/sysroot", ambient_authority()).context("Opening sysroot")?;
+    let sysroot = &storage.physical_root;
 
-    let bootloader_entries = list_bootloader_entries()?;
+    let bootloader_entries = list_bootloader_entries(&storage.physical_root)?;
     let images = list_erofs_images(&sysroot)?;
 
     // Collect the deployments that have an image but no bootloader entry
@@ -190,10 +186,10 @@ pub(crate) async fn composefs_gc() -> Result<()> {
 
     let staged = &host.status.staged;
 
-    if img_bootloader_diff.contains(&&booted_cfs.verity) {
+    if img_bootloader_diff.contains(&&booted_cfs_status.verity) {
         anyhow::bail!(
             "Inconsistent state. Booted entry '{}' found for cleanup",
-            booted_cfs.verity
+            booted_cfs_status.verity
         )
     }
 

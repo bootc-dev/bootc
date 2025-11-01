@@ -4,28 +4,28 @@ use crate::bootc_composefs::boot::{
     get_esp_partition, get_sysroot_parent_dev, mount_esp, BootType,
 };
 use crate::bootc_composefs::rollback::{rename_exchange_bls_entries, rename_exchange_user_cfg};
+use crate::bootc_composefs::status::get_composefs_status;
+use crate::composefs_consts::STATE_DIR_ABS;
 use crate::spec::Bootloader;
-use crate::{
-    bootc_composefs::status::composefs_deployment_status, composefs_consts::STATE_DIR_ABS,
-};
+use crate::store::{BootedComposefs, Storage};
 use anyhow::{Context, Result};
-use bootc_initramfs_setup::{mount_composefs_image, open_dir};
+use bootc_initramfs_setup::mount_composefs_image;
 use bootc_mount::tempmount::TempMount;
 use cap_std_ext::cap_std::{ambient_authority, fs::Dir};
 use cap_std_ext::dirext::CapStdExtDirExt;
 use etc_merge::{compute_diff, merge, print_diff, traverse_etc};
-use rustix::fs::{fsync, renameat, CWD};
+use rustix::fs::{fsync, renameat};
 use rustix::path::Arg;
 
 use fn_error_context::context;
 
-pub(crate) async fn get_etc_diff() -> Result<()> {
-    let host = composefs_deployment_status().await?;
+pub(crate) async fn get_etc_diff(storage: &Storage, booted_cfs: &BootedComposefs) -> Result<()> {
+    let host = get_composefs_status(storage, booted_cfs).await?;
     let booted_composefs = host.require_composefs_booted()?;
 
     // Mount the booted EROFS image to get pristine etc
-    let sysroot = open_dir(CWD, "/sysroot").context("Opening /sysroot")?;
-    let composefs_fd = mount_composefs_image(&sysroot, &booted_composefs.verity, false)?;
+    let sysroot_fd = storage.physical_root.reopen_as_ownedfd()?;
+    let composefs_fd = mount_composefs_image(&sysroot_fd, &booted_composefs.verity, false)?;
 
     let erofs_tmp_mnt = TempMount::mount_fd(&composefs_fd)?;
 
@@ -41,8 +41,11 @@ pub(crate) async fn get_etc_diff() -> Result<()> {
     Ok(())
 }
 
-pub(crate) async fn composefs_backend_finalize() -> Result<()> {
-    let host = composefs_deployment_status().await?;
+pub(crate) async fn composefs_backend_finalize(
+    storage: &Storage,
+    booted_cfs: &BootedComposefs,
+) -> Result<()> {
+    let host = get_composefs_status(storage, booted_cfs).await?;
 
     let booted_composefs = host.require_composefs_booted()?;
 
@@ -56,8 +59,8 @@ pub(crate) async fn composefs_backend_finalize() -> Result<()> {
     ))?;
 
     // Mount the booted EROFS image to get pristine etc
-    let sysroot = open_dir(CWD, "/sysroot")?;
-    let composefs_fd = mount_composefs_image(&sysroot, &booted_composefs.verity, false)?;
+    let sysroot_fd = storage.physical_root.reopen_as_ownedfd()?;
+    let composefs_fd = mount_composefs_image(&sysroot_fd, &booted_composefs.verity, false)?;
 
     let erofs_tmp_mnt = TempMount::mount_fd(&composefs_fd)?;
 
@@ -83,13 +86,15 @@ pub(crate) async fn composefs_backend_finalize() -> Result<()> {
     // Unmount EROFS
     drop(erofs_tmp_mnt);
 
-    let sysroot_parent = get_sysroot_parent_dev()?;
+    let sysroot_parent = get_sysroot_parent_dev(&storage.physical_root)?;
     // NOTE: Assumption here that ESP will always be present
     let (esp_part, ..) = get_esp_partition(&sysroot_parent)?;
 
     let esp_mount = mount_esp(&esp_part)?;
-    let boot_dir = Dir::open_ambient_dir("/sysroot/boot", ambient_authority())
-        .context("Opening sysroot/boot")?;
+    let boot_dir = storage
+        .physical_root
+        .open_dir("boot")
+        .context("Opening boot")?;
 
     // NOTE: Assuming here we won't have two bootloaders at the same time
     match booted_composefs.bootloader {

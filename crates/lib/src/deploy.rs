@@ -835,7 +835,7 @@ fn write_reboot_required(image: &str) -> Result<()> {
 pub(crate) async fn rollback(sysroot: &Storage) -> Result<()> {
     const ROLLBACK_JOURNAL_ID: &str = "26f3b1eb24464d12aa5e7b544a6b5468";
     let ostree = sysroot.get_ostree()?;
-    let (booted_deployment, deployments, host) = crate::status::get_status_require_booted(ostree)?;
+    let (booted_ostree, deployments, host) = crate::status::get_status_require_booted(ostree)?;
 
     let new_spec = {
         let mut new_spec = host.spec.clone();
@@ -843,7 +843,7 @@ pub(crate) async fn rollback(sysroot: &Storage) -> Result<()> {
         new_spec
     };
 
-    let repo = &ostree.repo();
+    let repo = &booted_ostree.repo();
 
     // Just to be sure
     host.spec.verify_transition(&new_spec)?;
@@ -882,16 +882,18 @@ pub(crate) async fn rollback(sysroot: &Storage) -> Result<()> {
     // SAFETY: If there's a rollback status, then there's a deployment
     let rollback_deployment = deployments.rollback.expect("rollback deployment");
     let new_deployments = if reverting {
-        [booted_deployment, rollback_deployment]
+        [booted_ostree.deployment, rollback_deployment]
     } else {
-        [rollback_deployment, booted_deployment]
+        [rollback_deployment, booted_ostree.deployment]
     };
     let new_deployments = new_deployments
         .into_iter()
         .chain(deployments.other)
         .collect::<Vec<_>>();
     tracing::debug!("Writing new deployments: {new_deployments:?}");
-    ostree.write_deployments(&new_deployments, gio::Cancellable::NONE)?;
+    booted_ostree
+        .sysroot
+        .write_deployments(&new_deployments, gio::Cancellable::NONE)?;
     if reverting {
         println!("Next boot: current deployment");
     } else {

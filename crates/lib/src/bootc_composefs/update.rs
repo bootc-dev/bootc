@@ -7,17 +7,15 @@ use ostree_ext::oci_spec::image::{ImageConfiguration, ImageManifest};
 use crate::{
     bootc_composefs::{
         boot::{setup_composefs_bls_boot, setup_composefs_uki_boot, BootSetupType, BootType},
-        repo::{get_imgref, open_composefs_repo, pull_composefs_repo},
+        repo::{get_imgref, pull_composefs_repo},
         service::start_finalize_stated_svc,
         state::write_composefs_state,
-        status::{composefs_deployment_status, get_container_manifest_and_config},
+        status::{get_composefs_status, get_container_manifest_and_config},
     },
     cli::UpgradeOpts,
     spec::ImageReference,
-    store::ComposefsRepository,
+    store::{BootedComposefs, ComposefsRepository, Storage},
 };
-
-use cap_std_ext::cap_std::{ambient_authority, fs::Dir};
 
 #[context("Getting SHA256 Digest for {id}")]
 pub fn str_to_sha256digest(id: &str) -> Result<Sha256Digest> {
@@ -61,8 +59,12 @@ async fn is_image_pulled(
 }
 
 #[context("Upgrading composefs")]
-pub(crate) async fn upgrade_composefs(opts: UpgradeOpts) -> Result<()> {
-    let host = composefs_deployment_status()
+pub(crate) async fn upgrade_composefs(
+    opts: UpgradeOpts,
+    storage: &Storage,
+    composefs: &BootedComposefs,
+) -> Result<()> {
+    let host = get_composefs_status(storage, composefs)
         .await
         .context("Getting composefs deployment status")?;
 
@@ -72,9 +74,7 @@ pub(crate) async fn upgrade_composefs(opts: UpgradeOpts) -> Result<()> {
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("No image source specified"))?;
 
-    let sysroot =
-        Dir::open_ambient_dir("/sysroot", ambient_authority()).context("Opening sysroot")?;
-    let repo = open_composefs_repo(&sysroot)?;
+    let repo = &*composefs.repo;
 
     let (img_pulled, mut manifest, mut config) = is_image_pulled(&repo, imgref).await?;
     let booted_img_digest = manifest.config().digest().digest();
@@ -160,16 +160,19 @@ pub(crate) async fn upgrade_composefs(opts: UpgradeOpts) -> Result<()> {
     match boot_type {
         BootType::Bls => {
             boot_digest = Some(setup_composefs_bls_boot(
-                BootSetupType::Upgrade((&fs, &host)),
+                BootSetupType::Upgrade((storage, &fs, &host)),
                 repo,
                 &id,
                 entry,
             )?)
         }
 
-        BootType::Uki => {
-            setup_composefs_uki_boot(BootSetupType::Upgrade((&fs, &host)), repo, &id, entries)?
-        }
+        BootType::Uki => setup_composefs_uki_boot(
+            BootSetupType::Upgrade((storage, &fs, &host)),
+            repo,
+            &id,
+            entries,
+        )?,
     };
 
     write_composefs_state(

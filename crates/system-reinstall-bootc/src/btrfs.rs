@@ -4,7 +4,7 @@ use fn_error_context::context;
 
 #[context("check_root_siblings")]
 pub(crate) fn check_root_siblings() -> Result<Vec<String>> {
-    let mounts = bootc_mount::run_findmnt(&[], None)?;
+    let mounts = bootc_mount::run_findmnt(&[], None, None)?;
     let problem_filesystems: Vec<String> = mounts
         .filesystems
         .iter()

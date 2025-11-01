@@ -57,7 +57,7 @@ pub(crate) fn check_root_siblings() -> Result<Vec<String>> {
     let siblings: Vec<String> = all_volumes
         .iter()
         .filter(|lv| {
-            let mount = run_findmnt(&["-S", &lv.lv_path], None).log_err_default();
+            let mount = run_findmnt(&["-S", &lv.lv_path], None, None).log_err_default();
             if let Some(fs) = mount.filesystems.first() {
                 &fs.target == "/"
             } else {
@@ -66,7 +66,7 @@ pub(crate) fn check_root_siblings() -> Result<Vec<String>> {
         })
         .flat_map(|root_lv| parse_volumes(Some(root_lv.vg_name.as_str())).unwrap_or_default())
         .try_fold(Vec::new(), |mut acc, r| -> anyhow::Result<_> {
-            let mount = run_findmnt(&["-S", &r.lv_path], None).log_err_default();
+            let mount = run_findmnt(&["-S", &r.lv_path], None, None).log_err_default();
             let mount_path = if let Some(fs) = mount.filesystems.first() {
                 &fs.target
             } else {

@@ -1,7 +1,6 @@
 use std::io::Write;
 
 use anyhow::{anyhow, Context, Result};
-use cap_std_ext::cap_std::ambient_authority;
 use cap_std_ext::cap_std::fs::Dir;
 use cap_std_ext::dirext::CapStdExtDirExt;
 use fn_error_context::context;
@@ -10,9 +9,10 @@ use rustix::fs::{fsync, renameat_with, AtFlags, RenameFlags};
 use crate::bootc_composefs::boot::{
     get_esp_partition, get_sysroot_parent_dev, mount_esp, type1_entry_conf_file_name, BootType,
 };
-use crate::bootc_composefs::status::{composefs_deployment_status, get_sorted_type1_boot_entries};
+use crate::bootc_composefs::status::{get_composefs_status, get_sorted_type1_boot_entries};
 use crate::composefs_consts::TYPE1_ENT_PATH_STAGED;
 use crate::spec::Bootloader;
+use crate::store::{BootedComposefs, Storage};
 use crate::{
     bootc_composefs::{boot::get_efi_uuid_source, status::get_sorted_grub_uki_boot_entries},
     composefs_consts::{
@@ -164,8 +164,11 @@ fn rollback_composefs_entries(boot_dir: &Dir, bootloader: Bootloader) -> Result<
 }
 
 #[context("Rolling back composefs")]
-pub(crate) async fn composefs_rollback() -> Result<()> {
-    let host = composefs_deployment_status().await?;
+pub(crate) async fn composefs_rollback(
+    storage: &Storage,
+    booted_cfs: &BootedComposefs,
+) -> Result<()> {
+    let host = get_composefs_status(storage, booted_cfs).await?;
 
     let new_spec = {
         let mut new_spec = host.spec.clone();
@@ -195,7 +198,9 @@ pub(crate) async fn composefs_rollback() -> Result<()> {
 
     match &rollback_entry.bootloader {
         Bootloader::Grub => {
-            let boot_dir = Dir::open_ambient_dir("/sysroot/boot", ambient_authority())
+            let boot_dir = storage
+                .physical_root
+                .open_dir("boot")
                 .context("Opening boot dir")?;
 
             match rollback_entry.boot_type {
@@ -210,7 +215,7 @@ pub(crate) async fn composefs_rollback() -> Result<()> {
         }
 
         Bootloader::Systemd => {
-            let parent = get_sysroot_parent_dev()?;
+            let parent = get_sysroot_parent_dev(&storage.physical_root)?;
             let (esp_part, ..) = get_esp_partition(&parent)?;
             let esp_mount = mount_esp(&esp_part)?;
 
