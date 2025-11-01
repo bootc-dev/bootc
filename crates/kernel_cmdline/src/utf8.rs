@@ -5,7 +5,7 @@
 
 use std::ops::Deref;
 
-use crate::bytes;
+use crate::{bytes, Action};
 
 use anyhow::Result;
 
@@ -14,7 +14,7 @@ use anyhow::Result;
 /// Wraps the raw command line bytes and provides methods for parsing and iterating
 /// over individual parameters. Uses copy-on-write semantics to avoid unnecessary
 /// allocations when working with borrowed data.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct Cmdline<'a>(bytes::Cmdline<'a>);
 
 impl<'a, T: AsRef<str> + ?Sized> From<&'a T> for Cmdline<'a> {
@@ -23,6 +23,15 @@ impl<'a, T: AsRef<str> + ?Sized> From<&'a T> for Cmdline<'a> {
     /// Uses borrowed data when possible to avoid unnecessary allocations.
     fn from(input: &'a T) -> Self {
         Self(bytes::Cmdline::from(input.as_ref().as_bytes()))
+    }
+}
+
+impl From<String> for Cmdline<'static> {
+    /// Creates a new `Cmdline` from a `String`.
+    ///
+    /// Takes ownership of input and maintains it for internal owned data.
+    fn from(input: String) -> Self {
+        Self(bytes::Cmdline::from(input.into_bytes()))
     }
 }
 
@@ -109,13 +118,35 @@ impl<'a> Cmdline<'a> {
             .ok_or_else(|| anyhow::anyhow!("Failed to find kernel argument '{key}'"))
     }
 
+    /// Add a parameter to the command line if it doesn't already exist
+    ///
+    /// Returns `Action::Added` if the parameter did not already exist
+    /// and was added.
+    ///
+    /// Returns `Action::Existed` if the exact parameter (same key and value)
+    /// already exists. No modification was made.
+    ///
+    /// Unlike `add_or_modify`, this method will not modify existing
+    /// parameters. If a parameter with the same key exists but has a
+    /// different value, the new parameter is still added, allowing
+    /// duplicate keys (e.g., multiple `console=` parameters).
+    pub fn add(&mut self, param: &Parameter) -> Action {
+        self.0.add(&param.0)
+    }
+
     /// Add or modify a parameter to the command line
     ///
-    /// Returns `true` if the parameter was added or modified.
+    /// Returns `Action::Added` if the parameter did not exist before
+    /// and was added.
     ///
-    /// Returns `false` if the parameter already existed with the same
-    /// content.
-    pub fn add_or_modify(&mut self, param: &Parameter) -> bool {
+    /// Returns `Action::Modified` if the parameter existed before,
+    /// but contained a different value.  The value was updated to the
+    /// newly-requested value.
+    ///
+    /// Returns `Action::Existed` if the parameter existed before, and
+    /// contained the same value as the newly-requested value.  No
+    /// modification was made.
+    pub fn add_or_modify(&mut self, param: &Parameter) -> Action {
         self.0.add_or_modify(&param.0)
     }
 
@@ -124,6 +155,16 @@ impl<'a> Cmdline<'a> {
     /// Returns `true` if parameter(s) were removed.
     pub fn remove(&mut self, key: &ParameterKey) -> bool {
         self.0.remove(&key.0)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_owned(&self) -> bool {
+        self.0.is_owned()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_borrowed(&self) -> bool {
+        self.0.is_borrowed()
     }
 }
 
@@ -141,6 +182,23 @@ impl<'a> std::fmt::Display for Cmdline<'a> {
     }
 }
 
+impl<'a> IntoIterator for &'a Cmdline<'a> {
+    type Item = Parameter<'a>;
+    type IntoIter = CmdlineIter<'a>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
+impl<'a, 'other> Extend<Parameter<'other>> for Cmdline<'a> {
+    fn extend<T: IntoIterator<Item = Parameter<'other>>>(&mut self, iter: T) {
+        for param in iter {
+            self.add(&param);
+        }
+    }
+}
+
 /// A single kernel command line parameter key
 ///
 /// Handles quoted values and treats dashes and underscores in keys as equivalent.
@@ -154,6 +212,16 @@ impl<'a> std::ops::Deref for ParameterKey<'a> {
         // SAFETY: We know this is valid UTF-8 since we only
         // construct the underlying `bytes` from valid UTF-8
         str::from_utf8(&self.0).expect("We only construct the underlying bytes from valid UTF-8")
+    }
+}
+
+impl<'a, T> AsRef<T> for ParameterKey<'a>
+where
+    T: ?Sized,
+    <ParameterKey<'a> as Deref>::Target: AsRef<T>,
+{
+    fn as_ref(&self) -> &T {
+        self.deref().as_ref()
     }
 }
 
@@ -191,7 +259,7 @@ impl PartialEq for ParameterKey<'_> {
 }
 
 /// A single kernel command line parameter.
-#[derive(Debug, Eq)]
+#[derive(Clone, Debug, Eq)]
 pub struct Parameter<'a>(bytes::Parameter<'a>);
 
 impl<'a> Parameter<'a> {
@@ -254,6 +322,13 @@ impl<'a> Parameter<'a> {
             str::from_utf8(p).expect("We only construct the underlying bytes from valid UTF-8")
         })
     }
+
+    /// Returns the parameter as a &str
+    pub fn as_str(&'a self) -> &'a str {
+        // SAFETY: We know this is valid UTF-8 since we only
+        // construct the underlying `bytes` from valid UTF-8
+        str::from_utf8(&self.0).expect("We only construct the underlying bytes from valid UTF-8")
+    }
 }
 
 impl<'a> TryFrom<bytes::Parameter<'a>> for Parameter<'a> {
@@ -286,6 +361,16 @@ impl<'a> std::fmt::Display for Parameter<'a> {
             }
             None => write!(f, "{}", self.key()),
         }
+    }
+}
+
+impl<'a> std::ops::Deref for Parameter<'a> {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        // SAFETY: We know this is valid UTF-8 since we only
+        // construct the underlying `bytes` from valid UTF-8
+        str::from_utf8(&self.0).expect("We only construct the underlying bytes from valid UTF-8")
     }
 }
 
@@ -439,6 +524,29 @@ mod tests {
         // example taken lovingly from:
         // https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/kernel/params.c?id=89748acdf226fd1a8775ff6fa2703f8412b286c8#n160
         let kargs = Cmdline::from("foo=bar,bar2 baz=fuz wiz");
+        assert!(kargs.is_borrowed());
+        let mut iter = kargs.iter();
+
+        assert_eq!(iter.next(), Some(param("foo=bar,bar2")));
+        assert_eq!(iter.next(), Some(param("baz=fuz")));
+        assert_eq!(iter.next(), Some(param("wiz")));
+        assert_eq!(iter.next(), None);
+
+        // Test the find API
+        assert_eq!(kargs.find("foo").unwrap().value().unwrap(), "bar,bar2");
+        assert!(kargs.find("nothing").is_none());
+    }
+
+    #[test]
+    fn test_cmdline_default() {
+        let kargs: Cmdline = Default::default();
+        assert_eq!(kargs.iter().next(), None);
+    }
+
+    #[test]
+    fn test_kargs_simple_from_string() {
+        let kargs = Cmdline::from("foo=bar,bar2 baz=fuz wiz".to_string());
+        assert!(kargs.is_owned());
         let mut iter = kargs.iter();
 
         assert_eq!(iter.next(), Some(param("foo=bar,bar2")));
@@ -572,18 +680,61 @@ mod tests {
     }
 
     #[test]
+    fn test_add() {
+        let mut kargs = Cmdline::from("console=tty0 console=ttyS1");
+
+        // add new parameter with duplicate key but different value
+        assert!(matches!(kargs.add(&param("console=ttyS2")), Action::Added));
+        let mut iter = kargs.iter();
+        assert_eq!(iter.next(), Some(param("console=tty0")));
+        assert_eq!(iter.next(), Some(param("console=ttyS1")));
+        assert_eq!(iter.next(), Some(param("console=ttyS2")));
+        assert_eq!(iter.next(), None);
+
+        // try to add exact duplicate - should return Existed
+        assert!(matches!(
+            kargs.add(&param("console=ttyS1")),
+            Action::Existed
+        ));
+        iter = kargs.iter();
+        assert_eq!(iter.next(), Some(param("console=tty0")));
+        assert_eq!(iter.next(), Some(param("console=ttyS1")));
+        assert_eq!(iter.next(), Some(param("console=ttyS2")));
+        assert_eq!(iter.next(), None);
+
+        // add completely new parameter
+        assert!(matches!(kargs.add(&param("quiet")), Action::Added));
+        iter = kargs.iter();
+        assert_eq!(iter.next(), Some(param("console=tty0")));
+        assert_eq!(iter.next(), Some(param("console=ttyS1")));
+        assert_eq!(iter.next(), Some(param("console=ttyS2")));
+        assert_eq!(iter.next(), Some(param("quiet")));
+        assert_eq!(iter.next(), None);
+    }
+
+    #[test]
+    fn test_add_empty_cmdline() {
+        let mut kargs = Cmdline::from("");
+        assert!(matches!(kargs.add(&param("foo")), Action::Added));
+        assert_eq!(kargs.as_ref(), "foo");
+    }
+
+    #[test]
     fn test_add_or_modify() {
         let mut kargs = Cmdline::from("foo=bar");
 
         // add new
-        assert!(kargs.add_or_modify(&param("baz")));
+        assert!(matches!(kargs.add_or_modify(&param("baz")), Action::Added));
         let mut iter = kargs.iter();
         assert_eq!(iter.next(), Some(param("foo=bar")));
         assert_eq!(iter.next(), Some(param("baz")));
         assert_eq!(iter.next(), None);
 
         // modify existing
-        assert!(kargs.add_or_modify(&param("foo=fuz")));
+        assert!(matches!(
+            kargs.add_or_modify(&param("foo=fuz")),
+            Action::Modified
+        ));
         iter = kargs.iter();
         assert_eq!(iter.next(), Some(param("foo=fuz")));
         assert_eq!(iter.next(), Some(param("baz")));
@@ -591,7 +742,10 @@ mod tests {
 
         // already exists with same value returns false and doesn't
         // modify anything
-        assert!(!kargs.add_or_modify(&param("foo=fuz")));
+        assert!(matches!(
+            kargs.add_or_modify(&param("foo=fuz")),
+            Action::Existed
+        ));
         iter = kargs.iter();
         assert_eq!(iter.next(), Some(param("foo=fuz")));
         assert_eq!(iter.next(), Some(param("baz")));
@@ -601,14 +755,17 @@ mod tests {
     #[test]
     fn test_add_or_modify_empty_cmdline() {
         let mut kargs = Cmdline::from("");
-        assert!(kargs.add_or_modify(&param("foo")));
+        assert!(matches!(kargs.add_or_modify(&param("foo")), Action::Added));
         assert_eq!(kargs.as_ref(), "foo");
     }
 
     #[test]
     fn test_add_or_modify_duplicate_parameters() {
         let mut kargs = Cmdline::from("a=1 a=2");
-        assert!(kargs.add_or_modify(&param("a=3")));
+        assert!(matches!(
+            kargs.add_or_modify(&param("a=3")),
+            Action::Modified
+        ));
         let mut iter = kargs.iter();
         assert_eq!(iter.next(), Some(param("a=3")));
         assert_eq!(iter.next(), None);
@@ -640,5 +797,50 @@ mod tests {
         let mut iter = kargs.iter();
         assert_eq!(iter.next(), Some(param("b=2")));
         assert_eq!(iter.next(), None);
+    }
+
+    #[test]
+    fn test_extend() {
+        let mut kargs = Cmdline::from("foo=bar baz");
+        let other = Cmdline::from("qux=quux foo=updated");
+
+        kargs.extend(&other);
+
+        // Sanity check that the lifetimes of the two Cmdlines are not
+        // tied to each other.
+        drop(other);
+
+        // Should have preserved the original foo, added qux, baz
+        // unchanged, and added the second (duplicate key) foo
+        let mut iter = kargs.iter();
+        assert_eq!(iter.next(), Some(param("foo=bar")));
+        assert_eq!(iter.next(), Some(param("baz")));
+        assert_eq!(iter.next(), Some(param("qux=quux")));
+        assert_eq!(iter.next(), Some(param("foo=updated")));
+        assert_eq!(iter.next(), None);
+    }
+
+    #[test]
+    fn test_extend_empty() {
+        let mut kargs = Cmdline::from("");
+        let other = Cmdline::from("foo=bar baz");
+
+        kargs.extend(&other);
+
+        let mut iter = kargs.iter();
+        assert_eq!(iter.next(), Some(param("foo=bar")));
+        assert_eq!(iter.next(), Some(param("baz")));
+        assert_eq!(iter.next(), None);
+    }
+
+    #[test]
+    fn test_into_iterator() {
+        let kargs = Cmdline::from("foo=bar baz=qux wiz");
+        let params: Vec<_> = (&kargs).into_iter().collect();
+
+        assert_eq!(params.len(), 3);
+        assert_eq!(params[0], param("foo=bar"));
+        assert_eq!(params[1], param("baz=qux"));
+        assert_eq!(params[2], param("wiz"));
     }
 }

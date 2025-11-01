@@ -4,8 +4,9 @@
 //! arguments, supporting both key-only switches and key-value pairs with proper quote handling.
 
 use std::borrow::Cow;
+use std::ops::Deref;
 
-use crate::utf8;
+use crate::{utf8, Action};
 
 use anyhow::Result;
 
@@ -14,7 +15,7 @@ use anyhow::Result;
 /// Wraps the raw command line bytes and provides methods for parsing and iterating
 /// over individual parameters. Uses copy-on-write semantics to avoid unnecessary
 /// allocations when working with borrowed data.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct Cmdline<'a>(Cow<'a, [u8]>);
 
 impl<'a, T: AsRef<[u8]> + ?Sized> From<&'a T> for Cmdline<'a> {
@@ -132,13 +133,49 @@ impl<'a> Cmdline<'a> {
         })
     }
 
+    /// Add a parameter to the command line if it doesn't already exist
+    ///
+    /// Returns `Action::Added` if the parameter did not already exist
+    /// and was added.
+    ///
+    /// Returns `Action::Existed` if the exact parameter (same key and value)
+    /// already exists. No modification was made.
+    ///
+    /// Unlike `add_or_modify`, this method will not modify existing
+    /// parameters. If a parameter with the same key exists but has a
+    /// different value, the new parameter is still added, allowing
+    /// duplicate keys (e.g., multiple `console=` parameters).
+    pub fn add(&mut self, param: &Parameter) -> Action {
+        // Check if the exact parameter already exists
+        for p in self.iter() {
+            if p == *param {
+                // Exact match found, don't add duplicate
+                return Action::Existed;
+            }
+        }
+
+        // The exact parameter was not found, so we append it.
+        let self_mut = self.0.to_mut();
+        if !self_mut.is_empty() && !self_mut.last().unwrap().is_ascii_whitespace() {
+            self_mut.push(b' ');
+        }
+        self_mut.extend_from_slice(param.parameter);
+        Action::Added
+    }
+
     /// Add or modify a parameter to the command line
     ///
-    /// Returns `true` if the parameter was added or modified.
+    /// Returns `Action::Added` if the parameter did not exist before
+    /// and was added.
     ///
-    /// Returns `false` if the parameter already existed with the same
-    /// content.
-    pub fn add_or_modify(&mut self, param: &Parameter) -> bool {
+    /// Returns `Action::Modified` if the parameter existed before,
+    /// but contained a different value.  The value was updated to the
+    /// newly-requested value.
+    ///
+    /// Returns `Action::Existed` if the parameter existed before, and
+    /// contained the same value as the newly-requested value.  No
+    /// modification was made.
+    pub fn add_or_modify(&mut self, param: &Parameter) -> Action {
         let mut new_params = Vec::new();
         let mut modified = false;
         let mut seen_key = false;
@@ -170,14 +207,14 @@ impl<'a> Cmdline<'a> {
                 self_mut.push(b' ');
             }
             self_mut.extend_from_slice(param.parameter);
-            return true;
+            return Action::Added;
         }
         if modified {
             self.0 = Cow::Owned(new_params.join(b" ".as_slice()));
-            true
+            Action::Modified
         } else {
             // The parameter already existed with the same content, and there were no duplicates.
-            false
+            Action::Existed
         }
     }
 
@@ -202,11 +239,38 @@ impl<'a> Cmdline<'a> {
 
         removed
     }
+
+    #[cfg(test)]
+    pub(crate) fn is_owned(&self) -> bool {
+        matches!(self.0, Cow::Owned(_))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_borrowed(&self) -> bool {
+        matches!(self.0, Cow::Borrowed(_))
+    }
 }
 
 impl<'a> AsRef<[u8]> for Cmdline<'a> {
     fn as_ref(&self) -> &[u8] {
         &self.0
+    }
+}
+
+impl<'a> IntoIterator for &'a Cmdline<'a> {
+    type Item = Parameter<'a>;
+    type IntoIter = CmdlineIter<'a>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
+impl<'a, 'other> Extend<Parameter<'other>> for Cmdline<'a> {
+    fn extend<T: IntoIterator<Item = Parameter<'other>>>(&mut self, iter: T) {
+        for param in iter {
+            self.add(&param);
+        }
     }
 }
 
@@ -216,11 +280,21 @@ impl<'a> AsRef<[u8]> for Cmdline<'a> {
 #[derive(Clone, Debug, Eq)]
 pub struct ParameterKey<'a>(pub(crate) &'a [u8]);
 
-impl<'a> std::ops::Deref for ParameterKey<'a> {
+impl<'a> Deref for ParameterKey<'a> {
     type Target = [u8];
 
     fn deref(&self) -> &'a Self::Target {
         self.0
+    }
+}
+
+impl<'a, T> AsRef<T> for ParameterKey<'a>
+where
+    T: ?Sized,
+    <ParameterKey<'a> as Deref>::Target: AsRef<T>,
+{
+    fn as_ref(&self) -> &T {
+        self.deref().as_ref()
     }
 }
 
@@ -255,7 +329,7 @@ impl PartialEq for ParameterKey<'_> {
 }
 
 /// A single kernel command line parameter.
-#[derive(Debug, Eq)]
+#[derive(Clone, Debug, Eq)]
 pub struct Parameter<'a> {
     /// The full original value
     parameter: &'a [u8],
@@ -358,6 +432,14 @@ impl<'a> PartialEq for Parameter<'a> {
     fn eq(&self, other: &Self) -> bool {
         // Note we don't compare parameter because we want hyphen-dash insensitivity for the key
         self.key == other.key && self.value == other.value
+    }
+}
+
+impl<'a> std::ops::Deref for Parameter<'a> {
+    type Target = [u8];
+
+    fn deref(&self) -> &'a Self::Target {
+        self.parameter
     }
 }
 
@@ -507,6 +589,12 @@ mod tests {
     }
 
     #[test]
+    fn test_cmdline_default() {
+        let kargs: Cmdline = Default::default();
+        assert_eq!(kargs.iter().next(), None);
+    }
+
+    #[test]
     fn test_kargs_iter_utf8() {
         let kargs = Cmdline::from(b"foo=bar,bar2 \xff baz=fuz bad=oh\xffno wiz");
         let mut iter = kargs.iter_utf8();
@@ -640,18 +728,61 @@ mod tests {
     }
 
     #[test]
+    fn test_add() {
+        let mut kargs = Cmdline::from(b"console=tty0 console=ttyS1");
+
+        // add new parameter with duplicate key but different value
+        assert!(matches!(kargs.add(&param("console=ttyS2")), Action::Added));
+        let mut iter = kargs.iter();
+        assert_eq!(iter.next(), Some(param("console=tty0")));
+        assert_eq!(iter.next(), Some(param("console=ttyS1")));
+        assert_eq!(iter.next(), Some(param("console=ttyS2")));
+        assert_eq!(iter.next(), None);
+
+        // try to add exact duplicate - should return Existed
+        assert!(matches!(
+            kargs.add(&param("console=ttyS1")),
+            Action::Existed
+        ));
+        iter = kargs.iter();
+        assert_eq!(iter.next(), Some(param("console=tty0")));
+        assert_eq!(iter.next(), Some(param("console=ttyS1")));
+        assert_eq!(iter.next(), Some(param("console=ttyS2")));
+        assert_eq!(iter.next(), None);
+
+        // add completely new parameter
+        assert!(matches!(kargs.add(&param("quiet")), Action::Added));
+        iter = kargs.iter();
+        assert_eq!(iter.next(), Some(param("console=tty0")));
+        assert_eq!(iter.next(), Some(param("console=ttyS1")));
+        assert_eq!(iter.next(), Some(param("console=ttyS2")));
+        assert_eq!(iter.next(), Some(param("quiet")));
+        assert_eq!(iter.next(), None);
+    }
+
+    #[test]
+    fn test_add_empty_cmdline() {
+        let mut kargs = Cmdline::from(b"");
+        assert!(matches!(kargs.add(&param("foo")), Action::Added));
+        assert_eq!(kargs.0, b"foo".as_slice());
+    }
+
+    #[test]
     fn test_add_or_modify() {
         let mut kargs = Cmdline::from(b"foo=bar");
 
         // add new
-        assert!(kargs.add_or_modify(&param("baz")));
+        assert!(matches!(kargs.add_or_modify(&param("baz")), Action::Added));
         let mut iter = kargs.iter();
         assert_eq!(iter.next(), Some(param("foo=bar")));
         assert_eq!(iter.next(), Some(param("baz")));
         assert_eq!(iter.next(), None);
 
         // modify existing
-        assert!(kargs.add_or_modify(&param("foo=fuz")));
+        assert!(matches!(
+            kargs.add_or_modify(&param("foo=fuz")),
+            Action::Modified
+        ));
         iter = kargs.iter();
         assert_eq!(iter.next(), Some(param("foo=fuz")));
         assert_eq!(iter.next(), Some(param("baz")));
@@ -659,7 +790,10 @@ mod tests {
 
         // already exists with same value returns false and doesn't
         // modify anything
-        assert!(!kargs.add_or_modify(&param("foo=fuz")));
+        assert!(matches!(
+            kargs.add_or_modify(&param("foo=fuz")),
+            Action::Existed
+        ));
         iter = kargs.iter();
         assert_eq!(iter.next(), Some(param("foo=fuz")));
         assert_eq!(iter.next(), Some(param("baz")));
@@ -669,14 +803,17 @@ mod tests {
     #[test]
     fn test_add_or_modify_empty_cmdline() {
         let mut kargs = Cmdline::from(b"");
-        assert!(kargs.add_or_modify(&param("foo")));
+        assert!(matches!(kargs.add_or_modify(&param("foo")), Action::Added));
         assert_eq!(kargs.0, b"foo".as_slice());
     }
 
     #[test]
     fn test_add_or_modify_duplicate_parameters() {
         let mut kargs = Cmdline::from(b"a=1 a=2");
-        assert!(kargs.add_or_modify(&param("a=3")));
+        assert!(matches!(
+            kargs.add_or_modify(&param("a=3")),
+            Action::Modified
+        ));
         let mut iter = kargs.iter();
         assert_eq!(iter.next(), Some(param("a=3")));
         assert_eq!(iter.next(), None);
@@ -708,5 +845,50 @@ mod tests {
         let mut iter = kargs.iter();
         assert_eq!(iter.next(), Some(param("b=2")));
         assert_eq!(iter.next(), None);
+    }
+
+    #[test]
+    fn test_extend() {
+        let mut kargs = Cmdline::from(b"foo=bar baz");
+        let other = Cmdline::from(b"qux=quux foo=updated");
+
+        kargs.extend(&other);
+
+        // Sanity check that the lifetimes of the two Cmdlines are not
+        // tied to each other.
+        drop(other);
+
+        // Should have preserved the original foo, added qux, baz
+        // unchanged, and added the second (duplicate key) foo
+        let mut iter = kargs.iter();
+        assert_eq!(iter.next(), Some(param("foo=bar")));
+        assert_eq!(iter.next(), Some(param("baz")));
+        assert_eq!(iter.next(), Some(param("qux=quux")));
+        assert_eq!(iter.next(), Some(param("foo=updated")));
+        assert_eq!(iter.next(), None);
+    }
+
+    #[test]
+    fn test_extend_empty() {
+        let mut kargs = Cmdline::from(b"");
+        let other = Cmdline::from(b"foo=bar baz");
+
+        kargs.extend(&other);
+
+        let mut iter = kargs.iter();
+        assert_eq!(iter.next(), Some(param("foo=bar")));
+        assert_eq!(iter.next(), Some(param("baz")));
+        assert_eq!(iter.next(), None);
+    }
+
+    #[test]
+    fn test_into_iterator() {
+        let kargs = Cmdline::from(b"foo=bar baz=qux wiz");
+        let params: Vec<_> = (&kargs).into_iter().collect();
+
+        assert_eq!(params.len(), 3);
+        assert_eq!(params[0], param("foo=bar"));
+        assert_eq!(params[1], param("baz=qux"));
+        assert_eq!(params[2], param("wiz"));
     }
 }
