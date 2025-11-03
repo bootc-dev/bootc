@@ -15,6 +15,7 @@ const CONFIG_VAR: &str = "BOOTC_REINSTALL_CONFIG";
 pub(crate) struct ReinstallConfig {
     /// The bootc image to install on the system.
     pub(crate) bootc_image: String,
+    pub(crate) composefs_backend: bool,
 }
 
 impl ReinstallConfig {

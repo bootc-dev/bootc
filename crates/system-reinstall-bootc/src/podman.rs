@@ -1,4 +1,4 @@
-use crate::prompt;
+use crate::{prompt, ReinstallOpts};
 
 use super::ROOT_KEY_MOUNT_POINT;
 use anyhow::{ensure, Context, Result};
@@ -25,7 +25,7 @@ fn bootc_has_clean(image: &str) -> Result<bool> {
 }
 
 #[context("reinstall_command")]
-pub(crate) fn reinstall_command(image: &str, ssh_key_file: &str) -> Result<Command> {
+pub(crate) fn reinstall_command(opts: &ReinstallOpts, ssh_key_file: &str) -> Result<Command> {
     let mut podman_command_and_args = [
         // We use podman to run the bootc container. This might change in the future to remove the
         // podman dependency.
@@ -72,11 +72,15 @@ pub(crate) fn reinstall_command(image: &str, ssh_key_file: &str) -> Result<Comma
     .map(String::from)
     .to_vec();
 
+    if opts.composefs_backend {
+        bootc_command_and_args.push("--composefs-backend".into());
+    }
+
     // Enable the systemd service to cleanup the previous install after booting into the
     // bootc system for the first time.
     // This only happens if the bootc version in the image >= 1.1.8 (this is when the cleanup
     // feature was introduced)
-    if bootc_has_clean(image)? {
+    if bootc_has_clean(&opts.image)? {
         bootc_command_and_args.push("--cleanup".to_string());
     }
 
@@ -88,7 +92,7 @@ pub(crate) fn reinstall_command(image: &str, ssh_key_file: &str) -> Result<Comma
 
     let all_args = [
         podman_command_and_args,
-        vec![image.to_string()],
+        vec![opts.image.to_string()],
         bootc_command_and_args,
     ]
     .concat();

@@ -24,10 +24,12 @@ const ROOT_KEY_MOUNT_POINT: &str = "/bootc_authorized_ssh_keys/root";
 /// file with a single member `bootc_image` that specifies the image to install.
 /// This will take precedence over the CLI.
 #[derive(clap::Parser)]
-struct Opts {
+pub(crate) struct ReinstallOpts {
     /// The bootc image to install
     pub(crate) image: String,
     // Note if we ever add any other options here,
+    #[arg(long)]
+    pub(crate) composefs_backend: bool,
 }
 
 #[context("run")]
@@ -35,12 +37,13 @@ fn run() -> Result<()> {
     // We historically supported an environment variable providing a config to override the image, so
     // keep supporting that. I'm considering deprecating that though.
     let opts = if let Some(config) = config::ReinstallConfig::load().context("loading config")? {
-        Opts {
+        ReinstallOpts {
             image: config.bootc_image,
+            composefs_backend: config.composefs_backend,
         }
     } else {
         // Otherwise an image is required.
-        Opts::parse()
+        ReinstallOpts::parse()
     };
 
     bootc_utils::initialize_tracing();
@@ -68,7 +71,7 @@ fn run() -> Result<()> {
 
     prompt::mount_warning()?;
 
-    let mut reinstall_podman_command = podman::reinstall_command(&opts.image, ssh_key_file_path)?;
+    let mut reinstall_podman_command = podman::reinstall_command(&opts, ssh_key_file_path)?;
 
     println!();
     println!("Going to run command:");
