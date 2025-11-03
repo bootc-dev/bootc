@@ -63,6 +63,9 @@ pub(crate) const EFI_LINUX: &str = "EFI/Linux";
 const SYSTEMD_TIMEOUT: &str = "timeout 5";
 const SYSTEMD_LOADER_CONF_PATH: &str = "loader/loader.conf";
 
+const INITRD: &str = "initrd";
+const VMLINUZ: &str = "vmlinuz";
+
 /// We want to be able to control the ordering of UKIs so we put them in a directory that's not the
 /// directory specified by the BLS spec. We do this because we want systemd-boot to only look at
 /// our config files and not show the actual UKIs in the bootloader menu
@@ -280,7 +283,7 @@ fn write_bls_boot_entries_to_disk(
 
     entries_dir
         .atomic_write(
-            "vmlinuz",
+            VMLINUZ,
             read_file(&entry.vmlinuz, &repo).context("Reading vmlinuz")?,
         )
         .context("Writing vmlinuz to path")?;
@@ -291,7 +294,7 @@ fn write_bls_boot_entries_to_disk(
 
     entries_dir
         .atomic_write(
-            "initrd",
+            INITRD,
             read_file(initramfs, &repo).context("Reading initrd")?,
         )
         .context("Writing initrd to path")?;
@@ -351,12 +354,11 @@ fn osrel_title_and_version(
     Ok(Some((title, version)))
 }
 
-struct BLSEntryPath<'a> {
+struct BLSEntryPath {
     /// Where to write vmlinuz/initrd
     entries_path: Utf8PathBuf,
     /// The absolute path, with reference to the partition's root, where the vmlinuz/initrd are written to
-    /// We need this as when installing, the mounted path will not
-    abs_entries_path: &'a str,
+    abs_entries_path: Utf8PathBuf,
     /// Where to write the .conf files
     config_path: Utf8PathBuf,
 }
@@ -419,14 +421,29 @@ pub(crate) fn setup_composefs_bls_boot(
     let is_upgrade = matches!(setup_type, BootSetupType::Upgrade(..));
 
     let (entry_paths, _tmpdir_guard) = match bootloader {
-        Bootloader::Grub => (
-            BLSEntryPath {
-                entries_path: root_path.join("boot"),
-                config_path: root_path.join("boot"),
-                abs_entries_path: "boot",
-            },
-            None,
-        ),
+        Bootloader::Grub => {
+            let root = Dir::open_ambient_dir(&root_path, ambient_authority())
+                .context("Opening root path")?;
+
+            // Grub wants the paths to be absolute against the mounted drive that the kernel +
+            // initrd live in
+            //
+            // If "boot" is a partition, we want the paths to be absolute to "/"
+            let entries_path = match root.is_mountpoint("boot")? {
+                Some(true) => "/",
+                // We can be fairly sure that the kernels we target support `statx`
+                Some(false) | None => "/boot",
+            };
+
+            (
+                BLSEntryPath {
+                    entries_path: root_path.join("boot"),
+                    config_path: root_path.join("boot"),
+                    abs_entries_path: entries_path.into(),
+                },
+                None,
+            )
+        }
 
         Bootloader::Systemd => {
             let efi_mount = mount_esp(&esp_device).context("Mounting ESP")?;
@@ -438,7 +455,7 @@ pub(crate) fn setup_composefs_bls_boot(
                 BLSEntryPath {
                     entries_path: efi_linux_dir,
                     config_path: mounted_efi.clone(),
-                    abs_entries_path: EFI_LINUX,
+                    abs_entries_path: Utf8PathBuf::from("/").join(EFI_LINUX),
                 },
                 Some(efi_mount),
             )
@@ -474,10 +491,8 @@ pub(crate) fn setup_composefs_bls_boot(
                 .with_sort_key(default_sort_key.into())
                 .with_version(version)
                 .with_cfg(BLSConfigType::NonEFI {
-                    linux: format!("/{}/{id_hex}/vmlinuz", entry_paths.abs_entries_path).into(),
-                    initrd: vec![
-                        format!("/{}/{id_hex}/initrd", entry_paths.abs_entries_path).into()
-                    ],
+                    linux: entry_paths.abs_entries_path.join(&id_hex).join(VMLINUZ),
+                    initrd: vec![entry_paths.abs_entries_path.join(&id_hex).join(INITRD)],
                     options: Some(cmdline_refs),
                 });
 
@@ -491,15 +506,10 @@ pub(crate) fn setup_composefs_bls_boot(
                             ref mut initrd,
                             ..
                         } => {
-                            *linux =
-                                format!("/{}/{symlink_to}/vmlinuz", entry_paths.abs_entries_path)
-                                    .into();
+                            *linux = entry_paths.abs_entries_path.join(&symlink_to).join(VMLINUZ);
 
-                            *initrd = vec![format!(
-                                "/{}/{symlink_to}/initrd",
-                                entry_paths.abs_entries_path
-                            )
-                            .into()];
+                            *initrd =
+                                vec![entry_paths.abs_entries_path.join(&symlink_to).join(INITRD)];
                         }
 
                         _ => unreachable!(),
