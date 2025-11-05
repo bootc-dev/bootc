@@ -24,13 +24,15 @@ source /etc/os-release
 # Some rhts-*, rstrnt-* and tmt-* commands are in /usr/local/bin
 if [[ -d /var/lib/tmt/scripts ]]; then
     cp -r /var/lib/tmt/scripts "$BOOTC_TEMPDIR"
+    ls -al "${BOOTC_TEMPDIR}/scripts"
 else
     cp -r /usr/local/bin "$BOOTC_TEMPDIR"
+    ls -al "${BOOTC_TEMPDIR}/bin"
 fi
 
 # Get base image URL
 TEST_OS="${ID}-${VERSION_ID}"
-BASE=$(cat os-image-map.json | jq --arg v "$TEST_OS" '.[$v]')
+BASE=$(jq -r --arg v "$TEST_OS" '.[$v]' < os-image-map.json)
 
 if [[ "$ID" == "rhel" ]]; then
     # OSCI gating only
@@ -78,7 +80,7 @@ ls -al /var/share/test-artifacts
 cp /etc/yum.repos.d/test-artifacts.repo "$BOOTC_TEMPDIR"
 
 # Let's check things in hack folder
-ls -al "$BOOTC_TEMPDIR" "${BOOTC_TEMPDIR}/bin"
+ls -al "$BOOTC_TEMPDIR"
 
 # Do not use just because it's only available on Fedora, not on CS and RHEL
 podman build --jobs=4 --from "$BASE" -v "$BOOTC_TEMPDIR":/bootc-test:z -t localhost/bootc-integration -f "${BOOTC_TEMPDIR}/Containerfile.packit" "$BOOTC_TEMPDIR"

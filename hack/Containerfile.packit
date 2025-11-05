@@ -5,8 +5,6 @@ FROM quay.io/centos-bootc/centos-bootc:stream10
 
 WORKDIR /bootc-test
 
-# Some rhts-*, rstrnt-* and tmt-* commands are in /usr/local/bin
-COPY bin /usr/local/bin
 # Save testing farm run files
 COPY ARTIFACTS /var/ARTIFACTS
 # Copy bootc repo
@@ -19,8 +17,18 @@ set -xeuo pipefail
 if [[ $ID == "rhel" ]]; then
     cp rhel.repo /etc/yum.repos.d/
 fi
+# OSCI uses /var/lib/tmt/scripts to save tmt-* commands
+# Fedora CI and Packit use /usr/local/bin
+if [[ -d scripts ]]; then
+    mkdir -p /var/lib/tmt
+    cp -r scripts /var/lib/tmt/
+else
+    cp -r bin /usr/local
+fi
 cp test-artifacts.repo /etc/yum.repos.d/
 dnf -y update bootc
+# Required by tmt avc checking after test
+dnf -y install audit
 ./provision-derived.sh
 
 # For test-22-logically-bound-install

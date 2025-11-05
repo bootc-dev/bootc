@@ -7,6 +7,9 @@
   tasks:
     - name: Reboot system to image mode
       reboot:
+        reboot_timeout: 1200
+        connect_timeout: 30
+        pre_reboot_delay: 15
 
     - name: Wait for connection to become reachable/usable
       wait_for_connection:
