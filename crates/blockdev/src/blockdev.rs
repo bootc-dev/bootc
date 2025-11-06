@@ -117,6 +117,7 @@ pub struct Partition {
     pub parttype: String,
     pub uuid: Option<String>,
     pub name: Option<String>,
+    pub bootable: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, PartialEq, Eq)]
@@ -169,6 +170,11 @@ impl PartitionTable {
     pub fn find_partition_of_type(&self, uuid: &str) -> Option<&Partition> {
         self.partitions.iter().find(|p| p.parttype_matches(uuid))
     }
+
+    /// Find the partition with bootable is 'true'.
+    pub fn find_partition_of_bootable(&self) -> Option<&Partition> {
+        self.partitions.iter().find(|p| p.is_bootable())
+    }
 }
 
 impl Partition {
@@ -183,6 +189,11 @@ impl Partition {
     /// as different tools may report them in different cases.
     pub fn parttype_matches(&self, uuid: &str) -> bool {
         self.parttype.eq_ignore_ascii_case(uuid)
+    }
+
+    /// Check this partition's bootable property.
+    pub fn is_bootable(&self) -> bool {
+        self.bootable.unwrap_or(false)
     }
 }
 
@@ -531,6 +542,7 @@ mod test {
             parttype: "c12a7328-f81f-11d2-ba4b-00a0c93ec93b".to_string(), // lowercase ESP UUID
             uuid: Some("58A4C5F0-BD12-424C-B563-195AC65A25DD".to_string()),
             name: Some("EFI System".to_string()),
+            bootable: None,
         };
 
         // Test exact match (lowercase)
@@ -600,6 +612,49 @@ mod test {
             .find_partition_of_type("00000000-0000-0000-0000-000000000000");
         assert!(nonexistent.is_none());
 
+        Ok(())
+    }
+    #[test]
+    fn test_find_partition_of_bootable() -> Result<()> {
+        let fixture = indoc::indoc! { r#"
+        {
+            "partitiontable": {
+                "label": "dos",
+                "id": "0xc1748067",
+                "device": "/dev/mmcblk0",
+                "unit": "sectors",
+                "sectorsize": 512,
+                "partitions": [
+                    {
+                        "node": "/dev/mmcblk0p1",
+                        "start": 2048,
+                        "size": 1026048,
+                        "type": "6",
+                        "bootable": true
+                    },{
+                        "node": "/dev/mmcblk0p2",
+                        "start": 1028096,
+                        "size": 2097152,
+                        "type": "83"
+                    },{
+                        "node": "/dev/mmcblk0p3",
+                        "start": 3125248,
+                        "size": 121610240,
+                        "type": "83"
+                    }
+                ]
+            }
+        }
+        "# };
+        let table: SfDiskOutput = serde_json::from_str(fixture).unwrap();
+
+        // Find ESP partition using bootalbe is true
+        assert_eq!(table.partitiontable.label, PartitionType::Dos);
+        let esp = table
+            .partitiontable
+            .find_partition_of_bootable()
+            .expect("bootable partition not found");
+        assert_eq!(esp.node, "/dev/mmcblk0p1");
         Ok(())
     }
 }
