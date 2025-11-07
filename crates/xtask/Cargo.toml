@@ -28,7 +28,7 @@ xshell = { workspace = true }
 
 # Crate-specific dependencies
 mandown = "1.1.0"
-rand = "0.8"
+rand = "0.9"
 tar = "0.4"
 
 [lints]
