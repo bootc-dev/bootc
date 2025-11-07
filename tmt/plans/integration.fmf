@@ -104,7 +104,7 @@ execute:
   adjust:
     - when: running_env != image_mode
       enabled: false
-      because: tmt-reboot does not work with systemd reboot in testing farm environment
+      because: tmt-reboot does not work with systemd reboot in testing farm environment (see bug-soft-reboot.md)
 
 /test-28-factory-reset:
   summary: Factory reset

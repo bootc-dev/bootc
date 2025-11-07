@@ -17,6 +17,7 @@ anyhow = { workspace = true }
 anstream = { workspace = true }
 camino = { workspace = true }
 chrono = { workspace = true, features = ["std"] }
+clap = { workspace = true, features = ["derive"] }
 fn-error-context = { workspace = true }
 owo-colors = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
@@ -27,6 +28,7 @@ xshell = { workspace = true }
 
 # Crate-specific dependencies
 mandown = "1.1.0"
+rand = "0.8"
 tar = "0.4"
 
 [lints]

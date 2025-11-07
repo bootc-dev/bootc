@@ -45,8 +45,18 @@ dnf clean all
 cat <<KARGEOF >> /usr/lib/bootc/kargs.d/20-console.toml
 kargs = ["console=ttyS0,115200n8"]
 KARGEOF
-# And cloud-init stuff
-ln -s ../cloud-init.target /usr/lib/systemd/system/default.target.wants
+# And cloud-init stuff, unless we're doing a UKI which is always
+# tested with bcvk
+if test '!' -d /boot/EFI; then
+  ln -s ../cloud-init.target /usr/lib/systemd/system/default.target.wants
+fi
+
+# Allow root SSH login for testing with bcvk/tmt
+mkdir -p /etc/cloud/cloud.cfg.d
+cat > /etc/cloud/cloud.cfg.d/80-enable-root.cfg <<'CLOUDEOF'
+# Enable root login for testing
+disable_root: false
+CLOUDEOF
 
 # Stock extra cleaning of logs and caches in general (mostly dnf)
 rm /var/log/* /var/cache /var/lib/{dnf,rpm-state,rhsm} -rf

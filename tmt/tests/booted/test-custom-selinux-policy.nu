@@ -22,10 +22,11 @@ RUN mkdir /opt123; echo \"/opt123 /opt\" >> /etc/selinux/targeted/contexts/files
     # Build it
     podman build -t localhost/bootc-derived .
 
-    bootc switch --soft-reboot=auto --transport containers-storage localhost/bootc-derived
+    bootc switch --transport containers-storage localhost/bootc-derived
 
     assert (not ("/opt123" | path exists))
 
+    # See ../bug-soft-reboot.md - TMT cannot handle systemd soft-reboots
     # https://tmt.readthedocs.io/en/stable/stories/features.html#reboot-during-test
     tmt-reboot
 }

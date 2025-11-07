@@ -36,7 +36,7 @@ RUN echo test content > /usr/share/testfile-for-soft-reboot.txt
 
     assert ("/run/nextroot" | path exists)
 
-    #Let's reset the soft-reboot as we still can't correctly soft-reboot with tmt
+    # See ../bug-soft-reboot.md - TMT cannot handle systemd soft-reboots
     ostree admin prepare-soft-reboot --reset
     # https://tmt.readthedocs.io/en/stable/stories/features.html#reboot-during-test
     tmt-reboot
@@ -45,9 +45,7 @@ RUN echo test content > /usr/share/testfile-for-soft-reboot.txt
 # The second boot; verify we're in the derived image
 def second_boot [] {
     assert ("/usr/share/testfile-for-soft-reboot.txt" | path exists)
-    #tmt-reboot seems not to be using systemd soft-reboot 
-    # and tmt-reboot -c "systemctl soft-reboot" is not connecting back
-    # let's comment this check.
+    # See ../bug-soft-reboot.md - we can't verify SoftRebootsCount due to TMT limitation
     #assert equal (systemctl show -P SoftRebootsCount) "1"
 
     # A new derived with new kargs which should stop the soft reboot.

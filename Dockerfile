@@ -1,10 +1,8 @@
 # Build this project from source and write the updated content
 # (i.e. /usr/bin/bootc and systemd units) to a new derived container
 # image. See the `Justfile` for an example
-#
-# Use e.g. --build-arg=base=quay.io/fedora/fedora-bootc:42 to target
-# Fedora instead.
 
+# Note this is usually overridden via Justfile
 ARG base=quay.io/centos-bootc/centos-bootc:stream10
 
 # This first image captures a snapshot of the source code,
@@ -13,31 +11,7 @@ FROM scratch as src
 COPY . /src
 
 FROM $base as base
-# Set this to anything non-0 to enable https://copr.fedorainfracloud.org/coprs/g/CoreOS/continuous/
-ARG continuous_repo=0
-RUN <<EORUN
-set -xeuo pipefail
-if [ "${continuous_repo}" == 0 ]; then
-  exit 0
-fi
-# Sadly dnf copr enable looks for epel, not centos-stream....
-. /usr/lib/os-release
-case $ID in
-  centos) 
-    curl -L -o /etc/yum.repos.d/continuous.repo https://copr.fedorainfracloud.org/coprs/g/CoreOS/continuous/repo/centos-stream-$VERSION_ID/group_CoreOS-continuous-centos-stream-$VERSION_ID.repo
-  ;;
-  fedora)
-    if rpm -q dnf5 &>/dev/null; then
-      dnf -y install dnf5-plugins
-    fi
-    dnf copr enable -y @CoreOS/continuous
-  ;;
-  *) echo "error: Unsupported OS '$ID'" >&2; exit 1
-  ;;
-esac
-dnf -y upgrade ostree bootupd
-rm -rf /var/cache/* /var/lib/dnf /var/lib/rhsm /var/log/*
-EORUN
+# We could inject other content here
 
 # This image installs build deps, pulls in our source code, and installs updated
 # bootc binaries in /out. The intention is that the target rootfs is extracted from /out
@@ -94,20 +68,60 @@ RUN --mount=type=cache,target=/src/target --mount=type=cache,target=/var/roothom
 
 # The final image that derives from the original base and adds the release binaries
 FROM base
-# Set this to 1 to default to systemd-boot
-ARG sdboot=0
+# See the Justfile for possible variants
+ARG variant
 RUN <<EORUN
 set -xeuo pipefail
 # Ensure we've flushed out prior state (i.e. files no longer shipped from the old version);
 # and yes, we may need to go to building an RPM in this Dockerfile by default.
 rm -vf /usr/lib/systemd/system/multi-user.target.wants/bootc-*
-if test "$sdboot" = 1; then
-  dnf -y install systemd-boot-unsigned
-  # And uninstall bootupd
-  rpm -e bootupd
-  rm /usr/lib/bootupd/updates -rf
-  dnf clean all
-  rm -rf /var/cache /var/lib/{dnf,rhsm} /var/log/*
+case "${variant}" in
+  *-sdboot)
+    dnf -y install systemd-boot-unsigned
+    # And uninstall bootupd
+    rpm -e bootupd
+    rm /usr/lib/bootupd/updates -rf
+    dnf clean all
+    rm -rf /var/cache /var/lib/{dnf,rhsm} /var/log/*
+  ;;
+esac
+EORUN
+# Support overriding the rootfs at build time conveniently
+ARG rootfs=
+RUN <<EORUN
+set -xeuo pipefail
+# Do we have an explicit build-time override? Then write it.
+if test -n "$rootfs"; then
+  cat > /usr/lib/bootc/install/80-rootfs-override.toml <<EOF
+[install.filesystem.root]
+type = "$rootfs"
+EOF
+else
+  # Query the default rootfs
+  base_rootfs=$(bootc install print-configuration | jq -r '.filesystem.root.type // ""')
+  # No filesystem override set. If we're doing composefs, we need a FS that
+  # supports fsverity. If btrfs is available we'll pick that, otherwise ext4.
+  fs=
+  case "${variant}" in
+    composefs*)
+      btrfs=$(grep -qEe '^CONFIG_BTRFS_FS' /usr/lib/modules/*/config && echo btrfs || true)
+      fs=${btrfs:-ext4}
+      ;;
+    *)
+      # No explicit filesystem set and we're not using composefs. Default to xfs
+      # with the rationale that we're trying to get filesystem coverage across
+      # all the cases in general.
+      if test -z "${base_rootfs}"; then
+        fs=xfs
+      fi 
+      ;;
+  esac
+  if test -n "$fs"; then
+    cat > /usr/lib/bootc/install/80-ext4-composefs.toml <<EOF
+[install.filesystem.root]
+type = "${fs}"
+EOF
+  fi
 fi
 EORUN
 # Create a layer that is our new binaries

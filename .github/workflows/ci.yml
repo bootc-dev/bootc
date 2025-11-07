@@ -38,15 +38,6 @@ jobs:
         uses: ./.github/actions/bootc-ubuntu-setup
       - name: Validate (default)
         run: just validate
-  # Build container with continuous repository enabled
-  container-continuous:
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v5
-      - name: Bootc Ubuntu Setup
-        uses: ./.github/actions/bootc-ubuntu-setup
-      - name: Build with continuous repo enabled
-        run: sudo just build --build-arg=continuous_repo=1
   # Check for security vulnerabilities and license compliance
   cargo-deny:
     runs-on: ubuntu-24.04
@@ -141,60 +132,39 @@ jobs:
       - name: Install tmt
         run: pip install --user "tmt[provision-virtual]"
 
-      - name: Build container and disk image
+      - name: Setup env
         run: |
-          set -xeuo pipefail
-          build_args=()
-          # Map from an ID-VERSIONID pair to a container ref
-          target=${{ matrix.test_os }}
-          OS_ID=$(echo "$target" | cut -d '-' -f 1)
-          OS_VERSION_ID=$(echo "$target" | cut -d '-' -f 2)
-          # Base image
-          case "$OS_ID" in
-              "centos")
-                  BASE="quay.io/centos-bootc/centos-bootc:stream${OS_VERSION_ID}"
-              ;;
-              "fedora")
-                  BASE="quay.io/fedora/fedora-bootc:${OS_VERSION_ID}"
-              ;;
-              *) echo "Unknown OS: ${OS_ID}" 1>&2; exit 1
-              ;;
-          esac
-          build_args+=("--build-arg=base=$BASE")
-          just build ${build_args[@]}
+          BASE=$(just pullspec-for-os ${{ matrix.test_os }})
+          echo "BOOTC_base=${BASE}" >> $GITHUB_ENV
+
+      - name: Build container
+        run: |
           just build-integration-test-image
-          # Cross check we're using the right base
-          used_vid=$(podman run --rm localhost/bootc-integration bash -c '. /usr/lib/os-release && echo $VERSION_ID')
-          test "$OS_VERSION_ID" = "${used_vid}"
+          # Extra cross-check (duplicating the integration test) that we're using the right base
+          used_vid=$(podman run --rm localhost/bootc-integration bash -c '. /usr/lib/os-release && echo ${ID}-${VERSION_ID}')
+          test ${{ matrix.test_os }} = "${used_vid}"
 
-      - name: Run container tests
-        run: |
-          just test-container
-
-      - name: Generate disk image
-        run: |
-          mkdir -p target
-          just build-disk-image localhost/bootc-integration target/bootc-integration-test.qcow2
-
-      - name: Workaround https://github.com/teemtee/testcloud/issues/18
-        run: sudo rm -f /usr/bin/chcon && sudo ln -sr /usr/bin/true /usr/bin/chcon
+      - name: Unit and container integration tests
+        run: just test-container
 
       - name: Run all TMT tests
-        run: |
-          just test-tmt-nobuild
+        run: just test-tmt
 
       - name: Archive TMT logs
         if: always()
         uses: actions/upload-artifact@v5
         with:
-          name: tmt-log-PR-${{ github.event.number }}-${{ matrix.test_os }}-${{ env.ARCH }}-${{ matrix.tmt_plan }}
+          name: tmt-log-PR-${{ github.event.number }}-${{ matrix.test_os }}-ostree-${{ env.ARCH }}
           path: /var/tmp/tmt
   # This variant does composefs testing
   test-integration-cfs:
     strategy:
       fail-fast: false
       matrix:
+        # TODO expand this matrix, we need to make it better to override the target
+        # OS via Justfile variables too
         test_os: [centos-10]
+        variant: [composefs-sealeduki-sdboot]
 
     runs-on: ubuntu-24.04
 
@@ -204,9 +174,29 @@ jobs:
         uses: ./.github/actions/bootc-ubuntu-setup
         with:
           libvirt: true
+      - name: Install tmt
+        run: pip install --user "tmt[provision-virtual]"
+
+      - name: Setup env
+        run: |
+          BASE=$(just pullspec-for-os ${{ matrix.test_os }})
+          echo "BOOTC_base=${BASE}" >> $GITHUB_ENV
+          echo "BOOTC_variant="${{ matrix.variant }} >> $GITHUB_ENV
 
       - name: Build container
-        run: just build-sealed
+        run: |
+          just build-integration-test-image
 
-      - name: Test
-        run: just test-composefs
+      - name: Unit and container integration tests
+        run: just test-container
+
+      - name: Run readonly TMT tests
+        # TODO: expand to more tests
+        run: just test-tmt readonly
+
+      - name: Archive TMT logs
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: tmt-log-PR-${{ github.event.number }}-${{ matrix.test_os }}-cfs-${{ env.ARCH }}
+          path: /var/tmp/tmt

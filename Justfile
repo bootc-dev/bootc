@@ -11,26 +11,35 @@
 
 # --------------------------------------------------------------------
 
+# ostree: The default
+# composefs-sealeduki-sdboot: A system with a sealed composefs using systemd-boot
+variant := env("BOOTC_variant", "ostree")
+base := env("BOOTC_base", "quay.io/centos-bootc/centos-bootc:stream10")
+
+buildargs := "--build-arg=base=" + base + " --build-arg=variant=" + variant
+
 # Build the container image from current sources.
 # Note commonly you might want to override the base image via e.g.
 # `just build --build-arg=base=quay.io/fedora/fedora-bootc:42`
-build *ARGS:
-    podman build --jobs=4 -t localhost/bootc {{ARGS}} .
-
-# Build a sealed image from current sources. This will default to
-# generating Secure Boot keys in target/test-secureboot.
-build-sealed *ARGS:
-    podman build --build-arg=sdboot=1 --jobs=4 -t localhost/bootc-unsealed {{ARGS}} .
-    ./tests/build-sealed localhost/bootc-unsealed localhost/bootc
+build:
+    podman build --jobs=4 -t localhost/bootc-bin {{buildargs}} .
+    ./tests/build-sealed {{variant}} localhost/bootc-bin localhost/bootc
 
 # This container image has additional testing content and utilities
-build-integration-test-image *ARGS:
-    cd hack && podman build --jobs=4 -t localhost/bootc-integration -f Containerfile {{ARGS}} .
+build-integration-test-image: build
+    cd hack && podman build --jobs=4 -t localhost/bootc-integration-bin {{buildargs}} -f Containerfile .
+    ./tests/build-sealed {{variant}} localhost/bootc-integration-bin localhost/bootc-integration
     # Keep these in sync with what's used in hack/lbi
     podman pull -q --retry 5 --retry-delay 5s quay.io/curl/curl:latest quay.io/curl/curl-base:latest registry.access.redhat.com/ubi9/podman:latest
 
-test-composefs: build-sealed
+# Build+test composefs; compat alias
+test-composefs:
+    # These first two are currently a distinct test suite from tmt that directly
+    # runs an integration test binary in the base image via bcvk
+    just variant=composefs-sealeduki-sdboot build
     cargo run --release -p tests-integration -- composefs-bcvk localhost/bootc
+    # We're trying to move more testing to tmt, so 
+    just variant=composefs-sealeduki-sdboot test-tmt readonly
 
 # Only used by ci.yml right now
 build-install-test-image: build-integration-test-image
@@ -59,27 +68,27 @@ validate-local:
 build-disk *ARGS:
     ./tests/build.sh {{ARGS}}
 
-# The tests which run a fully booted bootc system (i.e. where in place
-# updates are supported) as if it were a production environment use
-# https://github.com/teemtee/tmt.
+# Run tmt-based test suites using local virtual machines with
+# bcvk.
 #
-# This task runs *all* of the tmt-based tests targeting the disk image generated
-# in the previous step.
-test-tmt *ARGS: build-disk
-    ./tests/run-tmt.sh {{ARGS}}
+# To run an individual test, pass it as an argument like:
+# `just test-tmt readonly`
+test-tmt *ARGS: build-integration-test-image
+    cargo xtask run-tmt --env=BOOTC_variant={{variant}} localhost/bootc-integration {{ARGS}}
 
-# Like test-tmt but assumes that a disk image is already built
-test-tmt-nobuild *ARGS:
-    ./tests/run-tmt.sh {{ARGS}}
-
-# Run just one tmt test: `just test-tmt-one test-20-local-upgrade`
-test-tmt-one PLAN: build-disk
-    ./tests/run-tmt.sh plan --name {{PLAN}}
+# Cleanup all test VMs created by tmt tests
+tmt-vm-cleanup:
+    bcvk libvirt rm --stop --force --label bootc.test=1
 
 # Run tests (unit and integration) that are containerized
 test-container: build-units build-integration-test-image
     podman run --rm --read-only localhost/bootc-units /usr/bin/bootc-units
-    podman run --rm localhost/bootc-integration bootc-integration-tests container
+    # Pass these through for cross-checking
+    podman run --rm --env=BOOTC_variant={{variant}} --env=BOOTC_base={{base}} localhost/bootc-integration bootc-integration-tests container
+
+# Print the container image reference for a given short $ID-VERSION_ID
+pullspec-for-os NAME:
+    @jq -r --arg v "{{NAME}}" '.[$v]' < hack/os-image-map.json
 
 build-mdbook:
     cd docs && podman build -t localhost/bootc-mdbook -f Dockerfile.mdbook
