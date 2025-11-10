@@ -12,6 +12,13 @@ use serde::Deserialize;
 
 use bootc_utils::CommandRunExt;
 
+/// EFI System Partition (ESP) on MBR
+/// Refer to <https://en.wikipedia.org/wiki/Partition_type>
+pub const ESP_ID_MBR: &[u8] = &[0x06, 0xEF];
+
+/// EFI System Partition (ESP) for UEFI boot on GPT
+pub const ESP: &str = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b";
+
 #[derive(Debug, Deserialize)]
 struct DevicesOutput {
     blockdevices: Vec<Device>,
@@ -174,6 +181,19 @@ impl PartitionTable {
     /// Find the partition with bootable is 'true'.
     pub fn find_partition_of_bootable(&self) -> Option<&Partition> {
         self.partitions.iter().find(|p| p.is_bootable())
+    }
+
+    /// Find the esp partition.
+    pub fn find_partition_of_esp(&self) -> Result<Option<&Partition>> {
+        match &self.label {
+            PartitionType::Dos => Ok(self.partitions.iter().find(|b| {
+                u8::from_str_radix(&b.parttype, 16)
+                    .map(|pt| ESP_ID_MBR.contains(&pt))
+                    .unwrap_or(false)
+            })),
+            PartitionType::Gpt => Ok(self.find_partition_of_type(ESP)),
+            _ => Err(anyhow::anyhow!("Unsupported partition table type")),
+        }
     }
 }
 
@@ -612,10 +632,14 @@ mod test {
             .find_partition_of_type("00000000-0000-0000-0000-000000000000");
         assert!(nonexistent.is_none());
 
+        // Find esp partition on GPT
+        let esp = table.partitiontable.find_partition_of_esp()?.unwrap();
+        assert_eq!(esp.node, "/dev/loop0p1");
+
         Ok(())
     }
     #[test]
-    fn test_find_partition_of_bootable() -> Result<()> {
+    fn test_find_partition_of_type_mbr() -> Result<()> {
         let fixture = indoc::indoc! { r#"
         {
             "partitiontable": {
@@ -640,7 +664,7 @@ mod test {
                         "node": "/dev/mmcblk0p3",
                         "start": 3125248,
                         "size": 121610240,
-                        "type": "83"
+                        "type": "ef"
                     }
                 ]
             }
@@ -655,6 +679,10 @@ mod test {
             .find_partition_of_bootable()
             .expect("bootable partition not found");
         assert_eq!(esp.node, "/dev/mmcblk0p1");
+
+        // Find esp partition on MBR
+        let esp1 = table.partitiontable.find_partition_of_esp()?.unwrap();
+        assert_eq!(esp1.node, "/dev/mmcblk0p1");
         Ok(())
     }
 }
