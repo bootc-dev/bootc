@@ -161,13 +161,13 @@ However, some software installs to `/opt/examplepkg` or another
 location outside of `/usr`, and may include all three types of data
 undernath its single toplevel directory.  For example, it
 may write log files to `/opt/examplepkg/logs`.  A simple way to handle
-this is to change the directories that need to be writble to symbolic links
+this is to change the directories that need to be writable to symbolic links
 to `/var`:
 
 ```dockerfile
 RUN apt|dnf install examplepkg && \
     mv /opt/examplepkg/logs /var/log/examplepkg && \
-    ln -sr /opt/examplepkg/logs /var/log/examplepkg
+    ln -sr /var/log/examplepkg /opt/examplepkg/logs
 ```
 
 The [Fedora/CentOS bootc puppet example](https://gitlab.com/fedora/bootc/examples/-/tree/main/opt-puppet)
