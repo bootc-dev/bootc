@@ -93,6 +93,17 @@ pub(crate) async fn new_importer(
     Ok(imp)
 }
 
+/// Wrapper for pulling a container image with a custom proxy config (e.g. for unified storage).
+pub(crate) async fn new_importer_with_config(
+    repo: &ostree::Repo,
+    imgref: &ostree_container::OstreeImageReference,
+    config: ostree_ext::containers_image_proxy::ImageProxyConfig,
+) -> Result<ostree_container::store::ImageImporter> {
+    let mut imp = ostree_container::store::ImageImporter::new(repo, imgref, config).await?;
+    imp.require_bootable();
+    Ok(imp)
+}
+
 pub(crate) fn check_bootc_label(config: &ostree_ext::oci_spec::image::ImageConfiguration) {
     if let Some(label) =
         labels_of_config(config).and_then(|labels| labels.get(crate::metadata::BOOTC_COMPAT_LABEL))
@@ -414,8 +425,17 @@ pub(crate) async fn prepare_for_pull_unified(
     };
     let ostree_imgref = OstreeImageReference::from(containers_storage_imgref);
 
-    // Use the standard preparation flow but reading from containers-storage
-    let mut imp = new_importer(repo, &ostree_imgref).await?;
+    // Configure the importer to use bootc storage as an additional image store
+    use std::process::Command;
+    let mut config = ostree_ext::containers_image_proxy::ImageProxyConfig::default();
+    let mut cmd = Command::new("skopeo");
+    // Use the actual physical path to bootc storage, not the alias
+    let storage_path = format!("/sysroot/{}", crate::podstorage::CStorage::subpath());
+    crate::podstorage::set_additional_image_store(&mut cmd, &storage_path);
+    config.skopeo_cmd = Some(cmd);
+
+    // Use the preparation flow with the custom config
+    let mut imp = new_importer_with_config(repo, &ostree_imgref, config).await?;
     if let Some(target) = target_imgref {
         imp.set_target(target);
     }

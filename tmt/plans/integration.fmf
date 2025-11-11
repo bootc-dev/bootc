@@ -112,3 +112,17 @@ execute:
     how: fmf
     test:
         - /tmt/tests/test-28-factory-reset
+
+/test-29-install-unified-flag:
+  summary: Verify install help exposes experimental unified storage flag
+  discover:
+    how: fmf
+    test:
+        - /tmt/tests/test-28-install-unified-flag
+
+/test-30-switch-to-unified:
+  summary: Onboard to unified storage and verify subsequent operations use it
+  discover:
+    how: fmf
+    test:
+        - /tmt/tests/test-29-switch-to-unified

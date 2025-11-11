@@ -387,7 +387,7 @@ impl CStorage {
         Ok(())
     }
 
-    fn subpath() -> Utf8PathBuf {
+    pub(crate) fn subpath() -> Utf8PathBuf {
         Utf8Path::new(crate::store::BOOTC_ROOT).join(SUBPATH)
     }
 }

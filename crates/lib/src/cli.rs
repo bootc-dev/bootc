@@ -943,7 +943,7 @@ async fn upgrade(
         }
     } else {
         // Check if image exists in bootc storage (/usr/lib/bootc/storage)
-        let imgstore = sysroot.get_ensure_imgstore()?;
+        let imgstore = storage.get_ensure_imgstore()?;
 
         let image_ref_str = crate::utils::imageref_to_container_ref(imgref);
 
@@ -958,7 +958,7 @@ async fn upgrade(
         };
 
         let fetched = if use_unified {
-            crate::deploy::pull_unified(repo, imgref, None, opts.quiet, prog.clone(), sysroot)
+            crate::deploy::pull_unified(repo, imgref, None, opts.quiet, prog.clone(), storage)
                 .await?
         } else {
             crate::deploy::pull(repo, imgref, None, opts.quiet, prog.clone()).await?
@@ -1077,7 +1077,7 @@ async fn switch_ostree(
     let new_spec = RequiredHostSpec::from_spec(&new_spec)?;
 
     // Check if image exists in bootc storage (/usr/lib/bootc/storage)
-    let imgstore = sysroot.get_ensure_imgstore()?;
+    let imgstore = storage.get_ensure_imgstore()?;
 
     let target_ref_str = crate::utils::imageref_to_container_ref(&target);
 
@@ -1092,7 +1092,7 @@ async fn switch_ostree(
     };
 
     let fetched = if use_unified {
-        crate::deploy::pull_unified(repo, &target, None, opts.quiet, prog.clone(), sysroot).await?
+        crate::deploy::pull_unified(repo, &target, None, opts.quiet, prog.clone(), storage).await?
     } else {
         crate::deploy::pull(repo, &target, None, opts.quiet, prog.clone()).await?
     };
