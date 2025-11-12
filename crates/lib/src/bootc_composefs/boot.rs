@@ -57,7 +57,7 @@ use crate::{
 
 use crate::install::{RootSetup, State};
 
-/// Contains the EFP's filesystem UUID. Used by grub
+/// Contains the ESP's filesystem UUID. Used by grub
 pub(crate) const EFI_UUID_FILE: &str = "efiuuid.cfg";
 /// The EFI Linux directory
 pub(crate) const EFI_LINUX: &str = "EFI/Linux";
@@ -74,6 +74,13 @@ const VMLINUZ: &str = "vmlinuz";
 /// our config files and not show the actual UKIs in the bootloader menu
 /// This is relative to the ESP
 pub(crate) const SYSTEMD_UKI_DIR: &str = "EFI/Linux/bootc";
+
+pub(crate) const GLOBAL_UKI_ADDON_DIR: &str = "loader/addons";
+
+/// Whether to install all passed in UKI Addons as global
+/// For now, we don't have a reason to scope addons to a specific deployment, but we want to in the
+/// future
+pub const INSTALL_ADDONS_AS_GLOBAL: bool = true;
 
 pub(crate) enum BootSetupType<'a> {
     /// For initial setup, i.e. install to-disk
@@ -642,16 +649,23 @@ fn write_pe_to_esp(
         });
     }
 
-    // Write the UKI to ESP
-    let efi_linux_path = mounted_efi.as_ref().join(match bootloader {
-        Bootloader::Grub => EFI_LINUX,
-        Bootloader::Systemd => SYSTEMD_UKI_DIR,
+    // Directory to write the PortableExecutable to
+    let pe_install_dir = mounted_efi.as_ref().join(match pe_type {
+        PEType::UkiAddon if INSTALL_ADDONS_AS_GLOBAL => GLOBAL_UKI_ADDON_DIR,
+
+        PEType::Uki | PEType::UkiAddon => match bootloader {
+            Bootloader::Grub => EFI_LINUX,
+            Bootloader::Systemd => SYSTEMD_UKI_DIR,
+        },
     });
 
-    create_dir_all(&efi_linux_path).context("Creating EFI/Linux")?;
+    create_dir_all(&pe_install_dir)
+        .with_context(|| format!("Creating {}", pe_install_dir.display()))?;
 
-    let final_pe_path = match file_path.parent() {
-        Some(parent) => {
+    let final_pe_path = match (INSTALL_ADDONS_AS_GLOBAL, file_path.parent()) {
+        (true, ..) => pe_install_dir,
+
+        (false, Some(parent)) => {
             let renamed_path = match parent.as_str().ends_with(EFI_ADDON_DIR_EXT) {
                 true => {
                     let dir_name = format!("{}{}", uki_id.to_hex(), EFI_ADDON_DIR_EXT);
@@ -665,13 +679,13 @@ fn write_pe_to_esp(
                 false => parent.to_path_buf(),
             };
 
-            let full_path = efi_linux_path.join(renamed_path);
+            let full_path = pe_install_dir.join(renamed_path);
             create_dir_all(&full_path)?;
 
             full_path
         }
 
-        None => efi_linux_path,
+        (false, None) => pe_install_dir,
     };
 
     let pe_dir = Dir::open_ambient_dir(&final_pe_path, ambient_authority())
@@ -922,6 +936,7 @@ pub(crate) fn setup_composefs_uki_boot(
                         })?;
 
                     if !addons.iter().any(|passed_addon| passed_addon == addon_name) {
+                        tracing::debug!("Skipping addon '{addon_name}'");
                         continue;
                     }
                 }
