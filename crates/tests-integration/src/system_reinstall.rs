@@ -94,9 +94,10 @@ pub(crate) fn run(image: &str, testargs: libtest_mimic::Arguments) -> Result<()>
                 get_deployment_dir().with_context(|| "Failed to get deployment directory")?;
 
             let files = [
-                "usr/lib/bootc/fedora-bootc-destructive-cleanup",
+                "usr/lib",
                 "usr/lib/systemd/system/bootc-destructive-cleanup.service",
                 "etc/tmpfiles.d/bootc-root-ssh.conf",
+                "usr/lib/bootc/fedora-bootc-destructive-cleanup",
             ];
 
             for f in files {
