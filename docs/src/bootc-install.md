@@ -26,7 +26,7 @@ This requires running the container via `--privileged`; it uses the running Linu
 on the host to write the file content from the running container image; not the kernel
 inside the container.
 
-There are two sub-commands: `bootc install to-disk` and `boot install to-filesystem`.
+There are two sub-commands: `bootc install to-disk` and `bootc install to-filesystem`.
 
 However, nothing *else* (external) is required to perform a basic installation
 to disk - the container image itself comes with a baseline self-sufficient installer
