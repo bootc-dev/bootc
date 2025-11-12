@@ -62,20 +62,20 @@ fn delete_type1_entry(depl: &DeploymentEntry, boot_dir: &Dir, deleting_staged: b
         let bls_config = parse_bls_config(&cfg)?;
 
         match &bls_config.cfg_type {
-            BLSConfigType::EFI { efi } => {
-                if !efi.as_str().contains(&depl.deployment.verity) {
+            BLSConfigType::UKI { uki } => {
+                if !uki.as_str().contains(&depl.deployment.verity) {
                     continue;
                 }
 
                 // Boot dir in case of EFI will be the ESP
-                tracing::debug!("Deleting EFI .conf file: {}", file_name);
+                tracing::debug!("Deleting UKI .conf file: {}", file_name);
                 entry.remove_file().context("Removing .conf file")?;
                 delete_uki(&depl.deployment.verity, boot_dir)?;
 
                 break;
             }
 
-            BLSConfigType::NonEFI { options, .. } => {
+            BLSConfigType::NonUKI { options, .. } => {
                 let options = options
                     .as_ref()
                     .ok_or(anyhow::anyhow!("options not found in BLS config file"))?;
@@ -84,7 +84,7 @@ fn delete_type1_entry(depl: &DeploymentEntry, boot_dir: &Dir, deleting_staged: b
                     continue;
                 }
 
-                tracing::debug!("Deleting non-EFI .conf file: {}", file_name);
+                tracing::debug!("Deleting non-UKI .conf file: {}", file_name);
                 entry.remove_file().context("Removing .conf file")?;
 
                 if should_del_kernel {
@@ -113,8 +113,8 @@ fn delete_type1_entry(depl: &DeploymentEntry, boot_dir: &Dir, deleting_staged: b
 
 #[fn_error_context::context("Deleting kernel and initrd")]
 fn delete_kernel_initrd(bls_config: &BLSConfigType, boot_dir: &Dir) -> Result<()> {
-    let BLSConfigType::NonEFI { linux, initrd, .. } = bls_config else {
-        anyhow::bail!("Found EFI config")
+    let BLSConfigType::NonUKI { linux, initrd, .. } = bls_config else {
+        anyhow::bail!("Found UKI config")
     };
 
     // "linux" and "initrd" are relative to the boot_dir in our config files

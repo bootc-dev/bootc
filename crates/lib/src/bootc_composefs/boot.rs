@@ -526,7 +526,7 @@ pub(crate) fn setup_composefs_bls_boot(
                 .with_title(title)
                 .with_sort_key(default_sort_key.into())
                 .with_version(version)
-                .with_cfg(BLSConfigType::NonEFI {
+                .with_cfg(BLSConfigType::NonUKI {
                     linux: entry_paths.abs_entries_path.join(&id_hex).join(VMLINUZ),
                     initrd: vec![entry_paths.abs_entries_path.join(&id_hex).join(INITRD)],
                     options: Some(cmdline_refs),
@@ -564,7 +564,7 @@ pub(crate) fn setup_composefs_bls_boot(
                     })?;
 
                     match bls_config.cfg_type {
-                        BLSConfigType::NonEFI {
+                        BLSConfigType::NonUKI {
                             ref mut linux,
                             ref mut initrd,
                             ..
@@ -857,8 +857,8 @@ fn write_systemd_uki_config(
     let mut bls_conf = BLSConfig::default();
     bls_conf
         .with_title(boot_label.boot_label)
-        .with_cfg(BLSConfigType::EFI {
-            efi: format!("/{SYSTEMD_UKI_DIR}/{}{}", id.to_hex(), EFI_EXT).into(),
+        .with_cfg(BLSConfigType::UKI {
+            uki: format!("/{SYSTEMD_UKI_DIR}/{}{}", id.to_hex(), EFI_EXT).into(),
         })
         .with_sort_key(default_sort_key.into())
         .with_version(boot_label.version.unwrap_or(default_sort_key.into()));
