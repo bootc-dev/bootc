@@ -95,6 +95,7 @@ pub(crate) fn copy_etc_to_state(
     let cp_ret = Command::new("cp")
         .args([
             "-a",
+            "--remove-destination",
             &format!("{}/etc/.", tempdir.dir.path().as_str()?),
             &format!("{state_path}/etc/."),
         ])
