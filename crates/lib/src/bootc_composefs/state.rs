@@ -124,13 +124,17 @@ pub(crate) fn write_composefs_state(
 
     let actual_var_path = root_path.join(SHARED_VAR_PATH);
     create_dir_all(&actual_var_path)?;
-
-    symlink(
-        path_relative_to(state_path.as_std_path(), actual_var_path.as_std_path())
-            .context("Getting var symlink path")?,
-        state_path.join("var"),
-    )
-    .context("Failed to create symlink for /var")?;
+    
+    let var_symlink_target = path_relative_to(state_path.as_std_path(), actual_var_path.as_std_path())
+        .context("Getting var symlink path")?;
+    
+    let var_symlink_path = state_path.join("var");
+    
+    match symlink(&var_symlink_target, &var_symlink_path) {
+        Ok(_) => (),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => (),
+        Err(e) => return Err(anyhow::Error::new(e).context("Failed to create symlink for /var")),
+    }
 
     let ImageReference {
         image: image_name,
