@@ -1,0 +1,3 @@
+summary: Test soft reboot with SELinux policy changes
+test: nu booted/test-soft-reboot-selinux-policy.nu
+duration: 30m
