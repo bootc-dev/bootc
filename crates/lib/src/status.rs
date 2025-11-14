@@ -93,7 +93,45 @@ impl From<ImageReference> for OstreeImageReference {
     }
 }
 
+/// Check if SELinux policies are compatible between booted and target deployments.
+/// Returns false if SELinux is enabled and the policies differ or have mismatched presence.
+fn check_selinux_policy_compatible(
+    sysroot: &SysrootLock,
+    booted_deployment: &ostree::Deployment,
+    target_deployment: &ostree::Deployment,
+) -> Result<bool> {
+    // Only check if SELinux is enabled
+    if !crate::lsm::selinux_enabled()? {
+        return Ok(true);
+    }
+
+    let booted_fd = crate::utils::deployment_fd(sysroot, booted_deployment)
+        .context("Failed to get file descriptor for booted deployment")?;
+    let booted_policy = crate::lsm::new_sepolicy_at(&booted_fd)
+        .context("Failed to load SELinux policy from booted deployment")?;
+    let target_fd = crate::utils::deployment_fd(sysroot, target_deployment)
+        .context("Failed to get file descriptor for target deployment")?;
+    let target_policy = crate::lsm::new_sepolicy_at(&target_fd)
+        .context("Failed to load SELinux policy from target deployment")?;
+
+    let booted_csum = booted_policy.and_then(|p| p.csum());
+    let target_csum = target_policy.and_then(|p| p.csum());
+
+    match (booted_csum, target_csum) {
+        (None, None) => Ok(true), // Both absent, compatible
+        (Some(_), None) | (None, Some(_)) => {
+            // Incompatible: one has policy, other doesn't
+            Ok(false)
+        }
+        (Some(booted_csum), Some(target_csum)) => {
+            // Both have policies, checksums must match
+            Ok(booted_csum == target_csum)
+        }
+    }
+}
+
 /// Check if a deployment has soft reboot capability
+// TODO: Lower SELinux policy check into ostree's deployment_can_soft_reboot API
 fn has_soft_reboot_capability(sysroot: &SysrootLock, deployment: &ostree::Deployment) -> bool {
     if !ostree_ext::systemd_has_soft_reboot() {
         return false;
@@ -113,7 +151,22 @@ fn has_soft_reboot_capability(sysroot: &SysrootLock, deployment: &ostree::Deploy
         return false;
     }
 
-    sysroot.deployment_can_soft_reboot(deployment)
+    if !sysroot.deployment_can_soft_reboot(deployment) {
+        return false;
+    }
+
+    // Check SELinux policy compatibility with booted deployment
+    // Block soft reboot if SELinux policies differ, as policy is not reloaded across soft reboots
+    if let Some(booted_deployment) = sysroot.booted_deployment() {
+        // deployment_fd should not fail for valid deployments
+        if !check_selinux_policy_compatible(sysroot, &booted_deployment, deployment)
+            .expect("deployment_fd should not fail for valid deployments")
+        {
+            return false;
+        }
+    }
+
+    true
 }
 
 /// Parse an ostree origin file (a keyfile) and extract the targeted

@@ -119,3 +119,14 @@ execute:
     how: fmf
     test:
         - /tmt/tests/test-28-factory-reset
+
+/test-29-soft-reboot-selinux-policy:
+  summary: Test soft reboot with SELinux policy changes
+  discover:
+    how: fmf
+    test:
+        - /tmt/tests/test-29-soft-reboot-selinux-policy
+  adjust:
+    - when: running_env != image_mode
+      enabled: false
+      because: tmt-reboot does not work with systemd reboot in testing farm environment (see bug-soft-reboot.md)
