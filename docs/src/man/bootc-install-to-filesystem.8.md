@@ -27,7 +27,7 @@ is currently expected to be empty by default.
 
 **--root-mount-spec**=*ROOT_MOUNT_SPEC*
 
-    Source device specification for the root filesystem.  For example, UUID=2e9f4241-229b-4202-8429-62d2302382e1
+    Source device specification for the root filesystem.  For example, `UUID=2e9f4241-229b-4202-8429-62d2302382e1`. If not provided, the UUID of the target filesystem will be used. This option is provided as some use cases might prefer to mount by a label instead via e.g. `LABEL=rootfs`
 
 **--boot-mount-spec**=*BOOT_MOUNT_SPEC*
 

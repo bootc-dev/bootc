@@ -312,9 +312,9 @@ pub(crate) struct InstallTargetFilesystemOpts {
     /// To override this, use `--root-mount-spec`.
     pub(crate) root_path: Utf8PathBuf,
 
-    /// Source device specification for the root filesystem.  For example, UUID=2e9f4241-229b-4202-8429-62d2302382e1
-    ///
-    /// If not provided, the UUID of the target filesystem will be used.
+    /// Source device specification for the root filesystem.  For example, `UUID=2e9f4241-229b-4202-8429-62d2302382e1`.
+    /// If not provided, the UUID of the target filesystem will be used. This option is provided
+    /// as some use cases might prefer to mount by a label instead via e.g. `LABEL=rootfs`.
     #[clap(long)]
     pub(crate) root_mount_spec: Option<String>,
 
