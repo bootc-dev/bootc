@@ -1793,6 +1793,19 @@ fn require_empty_rootdir(rootfs_fd: &Dir) -> Result<()> {
         if name == LOST_AND_FOUND {
             continue;
         }
+
+        // Check if this entry is a directory
+        let etype = e.file_type()?;
+        if etype == FileType::dir() {
+            // Check if this directory is a mount point (separate filesystem)
+            // If open_dir_noxdev returns None, it means this directory is on a different device
+            // (i.e., it's a mount point), which is acceptable for to-filesystem installations
+            if rootfs_fd.open_dir_noxdev(&name)?.is_none() {
+                tracing::debug!("Skipping mount point: {name}");
+                continue;
+            }
+        }
+
         // There must be a boot directory (that is empty)
         if name == BOOT {
             let mut entries = rootfs_fd.read_dir(BOOT)?;

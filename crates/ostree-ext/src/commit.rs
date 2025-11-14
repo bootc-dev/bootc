@@ -57,10 +57,23 @@ fn clean_subdir(root: &Dir, rootdev: u64) -> Result<()> {
             tracing::trace!("Skipping entry in foreign dev {path:?}");
             continue;
         }
-        // Also ignore bind mounts, if we have a new enough kernel with statx()
-        // that will tell us.
+        // For mount points (e.g., separate LVM volumes under /var), we need to clean
+        // their contents but preserve the directory itself. This is critical for cases
+        // where subdirectories like /var/log or /var/home are separate logical volumes.
         if root.is_mountpoint(&path)?.unwrap_or_default() {
-            tracing::trace!("Skipping mount point {path:?}");
+            if metadata.is_dir() {
+                tracing::debug!("Cleaning contents of mount point directory {path:?}");
+                // Get the device ID of the mountpoint itself
+                let mountpoint_dev = metadata.dev();
+                // Open the mountpoint directory and clean its contents
+                if let Some(mountpoint_dir) = root.open_dir_optional(&path)? {
+                    clean_subdir(&mountpoint_dir, mountpoint_dev)
+                        .with_context(|| format!("Cleaning mountpoint {path:?}"))?;
+                }
+                // Do not remove the directory itself - it's a mount point
+            } else {
+                tracing::trace!("Skipping non-directory mount point {path:?}");
+            }
             continue;
         }
         if metadata.is_dir() {
