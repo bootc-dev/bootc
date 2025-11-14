@@ -162,6 +162,7 @@ dependencies = [
  "composefs",
  "composefs-boot",
  "fn-error-context",
+ "libc",
  "rustix",
  "serde",
  "toml",

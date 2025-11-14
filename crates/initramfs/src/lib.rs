@@ -4,7 +4,7 @@ use std::{
     ffi::OsString,
     fmt::Debug,
     io::ErrorKind,
-    os::fd::{AsFd, OwnedFd},
+    os::fd::{AsFd, AsRawFd, OwnedFd},
     path::{Path, PathBuf},
 };
 
@@ -30,6 +30,49 @@ use composefs::{
 use composefs_boot::cmdline::get_cmdline_composefs;
 
 use fn_error_context::context;
+
+// mount_setattr syscall support
+const MOUNT_ATTR_RDONLY: u64 = 0x00000001;
+
+#[repr(C)]
+struct MountAttr {
+    attr_set: u64,
+    attr_clr: u64,
+    propagation: u64,
+    userns_fd: u64,
+}
+
+/// Set mount attributes using mount_setattr syscall
+#[context("Setting mount attributes")]
+#[allow(unsafe_code)]
+fn mount_setattr(fd: impl AsFd, flags: libc::c_int, attr: &MountAttr) -> Result<()> {
+    let ret = unsafe {
+        libc::syscall(
+            libc::SYS_mount_setattr,
+            fd.as_fd().as_raw_fd(),
+            c"".as_ptr(),
+            flags,
+            attr as *const MountAttr,
+            std::mem::size_of::<MountAttr>(),
+        )
+    };
+    if ret == -1 {
+        Err(std::io::Error::last_os_error())?;
+    }
+    Ok(())
+}
+
+/// Set mount to readonly recursively
+#[context("Setting mount readonly recursively")]
+fn set_mount_readonly_recursive(fd: impl AsFd) -> Result<()> {
+    let attr = MountAttr {
+        attr_set: MOUNT_ATTR_RDONLY,
+        attr_clr: 0,
+        propagation: 0,
+        userns_fd: 0,
+    };
+    mount_setattr(fd, libc::AT_EMPTY_PATH | libc::AT_RECURSIVE, &attr)
+}
 
 // Config file
 #[derive(Clone, Copy, Debug, Deserialize)]
@@ -193,8 +236,7 @@ fn open_root_fs(path: &Path) -> Result<OwnedFd> {
         OpenTreeFlags::OPEN_TREE_CLONE | OpenTreeFlags::OPEN_TREE_CLOEXEC,
     )?;
 
-    // https://github.com/bytecodealliance/rustix/issues/975
-    // mount_setattr(rootfs.as_fd()), ..., { ... MountAttrFlags::MOUNT_ATTR_RDONLY ... }, ...)?;
+    set_mount_readonly_recursive(&rootfs)?;
 
     Ok(rootfs)
 }
@@ -209,7 +251,13 @@ fn open_root_fs(path: &Path) -> Result<OwnedFd> {
 pub fn mount_composefs_image(sysroot: &OwnedFd, name: &str, insecure: bool) -> Result<OwnedFd> {
     let mut repo = Repository::<Sha512HashValue>::open_path(sysroot, "composefs")?;
     repo.set_insecure(insecure);
-    repo.mount(name).context("Failed to mount composefs image")
+    let rootfs = repo
+        .mount(name)
+        .context("Failed to mount composefs image")?;
+
+    set_mount_readonly_recursive(&rootfs)?;
+
+    Ok(rootfs)
 }
 
 #[context("Mounting subdirectory")]
@@ -291,6 +339,8 @@ pub fn setup_root(args: Args) -> Result<()> {
 
     // we need to clone this before the next step to make sure we get the old one
     let sysroot_clone = bind_mount(&sysroot, "")?;
+
+    set_mount_readonly_recursive(&sysroot_clone)?;
 
     // Ideally we build the new root filesystem together before we mount it, but that only works on
     // 6.15 and later.  Before 6.15 we can't mount into a floating tree, so mount it first.  This
