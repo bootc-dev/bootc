@@ -80,6 +80,13 @@ fn inner_tests() -> Vec<Trial> {
 
         assert_eq!(verity_from_status.unwrap(), verity_from_cmdline);
 
+        // Verify that we booted via systemd-gpt-auto-generator by checking
+        // that /proc/cmdline does NOT contain a root= parameter
+        let has_root_param = cmdline.iter().any(|entry| {
+            entry.key() == "root".into()
+        });
+        assert!(!has_root_param, "Sealed composefs image should not have root= in kernel cmdline; systemd-gpt-auto-generator should discover the root partition via DPS");
+
         Ok(())
     })]
     .into_iter()

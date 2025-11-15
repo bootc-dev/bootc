@@ -37,6 +37,7 @@ pub struct Device {
     // Filesystem-related properties
     pub label: Option<String>,
     pub fstype: Option<String>,
+    pub uuid: Option<String>,
     pub path: Option<String>,
 }
 

@@ -19,6 +19,19 @@ the container image, alongside any required system partitions such as
 the EFI system partition. Use `install to-filesystem` for anything
 more complex such as RAID, LVM, LUKS etc.
 
+## Partitioning details
+
+The default as of bootc 1.11 uses the [Discoverable Partitions Specification](https://uapi-group.org/specifications/specs/discoverable_partitions_specification/)
+for the generated root filesystem, as well as any required system partitions
+such as the EFI system partition.
+
+Note that by default when used with "type 1" bootloader setups (i.e. non-UKI)
+a kernel argument `root=UUID=<uuid of filesystem>` is injected by default.
+
+When used with the composefs backend and UKIs, it's recommended that
+a bootloader implementing the DPS specification is used and that the root
+partition is auto-discovered.
+
 # OPTIONS
 
 <!-- BEGIN GENERATED OPTIONS -->

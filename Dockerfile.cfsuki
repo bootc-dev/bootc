@@ -28,10 +28,7 @@ RUN --mount=type=secret,id=key \
     # Should be generated externally
     test -n "${COMPOSEFS_FSVERITY}"
 
-    # Inject the composefs kernel argument and specify a root with the x86_64 DPS UUID.
-    # TODO: Discoverable partition fleshed out, or drop root UUID as systemd-stub extension
-    # TODO: https://github.com/containers/composefs-rs/issues/183
-    cmdline="composefs=${COMPOSEFS_FSVERITY} root=UUID=4f68bce3-e8cd-4db1-96e7-fbcaf984b709 console=ttyS0,115200n8 enforcing=0 rw"
+    cmdline="composefs=${COMPOSEFS_FSVERITY} console=ttyS0,115200n8 enforcing=0 rw"
 
     # pesign uses NSS database so create it from input cert/key
     mkdir pesign

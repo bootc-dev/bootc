@@ -41,8 +41,6 @@ pub(crate) const EFIPN_SIZE_MB: u32 = 512;
 /// We need more space than ostree as we have UKIs and UKI addons
 /// We might also need to store UKIs for pinned deployments
 pub(crate) const CFS_EFIPN_SIZE_MB: u32 = 1024;
-/// The GPT type for "linux"
-pub(crate) const LINUX_PARTTYPE: &str = "0FC63DAF-8483-4772-8E79-3D69D8477DE4";
 #[cfg(feature = "install-to-disk")]
 pub(crate) const PREPBOOT_GUID: &str = "9E1A2D38-C612-4316-AA26-8B49521E5A8B";
 #[cfg(feature = "install-to-disk")]
@@ -113,7 +111,8 @@ fn mkfs<'a>(
     let devinfo = bootc_blockdev::list_dev(dev.into())?;
     let size = ostree_ext::glib::format_size(devinfo.size);
 
-    let u = uuid::Uuid::parse_str(crate::discoverable_partition_specification::this_arch_root())?;
+    // Generate a random UUID for the filesystem
+    let u = uuid::Uuid::new_v4();
 
     let mut t = Task::new(
         &format!("Creating {label} filesystem ({fs}) on device {dev} (size={size})"),
@@ -315,9 +314,11 @@ pub(crate) fn install_create_rootfs(
     let root_size = root_size
         .map(|v| Cow::Owned(format!("size={v}MiB, ")))
         .unwrap_or_else(|| Cow::Borrowed(""));
+    let rootpart_uuid =
+        uuid::Uuid::parse_str(crate::discoverable_partition_specification::this_arch_root())?;
     writeln!(
         &mut partitioning_buf,
-        r#"{root_size}type={LINUX_PARTTYPE}, name="root""#
+        r#"{root_size}type={rootpart_uuid}, name="root""#
     )?;
     tracing::debug!("Partitioning: {partitioning_buf}");
     Task::new("Initializing partitions", "sfdisk")
@@ -336,9 +337,14 @@ pub(crate) fn install_create_rootfs(
     let base_partitions = &bootc_blockdev::partitions_of(&devpath)?;
 
     let root_partition = base_partitions.find_partno(rootpn)?;
-    if root_partition.parttype.as_str() != LINUX_PARTTYPE {
+    // Verify the partition type matches the DPS root partition type for this architecture
+    let expected_parttype = crate::discoverable_partition_specification::this_arch_root();
+    if !root_partition
+        .parttype
+        .eq_ignore_ascii_case(expected_parttype)
+    {
         anyhow::bail!(
-            "root partition {partno} has type {}; expected {LINUX_PARTTYPE}",
+            "root partition {rootpn} has type {}; expected {expected_parttype}",
             root_partition.parttype.as_str()
         );
     }

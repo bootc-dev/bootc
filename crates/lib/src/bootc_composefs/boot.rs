@@ -51,7 +51,6 @@ use crate::{
         BOOT_LOADER_ENTRIES, COMPOSEFS_CMDLINE, ORIGIN_KEY_BOOT, ORIGIN_KEY_BOOT_DIGEST,
         STAGED_BOOT_LOADER_ENTRIES, STATE_DIR_ABS, USER_CFG, USER_CFG_STAGED,
     },
-    discoverable_partition_specification::this_arch_root,
     install::RW_KARG,
     spec::{Bootloader, Host},
 };
@@ -412,10 +411,7 @@ pub(crate) fn setup_composefs_bls_boot(
             (
                 Utf8PathBuf::from("/sysroot"),
                 get_esp_partition(&sysroot_parent)?.0,
-                Cmdline::from(format!(
-                    "root=UUID={} {RW_KARG} {COMPOSEFS_CMDLINE}={id_hex}",
-                    this_arch_root()
-                )),
+                Cmdline::from(format!("{RW_KARG} {COMPOSEFS_CMDLINE}={id_hex}")),
                 fs,
                 bootloader,
             )
