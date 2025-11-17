@@ -122,6 +122,13 @@
       "description": "A bootable entry",
       "type": "object",
       "properties": {
+        "bootDigest": {
+          "description": "The sha256sum of vmlinuz + initrd\nOnly `Some` for Type1 boot entries",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "bootType": {
           "description": "Whether this deployment is to be booted via Type1 (vmlinuz + initrd) or Type2 (UKI) entry",
           "$ref": "#/$defs/BootType"
