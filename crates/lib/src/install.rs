@@ -1815,6 +1815,42 @@ fn require_empty_rootdir(rootfs_fd: &Dir) -> Result<()> {
     Ok(())
 }
 
+#[context("Removing boot directory content except loader and ostree dirs")]
+fn remove_all_except_loader_dirs(bootdir: &Dir) -> Result<()> {
+    let entries = bootdir.entries().context("Reading boot directory entries")?;
+    let protected_dirs = ["loader", "ostree"];
+
+    for entry in entries {
+        let entry = entry.context("Reading directory entry")?;
+        let file_name = entry.file_name();
+        let file_name = if let Some(n) = file_name.to_str() {
+            n
+        } else {
+            anyhow::bail!("Invalid non-UTF8 filename: {file_name:?} in /boot");
+        };
+
+        // Skip any entry that starts with a protected prefix,
+        // as we also need to protect loader.0 or loader.1
+        if protected_dirs.iter().any(|p| file_name.starts_with(p)) {
+            continue;
+        }
+
+        let etype = entry.file_type()?;
+        if etype == FileType::dir() {
+            // Open the directory and remove its contents
+            if let Some(subdir) = bootdir.open_dir_noxdev(&file_name)? {
+                remove_all_in_dir_no_xdev(&subdir, false)
+                    .with_context(|| format!("Removing directory contents: {}", file_name))?;
+            }
+        } else {
+            bootdir
+                .remove_file_optional(&file_name)
+                .with_context(|| format!("Removing file: {}", file_name))?;
+        }
+    }
+    Ok(())
+}
+
 /// Remove all entries in a directory, but do not traverse across distinct devices.
 /// If mount_err is true, then an error is returned if a mount point is found;
 /// otherwise it is silently ignored.
@@ -1838,29 +1874,22 @@ fn remove_all_in_dir_no_xdev(d: &Dir, mount_err: bool) -> Result<()> {
 }
 
 #[context("Removing boot directory content")]
-fn clean_boot_directories(rootfs: &Dir, is_ostree: bool) -> Result<()> {
+fn clean_boot_directories(rootfs: &Dir) -> Result<()> {
     let bootdir =
         crate::utils::open_dir_remount_rw(rootfs, BOOT.into()).context("Opening /boot")?;
 
-    if is_ostree {
-        // On ostree systems, the boot directory already has our desired format, we should only
-        // remove the bootupd-state.json file to avoid bootupctl complaining it already exists.
-        bootdir
-            .remove_file_optional("bootupd-state.json")
-            .context("removing bootupd-state.json")?;
-    } else {
-        // This should not remove /boot/efi note.
-        remove_all_in_dir_no_xdev(&bootdir, false).context("Emptying /boot")?;
-        // TODO: Discover the ESP the same way bootupd does it; we should also
-        // support not wiping the ESP.
-        if ARCH_USES_EFI {
-            if let Some(efidir) = bootdir
-                .open_dir_optional(crate::bootloader::EFI_DIR)
-                .context("Opening /boot/efi")?
-            {
-                remove_all_in_dir_no_xdev(&efidir, false)
-                    .context("Emptying EFI system partition")?;
-            }
+    // This should not remove /boot/efi note.
+    remove_all_except_loader_dirs(&bootdir).context("Emptying /boot except protected dirs")?;
+
+    // TODO: Discover the ESP the same way bootupd does it; we should also
+    // support not wiping the ESP.
+    if ARCH_USES_EFI {
+        if let Some(efidir) = bootdir
+            .open_dir_optional(crate::bootloader::EFI_DIR)
+            .context("Opening /boot/efi")?
+        {
+            remove_all_in_dir_no_xdev(&efidir, false)
+                .context("Emptying EFI system partition")?;
         }
     }
 
@@ -2068,7 +2097,7 @@ pub(crate) async fn install_to_filesystem(
         }
         // Find boot under /
         Some(ReplaceMode::Alongside) => {
-            clean_boot_directories(&target_rootfs_fd, is_already_ostree)?
+            clean_boot_directories(&target_rootfs_fd)?
         }
         None => require_empty_rootdir(&target_rootfs_fd)?,
     }
