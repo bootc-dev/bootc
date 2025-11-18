@@ -22,6 +22,11 @@ use crate::oci_spec::image as oci_image;
 /// TODO: change the skopeo code to shield us from this correctly
 const DOCKER_TYPE_LAYER_TAR: &str = "application/vnd.docker.image.rootfs.diff.tar";
 
+/// The Docker MIME type for gzipped layers when stored in docker-daemon.
+/// Even though this indicates gzip compression, docker-daemon actually stores
+/// the layers uncompressed, so we need to treat this as uncompressed.
+const DOCKER_TYPE_LAYER_TAR_GZIP: &str = "application/vnd.docker.image.rootfs.diff.tar.gzip";
+
 /// Extends the `Read` trait with another method to get mutable access to the inner reader
 trait ReadWithGetInnerMut: Read + Send + 'static {
     fn get_inner_mut(&mut self) -> &mut dyn Read;
@@ -125,6 +130,9 @@ impl Decompressor {
             oci_image::MediaType::Other(t) if t.as_str() == DOCKER_TYPE_LAYER_TAR => {
                 Box::new(TransparentDecompressor(src))
             }
+            oci_image::MediaType::Other(t) if t.as_str() == DOCKER_TYPE_LAYER_TAR_GZIP => {
+                Box::new(TransparentDecompressor(src))
+            }
             o => anyhow::bail!("Unhandled layer type: {}", o),
         };
         Ok(Self {
@@ -226,6 +234,19 @@ mod tests {
         let e = d.read(&mut buf).unwrap_err();
         assert!(matches!(e.kind(), std::io::ErrorKind::Other));
         assert_eq!(e.to_string(), "Unknown frame descriptor".to_string());
+        drop(d)
+    }
+
+    #[test]
+    fn test_docker_tar_gzip_media_type_uses_transparent_decompressor() {
+        // Test that the docker-daemon gzip media type is treated as uncompressed
+        let data = b"test data";
+        let media_type = oci_image::MediaType::Other(DOCKER_TYPE_LAYER_TAR_GZIP.to_string());
+        let mut d = Decompressor::new(&media_type, &data[..]).unwrap();
+        let mut buf = [0u8; 32];
+        let n = d.read(&mut buf).unwrap();
+        assert_eq!(n, data.len());
+        assert_eq!(&buf[..n], data);
         drop(d)
     }
 }

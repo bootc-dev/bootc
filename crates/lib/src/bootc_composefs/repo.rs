@@ -56,12 +56,15 @@ pub(crate) async fn initialize_composefs_repository(
 /// Ex
 /// docker://quay.io/some-image
 /// containers-storage:some-image
+/// docker-daemon:some-image-id
 pub(crate) fn get_imgref(transport: &str, image: &str) -> String {
     let img = image.strip_prefix(":").unwrap_or(&image);
     let transport = transport.strip_suffix(":").unwrap_or(&transport);
 
     if transport == "registry" {
         format!("docker://{img}")
+    } else if transport == "docker-daemon" {
+        format!("docker-daemon:{img}")
     } else {
         format!("{transport}:{img}")
     }
@@ -136,6 +139,14 @@ mod tests {
         assert_eq!(
             get_imgref("registry", IMAGE_NAME),
             format!("docker://{IMAGE_NAME}")
+        );
+    }
+
+    #[test]
+    fn test_get_imgref_docker_daemon_transport() {
+        assert_eq!(
+            get_imgref("docker-daemon", IMAGE_NAME),
+            format!("docker-daemon:{IMAGE_NAME}")
         );
     }
 }

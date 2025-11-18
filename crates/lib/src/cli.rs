@@ -123,7 +123,7 @@ pub(crate) struct SwitchOpts {
     #[clap(long = "soft-reboot")]
     pub(crate) soft_reboot: Option<SoftRebootMode>,
 
-    /// The transport; e.g. oci, oci-archive, containers-storage.  Defaults to `registry`.
+    /// The transport; e.g. registry, oci, oci-archive, docker-daemon, containers-storage.  Defaults to `registry`.
     #[clap(long, default_value = "registry")]
     pub(crate) transport: String,
 

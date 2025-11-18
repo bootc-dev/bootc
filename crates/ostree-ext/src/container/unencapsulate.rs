@@ -205,9 +205,13 @@ pub(crate) async fn fetch_layer<'a>(
     let (blob, driver, size);
     let media_type: oci_image::MediaType;
     match transport_src {
-        Transport::ContainerStorage => {
-            let layer_info = layer_info
-                .ok_or_else(|| anyhow!("skopeo too old to pull from containers-storage"))?;
+        // Both containers-storage and docker-daemon store layers uncompressed in their
+        // local storage, even though the manifest may indicate they are compressed.
+        // We need to use the actual media type from layer_info to avoid decompression errors.
+        Transport::ContainerStorage | Transport::DockerDaemon => {
+            let layer_info = layer_info.ok_or_else(|| {
+                anyhow!("skopeo too old to pull from containers-storage or docker-daemon")
+            })?;
             let n_layers = layer_info.len();
             let layer_blob = layer_info.get(layer_index).ok_or_else(|| {
                 anyhow!("blobid position {layer_index} exceeds diffid count {n_layers}")

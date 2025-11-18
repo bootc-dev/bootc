@@ -66,6 +66,8 @@ pub enum Transport {
     ContainerStorage,
     /// Local directory (`dir:`)
     Dir,
+    /// Local Docker daemon (`docker-daemon:`)
+    DockerDaemon,
 }
 
 /// Combination of a remote image reference and transport.
@@ -114,6 +116,7 @@ impl TryFrom<&str> for Transport {
             Self::DOCKER_ARCHIVE_STR => Self::DockerArchive,
             Self::CONTAINERS_STORAGE_STR => Self::ContainerStorage,
             Self::LOCAL_DIRECTORY_STR => Self::Dir,
+            Self::DOCKER_DAEMON_STR => Self::DockerDaemon,
             o => return Err(anyhow!("Unknown transport '{}'", o)),
         })
     }
@@ -126,6 +129,7 @@ impl Transport {
     const CONTAINERS_STORAGE_STR: &'static str = "containers-storage";
     const LOCAL_DIRECTORY_STR: &'static str = "dir";
     const REGISTRY_STR: &'static str = "registry";
+    const DOCKER_DAEMON_STR: &'static str = "docker-daemon";
 
     /// Retrieve an identifier that can then be re-parsed from [`Transport::try_from::<&str>`].
     pub fn serializable_name(&self) -> &'static str {
@@ -136,6 +140,7 @@ impl Transport {
             Transport::DockerArchive => Self::DOCKER_ARCHIVE_STR,
             Transport::ContainerStorage => Self::CONTAINERS_STORAGE_STR,
             Transport::Dir => Self::LOCAL_DIRECTORY_STR,
+            Transport::DockerDaemon => Self::DOCKER_DAEMON_STR,
         }
     }
 }
@@ -258,6 +263,7 @@ impl std::fmt::Display for Transport {
             Self::OciDir => "oci:",
             Self::ContainerStorage => "containers-storage:",
             Self::Dir => "dir:",
+            Self::DockerDaemon => "docker-daemon:",
         };
         f.write_str(s)
     }
