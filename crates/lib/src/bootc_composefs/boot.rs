@@ -137,7 +137,7 @@ const AUTH_EXT: &str = "auth";
 /// directory specified by the BLS spec. We do this because we want systemd-boot to only look at
 /// our config files and not show the actual UKIs in the bootloader menu
 /// This is relative to the ESP
-pub(crate) const SYSTEMD_UKI_DIR: &str = "EFI/Linux/bootc";
+pub(crate) const BOOTC_UKI_DIR: &str = "EFI/Linux/bootc";
 
 pub(crate) enum BootSetupType<'a> {
     /// For initial setup, i.e. install to-disk
@@ -793,7 +793,6 @@ fn write_pe_to_esp(
     uki_id: &Sha512HashValue,
     missing_fsverity_allowed: bool,
     mounted_efi: impl AsRef<Path>,
-    bootloader: &Bootloader,
 ) -> Result<Option<UKIInfo>> {
     let efi_bin = read_file(file, &repo).context("Reading .efi binary")?;
 
@@ -843,14 +842,8 @@ fn write_pe_to_esp(
         });
     }
 
-    // Write the UKI to ESP
-    let efi_linux_path = mounted_efi.as_ref().join(match bootloader {
-        Bootloader::Grub => EFI_LINUX,
-        Bootloader::Systemd => SYSTEMD_UKI_DIR,
-        Bootloader::None => unreachable!("Checked at install time"),
-    });
-
-    create_dir_all(&efi_linux_path).context("Creating EFI/Linux")?;
+    let efi_linux_path = mounted_efi.as_ref().join(BOOTC_UKI_DIR);
+    create_dir_all(&efi_linux_path).context("Creating bootc UKI directory")?;
 
     let final_pe_path = match file_path.parent() {
         Some(parent) => {
@@ -1000,7 +993,7 @@ fn write_systemd_uki_config(
     bls_conf
         .with_title(boot_label.boot_label)
         .with_cfg(BLSConfigType::EFI {
-            efi: format!("/{SYSTEMD_UKI_DIR}/{}{}", id.to_hex(), EFI_EXT).into(),
+            efi: format!("/{BOOTC_UKI_DIR}/{}{}", id.to_hex(), EFI_EXT).into(),
         })
         .with_sort_key(primary_sort_key.clone())
         .with_version(boot_label.version.unwrap_or_else(|| id.to_hex()));
@@ -1143,7 +1136,6 @@ pub(crate) fn setup_composefs_uki_boot(
                     &id,
                     missing_fsverity_allowed,
                     esp_mount.dir.path(),
-                    &bootloader,
                 )?;
 
                 if let Some(label) = ret {

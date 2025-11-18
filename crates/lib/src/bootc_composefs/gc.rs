@@ -13,7 +13,7 @@ use rustix::fs::readlink;
 
 use crate::{
     bootc_composefs::{
-        boot::{BootType, SYSTEMD_UKI_DIR, VMLINUZ},
+        boot::{BootType, BOOTC_UKI_DIR, VMLINUZ},
         delete::{delete_image, delete_staged, delete_state_dir},
         status::{get_composefs_status, get_imginfo, list_bootloader_entries},
     },
@@ -83,7 +83,7 @@ fn collect_boot_binaries(storage: &Storage) -> Result<Vec<BootBinary>> {
 /// Scan for UKI binaries in EFI/Linux/bootc
 #[fn_error_context::context("Collecting UKI binaries")]
 fn collect_uki_binaries(boot_dir: &Dir, boot_binaries: &mut Vec<BootBinary>) -> Result<()> {
-    let Ok(Some(efi_dir)) = boot_dir.open_dir_optional(SYSTEMD_UKI_DIR) else {
+    let Ok(Some(efi_dir)) = boot_dir.open_dir_optional(BOOTC_UKI_DIR) else {
         return Ok(());
     };
 
@@ -164,7 +164,7 @@ fn delete_uki(storage: &Storage, uki_id: &str, dry_run: bool) -> Result<()> {
 
     // NOTE: We don't delete global addons here
     // Which is fine as global addons don't belong to any single deployment
-    let uki_dir = esp_mnt.fd.open_dir(SYSTEMD_UKI_DIR)?;
+    let uki_dir = esp_mnt.fd.open_dir(BOOTC_UKI_DIR)?;
 
     for entry in uki_dir.entries_utf8()? {
         let entry = entry?;
