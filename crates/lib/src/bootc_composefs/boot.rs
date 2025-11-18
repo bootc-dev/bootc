@@ -73,7 +73,7 @@ const VMLINUZ: &str = "vmlinuz";
 /// directory specified by the BLS spec. We do this because we want systemd-boot to only look at
 /// our config files and not show the actual UKIs in the bootloader menu
 /// This is relative to the ESP
-pub(crate) const SYSTEMD_UKI_DIR: &str = "EFI/Linux/bootc";
+pub(crate) const BOOTC_UKI_DIR: &str = "EFI/Linux/bootc";
 
 pub(crate) const GLOBAL_UKI_ADDON_DIR: &str = "loader/addons";
 
@@ -604,7 +604,6 @@ fn write_pe_to_esp(
     uki_id: &Sha512HashValue,
     is_insecure_from_opts: bool,
     mounted_efi: impl AsRef<Path>,
-    bootloader: &Bootloader,
 ) -> Result<Option<UKILabels>> {
     let efi_bin = read_file(file, &repo).context("Reading .efi binary")?;
 
@@ -652,11 +651,7 @@ fn write_pe_to_esp(
     // Directory to write the PortableExecutable to
     let pe_install_dir = mounted_efi.as_ref().join(match pe_type {
         PEType::UkiAddon if INSTALL_ADDONS_AS_GLOBAL => GLOBAL_UKI_ADDON_DIR,
-
-        PEType::Uki | PEType::UkiAddon => match bootloader {
-            Bootloader::Grub => EFI_LINUX,
-            Bootloader::Systemd => SYSTEMD_UKI_DIR,
-        },
+        PEType::Uki | PEType::UkiAddon => BOOTC_UKI_DIR,
     });
 
     create_dir_all(&pe_install_dir)
@@ -811,7 +806,7 @@ fn write_systemd_uki_config(
     bls_conf
         .with_title(boot_label.boot_label)
         .with_cfg(BLSConfigType::UKI {
-            uki: format!("/{SYSTEMD_UKI_DIR}/{}{}", id.to_hex(), EFI_EXT).into(),
+            uki: format!("/{BOOTC_UKI_DIR}/{}{}", id.to_hex(), EFI_EXT).into(),
         })
         .with_sort_key(default_sort_key.into())
         .with_version(boot_label.version.unwrap_or(default_sort_key.into()));
@@ -952,7 +947,6 @@ pub(crate) fn setup_composefs_uki_boot(
                     &id,
                     is_insecure_from_opts,
                     esp_mount.dir.path(),
-                    &bootloader,
                 )?;
 
                 if let Some(label) = ret {

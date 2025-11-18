@@ -15,6 +15,8 @@ use nom::{
     Err, IResult, Parser,
 };
 
+use crate::bootc_composefs::boot::BOOTC_UKI_DIR;
+
 /// Body content of a GRUB menuentry containing parsed commands.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct MenuentryBody<'a> {
@@ -95,7 +97,7 @@ impl<'a> MenuEntry<'a> {
             title: format!("{boot_label}: ({uki_id})"),
             body: MenuentryBody {
                 insmod: vec!["fat", "chain"],
-                chainloader: format!("/EFI/Linux/{uki_id}.efi"),
+                chainloader: format!("/{BOOTC_UKI_DIR}/{uki_id}.efi"),
                 search: "--no-floppy --set=root --fs-uuid \"${EFI_PART_UUID}\"",
                 version: 0,
                 extra: vec![],

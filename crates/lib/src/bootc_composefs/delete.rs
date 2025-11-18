@@ -9,7 +9,7 @@ use crate::{
     bootc_composefs::{
         boot::{
             find_vmlinuz_initrd_duplicates, get_efi_uuid_source, get_esp_partition,
-            get_sysroot_parent_dev, mount_esp, BootType, SYSTEMD_UKI_DIR,
+            get_sysroot_parent_dev, mount_esp, BootType, BOOTC_UKI_DIR,
         },
         gc::composefs_gc,
         repo::open_composefs_repo,
@@ -156,7 +156,7 @@ fn delete_kernel_initrd(bls_config: &BLSConfigType, boot_dir: &Dir) -> Result<()
 #[fn_error_context::context("Deleting UKI and UKI addons {uki_id}")]
 fn delete_uki(uki_id: &str, esp_mnt: &Dir) -> Result<()> {
     // TODO: We don't delete global addons here
-    let ukis = esp_mnt.open_dir(SYSTEMD_UKI_DIR)?;
+    let ukis = esp_mnt.open_dir(BOOTC_UKI_DIR)?;
 
     for entry in ukis.entries_utf8()? {
         let entry = entry?;
