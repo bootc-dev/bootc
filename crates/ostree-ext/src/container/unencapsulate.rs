@@ -203,7 +203,7 @@ pub(crate) async fn fetch_layer<'a>(
     tracing::debug!("fetching {}", layer.digest());
     let layer_index = manifest.layers().iter().position(|x| x == layer).unwrap();
     let (blob, driver, size);
-    let media_type: oci_image::MediaType;
+    let mut media_type: oci_image::MediaType;
     match transport_src {
         // Both containers-storage and docker-daemon store layers uncompressed in their
         // local storage, even though the manifest may indicate they are compressed.
@@ -218,6 +218,19 @@ pub(crate) async fn fetch_layer<'a>(
             })?;
             size = layer_blob.size;
             media_type = layer_blob.media_type.clone();
+
+            // docker-daemon stores layers uncompressed even when the media type
+            // indicates gzip compression. Translate to the uncompressed variant.
+            if transport_src == Transport::DockerDaemon {
+                if let oci_image::MediaType::Other(t) = &media_type {
+                    if t.as_str() == "application/vnd.docker.image.rootfs.diff.tar.gzip" {
+                        media_type = oci_image::MediaType::Other(
+                            "application/vnd.docker.image.rootfs.diff.tar".to_string(),
+                        );
+                    }
+                }
+            }
+
             (blob, driver) = proxy.get_blob(img, &layer_blob.digest, size).await?;
         }
         _ => {
