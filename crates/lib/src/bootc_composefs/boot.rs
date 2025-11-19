@@ -5,7 +5,7 @@ use std::path::Path;
 
 use anyhow::{anyhow, Context, Result};
 use bootc_blockdev::find_parent_devices;
-use bootc_kernel_cmdline::utf8::Cmdline;
+use bootc_kernel_cmdline::utf8::{Cmdline, Parameter};
 use bootc_mount::inspect_filesystem_of_dir;
 use bootc_mount::tempmount::TempMount;
 use camino::{Utf8Path, Utf8PathBuf};
@@ -33,6 +33,7 @@ use rustix::{mount::MountFlags, path::Arg};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::bootc_kargs::kargs_from_composefs_filesystem;
 use crate::composefs_consts::{TYPE1_ENT_PATH, TYPE1_ENT_PATH_STAGED};
 use crate::parsers::bls_config::{BLSConfig, BLSConfigType};
 use crate::parsers::grub_menuconfig::MenuEntry;
@@ -51,7 +52,6 @@ use crate::{
         BOOT_LOADER_ENTRIES, COMPOSEFS_CMDLINE, ORIGIN_KEY_BOOT, ORIGIN_KEY_BOOT_DIGEST,
         STAGED_BOOT_LOADER_ENTRIES, STATE_DIR_ABS, USER_CFG, USER_CFG_STAGED,
     },
-    install::RW_KARG,
     spec::{Bootloader, Host},
 };
 
@@ -381,10 +381,11 @@ pub(crate) fn setup_composefs_bls_boot(
     repo: crate::store::ComposefsRepository,
     id: &Sha512HashValue,
     entry: &ComposefsBootEntry<Sha512HashValue>,
+    mounted_erofs: &Dir
 ) -> Result<String> {
     let id_hex = id.to_hex();
 
-    let (root_path, esp_device, cmdline_refs, fs, bootloader) = match setup_type {
+    let (root_path, esp_device, mut cmdline_refs, fs, bootloader) = match setup_type {
         BootSetupType::Setup((root_setup, state, postfetch, fs)) => {
             // root_setup.kargs has [root=UUID=<UUID>, "rw"]
             let mut cmdline_options = Cmdline::new();
@@ -415,15 +416,52 @@ pub(crate) fn setup_composefs_bls_boot(
             let sysroot_parent = get_sysroot_parent_dev(&storage.physical_root)?;
             let bootloader = host.require_composefs_booted()?.bootloader.clone();
 
+            let current_cfg = match bootloader {
+                Bootloader::Grub => {
+                    let boot_dir = storage
+                        .physical_root
+                        .open_dir("boot")
+                        .context("Opening boot")?;
+
+                    get_booted_bls(&boot_dir)?
+                }
+
+                Bootloader::Systemd => {
+                    let esp = get_esp_partition(&sysroot_parent)?.0;
+                    let esp_mnt = mount_esp(&esp)?;
+
+                    get_booted_bls(&esp_mnt.fd)?
+                }
+            };
+
+            let mut cmdline = match current_cfg.cfg_type {
+                BLSConfigType::NonEFI { options, .. } => {
+                    let options = options
+                        .ok_or_else(|| anyhow::anyhow!("No 'options' found in BLS Config"))?;
+
+                    Cmdline::from(options)
+                }
+
+                _ => anyhow::bail!("Found NonEFI config"),
+            };
+
+            // Copy all cmdline args, replacing only `composefs=`
+            let param = format!("{COMPOSEFS_CMDLINE}={id_hex}");
+            let param =
+                Parameter::parse(&param).context("Failed to create 'composefs=' parameter")?;
+            cmdline.add_or_modify(&param);
+
             (
                 Utf8PathBuf::from("/sysroot"),
                 get_esp_partition(&sysroot_parent)?.0,
-                Cmdline::from(format!("{RW_KARG} {COMPOSEFS_CMDLINE}={id_hex}")),
+                cmdline,
                 fs,
                 bootloader,
             )
         }
     };
+
+    kargs_from_composefs_filesystem(mounted_erofs, &mut cmdline_refs)?;
 
     let is_upgrade = matches!(setup_type, BootSetupType::Upgrade(..));
 
@@ -1053,6 +1091,7 @@ pub(crate) fn setup_composefs_boot(
                 repo,
                 &id,
                 entry,
+                &mounted_fs
             )?;
 
             boot_digest = Some(digest);

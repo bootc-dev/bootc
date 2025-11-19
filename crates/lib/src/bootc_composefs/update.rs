@@ -1,6 +1,10 @@
 use anyhow::{Context, Result};
 use camino::Utf8PathBuf;
-use composefs::util::{parse_sha256, Sha256Digest};
+use cap_std_ext::cap_std::fs::Dir;
+use composefs::{
+    fsverity::FsVerityHashValue,
+    util::{parse_sha256, Sha256Digest},
+};
 use fn_error_context::context;
 use ostree_ext::oci_spec::image::{ImageConfiguration, ImageManifest};
 
@@ -154,6 +158,12 @@ pub(crate) async fn upgrade_composefs(
         anyhow::bail!("No boot entries!");
     };
 
+    let mounted_fs = Dir::reopen_dir(
+        &repo
+            .mount(&id.to_hex())
+            .context("Failed to mount composefs image")?,
+    )?;
+
     let boot_type = BootType::from(entry);
     let mut boot_digest = None;
 
@@ -164,6 +174,7 @@ pub(crate) async fn upgrade_composefs(
                 repo,
                 &id,
                 entry,
+                &mounted_fs,
             )?)
         }
 

@@ -45,6 +45,16 @@ impl Config {
     }
 }
 
+/// Looks for files in usr/lib/bootc/kargs.d and parses cmdline agruments
+pub(crate) fn kargs_from_composefs_filesystem(
+    new_fs: &Dir,
+    cmdline: &mut Cmdline,
+) -> Result<()> {
+    let remote_kargs = get_kargs_in_root(new_fs, std::env::consts::ARCH)?;
+    cmdline.extend(&remote_kargs);
+    Ok(())
+}
+
 /// Load and parse all bootc kargs.d files in the specified root, returning
 /// a combined list.
 pub(crate) fn get_kargs_in_root(d: &Dir, sys_arch: &str) -> Result<CmdlineOwned> {

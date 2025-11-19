@@ -1,5 +1,7 @@
 use anyhow::{Context, Result};
 use camino::Utf8PathBuf;
+use cap_std_ext::cap_std::fs::Dir;
+use composefs::fsverity::FsVerityHashValue;
 use fn_error_context::context;
 
 use crate::{
@@ -54,6 +56,12 @@ pub(crate) async fn switch_composefs(
     let boot_type = BootType::from(entry);
     let mut boot_digest = None;
 
+    let mounted_fs = Dir::reopen_dir(
+        &repo
+            .mount(&id.to_hex())
+            .context("Failed to mount composefs image")?,
+    )?;
+
     match boot_type {
         BootType::Bls => {
             boot_digest = Some(setup_composefs_bls_boot(
@@ -61,6 +69,7 @@ pub(crate) async fn switch_composefs(
                 repo,
                 &id,
                 entry,
+                &mounted_fs,
             )?)
         }
         BootType::Uki => setup_composefs_uki_boot(
