@@ -7,10 +7,7 @@ use composefs_boot::bootloader::{EFI_ADDON_DIR_EXT, EFI_EXT};
 
 use crate::{
     bootc_composefs::{
-        boot::{
-            find_vmlinuz_initrd_duplicates, get_efi_uuid_source, get_esp_partition,
-            get_sysroot_parent_dev, mount_esp, BootType, SYSTEMD_UKI_DIR,
-        },
+        boot::{find_vmlinuz_initrd_duplicates, get_efi_uuid_source, BootType, SYSTEMD_UKI_DIR},
         gc::composefs_gc,
         repo::open_composefs_repo,
         rollback::{composefs_rollback, rename_exchange_user_cfg},
@@ -215,40 +212,34 @@ fn remove_grub_menucfg_entry(id: &str, boot_dir: &Dir, deleting_staged: bool) ->
 #[fn_error_context::context("Deleting boot entries for deployment {}", deployment.deployment.verity)]
 fn delete_depl_boot_entries(
     deployment: &DeploymentEntry,
-    physical_root: &Dir,
+    storage: &Storage,
     deleting_staged: bool,
 ) -> Result<()> {
+    let boot_dir = storage.require_boot_dir()?;
+
     match deployment.deployment.bootloader {
-        Bootloader::Grub => {
-            let boot_dir = physical_root.open_dir("boot").context("Opening boot dir")?;
+        Bootloader::Grub => match deployment.deployment.boot_type {
+            BootType::Bls => delete_type1_entry(deployment, boot_dir, deleting_staged),
 
-            match deployment.deployment.boot_type {
-                BootType::Bls => delete_type1_entry(deployment, &boot_dir, deleting_staged),
+            BootType::Uki => {
+                let esp = storage
+                    .esp
+                    .as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("ESP not found"))?;
 
-                BootType::Uki => {
-                    let device = get_sysroot_parent_dev(physical_root)?;
-                    let (esp_part, ..) = get_esp_partition(&device)?;
-                    let esp_mount = mount_esp(&esp_part)?;
+                remove_grub_menucfg_entry(
+                    &deployment.deployment.verity,
+                    boot_dir,
+                    deleting_staged,
+                )?;
 
-                    remove_grub_menucfg_entry(
-                        &deployment.deployment.verity,
-                        &boot_dir,
-                        deleting_staged,
-                    )?;
-
-                    delete_uki(&deployment.deployment.verity, &esp_mount.fd)
-                }
+                delete_uki(&deployment.deployment.verity, &esp.fd)
             }
-        }
+        },
 
         Bootloader::Systemd => {
-            let device = get_sysroot_parent_dev(physical_root)?;
-            let (esp_part, ..) = get_esp_partition(&device)?;
-
-            let esp_mount = mount_esp(&esp_part)?;
-
             // For Systemd UKI as well, we use .conf files
-            delete_type1_entry(deployment, &esp_mount.fd, deleting_staged)
+            delete_type1_entry(deployment, boot_dir, deleting_staged)
         }
     }
 }
@@ -362,7 +353,7 @@ pub(crate) async fn delete_composefs_deployment(
 
     tracing::info!("Deleting {kind}deployment '{deployment_id}'");
 
-    delete_depl_boot_entries(&depl_to_del, &storage.physical_root, deleting_staged)?;
+    delete_depl_boot_entries(&depl_to_del, &storage, deleting_staged)?;
 
     composefs_gc(storage, booted_cfs).await?;
 

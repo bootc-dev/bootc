@@ -10,7 +10,6 @@ use composefs::fsverity::{FsVerityHashValue, Sha512HashValue};
 
 use crate::{
     bootc_composefs::{
-        boot::{get_esp_partition, get_sysroot_parent_dev, mount_esp},
         delete::{delete_image, delete_staged, delete_state_dir, get_image_objects},
         status::{
             get_bootloader, get_composefs_status, get_sorted_grub_uki_boot_entries,
@@ -44,20 +43,19 @@ fn list_erofs_images(sysroot: &Dir) -> Result<Vec<String>> {
 /// # Returns
 /// The fsverity of EROFS images corresponding to boot entries
 #[fn_error_context::context("Listing bootloader entries")]
-fn list_bootloader_entries(physical_root: &Dir) -> Result<Vec<String>> {
+fn list_bootloader_entries(storage: &Storage) -> Result<Vec<String>> {
     let bootloader = get_bootloader()?;
+    let boot_dir = storage.require_boot_dir()?;
 
     let entries = match bootloader {
         Bootloader::Grub => {
-            let boot_dir = physical_root.open_dir("boot").context("Opening boot dir")?;
-
             // Grub entries are always in boot
             let grub_dir = boot_dir.open_dir("grub2").context("Opening grub dir")?;
 
             if grub_dir.exists(USER_CFG) {
                 // Grub UKI
                 let mut s = String::new();
-                let boot_entries = get_sorted_grub_uki_boot_entries(&boot_dir, &mut s)?;
+                let boot_entries = get_sorted_grub_uki_boot_entries(boot_dir, &mut s)?;
 
                 boot_entries
                     .into_iter()
@@ -65,7 +63,7 @@ fn list_bootloader_entries(physical_root: &Dir) -> Result<Vec<String>> {
                     .collect::<Result<Vec<_>, _>>()?
             } else {
                 // Type1 Entry
-                let boot_entries = get_sorted_type1_boot_entries(&boot_dir, true)?;
+                let boot_entries = get_sorted_type1_boot_entries(boot_dir, true)?;
 
                 boot_entries
                     .into_iter()
@@ -75,11 +73,7 @@ fn list_bootloader_entries(physical_root: &Dir) -> Result<Vec<String>> {
         }
 
         Bootloader::Systemd => {
-            let device = get_sysroot_parent_dev(physical_root)?;
-            let (esp_part, ..) = get_esp_partition(&device)?;
-            let esp_mount = mount_esp(&esp_part)?;
-
-            let boot_entries = get_sorted_type1_boot_entries(&esp_mount.fd, true)?;
+            let boot_entries = get_sorted_type1_boot_entries(boot_dir, true)?;
 
             boot_entries
                 .into_iter()
@@ -175,7 +169,7 @@ pub(crate) async fn composefs_gc(storage: &Storage, booted_cfs: &BootedComposefs
 
     let sysroot = &storage.physical_root;
 
-    let bootloader_entries = list_bootloader_entries(&storage.physical_root)?;
+    let bootloader_entries = list_bootloader_entries(&storage)?;
     let images = list_erofs_images(&sysroot)?;
 
     // Collect the deployments that have an image but no bootloader entry

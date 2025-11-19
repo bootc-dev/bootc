@@ -416,23 +416,8 @@ pub(crate) fn setup_composefs_bls_boot(
             let sysroot_parent = get_sysroot_parent_dev(&storage.physical_root)?;
             let bootloader = host.require_composefs_booted()?.bootloader.clone();
 
-            let current_cfg = match bootloader {
-                Bootloader::Grub => {
-                    let boot_dir = storage
-                        .physical_root
-                        .open_dir("boot")
-                        .context("Opening boot")?;
-
-                    get_booted_bls(&boot_dir)?
-                }
-
-                Bootloader::Systemd => {
-                    let esp = get_esp_partition(&sysroot_parent)?.0;
-                    let esp_mnt = mount_esp(&esp)?;
-
-                    get_booted_bls(&esp_mnt.fd)?
-                }
-            };
+            let boot_dir = storage.require_boot_dir()?;
+            let current_cfg = get_booted_bls(&boot_dir)?;
 
             let mut cmdline = match current_cfg.cfg_type {
                 BLSConfigType::NonEFI { options, .. } => {

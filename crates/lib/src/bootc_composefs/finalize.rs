@@ -1,8 +1,6 @@
 use std::path::Path;
 
-use crate::bootc_composefs::boot::{
-    get_esp_partition, get_sysroot_parent_dev, mount_esp, BootType,
-};
+use crate::bootc_composefs::boot::BootType;
 use crate::bootc_composefs::rollback::{rename_exchange_bls_entries, rename_exchange_user_cfg};
 use crate::bootc_composefs::status::get_composefs_status;
 use crate::composefs_consts::STATE_DIR_ABS;
@@ -86,15 +84,12 @@ pub(crate) async fn composefs_backend_finalize(
     // Unmount EROFS
     drop(erofs_tmp_mnt);
 
-    let sysroot_parent = get_sysroot_parent_dev(&storage.physical_root)?;
-    // NOTE: Assumption here that ESP will always be present
-    let (esp_part, ..) = get_esp_partition(&sysroot_parent)?;
+    let boot_dir = storage.require_boot_dir()?;
 
-    let esp_mount = mount_esp(&esp_part)?;
-    let boot_dir = storage
-        .physical_root
-        .open_dir("boot")
-        .context("Opening boot")?;
+    let esp_mount = storage
+        .esp
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("ESP not found"))?;
 
     // NOTE: Assuming here we won't have two bootloaders at the same time
     match booted_composefs.bootloader {
@@ -103,21 +98,17 @@ pub(crate) async fn composefs_backend_finalize(
                 let entries_dir = boot_dir.open_dir("loader")?;
                 rename_exchange_bls_entries(&entries_dir)?;
             }
-            BootType::Uki => finalize_staged_grub_uki(&esp_mount.fd, &boot_dir)?,
+            BootType::Uki => finalize_staged_grub_uki(&esp_mount.fd, boot_dir)?,
         },
 
-        Bootloader::Systemd => match staged_composefs.boot_type {
-            BootType::Bls => {
-                let entries_dir = esp_mount.fd.open_dir("loader")?;
-                rename_exchange_bls_entries(&entries_dir)?;
-            }
-            BootType::Uki => {
+        Bootloader::Systemd => {
+            if matches!(staged_composefs.boot_type, BootType::Uki) {
                 rename_staged_uki_entries(&esp_mount.fd)?;
-
-                let entries_dir = esp_mount.fd.open_dir("loader")?;
-                rename_exchange_bls_entries(&entries_dir)?;
             }
-        },
+
+            let entries_dir = boot_dir.open_dir("loader")?;
+            rename_exchange_bls_entries(&entries_dir)?;
+        }
     };
 
     Ok(())
