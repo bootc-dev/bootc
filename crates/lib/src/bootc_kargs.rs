@@ -6,6 +6,8 @@ use cap_std_ext::cap_std::fs::Dir;
 use cap_std_ext::cap_std::fs_utf8::Dir as DirUtf8;
 use cap_std_ext::dirext::CapStdExtDirExt;
 use cap_std_ext::dirext::CapStdExtDirExtUtf8;
+use composefs::fs::read_file;
+use composefs::generic_tree::Inode;
 use ostree::gio;
 use ostree_ext::ostree;
 use ostree_ext::ostree::Deployment;
@@ -13,9 +15,11 @@ use ostree_ext::prelude::Cast;
 use ostree_ext::prelude::FileEnumeratorExt;
 use ostree_ext::prelude::FileExt;
 use serde::Deserialize;
+use std::ffi::OsStr;
 
 use crate::deploy::ImageState;
 use crate::store::Storage;
+use crate::store::{ComposefsFilesystem, ComposefsRepository};
 
 /// The relative path to the kernel arguments which may be embedded in an image.
 const KARGS_PATH: &str = "usr/lib/bootc/kargs.d";
@@ -43,6 +47,48 @@ impl Config {
     fn filename_matches(name: &str) -> bool {
         matches!(Utf8Path::new(name).extension(), Some("toml"))
     }
+}
+
+/// Looks for files in usr/lib/bootc/kargs.d and parses cmdline agruments
+pub(crate) fn kargs_from_composefs_filesystem(
+    fs: &ComposefsFilesystem,
+    repo: &ComposefsRepository,
+    cmdline: &mut Cmdline,
+) -> Result<()> {
+    let kargs_d = fs
+        .root
+        .get_directory_opt(OsStr::new(KARGS_PATH))
+        .with_context(|| format!("Getting {KARGS_PATH}"))?;
+
+    let Some(kargs_d) = kargs_d else {
+        return Ok(());
+    };
+
+    for (fname, inode) in kargs_d.sorted_entries() {
+        let Inode::Leaf(..) = inode else { continue };
+
+        let fname_str = fname
+            .to_str()
+            .ok_or_else(|| anyhow::anyhow!("Failed to get filename as string"))?;
+
+        if !Config::filename_matches(fname_str) {
+            continue;
+        }
+
+        let file = kargs_d
+            .get_file(fname)
+            .with_context(|| format!("Getting file {fname_str}"))?;
+
+        let contents = read_file(&file, &repo)?;
+        let contents = std::str::from_utf8(&contents)
+            .with_context(|| format!("File {fname_str} is not a valid UTF-8"))?;
+
+        if let Some(kargs) = parse_kargs_toml(contents, std::env::consts::ARCH)? {
+            cmdline.extend(&kargs);
+        };
+    }
+
+    Ok(())
 }
 
 /// Load and parse all bootc kargs.d files in the specified root, returning
