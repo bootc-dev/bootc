@@ -6,9 +6,7 @@ use cap_std_ext::dirext::CapStdExtDirExt;
 use fn_error_context::context;
 use rustix::fs::{fsync, renameat_with, AtFlags, RenameFlags};
 
-use crate::bootc_composefs::boot::{
-    get_esp_partition, get_sysroot_parent_dev, mount_esp, type1_entry_conf_file_name, BootType,
-};
+use crate::bootc_composefs::boot::{type1_entry_conf_file_name, BootType};
 use crate::bootc_composefs::status::{get_composefs_status, get_sorted_type1_boot_entries};
 use crate::composefs_consts::TYPE1_ENT_PATH_STAGED;
 use crate::spec::Bootloader;
@@ -196,31 +194,21 @@ pub(crate) async fn composefs_rollback(
         anyhow::bail!("Rollback deployment not a composefs deployment")
     };
 
+    let boot_dir = storage.require_boot_dir()?;
+
     match &rollback_entry.bootloader {
-        Bootloader::Grub => {
-            let boot_dir = storage
-                .physical_root
-                .open_dir("boot")
-                .context("Opening boot dir")?;
-
-            match rollback_entry.boot_type {
-                BootType::Bls => {
-                    rollback_composefs_entries(&boot_dir, rollback_entry.bootloader.clone())?;
-                }
-
-                BootType::Uki => {
-                    rollback_grub_uki_entries(&boot_dir)?;
-                }
+        Bootloader::Grub => match rollback_entry.boot_type {
+            BootType::Bls => {
+                rollback_composefs_entries(boot_dir, rollback_entry.bootloader.clone())?;
             }
-        }
+            BootType::Uki => {
+                rollback_grub_uki_entries(boot_dir)?;
+            }
+        },
 
         Bootloader::Systemd => {
-            let parent = get_sysroot_parent_dev(&storage.physical_root)?;
-            let (esp_part, ..) = get_esp_partition(&parent)?;
-            let esp_mount = mount_esp(&esp_part)?;
-
             // We use BLS entries for systemd UKI as well
-            rollback_composefs_entries(&esp_mount.fd, rollback_entry.bootloader.clone())?;
+            rollback_composefs_entries(boot_dir, rollback_entry.bootloader.clone())?;
         }
     }
 

@@ -5,7 +5,7 @@ use bootc_kernel_cmdline::utf8::Cmdline;
 use fn_error_context::context;
 
 use crate::{
-    bootc_composefs::boot::{get_esp_partition, get_sysroot_parent_dev, mount_esp, BootType},
+    bootc_composefs::boot::BootType,
     composefs_consts::{COMPOSEFS_CMDLINE, ORIGIN_KEY_BOOT_DIGEST, TYPE1_ENT_PATH, USER_CFG},
     install::EFI_LOADER_INFO,
     parsers::{
@@ -13,6 +13,7 @@ use crate::{
         grub_menuconfig::{parse_grub_menuentry_file, MenuEntry},
     },
     spec::{BootEntry, BootOrder, Host, HostSpec, ImageReference, ImageStatus},
+    store::Storage,
     utils::{read_uefi_var, EfiError},
 };
 
@@ -254,17 +255,20 @@ pub(crate) async fn get_composefs_status(
     storage: &crate::store::Storage,
     booted_cfs: &crate::store::BootedComposefs,
 ) -> Result<Host> {
-    composefs_deployment_status_from(&storage.physical_root, booted_cfs.cmdline).await
+    composefs_deployment_status_from(&storage, booted_cfs.cmdline).await
 }
 
 #[context("Getting composefs deployment status")]
 pub(crate) async fn composefs_deployment_status_from(
-    sysroot: &Dir,
+    storage: &Storage,
     cmdline: &ComposefsCmdline,
 ) -> Result<Host> {
     let composefs_digest = &cmdline.digest;
 
-    let deployments = sysroot
+    let boot_dir = storage.require_boot_dir()?;
+
+    let deployments = storage
+        .physical_root
         .read_dir(STATE_DIR_RELATIVE)
         .with_context(|| format!("Reading sysroot {STATE_DIR_RELATIVE}"))?;
 
@@ -348,30 +352,10 @@ pub(crate) async fn composefs_deployment_status_from(
 
     let booted = host.require_composefs_booted()?;
 
-    let (boot_dir, _temp_guard) = match booted.bootloader {
-        Bootloader::Grub => (sysroot.open_dir("boot").context("Opening boot dir")?, None),
-
-        // TODO: This is redundant as we should already have ESP mounted at `/efi/` accoding to
-        // spec; currently we do not
-        //
-        // See: https://uapi-group.org/specifications/specs/boot_loader_specification/#mount-points
-        Bootloader::Systemd => {
-            let parent = get_sysroot_parent_dev(sysroot)?;
-            let (esp_part, ..) = get_esp_partition(&parent)?;
-
-            let esp_mount = mount_esp(&esp_part)?;
-
-            let dir = esp_mount.fd.try_clone().context("Cloning fd")?;
-            let guard = Some(esp_mount);
-
-            (dir, guard)
-        }
-    };
-
     let is_rollback_queued = match booted.bootloader {
         Bootloader::Grub => match boot_type {
             BootType::Bls => {
-                let bls_config = get_sorted_type1_boot_entries(&boot_dir, false)?;
+                let bls_config = get_sorted_type1_boot_entries(boot_dir, false)?;
                 let bls_config = bls_config
                     .first()
                     .ok_or(anyhow::anyhow!("First boot entry not found"))?;
@@ -392,7 +376,7 @@ pub(crate) async fn composefs_deployment_status_from(
             BootType::Uki => {
                 let mut s = String::new();
 
-                !get_sorted_grub_uki_boot_entries(&boot_dir, &mut s)?
+                !get_sorted_grub_uki_boot_entries(boot_dir, &mut s)?
                     .first()
                     .ok_or(anyhow::anyhow!("First boot entry not found"))?
                     .body
@@ -403,7 +387,7 @@ pub(crate) async fn composefs_deployment_status_from(
 
         // We will have BLS stuff and the UKI stuff in the same DIR
         Bootloader::Systemd => {
-            let bls_config = get_sorted_type1_boot_entries(&boot_dir, false)?;
+            let bls_config = get_sorted_type1_boot_entries(boot_dir, false)?;
             let bls_config = bls_config
                 .first()
                 .ok_or(anyhow::anyhow!("First boot entry not found"))?;
