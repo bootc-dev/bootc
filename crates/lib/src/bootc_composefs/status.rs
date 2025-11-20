@@ -377,13 +377,13 @@ pub(crate) async fn composefs_deployment_status_from(
                     .ok_or(anyhow::anyhow!("First boot entry not found"))?;
 
                 match &bls_config.cfg_type {
-                    BLSConfigType::NonEFI { options, .. } => !options
+                    BLSConfigType::NonUKI { options, .. } => !options
                         .as_ref()
                         .ok_or(anyhow::anyhow!("options key not found in bls config"))?
                         .contains(composefs_digest.as_ref()),
 
-                    BLSConfigType::EFI { .. } => {
-                        anyhow::bail!("Found 'efi' field in Type1 boot entry")
+                    BLSConfigType::UKI { .. } => {
+                        anyhow::bail!("Found 'uki' field in Type1 boot entry")
                     }
                     BLSConfigType::Unknown => anyhow::bail!("Unknown BLS Config Type"),
                 }
@@ -410,10 +410,10 @@ pub(crate) async fn composefs_deployment_status_from(
 
             match &bls_config.cfg_type {
                 // For UKI boot
-                BLSConfigType::EFI { efi } => efi.as_str().contains(composefs_digest.as_ref()),
+                BLSConfigType::UKI { uki } => uki.as_str().contains(composefs_digest.as_ref()),
 
                 // For boot entry Type1
-                BLSConfigType::NonEFI { options, .. } => !options
+                BLSConfigType::NonUKI { options, .. } => !options
                     .as_ref()
                     .ok_or(anyhow::anyhow!("options key not found in bls config"))?
                     .contains(composefs_digest.as_ref()),
@@ -486,7 +486,7 @@ mod tests {
         let mut config1 = BLSConfig::default();
         config1.title = Some("Fedora 42.20250623.3.1 (CoreOS)".into());
         config1.sort_key = Some("1".into());
-        config1.cfg_type = BLSConfigType::NonEFI {
+        config1.cfg_type = BLSConfigType::NonUKI {
             linux: "/boot/7e11ac46e3e022053e7226a20104ac656bf72d1a84e3a398b7cce70e9df188b6/vmlinuz-5.14.10".into(),
             initrd: vec!["/boot/7e11ac46e3e022053e7226a20104ac656bf72d1a84e3a398b7cce70e9df188b6/initramfs-5.14.10.img".into()],
             options: Some("root=UUID=abc123 rw composefs=7e11ac46e3e022053e7226a20104ac656bf72d1a84e3a398b7cce70e9df188b6".into()),
@@ -495,7 +495,7 @@ mod tests {
         let mut config2 = BLSConfig::default();
         config2.title = Some("Fedora 41.20250214.2.0 (CoreOS)".into());
         config2.sort_key = Some("2".into());
-        config2.cfg_type = BLSConfigType::NonEFI {
+        config2.cfg_type = BLSConfigType::NonUKI {
             linux: "/boot/febdf62805de2ae7b6b597f2a9775d9c8a753ba1e5f09298fc8fbe0b0d13bf01/vmlinuz-5.14.10".into(),
             initrd: vec!["/boot/febdf62805de2ae7b6b597f2a9775d9c8a753ba1e5f09298fc8fbe0b0d13bf01/initramfs-5.14.10.img".into()],
             options: Some("root=UUID=abc123 rw composefs=febdf62805de2ae7b6b597f2a9775d9c8a753ba1e5f09298fc8fbe0b0d13bf01".into())
