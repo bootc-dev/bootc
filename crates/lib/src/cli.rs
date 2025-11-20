@@ -1521,10 +1521,12 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
                 let storage = get_storage().await?;
                 let cfs = storage.get_ensure_composefs()?;
                 let testdata = b"some test data";
-                let testdata_digest = openssl::sha::sha256(testdata);
-                let mut w = SplitStreamWriter::new(&cfs, None, Some(testdata_digest));
+                let testdata_digest = hex::encode(openssl::sha::sha256(testdata));
+                let mut w = SplitStreamWriter::new(&cfs, 0);
                 w.write_inline(testdata);
-                let object = cfs.write_stream(w, Some("testobject"))?.to_hex();
+                let object = cfs
+                    .write_stream(w, &testdata_digest, Some("testobject"))?
+                    .to_hex();
                 assert_eq!(object, "5d94ceb0b2bb3a78237e0a74bc030a262239ab5f47754a5eb2e42941056b64cb21035d64a8f7c2f156e34b820802fa51884de2b1f7dc3a41b9878fc543cd9b07");
                 Ok(())
             }
@@ -1545,7 +1547,14 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
                     Ok(())
                 }
             },
-            InternalsOpts::Cfs { args } => crate::cfsctl::run_from_iter(args.iter()).await,
+            InternalsOpts::Cfs { args } => {
+                let args = cfsctl::App::parse_from(
+                    std::iter::once(OsString::from("cfs")).chain(args.into_iter().map(Into::into)),
+                );
+
+                cfsctl::main::<fsverity::Sha512HashValue>(args).await?;
+                Ok(())
+            }
             InternalsOpts::Reboot => crate::reboot::reboot(),
             InternalsOpts::Fsck => {
                 let storage = &get_storage().await?;

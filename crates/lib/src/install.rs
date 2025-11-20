@@ -1676,9 +1676,9 @@ async fn install_to_filesystem_impl(
         // Load a fd for the mounted target physical root
 
         let (id, verity) = initialize_composefs_repository(state, rootfs).await?;
-        tracing::info!("id: {}, verity: {}", hex::encode(id), verity.to_hex());
+        tracing::info!("id: {id}, verity: {}", verity.to_hex());
 
-        setup_composefs_boot(rootfs, state, &hex::encode(id))?;
+        setup_composefs_boot(rootfs, state, &id)?;
     } else {
         ostree_install(state, rootfs, cleanup).await?;
     }
