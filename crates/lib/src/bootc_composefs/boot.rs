@@ -381,7 +381,7 @@ pub(crate) fn setup_composefs_bls_boot(
     repo: crate::store::ComposefsRepository,
     id: &Sha512HashValue,
     entry: &ComposefsBootEntry<Sha512HashValue>,
-    mounted_erofs: &Dir
+    mounted_erofs: &Dir,
 ) -> Result<String> {
     let id_hex = id.to_hex();
 
@@ -446,9 +446,15 @@ pub(crate) fn setup_composefs_bls_boot(
         }
     };
 
-    kargs_from_composefs_filesystem(mounted_erofs, &mut cmdline_refs)?;
-
     let is_upgrade = matches!(setup_type, BootSetupType::Upgrade(..));
+
+    let current_root = if is_upgrade {
+        Some(&Dir::open_ambient_dir("/", ambient_authority()).context("Opening root")?)
+    } else {
+        None
+    };
+
+    kargs_from_composefs_filesystem(mounted_erofs, current_root, &mut cmdline_refs)?;
 
     let (entry_paths, _tmpdir_guard) = match bootloader {
         Bootloader::Grub => {
@@ -1076,7 +1082,7 @@ pub(crate) fn setup_composefs_boot(
                 repo,
                 &id,
                 entry,
-                &mounted_fs
+                &mounted_fs,
             )?;
 
             boot_digest = Some(digest);
