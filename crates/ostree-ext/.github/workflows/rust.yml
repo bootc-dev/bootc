@@ -21,7 +21,7 @@ jobs:
     runs-on: ubuntu-latest
     container: quay.io/coreos-assembler/fcos-buildroot:testing-devel
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
       - name: Code lints
         run: ./ci/lints.sh
       - name: Install deps
@@ -47,7 +47,7 @@ jobs:
     runs-on: ubuntu-latest
     container: quay.io/coreos-assembler/fcos-buildroot:testing-devel
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
       - name: Install deps
         run: ./ci/installdeps.sh
       - name: Cache Dependencies
@@ -67,7 +67,7 @@ jobs:
     container: quay.io/coreos-assembler/fcos-buildroot:testing-devel
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
       - name: Install deps
         run: ./ci/installdeps.sh
       - name: Detect crate MSRV
@@ -91,7 +91,7 @@ jobs:
   cargo-deny:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v5
+    - uses: actions/checkout@v6
     - uses: EmbarkStudios/cargo-deny-action@v2
       with:
         log-level: warn
@@ -103,7 +103,7 @@ jobs:
     container: quay.io/fedora/fedora-coreos:testing-devel
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
       - name: Download ostree-ext-cli
         uses: actions/download-artifact@v6.0.0
         with:
@@ -119,7 +119,7 @@ jobs:
     container: quay.io/fedora/fedora-coreos:testing-devel
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
       - name: Download ostree-ext-cli
         uses: actions/download-artifact@v6.0.0
         with:
@@ -137,7 +137,7 @@ jobs:
       options: "--privileged --pid=host -v /var/tmp:/var/tmp -v /run/dbus:/run/dbus -v /run/systemd:/run/systemd -v /:/run/host"
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
       - name: Download
         uses: actions/download-artifact@v6.0.0
         with:
@@ -152,9 +152,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
       - name: Checkout coreos-layering-examples
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
         with:
           repository: coreos/coreos-layering-examples
           path: coreos-layering-examples
