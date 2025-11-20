@@ -6,7 +6,10 @@ use cap_std_ext::dirext::CapStdExtDirExt;
 use fn_error_context::context;
 use rustix::fs::{fsync, renameat_with, AtFlags, RenameFlags};
 
-use crate::bootc_composefs::boot::{type1_entry_conf_file_name, BootType};
+use crate::bootc_composefs::boot::{
+    primary_sort_key, secondary_sort_key, type1_entry_conf_file_name, BootType,
+    FILENAME_PRIORITY_PRIMARY, FILENAME_PRIORITY_SECONDARY,
+};
 use crate::bootc_composefs::status::{get_composefs_status, get_sorted_type1_boot_entries};
 use crate::composefs_consts::TYPE1_ENT_PATH_STAGED;
 use crate::spec::Bootloader;
@@ -111,23 +114,36 @@ fn rollback_grub_uki_entries(boot_dir: &Dir) -> Result<()> {
 /// - Grub Type1 boot entries
 /// - Systemd Typ1 boot entries
 /// - Systemd UKI (Type2) boot entries [since we use BLS entries for systemd boot]
-///
-/// The bootloader parameter is only for logging purposes
 #[context("Rolling back {bootloader} entries")]
 fn rollback_composefs_entries(boot_dir: &Dir, bootloader: Bootloader) -> Result<()> {
-    // Sort in descending order as that's the order they're shown on the boot screen
-    // After this:
-    // all_configs[0] -> booted depl
-    // all_configs[1] -> rollback depl
-    let mut all_configs = get_sorted_type1_boot_entries(&boot_dir, false)?;
+    use crate::bootc_composefs::state::get_booted_bls;
 
-    // Update the indicies so that they're swapped
-    for (idx, cfg) in all_configs.iter_mut().enumerate() {
-        cfg.sort_key = Some(idx.to_string());
-    }
+    // Get all boot entries sorted in descending order by sort-key
+    let mut all_configs = get_sorted_type1_boot_entries(&boot_dir, false)?;
 
     // TODO(Johan-Liebert): Currently assuming there are only two deployments
     assert!(all_configs.len() == 2);
+
+    // Identify which entry is the currently booted one
+    let booted_bls = get_booted_bls(&boot_dir)?;
+    let booted_verity = booted_bls.get_verity()?;
+
+    // For rollback: previous gets primary sort-key, booted gets secondary sort-key
+    // Use "bootc" as default os_id for rollback scenarios
+    // TODO: Extract actual os_id from deployment
+    let os_id = "bootc";
+
+    for cfg in &mut all_configs {
+        let cfg_verity = cfg.get_verity()?;
+
+        if cfg_verity == booted_verity {
+            // This is the currently booted deployment - it should become secondary
+            cfg.sort_key = Some(secondary_sort_key(os_id));
+        } else {
+            // This is the previous deployment - it should become primary (rollback target)
+            cfg.sort_key = Some(primary_sort_key(os_id));
+        }
+    }
 
     // Write these
     boot_dir
@@ -140,8 +156,15 @@ fn rollback_composefs_entries(boot_dir: &Dir, bootloader: Bootloader) -> Result<
 
     // Write the BLS configs in there
     for cfg in all_configs {
-        // SAFETY: We set sort_key above
-        let file_name = type1_entry_conf_file_name(cfg.sort_key.as_ref().unwrap());
+        let cfg_verity = cfg.get_verity()?;
+        // After rollback: previous deployment becomes primary, booted becomes secondary
+        let priority = if cfg_verity == booted_verity {
+            FILENAME_PRIORITY_SECONDARY
+        } else {
+            FILENAME_PRIORITY_PRIMARY
+        };
+
+        let file_name = type1_entry_conf_file_name(os_id, &cfg.version(), priority);
 
         rollback_entries_dir
             .atomic_write(&file_name, cfg.to_string())

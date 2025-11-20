@@ -1,3 +1,66 @@
+//! Composefs boot setup and configuration.
+//!
+//! This module handles setting up boot entries for composefs-based deployments,
+//! including generating BLS (Boot Loader Specification) entries, copying kernel/initrd
+//! files, managing UKI (Unified Kernel Images), and configuring the ESP (EFI System
+//! Partition).
+//!
+//! ## Boot Ordering
+//!
+//! A critical aspect of this module is boot entry ordering, which must work correctly
+//! across both Grub and systemd-boot bootloaders despite their fundamentally different
+//! sorting behaviors.
+//!
+//! ## Critical Context: Grub's Filename Parsing
+//!
+//! **Grub does NOT read BLS fields** - it parses the filename as an RPM package name!
+//! See: <https://github.com/ostreedev/ostree/issues/2961>
+//!
+//! Grub's `split_package_string()` parsing algorithm:
+//! 1. Strip `.conf` suffix
+//! 2. Find LAST `-` → extract **release** field
+//! 3. Find SECOND-TO-LAST `-` → extract **version** field
+//! 4. Remainder → **name** field
+//!
+//! Example: `kernel-5.14.0-362.fc38.conf`
+//! - name: `kernel`
+//! - version: `5.14.0`
+//! - release: `362.fc38`
+//!
+//! **Critical:** Grub sorts by (name, version, release) in DESCENDING order.
+//!
+//! ## Bootloader Differences
+//!
+//! ### Grub
+//! - Ignores BLS sort-key field completely
+//! - Parses filename to extract name-version-release
+//! - Sorts by (name, version, release) DESCENDING
+//! - Any `-` in name/version gets incorrectly split
+//!
+//! ### Systemd-boot
+//! - Reads BLS sort-key field
+//! - Sorts by sort-key ASCENDING (A→Z, 0→9)
+//! - Filename is mostly irrelevant
+//!
+//! ## Implementation Strategy
+//!
+//! **Filenames** (for Grub's RPM-style parsing and descending sort):
+//! - Format: `bootc_{os_id}-{version}-{priority}.conf`
+//! - Replace `-` with `_` in os_id to prevent mis-parsing
+//! - Primary: `bootc_fedora-41.20251125.0-1.conf` → (name=bootc_fedora, version=41.20251125.0, release=1)
+//! - Secondary: `bootc_fedora-41.20251124.0-0.conf` → (name=bootc_fedora, version=41.20251124.0, release=0)
+//! - Grub sorts: Primary (release=1) > Secondary (release=0) when versions equal
+//!
+//! **Sort-keys** (for systemd-boot's ascending sort):
+//! - Primary: `bootc-{os_id}-0` (lower value, sorts first)
+//! - Secondary: `bootc-{os_id}-1` (higher value, sorts second)
+//!
+//! ## Boot Entry Ordering
+//!
+//! After an upgrade, both bootloaders show:
+//! 1. **Primary**: New/upgraded deployment (default boot target)
+//! 2. **Secondary**: Currently booted deployment (rollback option)
+
 use std::ffi::OsStr;
 use std::fs::create_dir_all;
 use std::io::Write;
@@ -189,8 +252,52 @@ pub fn get_sysroot_parent_dev(physical_root: &Dir) -> Result<String> {
     Ok(parent)
 }
 
-pub fn type1_entry_conf_file_name(sort_key: impl std::fmt::Display) -> String {
-    format!("bootc-composefs-{sort_key}.conf")
+/// Filename release field for primary (new/upgraded) entry.
+/// Grub parses this as the "release" field and sorts descending, so "1" > "0".
+pub(crate) const FILENAME_PRIORITY_PRIMARY: &str = "1";
+
+/// Filename release field for secondary (currently booted) entry.
+pub(crate) const FILENAME_PRIORITY_SECONDARY: &str = "0";
+
+/// Sort-key priority for primary (new/upgraded) entry.
+/// Systemd-boot sorts by sort-key in ascending order, so "0" appears before "1".
+pub(crate) const SORTKEY_PRIORITY_PRIMARY: &str = "0";
+
+/// Sort-key priority for secondary (currently booted) entry.
+pub(crate) const SORTKEY_PRIORITY_SECONDARY: &str = "1";
+
+/// Generate BLS Type 1 entry filename compatible with Grub's RPM-style parsing.
+///
+/// Format: `bootc_{os_id}-{version}-{priority}.conf`
+///
+/// Grub parses this as:
+/// - name: `bootc_{os_id}` (hyphens in os_id replaced with underscores)
+/// - version: `{version}`
+/// - release: `{priority}`
+///
+/// The underscore replacement prevents Grub from mis-parsing os_id values
+/// containing hyphens (e.g., "fedora-coreos" → "fedora_coreos").
+pub fn type1_entry_conf_file_name(
+    os_id: &str,
+    version: impl std::fmt::Display,
+    priority: &str,
+) -> String {
+    let os_id_safe = os_id.replace('-', "_");
+    format!("bootc_{os_id_safe}-{version}-{priority}.conf")
+}
+
+/// Generate sort key for the primary (new/upgraded) boot entry.
+/// Format: bootc-{id}-0
+/// Systemd-boot sorts ascending by sort-key, so "0" comes first.
+/// Grub ignores sort-key and uses filename/version ordering.
+pub(crate) fn primary_sort_key(os_id: &str) -> String {
+    format!("bootc-{os_id}-{SORTKEY_PRIORITY_PRIMARY}")
+}
+
+/// Generate sort key for the secondary (currently booted) boot entry.
+/// Format: bootc-{id}-1
+pub(crate) fn secondary_sort_key(os_id: &str) -> String {
+    format!("bootc-{os_id}-{SORTKEY_PRIORITY_SECONDARY}")
 }
 
 /// Compute SHA256Sum of VMlinuz + Initrd
@@ -317,13 +424,11 @@ fn write_bls_boot_entries_to_disk(
     Ok(())
 }
 
-/// Parses /usr/lib/os-release and returns title and version fields
-/// # Returns
-/// - (title, version)
-fn osrel_title_and_version(
+/// Parses /usr/lib/os-release and returns (id, title, version)
+fn parse_os_release(
     fs: &crate::store::ComposefsFilesystem,
     repo: &crate::store::ComposefsRepository,
-) -> Result<Option<(Option<String>, Option<String>)>> {
+) -> Result<Option<(String, Option<String>, Option<String>)>> {
     // Every update should have its own /usr/lib/os-release
     let (dir, fname) = fs
         .root
@@ -354,12 +459,17 @@ fn osrel_title_and_version(
         }
     };
 
-    let parsed_contents = OsReleaseInfo::parse(file_contents);
+    let parsed = OsReleaseInfo::parse(file_contents);
 
-    let title = parsed_contents.get_pretty_name();
-    let version = parsed_contents.get_version();
+    let os_id = parsed
+        .get_value(&["ID"])
+        .unwrap_or_else(|| "bootc".to_string());
 
-    Ok(Some((title, version)))
+    Ok(Some((
+        os_id,
+        parsed.get_pretty_name(),
+        parsed.get_version(),
+    )))
 }
 
 struct BLSEntryPath {
@@ -498,7 +608,7 @@ pub(crate) fn setup_composefs_bls_boot(
         }
     };
 
-    let (bls_config, boot_digest) = match &entry {
+    let (bls_config, boot_digest, os_id) = match &entry {
         ComposefsBootEntry::Type1(..) => anyhow::bail!("Found Type1 entries in /boot"),
         ComposefsBootEntry::Type2(..) => anyhow::bail!("Found UKI"),
 
@@ -506,26 +616,32 @@ pub(crate) fn setup_composefs_bls_boot(
             let boot_digest = compute_boot_digest(usr_lib_modules_vmlinuz, &repo)
                 .context("Computing boot digest")?;
 
-            let default_sort_key = "1";
-            let default_title_version = (id.to_hex(), default_sort_key.to_string());
+            let osrel = parse_os_release(fs, &repo)?;
 
-            let osrel_res = osrel_title_and_version(fs, &repo)?;
-
-            let (title, version) = match osrel_res {
-                Some((t, v)) => (
-                    t.unwrap_or(default_title_version.0),
-                    v.unwrap_or(default_title_version.1),
+            let (os_id, title, version, sort_key) = match osrel {
+                Some((id_str, title_opt, version_opt)) => (
+                    id_str.clone(),
+                    title_opt.unwrap_or_else(|| id.to_hex()),
+                    version_opt.unwrap_or_else(|| id.to_hex()),
+                    primary_sort_key(&id_str),
                 ),
-
-                None => default_title_version,
+                None => {
+                    let default_id = "bootc".to_string();
+                    (
+                        default_id.clone(),
+                        id.to_hex(),
+                        id.to_hex(),
+                        primary_sort_key(&default_id),
+                    )
+                }
             };
 
             let mut bls_config = BLSConfig::default();
 
             bls_config
                 .with_title(title)
-                .with_sort_key(default_sort_key.into())
                 .with_version(version)
+                .with_sort_key(sort_key)
                 .with_cfg(BLSConfigType::NonEFI {
                     linux: entry_paths.abs_entries_path.join(&id_hex).join(VMLINUZ),
                     initrd: vec![entry_paths.abs_entries_path.join(&id_hex).join(INITRD)],
@@ -594,7 +710,7 @@ pub(crate) fn setup_composefs_bls_boot(
                 }
             };
 
-            (bls_config, boot_digest)
+            (bls_config, boot_digest, os_id)
         }
     };
 
@@ -604,7 +720,7 @@ pub(crate) fn setup_composefs_bls_boot(
         let boot_dir = Dir::open_ambient_dir(&entry_paths.config_path, ambient_authority())?;
 
         let mut booted_bls = get_booted_bls(&boot_dir)?;
-        booted_bls.sort_key = Some("0".into()); // entries are sorted by their filename in reverse order
+        booted_bls.sort_key = Some(secondary_sort_key(&os_id));
 
         // This will be atomically renamed to 'loader/entries' on shutdown/reboot
         (
@@ -621,15 +737,13 @@ pub(crate) fn setup_composefs_bls_boot(
         .with_context(|| format!("Opening {config_path:?}"))?;
 
     loader_entries_dir.atomic_write(
-        // SAFETY: We set sort_key above
-        type1_entry_conf_file_name(bls_config.sort_key.as_ref().unwrap()),
+        type1_entry_conf_file_name(&os_id, &bls_config.version(), FILENAME_PRIORITY_PRIMARY),
         bls_config.to_string().as_bytes(),
     )?;
 
     if let Some(booted_bls) = booted_bls {
         loader_entries_dir.atomic_write(
-            // SAFETY: We set sort_key above
-            type1_entry_conf_file_name(booted_bls.sort_key.as_ref().unwrap()),
+            type1_entry_conf_file_name(&os_id, &booted_bls.version(), FILENAME_PRIORITY_SECONDARY),
             booted_bls.to_string().as_bytes(),
         )?;
     }
@@ -646,6 +760,7 @@ pub(crate) fn setup_composefs_bls_boot(
 struct UKILabels {
     boot_label: String,
     version: Option<String>,
+    os_id: Option<String>,
 }
 
 /// Writes a PortableExecutable to ESP along with any PE specific or Global addons
@@ -700,6 +815,7 @@ fn write_pe_to_esp(
         boot_label = Some(UKILabels {
             boot_label: uki::get_boot_label(&efi_bin).context("Getting UKI boot label")?,
             version: parsed_osrel.get_version(),
+            os_id: parsed_osrel.get_value(&["ID"]),
         });
     }
 
@@ -852,7 +968,8 @@ fn write_systemd_uki_config(
     boot_label: UKILabels,
     id: &Sha512HashValue,
 ) -> Result<()> {
-    let default_sort_key = "0";
+    let os_id = boot_label.os_id.as_deref().unwrap_or("bootc");
+    let primary_sort_key = primary_sort_key(os_id);
 
     let mut bls_conf = BLSConfig::default();
     bls_conf
@@ -860,8 +977,8 @@ fn write_systemd_uki_config(
         .with_cfg(BLSConfigType::EFI {
             efi: format!("/{SYSTEMD_UKI_DIR}/{}{}", id.to_hex(), EFI_EXT).into(),
         })
-        .with_sort_key(default_sort_key.into())
-        .with_version(boot_label.version.unwrap_or(default_sort_key.into()));
+        .with_sort_key(primary_sort_key.clone())
+        .with_version(boot_label.version.unwrap_or_else(|| id.to_hex()));
 
     let (entries_dir, booted_bls) = match setup_type {
         BootSetupType::Setup(..) => {
@@ -878,7 +995,7 @@ fn write_systemd_uki_config(
                 .with_context(|| format!("Creating {TYPE1_ENT_PATH_STAGED}"))?;
 
             let mut booted_bls = get_booted_bls(&esp_dir)?;
-            booted_bls.sort_key = Some("1".into());
+            booted_bls.sort_key = Some(secondary_sort_key(os_id));
 
             (esp_dir.open_dir(TYPE1_ENT_PATH_STAGED)?, Some(booted_bls))
         }
@@ -886,15 +1003,14 @@ fn write_systemd_uki_config(
 
     entries_dir
         .atomic_write(
-            type1_entry_conf_file_name(default_sort_key),
+            type1_entry_conf_file_name(os_id, &bls_conf.version(), FILENAME_PRIORITY_PRIMARY),
             bls_conf.to_string().as_bytes(),
         )
         .context("Writing conf file")?;
 
     if let Some(booted_bls) = booted_bls {
         entries_dir.atomic_write(
-            // SAFETY: We set sort_key above
-            type1_entry_conf_file_name(booted_bls.sort_key.as_ref().unwrap()),
+            type1_entry_conf_file_name(os_id, &booted_bls.version(), FILENAME_PRIORITY_SECONDARY),
             booted_bls.to_string().as_bytes(),
         )?;
     }
@@ -1135,5 +1251,117 @@ mod tests {
         assert_eq!(container_root_has_uki(&tempdir)?, true);
 
         Ok(())
+    }
+
+    #[test]
+    fn test_type1_filename_generation() {
+        // Test basic os_id without hyphens
+        let filename =
+            type1_entry_conf_file_name("fedora", "41.20251125.0", FILENAME_PRIORITY_PRIMARY);
+        assert_eq!(filename, "bootc_fedora-41.20251125.0-1.conf");
+
+        // Test primary vs secondary priority
+        let primary =
+            type1_entry_conf_file_name("fedora", "41.20251125.0", FILENAME_PRIORITY_PRIMARY);
+        let secondary =
+            type1_entry_conf_file_name("fedora", "41.20251125.0", FILENAME_PRIORITY_SECONDARY);
+        assert_eq!(primary, "bootc_fedora-41.20251125.0-1.conf");
+        assert_eq!(secondary, "bootc_fedora-41.20251125.0-0.conf");
+
+        // Test os_id with hyphens (should be replaced with underscores)
+        let filename =
+            type1_entry_conf_file_name("fedora-coreos", "41.20251125.0", FILENAME_PRIORITY_PRIMARY);
+        assert_eq!(filename, "bootc_fedora_coreos-41.20251125.0-1.conf");
+
+        // Test multiple hyphens in os_id
+        let filename =
+            type1_entry_conf_file_name("my-custom-os", "1.0.0", FILENAME_PRIORITY_PRIMARY);
+        assert_eq!(filename, "bootc_my_custom_os-1.0.0-1.conf");
+
+        // Test rhel example
+        let filename = type1_entry_conf_file_name("rhel", "9.3.0", FILENAME_PRIORITY_SECONDARY);
+        assert_eq!(filename, "bootc_rhel-9.3.0-0.conf");
+    }
+
+    #[test]
+    fn test_grub_filename_parsing() {
+        // Verify our filename format works correctly with Grub's parsing logic
+        // Grub parses: bootc_fedora-41.20251125.0-1.conf
+        // Expected:
+        //   - name: bootc_fedora
+        //   - version: 41.20251125.0
+        //   - release: 1
+
+        // For fedora-coreos (with hyphens), we convert to underscores
+        let filename = type1_entry_conf_file_name("fedora-coreos", "41.20251125.0", "1");
+        assert_eq!(filename, "bootc_fedora_coreos-41.20251125.0-1.conf");
+
+        // Grub parsing simulation (from right):
+        // 1. Strip .conf -> bootc_fedora_coreos-41.20251125.0-1
+        // 2. Last '-' splits: release="1", remainder="bootc_fedora_coreos-41.20251125.0"
+        // 3. Second-to-last '-' splits: version="41.20251125.0", name="bootc_fedora_coreos"
+
+        let without_ext = filename.strip_suffix(".conf").unwrap();
+        let parts: Vec<&str> = without_ext.rsplitn(3, '-').collect();
+        assert_eq!(parts.len(), 3);
+        assert_eq!(parts[0], "1"); // release
+        assert_eq!(parts[1], "41.20251125.0"); // version
+        assert_eq!(parts[2], "bootc_fedora_coreos"); // name
+    }
+
+    #[test]
+    fn test_sort_keys() {
+        // Test sort-key generation for systemd-boot
+        let primary = primary_sort_key("fedora");
+        let secondary = secondary_sort_key("fedora");
+
+        assert_eq!(primary, "bootc-fedora-0");
+        assert_eq!(secondary, "bootc-fedora-1");
+
+        // Systemd-boot sorts ascending, so "bootc-fedora-0" < "bootc-fedora-1"
+        assert!(primary < secondary);
+
+        // Test with hyphenated os_id (sort-key keeps hyphens)
+        let primary_coreos = primary_sort_key("fedora-coreos");
+        assert_eq!(primary_coreos, "bootc-fedora-coreos-0");
+    }
+
+    #[test]
+    fn test_filename_sorting_grub_style() {
+        // Simulate Grub's descending sort by (name, version, release)
+
+        // Test 1: Same version, different release (priority)
+        let primary =
+            type1_entry_conf_file_name("fedora", "41.20251125.0", FILENAME_PRIORITY_PRIMARY);
+        let secondary =
+            type1_entry_conf_file_name("fedora", "41.20251125.0", FILENAME_PRIORITY_SECONDARY);
+
+        // Descending sort: "bootc_fedora-41.20251125.0-1" > "bootc_fedora-41.20251125.0-0"
+        assert!(
+            primary > secondary,
+            "Primary should sort before secondary in descending order"
+        );
+
+        // Test 2: Different versions
+        let newer =
+            type1_entry_conf_file_name("fedora", "42.20251125.0", FILENAME_PRIORITY_PRIMARY);
+        let older =
+            type1_entry_conf_file_name("fedora", "41.20251125.0", FILENAME_PRIORITY_PRIMARY);
+
+        // Descending sort: version "42" > "41"
+        assert!(
+            newer > older,
+            "Newer version should sort before older in descending order"
+        );
+
+        // Test 3: Different os_id (different name)
+        let fedora = type1_entry_conf_file_name("fedora", "41.0", FILENAME_PRIORITY_PRIMARY);
+        let rhel = type1_entry_conf_file_name("rhel", "9.0", FILENAME_PRIORITY_PRIMARY);
+
+        // Names differ: bootc_rhel > bootc_fedora (descending alphabetical)
+        assert!(
+            rhel > fedora,
+            "RHEL should sort before Fedora in descending order"
+        );
     }
 }
