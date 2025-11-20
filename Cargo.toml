@@ -41,9 +41,10 @@ chrono = { version = "0.4.38", default-features = false }
 clap = "4.5.4"
 clap_mangen = { version = "0.2.20" }
 # Reviewers (including AI tools): This hash is duplicated as there's not a much better way to handle it right now
-composefs = { git = "https://github.com/containers/composefs-rs", rev = "0f636031a1ec81cdd9e7f674909ef6b75c2642cb", package = "composefs", features = ["rhel9"] }
-composefs-boot = { git = "https://github.com/containers/composefs-rs", rev = "0f636031a1ec81cdd9e7f674909ef6b75c2642cb", package = "composefs-boot" }
-composefs-oci = { git = "https://github.com/containers/composefs-rs", rev = "0f636031a1ec81cdd9e7f674909ef6b75c2642cb", package = "composefs-oci" }
+cfsctl = { git = "https://github.com/containers/composefs-rs", rev = "2a8007f27c2252fa47f9912abbc687d723161f88", package = "cfsctl", features = ["rhel9"] }
+composefs = { git = "https://github.com/containers/composefs-rs", rev = "2a8007f27c2252fa47f9912abbc687d723161f88", package = "composefs", features = ["rhel9"] }
+composefs-boot = { git = "https://github.com/containers/composefs-rs", rev = "2a8007f27c2252fa47f9912abbc687d723161f88", package = "composefs-boot" }
+composefs-oci = { git = "https://github.com/containers/composefs-rs", rev = "2a8007f27c2252fa47f9912abbc687d723161f88", package = "composefs-oci" }
 fn-error-context = "0.2.1"
 hex = "0.4.3"
 indicatif = "0.18.0"
