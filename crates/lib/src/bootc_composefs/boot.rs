@@ -445,9 +445,9 @@ pub(crate) fn setup_composefs_bls_boot(
         }
     };
 
-    kargs_from_composefs_filesystem(fs, &repo, &mut cmdline_refs)?;
-
     let is_upgrade = matches!(setup_type, BootSetupType::Upgrade(..));
+
+    kargs_from_composefs_filesystem(fs, &repo, &mut cmdline_refs, !is_upgrade)?;
 
     let (entry_paths, _tmpdir_guard) = match bootloader {
         Bootloader::Grub => {
