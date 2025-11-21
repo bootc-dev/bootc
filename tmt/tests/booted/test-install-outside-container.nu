@@ -1,3 +1,8 @@
+# number: 23
+# tmt:
+#   summary: Execute tests for installing outside of a container
+#   duration: 30m
+#
 use std assert
 use tap.nu
 

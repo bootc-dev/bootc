@@ -1,3 +1,8 @@
+# number: 25
+# tmt:
+#   summary: Execute soft reboot test
+#   duration: 30m
+#
 # Verify that soft reboot works (on by default)
 use std assert
 use tap.nu

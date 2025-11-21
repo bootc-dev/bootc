@@ -1,3 +1,0 @@
-summary: Execute logically bound images tests for installing image
-test: nu booted/test-logically-bound-install.nu
-duration: 30m

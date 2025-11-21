@@ -1,0 +1,3 @@
+# Just creates a file as a new layer for a synthetic upgrade test
+FROM localhost/bootc-integration
+RUN touch --reference=/usr/bin/bash /usr/share/testing-bootc-upgrade-apply

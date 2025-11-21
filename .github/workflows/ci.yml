@@ -207,9 +207,9 @@ jobs:
       - name: Unit and container integration tests
         run: just test-container
 
-      - name: Run readonly TMT tests
-        # TODO: expand to more tests
-        run: just test-tmt readonly
+      - name: Run TMT tests
+        # Note that this one only runs a subset of tests right now
+        run: just test-composefs
 
       - name: Archive TMT logs
         if: always()

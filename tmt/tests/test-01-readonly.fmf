@@ -1,3 +1,0 @@
-summary: Execute booted readonly/nondestructive tests
-test: ls booted/readonly/*-test-*.nu | sort -n | while read t; do nu $t; done
-duration: 30m

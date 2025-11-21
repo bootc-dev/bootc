@@ -1,3 +1,0 @@
-summary: Execute tests for installing outside of a container
-test: nu booted/test-install-outside-container.nu
-duration: 30m

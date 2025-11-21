@@ -30,15 +30,16 @@ prefix ?= /usr
 # the code is really tiny.
 # (Note we should also make installation of the units conditional on the rhsm feature)
 CARGO_FEATURES ?= $(shell . /usr/lib/os-release; if echo "$$ID_LIKE" |grep -qF rhel; then echo rhsm; fi)
+CARGO_PROFILE ?= release
 
 all: bin manpages
 
 bin:
-	cargo build --release --features "$(CARGO_FEATURES)"
+	cargo build --profile $(CARGO_PROFILE) --features "$(CARGO_FEATURES)"
 
 .PHONY: manpages
 manpages:
-	cargo run --package xtask -- manpages
+	cargo run --profile $(CARGO_PROFILE) --package xtask -- manpages
 
 STORAGE_RELATIVE_PATH ?= $(shell realpath -m -s --relative-to="$(prefix)/lib/bootc/storage" /sysroot/ostree/bootc/storage)
 install:

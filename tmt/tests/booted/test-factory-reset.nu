@@ -1,3 +1,8 @@
+# number: 28
+# tmt:
+#   summary: Execute factory reset tests
+#   duration: 30m
+#
 use std assert
 use tap.nu
 use bootc_testlib.nu

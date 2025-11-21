@@ -1,3 +1,4 @@
+# Common settings for all plans
 provision:
   how: virtual
   image: $@{test_disk_image}
@@ -35,98 +36,96 @@ prepare:
 execute:
   how: tmt
 
-/readonly-tests:
+# BEGIN GENERATED PLANS
+/plan-01-readonly:
   summary: Execute booted readonly/nondestructive tests
   discover:
     how: fmf
     test:
-        - /tmt/tests/test-01-readonly
+      - /tmt/tests/tests/test-01-readonly
 
-/test-20-local-upgrade:
+/plan-20-image-pushpull-upgrade:
   summary: Execute local upgrade tests
   discover:
     how: fmf
     test:
-        - /tmt/tests/test-20-local-upgrade
+      - /tmt/tests/tests/test-20-image-pushpull-upgrade
 
-/test-21-logically-bound-switch:
+/plan-21-logically-bound-switch:
   summary: Execute logically bound images tests for switching images
   discover:
     how: fmf
     test:
-        - /tmt/tests/test-21-logically-bound-switch
+      - /tmt/tests/tests/test-21-logically-bound-switch
 
-/test-22-logically-bound-install:
-  summary: Execute logically bound images tests for switching images
+/plan-22-logically-bound-install:
+  summary: Execute logically bound images tests for installing image
   discover:
     how: fmf
     test:
-        - /tmt/tests/test-22-logically-bound-install
+      - /tmt/tests/tests/test-22-logically-bound-install
 
-/test-23-install-outside-container:
+/plan-23-install-outside-container:
   summary: Execute tests for installing outside of a container
   discover:
     how: fmf
     test:
-        - /tmt/tests/test-23-install-outside-container
+      - /tmt/tests/tests/test-23-install-outside-container
 
-/test-24-local-upgrade-reboot:
-  summary: Execute local upgrade tests with automated reboot
+/plan-23-usroverlay:
+  summary: Execute tests for bootc usrover
   discover:
     how: fmf
     test:
-        - /tmt/tests/test-24-local-upgrade-reboot
+      - /tmt/tests/tests/test-23-usroverlay
 
-/test-25-soft-reboot:
-  summary: Soft reboot support
+/plan-24-image-upgrade-reboot:
+  summary: Execute local upgrade tests
   discover:
     how: fmf
     test:
-        - /tmt/tests/test-25-soft-reboot
+      - /tmt/tests/tests/test-24-image-upgrade-reboot
 
-/test-26-examples-build:
+/plan-25-soft-reboot:
+  summary: Execute soft reboot test
+  discover:
+    how: fmf
+    test:
+      - /tmt/tests/tests/test-25-soft-reboot
+
+/plan-26-examples-build:
   summary: Test bootc examples build scripts
   discover:
     how: fmf
     test:
-        - /tmt/tests/test-26-examples-build
+      - /tmt/tests/tests/test-26-examples-build
   adjust:
-    - when: running_env != image_mode
-      enabled: false
-      because: packit tests use RPM bootc and does not install /usr/lib/bootc/initramfs-setup
+  - when: running_env != image_mode
+    enabled: false
+    because: packit tests use RPM bootc and does not install /usr/lib/bootc/initramfs-setup
 
-/test-27-custom-selinux-policy:
-  summary: Execute restorecon test on system with custom selinux policy
+/plan-27-custom-selinux-policy:
+  summary: Execute custom selinux policy test
   discover:
     how: fmf
     test:
-        - /tmt/tests/test-27-custom-selinux-policy
+      - /tmt/tests/tests/test-27-custom-selinux-policy
   adjust:
-    - when: running_env != image_mode
-      enabled: false
-      because: tmt-reboot does not work with systemd reboot in testing farm environment (see bug-soft-reboot.md)
+  - when: running_env != image_mode
+    enabled: false
+    because: these tests require features only available in image mode
 
-/test-23-usroverlay:
-  summary: Usroverlay
+/plan-28-factory-reset:
+  summary: Execute factory reset tests
   discover:
     how: fmf
     test:
-        - /tmt/tests/test-23-usroverlay
+      - /tmt/tests/tests/test-28-factory-reset
 
-/test-28-factory-reset:
-  summary: Factory reset
-  discover:
-    how: fmf
-    test:
-        - /tmt/tests/test-28-factory-reset
-
-/test-29-soft-reboot-selinux-policy:
+/plan-29-soft-reboot-selinux-policy:
   summary: Test soft reboot with SELinux policy changes
   discover:
     how: fmf
     test:
-        - /tmt/tests/test-29-soft-reboot-selinux-policy
-  adjust:
-    - when: running_env != image_mode
-      enabled: false
-      because: tmt-reboot does not work with systemd reboot in testing farm environment (see bug-soft-reboot.md)
+      - /tmt/tests/tests/test-29-soft-reboot-selinux-policy
+# END GENERATED PLANS

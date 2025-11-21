@@ -1,3 +1,0 @@
-summary: Execute soft reboot test
-test: nu booted/test-soft-reboot.nu
-duration: 30m

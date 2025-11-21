@@ -1,3 +1,8 @@
+# number: 20
+# tmt:
+#   summary: Execute local upgrade tests
+#   duration: 30m
+#
 # This test does:
 # bootc image copy-to-storage
 # podman build <from that image>

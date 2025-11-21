@@ -1,3 +1,8 @@
+# number: 24
+# tmt:
+#   summary: Execute local upgrade tests
+#   duration: 30m
+#
 # This test does:
 # bootc image copy-to-storage
 # podman build <from that image>
@@ -10,6 +15,8 @@ use tap.nu
 # This code runs on *each* boot.
 # Here we just capture information.
 bootc status
+journalctl --list-boots
+
 let st = bootc status --json | from json
 let booted = $st.status.booted.image
 
@@ -20,30 +27,38 @@ def parse_cmdline []  {
     open /proc/cmdline | str trim | split row " "
 }
 
+def imgsrc [] {
+    $env.BOOTC_upgrade_image? | default "localhost/bootc-derived-local"
+}
+
 # Run on the first boot
 def initial_build [] {
     tap begin "local image push + pull + upgrade"
 
-    bootc image copy-to-storage
+    let imgsrc = imgsrc
+    # For the packit case, we build locally right now
+    if ($imgsrc | str ends-with "-local") {
+        bootc image copy-to-storage
 
-    # A simple derived container that adds a file
-    "FROM localhost/bootc
+        # A simple derived container that adds a file
+        "FROM localhost/bootc
 RUN touch /usr/share/testing-bootc-upgrade-apply
 " | save Dockerfile
-    # Build it
-    podman build -t localhost/bootc-derived .
+         # Build it
+        podman build -t $imgsrc .
+    }
 
     # Now, switch into the new image
-    tmt-reboot -c "bootc switch --apply --transport containers-storage localhost/bootc-derived"
-
-    # We cannot perform any other checks here since the system will be automatically rebooted
+    print $"Applying ($imgsrc)"
+    bootc switch --transport containers-storage ($imgsrc)
+    tmt-reboot
 }
 
 # Check we have the updated image
 def second_boot [] {
     print "verifying second boot"
     assert equal $booted.image.transport containers-storage
-    assert equal $booted.image.image localhost/bootc-derived
+    assert equal $booted.image.image $"(imgsrc)"
 
     # Verify the new file exists
     "/usr/share/testing-bootc-upgrade-apply" | path exists

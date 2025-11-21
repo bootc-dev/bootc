@@ -1,3 +1,0 @@
-summary: Execute factory reset tests
-test: nu booted/test-factory-reset.nu
-duration: 30m

@@ -1,3 +1,8 @@
+# number: 23
+# tmt:
+#   summary: Execute tests for bootc usrover
+#   duration: 30m
+#
 # Verify that bootc usroverlay works
 use std assert
 use tap.nu

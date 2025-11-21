@@ -1,3 +1,8 @@
+# number: 21
+# tmt:
+#   summary: Execute logically bound images tests for switching images
+#   duration: 30m
+#
 # This test does:
 # bootc image switch bootc-bound-image
 # <verify bound images are pulled>

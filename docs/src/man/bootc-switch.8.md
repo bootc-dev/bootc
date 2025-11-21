@@ -61,7 +61,7 @@ Soft reboot allows faster system restart by avoiding full hardware reboot when p
 
 **--transport**=*TRANSPORT*
 
-    The transport; e.g. oci, oci-archive, containers-storage.  Defaults to `registry`
+    The transport; e.g. registry, oci, oci-archive, docker-daemon, containers-storage.  Defaults to `registry`
 
     Default: registry
 

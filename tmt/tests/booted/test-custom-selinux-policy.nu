@@ -1,3 +1,12 @@
+# number: 27
+# tmt:
+#   summary: Execute custom selinux policy test
+#   duration: 30m
+#   adjust:
+#     - when: running_env != image_mode
+#       enabled: false
+#       because: these tests require features only available in image mode
+#
 # Verify that correct labels are applied after a deployment
 use std assert
 use tap.nu
