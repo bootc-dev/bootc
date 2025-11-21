@@ -477,7 +477,8 @@ pub(crate) fn setup_composefs_bls_boot(
             let boot_digest = compute_boot_digest(usr_lib_modules_vmlinuz, &repo)
                 .context("Computing boot digest")?;
 
-            let default_sort_key = "1";
+            let default_sort_key = bootloader.default_sort_key();
+
             let default_title_version = (id.to_hex(), default_sort_key.to_string());
 
             let osrel_res = osrel_title_and_version(fs, &repo)?;
@@ -575,7 +576,7 @@ pub(crate) fn setup_composefs_bls_boot(
         let boot_dir = Dir::open_ambient_dir(&entry_paths.config_path, ambient_authority())?;
 
         let mut booted_bls = get_booted_bls(&boot_dir)?;
-        booted_bls.sort_key = Some("0".into()); // entries are sorted by their filename in reverse order
+        booted_bls.sort_key = Some(bootloader.secondary_sort_key().into());
 
         // This will be atomically renamed to 'loader/entries' on shutdown/reboot
         (
@@ -823,7 +824,7 @@ fn write_systemd_uki_config(
     boot_label: UKILabels,
     id: &Sha512HashValue,
 ) -> Result<()> {
-    let default_sort_key = "0";
+    let default_sort_key = Bootloader::SYSTEMD_PRIMARY_SORT_KEY;
 
     let mut bls_conf = BLSConfig::default();
     bls_conf

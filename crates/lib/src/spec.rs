@@ -197,6 +197,31 @@ impl FromStr for Bootloader {
     }
 }
 
+impl Bootloader {
+    pub(crate) const SYSTEMD_PRIMARY_SORT_KEY: &str = "0";
+    // Grub entries are sorted by their filename in reverse order
+    pub(crate) const GRUB_PRIMARY_SORT_KEY: &str = "1";
+
+    pub(crate) const SYSTEMD_SECONDARY_SORT_KEY: &str = "1";
+    pub(crate) const GRUB_SECONDARY_SORT_KEY: &str = "0";
+
+    /// Sort key for the primary BLS entry
+    pub(crate) fn default_sort_key(&self) -> &str {
+        match self {
+            Bootloader::Grub => Self::GRUB_PRIMARY_SORT_KEY,
+            Bootloader::Systemd => Self::SYSTEMD_PRIMARY_SORT_KEY,
+        }
+    }
+
+    /// Sort key for the secondary BLS entry
+    pub(crate) fn secondary_sort_key(&self) -> &str {
+        match self {
+            Bootloader::Grub => Self::GRUB_SECONDARY_SORT_KEY,
+            Bootloader::Systemd => Self::SYSTEMD_SECONDARY_SORT_KEY,
+        }
+    }
+}
+
 /// A bootable entry
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
 #[serde(rename_all = "camelCase")]
