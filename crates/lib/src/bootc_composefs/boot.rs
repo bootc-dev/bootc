@@ -504,8 +504,35 @@ pub(crate) fn setup_composefs_bls_boot(
                 });
 
             match find_vmlinuz_initrd_duplicates(&boot_digest)? {
-                Some(symlink_to) => {
-                    let symlink_to = &symlink_to[0];
+                Some(shared_entries) => {
+                    // Multiple deployments could be using the same kernel + initrd, but there
+                    // would be only one available
+                    //
+                    // Symlinking directories themselves would be better, but vfat does not support
+                    // symlinks
+
+                    let mut shared_entry: Option<String> = None;
+
+                    let entries =
+                        Dir::open_ambient_dir(entry_paths.entries_path, ambient_authority())
+                            .context("Opening entries path")?
+                            .entries_utf8()
+                            .context("Getting dir entries")?;
+
+                    for ent in entries {
+                        let ent = ent?;
+                        // We shouldn't error here as all our file names are UTF-8 compatible
+                        let ent_name = ent.file_name()?;
+
+                        if shared_entries.contains(&ent_name) {
+                            shared_entry = Some(ent_name);
+                            break;
+                        }
+                    }
+
+                    let shared_entry = shared_entry.ok_or_else(|| {
+                        anyhow::anyhow!("Could not get symlink to BLS boot entry")
+                    })?;
 
                     match bls_config.cfg_type {
                         BLSConfigType::NonEFI {
@@ -513,10 +540,15 @@ pub(crate) fn setup_composefs_bls_boot(
                             ref mut initrd,
                             ..
                         } => {
-                            *linux = entry_paths.abs_entries_path.join(&symlink_to).join(VMLINUZ);
+                            *linux = entry_paths
+                                .abs_entries_path
+                                .join(&shared_entry)
+                                .join(VMLINUZ);
 
-                            *initrd =
-                                vec![entry_paths.abs_entries_path.join(&symlink_to).join(INITRD)];
+                            *initrd = vec![entry_paths
+                                .abs_entries_path
+                                .join(&shared_entry)
+                                .join(INITRD)];
                         }
 
                         _ => unreachable!(),
