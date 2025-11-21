@@ -1,16 +1,11 @@
 use anyhow::{Context, Result};
-use camino::Utf8PathBuf;
-use cap_std_ext::cap_std::fs::Dir;
-use composefs::fsverity::FsVerityHashValue;
 use fn_error_context::context;
 
 use crate::{
     bootc_composefs::{
-        boot::{setup_composefs_bls_boot, setup_composefs_uki_boot, BootSetupType, BootType},
-        repo::pull_composefs_repo,
-        service::start_finalize_stated_svc,
-        state::write_composefs_state,
+        state::update_target_imgref_in_origin,
         status::get_composefs_status,
+        update::{do_upgrade, is_image_pulled, validate_update, UpdateAction},
     },
     cli::{imgref_for_switch, SwitchOpts},
     store::{BootedComposefs, Storage},
@@ -44,51 +39,39 @@ pub(crate) async fn switch_composefs(
         anyhow::bail!("Target image is undefined")
     };
 
-    start_finalize_stated_svc()?;
+    let repo = &*booted_cfs.repo;
+    let (image, manifest, _) = is_image_pulled(repo, &target_imgref).await?;
 
-    let (repo, entries, id, fs) =
-        pull_composefs_repo(&target_imgref.transport, &target_imgref.image).await?;
+    if let Some(cfg_verity) = image {
+        let action = validate_update(
+            storage,
+            booted_cfs,
+            &host,
+            manifest.config().digest().digest(),
+            &cfg_verity,
+            true,
+        )?;
 
-    let Some(entry) = entries.iter().next() else {
-        anyhow::bail!("No boot entries!");
-    };
+        match action {
+            UpdateAction::Skip => {
+                println!("No changes in image: {target_imgref:#}");
+                return Ok(());
+            }
 
-    let boot_type = BootType::from(entry);
-    let mut boot_digest = None;
+            UpdateAction::Proceed => {
+                return do_upgrade(storage, &host, &target_imgref).await;
+            }
 
-    let mounted_fs = Dir::reopen_dir(
-        &repo
-            .mount(&id.to_hex())
-            .context("Failed to mount composefs image")?,
-    )?;
-
-    match boot_type {
-        BootType::Bls => {
-            boot_digest = Some(setup_composefs_bls_boot(
-                BootSetupType::Upgrade((storage, &fs, &host)),
-                repo,
-                &id,
-                entry,
-                &mounted_fs,
-            )?)
+            UpdateAction::UpdateOrigin => {
+                // The staged image will never be the current image's verity digest
+                println!("Image already in compoesfs repository");
+                println!("Updating target image reference");
+                return update_target_imgref_in_origin(storage, booted_cfs, &target_imgref);
+            }
         }
-        BootType::Uki => setup_composefs_uki_boot(
-            BootSetupType::Upgrade((storage, &fs, &host)),
-            repo,
-            &id,
-            entries,
-        )?,
-    };
+    }
 
-    // TODO: Remove this hardcoded path when write_composefs_state accepts a Dir
-    write_composefs_state(
-        &Utf8PathBuf::from("/sysroot"),
-        id,
-        &target_imgref,
-        true,
-        boot_type,
-        boot_digest,
-    )?;
+    do_upgrade(storage, &host, &target_imgref).await?;
 
     Ok(())
 }

@@ -15,7 +15,7 @@ use crate::{
         boot::{setup_composefs_bls_boot, setup_composefs_uki_boot, BootSetupType, BootType},
         repo::{get_imgref, pull_composefs_repo},
         service::start_finalize_stated_svc,
-        state::{update_target_imgref_in_origin, write_composefs_state},
+        state::write_composefs_state,
         status::{get_bootloader, get_composefs_status, get_container_manifest_and_config},
     },
     cli::UpgradeOpts,
@@ -49,7 +49,7 @@ pub fn str_to_sha256digest(id: &str) -> Result<Sha256Digest> {
 /// * The container image manifest
 /// * The container image configuration
 #[context("Checking if image {} is pulled", imgref.image)]
-async fn is_image_pulled(
+pub(crate) async fn is_image_pulled(
     repo: &ComposefsRepository,
     imgref: &ImageReference,
 ) -> Result<(Option<Sha512HashValue>, ImageManifest, ImageConfiguration)> {
@@ -75,41 +75,62 @@ fn rm_staged_type1_ent(boot_dir: &Dir) -> Result<()> {
     Ok(())
 }
 
+#[derive(Debug)]
 pub(crate) enum UpdateAction {
     /// Skip the update. We probably have the update in our deployments
     Skip,
     /// Proceed with the update
     Proceed,
     /// Only update the target imgref in the .origin file
+    /// Will only be returned if the Operation is update and not switch
     UpdateOrigin,
 }
 
 /// Determines what action should be taken for the update
-fn validate_update(
+///
+/// Cases:
+///
+/// - The verity is the same as that of the currently booted deployment
+///
+///    Nothing to do here as we're currently booted
+///
+/// - The verity is the same as that of the staged deployment
+///
+///    Nothing to do, as we only get a "staged" deployment if we have
+///    /run/composefs/staged-deployment which is the last thing we create while upgrading
+///
+/// - The verity is the same as that of the rollback deployment
+///
+///    Nothing to do since this is a rollback deployment which means this was unstaged at some
+///    point
+///
+/// - The verity is not found
+///
+///    The update/switch might've been canceled before /run/composefs/staged-deployment
+///    was created, or at any other point in time, or it's a new one.
+///    Any which way, we can overwrite everything
+///
+/// # Arguments
+///
+/// * `storage`       - The global storage object
+/// * `booted_cfs`    - Reference to the booted composefs deployment
+/// * `host`          - Object returned by `get_composefs_status`
+/// * `img_digest`    - The SHA256 sum of the target image
+/// * `config_verity` - The verity of the Image config splitstream
+/// * `is_switch`     - Whether this is an update operation or a switch operation
+///
+/// # Returns
+/// * UpdateAction::Skip         - Skip the update/switch as we have it as a deployment
+/// * UpdateAction::UpdateOrigin - Just update the target imgref in the origin file
+/// * UpdateAction::Proceed      - Proceed with the update
+pub(crate) fn validate_update(
     storage: &Storage,
     booted_cfs: &BootedComposefs,
     host: &Host,
     img_digest: &str,
     config_verity: &Sha512HashValue,
+    is_switch: bool,
 ) -> Result<UpdateAction> {
-    // Cases
-    //
-    // 1. The verity is the same as that of the currently booted deployment
-    //    - Nothing to do here as we're currently booted
-    //
-    // 2. The verity is the same as that of the staged deployment
-    //    - Nothing to do, as we only get a "staged" deployment if we have
-    //    /run/composefs/staged-deployment which is the last thing we create while upgrading
-    //
-    // 3. The verity is the same as that of the rollback deployment
-    //    - Nothing to do since this is a rollback deployment which means this was unstaged at some
-    //    point
-    //
-    // 4. The verity is not found
-    //    - The update/switch might've been canceled before /run/composefs/staged-deployment
-    //    was created, or at any other point in time, or it's a new one.
-    //    Any which way, we can overwrite everything
-
     let repo = &*booted_cfs.repo;
 
     let mut fs = create_filesystem(repo, img_digest, Some(config_verity))?;
@@ -126,8 +147,13 @@ fn validate_update(
     //
     // We could simply update the image origin file here
     if image_id.to_hex() == *booted_cfs.cmdline.digest {
-        // update_target_imgref_in_origin(storage, booted_cfs);
-        return Ok(UpdateAction::UpdateOrigin);
+        let ret = if is_switch {
+            UpdateAction::UpdateOrigin
+        } else {
+            UpdateAction::Skip
+        };
+
+        return Ok(ret);
     }
 
     let all_deployments = host.all_composefs_deployments()?;
@@ -178,7 +204,13 @@ fn validate_update(
     Ok(UpdateAction::Proceed)
 }
 
-async fn do_upgrade(storage: &Storage, host: &Host, imgref: &ImageReference) -> Result<()> {
+/// Performs the Update or Switch operation
+#[context("Performing Upgrade Operation")]
+pub(crate) async fn do_upgrade(
+    storage: &Storage,
+    host: &Host,
+    imgref: &ImageReference,
+) -> Result<()> {
     start_finalize_stated_svc()?;
 
     let (repo, entries, id, fs) = pull_composefs_repo(&imgref.transport, &imgref.image).await?;
@@ -282,6 +314,7 @@ pub(crate) async fn upgrade_composefs(
                 &host,
                 manifest.config().digest().digest(),
                 &cfg_verity,
+                false,
             )?;
 
             match action {
@@ -295,8 +328,7 @@ pub(crate) async fn upgrade_composefs(
                 }
 
                 UpdateAction::UpdateOrigin => {
-                    // The staged image will never be the current image's verity digest
-                    anyhow::bail!("Staged image verity digest is the same as booted image")
+                    anyhow::bail!("Updating origin not supported for update operation")
                 }
             }
         }
@@ -304,7 +336,14 @@ pub(crate) async fn upgrade_composefs(
 
     // We already have this container config
     if let Some(cfg_verity) = img_pulled {
-        let action = validate_update(storage, composefs, &host, &booted_img_digest, &cfg_verity)?;
+        let action = validate_update(
+            storage,
+            composefs,
+            &host,
+            &booted_img_digest,
+            &cfg_verity,
+            false,
+        )?;
 
         match action {
             UpdateAction::Skip => {
@@ -317,7 +356,7 @@ pub(crate) async fn upgrade_composefs(
             }
 
             UpdateAction::UpdateOrigin => {
-                return update_target_imgref_in_origin(storage, composefs, booted_imgref);
+                anyhow::bail!("Updating origin not supported for update operation")
             }
         }
     }
