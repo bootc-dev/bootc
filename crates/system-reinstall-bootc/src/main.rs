@@ -30,6 +30,8 @@ pub(crate) struct ReinstallOpts {
     // Note if we ever add any other options here,
     #[arg(long)]
     pub(crate) composefs_backend: bool,
+    #[arg(long = "experimental-unified-storage")]
+    pub(crate) unified_storage_exp: bool,
 }
 
 #[context("run")]
@@ -40,6 +42,7 @@ fn run() -> Result<()> {
         ReinstallOpts {
             image: config.bootc_image,
             composefs_backend: config.composefs_backend,
+            unified_storage_exp: false,
         }
     } else {
         // Otherwise an image is required.
