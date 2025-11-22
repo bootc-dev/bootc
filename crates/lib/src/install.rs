@@ -1803,6 +1803,54 @@ pub(crate) async fn install_to_disk(mut opts: InstallToDiskOpts) -> Result<()> {
     Ok(())
 }
 
+/// Check if a directory contains only mount points (or is empty), recursively.
+/// Returns true if all entries in the directory tree are either:
+/// - Mount points (on different filesystems)
+/// - Directories that themselves contain only mount points (recursively)
+/// - The lost+found directory
+///
+/// This handles cases like /var containing /var/lib (not a mount) which contains
+/// /var/lib/containers (a mount point).
+#[context("Checking if directory contains only mount points")]
+fn dir_contains_only_mounts(parent_fd: &Dir, dir_name: &str) -> Result<bool> {
+    let Some(dir_fd) = parent_fd.open_dir_noxdev(dir_name)? else {
+        // The directory itself is a mount point, which is acceptable
+        return Ok(true);
+    };
+
+    for entry in dir_fd.entries()? {
+        let entry = DirEntryUtf8::from_cap_std(entry?);
+        let entry_name = entry.file_name()?;
+
+        // Skip lost+found
+        if entry_name == LOST_AND_FOUND {
+            continue;
+        }
+
+        let etype = entry.file_type()?;
+        if etype == FileType::dir() {
+            // If open_dir_noxdev returns None, this is a mount point on a different filesystem
+            if dir_fd.open_dir_noxdev(&entry_name)?.is_none() {
+                tracing::debug!("Found mount point: {dir_name}/{entry_name}");
+                continue;
+            }
+
+            // Not a mount point itself, but check recursively if it contains only mounts
+            if dir_contains_only_mounts(&dir_fd, &entry_name)? {
+                tracing::debug!("Directory {dir_name}/{entry_name} contains only mount points");
+                continue;
+            }
+        }
+
+        // Found a non-mount, non-directory-of-mounts entry
+        tracing::debug!("Found non-mount entry in {dir_name}: {entry_name}");
+        return Ok(false);
+    }
+
+    // All entries are mount points or directories containing only mount points
+    Ok(true)
+}
+
 #[context("Verifying empty rootfs")]
 fn require_empty_rootdir(rootfs_fd: &Dir) -> Result<()> {
     for e in rootfs_fd.entries()? {
@@ -1811,6 +1859,27 @@ fn require_empty_rootdir(rootfs_fd: &Dir) -> Result<()> {
         if name == LOST_AND_FOUND {
             continue;
         }
+
+        // Check if this entry is a directory
+        let etype = e.file_type()?;
+        if etype == FileType::dir() {
+            // Check if this directory is a mount point (separate filesystem)
+            // If open_dir_noxdev returns None, it means this directory is on a different device
+            // (i.e., it's a mount point), which is acceptable for to-filesystem installations
+            if rootfs_fd.open_dir_noxdev(&name)?.is_none() {
+                tracing::debug!("Skipping mount point: {name}");
+                continue;
+            }
+
+            // If the directory itself is not a mount point, check if it contains only mount points.
+            // This handles the case where subdirectories like /var/log, /var/home are separate
+            // partitions, creating a /var directory that exists only to hold mount points.
+            if dir_contains_only_mounts(rootfs_fd, &name)? {
+                tracing::debug!("Skipping directory containing only mount points: {name}");
+                continue;
+            }
+        }
+
         // There must be a boot directory (that is empty)
         if name == BOOT {
             let mut entries = rootfs_fd.read_dir(BOOT)?;
