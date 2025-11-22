@@ -21,6 +21,7 @@ use std::ops::Deref;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use bootc_mount::tempmount::TempMount;
 use cap_std_ext::cap_std;
 use cap_std_ext::cap_std::fs::{Dir, DirBuilder, DirBuilderExt as _};
 use cap_std_ext::dirext::CapStdExtDirExt;
@@ -31,10 +32,11 @@ use ostree_ext::sysroot::SysrootLock;
 use ostree_ext::{gio, ostree};
 use rustix::fs::Mode;
 
-use crate::bootc_composefs::status::{composefs_booted, ComposefsCmdline};
+use crate::bootc_composefs::boot::{get_esp_partition, get_sysroot_parent_dev, mount_esp};
+use crate::bootc_composefs::status::{composefs_booted, get_bootloader, ComposefsCmdline};
 use crate::lsm;
 use crate::podstorage::CStorage;
-use crate::spec::ImageStatus;
+use crate::spec::{Bootloader, ImageStatus};
 use crate::utils::{deployment_fd, open_dir_remount_rw};
 
 /// See https://github.com/containers/composefs-rs/issues/159
@@ -169,9 +171,23 @@ impl BootedStorage {
                 }
                 let composefs = Arc::new(composefs);
 
+                // NOTE: This is assuming that we'll only have composefs in a UEFI system
+                // We do have this assumptions in a lot of other places
+                let parent = get_sysroot_parent_dev(&physical_root)?;
+                let (esp_part, ..) = get_esp_partition(&parent)?;
+                let esp_mount = mount_esp(&esp_part)?;
+
+                let boot_dir = match get_bootloader()? {
+                    Bootloader::Grub => physical_root.open_dir("boot").context("Opening boot")?,
+                    // NOTE: Handle XBOOTLDR partitions here if and when we use it
+                    Bootloader::Systemd => esp_mount.fd.try_clone().context("Cloning fd")?,
+                };
+
                 let storage = Storage {
                     physical_root,
                     run,
+                    boot_dir: Some(boot_dir),
+                    esp: Some(esp_mount),
                     ostree: Default::default(),
                     composefs: OnceCell::from(composefs),
                     imgstore: Default::default(),
@@ -194,6 +210,8 @@ impl BootedStorage {
                 let storage = Storage {
                     physical_root,
                     run,
+                    boot_dir: None,
+                    esp: None,
                     ostree: OnceCell::from(sysroot),
                     composefs: Default::default(),
                     imgstore: Default::default(),
@@ -235,6 +253,15 @@ impl BootedStorage {
 pub(crate) struct Storage {
     /// Directory holding the physical root
     pub physical_root: Dir,
+
+    /// The 'boot' directory, useful and `Some` only for composefs systems
+    /// For grub booted systems, this points to `/sysroot/boot`
+    /// For systemd booted systems, this points to the ESP
+    pub boot_dir: Option<Dir>,
+
+    /// The ESP mounted at a tmp location
+    pub esp: Option<TempMount>,
+
     /// Our runtime state
     run: Dir,
 
@@ -286,10 +313,19 @@ impl Storage {
         Ok(Self {
             physical_root,
             run,
+            boot_dir: None,
+            esp: None,
             ostree: ostree_cell,
             composefs: Default::default(),
             imgstore: Default::default(),
         })
+    }
+
+    /// Returns `boot_dir` if it exists
+    pub(crate) fn require_boot_dir(&self) -> Result<&Dir> {
+        self.boot_dir
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Boot dir not found"))
     }
 
     /// Access the underlying ostree repository
