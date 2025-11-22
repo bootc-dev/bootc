@@ -2,10 +2,13 @@
 use anyhow::{Context, Result};
 use bootc_kernel_cmdline::utf8::{Cmdline, CmdlineOwned};
 use camino::Utf8Path;
+use cap_std_ext::cap_std::ambient_authority;
 use cap_std_ext::cap_std::fs::Dir;
 use cap_std_ext::cap_std::fs_utf8::Dir as DirUtf8;
 use cap_std_ext::dirext::CapStdExtDirExt;
 use cap_std_ext::dirext::CapStdExtDirExtUtf8;
+use composefs::fs::read_file;
+use composefs::generic_tree::Inode;
 use ostree::gio;
 use ostree_ext::ostree;
 use ostree_ext::ostree::Deployment;
@@ -13,9 +16,11 @@ use ostree_ext::prelude::Cast;
 use ostree_ext::prelude::FileEnumeratorExt;
 use ostree_ext::prelude::FileExt;
 use serde::Deserialize;
+use std::ffi::OsStr;
 
 use crate::deploy::ImageState;
 use crate::store::Storage;
+use crate::store::{ComposefsFilesystem, ComposefsRepository};
 
 /// The relative path to the kernel arguments which may be embedded in an image.
 const KARGS_PATH: &str = "usr/lib/bootc/kargs.d";
@@ -43,6 +48,96 @@ impl Config {
     fn filename_matches(name: &str) -> bool {
         matches!(Utf8Path::new(name).extension(), Some("toml"))
     }
+}
+
+/// Compute the diff between existing and remote kargs
+/// Apply the diff to the new kargs
+fn compute_apply_kargs_diff(
+    existing_kargs: &Cmdline,
+    remote_kargs: &Cmdline,
+    new_kargs: &mut Cmdline,
+) {
+    // Calculate the diff between the existing and remote kargs
+    let added_kargs: Vec<_> = remote_kargs
+        .iter()
+        .filter(|item| !existing_kargs.iter().any(|existing| *item == existing))
+        .collect();
+    let removed_kargs: Vec<_> = existing_kargs
+        .iter()
+        .filter(|item| !remote_kargs.iter().any(|remote| *item == remote))
+        .collect();
+
+    tracing::debug!("kargs: added={:?} removed={:?}", added_kargs, removed_kargs);
+
+    // Apply the diff to the system kargs
+    for arg in &removed_kargs {
+        new_kargs.remove_exact(arg);
+    }
+    for arg in &added_kargs {
+        new_kargs.add(arg);
+    }
+}
+
+/// Looks for files in usr/lib/bootc/kargs.d and parses cmdline agruments
+pub(crate) fn kargs_from_composefs_filesystem(
+    fs: &ComposefsFilesystem,
+    repo: &ComposefsRepository,
+    new_kargs: &mut Cmdline,
+    fresh_install: bool,
+) -> Result<()> {
+    let existing_kargs = match fresh_install {
+        // If we are freshly installing, we won't have any existing kargs
+        true => Cmdline::new(),
+
+        false => {
+            let root = Dir::open_ambient_dir("/", ambient_authority()).context("Opening root")?;
+            let existing_kargs = get_kargs_in_root(&root, std::env::consts::ARCH)?;
+            existing_kargs
+        }
+    };
+
+    let kargs_d = fs
+        .root
+        .get_directory_opt(OsStr::new(KARGS_PATH))
+        .with_context(|| format!("Getting {KARGS_PATH}"))?;
+
+    let Some(kargs_d) = kargs_d else {
+        return Ok(());
+    };
+
+    let mut remote_kargs = Cmdline::new();
+
+    for (fname, inode) in kargs_d.sorted_entries() {
+        let Inode::Leaf(..) = inode else { continue };
+
+        let Some(fname_str) = fname.to_str() else {
+            tracing::warn!(
+                "Failed to convert filename to UTF-8, will skip parsing: {:?}",
+                fname
+            );
+            continue;
+        };
+
+        if !Config::filename_matches(fname_str) {
+            continue;
+        }
+
+        let file = kargs_d
+            .get_file(fname)
+            .with_context(|| format!("Getting file {fname_str}"))?;
+
+        let contents = read_file(&file, &repo)?;
+        let contents = std::str::from_utf8(&contents)
+            .with_context(|| format!("File {fname_str} is not a valid UTF-8"))?;
+
+        if let Some(kargs) = parse_kargs_toml(contents, std::env::consts::ARCH)? {
+            remote_kargs.extend(&kargs);
+        };
+    }
+
+    compute_apply_kargs_diff(&existing_kargs, &remote_kargs, new_kargs);
+
+    Ok(())
 }
 
 /// Load and parse all bootc kargs.d files in the specified root, returning
@@ -175,29 +270,7 @@ pub(crate) fn get_kargs(
     // Fetch the kernel arguments from the new root
     let remote_kargs = get_kargs_from_ostree(repo, &fetched_tree, sys_arch)?;
 
-    // Calculate the diff between the existing and remote kargs
-    let added_kargs: Vec<_> = remote_kargs
-        .iter()
-        .filter(|item| !existing_kargs.iter().any(|existing| *item == existing))
-        .collect();
-    let removed_kargs: Vec<_> = existing_kargs
-        .iter()
-        .filter(|item| !remote_kargs.iter().any(|remote| *item == remote))
-        .collect();
-
-    tracing::debug!(
-        "kargs: added={:?} removed={:?}",
-        &added_kargs,
-        removed_kargs
-    );
-
-    // Apply the diff to the system kargs
-    for arg in &removed_kargs {
-        kargs.remove_exact(arg);
-    }
-    for arg in &added_kargs {
-        kargs.add(arg);
-    }
+    compute_apply_kargs_diff(&existing_kargs, &remote_kargs, &mut kargs);
 
     Ok(kargs)
 }

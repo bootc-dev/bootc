@@ -1,4 +1,7 @@
+use std::io::Write;
+use std::ops::Deref;
 use std::os::unix::fs::symlink;
+use std::path::Path;
 use std::{fs::create_dir_all, process::Command};
 
 use anyhow::{Context, Result};
@@ -8,7 +11,7 @@ use bootc_mount::tempmount::TempMount;
 use bootc_utils::CommandRunExt;
 use camino::Utf8PathBuf;
 use cap_std_ext::cap_std::ambient_authority;
-use cap_std_ext::cap_std::fs::Dir;
+use cap_std_ext::cap_std::fs::{Dir, Permissions, PermissionsExt};
 use cap_std_ext::dirext::CapStdExtDirExt;
 use composefs::fsverity::{FsVerityHashValue, Sha512HashValue};
 use fn_error_context::context;
@@ -23,6 +26,7 @@ use crate::bootc_composefs::boot::BootType;
 use crate::bootc_composefs::repo::get_imgref;
 use crate::bootc_composefs::status::get_sorted_type1_boot_entries;
 use crate::parsers::bls_config::BLSConfigType;
+use crate::store::{BootedComposefs, Storage};
 use crate::{
     composefs_consts::{
         COMPOSEFS_CMDLINE, COMPOSEFS_STAGED_DEPLOYMENT_FNAME, COMPOSEFS_TRANSIENT_STATE_DIR,
@@ -102,6 +106,49 @@ pub(crate) fn copy_etc_to_state(
         .run_capture_stderr();
 
     cp_ret
+}
+
+/// Updates the currently booted image's target imgref
+pub(crate) fn update_target_imgref_in_origin(
+    storage: &Storage,
+    booted_cfs: &BootedComposefs,
+    imgref: &ImageReference,
+) -> Result<()> {
+    let path = Path::new(STATE_DIR_RELATIVE).join(booted_cfs.cmdline.digest.deref());
+
+    let state_dir = storage
+        .physical_root
+        .open_dir(path)
+        .context("Opening state dir")?;
+
+    let origin_filename = format!("{}.origin", booted_cfs.cmdline.digest.deref());
+
+    let origin_file = state_dir
+        .read_to_string(&origin_filename)
+        .context("Reading origin file")?;
+
+    let mut ini =
+        tini::Ini::from_string(&origin_file).context("Failed to parse file origin file as ini")?;
+
+    // Replace the origin
+    ini = ini.section("origin").item(
+        ORIGIN_CONTAINER,
+        format!("ostree-unverified-image:{imgref}"),
+    );
+
+    state_dir
+        .atomic_replace_with(origin_filename, move |f| -> std::io::Result<_> {
+            f.write_all(ini.to_string().as_bytes())?;
+            f.flush()?;
+
+            let perms = Permissions::from_mode(0o644);
+            f.get_mut().as_file_mut().set_permissions(perms)?;
+
+            Ok(())
+        })
+        .context("Writing to origin file")?;
+
+    Ok(())
 }
 
 /// Creates and populates /sysroot/state/deploy/image_id
