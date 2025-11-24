@@ -44,17 +44,17 @@ pub(crate) fn get_booted_bls(boot_dir: &Dir) -> Result<BLSConfig> {
 
     for entry in sorted_entries {
         match &entry.cfg_type {
-            BLSConfigType::EFI { efi } => {
+            BLSConfigType::UKI { uki } => {
                 let composefs_param_value = booted.value().ok_or_else(|| {
                     anyhow::anyhow!("Failed to get composefs kernel cmdline value")
                 })?;
 
-                if efi.as_str().contains(composefs_param_value) {
+                if uki.as_str().contains(composefs_param_value) {
                     return Ok(entry);
                 }
             }
 
-            BLSConfigType::NonEFI { options, .. } => {
+            BLSConfigType::NonUKI { options, .. } => {
                 let Some(opts) = options else {
                     anyhow::bail!("options not found in bls config")
                 };

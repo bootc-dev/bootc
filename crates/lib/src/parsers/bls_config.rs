@@ -17,11 +17,11 @@ use crate::composefs_consts::COMPOSEFS_CMDLINE;
 
 #[derive(Debug, PartialEq, Eq, Default)]
 pub enum BLSConfigType {
-    EFI {
-        /// The path to the EFI binary, usually a UKI
-        efi: Utf8PathBuf,
+    UKI {
+        /// The path to the UKI
+        uki: Utf8PathBuf,
     },
-    NonEFI {
+    NonUKI {
         /// The path to the linux kernel to boot.
         linux: Utf8PathBuf,
         /// The paths to the initrd images.
@@ -102,11 +102,11 @@ impl Display for BLSConfig {
         writeln!(f, "version {}", self.version)?;
 
         match &self.cfg_type {
-            BLSConfigType::EFI { efi } => {
-                writeln!(f, "efi {}", efi)?;
+            BLSConfigType::UKI { uki } => {
+                writeln!(f, "uki {}", uki)?;
             }
 
-            BLSConfigType::NonEFI {
+            BLSConfigType::NonUKI {
                 linux,
                 initrd,
                 options,
@@ -173,16 +173,16 @@ impl BLSConfig {
 
     pub(crate) fn get_verity(&self) -> Result<String> {
         match &self.cfg_type {
-            BLSConfigType::EFI { efi } => Ok(efi
+            BLSConfigType::UKI { uki } => Ok(uki
                 .components()
                 .last()
-                .ok_or(anyhow::anyhow!("Empty efi field"))?
+                .ok_or(anyhow::anyhow!("Empty uki field"))?
                 .to_string()
                 .strip_suffix(EFI_EXT)
-                .ok_or(anyhow::anyhow!("efi doesn't end with .efi"))?
+                .ok_or_else(|| anyhow::anyhow!("uki doesn't end with .efi"))?
                 .to_string()),
 
-            BLSConfigType::NonEFI { options, .. } => {
+            BLSConfigType::NonUKI { options, .. } => {
                 let options = options.as_ref().ok_or(anyhow::anyhow!("No options"))?;
 
                 let cmdline = Cmdline::from(&options);
@@ -209,7 +209,7 @@ pub(crate) fn parse_bls_config(input: &str) -> Result<BLSConfig> {
     let mut title = None;
     let mut version = None;
     let mut linux = None;
-    let mut efi = None;
+    let mut uki = None;
     let mut initrd = Vec::new();
     let mut options = None;
     let mut machine_id = None;
@@ -232,7 +232,7 @@ pub(crate) fn parse_bls_config(input: &str) -> Result<BLSConfig> {
                 "options" => options = Some(CmdlineOwned::from(value)),
                 "machine-id" => machine_id = Some(value),
                 "sort-key" => sort_key = Some(value),
-                "efi" => efi = Some(Utf8PathBuf::from(value)),
+                "uki" => uki = Some(Utf8PathBuf::from(value)),
                 _ => {
                     extra.insert(key.to_string(), value);
                 }
@@ -242,10 +242,10 @@ pub(crate) fn parse_bls_config(input: &str) -> Result<BLSConfig> {
 
     let version = version.ok_or_else(|| anyhow!("Missing 'version' value"))?;
 
-    let cfg_type = match (linux, efi) {
-        (None, Some(efi)) => BLSConfigType::EFI { efi },
+    let cfg_type = match (linux, uki) {
+        (None, Some(uki)) => BLSConfigType::UKI { uki },
 
-        (Some(linux), None) => BLSConfigType::NonEFI {
+        (Some(linux), None) => BLSConfigType::NonUKI {
             linux,
             initrd,
             options,
@@ -253,8 +253,8 @@ pub(crate) fn parse_bls_config(input: &str) -> Result<BLSConfig> {
 
         // The spec makes no mention of whether both can be present or not
         // Fow now, for us, we won't have both at the same time
-        (Some(_), Some(_)) => anyhow::bail!("'linux' and 'efi' values present"),
-        (None, None) => anyhow::bail!("Missing 'linux' or 'efi' value"),
+        (Some(_), Some(_)) => anyhow::bail!("'linux' and 'uki' values present"),
+        (None, None) => anyhow::bail!("Missing 'linux' or 'uki' value"),
     };
 
     Ok(BLSConfig {
@@ -285,13 +285,13 @@ mod tests {
 
         let config = parse_bls_config(input)?;
 
-        let BLSConfigType::NonEFI {
+        let BLSConfigType::NonUKI {
             linux,
             initrd,
             options,
         } = config.cfg_type
         else {
-            panic!("Expected non EFI variant");
+            panic!("Expected non UKI variant");
         };
 
         assert_eq!(
@@ -321,8 +321,8 @@ mod tests {
 
         let config = parse_bls_config(input)?;
 
-        let BLSConfigType::NonEFI { initrd, .. } = config.cfg_type else {
-            panic!("Expected non EFI variant");
+        let BLSConfigType::NonUKI { initrd, .. } = config.cfg_type else {
+            panic!("Expected non UKI variant");
         };
 
         assert_eq!(
