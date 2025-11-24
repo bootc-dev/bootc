@@ -1,6 +1,5 @@
 use anyhow::{Context, Result};
 use camino::Utf8PathBuf;
-use composefs::util::{parse_sha256, Sha256Digest};
 use fn_error_context::context;
 use ostree_ext::oci_spec::image::{ImageConfiguration, ImageManifest};
 
@@ -16,12 +15,6 @@ use crate::{
     spec::ImageReference,
     store::{BootedComposefs, ComposefsRepository, Storage},
 };
-
-#[context("Getting SHA256 Digest for {id}")]
-pub fn str_to_sha256digest(id: &str) -> Result<Sha256Digest> {
-    let id = id.strip_prefix("sha256:").unwrap_or(id);
-    Ok(parse_sha256(&id)?)
-}
 
 /// Checks if a container image has been pulled to the local composefs repository.
 ///
@@ -50,10 +43,9 @@ async fn is_image_pulled(
     let (manifest, config) = get_container_manifest_and_config(&imgref_repr).await?;
 
     let img_digest = manifest.config().digest().digest();
-    let img_sha256 = str_to_sha256digest(&img_digest)?;
 
-    // check_stream is expensive to run, but probably a good idea
-    let container_pulled = repo.check_stream(&img_sha256).context("Checking stream")?;
+    // NB: add deep checking?
+    let container_pulled = repo.has_stream(&img_digest).context("Checking stream")?;
 
     Ok((container_pulled.is_some(), manifest, config))
 }
@@ -122,8 +114,6 @@ pub(crate) async fn upgrade_composefs(
         // TODO(Johan-Liebert1): If we have the previous, i.e. the current manifest with us then we can replace the
         // following with [`ostree_container::ManifestDiff::new`] which will be much cleaner
         for (idx, diff_id) in config.rootfs().diff_ids().iter().enumerate() {
-            let diff_id = str_to_sha256digest(diff_id)?;
-
             // we could use `check_stream` here but that will most probably take forever as it
             // usually takes ~3s to verify one single layer
             let have_layer = repo.has_stream(&diff_id)?;
