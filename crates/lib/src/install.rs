@@ -1122,6 +1122,8 @@ pub(crate) struct RootSetup {
     pub(crate) physical_root_path: Utf8PathBuf,
     /// Directory file descriptor for the above physical root.
     pub(crate) physical_root: Dir,
+    /// Target root path /target.
+    pub(crate) target_root_path: Option<Utf8PathBuf>,
     pub(crate) rootfs_uuid: Option<String>,
     /// True if we should skip finalizing
     skip_finalize: bool,
@@ -1575,7 +1577,10 @@ async fn install_with_sysroot(
             Bootloader::Grub => {
                 crate::bootloader::install_via_bootupd(
                     &rootfs.device_info,
-                    &rootfs.physical_root_path,
+                    &rootfs
+                        .target_root_path
+                        .clone()
+                        .unwrap_or(rootfs.physical_root_path.clone()),
                     &state.config_opts,
                     Some(&deployment_path.as_str()),
                 )?;
@@ -2110,6 +2115,18 @@ pub(crate) async fn install_to_filesystem(
         .context("Mounting host / to {ALONGSIDE_ROOT_MOUNT}")?;
     }
 
+    let target_root_path = fsopts.root_path.clone();
+    // Get a file descriptor for the root path /target
+    let target_rootfs_fd =
+        Dir::open_ambient_dir(&target_root_path, cap_std::ambient_authority())
+            .with_context(|| format!("Opening target root directory {target_root_path}"))?;
+
+    tracing::debug!("Target root filesystem: {target_root_path}");
+
+    if let Some(false) = target_rootfs_fd.is_mountpoint(".")? {
+        anyhow::bail!("Not a mountpoint: {target_root_path}");
+    }
+
     // Check that the target is a directory
     {
         let root_path = &fsopts.root_path;
@@ -2123,10 +2140,7 @@ pub(crate) async fn install_to_filesystem(
 
     // Check to see if this happens to be the real host root
     if !fsopts.acknowledge_destructive {
-        let root_path = &fsopts.root_path;
-        let rootfs_fd = Dir::open_ambient_dir(root_path, cap_std::ambient_authority())
-            .with_context(|| format!("Opening target root directory {root_path}"))?;
-        warn_on_host_root(&rootfs_fd)?;
+        warn_on_host_root(&target_rootfs_fd)?;
     }
 
     // If we're installing to an ostree root, then find the physical root from
@@ -2142,7 +2156,8 @@ pub(crate) async fn install_to_filesystem(
     };
 
     // Get a file descriptor for the root path
-    let rootfs_fd = {
+    // It will be /target/sysroot on ostree OS, or will be /target
+    let rootfs_fd = if is_already_ostree {
         let root_path = &fsopts.root_path;
         let rootfs_fd = Dir::open_ambient_dir(&fsopts.root_path, cap_std::ambient_authority())
             .with_context(|| format!("Opening target root directory {root_path}"))?;
@@ -2153,6 +2168,8 @@ pub(crate) async fn install_to_filesystem(
             anyhow::bail!("Not a mountpoint: {root_path}");
         }
         rootfs_fd
+    } else {
+        target_rootfs_fd.try_clone()?
     };
 
     match fsopts.replace {
@@ -2162,7 +2179,9 @@ pub(crate) async fn install_to_filesystem(
             tokio::task::spawn_blocking(move || remove_all_in_dir_no_xdev(&rootfs_fd, true))
                 .await??;
         }
-        Some(ReplaceMode::Alongside) => clean_boot_directories(&rootfs_fd, is_already_ostree)?,
+        Some(ReplaceMode::Alongside) => {
+            clean_boot_directories(&target_rootfs_fd, is_already_ostree)?
+        }
         None => require_empty_rootdir(&rootfs_fd)?,
     }
 
@@ -2207,7 +2226,7 @@ pub(crate) async fn install_to_filesystem(
 
     let boot_is_mount = {
         let root_dev = rootfs_fd.dir_metadata()?.dev();
-        let boot_dev = rootfs_fd
+        let boot_dev = target_rootfs_fd
             .symlink_metadata_optional(BOOT)?
             .ok_or_else(|| {
                 anyhow!("No /{BOOT} directory found in root; this is is currently required")
@@ -2218,9 +2237,10 @@ pub(crate) async fn install_to_filesystem(
     };
     // Find the UUID of /boot because we need it for GRUB.
     let boot_uuid = if boot_is_mount {
-        let boot_path = fsopts.root_path.join(BOOT);
+        let boot_path = target_root_path.join(BOOT);
+        tracing::debug!("boot_path={boot_path}");
         let u = bootc_mount::inspect_filesystem(&boot_path)
-            .context("Inspecting /{BOOT}")?
+            .with_context(|| format!("Inspecting /{BOOT}"))?
             .uuid
             .ok_or_else(|| anyhow!("No UUID found for /{BOOT}"))?;
         Some(u)
@@ -2307,6 +2327,7 @@ pub(crate) async fn install_to_filesystem(
         device_info,
         physical_root_path: fsopts.root_path,
         physical_root: rootfs_fd,
+        target_root_path: Some(target_root_path.clone()),
         rootfs_uuid: inspect.uuid.clone(),
         boot,
         kargs,
