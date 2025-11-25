@@ -758,6 +758,16 @@ async fn initialize_ostree_root(state: &State, root_setup: &RootSetup) -> Result
     // Another implementation: https://github.com/coreos/coreos-assembler/blob/3cd3307904593b3a131b81567b13a4d0b6fe7c90/src/create_disk.sh#L295
     crate::lsm::ensure_dir_labeled(rootfs_dir, "", Some("/".into()), 0o755.into(), sepolicy)?;
 
+    // If we're installing alongside existing ostree and there's a separate boot partition,
+    // we need to mount it to the sysroot's /boot so ostree can write bootloader entries there
+    if has_ostree && root_setup.boot.is_some() {
+        if let Some(boot) = &root_setup.boot {
+            let source_boot = &boot.source;
+            let target_boot = root_setup.physical_root_path.join(BOOT);
+            tracing::debug!("Mount {source_boot} to {target_boot} on ostree");
+            bootc_mount::mount(source_boot, &target_boot)?;
+        }
+    }
     // And also label /boot AKA xbootldr, if it exists
     if rootfs_dir.try_exists("boot")? {
         crate::lsm::ensure_dir_labeled(rootfs_dir, "boot", None, 0o755.into(), sepolicy)?;
@@ -967,6 +977,23 @@ async fn install_container(
     if let Some(cli_kargs) = state.config_opts.karg.as_ref() {
         for karg in cli_kargs {
             kargs.extend(karg);
+        }
+    }
+
+    // For seperate /boot filesystem, the better workaround is
+    // to inject kernel arguments during installation.
+    // See discussion in https://github.com/bootc-dev/bootc/issues/1388
+    if let Some(boot) = root_setup.boot.as_ref() {
+        if !boot.source.is_empty() {
+            let mount_extra = format!(
+                "systemd.mount-extra={}:{}:{}:{}",
+                boot.source,
+                boot.target,
+                boot.fstype,
+                boot.options.as_deref().unwrap_or("defaults")
+            );
+            kargs.extend(&Cmdline::from(mount_extra.as_str()));
+            tracing::debug!("Add {mount_extra} to kargs if has seperate /boot");
         }
     }
 
@@ -1882,6 +1909,7 @@ fn remove_all_except_loader_dirs(bootdir: &Dir, is_ostree: bool) -> Result<()> {
             if let Some(subdir) = bootdir.open_dir_noxdev(&file_name)? {
                 remove_all_in_dir_no_xdev(&subdir, false)
                     .with_context(|| format!("Removing directory contents: {}", file_name))?;
+                bootdir.remove_dir(&file_name)?;
             }
         } else {
             bootdir
@@ -2098,7 +2126,7 @@ pub(crate) async fn install_to_filesystem(
         }
         rootfs_fd
     } else {
-        target_rootfs_fd.clone()
+        target_rootfs_fd.try_clone()?
     };
 
     match fsopts.replace {
