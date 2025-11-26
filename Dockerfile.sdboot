@@ -1,0 +1,50 @@
+# Override via --build-arg=base=<image> to use a different base
+ARG base=localhost/bootc
+# Image to sign systemd-boot first, BEFORE, installing onto the image
+ARG buildroot=quay.io/centos/centos:stream10
+
+FROM $base AS base-unsigned
+
+FROM $buildroot as buildroot-base
+RUN <<EORUN
+set -xeuo pipefail
+dnf install -y pesign openssl
+dnf clean all
+EORUN
+
+
+FROM buildroot-base as signer
+# Sign sdboot and put it on the target first
+RUN --mount=type=secret,id=key \
+    --mount=type=secret,id=cert \
+    --mount=type=bind,from=base-unsigned,target=/target \
+    <<EORUN
+    set -xeuo pipefail
+
+    # pesign uses NSS database so create it from input cert/key
+    mkdir pesign
+    certutil -N -d pesign --empty-password
+    openssl pkcs12 -export -password 'pass:' -inkey /run/secrets/key -in /run/secrets/cert -out db.p12
+    pk12util -i db.p12 -W '' -d pesign
+    subject=$(openssl x509 -in /run/secrets/cert -subject | grep '^subject=CN=' | sed 's/^subject=CN=//')
+
+    # Sign systemd-boot as well
+    sdboot="target/usr/lib/systemd/boot/efi/systemd-bootx64.efi"
+    sdboot_out="/sdboot.efi"
+    pesign \
+        --certdir "pesign" \
+        --certificate "${subject}" \
+        --in "${sdboot}" \
+        --out "${sdboot_out}" \
+        --sign
+EORUN
+
+
+FROM base-unsigned as final
+RUN --mount=type=bind,from=signer,target=/run/sdboot \
+    <<EORUN
+    set -xeuo pipefail
+    sdboot=/usr/lib/systemd/boot/efi/systemd-bootx64.efi
+    # copy signed sdboot from buildroot
+    cp "/run/sdboot/sdboot.efi" ${sdboot}
+EORUN

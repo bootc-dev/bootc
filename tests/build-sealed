@@ -37,11 +37,6 @@ case $variant in
 esac
 
 
-graphroot=$(podman system info -f '{{.Store.GraphRoot}}')
-echo "Computing composefs digest..."
-cfs_digest=$(podman run --rm --privileged --read-only --security-opt=label=disable -v /sys:/sys:ro --net=none \
-  -v ${graphroot}:/run/host-container-storage:ro --tmpfs /var "$input_image" bootc container compute-composefs-digest)
-
 if test -z "${secureboot}"; then
   secureboot=$(pwd)/target/test-secureboot
   mkdir -p ${secureboot}
@@ -61,9 +56,23 @@ if test -z "${secureboot}"; then
   cd -
 fi
 
-runv podman build -t $output_image \
-  --build-arg=COMPOSEFS_FSVERITY=${cfs_digest} \
+# handle sdboot signing before building the sealed UKI
+sdboot_signed="${input_image}_signed"
+runv podman build -t $sdboot_signed \
   --build-arg=base=${input_image} \
   --build-arg=buildroot=${buildroot_base} \
   --secret=id=key,src=${secureboot}/db.key \
-  --secret=id=cert,src=${secureboot}/db.crt -f Dockerfile.cfsuki .
+  --secret=id=cert,src=${secureboot}/db.crt \
+  -f Dockerfile.sdboot .
+
+graphroot=$(podman system info -f '{{.Store.GraphRoot}}')
+echo "Computing composefs digest..."
+cfs_digest=$(podman run --rm --privileged --read-only --security-opt=label=disable -v /sys:/sys:ro --net=none \
+  -v ${graphroot}:/run/host-container-storage:ro --tmpfs /var "$sdboot_signed" bootc container compute-composefs-digest)
+
+runv podman build -t $output_image \
+  --build-arg=COMPOSEFS_FSVERITY=${cfs_digest} \
+  --build-arg=base=${sdboot_signed} \
+  --secret=id=key,src=${secureboot}/db.key \
+  --secret=id=cert,src=${secureboot}/db.crt \
+  -f Dockerfile.cfsuki .
