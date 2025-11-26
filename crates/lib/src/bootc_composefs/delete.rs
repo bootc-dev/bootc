@@ -7,7 +7,7 @@ use composefs_boot::bootloader::{EFI_ADDON_DIR_EXT, EFI_EXT};
 
 use crate::{
     bootc_composefs::{
-        boot::{find_vmlinuz_initrd_duplicates, get_efi_uuid_source, BootType, SYSTEMD_UKI_DIR},
+        boot::{find_vmlinuz_initrd_duplicates, get_efi_uuid_source, BootType, BOOTC_UKI_DIR},
         gc::composefs_gc,
         repo::open_composefs_repo,
         rollback::{composefs_rollback, rename_exchange_user_cfg},
@@ -62,20 +62,20 @@ fn delete_type1_entry(depl: &DeploymentEntry, boot_dir: &Dir, deleting_staged: b
         let bls_config = parse_bls_config(&cfg)?;
 
         match &bls_config.cfg_type {
-            BLSConfigType::EFI { efi } => {
-                if !efi.as_str().contains(&depl.deployment.verity) {
+            BLSConfigType::UKI { uki } => {
+                if !uki.as_str().contains(&depl.deployment.verity) {
                     continue;
                 }
 
                 // Boot dir in case of EFI will be the ESP
-                tracing::debug!("Deleting EFI .conf file: {}", file_name);
+                tracing::debug!("Deleting UKI .conf file: {}", file_name);
                 entry.remove_file().context("Removing .conf file")?;
                 delete_uki(&depl.deployment.verity, boot_dir)?;
 
                 break;
             }
 
-            BLSConfigType::NonEFI { options, .. } => {
+            BLSConfigType::NonUKI { options, .. } => {
                 let options = options
                     .as_ref()
                     .ok_or(anyhow::anyhow!("options not found in BLS config file"))?;
@@ -84,7 +84,7 @@ fn delete_type1_entry(depl: &DeploymentEntry, boot_dir: &Dir, deleting_staged: b
                     continue;
                 }
 
-                tracing::debug!("Deleting non-EFI .conf file: {}", file_name);
+                tracing::debug!("Deleting non-UKI .conf file: {}", file_name);
                 entry.remove_file().context("Removing .conf file")?;
 
                 if should_del_kernel {
@@ -113,8 +113,8 @@ fn delete_type1_entry(depl: &DeploymentEntry, boot_dir: &Dir, deleting_staged: b
 
 #[fn_error_context::context("Deleting kernel and initrd")]
 fn delete_kernel_initrd(bls_config: &BLSConfigType, boot_dir: &Dir) -> Result<()> {
-    let BLSConfigType::NonEFI { linux, initrd, .. } = bls_config else {
-        anyhow::bail!("Found EFI config")
+    let BLSConfigType::NonUKI { linux, initrd, .. } = bls_config else {
+        anyhow::bail!("Found UKI config")
     };
 
     // "linux" and "initrd" are relative to the boot_dir in our config files
@@ -153,7 +153,7 @@ fn delete_kernel_initrd(bls_config: &BLSConfigType, boot_dir: &Dir) -> Result<()
 #[fn_error_context::context("Deleting UKI and UKI addons {uki_id}")]
 fn delete_uki(uki_id: &str, esp_mnt: &Dir) -> Result<()> {
     // TODO: We don't delete global addons here
-    let ukis = esp_mnt.open_dir(SYSTEMD_UKI_DIR)?;
+    let ukis = esp_mnt.open_dir(BOOTC_UKI_DIR)?;
 
     for entry in ukis.entries_utf8()? {
         let entry = entry?;
