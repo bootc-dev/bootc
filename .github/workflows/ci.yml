@@ -113,10 +113,40 @@ jobs:
         uses: ./.github/actions/bootc-ubuntu-setup
       - name: Build mdbook
         run: just build-mdbook
+  # Build packages for each test OS
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        test_os: [fedora-42, fedora-43, fedora-44, centos-9, centos-10]
+
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v6
+      - name: Bootc Ubuntu Setup
+        uses: ./.github/actions/bootc-ubuntu-setup
+
+      - name: Setup env
+        run: |
+          BASE=$(just pullspec-for-os ${{ matrix.test_os }})
+          echo "BOOTC_base=${BASE}" >> $GITHUB_ENV
+
+      - name: Build packages
+        run: just package
+
+      - name: Upload package artifacts
+        uses: actions/upload-artifact@v5
+        with:
+          name: packages-${{ matrix.test_os }}
+          path: target/packages/*.rpm
+          retention-days: 1
+
   # Build bootc from source into a container image FROM each specified base `test_os`
   # running unit and integration tests (using TMT, leveraging the support for nested virtualization
   # in the GHA runners)
   test-integration:
+    needs: package
     strategy:
       fail-fast: false
       matrix:
@@ -149,12 +179,15 @@ jobs:
             echo "BOOTC_buildroot_base=${BUILDROOTBASE}" >> $GITHUB_ENV
           fi
 
+      - name: Download package artifacts
+        uses: actions/download-artifact@v5
+        with:
+          name: packages-${{ matrix.test_os }}
+          path: target/packages/
+
       - name: Build container
         run: |
-          just build-integration-test-image
-          # Extra cross-check (duplicating the integration test) that we're using the right base
-          used_vid=$(podman run --rm localhost/bootc-integration bash -c '. /usr/lib/os-release && echo ${ID}-${VERSION_ID}')
-          test ${{ matrix.test_os }} = "${used_vid}"
+          just build-integration-test-image-from-package target/packages
 
       - name: Unit and container integration tests
         run: just test-container
@@ -177,11 +210,12 @@ jobs:
   # Sentinel job for required checks - configure this job name in repository settings
   required-checks:
     if: always()
-    needs: [cargo-deny, validate, test-integration]
+    needs: [cargo-deny, validate, package, test-integration]
     runs-on: ubuntu-latest
     steps:
       - run: exit 1
         if: >-
           needs.cargo-deny.result != 'success' ||
           needs.validate.result != 'success' ||
+          needs.package.result != 'success' ||
           needs.test-integration.result != 'success'

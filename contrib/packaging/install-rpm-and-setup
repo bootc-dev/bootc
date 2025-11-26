@@ -7,7 +7,7 @@ RPM_DIR="${1:-/tmp}"
 # Install the RPM package
 # Use rpm -Uvh with --oldpackage to allow replacing with dev version
 rpm -Uvh --oldpackage "${RPM_DIR}"/*.rpm
-rm -f "${RPM_DIR}"/*.rpm
+# Note: we don't need to clean up the source directory since it's a bind mount
 
 # Regenerate initramfs if we have initramfs-setup
 kver=$(cd /usr/lib/modules && echo *)

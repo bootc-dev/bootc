@@ -40,7 +40,13 @@ buildargs := "--build-arg=base=" + base + " --build-arg=variant=" + variant
 # Build the container image from current sources.
 # Note commonly you might want to override the base image via e.g.
 # `just build --build-arg=base=quay.io/fedora/fedora-bootc:42`
-build:
+build: package
+    podman build {{base_buildargs}} -t {{base_img}}-bin {{buildargs}} .
+    ./tests/build-sealed {{variant}} {{base_img}}-bin {{base_img}}
+
+# Build the container image using pre-existing packages from PATH
+build-from-package PATH:
+    @just copy-packages-from {{PATH}}
     podman build {{base_buildargs}} -t {{base_img}}-bin {{buildargs}} .
     ./tests/build-sealed {{variant}} {{base_img}}-bin {{base_img}} {{buildroot_base}}
 
@@ -65,17 +71,43 @@ _packagecontainer:
     echo "Building RPM with version: ${VERSION}"
     podman build {{base_buildargs}} {{buildargs}} --build-arg=pkgversion=${VERSION} -t localhost/bootc-pkg --target=build .
 
-# Build a packages (e.g. RPM) into target/
+# Build packages (e.g. RPM) into target/packages/
 # Any old packages will be removed.
 package: _packagecontainer
-    mkdir -p target
-    rm -vf target/*.rpm
-    podman run --rm localhost/bootc-pkg tar -C /out/ -cf - . | tar -C target/ -xvf -
+    mkdir -p target/packages
+    rm -vf target/packages/*.rpm
+    podman run --rm localhost/bootc-pkg tar -C /out/ -cf - . | tar -C target/packages/ -xvf -
+    chmod a+rx target target/packages
+    chmod a+r target/packages/*.rpm
+    podman rmi localhost/bootc-pkg
+
+# Copy pre-existing packages from PATH into target/packages/
+# Used to prepare for building with pre-built packages
+copy-packages-from PATH:
+    #!/bin/bash
+    set -xeuo pipefail
+    if ! compgen -G "{{PATH}}/*.rpm" > /dev/null; then
+        echo "Error: No packages found in {{PATH}}" >&2
+        exit 1
+    fi
+    mkdir -p target/packages
+    rm -vf target/packages/*.rpm
+    cp -v {{PATH}}/*.rpm target/packages/
+    chmod a+rx target target/packages
+    chmod a+r target/packages/*.rpm
 
 # This container image has additional testing content and utilities
 build-integration-test-image: build
     cd hack && podman build {{base_buildargs}} -t {{integration_img}}-bin -f Containerfile .
     ./tests/build-sealed {{variant}} {{integration_img}}-bin {{integration_img}} {{buildroot_base}}
+    # Keep these in sync with what's used in hack/lbi
+    podman pull -q --retry 5 --retry-delay 5s quay.io/curl/curl:latest quay.io/curl/curl-base:latest registry.access.redhat.com/ubi9/podman:latest
+
+# Build integration test image using pre-existing packages from PATH
+build-integration-test-image-from-package PATH:
+    @just build-from-package {{PATH}}
+    cd hack && podman build {{base_buildargs}} -t {{integration_img}}-bin -f Containerfile .
+    ./tests/build-sealed {{variant}} {{integration_img}}-bin {{integration_img}}
     # Keep these in sync with what's used in hack/lbi
     podman pull -q --retry 5 --retry-delay 5s quay.io/curl/curl:latest quay.io/curl/curl-base:latest registry.access.redhat.com/ubi9/podman:latest
 
