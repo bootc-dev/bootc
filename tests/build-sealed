@@ -58,6 +58,9 @@ if test -z "${secureboot}"; then
   cd -
 fi
 
-runv podman build -t $output_image --build-arg=COMPOSEFS_FSVERITY=${cfs_digest} --build-arg=base=${input_image} \
+runv podman build -t $output_image \
+  --build-arg=COMPOSEFS_FSVERITY=${cfs_digest} \
+  --build-arg=base=${input_image} \
+  --build-arg=buildroot=${BOOTC_buildroot_base} \
   --secret=id=key,src=${secureboot}/db.key \
   --secret=id=cert,src=${secureboot}/db.crt -f Dockerfile.cfsuki .

@@ -32,7 +32,7 @@ fi
 
 # Get base image URL
 TEST_OS="${ID}-${VERSION_ID}"
-BASE=$(jq -r --arg v "$TEST_OS" '.[$v]' < os-image-map.json)
+BASE=$(jq -r --arg v "$TEST_OS" '.base[$v]' < os-image-map.json)
 
 if [[ "$ID" == "rhel" ]]; then
     # OSCI gating only

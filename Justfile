@@ -82,10 +82,14 @@ build-integration-test-image: build
 test-composefs:
     # These first two are currently a distinct test suite from tmt that directly
     # runs an integration test binary in the base image via bcvk
-    just variant=composefs-sealeduki-sdboot build
-    cargo run --release -p tests-integration -- composefs-bcvk {{base_img}}
+    just _composefs-build-image
+    cargo run --release -p tests-integration -- composefs-bcvk {{integration_img}}
     # We're trying to move more testing to tmt
     just variant=composefs-sealeduki-sdboot test-tmt readonly local-upgrade-reboot
+
+# Internal helper to build integration test image with composefs variant
+_composefs-build-image:
+    just variant=composefs-sealeduki-sdboot build-integration-test-image
 
 # Only used by ci.yml right now
 build-install-test-image: build-integration-test-image
@@ -136,9 +140,10 @@ clean-local-images:
     podman images --filter "label={{testimage_label}}"
     podman images --filter "label={{testimage_label}}" --format "{{{{.ID}}" | xargs -r podman rmi -f
 
-# Print the container image reference for a given short $ID-VERSION_ID
-pullspec-for-os NAME:
-    @jq -r --arg v "{{NAME}}" '.[$v]' < hack/os-image-map.json
+# Print the container image reference for a given short $ID-VERSION_ID for NAME
+# and 'base' or 'buildroot-base' for TYPE (base image type)
+pullspec-for-os TYPE NAME:
+    @jq -r --arg v "{{NAME}}" '."{{TYPE}}"[$v]' < hack/os-image-map.json
 
 build-mdbook:
     cd docs && podman build {{base_buildargs}} -t localhost/bootc-mdbook -f Dockerfile.mdbook

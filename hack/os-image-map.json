@@ -1,9 +1,16 @@
 {
-  "rhel-9.8": "images.paas.redhat.com/bootc/rhel-bootc:latest-9.8",
-  "rhel-10.2": "images.paas.redhat.com/bootc/rhel-bootc:latest-10.2",
-  "centos-9": "quay.io/centos-bootc/centos-bootc:stream9",
-  "centos-10": "quay.io/centos-bootc/centos-bootc:stream10",
-  "fedora-42": "quay.io/fedora/fedora-bootc:42",
-  "fedora-43": "quay.io/fedora/fedora-bootc:43",
-  "fedora-44": "quay.io/fedora/fedora-bootc:rawhide"
+  "base": {
+    "centos-9": "quay.io/centos-bootc/centos-bootc:stream9",
+    "centos-10": "quay.io/centos-bootc/centos-bootc:stream10",
+    "fedora-42": "quay.io/fedora/fedora-bootc:42",
+    "fedora-43": "quay.io/fedora/fedora-bootc:43",
+    "fedora-44": "quay.io/fedora/fedora-bootc:rawhide"
+  },
+  "buildroot-base": {
+    "centos-9": "quay.io/centos/centos:stream9",
+    "centos-10": "quay.io/centos/centos:stream10",
+    "fedora-42": "quay.io/fedora/fedora:42",
+    "fedora-43": "quay.io/fedora/fedora:43",
+    "fedora-44": "quay.io/fedora/fedora:rawhide"
+  }
 }

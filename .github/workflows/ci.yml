@@ -136,7 +136,7 @@ jobs:
 
       - name: Setup env
         run: |
-          BASE=$(just pullspec-for-os ${{ matrix.test_os }})
+          BASE=$(just pullspec-for-os base ${{ matrix.test_os }})
           echo "BOOTC_base=${BASE}" >> $GITHUB_ENV
 
       - name: Build container
@@ -175,13 +175,19 @@ jobs:
 
   # This variant does composefs testing
   test-integration-cfs:
+    continue-on-error: ${{ matrix.experimental }}
     strategy:
       fail-fast: false
       matrix:
-        # TODO expand this matrix, we need to make it better to override the target
         # OS via Justfile variables too
-        test_os: [centos-10]
+        test_os: [fedora-42, fedora-43, fedora-44, centos-10]
         variant: [composefs-sealeduki-sdboot]
+        experimental: [false]
+        # For issue https://github.com/bootc-dev/bootc/issues/1812
+        include:
+          - test_os: centos-9
+            variant: composefs-sealeduki-sdboot
+            experimental: true
 
     runs-on: ubuntu-24.04
 
@@ -196,13 +202,18 @@ jobs:
 
       - name: Setup env
         run: |
-          BASE=$(just pullspec-for-os ${{ matrix.test_os }})
+          BASE=$(just pullspec-for-os base ${{ matrix.test_os }})
+          BUILDROOTBASE=$(just pullspec-for-os buildroot-base ${{ matrix.test_os }})
           echo "BOOTC_base=${BASE}" >> $GITHUB_ENV
+          echo "BOOTC_buildroot_base=${BUILDROOTBASE}" >> $GITHUB_ENV
           echo "BOOTC_variant="${{ matrix.variant }} >> $GITHUB_ENV
 
       - name: Build container
         run: |
           just build-integration-test-image
+          # Extra cross-check (duplicating the integration test) that we're using the right base
+          used_vid=$(podman run --rm localhost/bootc-integration bash -c '. /usr/lib/os-release && echo ${ID}-${VERSION_ID}')
+          test ${{ matrix.test_os }} = "${used_vid}"
 
       - name: Unit and container integration tests
         run: just test-container
