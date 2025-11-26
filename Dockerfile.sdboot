@@ -13,13 +13,13 @@ dnf clean all
 EORUN
 
 
-FROM buildroot-base as kernel
+FROM buildroot-base as signer
 # Sign sdboot and put it on the target first
 RUN --mount=type=secret,id=key \
     --mount=type=secret,id=cert \
     --mount=type=bind,from=base-unsigned,target=/target \
-<<EORUN
-set -eux
+    <<EORUN
+    set -xeuo pipefail
 
     # pesign uses NSS database so create it from input cert/key
     mkdir pesign
@@ -41,9 +41,9 @@ EORUN
 
 
 FROM base-unsigned as final
-RUN --mount=type=bind,from=kernel,target=/run/sdboot \
-    <<EORUN 
-    set -eux
+RUN --mount=type=bind,from=signer,target=/run/sdboot \
+    <<EORUN
+    set -xeuo pipefail
     sdboot=/usr/lib/systemd/boot/efi/systemd-bootx64.efi
     # copy signed sdboot from buildroot
     cp "/run/sdboot/sdboot.efi" ${sdboot}
