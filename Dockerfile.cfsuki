@@ -2,6 +2,7 @@
 ARG base=localhost/bootc
 # This is where we get the tools to build the UKI
 ARG buildroot=quay.io/centos/centos:stream10
+
 FROM $base AS base
 
 FROM $buildroot as buildroot-base
@@ -12,7 +13,7 @@ set -xeuo pipefail
 # is used by ukify as invoked with the `--measure` flag below.  Not
 # strictly required, but nice to have the measured PCR values in the
 # output.
-dnf install -y systemd-ukify systemd-udev pesign openssl systemd-boot-unsigned
+dnf install -y systemd-ukify systemd-udev pesign openssl
 dnf clean all
 EORUN
 
@@ -23,7 +24,7 @@ RUN --mount=type=secret,id=key \
     --mount=type=secret,id=cert \
     --mount=type=bind,from=base,target=/target \
      <<EOF
-    set -eux
+    set -xeuo pipefail
 
     # Should be generated externally
     test -n "${COMPOSEFS_FSVERITY}"
@@ -50,19 +51,9 @@ RUN --mount=type=secret,id=key \
         --measure \
         --json pretty \
         --output "/boot/$kver.efi"
-    # Sign systemd-boot as well
-    sdboot="/usr/lib/systemd/boot/efi/systemd-bootx64.efi"
-    pesign \
-        --certdir "pesign" \
-        --certificate "${subject}" \
-        --in "${sdboot}" \
-        --out "${sdboot}.signed" \
-        --sign
-    mv "${sdboot}.signed" "${sdboot}"
 EOF
 
 FROM base as final
-
 RUN --mount=type=bind,from=kernel,target=/run/kernel <<EOF
 set -xeuo pipefail
 kver=$(cd /usr/lib/modules && echo *)
