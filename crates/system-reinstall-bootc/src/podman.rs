@@ -76,6 +76,10 @@ pub(crate) fn reinstall_command(opts: &ReinstallOpts, ssh_key_file: &str) -> Res
         bootc_command_and_args.push("--composefs-backend".into());
     }
 
+    if opts.unified_storage_exp {
+        bootc_command_and_args.push("--experimental-unified-storage".into());
+    }
+
     // Enable the systemd service to cleanup the previous install after booting into the
     // bootc system for the first time.
     // This only happens if the bootc version in the image >= 1.1.8 (this is when the cleanup

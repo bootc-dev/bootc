@@ -311,7 +311,7 @@ impl CStorage {
                 .names
                 .iter()
                 .flatten()
-                .any(|name| !roots.contains(name.as_str()))
+                .all(|name| !roots.contains(name.as_str()))
             {
                 garbage.push(image.id);
             }
@@ -387,7 +387,7 @@ impl CStorage {
         Ok(())
     }
 
-    fn subpath() -> Utf8PathBuf {
+    pub(crate) fn subpath() -> Utf8PathBuf {
         Utf8Path::new(crate::store::BOOTC_ROOT).join(SUBPATH)
     }
 }
