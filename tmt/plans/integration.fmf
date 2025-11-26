@@ -1,3 +1,40 @@
+# Note that this provisioning defaults to using a locally built bootc
+# disk image. The default runs in Github Actions use nested KVM
+# to run most of these tests.
+#
+# However, Packit+Testing Farm provisions a stock package-based
+# cloud VM. When it does that, it ignores the `provision:` tag
+# here, sets running_env=packit, and installs the build artifacts to
+# /var/share/test-artifacts/. The prepare phase then builds a bootc
+# image and reinstalls the system.
+#
+# The idea here is all of our tests should work when started from
+# a package-based host *or* an image-based one.
+#
+# For local testing:
+# - Standard workflow: Use tests/run-tmt.sh (builds bootc image first, sets running_env=image_mode)
+#
+# To reproduce Testing Farm workflow locally with testcloud:
+# Testing Farm provisions a stock cloud VM, creates a yum repo for the copr build artifacts,
+# installs binary RPMs (bootc, system-reinstall-bootc), and places the SRPM in
+# /var/share/test-artifacts/. The prepare phase then builds a bootc container image and
+# reinstalls the system. To reproduce locally:
+#
+# 1. Build packages in current directory:
+#      fedpkg --release f42 srpm
+#      mock -r fedora-42-x86_64 --resultdir=. bootc-*.src.rpm
+# 2. Run with inserted prepare steps to set up artifacts on the VM:
+#    tmt --context running_env=packit run -a \
+#      provision -h virtual --image fedora \
+#      prepare --insert --order 96 -h install -p createrepo_c \
+#      prepare --insert --order 96 -h shell \
+#        -s 'mkdir -p /var/share/test-artifacts /var/tmp/bootc-repo' \
+#        -s 'cp bootc-*.src.rpm /var/share/test-artifacts/' \
+#        -s 'cp bootc-*.rpm system-reinstall-bootc-*.rpm /var/tmp/bootc-repo/' \
+#        -s 'createrepo_c /var/tmp/bootc-repo' \
+#        -s 'printf "[test-artifacts]\nname=test-artifacts\nbaseurl=file:///var/tmp/bootc-repo\nenabled=1\ngpgcheck=0\n" > /etc/yum.repos.d/test-artifacts.repo'
+#
+# Note: tmt syncs the test tree (including files in current directory) to the guest.
 provision:
   how: virtual
   image: $@{test_disk_image}
