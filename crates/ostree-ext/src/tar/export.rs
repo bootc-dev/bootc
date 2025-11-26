@@ -494,7 +494,7 @@ impl<'a, W: std::io::Write> OstreeTarWriter<'a, W> {
         } else {
             false
         };
-        // Link sizes shoud always be zero
+        // Link sizes should always be zero
         h.set_size(0);
         if is_regular_zerosized {
             self.out.append_data(&mut h, dest, &mut std::io::empty())?;

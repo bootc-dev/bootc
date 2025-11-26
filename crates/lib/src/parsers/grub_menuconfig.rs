@@ -186,7 +186,7 @@ fn parse_menuentry(input: &str) -> IResult<&str, MenuEntry<'_>> {
     // Skip any whitespace after title
     let (input, _) = multispace0.parse(input)?;
 
-    // Eat up everything insde { .. }
+    // Eat up everything inside { .. }
     let (input, body) = delimited(
         tag("{"),
         take_until_balanced_allow_nested('{', '}'),

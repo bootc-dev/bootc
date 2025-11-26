@@ -1550,7 +1550,7 @@ async fn install_with_sysroot(
     }
     tracing::debug!("Installed bootloader");
 
-    tracing::debug!("Perfoming post-deployment operations");
+    tracing::debug!("Performing post-deployment operations");
 
     match bound_images {
         BoundImages::Skip => {}
@@ -1951,7 +1951,7 @@ pub enum Cleanup {
     TriggerOnNextBoot,
 }
 
-/// Implementation of the `bootc install to-filsystem` CLI command.
+/// Implementation of the `bootc install to-filesystem` CLI command.
 #[context("Installing to filesystem")]
 pub(crate) async fn install_to_filesystem(
     opts: InstallToFilesystemOpts,
@@ -2154,7 +2154,7 @@ pub(crate) async fn install_to_filesystem(
 
     let rootarg = format!("root={}", root_info.mount_spec);
     let mut boot = if let Some(spec) = fsopts.boot_mount_spec {
-        // An empty boot mount spec signals to ommit the mountspec kargs
+        // An empty boot mount spec signals to omit the mountspec kargs
         // See https://github.com/bootc-dev/bootc/issues/1441
         if spec.is_empty() {
             None

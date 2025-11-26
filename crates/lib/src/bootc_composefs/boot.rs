@@ -675,9 +675,8 @@ pub(crate) fn setup_composefs_bls_boot(
                         }
                     }
 
-                    let shared_entry = shared_entry.ok_or_else(|| {
-                        anyhow::anyhow!("Could not get symlink to BLS boot entry")
-                    })?;
+                    let shared_entry = shared_entry
+                        .ok_or_else(|| anyhow::anyhow!("Shared boot binaries not found"))?;
 
                     match bls_config.cfg_type {
                         BLSConfigType::NonEFI {

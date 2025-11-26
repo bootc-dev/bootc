@@ -9,7 +9,7 @@
 # <reboot>
 # <verify booted state>
 # bootc upgrade
-# <verify new boudn images are pulled>
+# <verify new bound images are pulled>
 # <reboot>
 # <verify booted state>
 

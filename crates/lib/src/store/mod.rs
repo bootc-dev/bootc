@@ -269,7 +269,7 @@ pub(crate) struct Storage {
     ostree: OnceCell<SysrootLock>,
     /// The composefs storage
     composefs: OnceCell<Arc<ComposefsRepository>>,
-    /// The containers-image storage used foR LBIs
+    /// The containers-image storage used for LBIs
     imgstore: OnceCell<CStorage>,
 }
 
