@@ -73,8 +73,22 @@ fn compute_apply_kargs_diff(
     }
 }
 
-/// Looks for files in usr/lib/bootc/kargs.d and parses cmdline agruments
-pub(crate) fn kargs_from_composefs_filesystem(
+/// Computes new kernel arguments by applying the diff between existing and new kargs.d files.
+///
+/// This function:
+/// 1. Loads kernel arguments from `usr/lib/bootc/kargs.d` in the new filesystem
+/// 2. Loads kernel arguments from the current root (if present)
+/// 3. Computes the difference between them (added/removed arguments)
+/// 4. Applies that difference to the provided `new_kargs` cmdline
+///
+/// This allows bootc to maintain user customizations while applying changes from
+/// updated container images.
+///
+/// # Arguments
+/// * `new_fs`       - Directory handle to the new filesystem containing kargs.d files
+/// * `current_root` - Optional directory handle to current root filesystem
+/// * `new_kargs`    - Mutable cmdline that will be modified with the computed diff
+pub(crate) fn compute_new_kargs(
     new_fs: &Dir,
     current_root: Option<&Dir>,
     new_kargs: &mut Cmdline,

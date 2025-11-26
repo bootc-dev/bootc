@@ -96,7 +96,7 @@ use rustix::{mount::MountFlags, path::Arg};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::bootc_kargs::kargs_from_composefs_filesystem;
+use crate::bootc_kargs::compute_new_kargs;
 use crate::composefs_consts::{TYPE1_ENT_PATH, TYPE1_ENT_PATH_STAGED};
 use crate::parsers::bls_config::{BLSConfig, BLSConfigType};
 use crate::parsers::grub_menuconfig::MenuEntry;
@@ -564,7 +564,7 @@ pub(crate) fn setup_composefs_bls_boot(
         None
     };
 
-    kargs_from_composefs_filesystem(mounted_erofs, current_root, &mut cmdline_refs)?;
+    compute_new_kargs(mounted_erofs, current_root, &mut cmdline_refs)?;
 
     let (entry_paths, _tmpdir_guard) = match bootloader {
         Bootloader::Grub => {
