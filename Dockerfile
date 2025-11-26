@@ -15,6 +15,11 @@ COPY . /src
 FROM scratch as packaging
 COPY contrib/packaging /
 
+# This image captures pre-built packages from the context.
+# By COPYing into a stage, we avoid SELinux issues with context bind mounts.
+FROM scratch as packages
+COPY target/packages/*.rpm /
+
 FROM $base as base
 # Mark this as a test image (moved from --label build flag to fix layer caching)
 LABEL bootc.testimage="1"
@@ -63,10 +68,11 @@ ARG rootfs=
 RUN --mount=type=bind,from=packaging,target=/run/packaging /run/packaging/configure-rootfs "${variant}" "${rootfs}"
 # Inject additional content
 COPY --from=packaging /usr-extras/ /usr/
-# Install the RPM built in the build stage
-# This replaces the manual file deletion hack and COPY, ensuring proper package management
-# Use rpm -Uvh with --oldpackage to allow replacing with dev version
-COPY --from=build /out/*.rpm /tmp/
-RUN --mount=type=bind,from=packaging,target=/run/packaging --network=none /run/packaging/install-rpm-and-setup /tmp
+# Install packages from the packages stage
+# Using bind from a stage avoids SELinux issues with context bind mounts
+RUN --mount=type=bind,from=packaging,target=/run/packaging \
+    --mount=type=bind,from=packages,target=/build-packages \
+    --network=none \
+    /run/packaging/install-rpm-and-setup /build-packages
 # Finally, testour own linting
 RUN bootc container lint --fatal-warnings
