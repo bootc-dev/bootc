@@ -758,6 +758,16 @@ async fn initialize_ostree_root(state: &State, root_setup: &RootSetup) -> Result
     // Another implementation: https://github.com/coreos/coreos-assembler/blob/3cd3307904593b3a131b81567b13a4d0b6fe7c90/src/create_disk.sh#L295
     crate::lsm::ensure_dir_labeled(rootfs_dir, "", Some("/".into()), 0o755.into(), sepolicy)?;
 
+    // If we're installing alongside existing ostree and there's a separate boot partition,
+    // we need to mount it to the sysroot's /boot so ostree can write bootloader entries there
+    if has_ostree && root_setup.boot.is_some() {
+        if let Some(boot) = &root_setup.boot {
+            let source_boot = &boot.source;
+            let target_boot = root_setup.physical_root_path.join(BOOT);
+            tracing::debug!("Mount {source_boot} to {target_boot} on ostree");
+            bootc_mount::mount(source_boot, &target_boot)?;
+        }
+    }
     // And also label /boot AKA xbootldr, if it exists
     if rootfs_dir.try_exists("boot")? {
         crate::lsm::ensure_dir_labeled(rootfs_dir, "boot", None, 0o755.into(), sepolicy)?;
@@ -970,6 +980,23 @@ async fn install_container(
         }
     }
 
+    // For seperate /boot filesystem, the better workaround is
+    // to inject kernel arguments during installation.
+    // See discussion in https://github.com/bootc-dev/bootc/issues/1388
+    if let Some(boot) = root_setup.boot.as_ref() {
+        if !boot.source.is_empty() {
+            let mount_extra = format!(
+                "systemd.mount-extra={}:{}:{}:{}",
+                boot.source,
+                boot.target,
+                boot.fstype,
+                boot.options.as_deref().unwrap_or("defaults")
+            );
+            kargs.extend(&Cmdline::from(mount_extra.as_str()));
+            tracing::debug!("Add {mount_extra} to kargs if has seperate /boot");
+        }
+    }
+
     // Finally map into &[&str] for ostree_container
     let kargs_strs: Vec<&str> = kargs.iter_str().collect();
 
@@ -1084,6 +1111,8 @@ pub(crate) struct RootSetup {
     pub(crate) physical_root_path: Utf8PathBuf,
     /// Directory file descriptor for the above physical root.
     pub(crate) physical_root: Dir,
+    /// Target root path /target.
+    pub(crate) target_root_path: Option<Utf8PathBuf>,
     pub(crate) rootfs_uuid: Option<String>,
     /// True if we should skip finalizing
     skip_finalize: bool,
@@ -1538,7 +1567,10 @@ async fn install_with_sysroot(
             Bootloader::Grub => {
                 crate::bootloader::install_via_bootupd(
                     &rootfs.device_info,
-                    &rootfs.physical_root_path,
+                    &rootfs
+                        .target_root_path
+                        .clone()
+                        .unwrap_or(rootfs.physical_root_path.clone()),
                     &state.config_opts,
                     Some(&deployment_path.as_str()),
                 )?;
@@ -1851,30 +1883,59 @@ fn remove_all_in_dir_no_xdev(d: &Dir, mount_err: bool) -> Result<()> {
     anyhow::Ok(())
 }
 
+#[context("Removing boot directory content except loader dir on ostree")]
+fn remove_all_except_loader_dirs(bootdir: &Dir, is_ostree: bool) -> Result<()> {
+    let entries = bootdir
+        .entries()
+        .context("Reading boot directory entries")?;
+
+    for entry in entries {
+        let entry = entry.context("Reading directory entry")?;
+        let file_name = entry.file_name();
+        let file_name = if let Some(n) = file_name.to_str() {
+            n
+        } else {
+            anyhow::bail!("Invalid non-UTF8 filename: {file_name:?} in /boot");
+        };
+
+        // Only preserve loader on ostree
+        if is_ostree && file_name.starts_with("loader") {
+            continue;
+        }
+
+        let etype = entry.file_type()?;
+        if etype == FileType::dir() {
+            // Open the directory and remove its contents
+            if let Some(subdir) = bootdir.open_dir_noxdev(&file_name)? {
+                remove_all_in_dir_no_xdev(&subdir, false)
+                    .with_context(|| format!("Removing directory contents: {}", file_name))?;
+                bootdir.remove_dir(&file_name)?;
+            }
+        } else {
+            bootdir
+                .remove_file_optional(&file_name)
+                .with_context(|| format!("Removing file: {}", file_name))?;
+        }
+    }
+    Ok(())
+}
+
 #[context("Removing boot directory content")]
 fn clean_boot_directories(rootfs: &Dir, is_ostree: bool) -> Result<()> {
     let bootdir =
         crate::utils::open_dir_remount_rw(rootfs, BOOT.into()).context("Opening /boot")?;
 
-    if is_ostree {
-        // On ostree systems, the boot directory already has our desired format, we should only
-        // remove the bootupd-state.json file to avoid bootupctl complaining it already exists.
-        bootdir
-            .remove_file_optional("bootupd-state.json")
-            .context("removing bootupd-state.json")?;
-    } else {
-        // This should not remove /boot/efi note.
-        remove_all_in_dir_no_xdev(&bootdir, false).context("Emptying /boot")?;
-        // TODO: Discover the ESP the same way bootupd does it; we should also
-        // support not wiping the ESP.
-        if ARCH_USES_EFI {
-            if let Some(efidir) = bootdir
-                .open_dir_optional(crate::bootloader::EFI_DIR)
-                .context("Opening /boot/efi")?
-            {
-                remove_all_in_dir_no_xdev(&efidir, false)
-                    .context("Emptying EFI system partition")?;
-            }
+    // This should not remove /boot/efi note.
+    remove_all_except_loader_dirs(&bootdir, is_ostree).context("Emptying /boot")?;
+
+    // TODO: Discover the ESP the same way bootupd does it; we should also
+    // support not wiping the ESP.
+    if ARCH_USES_EFI {
+        if let Some(efidir) = bootdir
+            .open_dir_optional(crate::bootloader::EFI_DIR)
+            .context("Opening /boot/efi")?
+        {
+            remove_all_in_dir_no_xdev(&efidir, false).context("Emptying EFI system partition")?;
         }
     }
 
@@ -2011,6 +2072,18 @@ pub(crate) async fn install_to_filesystem(
         .context("Mounting host / to {ALONGSIDE_ROOT_MOUNT}")?;
     }
 
+    let target_root_path = fsopts.root_path.clone();
+    // Get a file descriptor for the root path /target
+    let target_rootfs_fd =
+        Dir::open_ambient_dir(&target_root_path, cap_std::ambient_authority())
+            .with_context(|| format!("Opening target root directory {target_root_path}"))?;
+
+    tracing::debug!("Target root filesystem: {target_root_path}");
+
+    if let Some(false) = target_rootfs_fd.is_mountpoint(".")? {
+        anyhow::bail!("Not a mountpoint: {target_root_path}");
+    }
+
     // Check that the target is a directory
     {
         let root_path = &fsopts.root_path;
@@ -2024,10 +2097,7 @@ pub(crate) async fn install_to_filesystem(
 
     // Check to see if this happens to be the real host root
     if !fsopts.acknowledge_destructive {
-        let root_path = &fsopts.root_path;
-        let rootfs_fd = Dir::open_ambient_dir(root_path, cap_std::ambient_authority())
-            .with_context(|| format!("Opening target root directory {root_path}"))?;
-        warn_on_host_root(&rootfs_fd)?;
+        warn_on_host_root(&target_rootfs_fd)?;
     }
 
     // If we're installing to an ostree root, then find the physical root from
@@ -2043,7 +2113,8 @@ pub(crate) async fn install_to_filesystem(
     };
 
     // Get a file descriptor for the root path
-    let rootfs_fd = {
+    // It will be /target/sysroot on ostree OS, or will be /target
+    let rootfs_fd = if is_already_ostree {
         let root_path = &fsopts.root_path;
         let rootfs_fd = Dir::open_ambient_dir(&fsopts.root_path, cap_std::ambient_authority())
             .with_context(|| format!("Opening target root directory {root_path}"))?;
@@ -2054,6 +2125,8 @@ pub(crate) async fn install_to_filesystem(
             anyhow::bail!("Not a mountpoint: {root_path}");
         }
         rootfs_fd
+    } else {
+        target_rootfs_fd.try_clone()?
     };
 
     match fsopts.replace {
@@ -2063,7 +2136,9 @@ pub(crate) async fn install_to_filesystem(
             tokio::task::spawn_blocking(move || remove_all_in_dir_no_xdev(&rootfs_fd, true))
                 .await??;
         }
-        Some(ReplaceMode::Alongside) => clean_boot_directories(&rootfs_fd, is_already_ostree)?,
+        Some(ReplaceMode::Alongside) => {
+            clean_boot_directories(&target_rootfs_fd, is_already_ostree)?
+        }
         None => require_empty_rootdir(&rootfs_fd)?,
     }
 
@@ -2108,7 +2183,7 @@ pub(crate) async fn install_to_filesystem(
 
     let boot_is_mount = {
         let root_dev = rootfs_fd.dir_metadata()?.dev();
-        let boot_dev = rootfs_fd
+        let boot_dev = target_rootfs_fd
             .symlink_metadata_optional(BOOT)?
             .ok_or_else(|| {
                 anyhow!("No /{BOOT} directory found in root; this is is currently required")
@@ -2119,9 +2194,10 @@ pub(crate) async fn install_to_filesystem(
     };
     // Find the UUID of /boot because we need it for GRUB.
     let boot_uuid = if boot_is_mount {
-        let boot_path = fsopts.root_path.join(BOOT);
+        let boot_path = target_root_path.join(BOOT);
+        tracing::debug!("boot_path={boot_path}");
         let u = bootc_mount::inspect_filesystem(&boot_path)
-            .context("Inspecting /{BOOT}")?
+            .with_context(|| format!("Inspecting /{BOOT}"))?
             .uuid
             .ok_or_else(|| anyhow!("No UUID found for /{BOOT}"))?;
         Some(u)
@@ -2202,6 +2278,7 @@ pub(crate) async fn install_to_filesystem(
         device_info,
         physical_root_path: fsopts.root_path,
         physical_root: rootfs_fd,
+        target_root_path: Some(target_root_path.clone()),
         rootfs_uuid: inspect.uuid.clone(),
         boot,
         kargs,
