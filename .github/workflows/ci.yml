@@ -129,7 +129,7 @@ jobs:
 
       - name: Setup env
         run: |
-          BASE=$(just pullspec-for-os ${{ matrix.test_os }})
+          BASE=$(just pullspec-for-os base ${{ matrix.test_os }})
           echo "BOOTC_base=${BASE}" >> $GITHUB_ENV
 
       - name: Build packages
