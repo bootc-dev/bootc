@@ -15,6 +15,11 @@ COPY . /src
 FROM scratch as packaging
 COPY contrib/packaging /
 
+# This image captures pre-built packages from the context.
+# By COPYing into a stage, we avoid SELinux issues with context bind mounts.
+FROM scratch as packages
+COPY target/packages/*.rpm /
+
 FROM $base as base
 # Mark this as a test image (moved from --label build flag to fix layer caching)
 LABEL bootc.testimage="1"
@@ -25,8 +30,6 @@ LABEL bootc.testimage="1"
 FROM base as buildroot
 # Flip this off to disable initramfs code
 ARG initramfs=1
-# Version for RPM build (optional, computed from git in Justfile)
-ARG pkgversion=
 # This installs our buildroot, and we want to cache it independently of the rest.
 # Basically we don't want changing a .rs file to blow out the cache of packages.
 RUN --mount=type=bind,from=packaging,target=/run/packaging /run/packaging/install-buildroot
@@ -39,8 +42,10 @@ WORKDIR /src
 RUN --mount=type=cache,target=/src/target --mount=type=cache,target=/var/roothome cargo fetch
 
 FROM buildroot as build
+# Version for RPM build (optional, computed from git in Justfile)
+ARG pkgversion
 # Build RPM directly from source, using cached target directory
-RUN --mount=type=cache,target=/src/target --mount=type=cache,target=/var/roothome --network=none RPM_VERSION=${pkgversion} /src/contrib/packaging/build-rpm
+RUN --mount=type=cache,target=/src/target --mount=type=cache,target=/var/roothome --network=none RPM_VERSION="${pkgversion}" /src/contrib/packaging/build-rpm
 
 # This "build" includes our unit tests
 FROM build as units
@@ -59,14 +64,15 @@ FROM base
 ARG variant
 RUN --mount=type=bind,from=packaging,target=/run/packaging /run/packaging/configure-variant "${variant}"
 # Support overriding the rootfs at build time conveniently
-ARG rootfs=
+ARG rootfs
 RUN --mount=type=bind,from=packaging,target=/run/packaging /run/packaging/configure-rootfs "${variant}" "${rootfs}"
 # Inject additional content
 COPY --from=packaging /usr-extras/ /usr/
-# Install the RPM built in the build stage
-# This replaces the manual file deletion hack and COPY, ensuring proper package management
-# Use rpm -Uvh with --oldpackage to allow replacing with dev version
-COPY --from=build /out/*.rpm /tmp/
-RUN --mount=type=bind,from=packaging,target=/run/packaging --network=none /run/packaging/install-rpm-and-setup /tmp
+# Install packages from the packages stage
+# Using bind from a stage avoids SELinux issues with context bind mounts
+RUN --mount=type=bind,from=packaging,target=/run/packaging \
+    --mount=type=bind,from=packages,target=/build-packages \
+    --network=none \
+    /run/packaging/install-rpm-and-setup /build-packages
 # Finally, testour own linting
 RUN bootc container lint --fatal-warnings
