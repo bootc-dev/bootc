@@ -45,7 +45,7 @@ RUN --mount=type=cache,target=/src/target --mount=type=cache,target=/var/roothom
 
 FROM buildroot as build
 # Build RPM directly from source, using cached target directory
-RUN --mount=type=cache,target=/src/target --mount=type=cache,target=/var/roothome --network=none RPM_VERSION=${pkgversion} /src/contrib/packaging/build-rpm
+RUN --mount=type=cache,target=/src/target --mount=type=cache,target=/var/roothome --network=none RPM_VERSION="${pkgversion}" /src/contrib/packaging/build-rpm
 
 # This "build" includes our unit tests
 FROM build as units
