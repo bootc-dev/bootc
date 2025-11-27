@@ -94,6 +94,143 @@ pub(crate) fn run_alongside(image: &str, mut testargs: libtest_mimic::Arguments)
             Ok(())
         }),
         Trial::test(
+            "install to-filesystem with separate /var mount",
+            move || {
+                let sh = &xshell::Shell::new()?;
+                reset_root(sh, image)?;
+
+                // Create work directory for the test
+                let tmpd = sh.create_temp_dir()?;
+                let work_dir = tmpd.path();
+
+                // Create a disk image with partitions for root and var
+                let disk_img = work_dir.join("disk.img");
+                let size = 12 * 1024 * 1024 * 1024;
+                let disk_file = std::fs::File::create(&disk_img)?;
+                disk_file.set_len(size)?;
+                drop(disk_file);
+
+                // Setup loop device
+                let loop_dev = cmd!(sh, "sudo losetup -f --show {disk_img}")
+                    .read()?
+                    .trim()
+                    .to_string();
+
+                // Helper closure for cleanup
+                let cleanup = |sh: &Shell, loop_dev: &str, target: &str| {
+                    // Unmount filesystems
+                    let _ = cmd!(sh, "sudo umount -R {target}").ignore_status().run();
+                    // Deactivate LVM
+                    let _ = cmd!(sh, "sudo vgchange -an BL").ignore_status().run();
+                    let _ = cmd!(sh, "sudo vgremove -f BL").ignore_status().run();
+                    // Detach loop device
+                    let _ = cmd!(sh, "sudo losetup -d {loop_dev}").ignore_status().run();
+                };
+
+                // Create partition table
+                if let Err(e) = (|| -> Result<()> {
+                    cmd!(sh, "sudo parted -s {loop_dev} mklabel gpt").run()?;
+                    // Create BIOS boot partition (for GRUB on GPT)
+                    cmd!(sh, "sudo parted -s {loop_dev} mkpart primary 1MiB 2MiB").run()?;
+                    cmd!(sh, "sudo parted -s {loop_dev} set 1 bios_grub on").run()?;
+                    // Create EFI partition
+                    cmd!(
+                        sh,
+                        "sudo parted -s {loop_dev} mkpart primary fat32 2MiB 202MiB"
+                    )
+                    .run()?;
+                    cmd!(sh, "sudo parted -s {loop_dev} set 2 esp on").run()?;
+                    // Create boot partition
+                    cmd!(
+                        sh,
+                        "sudo parted -s {loop_dev} mkpart primary ext4 202MiB 1226MiB"
+                    )
+                    .run()?;
+                    // Create LVM partition
+                    cmd!(sh, "sudo parted -s {loop_dev} mkpart primary 1226MiB 100%").run()?;
+
+                    // Reload partition table
+                    cmd!(sh, "sudo partprobe {loop_dev}").run()?;
+                    std::thread::sleep(std::time::Duration::from_secs(2));
+
+                    let loop_part2 = format!("{}p2", loop_dev); // EFI
+                    let loop_part3 = format!("{}p3", loop_dev); // Boot
+                    let loop_part4 = format!("{}p4", loop_dev); // LVM
+
+                    // Create filesystems on boot partitions
+                    cmd!(sh, "sudo mkfs.vfat -F32 {loop_part2}").run()?;
+                    cmd!(sh, "sudo mkfs.ext4 -F {loop_part3}").run()?;
+
+                    // Setup LVM
+                    cmd!(sh, "sudo pvcreate {loop_part4}").run()?;
+                    cmd!(sh, "sudo vgcreate BL {loop_part4}").run()?;
+
+                    // Create logical volumes
+                    cmd!(sh, "sudo lvcreate -L 4G -n var02 BL").run()?;
+                    cmd!(sh, "sudo lvcreate -L 5G -n root02 BL").run()?;
+
+                    // Create filesystems on logical volumes
+                    cmd!(sh, "sudo mkfs.ext4 -F /dev/BL/var02").run()?;
+                    cmd!(sh, "sudo mkfs.ext4 -F /dev/BL/root02").run()?;
+
+                    // Get UUIDs
+                    let root_uuid = cmd!(sh, "sudo blkid -s UUID -o value /dev/BL/root02")
+                        .read()?
+                        .trim()
+                        .to_string();
+                    let boot_uuid = cmd!(sh, "sudo blkid -s UUID -o value {loop_part2}")
+                        .read()?
+                        .trim()
+                        .to_string();
+
+                    // Mount the partitions
+                    let target_dir = work_dir.join("target");
+                    std::fs::create_dir_all(&target_dir)?;
+                    let target = target_dir.to_str().unwrap();
+
+                    cmd!(sh, "sudo mount /dev/BL/root02 {target}").run()?;
+                    cmd!(sh, "sudo mkdir -p {target}/boot").run()?;
+                    cmd!(sh, "sudo mount {loop_part3} {target}/boot").run()?;
+                    cmd!(sh, "sudo mkdir -p {target}/boot/efi").run()?;
+                    cmd!(sh, "sudo mount {loop_part2} {target}/boot/efi").run()?;
+
+                    // Critical: Mount /var as a separate partition
+                    cmd!(sh, "sudo mkdir -p {target}/var").run()?;
+                    cmd!(sh, "sudo mount /dev/BL/var02 {target}/var").run()?;
+
+                    // Run bootc install to-filesystem
+                    // This should succeed and handle the separate /var mount correctly
+                    // Mount the target at /target inside the container for simplicity
+                    cmd!(
+                    sh,
+                    "sudo {BASE_ARGS...} -v {target}:/target -v /dev:/dev {image} bootc install to-filesystem --karg=root=UUID={root_uuid} --root-mount-spec=UUID={root_uuid} --boot-mount-spec=UUID={boot_uuid} /target"
+                )
+                .run()?;
+
+                    // Verify the installation succeeded
+                    // Check that bootc created the necessary files
+                    cmd!(sh, "sudo test -d {target}/ostree").run()?;
+                    cmd!(sh, "sudo test -d {target}/ostree/repo").run()?;
+                    // Verify bootloader was installed
+                    cmd!(sh, "sudo test -d {target}/boot/grub2").run()?;
+
+                    Ok(())
+                })() {
+                    let target = work_dir.join("target");
+                    let target_str = target.to_str().unwrap();
+                    cleanup(sh, &loop_dev, target_str);
+                    return Err(e.into());
+                }
+
+                // Clean up on success
+                let target = work_dir.join("target");
+                let target_str = target.to_str().unwrap();
+                cleanup(sh, &loop_dev, target_str);
+
+                Ok(())
+            },
+        ),
+        Trial::test(
             "replace=alongside with ssh keys and a karg, and SELinux disabled",
             move || {
                 let sh = &xshell::Shell::new()?;

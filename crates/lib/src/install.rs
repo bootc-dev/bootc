@@ -1803,6 +1803,50 @@ pub(crate) async fn install_to_disk(mut opts: InstallToDiskOpts) -> Result<()> {
     Ok(())
 }
 
+/// Require that a directory contains only mount points (or is empty), recursively.
+/// Returns Ok(()) if all entries in the directory tree are either:
+/// - Mount points (on different filesystems)
+/// - Directories that themselves contain only mount points (recursively)
+/// - The lost+found directory
+///
+/// Returns an error if any non-mount entry is found.
+///
+/// This handles cases like /var containing /var/lib (not a mount) which contains
+/// /var/lib/containers (a mount point).
+#[context("Requiring directory contains only mount points")]
+fn require_dir_contains_only_mounts(parent_fd: &Dir, dir_name: &str) -> Result<()> {
+    let Some(dir_fd) = parent_fd.open_dir_noxdev(dir_name)? else {
+        // The directory itself is a mount point
+        return Ok(());
+    };
+
+    if dir_fd.entries()?.next().is_none() {
+        anyhow::bail!("Found empty directory: {dir_name}");
+    }
+
+    for entry in dir_fd.entries()? {
+        let entry = DirEntryUtf8::from_cap_std(entry?);
+        let entry_name = entry.file_name()?;
+
+        if entry_name == LOST_AND_FOUND {
+            continue;
+        }
+
+        if dir_name == BOOT && entry_name == crate::bootloader::EFI_DIR {
+            continue;
+        }
+
+        let etype = entry.file_type()?;
+        if etype == FileType::dir() && dir_fd.open_dir_noxdev(&entry_name)?.is_some() {
+            require_dir_contains_only_mounts(&dir_fd, &entry_name)?;
+        } else {
+            anyhow::bail!("Found entry in {dir_name}: {entry_name}");
+        }
+    }
+
+    Ok(())
+}
+
 #[context("Verifying empty rootfs")]
 fn require_empty_rootdir(rootfs_fd: &Dir) -> Result<()> {
     for e in rootfs_fd.entries()? {
@@ -1811,17 +1855,11 @@ fn require_empty_rootdir(rootfs_fd: &Dir) -> Result<()> {
         if name == LOST_AND_FOUND {
             continue;
         }
-        // There must be a boot directory (that is empty)
-        if name == BOOT {
-            let mut entries = rootfs_fd.read_dir(BOOT)?;
-            if let Some(e) = entries.next() {
-                let e = DirEntryUtf8::from_cap_std(e?);
-                let name = e.file_name()?;
-                if matches!(name.as_str(), LOST_AND_FOUND | crate::bootloader::EFI_DIR) {
-                    continue;
-                }
-                anyhow::bail!("Non-empty boot directory, found {name}");
-            }
+
+        // Check if this entry is a directory
+        let etype = e.file_type()?;
+        if etype == FileType::dir() {
+            require_dir_contains_only_mounts(rootfs_fd, &name)?;
         } else {
             anyhow::bail!("Non-empty root filesystem; found {name:?}");
         }
@@ -2570,6 +2608,103 @@ UUID=boot-uuid /boot ext4 defaults 0 0
         let boot_spec = read_boot_fstab_entry(&td)?.unwrap();
         assert_eq!(boot_spec.source, "UUID=boot-uuid");
         assert_eq!(boot_spec.target, "/boot");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_require_dir_contains_only_mounts() -> Result<()> {
+        // Test 1: Empty directory should fail (not a mount point)
+        {
+            let td = cap_std_ext::cap_tempfile::TempDir::new(cap_std::ambient_authority())?;
+            td.create_dir("empty")?;
+            assert!(require_dir_contains_only_mounts(&td, "empty").is_err());
+        }
+
+        // Test 2: Directory with only lost+found should succeed (lost+found is ignored)
+        {
+            let td = cap_std_ext::cap_tempfile::TempDir::new(cap_std::ambient_authority())?;
+            td.create_dir_all("var/lost+found")?;
+            assert!(require_dir_contains_only_mounts(&td, "var").is_ok());
+        }
+
+        // Test 3: Directory with a regular file should fail
+        {
+            let td = cap_std_ext::cap_tempfile::TempDir::new(cap_std::ambient_authority())?;
+            td.create_dir("var")?;
+            td.write("var/test.txt", b"content")?;
+            assert!(require_dir_contains_only_mounts(&td, "var").is_err());
+        }
+
+        // Test 4: Nested directory structure with a file should fail
+        {
+            let td = cap_std_ext::cap_tempfile::TempDir::new(cap_std::ambient_authority())?;
+            td.create_dir_all("var/lib/containers")?;
+            td.write("var/lib/containers/storage.db", b"data")?;
+            assert!(require_dir_contains_only_mounts(&td, "var").is_err());
+        }
+
+        // Test 5: boot directory with efi subdirectory should succeed (efi is allowed in boot)
+        {
+            let td = cap_std_ext::cap_tempfile::TempDir::new(cap_std::ambient_authority())?;
+            td.create_dir_all("boot/efi")?;
+            assert!(require_dir_contains_only_mounts(&td, "boot").is_ok());
+        }
+
+        // Test 6: boot directory with both efi and lost+found should succeed (both are allowed)
+        {
+            let td = cap_std_ext::cap_tempfile::TempDir::new(cap_std::ambient_authority())?;
+            td.create_dir_all("boot/efi")?;
+            td.create_dir_all("boot/lost+found")?;
+            assert!(require_dir_contains_only_mounts(&td, "boot").is_ok());
+        }
+
+        // Test 7: boot directory with grub should fail (grub2 is not a mount and contains files)
+        {
+            let td = cap_std_ext::cap_tempfile::TempDir::new(cap_std::ambient_authority())?;
+            td.create_dir_all("boot/grub2")?;
+            td.write("boot/grub2/grub.cfg", b"config")?;
+            assert!(require_dir_contains_only_mounts(&td, "boot").is_err());
+        }
+
+        // Test 8: Nested empty directories should fail (empty directories are not mount points)
+        {
+            let td = cap_std_ext::cap_tempfile::TempDir::new(cap_std::ambient_authority())?;
+            td.create_dir_all("var/lib/containers")?;
+            td.create_dir_all("var/log/journal")?;
+            assert!(require_dir_contains_only_mounts(&td, "var").is_err());
+        }
+
+        // Test 9: Directory with lost+found and a file should fail (lost+found is ignored, but file is not allowed)
+        {
+            let td = cap_std_ext::cap_tempfile::TempDir::new(cap_std::ambient_authority())?;
+            td.create_dir_all("var/lost+found")?;
+            td.write("var/data.txt", b"content")?;
+            assert!(require_dir_contains_only_mounts(&td, "var").is_err());
+        }
+
+        // Test 10: Directory with a symlink should fail
+        {
+            let td = cap_std_ext::cap_tempfile::TempDir::new(cap_std::ambient_authority())?;
+            td.create_dir("var")?;
+            td.symlink_contents("../usr/lib", "var/lib")?;
+            assert!(require_dir_contains_only_mounts(&td, "var").is_err());
+        }
+
+        // Test 11: Deeply nested directory with a file should fail
+        {
+            let td = cap_std_ext::cap_tempfile::TempDir::new(cap_std::ambient_authority())?;
+            td.create_dir_all("var/lib/containers/storage/overlay")?;
+            td.write("var/lib/containers/storage/overlay/file.txt", b"data")?;
+            assert!(require_dir_contains_only_mounts(&td, "var").is_err());
+        }
+
+        // Test 12: Non-boot directory with efi should fail (special handling only applies to boot/efi)
+        {
+            let td = cap_std_ext::cap_tempfile::TempDir::new(cap_std::ambient_authority())?;
+            td.create_dir_all("var/efi")?;
+            assert!(require_dir_contains_only_mounts(&td, "var").is_err());
+        }
 
         Ok(())
     }
