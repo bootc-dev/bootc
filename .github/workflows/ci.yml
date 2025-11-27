@@ -119,7 +119,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        test_os: [fedora-42, fedora-43, centos-9, centos-10]
+        test_os: [fedora-42, fedora-43, fedora-44, centos-9, centos-10]
 
     runs-on: ubuntu-24.04
 
@@ -130,7 +130,7 @@ jobs:
 
       - name: Setup env
         run: |
-          BASE=$(just pullspec-for-os ${{ matrix.test_os }})
+          BASE=$(just pullspec-for-os base ${{ matrix.test_os }})
           echo "BOOTC_base=${BASE}" >> $GITHUB_ENV
 
       - name: Build packages
@@ -151,7 +151,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        test_os: [fedora-42, fedora-43, centos-9, centos-10]
+        test_os: [fedora-42, fedora-43, fedora-44, centos-9, centos-10]
 
     runs-on: ubuntu-24.04
 
