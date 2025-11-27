@@ -46,7 +46,7 @@ build: package
 
 # Build the container image using pre-existing packages from PATH
 build-from-package PATH:
-    @just copy-packages-from {{PATH}}
+    # @just copy-packages-from {{PATH}}
     podman build {{base_buildargs}} -t {{base_img}}-bin {{buildargs}} .
     ./tests/build-sealed {{variant}} {{base_img}}-bin {{base_img}} {{buildroot_base}}
 
