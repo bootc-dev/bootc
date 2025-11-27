@@ -51,7 +51,7 @@ fn delete_type1_entry(depl: &DeploymentEntry, boot_dir: &Dir, deleting_staged: b
         if !file_name.ends_with(".conf") {
             // We don't put any non .conf file in the entries dir
             // This is here just for sanity
-            tracing::debug!("Found non .conf file '{file_name}' in entires dir");
+            tracing::debug!("Found non .conf file '{file_name}' in entries dir");
             continue;
         }
 

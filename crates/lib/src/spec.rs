@@ -167,7 +167,7 @@ pub struct BootEntryOstree {
     clap::ValueEnum, Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema,
 )]
 pub enum Bootloader {
-    /// Use Grub as the booloader
+    /// Use Grub as the bootloader
     #[default]
     Grub,
     /// Use SystemdBoot as the bootloader

@@ -577,14 +577,14 @@ fn create_dir_with_perms(
     if new_inode.is_none() {
         // Here we use `create_dir_all` to create every parent as we will set the permissions later
         // on. Due to the fact that we have an ordered (sorted) list of directories and directory
-        // entries and we have a DFS traversal, we will aways have directory creation starting from
+        // entries and we have a DFS traversal, we will always have directory creation starting from
         // the parent anyway.
         //
         // The exception being, if a directory is modified in the current_etc, and a new directory
-        // is added inside the modified directory, say `dir/prems` has its premissions modified and
+        // is added inside the modified directory, say `dir/prems` has its permissions modified and
         // `dir/prems/new` is the new directory created. Since we handle added files/directories first,
         // we will create the directories `perms/new` with directory `new` also getting its
-        // permissions set, but `perms` will not. `perms` will have its premissions set up when we
+        // permissions set, but `perms` will not. `perms` will have its permissions set up when we
         // handle the modified directories.
         new_etc_fd
             .create_dir_all(&dir_name)

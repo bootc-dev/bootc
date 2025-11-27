@@ -37,7 +37,7 @@ The Bootc and its leadership embrace the following values:
 
 ## Maintainers
 
-Bootc Maintainers have "gated" write acess to the [project GitHub repository](https://github.com/bootc-dev/bootc).
+Bootc Maintainers have "gated" write access to the [project GitHub repository](https://github.com/bootc-dev/bootc).
 The current maintainers can be found in [MAINTAINERS.md](./MAINTAINERS.md).
 
 Direct pushes to the code is never allowed. All pull requests require review by a maintainer

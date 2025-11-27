@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-/// composefs= paramter in kernel cmdline
+/// composefs= parameter in kernel cmdline
 pub const COMPOSEFS_CMDLINE: &str = "composefs";
 
 /// Directory to store transient state, such as staged deployemnts etc

@@ -64,7 +64,7 @@ pub(crate) async fn switch_composefs(
 
             UpdateAction::UpdateOrigin => {
                 // The staged image will never be the current image's verity digest
-                println!("Image already in compoesfs repository");
+                println!("Image already in composefs repository");
                 println!("Updating target image reference");
                 return update_target_imgref_in_origin(storage, booted_cfs, &target_imgref);
             }

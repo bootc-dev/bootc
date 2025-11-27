@@ -239,7 +239,7 @@ pub(crate) fn composefs_usr_overlay() -> Result<()> {
         .context("Failed to get mount details for /usr")?;
 
     let is_usr_mounted =
-        is_usr_mounted.ok_or_else(|| anyhow::anyhow!("Falied to get mountinfo"))?;
+        is_usr_mounted.ok_or_else(|| anyhow::anyhow!("Failed to get mountinfo"))?;
 
     if is_usr_mounted {
         println!("A writeable overlayfs is already mounted on /usr");

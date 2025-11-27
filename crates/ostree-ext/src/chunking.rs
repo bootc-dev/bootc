@@ -932,7 +932,7 @@ mod test {
 
     #[test]
     fn test_advanced_packing() -> Result<()> {
-        // Step1 : Initial build (Packing sructure computed)
+        // Step1 : Initial build (Packing structure computed)
         let contentmeta_v0: Vec<ObjectSourceMetaSized> = vec![
             vec![1, u32::MAX, 100000],
             vec![2, u32::MAX, 99999],

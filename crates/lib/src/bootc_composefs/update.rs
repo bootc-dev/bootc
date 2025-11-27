@@ -144,8 +144,9 @@ pub(crate) fn validate_update(
     // This could be someone trying to `bootc switch <remote_image>` where
     // remote_image is the exact same image as the one currently booted, but
     // they are wanting to change the target
+    // We just update the image origin file here
     //
-    // We could simply update the image origin file here
+    // If it's not a switch op, then we skip the update
     if image_id.to_hex() == *booted_cfs.cmdline.digest {
         let ret = if is_switch {
             UpdateAction::UpdateOrigin
