@@ -115,14 +115,9 @@ build-integration-test-image-from-package PATH:
 test-composefs:
     # These first two are currently a distinct test suite from tmt that directly
     # runs an integration test binary in the base image via bcvk
-    just _composefs-build-image
     cargo run --release -p tests-integration -- composefs-bcvk {{integration_img}}
     # We're trying to move more testing to tmt
     just variant=composefs-sealeduki-sdboot test-tmt readonly local-upgrade-reboot
-
-# Internal helper to build integration test image with composefs variant
-_composefs-build-image:
-    just variant=composefs-sealeduki-sdboot build-integration-test-image
 
 # Only used by ci.yml right now
 build-install-test-image: build-integration-test-image
