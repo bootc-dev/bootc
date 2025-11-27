@@ -76,7 +76,7 @@ jobs:
 
           df -h /
           sudo install -m 0755 target/release/tests-integration /usr/bin/bootc-integration-tests
-          rm target -rf
+          sudo rm target -rf
           df -h /
           # The ostree-container tests
           sudo podman run --privileged --pid=host -v /:/run/host -v $(pwd):/src:ro -v /var/tmp:/var/tmp \
@@ -188,6 +188,9 @@ jobs:
       - name: Build container
         run: |
           just build-integration-test-image-from-package target/packages
+          # Extra cross-check (duplicating the integration test) that we're using the right base
+          used_vid=$(podman run --rm localhost/bootc-integration bash -c '. /usr/lib/os-release && echo ${ID}-${VERSION_ID}')
+          test ${{ matrix.test_os }} = "${used_vid}"
 
       - name: Unit and container integration tests
         run: just test-container
