@@ -30,8 +30,6 @@ LABEL bootc.testimage="1"
 FROM base as buildroot
 # Flip this off to disable initramfs code
 ARG initramfs=1
-# Version for RPM build (optional, computed from git in Justfile)
-ARG pkgversion=
 # This installs our buildroot, and we want to cache it independently of the rest.
 # Basically we don't want changing a .rs file to blow out the cache of packages.
 RUN --mount=type=bind,from=packaging,target=/run/packaging /run/packaging/install-buildroot
@@ -44,6 +42,8 @@ WORKDIR /src
 RUN --mount=type=cache,target=/src/target --mount=type=cache,target=/var/roothome cargo fetch
 
 FROM buildroot as build
+# Version for RPM build (optional, computed from git in Justfile)
+ARG pkgversion
 # Build RPM directly from source, using cached target directory
 RUN --mount=type=cache,target=/src/target --mount=type=cache,target=/var/roothome --network=none RPM_VERSION="${pkgversion}" /src/contrib/packaging/build-rpm
 
@@ -64,7 +64,7 @@ FROM base
 ARG variant
 RUN --mount=type=bind,from=packaging,target=/run/packaging /run/packaging/configure-variant "${variant}"
 # Support overriding the rootfs at build time conveniently
-ARG rootfs=
+ARG rootfs
 RUN --mount=type=bind,from=packaging,target=/run/packaging /run/packaging/configure-rootfs "${variant}" "${rootfs}"
 # Inject additional content
 COPY --from=packaging /usr-extras/ /usr/
