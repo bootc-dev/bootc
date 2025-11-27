@@ -665,6 +665,12 @@ pub(crate) enum Opt {
     /// Stability: This interface may change in the future.
     #[clap(subcommand, hide = true)]
     Image(ImageOpts),
+    /// Build and manipulate bootc container images.
+    ///
+    /// Tools for building container root filesystems, rechunking images,
+    /// and managing build manifests.
+    #[clap(subcommand, alias = "image-build")]
+    Imagectl(bootc_imagectl::ImageCtlCmd),
     /// Execute the given command in the host mount namespace
     #[clap(hide = true)]
     ExecInHostMountNamespace {
@@ -1472,6 +1478,7 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
                 }
             }
         },
+        Opt::Imagectl(cmd) => bootc_imagectl::run(&cmd),
         Opt::Install(opts) => match opts {
             #[cfg(feature = "install-to-disk")]
             InstallOpts::ToDisk(opts) => crate::install::install_to_disk(opts).await,

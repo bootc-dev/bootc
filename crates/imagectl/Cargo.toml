@@ -1,0 +1,31 @@
+[package]
+name = "bootc-imagectl"
+description = "Container image build tooling for bootc"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/bootc-dev/bootc"
+
+[dependencies]
+# Internal crates
+bootc-utils = { package = "bootc-internal-utils", path = "../utils", version = "0.0.0" }
+
+# Workspace dependencies
+anyhow = { workspace = true }
+camino = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+shlex = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["process"] }
+tracing = { workspace = true }
+
+# Crate-specific dependencies
+serde_yaml = "0.9.34"
+
+[dev-dependencies]
+similar-asserts = { workspace = true }
+
+[lints]
+workspace = true
