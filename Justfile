@@ -22,6 +22,7 @@ integration_upgrade_img := integration_img + "-upgrade"
 # composefs-sealeduki-sdboot: A system with a sealed composefs using systemd-boot
 variant := env("BOOTC_variant", "ostree")
 base := env("BOOTC_base", "quay.io/centos-bootc/centos-bootc:stream10")
+buildroot_base := env("BOOTC_buildroot_base", "quay.io/centos/centos:stream10")
 
 testimage_label := "bootc.testimage=1"
 # We used to have --jobs=4 here but sometimes that'd hit this
@@ -41,7 +42,7 @@ buildargs := "--build-arg=base=" + base + " --build-arg=variant=" + variant
 # `just build --build-arg=base=quay.io/fedora/fedora-bootc:42`
 build:
     podman build {{base_buildargs}} -t {{base_img}}-bin {{buildargs}} .
-    ./tests/build-sealed {{variant}} {{base_img}}-bin {{base_img}}
+    ./tests/build-sealed {{variant}} {{base_img}}-bin {{base_img}} {{buildroot_base}}
 
 # Build a sealed image from current sources.
 build-sealed:
@@ -74,7 +75,7 @@ package: _packagecontainer
 # This container image has additional testing content and utilities
 build-integration-test-image: build
     cd hack && podman build {{base_buildargs}} -t {{integration_img}}-bin -f Containerfile .
-    ./tests/build-sealed {{variant}} {{integration_img}}-bin {{integration_img}}
+    ./tests/build-sealed {{variant}} {{integration_img}}-bin {{integration_img}} {{buildroot_base}}
     # Keep these in sync with what's used in hack/lbi
     podman pull -q --retry 5 --retry-delay 5s quay.io/curl/curl:latest quay.io/curl/curl-base:latest registry.access.redhat.com/ubi9/podman:latest
 
@@ -118,7 +119,7 @@ test-tmt *ARGS: build-integration-test-image _build-upgrade-image
 # Generate a local synthetic upgrade
 _build-upgrade-image:
     cat tmt/tests/Dockerfile.upgrade | podman build -t {{integration_upgrade_img}}-bin --from={{integration_img}}-bin -
-    ./tests/build-sealed {{variant}} {{integration_upgrade_img}}-bin {{integration_upgrade_img}}
+    ./tests/build-sealed {{variant}} {{integration_upgrade_img}}-bin {{integration_upgrade_img}} {{buildroot_base}}
 
 # Assume the localhost/bootc-integration image is up to date, and just run tests.
 # Useful for iterating on tests quickly.
