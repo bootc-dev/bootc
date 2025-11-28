@@ -10,6 +10,9 @@ shift
 # The output container image
 output_image=$1
 shift
+# Buildroot base image for UKI build environment
+buildroot_base=${1:-quay.io/centos/centos:stream10}
+shift
 # Optional directory with secure boot keys; if none are provided, then we'll
 # generate some under target/
 secureboot=${1:-}
@@ -61,6 +64,6 @@ fi
 runv podman build -t $output_image \
   --build-arg=COMPOSEFS_FSVERITY=${cfs_digest} \
   --build-arg=base=${input_image} \
-  --build-arg=buildroot=${BOOTC_buildroot_base} \
+  --build-arg=buildroot=${buildroot_base} \
   --secret=id=key,src=${secureboot}/db.key \
   --secret=id=cert,src=${secureboot}/db.crt -f Dockerfile.cfsuki .
