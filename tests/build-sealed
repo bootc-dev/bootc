@@ -11,7 +11,7 @@ shift
 output_image=$1
 shift
 # Buildroot base image for UKI build environment
-buildroot_base=${1:-quay.io/centos/centos:stream10}
+buildroot_base=$1
 shift
 # Optional directory with secure boot keys; if none are provided, then we'll
 # generate some under target/
