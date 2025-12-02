@@ -1,3 +1,4 @@
+use std::fs::create_dir_all;
 use std::process::Command;
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -9,7 +10,7 @@ use fn_error_context::context;
 use bootc_blockdev::{Partition, PartitionTable};
 use bootc_mount as mount;
 
-use crate::bootc_composefs::boot::mount_esp;
+use crate::bootc_composefs::boot::{mount_esp, SecurebootKeys};
 use crate::{discoverable_partition_specification, utils};
 
 /// The name of the mountpoint for efi (as a subdirectory of /boot, or at the toplevel)
@@ -18,6 +19,9 @@ pub(crate) const EFI_DIR: &str = "efi";
 /// Path to the bootupd update payload
 #[allow(dead_code)]
 const BOOTUPD_UPDATES: &str = "usr/lib/bootupd/updates";
+
+// from: https://github.com/systemd/systemd/blob/26b2085d54ebbfca8637362eafcb4a8e3faf832f/man/systemd-boot.xml#L392
+const SYSTEMD_KEY_DIR: &str = "loader/keys";
 
 #[allow(dead_code)]
 pub(crate) fn esp_in(device: &PartitionTable) -> Result<&Partition> {
@@ -74,6 +78,7 @@ pub(crate) fn install_systemd_boot(
     _rootfs: &Utf8Path,
     _configopts: &crate::install::InstallConfigOpts,
     _deployment_path: Option<&str>,
+    autoenroll: Option<SecurebootKeys>,
 ) -> Result<()> {
     let esp_part = device
         .find_partition_of_type(discoverable_partition_specification::ESP)
@@ -87,7 +92,35 @@ pub(crate) fn install_systemd_boot(
     Command::new("bootctl")
         .args(["install", "--esp-path", esp_path.as_str()])
         .log_debug()
-        .run_inherited_with_cmd_context()
+        .run_inherited_with_cmd_context()?;
+
+    if let Some(SecurebootKeys { dir, keys }) = autoenroll {
+        let path = esp_path.join(SYSTEMD_KEY_DIR);
+        create_dir_all(&path)?;
+
+        let keys_dir = esp_mount
+            .fd
+            .open_dir(SYSTEMD_KEY_DIR)
+            .with_context(|| format!("Opening {path}"))?;
+
+        for filename in keys.iter() {
+            let p = path.join(&filename);
+
+            // create directory if it doesn't already exist
+            if let Some(parent) = p.parent() {
+                create_dir_all(parent)?;
+            }
+
+            dir.copy(&filename, &keys_dir, &filename)
+                .with_context(|| format!("Copying secure boot key: {p}"))?;
+            println!("Wrote Secure Boot key: {p}");
+        }
+        if keys.is_empty() {
+            tracing::debug!("No Secure Boot keys provided for systemd-boot enrollment");
+        }
+    }
+
+    Ok(())
 }
 
 #[context("Installing bootloader using zipl")]
