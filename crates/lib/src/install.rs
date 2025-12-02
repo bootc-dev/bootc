@@ -437,6 +437,15 @@ pub(crate) struct InstallResetOpts {
     karg: Option<Vec<CmdlineOwned>>,
 }
 
+#[derive(Debug, clap::Parser, PartialEq, Eq)]
+pub(crate) struct InstallPrintConfigurationOpts {
+    /// Print all configuration.
+    ///
+    /// Print configuration that is usually handled internally, like kargs.
+    #[clap(long)]
+    pub(crate) all: bool,
+}
+
 /// Global state captured from the container.
 #[derive(Debug, Clone)]
 pub(crate) struct SourceInfo {
@@ -722,9 +731,11 @@ impl SourceInfo {
     }
 }
 
-pub(crate) fn print_configuration() -> Result<()> {
+pub(crate) fn print_configuration(opts: InstallPrintConfigurationOpts) -> Result<()> {
     let mut install_config = config::load_config()?.unwrap_or_default();
-    install_config.filter_to_external();
+    if !opts.all {
+        install_config.filter_to_external();
+    }
     let stdout = std::io::stdout().lock();
     anyhow::Ok(install_config.to_canon_json_writer(stdout)?)
 }
