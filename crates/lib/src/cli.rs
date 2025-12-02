@@ -289,7 +289,7 @@ pub(crate) enum InstallOpts {
     ///
     /// At the current time, the only output key is `root-fs-type` which is a string-valued
     /// filesystem name suitable for passing to `mkfs.$type`.
-    PrintConfiguration,
+    PrintConfiguration(crate::install::InstallPrintConfigurationOpts),
 }
 
 /// Subcommands which can be executed as part of a container build.
@@ -1483,7 +1483,7 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
                 crate::install::install_to_existing_root(opts).await
             }
             InstallOpts::Reset(opts) => crate::install::install_reset(opts).await,
-            InstallOpts::PrintConfiguration => crate::install::print_configuration(),
+            InstallOpts::PrintConfiguration(opts) => crate::install::print_configuration(opts),
             InstallOpts::EnsureCompletion {} => {
                 let rootfs = &Dir::open_ambient_dir("/", cap_std::ambient_authority())?;
                 crate::install::completion::run_from_anaconda(rootfs).await
