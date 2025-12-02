@@ -1,0 +1,20 @@
+name: 'Setup Rust'
+description: 'Install Rust toolchain with caching and nextest'
+runs:
+  using: 'composite'
+  steps:
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+    - name: Install nextest
+      uses: taiki-e/install-action@v2
+      with:
+        tool: nextest
+    - name: Setup Rust cache
+      uses: Swatinem/rust-cache@v2
+      with:
+        cache-all-crates: true
+        # Only generate caches on push to git main
+        save-if: ${{ github.ref == 'refs/heads/main' }}
+        # Suppress actually using the cache for builds running from
+        # git main so that we avoid incremental compilation bugs
+        lookup-only: ${{ github.ref == 'refs/heads/main' }}

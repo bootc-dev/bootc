@@ -1,0 +1,45 @@
+name: Automatic Rebase
+on:
+  pull_request:
+    types: [labeled]
+
+permissions:
+  contents: read
+
+jobs:
+  rebase:
+    name: Rebase
+    if: github.event.label.name == 'needs-rebase'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Generate Actions Token
+        id: token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          token: ${{ steps.token.outputs.token }}
+          fetch-depth: 0
+
+      - name: Automatic Rebase
+        uses: peter-evans/rebase@v3
+        with:
+          token: ${{ steps.token.outputs.token }}
+
+      - name: Remove needs-rebase label
+        if: always()
+        uses: actions/github-script@v8
+        with:
+          github-token: ${{ steps.token.outputs.token }}
+          script: |
+            await github.rest.issues.removeLabel({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              name: 'needs-rebase'
+            });
