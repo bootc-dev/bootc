@@ -28,6 +28,10 @@ updates.
 An installation is not simply a copy of the container filesystem, but
 includes other setup and metadata.
 
+## Secure Boot Keys
+
+When installing with `systemd-boot`, bootc can let `systemd-boot` can handle enrollment of Secure Boot keys by putting signed EFI signature lists in `/usr/lib/bootc/install/secureboot-keys` which will copy over into `ESP/loader/keys` after bootloader installation. The keys will be copied to `loader/keys` subdirectory of the ESP. after installing `systemd-boot` to the system. More information on how key enrollment works with `systemd-boot` is available in the [systemd-boot](https://github.com/systemd/systemd/blob/26b2085d54ebbfca8637362eafcb4a8e3faf832f/man/systemd-boot.xml#L392) man page.
+
 <!-- BEGIN GENERATED OPTIONS -->
 <!-- END GENERATED OPTIONS -->
 
