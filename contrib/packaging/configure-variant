@@ -2,6 +2,8 @@
 # Configure system for a specific bootc variant
 set -xeuo pipefail
 
+dn=$(dirname $0)
+
 VARIANT="${1:-}"
 
 if [ -z "$VARIANT" ]; then
@@ -12,8 +14,14 @@ fi
 # Handle variant-specific configuration
 case "${VARIANT}" in
   *-sdboot)
-    # Install systemd-boot and remove bootupd
-    dnf -y install systemd-boot-unsigned
+    # Install systemd-boot and remove bootupd;
+    # We downloaded this in an earlier phase
+    sdboot="usr/lib/systemd/boot/efi/systemd-bootx64.efi"
+    sdboot_bn=$(basename ${sdboot})
+    rpm -Uvh /run/sdboot-content/out/*.rpm
+      # And override with our signed binary
+    install -m 0644 /run/sdboot-signed/out/${sdboot_bn} /${sdboot}
+
     # Uninstall bootupd
     rpm -e bootupd
     rm -rf /usr/lib/bootupd/updates

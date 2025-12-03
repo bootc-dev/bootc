@@ -22,4 +22,4 @@ env DRACUT_NO_XATTR=1 dracut --add bootc -vf /usr/lib/modules/$kver/initramfs.im
 touch /usr/lib/.bootc-dev-stamp
 
 # Workaround for https://github.com/bootc-dev/bootc/issues/1546
-rm -rf /root/buildinfo
+rm -rf /root/buildinfo /var/roothome/buildinfo

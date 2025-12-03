@@ -1,0 +1,17 @@
+#!/bin/bash
+set -euo pipefail
+# Generate Secure Boot keys, only intended to be used for our CI pipeline.
+d=target/test-secureboot
+# This file existing signals completion
+if test -f "${d}/.done"; then exit 0; fi
+mkdir -p "$d"
+cd "$d"
+systemd-id128 new -u > GUID.txt
+openssl req -quiet -newkey rsa:4096 -nodes -keyout PK.key -new -x509 -sha256 -days 3650 -subj '/CN=Test Platform Key/' -out PK.crt
+openssl x509 -outform DER -in PK.crt -out PK.cer
+openssl req -quiet -newkey rsa:4096 -nodes -keyout KEK.key -new -x509 -sha256 -days 3650 -subj '/CN=Test Key Exchange Key/' -out KEK.crt
+openssl x509 -outform DER -in KEK.crt -out KEK.cer
+openssl req -quiet -newkey rsa:4096 -nodes -keyout db.key -new -x509 -sha256 -days 3650 -subj '/CN=Test Signature Database key/' -out db.crt
+openssl x509 -outform DER -in db.crt -out db.cer
+touch .done
+echo "Generated Secure Boot keys in ${d}"

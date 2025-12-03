@@ -1,0 +1,2 @@
+# This file defines the package name for systemd-boot
+systemd-boot-unsigned
