@@ -203,6 +203,23 @@ impl BLSConfig {
             BLSConfigType::Unknown => anyhow::bail!("Unknown config type"),
         }
     }
+
+    /// Gets the `options` field from the config
+    /// Returns an error if the field doesn't exist
+    /// or if the config is of type `EFI`
+    pub(crate) fn get_cmdline(&self) -> Result<&Cmdline<'_>> {
+        match &self.cfg_type {
+            BLSConfigType::NonEFI { options, .. } => {
+                let options = options
+                    .as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("No cmdline found for config"))?;
+
+                Ok(options)
+            }
+
+            _ => anyhow::bail!("No cmdline found for config"),
+        }
+    }
 }
 
 pub(crate) fn parse_bls_config(input: &str) -> Result<BLSConfig> {

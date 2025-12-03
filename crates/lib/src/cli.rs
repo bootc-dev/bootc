@@ -11,8 +11,8 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, ensure, Context, Result};
 use camino::{Utf8Path, Utf8PathBuf};
-use cap_std_ext::cap_std;
 use cap_std_ext::cap_std::fs::Dir;
+use cap_std_ext::cap_std;
 use clap::Parser;
 use clap::ValueEnum;
 use composefs::dumpfile;

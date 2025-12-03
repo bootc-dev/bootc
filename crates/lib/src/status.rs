@@ -309,6 +309,13 @@ impl BootEntry {
             "BootEntry is not a composefs native boot entry"
         ))
     }
+
+    pub(crate) fn composefs_boot_digest(&self) -> Result<&String> {
+        self.require_composefs()?
+            .boot_digest
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Could not find boot digest for deployment"))
+    }
 }
 
 /// A variant of [`get_status`] that requires a booted deployment.
