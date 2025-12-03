@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::os::fd::{AsFd, AsRawFd};
 use std::os::unix::process::CommandExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process;
 use std::process::Command;
 use std::str::FromStr;
@@ -453,6 +453,13 @@ pub(crate) struct InstallPrintConfigurationOpts {
     /// Print configuration that is usually handled internally, like kargs.
     #[clap(long)]
     pub(crate) all: bool,
+
+    /// Set an alternative root filesystem.
+    ///
+    /// This can be used as part of a multi-stage build operation to detect
+    /// the desired configuration before executing code from a target container image.
+    #[clap(long, default_value = "/")]
+    pub(crate) sysroot: PathBuf,
 }
 
 /// Global state captured from the container.
@@ -742,12 +749,19 @@ impl SourceInfo {
 }
 
 pub(crate) fn print_configuration(opts: InstallPrintConfigurationOpts) -> Result<()> {
-    let mut install_config = config::load_config()?.unwrap_or_default();
+    let stdout = std::io::stdout().lock();
+    print_configuration_to_writer(opts, stdout)
+}
+
+fn print_configuration_to_writer<W: Write>(
+    opts: InstallPrintConfigurationOpts,
+    writer: W,
+) -> Result<()> {
+    let mut install_config = config::load_config_at(&opts.sysroot)?.unwrap_or_default();
     if !opts.all {
         install_config.filter_to_external();
     }
-    let stdout = std::io::stdout().lock();
-    anyhow::Ok(install_config.to_canon_json_writer(stdout)?)
+    anyhow::Ok(install_config.to_canon_json_writer(writer)?)
 }
 
 #[context("Creating ostree deployment")]
@@ -2517,6 +2531,8 @@ pub(crate) async fn install_finalize(target: &Utf8Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use tempfile::tempdir;
 
     #[test]
     fn install_opts_serializable() {
@@ -2718,6 +2734,48 @@ UUID=boot-uuid /boot ext4 defaults 0 0
             td.write("var/lib/containers/storage/overlay/file.txt", b"data")?;
             assert!(require_dir_contains_only_mounts(&td, "var").is_err());
         }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_print_configuration_with_root_dir() -> Result<()> {
+        use crate::install::config::{
+            Filesystem, InstallConfiguration, InstallConfigurationToplevel,
+        };
+
+        let temp_dir = tempdir()?;
+        let root_path = temp_dir.path();
+
+        let config_dir = root_path.join("etc/bootc/install");
+        fs::create_dir_all(&config_dir)?;
+        let config_path = config_dir.join("10-install.toml");
+
+        let test_config = InstallConfigurationToplevel {
+            install: Some(InstallConfiguration {
+                root_fs_type: Some(Filesystem::Xfs),
+                kargs: Some(vec!["quiet".to_string(), "karg2=2".to_string()]),
+                ..Default::default()
+            }),
+        };
+        let toml_content = toml::to_string(&test_config)?;
+        fs::write(config_path, toml_content)?;
+
+        let opts = InstallPrintConfigurationOpts {
+            sysroot: root_path.to_owned(),
+            all: true,
+        };
+
+        let mut buffer = Vec::new();
+        print_configuration_to_writer(opts, &mut buffer)?;
+
+        let output_json = String::from_utf8(buffer)?;
+        let output_config: crate::install::config::InstallConfiguration =
+            serde_json::from_str(&output_json)?;
+
+        let install_config = test_config.install.unwrap();
+        assert_eq!(install_config.kargs, output_config.kargs);
+        assert_eq!(install_config.root_fs_type, output_config.root_fs_type);
 
         Ok(())
     }

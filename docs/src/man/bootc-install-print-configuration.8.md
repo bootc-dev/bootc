@@ -26,6 +26,12 @@ string-valued filesystem name suitable for passing to `mkfs.\$type`.
 
     Print all configuration
 
+**--sysroot**=*SYSROOT*
+
+    Set an alternative root filesystem
+
+    Default: /
+
 <!-- END GENERATED OPTIONS -->
 
 # VERSION
