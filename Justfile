@@ -42,7 +42,7 @@ buildargs := "--build-arg=base=" + base + " --build-arg=variant=" + variant
 # `just build --build-arg=base=quay.io/fedora/fedora-bootc:42`
 build: package
     podman build {{base_buildargs}} -t {{base_img}}-bin {{buildargs}} .
-    ./tests/build-sealed {{variant}} {{base_img}}-bin {{base_img}}
+    ./tests/build-sealed {{variant}} {{base_img}}-bin {{base_img}} {{buildroot_base}}
 
 # Build the container image using pre-existing packages from PATH
 build-from-package PATH:
@@ -107,7 +107,7 @@ build-integration-test-image: build
 build-integration-test-image-from-package PATH:
     @just build-from-package {{PATH}}
     cd hack && podman build {{base_buildargs}} -t {{integration_img}}-bin -f Containerfile .
-    ./tests/build-sealed {{variant}} {{integration_img}}-bin {{integration_img}}
+    ./tests/build-sealed {{variant}} {{integration_img}}-bin {{integration_img}} {{buildroot_base}}
     # Keep these in sync with what's used in hack/lbi
     podman pull -q --retry 5 --retry-delay 5s quay.io/curl/curl:latest quay.io/curl/curl-base:latest registry.access.redhat.com/ubi9/podman:latest
 
