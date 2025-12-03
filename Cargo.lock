@@ -2578,6 +2578,7 @@ dependencies = [
  "oci-spec",
  "rexpect",
  "rustix",
+ "scopeguard",
  "serde",
  "serde_json",
  "tempfile",

@@ -29,6 +29,7 @@ bootc-kernel-cmdline = { path = "../kernel_cmdline", version = "0.0.0" }
 libtest-mimic = "0.8.0"
 oci-spec = "0.8.0"
 rexpect = "0.6"
+scopeguard = "1.2.0"
 
 [lints]
 workspace = true

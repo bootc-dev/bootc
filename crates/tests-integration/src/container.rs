@@ -1,3 +1,7 @@
+use indoc::indoc;
+use scopeguard::defer;
+use serde::Deserialize;
+use std::fs;
 use std::process::Command;
 
 use anyhow::{Context, Result};
@@ -36,8 +40,34 @@ pub(crate) fn test_bootc_install_config() -> Result<()> {
     let config = cmd!(sh, "bootc install print-configuration").read()?;
     let config: serde_json::Value =
         serde_json::from_str(&config).context("Parsing install config")?;
-    // Just verify we parsed the config, if any
-    drop(config);
+    // check that it parses okay, but also ensure kargs is not available here (only via --all)
+    assert!(config.get("kargs").is_none());
+    Ok(())
+}
+
+pub(crate) fn test_bootc_install_config_all() -> Result<()> {
+    #[derive(Deserialize)]
+    struct TestInstallConfig {
+        kargs: Vec<String>,
+    }
+
+    let config_d = std::path::Path::new("/run/bootc/install/");
+    let test_toml_path = config_d.join("10-test.toml");
+    std::fs::create_dir_all(&config_d)?;
+    let content = indoc! {r#"
+        [install]
+        kargs = ["karg1=1", "karg2=2"]
+    "#};
+    std::fs::write(&test_toml_path, content)?;
+    defer! {
+    fs::remove_file(test_toml_path).expect("cannot remove tempfile");
+    }
+
+    let sh = &xshell::Shell::new()?;
+    let config = cmd!(sh, "bootc install print-configuration --all").read()?;
+    let config: TestInstallConfig =
+        serde_json::from_str(&config).context("Parsing install config")?;
+    assert_eq! {config.kargs, vec!["karg1=1".to_string(), "karg2=2".to_string(), "localtestkarg=somevalue".to_string(), "otherlocalkarg=42".to_string()]};
     Ok(())
 }
 
@@ -88,6 +118,7 @@ pub(crate) fn run(testargs: libtest_mimic::Arguments) -> Result<()> {
         new_test("variant-base-crosscheck", test_variant_base_crosscheck),
         new_test("bootc upgrade", test_bootc_upgrade),
         new_test("install config", test_bootc_install_config),
+        new_test("printconfig --all", test_bootc_install_config_all),
         new_test("status", test_bootc_status),
         new_test("system-reinstall --help", test_system_reinstall_help),
     ];
