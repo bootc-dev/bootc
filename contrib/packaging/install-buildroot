@@ -4,7 +4,11 @@ set -xeuo pipefail
 cd $(dirname $0)
 . /usr/lib/os-release
 case $ID in
-  centos|rhel) dnf config-manager --set-enabled crb;;
+  centos|rhel)
+    dnf config-manager --set-enabled crb
+    # Enable EPEL for sbsigntools
+    dnf -y install epel-release
+    ;;
   fedora) dnf -y install dnf-utils 'dnf5-command(builddep)';;
 esac
 # Handle version skew, xref https://gitlab.com/redhat/centos-stream/containers/bootc/-/issues/1174

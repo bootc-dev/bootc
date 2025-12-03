@@ -1,0 +1,29 @@
+#!/bin/bash
+# Helper for signing and re-injecting systemd-boot
+set -euo pipefail
+op=$1
+shift
+
+sdboot="usr/lib/systemd/boot/efi/systemd-bootx64.efi"
+sdboot_bn=$(basename ${sdboot})
+
+case $op in 
+  download)
+    mkdir -p /out
+    cd /out
+    dnf -y download systemd-boot-unsigned
+    ;;
+  sign)
+    mkdir -p /out
+    rpm -Uvh /run/sdboot-package/out/*.rpm
+    # Sign with sbsign using db certificate and key
+    sbsign \
+           --key /run/secrets/secureboot_key \
+           --cert /run/secrets/secureboot_cert \
+           --output /out/${sdboot_bn} \
+           /${sdboot}
+    ls -al /out/${sdboot_bn}
+    ;;
+  *) echo "Unknown operation $op" 1>&2; exit 1
+  ;;
+esac

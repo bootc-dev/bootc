@@ -1,27 +1,25 @@
 # Override via --build-arg=base=<image> to use a different base
 ARG base=localhost/bootc
-# This is where we get the tools to build the UKI
-ARG buildroot=quay.io/centos/centos:stream10
-
 FROM $base AS base
 
-FROM $buildroot as buildroot-base
+FROM base as kernel
 RUN <<EORUN
 set -xeuo pipefail
-
-# systemd-udev is required for /usr/lib/systemd/systemd-measure which
-# is used by ukify as invoked with the `--measure` flag below.  Not
-# strictly required, but nice to have the measured PCR values in the
-# output.
-dnf install -y systemd-ukify systemd-udev pesign openssl
-dnf clean all
+. /usr/lib/os-release
+case $ID in
+  centos|rhel)
+    dnf config-manager --set-enabled crb
+    # Enable EPEL for sbsigntools
+    dnf -y install epel-release
+    ;;
+esac
+dnf -y install systemd-ukify sbsigntools
 EORUN
-
-FROM buildroot-base as kernel
 # Must be passed
 ARG COMPOSEFS_FSVERITY
-RUN --mount=type=secret,id=key \
-    --mount=type=secret,id=cert \
+RUN --network=none \
+    --mount=type=secret,id=secureboot_key \
+    --mount=type=secret,id=secureboot_cert \
     --mount=type=bind,from=base,target=/target \
      <<EOF
     set -xeuo pipefail
@@ -31,13 +29,7 @@ RUN --mount=type=secret,id=key \
 
     cmdline="composefs=${COMPOSEFS_FSVERITY} console=ttyS0,115200n8 console=hvc0 enforcing=0 rw"
 
-    # pesign uses NSS database so create it from input cert/key
-    mkdir pesign
-    certutil -N -d pesign --empty-password
-    openssl pkcs12 -export -password 'pass:' -inkey /run/secrets/key -in /run/secrets/cert -out db.p12
-    pk12util -i db.p12 -W '' -d pesign
-    subject=$(openssl x509 -in /run/secrets/cert -subject | grep '^subject=CN=' | sed 's/^subject=CN=//')
-
+    # Use sbsign to re-sign the entire UKI with our key
     kver=$(cd /target/usr/lib/modules && echo *)
     ukify build \
         --linux "/target/usr/lib/modules/$kver/vmlinuz" \
@@ -45,16 +37,16 @@ RUN --mount=type=secret,id=key \
         --uname="${kver}" \
         --cmdline "${cmdline}" \
         --os-release "@/target/usr/lib/os-release" \
-        --signtool pesign \
-        --secureboot-certificate-dir "pesign" \
-        --secureboot-certificate-name "${subject}" \
+        --signtool sbsign \
+        --secureboot-private-key "/run/secrets/secureboot_key" \
+        --secureboot-certificate "/run/secrets/secureboot_cert" \
         --measure \
         --json pretty \
         --output "/boot/$kver.efi"
 EOF
 
 FROM base as final
-RUN --mount=type=bind,from=kernel,target=/run/kernel <<EOF
+RUN --network=none --mount=type=bind,from=kernel,target=/run/kernel <<EOF
 set -xeuo pipefail
 kver=$(cd /usr/lib/modules && echo *)
 mkdir -p /boot/EFI/Linux

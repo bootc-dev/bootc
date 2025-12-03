@@ -41,11 +41,27 @@ WORKDIR /src
 # First we download all of our Rust dependencies
 RUN --mount=type=cache,target=/src/target --mount=type=cache,target=/var/roothome cargo fetch
 
+FROM buildroot as sdboot-content
+# Writes to /out
+RUN /src/contrib/packaging/configure-systemdboot download
+
+# NOTE: Every RUN instruction past this point should use `--network=none`; we want to ensure
+# all external dependencies are clearly delineated.
+
 FROM buildroot as build
 # Version for RPM build (optional, computed from git in Justfile)
 ARG pkgversion
 # Build RPM directly from source, using cached target directory
 RUN --mount=type=cache,target=/src/target --mount=type=cache,target=/var/roothome --network=none RPM_VERSION="${pkgversion}" /src/contrib/packaging/build-rpm
+
+FROM buildroot as sdboot-signed
+# The secureboot key and cert are passed via Justfile
+# We write the signed binary into /out
+RUN --network=none \
+    --mount=type=bind,from=sdboot-content,target=/run/sdboot-package \
+    --mount=type=secret,id=secureboot_key \
+    --mount=type=secret,id=secureboot_cert \
+    /src/contrib/packaging/configure-systemdboot sign
 
 # This "build" includes our unit tests
 FROM build as units
@@ -62,7 +78,10 @@ RUN --mount=type=cache,target=/src/target --mount=type=cache,target=/var/roothom
 FROM base
 # See the Justfile for possible variants
 ARG variant
-RUN --mount=type=bind,from=packaging,target=/run/packaging /run/packaging/configure-variant "${variant}"
+RUN --network=none --mount=type=bind,from=packaging,target=/run/packaging \
+    --mount=type=bind,from=sdboot-content,target=/run/sdboot-content \
+    --mount=type=bind,from=sdboot-signed,target=/run/sdboot-signed \
+    /run/packaging/configure-variant "${variant}"
 # Support overriding the rootfs at build time conveniently
 ARG rootfs
 RUN --mount=type=bind,from=packaging,target=/run/packaging /run/packaging/configure-rootfs "${variant}" "${rootfs}"

@@ -46,15 +46,6 @@
   duration: 40m
   test: nu booted/test-25-download-only-upgrade.nu
 
-/test-26-examples-build:
-  summary: Test bootc examples build scripts
-  duration: 45m
-  adjust:
-  - when: running_env != image_mode
-    enabled: false
-    because: packit tests use RPM bootc and does not install /usr/lib/bootc/initramfs-setup
-  test: bash booted/test-26-examples-build.sh
-
 /test-27-custom-selinux-policy:
   summary: Execute custom selinux policy test
   duration: 30m

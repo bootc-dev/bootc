@@ -25,6 +25,8 @@ base := env("BOOTC_base", "quay.io/centos-bootc/centos-bootc:stream10")
 buildroot_base := env("BOOTC_buildroot_base", "quay.io/centos/centos:stream10")
 
 testimage_label := "bootc.testimage=1"
+# Images used by hack/lbi; keep in sync
+lbi_images := "quay.io/curl/curl:latest quay.io/curl/curl-base:latest registry.access.redhat.com/ubi9/podman:latest"
 # We used to have --jobs=4 here but sometimes that'd hit this
 # ```
 #   [2/3] STEP 2/2: RUN --mount=type=bind,from=context,target=/run/context <<EORUN (set -xeuo pipefail...)
@@ -34,21 +36,23 @@ testimage_label := "bootc.testimage=1"
 #   /bin/sh: line 3: cd: /run/context/: Permission denied
 # ```
 # TODO: Gather more info and file a buildah bug
-base_buildargs := ""
-buildargs := "--build-arg=base=" + base + " --build-arg=variant=" + variant
+generic_buildargs := ""
+# Args for package building (no secrets needed, just builds RPMs)
+base_buildargs := generic_buildargs + " --build-arg=base=" + base + " --build-arg=variant=" + variant
+buildargs := base_buildargs + " --secret=id=secureboot_key,src=target/test-secureboot/db.key --secret=id=secureboot_cert,src=target/test-secureboot/db.crt"
+# Args for build-sealed (no base arg, it sets that itself)
+sealed_buildargs := "--build-arg=variant=" + variant + " --secret=id=secureboot_key,src=target/test-secureboot/db.key --secret=id=secureboot_cert,src=target/test-secureboot/db.crt"
 
-# Build the container image from current sources.
+# The default target: build the container image from current sources.
 # Note commonly you might want to override the base image via e.g.
 # `just build --build-arg=base=quay.io/fedora/fedora-bootc:42`
-build: package
+build: package _keygen
     podman build {{base_buildargs}} -t {{base_img}}-bin {{buildargs}} .
-    ./tests/build-sealed {{variant}} {{base_img}}-bin {{base_img}} {{buildroot_base}}
+    ./hack/build-sealed {{variant}} {{base_img}}-bin {{base_img}} {{sealed_buildargs}}
 
-# Build the container image using pre-existing packages from PATH
-build-from-package PATH:
-    # @just copy-packages-from {{PATH}}
-    podman build {{base_buildargs}} -t {{base_img}}-bin {{buildargs}} .
-    ./tests/build-sealed {{variant}} {{base_img}}-bin {{base_img}} {{buildroot_base}}
+# Generate Secure Boot keys (only for our own CI/testing)
+_keygen:
+    ./hack/generate-secureboot-keys
 
 # Build a sealed image from current sources.
 build-sealed:
@@ -69,7 +73,7 @@ _packagecontainer:
         VERSION="${TIMESTAMP}.g${COMMIT}"
     fi
     echo "Building RPM with version: ${VERSION}"
-    podman build {{base_buildargs}} {{buildargs}} --build-arg=pkgversion=${VERSION} -t localhost/bootc-pkg --target=build .
+    podman build {{base_buildargs}} --build-arg=pkgversion=${VERSION} -t localhost/bootc-pkg --target=build .
 
 # Build packages (e.g. RPM) into target/packages/
 # Any old packages will be removed.
@@ -96,20 +100,28 @@ copy-packages-from PATH:
     chmod a+rx target target/packages
     chmod a+r target/packages/*.rpm
 
+# Build the container image using pre-existing packages from PATH
+# Note: The Dockerfile reads from target/packages/, so copy the packages there first
+# if they're in a different location.
+build-from-package PATH: _keygen
+    @if [ "{{PATH}}" != "target/packages" ]; then just copy-packages-from {{PATH}}; fi
+    podman build {{base_buildargs}} -t {{base_img}}-bin {{buildargs}} .
+    ./hack/build-sealed {{variant}} {{base_img}}-bin {{base_img}} {{sealed_buildargs}}
+
+# Pull images used by hack/lbi
+_pull-lbi-images:
+    podman pull -q --retry 5 --retry-delay 5s {{lbi_images}}
+
 # This container image has additional testing content and utilities
-build-integration-test-image: build
+build-integration-test-image: build _pull-lbi-images
     cd hack && podman build {{base_buildargs}} -t {{integration_img}}-bin -f Containerfile .
-    ./tests/build-sealed {{variant}} {{integration_img}}-bin {{integration_img}} {{buildroot_base}}
-    # Keep these in sync with what's used in hack/lbi
-    podman pull -q --retry 5 --retry-delay 5s quay.io/curl/curl:latest quay.io/curl/curl-base:latest registry.access.redhat.com/ubi9/podman:latest
+    ./hack/build-sealed {{variant}} {{integration_img}}-bin {{integration_img}} {{sealed_buildargs}}
 
 # Build integration test image using pre-existing packages from PATH
-build-integration-test-image-from-package PATH:
+build-integration-test-image-from-package PATH: _pull-lbi-images
     @just build-from-package {{PATH}}
     cd hack && podman build {{base_buildargs}} -t {{integration_img}}-bin -f Containerfile .
-    ./tests/build-sealed {{variant}} {{integration_img}}-bin {{integration_img}} {{buildroot_base}}
-    # Keep these in sync with what's used in hack/lbi
-    podman pull -q --retry 5 --retry-delay 5s quay.io/curl/curl:latest quay.io/curl/curl-base:latest registry.access.redhat.com/ubi9/podman:latest
+    ./hack/build-sealed {{variant}} {{integration_img}}-bin {{integration_img}} {{sealed_buildargs}}
 
 # Build+test using the `composefs-sealeduki-sdboot` variant.
 test-composefs:
@@ -146,7 +158,7 @@ test-tmt *ARGS: build-integration-test-image _build-upgrade-image
 # Generate a local synthetic upgrade
 _build-upgrade-image:
     cat tmt/tests/Dockerfile.upgrade | podman build -t {{integration_upgrade_img}}-bin --from={{integration_img}}-bin -
-    ./tests/build-sealed {{variant}} {{integration_upgrade_img}}-bin {{integration_upgrade_img}} {{buildroot_base}}
+    ./hack/build-sealed {{variant}} {{integration_upgrade_img}}-bin {{integration_upgrade_img}} {{sealed_buildargs}}
 
 # Assume the localhost/bootc-integration image is up to date, and just run tests.
 # Useful for iterating on tests quickly.

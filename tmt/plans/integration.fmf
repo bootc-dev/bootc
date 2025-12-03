@@ -102,17 +102,6 @@ execute:
     test:
       - /tmt/tests/tests/test-25-download-only-upgrade
 
-/plan-26-examples-build:
-  summary: Test bootc examples build scripts
-  discover:
-    how: fmf
-    test:
-      - /tmt/tests/tests/test-26-examples-build
-  adjust:
-  - when: running_env != image_mode
-    enabled: false
-    because: packit tests use RPM bootc and does not install /usr/lib/bootc/initramfs-setup
-
 /plan-27-custom-selinux-policy:
   summary: Execute custom selinux policy test
   discover:
