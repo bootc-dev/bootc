@@ -71,6 +71,8 @@ jobs:
           sudo just build-install-test-image
           sudo podman build -t localhost/bootc-fsverity -f ci/Containerfile.install-fsverity
 
+          # Grant permission
+          sudo chown -R "$(id -u):$(id -g)" /home/runner/work/bootc/bootc
           # TODO move into a container, and then have this tool run other containers
           cargo build --release -p tests-integration
 
