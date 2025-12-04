@@ -1212,7 +1212,7 @@ pub(crate) fn setup_composefs_boot(
 
     write_composefs_state(
         &root_setup.physical_root_path,
-        id,
+        &id,
         &crate::spec::ImageReference::from(state.target_imgref.clone()),
         false,
         boot_type,
