@@ -31,6 +31,8 @@ use composefs_boot::cmdline::get_cmdline_composefs;
 
 use fn_error_context::context;
 
+use bootc_kernel_cmdline::utf8::Cmdline;
+
 // mount_setattr syscall support
 const MOUNT_ATTR_RDONLY: u64 = 0x00000001;
 
@@ -74,13 +76,17 @@ fn set_mount_readonly(fd: impl AsFd) -> Result<()> {
     mount_setattr(fd, libc::AT_EMPTY_PATH, &attr)
 }
 
-// Config file
+/// Types of mounts supported by the configuration
 #[derive(Clone, Copy, Debug, Deserialize)]
 #[serde(rename_all = "lowercase")]
-enum MountType {
+pub enum MountType {
+    /// No mount
     None,
+    /// Bind mount
     Bind,
+    /// Overlay mount
     Overlay,
+    /// Transient mount
     Transient,
 }
 
@@ -90,11 +96,14 @@ struct RootConfig {
     transient: bool,
 }
 
+/// Configuration for mount operations
 #[derive(Debug, Default, Deserialize)]
-struct MountConfig {
-    mount: Option<MountType>,
+pub struct MountConfig {
+    /// The type of mount to use
+    pub mount: Option<MountType>,
     #[serde(default)]
-    transient: bool,
+    /// Whether this mount should be transient (temporary)
+    pub transient: bool,
 }
 
 #[derive(Deserialize, Default)]
@@ -138,7 +147,7 @@ pub struct Args {
 
     #[arg(long, help = "Kernel commandline args (for testing)")]
     /// Kernel commandline args (for testing)
-    pub cmdline: Option<String>,
+    pub cmdline: Option<Cmdline<'static>>,
 
     #[arg(long, help = "Mountpoint (don't replace sysroot, for testing)")]
     /// Mountpoint (don't replace sysroot, for testing)
@@ -265,8 +274,9 @@ pub fn mount_composefs_image(sysroot: &OwnedFd, name: &str, insecure: bool) -> R
     Ok(rootfs)
 }
 
+/// Mounts a subdirectory with the specified configuration
 #[context("Mounting subdirectory")]
-fn mount_subdir(
+pub fn mount_subdir(
     new_root: impl AsFd,
     state: impl AsFd,
     subdir: &str,
@@ -331,12 +341,11 @@ pub fn setup_root(args: Args) -> Result<()> {
     let sysroot = open_dir(CWD, &args.sysroot)
         .with_context(|| format!("Failed to open sysroot {:?}", args.sysroot))?;
 
-    let cmdline = match &args.cmdline {
-        Some(cmdline) => cmdline,
-        // TODO: Deduplicate this with composefs branch karg parser
-        None => &std::fs::read_to_string("/proc/cmdline")?,
-    };
-    let (image, insecure) = get_cmdline_composefs::<Sha512HashValue>(cmdline)?;
+    let cmdline = args
+        .cmdline
+        .unwrap_or(Cmdline::from_proc().context("Failed to read cmdline")?);
+
+    let (image, insecure) = get_cmdline_composefs::<Sha512HashValue>(&cmdline)?;
 
     let new_root = match args.root_fs {
         Some(path) => open_root_fs(&path).context("Failed to clone specified root fs")?,
@@ -348,11 +357,13 @@ pub fn setup_root(args: Args) -> Result<()> {
 
     set_mount_readonly(&sysroot_clone)?;
 
+    let mount_target = args.target.unwrap_or(args.sysroot.clone());
+
     // Ideally we build the new root filesystem together before we mount it, but that only works on
     // 6.15 and later.  Before 6.15 we can't mount into a floating tree, so mount it first.  This
     // will leave an abandoned clone of the sysroot mounted under it, but that's OK for now.
     if cfg!(feature = "pre-6.15") {
-        mount_at_wrapper(&new_root, CWD, &args.sysroot)?;
+        mount_at_wrapper(&new_root, CWD, &mount_target)?;
     }
 
     if config.root.transient {
@@ -372,7 +383,7 @@ pub fn setup_root(args: Args) -> Result<()> {
     if cfg!(not(feature = "pre-6.15")) {
         // Replace the /sysroot with the new composed root filesystem
         unmount(&args.sysroot, UnmountFlags::DETACH)?;
-        mount_at_wrapper(&new_root, CWD, &args.sysroot)?;
+        mount_at_wrapper(&new_root, CWD, &mount_target)?;
     }
 
     Ok(())
