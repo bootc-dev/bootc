@@ -2,6 +2,7 @@ use std::{io::Read, sync::OnceLock};
 
 use anyhow::{Context, Result};
 use bootc_kernel_cmdline::utf8::Cmdline;
+use bootc_mount::inspect_filesystem;
 use fn_error_context::context;
 use serde::{Deserialize, Serialize};
 
@@ -86,7 +87,23 @@ pub(crate) fn composefs_booted() -> Result<Option<&'static ComposefsCmdline>> {
     };
     let Some(v) = kv.value() else { return Ok(None) };
     let v = ComposefsCmdline::new(v);
-    let r = CACHED_DIGEST_VALUE.get_or_init(|| Some(v));
+
+    // Find the source of / mountpoint as the cmdline doesn't change on soft-reboot
+    let root_mnt = inspect_filesystem("/".into())?;
+
+    // This is of the format composefs:<composefs_hash>
+    let verity_from_mount_src = root_mnt
+        .source
+        .strip_prefix("composefs:")
+        .ok_or_else(|| anyhow::anyhow!("Root not mounted using composefs"))?;
+
+    let r = if *verity_from_mount_src != *v.digest {
+        // soft rebooted into another deployment
+        CACHED_DIGEST_VALUE.get_or_init(|| Some(ComposefsCmdline::new(verity_from_mount_src)))
+    } else {
+        CACHED_DIGEST_VALUE.get_or_init(|| Some(v))
+    };
+
     Ok(r.as_ref())
 }
 
