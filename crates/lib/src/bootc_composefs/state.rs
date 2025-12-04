@@ -180,7 +180,7 @@ pub(crate) fn update_target_imgref_in_origin(
 #[context("Writing composefs state")]
 pub(crate) async fn write_composefs_state(
     root_path: &Utf8PathBuf,
-    deployment_id: Sha512HashValue,
+    deployment_id: &Sha512HashValue,
     target_imgref: &ImageReference,
     staged: bool,
     boot_type: BootType,

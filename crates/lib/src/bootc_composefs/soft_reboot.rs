@@ -10,20 +10,30 @@ use bootc_initramfs_setup::setup_root;
 use bootc_kernel_cmdline::utf8::Cmdline;
 use bootc_mount::{bind_mount_from_pidns, PID1};
 use camino::Utf8Path;
+use fn_error_context::context;
+use ostree_ext::systemd_has_soft_reboot;
 use std::{fs::create_dir_all, os::unix::process::CommandExt, path::PathBuf, process::Command};
 
 const NEXTROOT: &str = "/run/nextroot";
 
-pub(crate) async fn soft_reboot_to_deployment(
+/// Checks if the provided deployment is soft reboot capable, and soft reboots the system if
+/// argument `reboot` is true
+#[context("Soft rebooting")]
+pub(crate) async fn prepare_soft_reboot_composefs(
     storage: &Storage,
     booted_cfs: &BootedComposefs,
     deployment_id: &String,
     reboot: bool,
 ) -> Result<()> {
+    if !systemd_has_soft_reboot() {
+        anyhow::bail!("System does not support soft reboots")
+    }
+
     if *deployment_id == *booted_cfs.cmdline.digest {
         anyhow::bail!("Cannot soft-reboot to currently booted deployment");
     }
 
+    // We definitely need to re-query the state as some deployment might've been staged
     let host = composefs_deployment_status_from(storage, booted_cfs.cmdline).await?;
 
     let all_deployments = host.all_composefs_deployments()?;

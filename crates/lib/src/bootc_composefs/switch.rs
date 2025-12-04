@@ -5,7 +5,7 @@ use crate::{
     bootc_composefs::{
         state::update_target_imgref_in_origin,
         status::get_composefs_status,
-        update::{do_upgrade, is_image_pulled, validate_update, UpdateAction},
+        update::{do_upgrade, is_image_pulled, validate_update, DoUpgradeOpts, UpdateAction},
     },
     cli::{imgref_for_switch, SwitchOpts},
     store::{BootedComposefs, Storage},
@@ -42,6 +42,11 @@ pub(crate) async fn switch_composefs(
     let repo = &*booted_cfs.repo;
     let (image, img_config) = is_image_pulled(repo, &target_imgref).await?;
 
+    let do_upgrade_opts = DoUpgradeOpts {
+        soft_reboot: opts.soft_reboot,
+        apply: opts.apply,
+    };
+
     if let Some(cfg_verity) = image {
         let action = validate_update(
             storage,
@@ -59,7 +64,15 @@ pub(crate) async fn switch_composefs(
             }
 
             UpdateAction::Proceed => {
-                return do_upgrade(storage, &host, &target_imgref, &img_config).await;
+                return do_upgrade(
+                    storage,
+                    booted_cfs,
+                    &host,
+                    &target_imgref,
+                    &img_config,
+                    &do_upgrade_opts,
+                )
+                .await;
             }
 
             UpdateAction::UpdateOrigin => {
@@ -71,7 +84,15 @@ pub(crate) async fn switch_composefs(
         }
     }
 
-    do_upgrade(storage, &host, &target_imgref, &img_config).await?;
+    do_upgrade(
+        storage,
+        booted_cfs,
+        &host,
+        &target_imgref,
+        &img_config,
+        &do_upgrade_opts,
+    )
+    .await?;
 
     Ok(())
 }
