@@ -6,6 +6,7 @@ use anyhow::{Context, Result};
 use clap::ValueEnum;
 use fn_error_context::context;
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 
 #[cfg(feature = "install-to-disk")]
 use super::baseline::BlockSetup;
@@ -191,11 +192,20 @@ impl InstallConfiguration {
 #[context("Loading configuration")]
 /// Load the install configuration, merging all found configuration files.
 pub(crate) fn load_config() -> Result<Option<InstallConfiguration>> {
+    load_config_at("/")
+}
+
+pub(crate) fn load_config_at(root_dir: impl AsRef<Path>) -> Result<Option<InstallConfiguration>> {
     let env = EnvProperties {
         sys_arch: std::env::consts::ARCH.to_string(),
     };
-    const SYSTEMD_CONVENTIONAL_BASES: &[&str] = &["/usr/lib", "/usr/local/lib", "/etc", "/run"];
-    let fragments = liboverdrop::scan(SYSTEMD_CONVENTIONAL_BASES, "bootc/install", &["toml"], true);
+    let root_dir = root_dir.as_ref();
+    const SYSTEMD_CONVENTIONAL_BASES: &[&str] = &["usr/lib", "usr/local/lib", "etc", "run"];
+    let systemd_conventional_bases = SYSTEMD_CONVENTIONAL_BASES
+        .iter()
+        .map(|v| root_dir.join(v))
+        .collect::<Vec<_>>();
+    let fragments = liboverdrop::scan(systemd_conventional_bases, "bootc/install", &["toml"], true);
     let mut config: Option<InstallConfiguration> = None;
     for (_name, path) in fragments {
         let buf = std::fs::read_to_string(&path)?;
