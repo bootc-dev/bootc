@@ -275,6 +275,14 @@ pub(crate) struct DeploymentEntry<'a> {
     pub(crate) pinned: bool,
 }
 
+/// The result of a `bootc container inspect` command.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) struct ContainerInspect {
+    /// Kernel arguments embedded in the container image.
+    pub(crate) kargs: Vec<String>,
+}
+
 impl Host {
     /// Create a new host
     pub fn new(spec: HostSpec) -> Self {

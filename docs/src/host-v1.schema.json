@@ -199,7 +199,7 @@
       "description": "Bootloader type to determine whether system was booted via Grub or Systemd",
       "oneOf": [
         {
-          "description": "Use Grub as the booloader",
+          "description": "Use Grub as the bootloader",
           "type": "string",
           "const": "Grub"
         },

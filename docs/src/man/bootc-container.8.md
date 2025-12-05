@@ -19,6 +19,7 @@ Operations which can be executed as part of a container build
 <!-- BEGIN GENERATED SUBCOMMANDS -->
 | Command | Description |
 |---------|-------------|
+| **bootc container inspect** | Output JSON to stdout containing the container image metadata |
 | **bootc container lint** | Perform relatively inexpensive static analysis checks as part of a container build |
 
 <!-- END GENERATED SUBCOMMANDS -->
