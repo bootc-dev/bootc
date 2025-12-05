@@ -581,6 +581,7 @@ async fn deploy(
     from: MergeState,
     image: &ImageState,
     origin: &glib::KeyFile,
+    lock_finalization: bool,
 ) -> Result<Deployment> {
     // Compute the kernel argument overrides. In practice today this API is always expecting
     // a merge deployment. The kargs code also always looks at the booted root (which
@@ -607,6 +608,9 @@ async fn deploy(
             let ostree = ostree;
             let stateroot = Some(stateroot);
             let mut opts = ostree::SysrootDeployTreeOpts::default();
+
+            // Set finalization lock if requested
+            opts.locked = lock_finalization;
 
             // Because the C API expects a Vec<&str>, convert the Cmdline to string slices.
             // The references borrow from the Cmdline, which outlives this usage.
@@ -691,6 +695,7 @@ pub(crate) async fn stage(
     image: &ImageState,
     spec: &RequiredHostSpec<'_>,
     prog: ProgressWriter,
+    lock_finalization: bool,
 ) -> Result<()> {
     // Log the staging operation to systemd journal with comprehensive upgrade information
     const STAGE_JOURNAL_ID: &str = "8f7a2b1c3d4e5f6a7b8c9d0e1f2a3b4c";
@@ -748,7 +753,8 @@ pub(crate) async fn stage(
     })
     .await;
     let origin = origin_from_imageref(spec.image)?;
-    let deployment = crate::deploy::deploy(sysroot, from, image, &origin).await?;
+    let deployment =
+        crate::deploy::deploy(sysroot, from, image, &origin, lock_finalization).await?;
 
     subtask.completed = true;
     subtasks.push(subtask.clone());

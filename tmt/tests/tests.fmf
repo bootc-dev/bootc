@@ -68,3 +68,8 @@
   summary: Test soft reboot with SELinux policy changes
   duration: 30m
   test: nu booted/test-soft-reboot-selinux-policy.nu
+
+/test-30-upgrade-download-only:
+  summary: Execute upgrade --download-only tests
+  duration: 30m
+  test: nu booted/test-upgrade-download-only.nu

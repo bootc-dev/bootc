@@ -130,4 +130,12 @@ execute:
     how: fmf
     test:
       - /tmt/tests/tests/test-29-soft-reboot-selinux-policy
+
+/plan-30-upgrade-download-only:
+  summary: Execute upgrade --download-only tests
+  discover:
+    how: fmf
+    test:
+      - /tmt/tests/tests/test-30-upgrade-download-only
+  extra-try_bind_storage: true
 # END GENERATED PLANS

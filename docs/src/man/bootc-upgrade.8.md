@@ -61,6 +61,10 @@ Soft reboot allows faster system restart by avoiding full hardware reboot when p
     - required
     - auto
 
+**--download-only**
+
+    Download and stage the update without applying it
+
 <!-- END GENERATED OPTIONS -->
 
 # EXAMPLES
