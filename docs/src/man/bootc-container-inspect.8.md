@@ -23,7 +23,9 @@ Output JSON to stdout containing the container image metadata
 
 # EXAMPLES
 
-TODO: Add practical examples showing how to use this command.
+Inspect container image metadata:
+
+    bootc container inspect
 
 # SEE ALSO
 
