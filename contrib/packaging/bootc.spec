@@ -12,6 +12,17 @@
     %bcond_with rhsm
 %endif
 
+# systemd.mount-extra support requires RHEL >= 9.6
+%if 0%{?rhel} == 9
+    %define rhel_minor %(source /usr/lib/os-release; echo $VERSION_ID |  cut -f2 -d".")
+%endif
+
+%if 0%{?rhel} > 9 || (0%{?rhel} == 9 && 0%{?rhel_minor} >= 6) || 0%{?fedora}
+    %bcond_without systemd_supports_mount_extra
+%else
+    %bcond_with systemd_supports_mount_extra
+%endif
+
 %global rust_minor %(rustc --version | cut -f2 -d" " | cut -f2 -d".")
 
 # https://github.com/bootc-dev/bootc/issues/1640
@@ -127,13 +138,21 @@ make manpages
 # Build all binaries
 %if 0%{?container_build}
 # Container build: use cargo directly with cached dependencies to avoid RPM macro overhead
-cargo build -j%{_smp_build_ncpus} --release %{?with_rhsm:--features rhsm} --bins
+cargo build \
+    -j%{_smp_build_ncpus} \
+    --release %{?with_rhsm:--features rhsm} \
+    %{?with_systemd_supports_mount_extra:--features systemd-supports-mount-extra} \
+    --bins
 %else
 # Non-container build: use RPM macros for proper dependency tracking
 %if %new_cargo_macros
-    %cargo_build %{?with_rhsm:-f rhsm} -- --bins
+    %cargo_build \
+    %{?with_rhsm:-f rhsm} \
+    %{?with_systemd_supports_mount_extra:-f systemd-supports-mount-extra} -- --bins
 %else
-    %cargo_build %{?with_rhsm:--features rhsm} -- --bins
+    %cargo_build \
+    %{?with_rhsm:--features rhsm} \
+    %{?with_systemd_supports_mount_extra:--features systemd-supports-mount-extra} -- --bins
 %endif
 %endif
 

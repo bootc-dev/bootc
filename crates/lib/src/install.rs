@@ -983,6 +983,7 @@ async fn install_container(
     // For seperate /boot filesystem, the better workaround is
     // to inject kernel arguments during installation.
     // See discussion in https://github.com/bootc-dev/bootc/issues/1388
+    #[cfg(feature = "systemd-supports-mount-extra")]
     if let Some(boot) = root_setup.boot.as_ref() {
         if !boot.source.is_empty() {
             let mount_extra = format!(

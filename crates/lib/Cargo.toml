@@ -82,6 +82,9 @@ install-to-disk = []
 # This featuares enables `bootc internals publish-rhsm-facts` to integrate with
 # Red Hat Subscription Manager
 rhsm = []
+# This feature enables support for systemd.mount-extra kernel argument,
+# which requires RHEL >= 9.6
+systemd-supports-mount-extra = []
 # Implementation detail of man page generation.
 docgen = ["clap_mangen"]
 

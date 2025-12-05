@@ -29,7 +29,24 @@ prefix ?= /usr
 # We may in the future also want to include Fedora+derivatives as
 # the code is really tiny.
 # (Note we should also make installation of the units conditional on the rhsm feature)
-CARGO_FEATURES_DEFAULT ?= $(shell . /usr/lib/os-release; if echo "$$ID_LIKE" |grep -qF rhel; then echo rhsm; fi)
+# Enable systemd-supports-mount-extra for RHEL >= 9.6 or non-RHEL systems (Fedora, etc.)
+CARGO_FEATURES_DEFAULT ?= $(shell \
+	. /usr/lib/os-release; \
+	features=""; \
+	if echo "$$ID_LIKE" |grep -qF rhel; then \
+		features="rhsm"; \
+	fi; \
+	if [ "$$ID" != "rhel" ] || [ -z "$$VERSION_ID" ]; then \
+		features="$$features systemd-supports-mount-extra"; \
+	else \
+		major=$${VERSION_ID%%.*}; \
+		minor=$${VERSION_ID#*.}; \
+		if [ "$$major" -gt 9 ] || ([ "$$major" -eq 9 ] && [ "$$minor" -ge 6 ]); then \
+			features="$$features systemd-supports-mount-extra"; \
+		fi; \
+	fi; \
+	echo "$$features" | sed 's/^ //'; \
+)
 # You can set this to override all cargo features, including the defaults
 CARGO_FEATURES ?= $(CARGO_FEATURES_DEFAULT)
 
