@@ -93,6 +93,17 @@ pub(crate) async fn new_importer(
     Ok(imp)
 }
 
+/// Wrapper for pulling a container image with a custom proxy config (e.g. for unified storage).
+pub(crate) async fn new_importer_with_config(
+    repo: &ostree::Repo,
+    imgref: &ostree_container::OstreeImageReference,
+    config: ostree_ext::containers_image_proxy::ImageProxyConfig,
+) -> Result<ostree_container::store::ImageImporter> {
+    let mut imp = ostree_container::store::ImageImporter::new(repo, imgref, config).await?;
+    imp.require_bootable();
+    Ok(imp)
+}
+
 pub(crate) fn check_bootc_label(config: &ostree_ext::oci_spec::image::ImageConfiguration) {
     if let Some(label) =
         labels_of_config(config).and_then(|labels| labels.get(crate::metadata::BOOTC_COMPAT_LABEL))
@@ -316,6 +327,16 @@ pub(crate) async fn prune_container_store(sysroot: &Storage) -> Result<()> {
     for deployment in deployments {
         let bound = crate::boundimage::query_bound_images_for_deployment(ostree, &deployment)?;
         all_bound_images.extend(bound.into_iter());
+        // Also include the host image itself
+        if let Some(host_image) = crate::status::boot_entry_from_deployment(ostree, &deployment)?
+            .image
+            .map(|i| i.image)
+        {
+            all_bound_images.push(crate::boundimage::BoundImage {
+                image: crate::utils::imageref_to_container_ref(&host_image),
+                auth_file: None,
+            });
+        }
     }
     // Convert to a hashset of just the image names
     let image_names = HashSet::from_iter(all_bound_images.iter().map(|img| img.image.as_str()));
@@ -381,6 +402,151 @@ pub(crate) async fn prepare_for_pull(
     Ok(PreparedPullResult::Ready(Box::new(prepared_image)))
 }
 
+/// Unified approach: Use bootc's CStorage to pull the image, then prepare from containers-storage.
+/// This reuses the same infrastructure as LBIs.
+///
+/// The `sysroot_path` parameter specifies the path to the sysroot where bootc storage is located.
+/// During install, this should be the path to the target disk's mount point.
+/// During upgrade/switch on a running system, pass `None` to use the default `/sysroot`.
+pub(crate) async fn prepare_for_pull_unified(
+    repo: &ostree::Repo,
+    imgref: &ImageReference,
+    target_imgref: Option<&OstreeImageReference>,
+    store: &Storage,
+    sysroot_path: Option<&camino::Utf8Path>,
+) -> Result<PreparedPullResult> {
+    // Get or initialize the bootc container storage (same as used for LBIs)
+    let imgstore = store.get_ensure_imgstore()?;
+
+    let image_ref_str = crate::utils::imageref_to_container_ref(imgref);
+
+    // Check if image already exists in bootc storage - if so, skip the pull
+    // This is important for localhost images which can't be pulled from a registry
+    let image_exists = imgstore.exists(&image_ref_str).await.unwrap_or(false);
+
+    if image_exists {
+        tracing::info!(
+            "Unified pull: image '{}' already exists in bootc storage, skipping pull",
+            &image_ref_str
+        );
+    } else {
+        // Log the original transport being used for the pull
+        tracing::info!(
+            "Unified pull: pulling from transport '{}' to bootc storage",
+            &imgref.transport
+        );
+
+        // Pull the image to bootc storage using the same method as LBIs
+        imgstore
+            .pull(&image_ref_str, crate::podstorage::PullMode::Always)
+            .await?;
+    }
+
+    // Now create a containers-storage reference to read from bootc storage
+    tracing::info!("Unified pull: now importing from containers-storage transport");
+    let containers_storage_imgref = ImageReference {
+        transport: "containers-storage".to_string(),
+        image: imgref.image.clone(),
+        signature: imgref.signature.clone(),
+    };
+    let ostree_imgref = OstreeImageReference::from(containers_storage_imgref);
+
+    // Configure the importer to use bootc storage as an additional image store
+    use std::process::Command;
+    let mut config = ostree_ext::containers_image_proxy::ImageProxyConfig::default();
+    let mut cmd = Command::new("skopeo");
+    // Use the actual physical path to bootc storage
+    // During install, this is the target disk's mount point; otherwise default to /sysroot
+    let sysroot_base = sysroot_path
+        .map(|p| p.to_string())
+        .unwrap_or_else(|| "/sysroot".to_string());
+    let storage_path = format!("{}/{}", sysroot_base, crate::podstorage::CStorage::subpath());
+    crate::podstorage::set_additional_image_store(&mut cmd, &storage_path);
+    config.skopeo_cmd = Some(cmd);
+
+    // Use the preparation flow with the custom config
+    let mut imp = new_importer_with_config(repo, &ostree_imgref, config).await?;
+    if let Some(target) = target_imgref {
+        imp.set_target(target);
+    }
+    let prep = match imp.prepare().await? {
+        PrepareResult::AlreadyPresent(c) => {
+            println!("No changes in {imgref:#} => {}", c.manifest_digest);
+            return Ok(PreparedPullResult::AlreadyPresent(Box::new((*c).into())));
+        }
+        PrepareResult::Ready(p) => p,
+    };
+    check_bootc_label(&prep.config);
+    if let Some(warning) = prep.deprecated_warning() {
+        ostree_ext::cli::print_deprecated_warning(warning).await;
+    }
+    ostree_ext::cli::print_layer_status(&prep);
+    let layers_to_fetch = prep.layers_to_fetch().collect::<Result<Vec<_>>>()?;
+
+    // Log that we're importing a new image from containers-storage
+    const PULLING_NEW_IMAGE_ID: &str = "6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0";
+    tracing::info!(
+        message_id = PULLING_NEW_IMAGE_ID,
+        bootc.image.reference = &imgref.image,
+        bootc.image.transport = "containers-storage",
+        bootc.original_transport = &imgref.transport,
+        bootc.status = "importing_from_storage",
+        "Importing image from bootc storage: {}",
+        ostree_imgref
+    );
+
+    let prepared_image = PreparedImportMeta {
+        imp,
+        n_layers_to_fetch: layers_to_fetch.len(),
+        layers_total: prep.all_layers().count(),
+        bytes_to_fetch: layers_to_fetch.iter().map(|(l, _)| l.layer.size()).sum(),
+        bytes_total: prep.all_layers().map(|l| l.layer.size()).sum(),
+        digest: prep.manifest_digest.clone(),
+        prep,
+    };
+
+    Ok(PreparedPullResult::Ready(Box::new(prepared_image)))
+}
+
+/// Unified pull: Use podman to pull to containers-storage, then read from there
+///
+/// The `sysroot_path` parameter specifies the path to the sysroot where bootc storage is located.
+/// For normal upgrade/switch operations, pass `None` to use the default `/sysroot`.
+pub(crate) async fn pull_unified(
+    repo: &ostree::Repo,
+    imgref: &ImageReference,
+    target_imgref: Option<&OstreeImageReference>,
+    quiet: bool,
+    prog: ProgressWriter,
+    store: &Storage,
+    sysroot_path: Option<&camino::Utf8Path>,
+) -> Result<Box<ImageState>> {
+    match prepare_for_pull_unified(repo, imgref, target_imgref, store, sysroot_path).await? {
+        PreparedPullResult::AlreadyPresent(existing) => {
+            // Log that the image was already present (Debug level since it's not actionable)
+            const IMAGE_ALREADY_PRESENT_ID: &str = "5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9";
+            tracing::debug!(
+                message_id = IMAGE_ALREADY_PRESENT_ID,
+                bootc.image.reference = &imgref.image,
+                bootc.image.transport = &imgref.transport,
+                bootc.status = "already_present",
+                "Image already present: {}",
+                imgref
+            );
+            Ok(existing)
+        }
+        PreparedPullResult::Ready(prepared_image_meta) => {
+            // To avoid duplicate success logs, pass a containers-storage imgref to the importer
+            let cs_imgref = ImageReference {
+                transport: "containers-storage".to_string(),
+                image: imgref.image.clone(),
+                signature: imgref.signature.clone(),
+            };
+            pull_from_prepared(&cs_imgref, quiet, prog, *prepared_image_meta).await
+        }
+    }
+}
+
 #[context("Pulling")]
 pub(crate) async fn pull_from_prepared(
     imgref: &ImageReference,
@@ -430,18 +596,21 @@ pub(crate) async fn pull_from_prepared(
     let imgref_canonicalized = imgref.clone().canonicalize()?;
     tracing::debug!("Canonicalized image reference: {imgref_canonicalized:#}");
 
-    // Log successful import completion
-    const IMPORT_COMPLETE_JOURNAL_ID: &str = "4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8";
+    // Log successful import completion (skip if using unified storage to avoid double logging)
+    let is_unified_path = imgref.transport == "containers-storage";
+    if !is_unified_path {
+        const IMPORT_COMPLETE_JOURNAL_ID: &str = "4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8";
 
-    tracing::info!(
-        message_id = IMPORT_COMPLETE_JOURNAL_ID,
-        bootc.image.reference = &imgref.image,
-        bootc.image.transport = &imgref.transport,
-        bootc.manifest_digest = import.manifest_digest.as_ref(),
-        bootc.ostree_commit = &import.merge_commit,
-        "Successfully imported image: {}",
-        imgref
-    );
+        tracing::info!(
+            message_id = IMPORT_COMPLETE_JOURNAL_ID,
+            bootc.image.reference = &imgref.image,
+            bootc.image.transport = &imgref.transport,
+            bootc.manifest_digest = import.manifest_digest.as_ref(),
+            bootc.ostree_commit = &import.merge_commit,
+            "Successfully imported image: {}",
+            imgref
+        );
+    }
 
     if let Some(msg) =
         ostree_container::store::image_filtered_content_warning(&import.filtered_files)
@@ -489,6 +658,9 @@ pub(crate) async fn pull(
         }
     }
 }
+
+/// Pull selecting unified vs standard path based on persistent storage config.
+// pull_auto was reverted per request; keep explicit callers branching.
 
 pub(crate) async fn wipe_ostree(sysroot: Sysroot) -> Result<()> {
     tokio::task::spawn_blocking(move || {

@@ -181,3 +181,122 @@ pub(crate) async fn imgcmd_entrypoint(
     cmd.args(args);
     cmd.run_capture_stderr()
 }
+
+/// Re-pull the currently booted image into the bootc-owned container storage.
+///
+/// This onboards the system to unified storage for host images so that
+/// upgrade/switch can use the unified path automatically when the image is present.
+#[context("Setting unified storage for booted image")]
+pub(crate) async fn set_unified_entrypoint() -> Result<()> {
+    let sysroot = crate::cli::get_storage().await?;
+    let ostree = sysroot.get_ostree()?;
+    let repo = &ostree.repo();
+
+    // Discover the currently booted image reference
+    let (_booted_deployment, _deployments, host) =
+        crate::status::get_status_require_booted(ostree)?;
+    let imgref = host
+        .spec
+        .image
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("No image source specified in host spec"))?;
+
+    // Canonicalize for pull display only, but we want to preserve original pullspec
+    let imgref_display = imgref.clone().canonicalize()?;
+
+    // Pull the image from its original source into bootc storage using LBI machinery
+    let imgstore = sysroot.get_ensure_imgstore()?;
+
+    const SET_UNIFIED_JOURNAL_ID: &str = "1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d";
+    tracing::info!(
+        message_id = SET_UNIFIED_JOURNAL_ID,
+        bootc.image.reference = &imgref_display.image,
+        bootc.image.transport = &imgref_display.transport,
+        "Re-pulling booted image into bootc storage via unified path: {}",
+        imgref_display
+    );
+
+    // Check if this is a localhost image with registry transport - these images
+    // were built locally and don't exist in any remote registry. We need to
+    // export from the current ostree deployment to container storage first.
+    let is_localhost_image =
+        imgref.transport == "registry" && imgref.image.starts_with("localhost/");
+
+    if is_localhost_image {
+        tracing::info!(
+            "Detected localhost image; exporting from ostree to container storage first"
+        );
+
+        // First, export from ostree to the default container storage (like copy-to-storage)
+        let booted = host.status.booted.as_ref().unwrap();
+        let booted_image = booted.image.as_ref().unwrap();
+        let source = ImageReference {
+            transport: Transport::try_from(booted_image.image.transport.as_str()).unwrap(),
+            name: booted_image.image.image.clone(),
+        };
+        let target = ImageReference {
+            transport: Transport::ContainerStorage,
+            name: imgref.image.clone(),
+        };
+
+        ensure_floating_c_storage_initialized();
+        let mut opts = ostree_ext::container::store::ExportToOCIOpts::default();
+        opts.progress_to_stdout = true;
+        tracing::info!(
+            "Exporting ostree deployment to containers-storage: {}",
+            &imgref.image
+        );
+        ostree_ext::container::store::export(repo, &source, &target, Some(opts)).await?;
+
+        // Now copy from the default container storage (/var/lib/containers) into bootc storage.
+        // We need to explicitly specify the source storage path because imgstore's pull
+        // function operates with bootc storage as its primary root.
+        tracing::info!(
+            "Copying from default container storage to bootc storage: {}",
+            &imgref.image
+        );
+        // Use explicit path to the default container storage
+        let source_ref = format!(
+            "containers-storage:[overlay@/var/lib/containers/storage]{}",
+            &imgref.image
+        );
+        imgstore
+            .pull(&source_ref, crate::podstorage::PullMode::Always)
+            .await?;
+
+        // Verify the image is now in bootc storage and findable by upgrade/switch
+        if !imgstore.exists(&imgref.image).await? {
+            anyhow::bail!(
+                "Image was pushed to bootc storage but not found: {}. \
+                 This may indicate a storage configuration issue.",
+                &imgref.image
+            );
+        }
+        tracing::info!("Image verified in bootc storage: {}", &imgref.image);
+    } else {
+        let img_string = crate::utils::imageref_to_container_ref(imgref);
+        imgstore
+            .pull(&img_string, crate::podstorage::PullMode::Always)
+            .await?;
+    }
+
+    // Optionally verify we can import from containers-storage by preparing in a temp importer
+    // without actually importing into the main repo; this is a lightweight validation.
+    let containers_storage_imgref = crate::spec::ImageReference {
+        transport: "containers-storage".to_string(),
+        image: imgref.image.clone(),
+        signature: imgref.signature.clone(),
+    };
+    let ostree_imgref =
+        ostree_ext::container::OstreeImageReference::from(containers_storage_imgref);
+    let _ =
+        ostree_ext::container::store::ImageImporter::new(repo, &ostree_imgref, Default::default())
+            .await?;
+
+    tracing::info!(
+        message_id = SET_UNIFIED_JOURNAL_ID,
+        bootc.status = "set_unified_complete",
+        "Unified storage set for current image. Future upgrade/switch will use it automatically."
+    );
+    Ok(())
+}

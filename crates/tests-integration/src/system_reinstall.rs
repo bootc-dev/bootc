@@ -166,6 +166,35 @@ pub(crate) fn run(image: &str, testargs: libtest_mimic::Arguments) -> Result<()>
             p.exp_eof()?;
             Ok(())
         }),
+        Trial::test("unified storage check", move || {
+            let sh = &xshell::Shell::new()?;
+            install::reset_root(sh, image)?;
+
+            // Run system-reinstall-bootc with --experimental-unified-storage
+            let mut p: PtySession = rexpect::spawn(
+                format!("/usr/bin/system-reinstall-bootc --experimental-unified-storage {image}")
+                    .as_str(),
+                Some(TIMEOUT.as_millis().try_into().unwrap()),
+            )?;
+
+            p.exp_string(
+                format!("Image {image} is already present locally, skipping pull.").as_str(),
+            )?;
+            p.exp_regex("Found only one user ([^:]+) with ([\\d]+) SSH authorized keys.")?;
+            p.exp_string("[Y/n]")?;
+            p.send_line("y")?;
+
+            p.exp_string("Going to run command:")?;
+            // Verify the flag is present in the podman command
+            p.exp_regex(format!("podman run .* {image} bootc install to-existing-root .* --experimental-unified-storage").as_str())?;
+
+            p.exp_string("NOTICE: This will replace the installed operating system and reboot. Are you sure you want to continue? [y/N]")?;
+            p.send_line("y")?;
+            p.exp_string("Operation complete, rebooting in 10 seconds. Press Ctrl-C to cancel reboot, or press enter to continue immediately.")?;
+            p.send_control('c')?;
+            p.exp_eof()?;
+            Ok(())
+        }),
     ];
 
     libtest_mimic::run(&testargs, tests.into()).exit()
