@@ -65,6 +65,8 @@ runs:
     - name: Install libvirt and virtualization stack
       if: ${{ inputs.libvirt == 'true' }}
       shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
       run: |
         set -xeuo pipefail
         export BCVK_VERSION=0.8.0
@@ -73,9 +75,10 @@ runs:
         echo LIBVIRT_DEFAULT_URI=qemu:///session >> $GITHUB_ENV
         td=$(mktemp -d)
         cd $td
-        # Install bcvk
+        # Install bcvk from PR 170
+        gh run download 19967777682 --name bcvk-binary --repo bootc-dev/bcvk
         target=bcvk-$(arch)-unknown-linux-gnu
-        /bin/time -f '%E %C' curl -LO https://github.com/bootc-dev/bcvk/releases/download/v${BCVK_VERSION}/${target}.tar.gz
+        # /bin/time -f '%E %C' curl -LO https://github.com/bootc-dev/bcvk/releases/download/v${BCVK_VERSION}/${target}.tar.gz
         tar xzf ${target}.tar.gz
         sudo install -T ${target} /usr/bin/bcvk
         cd -

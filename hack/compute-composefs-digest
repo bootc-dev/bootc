@@ -1,0 +1,11 @@
+#!/bin/bash
+set -euo pipefail
+# This just runs `bootc container compute-composefs-digest` in a provided container image
+image=$1
+shift
+# Find the container storage
+graphroot=$(podman system info -f '{{.Store.GraphRoot}}')
+# --pull=never because we don't want to pollute the output with progress and most use cases
+# for this really should be operating on pre-pulled images.
+exec podman run --pull=never --quiet --rm --privileged --read-only --security-opt=label=disable -v /sys:/sys:ro --net=none \
+  -v ${graphroot}:/run/host-container-storage:ro --tmpfs /var "$image" bootc container compute-composefs-digest
