@@ -14,11 +14,8 @@ const VM_READY_TIMEOUT_SECS: u64 = 60;
 const SSH_CONNECTIVITY_MAX_ATTEMPTS: u32 = 60;
 const SSH_CONNECTIVITY_RETRY_DELAY_SECS: u64 = 3;
 
-const COMMON_INST_ARGS: &[&str] = &[
-    // TODO: Pass down the Secure Boot keys for tests if present
-    "--firmware=uefi-insecure",
-    "--label=bootc.test=1",
-];
+// Base args - firmware type will be added dynamically based on secure boot key availability
+const COMMON_INST_ARGS: &[&str] = &["--label=bootc.test=1"];
 
 // Metadata field names
 const FIELD_TRY_BIND_STORAGE: &str = "try_bind_storage";
@@ -93,6 +90,15 @@ fn detect_distro_from_image(sh: &Shell, image: &str) -> Result<String> {
     }
 
     Ok(distro.to_string())
+}
+
+/// Detect if image is a sealed image by checking for /boot/EFI
+/// Sealed images have EFI boot components, non-sealed images don't
+/// TODO: Have `bootc container status` expose this in a nice way instead of running podman
+#[context("Detecting if image is sealed")]
+fn is_sealed_image(sh: &Shell, image: &str) -> Result<bool> {
+    let result = cmd!(sh, "podman run --rm {image} ls /boot").read()?;
+    Ok(!result.is_empty())
 }
 
 /// Check if a distro supports --bind-storage-ro
@@ -240,6 +246,30 @@ pub(crate) fn run_tmt(sh: &Shell, args: &RunTmtArgs) -> Result<()> {
     println!("Using bcvk image: {}", image);
     println!("Detected distro: {}", distro);
 
+    // Detect if this is a sealed image and build firmware args accordingly
+    let is_sealed = is_sealed_image(sh, image)?;
+    let sb_keys_dir = Utf8Path::new("target/test-secureboot").canonicalize_utf8()?;
+    let firmware_args = if is_sealed && sb_keys_dir.try_exists()? {
+        println!(
+            "Sealed image detected, using secure boot with keys from: {}",
+            sb_keys_dir
+        );
+        vec![
+            "--firmware=uefi-secure".to_string(),
+            format!("--secure-boot-keys={}", sb_keys_dir),
+        ]
+    } else {
+        if is_sealed {
+            println!(
+                "Sealed image detected but no secure boot keys found at {}, using insecure UEFI",
+                sb_keys_dir
+            );
+        } else {
+            println!("Non-sealed image, using insecure UEFI");
+        }
+        vec!["--firmware=uefi-insecure".to_string()]
+    };
+
     // Create tmt-workdir and copy tmt bits to it
     // This works around https://github.com/teemtee/tmt/issues/4062
     let workdir = Utf8Path::new("target/tmt-workdir");
@@ -348,9 +378,10 @@ pub(crate) fn run_tmt(sh: &Shell, args: &RunTmtArgs) -> Result<()> {
         };
 
         // Launch VM with bcvk
+        let firmware_args_slice = firmware_args.as_slice();
         let launch_result = cmd!(
             sh,
-            "bcvk libvirt run --name {vm_name} --detach {COMMON_INST_ARGS...} {plan_bcvk_opts...} {image}"
+            "bcvk libvirt run --name {vm_name} --detach {firmware_args_slice...} {COMMON_INST_ARGS...} {plan_bcvk_opts...} {image}"
         )
         .run()
         .context("Launching VM with bcvk");
@@ -597,11 +628,36 @@ pub(crate) fn tmt_provision(sh: &Shell, args: &TmtProvisionArgs) -> Result<()> {
     println!("  Image: {}", image);
     println!("  VM name: {}\n", vm_name);
 
+    // Detect if this is a sealed image and build firmware args accordingly
+    let is_sealed = is_sealed_image(sh, image)?;
+    let sb_keys_dir = Utf8Path::new("target/test-secureboot");
+    let firmware_args = if is_sealed && sb_keys_dir.try_exists()? {
+        println!(
+            "Sealed image detected, using secure boot with keys from: {}",
+            sb_keys_dir
+        );
+        vec![
+            "--firmware=uefi-secure".to_string(),
+            format!("--secure-boot-keys={}", sb_keys_dir),
+        ]
+    } else {
+        if is_sealed {
+            println!(
+                "Sealed image detected but no secure boot keys found at {}, using insecure UEFI",
+                sb_keys_dir
+            );
+        } else {
+            println!("Non-sealed image, using insecure UEFI");
+        }
+        vec!["--firmware=uefi-insecure".to_string()]
+    };
+
     // Launch VM with bcvk
     // Use ds=iid-datasource-none to disable cloud-init for faster boot
+    let firmware_args_slice = firmware_args.as_slice();
     cmd!(
         sh,
-        "bcvk libvirt run --name {vm_name} --detach {COMMON_INST_ARGS...} {image}"
+        "bcvk libvirt run --name {vm_name} --detach {firmware_args_slice...} {COMMON_INST_ARGS...} {image}"
     )
     .run()
     .context("Launching VM with bcvk")?;
