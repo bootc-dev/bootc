@@ -2,6 +2,7 @@ use std::{io::Read, sync::OnceLock};
 
 use anyhow::{Context, Result};
 use bootc_kernel_cmdline::utf8::Cmdline;
+use bootc_mount::inspect_filesystem;
 use fn_error_context::context;
 
 use crate::{
@@ -76,7 +77,23 @@ pub(crate) fn composefs_booted() -> Result<Option<&'static ComposefsCmdline>> {
     };
     let Some(v) = kv.value() else { return Ok(None) };
     let v = ComposefsCmdline::new(v);
-    let r = CACHED_DIGEST_VALUE.get_or_init(|| Some(v));
+
+    // Find the source of / mountpoint as the cmdline doesn't change on soft-reboot
+    let root_mnt = inspect_filesystem("/".into())?;
+
+    // This is of the format composefs:<composefs_hash>
+    let verity_from_mount_src = root_mnt
+        .source
+        .strip_prefix("composefs:")
+        .ok_or_else(|| anyhow::anyhow!("Root not mounted using composefs"))?;
+
+    let r = if *verity_from_mount_src != *v.digest {
+        // soft rebooted into another deployment
+        CACHED_DIGEST_VALUE.get_or_init(|| Some(ComposefsCmdline::new(verity_from_mount_src)))
+    } else {
+        CACHED_DIGEST_VALUE.get_or_init(|| Some(v))
+    };
+
     Ok(r.as_ref())
 }
 
@@ -258,6 +275,12 @@ pub(crate) async fn get_composefs_status(
     composefs_deployment_status_from(&storage, booted_cfs.cmdline).await
 }
 
+fn set_reboot_capable(deployment: &mut BootEntry, booted_boot_digest: &String) -> Result<()> {
+    let boot_digest = deployment.composefs_boot_digest()?;
+    deployment.soft_reboot_capable = boot_digest == booted_boot_digest;
+    Ok(())
+}
+
 #[context("Getting composefs deployment status")]
 pub(crate) async fn composefs_deployment_status_from(
     storage: &Storage,
@@ -350,9 +373,9 @@ pub(crate) async fn composefs_deployment_status_from(
         anyhow::bail!("Could not determine boot type");
     };
 
-    let booted = host.require_composefs_booted()?;
+    let booted_cfs = host.require_composefs_booted()?;
 
-    let is_rollback_queued = match booted.bootloader {
+    let is_rollback_queued = match booted_cfs.bootloader {
         Bootloader::Grub => match boot_type {
             BootType::Bls => {
                 let bls_config = get_sorted_type1_boot_entries(boot_dir, false)?;
@@ -412,6 +435,29 @@ pub(crate) async fn composefs_deployment_status_from(
     if host.status.rollback_queued {
         host.spec.boot_order = BootOrder::Rollback
     };
+
+    // Can only soft reboot non UKI boot entries
+    if !matches!(boot_type, BootType::Uki) {
+        let booted_mut = host
+            .status
+            .booted
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("Failed to find booted entry"))?;
+
+        let booted_boot_digest = booted_mut.composefs_boot_digest()?;
+
+        if let Some(staged) = host.status.staged.as_mut() {
+            set_reboot_capable(staged, booted_boot_digest)?;
+        }
+
+        if let Some(rollback) = host.status.rollback.as_mut() {
+            set_reboot_capable(rollback, booted_boot_digest)?;
+        }
+
+        for deployment in &mut host.status.other_deployments {
+            set_reboot_capable(deployment, booted_boot_digest)?;
+        }
+    }
 
     Ok(host)
 }
