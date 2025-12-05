@@ -154,6 +154,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "bootc-imagectl"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bootc-internal-utils",
+ "camino",
+ "clap",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "shlex",
+ "similar-asserts",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "bootc-initramfs-setup"
 version = "0.1.0"
 dependencies = [
@@ -225,6 +243,7 @@ dependencies = [
  "anstream",
  "anstyle",
  "anyhow",
+ "bootc-imagectl",
  "bootc-initramfs-setup",
  "bootc-internal-blockdev",
  "bootc-internal-utils",
