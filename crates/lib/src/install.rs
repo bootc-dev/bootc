@@ -1689,7 +1689,7 @@ async fn install_to_filesystem_impl(
         let (id, verity) = initialize_composefs_repository(state, rootfs).await?;
         tracing::info!("id: {}, verity: {}", hex::encode(id), verity.to_hex());
 
-        setup_composefs_boot(rootfs, state, &hex::encode(id))?;
+        setup_composefs_boot(rootfs, state, &hex::encode(id)).await?;
     } else {
         ostree_install(state, rootfs, cleanup).await?;
     }
