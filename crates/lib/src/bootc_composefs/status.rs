@@ -3,6 +3,7 @@ use std::{io::Read, sync::OnceLock};
 use anyhow::{Context, Result};
 use bootc_kernel_cmdline::utf8::Cmdline;
 use fn_error_context::context;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     bootc_composefs::boot::BootType,
@@ -22,10 +23,10 @@ use std::str::FromStr;
 use bootc_utils::try_deserialize_timestamp;
 use cap_std_ext::cap_std::fs::Dir;
 use ostree_container::OstreeImageReference;
-use ostree_ext::container::deploy::ORIGIN_CONTAINER;
 use ostree_ext::container::{self as ostree_container};
 use ostree_ext::containers_image_proxy;
 use ostree_ext::oci_spec;
+use ostree_ext::{container::deploy::ORIGIN_CONTAINER, oci_spec::image::ImageConfiguration};
 
 use ostree_ext::oci_spec::image::ImageManifest;
 use tokio::io::AsyncReadExt;
@@ -35,6 +36,13 @@ use crate::composefs_consts::{
     ORIGIN_KEY_BOOT_TYPE, STATE_DIR_RELATIVE,
 };
 use crate::spec::Bootloader;
+
+/// Used for storing the container image info alongside of .origin file
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct ImgConfigManifest {
+    pub(crate) config: ImageConfiguration,
+    pub(crate) manifest: ImageManifest,
+}
 
 /// A parsed composefs command line
 #[derive(Clone)]
@@ -134,7 +142,7 @@ pub(crate) fn get_sorted_type1_boot_entries(
 #[context("Getting container info")]
 pub(crate) async fn get_container_manifest_and_config(
     imgref: &String,
-) -> Result<(ImageManifest, oci_spec::image::ImageConfiguration)> {
+) -> Result<ImgConfigManifest> {
     let config = containers_image_proxy::ImageProxyConfig::default();
     let proxy = containers_image_proxy::ImageProxy::new_with_config(config).await?;
 
@@ -150,7 +158,7 @@ pub(crate) async fn get_container_manifest_and_config(
 
     let config: oci_spec::image::ImageConfiguration = serde_json::from_slice(&buf)?;
 
-    Ok((manifest, config))
+    Ok(ImgConfigManifest { manifest, config })
 }
 
 #[context("Getting bootloader")]
@@ -175,47 +183,45 @@ pub(crate) fn get_bootloader() -> Result<Bootloader> {
 
 #[context("Getting composefs deployment metadata")]
 async fn boot_entry_from_composefs_deployment(
+    storage: &Storage,
     origin: tini::Ini,
     verity: String,
 ) -> Result<BootEntry> {
     let image = match origin.get::<String>("origin", ORIGIN_CONTAINER) {
         Some(img_name_from_config) => {
             let ostree_img_ref = OstreeImageReference::from_str(&img_name_from_config)?;
-            let imgref = ostree_img_ref.imgref.to_string();
             let img_ref = ImageReference::from(ostree_img_ref);
 
-            // The image might've been removed, so don't error if we can't get the image manifest
-            let (image_digest, version, architecture, created_at) =
-                match get_container_manifest_and_config(&imgref).await {
-                    Ok((manifest, config)) => {
-                        let digest = manifest.config().digest().to_string();
-                        let arch = config.architecture().to_string();
-                        let created = config.created().clone();
-                        let version = manifest
-                            .annotations()
-                            .as_ref()
-                            .and_then(|a| a.get(oci_spec::image::ANNOTATION_VERSION).cloned());
+            let path = std::path::PathBuf::from(STATE_DIR_RELATIVE)
+                .join(&verity)
+                .join(format!("{verity}.imginfo"));
 
-                        (digest, version, arch, created)
-                    }
+            let img_conf = storage
+                .physical_root
+                .read_to_string(&path)
+                .context("Failed to open imginfo file")?;
 
-                    Err(e) => {
-                        tracing::debug!("Failed to open image {img_ref}, because {e:?}");
-                        ("".into(), None, "".into(), None)
-                    }
-                };
+            let img_conf: ImgConfigManifest =
+                serde_json::from_str(&img_conf).context("Failed to parse imginfo file as JSON")?;
 
+            let image_digest = img_conf.manifest.config().digest().to_string();
+            let architecture = img_conf.config.architecture().to_string();
+            let version = img_conf
+                .manifest
+                .annotations()
+                .as_ref()
+                .and_then(|a| a.get(oci_spec::image::ANNOTATION_VERSION).cloned());
+
+            let created_at = img_conf.config.created().clone();
             let timestamp = created_at.and_then(|x| try_deserialize_timestamp(&x));
 
-            let image_status = ImageStatus {
+            Some(ImageStatus {
                 image: img_ref,
                 version,
                 timestamp,
                 image_digest,
                 architecture,
-            };
-
-            Some(image_status)
+            })
         }
 
         // Wasn't booted using a container image. Do nothing
@@ -313,7 +319,7 @@ pub(crate) async fn composefs_deployment_status_from(
             .with_context(|| format!("Failed to parse file {depl_file_name}.origin as ini"))?;
 
         let boot_entry =
-            boot_entry_from_composefs_deployment(ini, depl_file_name.to_string()).await?;
+            boot_entry_from_composefs_deployment(storage, ini, depl_file_name.to_string()).await?;
 
         // SAFETY: boot_entry.composefs will always be present
         let boot_type_from_origin = boot_entry.composefs.as_ref().unwrap().boot_type;

@@ -24,7 +24,9 @@ use rustix::{
 
 use crate::bootc_composefs::boot::BootType;
 use crate::bootc_composefs::repo::get_imgref;
-use crate::bootc_composefs::status::get_sorted_type1_boot_entries;
+use crate::bootc_composefs::status::{
+    get_container_manifest_and_config, get_sorted_type1_boot_entries, ImgConfigManifest,
+};
 use crate::parsers::bls_config::BLSConfigType;
 use crate::store::{BootedComposefs, Storage};
 use crate::{
@@ -151,15 +153,41 @@ pub(crate) fn update_target_imgref_in_origin(
     Ok(())
 }
 
-/// Creates and populates /sysroot/state/deploy/image_id
+/// Creates and populates the composefs state directory for a deployment.
+///
+/// This function sets up the state directory structure and configuration files
+/// needed for a composefs deployment. It creates the deployment state directory,
+/// copies configuration, sets up the shared `/var` directory, and writes metadata
+/// files including the origin configuration and image information.
+///
+/// # Arguments
+///
+/// * `root_path`         - The root filesystem path (typically `/sysroot`)
+/// * `deployment_id`     - Unique SHA512 hash identifier for this deployment
+/// * `imgref`            - Container image reference for the deployment
+/// * `staged`            - Whether this is a staged deployment (writes to transient state dir)
+/// * `boot_type`         - Boot loader type (`Bls` or `Uki`)
+/// * `boot_digest`       - Optional boot digest for verification
+/// * `container_details` - Optional container manifest and config. Fetched if not provided
+///
+/// # State Directory Structure
+///
+/// Creates the following structure under `/sysroot/state/deploy/{deployment_id}/`:
+/// * `etc/`                    - Copy of system configuration files
+/// * `var`                     - Symlink to shared `/var` directory
+/// * `{deployment_id}.origin`  - OSTree-style origin configuration
+/// * `{deployment_id}.imginfo` - Container image manifest and config as JSON
+///
+/// For staged deployments, also writes to `/run/composefs/staged-deployment`.
 #[context("Writing composefs state")]
-pub(crate) fn write_composefs_state(
+pub(crate) async fn write_composefs_state(
     root_path: &Utf8PathBuf,
     deployment_id: Sha512HashValue,
     imgref: &ImageReference,
     staged: bool,
     boot_type: BootType,
     boot_digest: Option<String>,
+    container_details: Option<&ImgConfigManifest>,
 ) -> Result<()> {
     let state_path = root_path
         .join(STATE_DIR_RELATIVE)
@@ -187,6 +215,11 @@ pub(crate) fn write_composefs_state(
 
     let imgref = get_imgref(&transport, &image_name);
 
+    let img_config = match container_details {
+        Some(val) => val,
+        None => &get_container_manifest_and_config(&imgref).await?,
+    };
+
     let mut config = tini::Ini::new().section("origin").item(
         ORIGIN_CONTAINER,
         // TODO (Johan-Liebert1): The image won't always be unverified
@@ -205,6 +238,15 @@ pub(crate) fn write_composefs_state(
 
     let state_dir =
         Dir::open_ambient_dir(&state_path, ambient_authority()).context("Opening state dir")?;
+
+    // NOTE: This is only supposed to be temporary until we decide on where to store
+    // the container manifest/config
+    state_dir
+        .atomic_write(
+            format!("{}.imginfo", deployment_id.to_hex()),
+            serde_json::to_vec(&img_config)?,
+        )
+        .context("Failed to write to .imginfo file")?;
 
     state_dir
         .atomic_write(

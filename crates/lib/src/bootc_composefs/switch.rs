@@ -40,14 +40,14 @@ pub(crate) async fn switch_composefs(
     };
 
     let repo = &*booted_cfs.repo;
-    let (image, manifest, _) = is_image_pulled(repo, &target_imgref).await?;
+    let (image, img_config) = is_image_pulled(repo, &target_imgref).await?;
 
     if let Some(cfg_verity) = image {
         let action = validate_update(
             storage,
             booted_cfs,
             &host,
-            manifest.config().digest().digest(),
+            img_config.manifest.config().digest().digest(),
             &cfg_verity,
             true,
         )?;
@@ -59,7 +59,7 @@ pub(crate) async fn switch_composefs(
             }
 
             UpdateAction::Proceed => {
-                return do_upgrade(storage, &host, &target_imgref).await;
+                return do_upgrade(storage, &host, &target_imgref, &img_config).await;
             }
 
             UpdateAction::UpdateOrigin => {
@@ -71,7 +71,7 @@ pub(crate) async fn switch_composefs(
         }
     }
 
-    do_upgrade(storage, &host, &target_imgref).await?;
+    do_upgrade(storage, &host, &target_imgref, &img_config).await?;
 
     Ok(())
 }

@@ -1142,7 +1142,7 @@ pub(crate) fn setup_composefs_uki_boot(
 }
 
 #[context("Setting up composefs boot")]
-pub(crate) fn setup_composefs_boot(
+pub(crate) async fn setup_composefs_boot(
     root_setup: &RootSetup,
     state: &State,
     image_id: &str,
@@ -1217,7 +1217,9 @@ pub(crate) fn setup_composefs_boot(
         false,
         boot_type,
         boot_digest,
-    )?;
+        None,
+    )
+    .await?;
 
     Ok(())
 }
