@@ -8,7 +8,6 @@ use composefs::{
 use composefs_boot::BootOps;
 use composefs_oci::image::create_filesystem;
 use fn_error_context::context;
-use ostree_ext::oci_spec::image::{ImageConfiguration, ImageManifest};
 
 use crate::{
     bootc_composefs::{
@@ -16,7 +15,10 @@ use crate::{
         repo::{get_imgref, pull_composefs_repo},
         service::start_finalize_stated_svc,
         state::write_composefs_state,
-        status::{get_bootloader, get_composefs_status, get_container_manifest_and_config},
+        status::{
+            get_bootloader, get_composefs_status, get_container_manifest_and_config,
+            ImgConfigManifest,
+        },
     },
     cli::UpgradeOpts,
     composefs_consts::{STATE_DIR_RELATIVE, TYPE1_ENT_PATH_STAGED, USER_CFG_STAGED},
@@ -52,17 +54,17 @@ pub fn str_to_sha256digest(id: &str) -> Result<Sha256Digest> {
 pub(crate) async fn is_image_pulled(
     repo: &ComposefsRepository,
     imgref: &ImageReference,
-) -> Result<(Option<Sha512HashValue>, ImageManifest, ImageConfiguration)> {
+) -> Result<(Option<Sha512HashValue>, ImgConfigManifest)> {
     let imgref_repr = get_imgref(&imgref.transport, &imgref.image);
-    let (manifest, config) = get_container_manifest_and_config(&imgref_repr).await?;
+    let img_config_manifest = get_container_manifest_and_config(&imgref_repr).await?;
 
-    let img_digest = manifest.config().digest().digest();
+    let img_digest = img_config_manifest.manifest.config().digest().digest();
     let img_sha256 = str_to_sha256digest(&img_digest)?;
 
     // check_stream is expensive to run, but probably a good idea
     let container_pulled = repo.check_stream(&img_sha256).context("Checking stream")?;
 
-    Ok((container_pulled, manifest, config))
+    Ok((container_pulled, img_config_manifest))
 }
 
 fn rm_staged_type1_ent(boot_dir: &Dir) -> Result<()> {
@@ -211,6 +213,7 @@ pub(crate) async fn do_upgrade(
     storage: &Storage,
     host: &Host,
     imgref: &ImageReference,
+    img_manifest_config: &ImgConfigManifest,
 ) -> Result<()> {
     start_finalize_stated_svc()?;
 
@@ -255,7 +258,9 @@ pub(crate) async fn do_upgrade(
         true,
         boot_type,
         boot_digest,
-    )?;
+        Some(img_manifest_config),
+    )
+    .await?;
 
     Ok(())
 }
@@ -278,8 +283,8 @@ pub(crate) async fn upgrade_composefs(
 
     let repo = &*composefs.repo;
 
-    let (img_pulled, mut manifest, mut config) = is_image_pulled(&repo, booted_imgref).await?;
-    let booted_img_digest = manifest.config().digest().digest().to_owned();
+    let (img_pulled, mut img_config) = is_image_pulled(&repo, booted_imgref).await?;
+    let booted_img_digest = img_config.manifest.config().digest().digest().to_owned();
 
     // Check if we already have this update staged
     // Or if we have another staged deployment with a different image
@@ -303,17 +308,15 @@ pub(crate) async fn upgrade_composefs(
         // Switch takes precedence over update, so we change the imgref
         booted_imgref = &staged_image.image;
 
-        let (img_pulled, staged_manifest, staged_cfg) =
-            is_image_pulled(&repo, booted_imgref).await?;
-        manifest = staged_manifest;
-        config = staged_cfg;
+        let (img_pulled, staged_img_config) = is_image_pulled(&repo, booted_imgref).await?;
+        img_config = staged_img_config;
 
         if let Some(cfg_verity) = img_pulled {
             let action = validate_update(
                 storage,
                 composefs,
                 &host,
-                manifest.config().digest().digest(),
+                img_config.manifest.config().digest().digest(),
                 &cfg_verity,
                 false,
             )?;
@@ -325,7 +328,7 @@ pub(crate) async fn upgrade_composefs(
                 }
 
                 UpdateAction::Proceed => {
-                    return do_upgrade(storage, &host, booted_imgref).await;
+                    return do_upgrade(storage, &host, booted_imgref, &img_config).await;
                 }
 
                 UpdateAction::UpdateOrigin => {
@@ -353,7 +356,7 @@ pub(crate) async fn upgrade_composefs(
             }
 
             UpdateAction::Proceed => {
-                return do_upgrade(storage, &host, booted_imgref).await;
+                return do_upgrade(storage, &host, booted_imgref, &img_config).await;
             }
 
             UpdateAction::UpdateOrigin => {
@@ -365,7 +368,7 @@ pub(crate) async fn upgrade_composefs(
     if opts.check {
         // TODO(Johan-Liebert1): If we have the previous, i.e. the current manifest with us then we can replace the
         // following with [`ostree_container::ManifestDiff::new`] which will be much cleaner
-        for (idx, diff_id) in config.rootfs().diff_ids().iter().enumerate() {
+        for (idx, diff_id) in img_config.config.rootfs().diff_ids().iter().enumerate() {
             let diff_id = str_to_sha256digest(diff_id)?;
 
             // we could use `check_stream` here but that will most probably take forever as it
@@ -373,11 +376,11 @@ pub(crate) async fn upgrade_composefs(
             let have_layer = repo.has_stream(&diff_id)?;
 
             if have_layer.is_none() {
-                if idx >= manifest.layers().len() {
+                if idx >= img_config.manifest.layers().len() {
                     anyhow::bail!("Length mismatch between rootfs diff layers and manifest layers");
                 }
 
-                let layer = &manifest.layers()[idx];
+                let layer = &img_config.manifest.layers()[idx];
 
                 println!(
                     "Added layer: {}\tSize: {}",
@@ -390,7 +393,7 @@ pub(crate) async fn upgrade_composefs(
         return Ok(());
     }
 
-    do_upgrade(storage, &host, booted_imgref).await?;
+    do_upgrade(storage, &host, booted_imgref, &img_config).await?;
 
     if opts.apply {
         return crate::reboot::reboot();
