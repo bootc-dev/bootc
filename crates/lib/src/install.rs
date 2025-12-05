@@ -2383,7 +2383,7 @@ pub(crate) async fn install_reset(opts: InstallResetOpts) -> Result<()> {
         stateroot: target_stateroot.clone(),
         kargs,
     };
-    crate::deploy::stage(sysroot, from, &fetched, &spec, prog.clone()).await?;
+    crate::deploy::stage(sysroot, from, &fetched, &spec, prog.clone(), false).await?;
 
     // Copy /boot entry from /etc/fstab to the new stateroot if it exists
     if let Some(boot_spec) = read_boot_fstab_entry(rootfs)? {

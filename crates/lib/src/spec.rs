@@ -227,6 +227,10 @@ pub struct BootEntry {
     /// This is true if (relative to the booted system) this is a possible target for a soft reboot
     #[serde(default)]
     pub soft_reboot_capable: bool,
+    /// Whether this deployment is locked from automatic finalization on shutdown
+    #[serde(default)]
+    #[serde(skip_serializing_if = "is_false")]
+    pub finalization_locked: bool,
     /// The container storage backend
     #[serde(default)]
     pub store: Option<Store>,
@@ -234,6 +238,11 @@ pub struct BootEntry {
     pub ostree: Option<BootEntryOstree>,
     /// If this boot entry is composefs based, the corresponding state
     pub composefs: Option<BootEntryComposefs>,
+}
+
+// Helper function for serde skip_serializing_if
+fn is_false(b: &bool) -> bool {
+    !b
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
@@ -628,6 +637,7 @@ mod tests {
                 incompatible: false,
                 soft_reboot_capable: false,
                 pinned: false,
+                finalization_locked: false,
                 store: None,
                 ostree: None,
                 composefs: None,

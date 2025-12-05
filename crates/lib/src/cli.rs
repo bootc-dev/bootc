@@ -100,6 +100,13 @@ pub(crate) struct UpgradeOpts {
     #[clap(long = "soft-reboot", conflicts_with = "check")]
     pub(crate) soft_reboot: Option<SoftRebootMode>,
 
+    /// Download and stage the update without applying it.
+    ///
+    /// The update will be downloaded and staged, but will not be applied automatically on reboot.
+    /// Use `bootc upgrade --apply` to apply the staged update.
+    #[clap(long, conflicts_with_all = ["check", "apply"])]
+    pub(crate) download_only: bool,
+
     #[clap(flatten)]
     pub(crate) progress: ProgressOptions,
 }
@@ -957,6 +964,26 @@ async fn upgrade(
             .unwrap_or_default();
         if staged_unchanged {
             println!("Staged update present, not changed.");
+            let staged_deployment = storage.get_ostree()?.staged_deployment();
+            if let Some(staged) = staged_deployment {
+                // Handle finalization locking based on flags
+                if opts.download_only {
+                    // --download-only: lock the deployment
+                    if !staged.is_finalization_locked() {
+                        storage.get_ostree()?.change_finalization(&staged)?;
+                        println!("Locked staged deployment.");
+                    }
+                } else if !opts.check {
+                    // --apply or no flags: unlock the deployment
+                    // (skip if --check, which is read-only)
+                    if staged.is_finalization_locked() {
+                        storage.get_ostree()?.change_finalization(&staged)?;
+                        println!("Unlocked staged deployment.");
+                    }
+                }
+            } else if opts.download_only || opts.apply {
+                anyhow::bail!("No staged deployment found");
+            }
             handle_staged_soft_reboot(booted_ostree, opts.soft_reboot, &host)?;
             if opts.apply {
                 crate::reboot::reboot()?;
@@ -966,7 +993,15 @@ async fn upgrade(
         } else {
             let stateroot = booted_ostree.stateroot();
             let from = MergeState::from_stateroot(storage, &stateroot)?;
-            crate::deploy::stage(storage, from, &fetched, &spec, prog.clone()).await?;
+            crate::deploy::stage(
+                storage,
+                from,
+                &fetched,
+                &spec,
+                prog.clone(),
+                opts.download_only,
+            )
+            .await?;
             changed = true;
             if let Some(prev) = booted_image.as_ref() {
                 if let Some(fetched_manifest) = fetched.get_manifest(repo)? {
@@ -1071,7 +1106,7 @@ async fn switch_ostree(
 
     let stateroot = booted_ostree.stateroot();
     let from = MergeState::from_stateroot(storage, &stateroot)?;
-    crate::deploy::stage(storage, from, &fetched, &new_spec, prog.clone()).await?;
+    crate::deploy::stage(storage, from, &fetched, &new_spec, prog.clone(), false).await?;
 
     storage.update_mtime()?;
 
@@ -1200,7 +1235,7 @@ async fn edit_ostree(
 
     let stateroot = booted_ostree.stateroot();
     let from = MergeState::from_stateroot(storage, &stateroot)?;
-    crate::deploy::stage(storage, from, &fetched, &new_spec, prog.clone()).await?;
+    crate::deploy::stage(storage, from, &fetched, &new_spec, prog.clone(), false).await?;
 
     storage.update_mtime()?;
 
