@@ -181,6 +181,24 @@ pub(crate) fn get_bootloader() -> Result<Bootloader> {
     }
 }
 
+/// Reads the .imginfo file for the provided deployment
+#[context("Reading imginfo")]
+pub(crate) fn get_imginfo(storage: &Storage, deployment_id: &str) -> Result<ImgConfigManifest> {
+    let path = std::path::PathBuf::from(STATE_DIR_RELATIVE)
+        .join(deployment_id)
+        .join(format!("{deployment_id}.imginfo"));
+
+    let img_conf = storage
+        .physical_root
+        .read_to_string(&path)
+        .context("Failed to open file")?;
+
+    let img_conf = serde_json::from_str::<ImgConfigManifest>(&img_conf)
+        .context("Failed to parse file as JSON")?;
+
+    Ok(img_conf)
+}
+
 #[context("Getting composefs deployment metadata")]
 async fn boot_entry_from_composefs_deployment(
     storage: &Storage,
@@ -192,17 +210,7 @@ async fn boot_entry_from_composefs_deployment(
             let ostree_img_ref = OstreeImageReference::from_str(&img_name_from_config)?;
             let img_ref = ImageReference::from(ostree_img_ref);
 
-            let path = std::path::PathBuf::from(STATE_DIR_RELATIVE)
-                .join(&verity)
-                .join(format!("{verity}.imginfo"));
-
-            let img_conf = storage
-                .physical_root
-                .read_to_string(&path)
-                .context("Failed to open imginfo file")?;
-
-            let img_conf: ImgConfigManifest =
-                serde_json::from_str(&img_conf).context("Failed to parse imginfo file as JSON")?;
+            let img_conf = get_imginfo(storage, &verity)?;
 
             let image_digest = img_conf.manifest.config().digest().to_string();
             let architecture = img_conf.config.architecture().to_string();

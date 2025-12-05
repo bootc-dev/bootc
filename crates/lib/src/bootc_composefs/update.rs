@@ -8,6 +8,7 @@ use composefs::{
 use composefs_boot::BootOps;
 use composefs_oci::image::create_filesystem;
 use fn_error_context::context;
+use ostree_ext::container::ManifestDiff;
 
 use crate::{
     bootc_composefs::{
@@ -16,7 +17,7 @@ use crate::{
         service::start_finalize_stated_svc,
         state::write_composefs_state,
         status::{
-            get_bootloader, get_composefs_status, get_container_manifest_and_config,
+            get_bootloader, get_composefs_status, get_container_manifest_and_config, get_imginfo,
             ImgConfigManifest,
         },
     },
@@ -366,30 +367,9 @@ pub(crate) async fn upgrade_composefs(
     }
 
     if opts.check {
-        // TODO(Johan-Liebert1): If we have the previous, i.e. the current manifest with us then we can replace the
-        // following with [`ostree_container::ManifestDiff::new`] which will be much cleaner
-        for (idx, diff_id) in img_config.config.rootfs().diff_ids().iter().enumerate() {
-            let diff_id = str_to_sha256digest(diff_id)?;
-
-            // we could use `check_stream` here but that will most probably take forever as it
-            // usually takes ~3s to verify one single layer
-            let have_layer = repo.has_stream(&diff_id)?;
-
-            if have_layer.is_none() {
-                if idx >= img_config.manifest.layers().len() {
-                    anyhow::bail!("Length mismatch between rootfs diff layers and manifest layers");
-                }
-
-                let layer = &img_config.manifest.layers()[idx];
-
-                println!(
-                    "Added layer: {}\tSize: {}",
-                    layer.digest(),
-                    layer.size().to_string()
-                );
-            }
-        }
-
+        let current_manifest = get_imginfo(storage, &*composefs.cmdline.digest)?;
+        let diff = ManifestDiff::new(&current_manifest.manifest, &img_config.manifest);
+        diff.print();
         return Ok(());
     }
 
