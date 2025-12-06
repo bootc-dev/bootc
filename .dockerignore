@@ -21,5 +21,7 @@
 # Workaround for podman bug with secrets + remote
 # https://github.com/containers/podman/issues/25314
 !podman-build-secret*
+# Pre-built packages for builds that use them
+!target/packages/
 # And finally of course all the Rust sources
 !crates/

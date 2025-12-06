@@ -86,6 +86,11 @@ RUN echo test content > /usr/share/blah.txt
     # Test for https://github.com/ostreedev/ostree/issues/3544
     # Add a quoted karg using rpm-ostree if available
     if not $is_composefs {
+        # Check rpm-ostree and rpm-ostreed service status before run rpm-ostree
+        # And collect info for flaky error "error: System transaction in progress"
+        rpm-ostree status
+        journalctl -u rpm-ostreed
+
         print "Adding quoted karg via rpm-ostree to test ostree issue #3544"
         rpm-ostree kargs --append=($quoted_karg)
     }
