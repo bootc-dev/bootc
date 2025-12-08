@@ -246,7 +246,7 @@ pub(crate) fn composefs_usr_overlay() -> Result<()> {
         return Ok(());
     }
 
-    overlay_transient(usr)?;
+    overlay_transient(usr, Some(0o755.into()))?;
 
     println!("A writeable overlayfs is now mounted on /usr");
     println!("All changes there will be discarded on reboot.");

@@ -169,8 +169,8 @@ pub fn open_dir(dirfd: impl AsFd, name: impl AsRef<Path> + Debug) -> Result<Owne
 }
 
 #[context("Ensure dir")]
-fn ensure_dir(dirfd: impl AsFd, name: &str) -> Result<OwnedFd> {
-    match mkdirat(dirfd.as_fd(), name, 0o700.into()) {
+fn ensure_dir(dirfd: impl AsFd, name: &str, mode: Option<rustix::fs::Mode>) -> Result<OwnedFd> {
+    match mkdirat(dirfd.as_fd(), name, mode.unwrap_or(0o700.into())) {
         Ok(()) | Err(Errno::EXIST) => {}
         Err(err) => Err(err).with_context(|| format!("Creating dir {name}"))?,
     }
@@ -203,9 +203,14 @@ fn mount_tmpfs() -> Result<OwnedFd> {
 }
 
 #[context("Mounting state as overlay")]
-fn overlay_state(base: impl AsFd, state: impl AsFd, source: &str) -> Result<()> {
-    let upper = ensure_dir(state.as_fd(), "upper")?;
-    let work = ensure_dir(state.as_fd(), "work")?;
+fn overlay_state(
+    base: impl AsFd,
+    state: impl AsFd,
+    source: &str,
+    mode: Option<rustix::fs::Mode>,
+) -> Result<()> {
+    let upper = ensure_dir(state.as_fd(), "upper", mode)?;
+    let work = ensure_dir(state.as_fd(), "work", mode)?;
 
     let overlayfs = FsHandle::open("overlay")?;
     fsconfig_set_string(overlayfs.as_fd(), "source", source)?;
@@ -224,8 +229,8 @@ fn overlay_state(base: impl AsFd, state: impl AsFd, source: &str) -> Result<()> 
 
 /// Mounts a transient overlayfs with passed in fd as the lowerdir
 #[context("Mounting transient overlayfs")]
-pub fn overlay_transient(base: impl AsFd) -> Result<()> {
-    overlay_state(base, prepare_mount(mount_tmpfs()?)?, "transient")
+pub fn overlay_transient(base: impl AsFd, mode: Option<rustix::fs::Mode>) -> Result<()> {
+    overlay_state(base, prepare_mount(mount_tmpfs()?)?, "transient", mode)
 }
 
 #[context("Opening rootfs")]
@@ -287,8 +292,9 @@ fn mount_subdir(
             open_dir(&new_root, subdir)?,
             open_dir(&state, subdir)?,
             "overlay",
+            None,
         ),
-        MountType::Transient => overlay_transient(open_dir(&new_root, subdir)?),
+        MountType::Transient => overlay_transient(open_dir(&new_root, subdir)?, None),
     }
 }
 
@@ -350,7 +356,7 @@ pub fn setup_root(args: Args) -> Result<()> {
     }
 
     if config.root.transient {
-        overlay_transient(&new_root)?;
+        overlay_transient(&new_root, None)?;
     }
 
     match composefs::mount::mount_at(&sysroot_clone, &new_root, "sysroot") {
