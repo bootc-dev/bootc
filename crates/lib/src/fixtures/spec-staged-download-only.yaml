@@ -14,33 +14,32 @@ status:
         image: quay.io/example/someimage:latest
         transport: registry
         signature: insecure
-      architecture: s390x
+      architecture: arm64
       version: nightly
-      timestamp: 2023-10-14T19:22:15Z
+      timestamp: 2023-10-14T19:22:15.42Z
       imageDigest: sha256:16dc2b6256b4ff0d2ec18d2dbfb06d117904010c8cf9732cdb022818cf7a7566
     incompatible: false
     pinned: false
-    downloadOnly: false
+    downloadOnly: true
     ostree:
       checksum: 3c6dad657109522e0b2e49bf44b5420f16f0b438b5b9357e5132211cfbad135d
       deploySerial: 0
       stateroot: default
-  booted: null
-  rollback:
+  booted:
     image:
       image:
         image: quay.io/example/someimage:latest
         transport: registry
         signature: insecure
-      architecture: s390x
+      architecture: arm64
       version: nightly
       timestamp: 2023-09-30T19:22:16Z
       imageDigest: sha256:736b359467c9437c1ac915acaae952aad854e07eb4a16a94999a48af08c83c34
     incompatible: false
     pinned: false
-    downloadOnly: false
     ostree:
       checksum: 26836632adf6228d64ef07a26fd3efaf177104efd1f341a2cf7909a3e4e2c72c
       deploySerial: 0
       stateroot: default
+  rollback: null
   isContainer: false

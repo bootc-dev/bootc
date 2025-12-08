@@ -20,6 +20,7 @@ status:
     cachedUpdate: null
     incompatible: false
     pinned: false
+    downloadOnly: false
     store: ostreeContainer
     ostree:
       checksum: 05cbf6dcae32e7a1c5a0774a648a073a5834a305ca92204b53fb6c281fe49db1
@@ -30,6 +31,7 @@ status:
     cachedUpdate: null
     incompatible: false
     pinned: false
+    downloadOnly: false
     store: null
     ostree:
       checksum: f9fa3a553ceaaaf30cf85bfe7eed46a822f7b8fd7e14c1e3389cbc3f6d27f791

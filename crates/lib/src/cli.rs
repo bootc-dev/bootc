@@ -100,6 +100,14 @@ pub(crate) struct UpgradeOpts {
     #[clap(long = "soft-reboot", conflicts_with = "check")]
     pub(crate) soft_reboot: Option<SoftRebootMode>,
 
+    /// Download and stage the update without applying it.
+    ///
+    /// Download the update and ensure it's retained on disk for the lifetime of this system boot,
+    /// but it will not be applied on reboot. If the system is rebooted without applying the update,
+    /// the image will be eligible for garbage collection again.
+    #[clap(long, conflicts_with_all = ["check", "apply"])]
+    pub(crate) download_only: bool,
+
     #[clap(flatten)]
     pub(crate) progress: ProgressOptions,
 }
@@ -956,7 +964,35 @@ async fn upgrade(
             .map(|img| &img.manifest_digest == fetched_digest)
             .unwrap_or_default();
         if staged_unchanged {
-            println!("Staged update present, not changed.");
+            let staged_deployment = storage.get_ostree()?.staged_deployment();
+            let mut download_only_changed = false;
+
+            if let Some(staged) = staged_deployment {
+                // Handle download-only mode based on flags
+                if opts.download_only {
+                    // --download-only: set download-only mode
+                    if !staged.is_finalization_locked() {
+                        storage.get_ostree()?.change_finalization(&staged)?;
+                        println!("Image downloaded, but will not be applied on reboot");
+                        download_only_changed = true;
+                    }
+                } else if !opts.check {
+                    // --apply or no flags: clear download-only mode
+                    // (skip if --check, which is read-only)
+                    if staged.is_finalization_locked() {
+                        storage.get_ostree()?.change_finalization(&staged)?;
+                        println!("Staged deployment will now be applied on reboot");
+                        download_only_changed = true;
+                    }
+                }
+            } else if opts.download_only || opts.apply {
+                anyhow::bail!("No staged deployment found");
+            }
+
+            if !download_only_changed {
+                println!("Staged update present, not changed");
+            }
+
             handle_staged_soft_reboot(booted_ostree, opts.soft_reboot, &host)?;
             if opts.apply {
                 crate::reboot::reboot()?;
@@ -966,7 +1002,15 @@ async fn upgrade(
         } else {
             let stateroot = booted_ostree.stateroot();
             let from = MergeState::from_stateroot(storage, &stateroot)?;
-            crate::deploy::stage(storage, from, &fetched, &spec, prog.clone()).await?;
+            crate::deploy::stage(
+                storage,
+                from,
+                &fetched,
+                &spec,
+                prog.clone(),
+                opts.download_only,
+            )
+            .await?;
             changed = true;
             if let Some(prev) = booted_image.as_ref() {
                 if let Some(fetched_manifest) = fetched.get_manifest(repo)? {
@@ -1071,7 +1115,7 @@ async fn switch_ostree(
 
     let stateroot = booted_ostree.stateroot();
     let from = MergeState::from_stateroot(storage, &stateroot)?;
-    crate::deploy::stage(storage, from, &fetched, &new_spec, prog.clone()).await?;
+    crate::deploy::stage(storage, from, &fetched, &new_spec, prog.clone(), false).await?;
 
     storage.update_mtime()?;
 
@@ -1200,7 +1244,7 @@ async fn edit_ostree(
 
     let stateroot = booted_ostree.stateroot();
     let from = MergeState::from_stateroot(storage, &stateroot)?;
-    crate::deploy::stage(storage, from, &fetched, &new_spec, prog.clone()).await?;
+    crate::deploy::stage(storage, from, &fetched, &new_spec, prog.clone(), false).await?;
 
     storage.update_mtime()?;
 

@@ -65,6 +65,11 @@
             }
           ]
         },
+        "downloadOnly": {
+          "description": "Whether this deployment is in download-only mode (prevented from automatic finalization on shutdown).\nThis is set via --download-only on the CLI.",
+          "type": "boolean",
+          "default": false
+        },
         "image": {
           "description": "The image reference",
           "anyOf": [
@@ -199,7 +204,7 @@
       "description": "Bootloader type to determine whether system was booted via Grub or Systemd",
       "oneOf": [
         {
-          "description": "Use Grub as the booloader",
+          "description": "Use Grub as the bootloader",
           "type": "string",
           "const": "Grub"
         },

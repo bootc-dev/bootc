@@ -19,7 +19,13 @@ filesystem type from the container image.
 At the current time, the only output key is `root-fs-type` which is a
 string-valued filesystem name suitable for passing to `mkfs.\$type`.
 
+# OPTIONS
+
 <!-- BEGIN GENERATED OPTIONS -->
+**--all**
+
+    Print all configuration
+
 <!-- END GENERATED OPTIONS -->
 
 # VERSION

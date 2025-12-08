@@ -227,6 +227,10 @@ pub struct BootEntry {
     /// This is true if (relative to the booted system) this is a possible target for a soft reboot
     #[serde(default)]
     pub soft_reboot_capable: bool,
+    /// Whether this deployment is in download-only mode (prevented from automatic finalization on shutdown).
+    /// This is set via --download-only on the CLI.
+    #[serde(default)]
+    pub download_only: bool,
     /// The container storage backend
     #[serde(default)]
     pub store: Option<Store>,
@@ -628,6 +632,7 @@ mod tests {
                 incompatible: false,
                 soft_reboot_capable: false,
                 pinned: false,
+                download_only: false,
                 store: None,
                 ostree: None,
                 composefs: None,

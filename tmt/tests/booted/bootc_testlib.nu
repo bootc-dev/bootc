@@ -19,3 +19,10 @@ export def reboot [] {
 export def have_hostexports [] {
     $env.BCVK_EXPORT? == "1"
 }
+
+# Parse the kernel commandline into a list.
+# This is not a proper parser, but good enough
+# for what we need here.
+export def parse_cmdline []  {
+    open /proc/cmdline | str trim | split row " "
+}

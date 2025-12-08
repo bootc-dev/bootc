@@ -170,6 +170,27 @@ impl SysrootLock {
             unowned: true,
         }
     }
+
+    /// Toggle the finalization lock state of a staged deployment.
+    /// If the deployment is currently locked, it will be unlocked, and vice versa.
+    /// The deployment must be a staged deployment.
+    #[allow(unsafe_code)]
+    pub fn change_finalization(&self, deployment: &ostree::Deployment) -> Result<()> {
+        use ostree::glib::translate::*;
+        use std::ptr;
+        unsafe {
+            let mut error = ptr::null_mut();
+            let result = ostree::ffi::ostree_sysroot_change_finalization(
+                self.sysroot.to_glib_none().0,
+                deployment.to_glib_none().0,
+                &mut error,
+            );
+            if result == 0 {
+                return Err(from_glib_full::<_, ostree::glib::Error>(error).into());
+            }
+            Ok(())
+        }
+    }
 }
 
 #[cfg(test)]

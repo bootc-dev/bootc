@@ -41,6 +41,11 @@
   duration: 30m
   test: nu booted/test-soft-reboot.nu
 
+/test-25-download-only-upgrade:
+  summary: Execute download-only upgrade tests
+  duration: 40m
+  test: nu booted/test-25-download-only-upgrade.nu
+
 /test-26-examples-build:
   summary: Test bootc examples build scripts
   duration: 45m

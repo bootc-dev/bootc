@@ -267,12 +267,14 @@ fn boot_entry_from_deployment(
     };
 
     let soft_reboot_capable = has_soft_reboot_capability(sysroot, deployment);
+    let download_only = deployment.is_staged() && deployment.is_finalization_locked();
     let store = Some(crate::spec::Store::OstreeContainer);
     let r = BootEntry {
         image,
         cached_update,
         incompatible,
         soft_reboot_capable,
+        download_only,
         store,
         pinned: deployment.is_pinned(),
         ostree: Some(crate::spec::BootEntryOstree {
@@ -493,7 +495,7 @@ pub(crate) async fn status(opts: super::cli::StatusOpts) -> Result<()> {
     Ok(())
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub enum Slot {
     Staged,
     Booted,
@@ -560,6 +562,21 @@ fn write_soft_reboot(
         }
     )?;
 
+    Ok(())
+}
+
+/// Helper function to render download-only lock status
+fn write_download_only(
+    mut out: impl Write,
+    slot: Option<Slot>,
+    entry: &crate::spec::BootEntry,
+    prefix_len: usize,
+) -> Result<()> {
+    // Only staged deployments can have download-only status
+    if matches!(slot, Some(Slot::Staged)) {
+        write_row_name(&mut out, "Download-only", prefix_len)?;
+        writeln!(out, "{}", if entry.download_only { "yes" } else { "no" })?;
+    }
     Ok(())
 }
 
@@ -654,6 +671,9 @@ fn human_render_slot(
 
         // Show soft-reboot capability
         write_soft_reboot(&mut out, entry, prefix_len)?;
+
+        // Show download-only lock status
+        write_download_only(&mut out, slot, entry, prefix_len)?;
     }
 
     tracing::debug!("pinned={}", entry.pinned);
@@ -694,6 +714,9 @@ fn human_render_slot_ostree(
 
         // Show soft-reboot capability
         write_soft_reboot(&mut out, entry, prefix_len)?;
+
+        // Show download-only lock status
+        write_download_only(&mut out, slot, entry, prefix_len)?;
     }
 
     tracing::debug!("pinned={}", entry.pinned);
@@ -940,5 +963,48 @@ mod tests {
         assert!(w.contains("Staged:"));
         assert!(w.contains("Commit:"));
         assert!(w.contains("Soft-reboot:"));
+    }
+
+    #[test]
+    fn test_human_readable_staged_download_only() {
+        // Test that download-only staged deployment shows the status in non-verbose mode
+        // Download-only status is only shown in verbose mode per design
+        let w =
+            human_status_from_spec_fixture(include_str!("fixtures/spec-staged-download-only.yaml"))
+                .expect("No spec found");
+        let expected = indoc::indoc! { r"
+            Staged image: quay.io/example/someimage:latest
+                  Digest: sha256:16dc2b6256b4ff0d2ec18d2dbfb06d117904010c8cf9732cdb022818cf7a7566 (arm64)
+                 Version: nightly (2023-10-14T19:22:15Z)
+
+          ● Booted image: quay.io/example/someimage:latest
+                  Digest: sha256:736b359467c9437c1ac915acaae952aad854e07eb4a16a94999a48af08c83c34 (arm64)
+                 Version: nightly (2023-09-30T19:22:16Z)
+        "};
+        similar_asserts::assert_eq!(w, expected);
+    }
+
+    #[test]
+    fn test_human_readable_staged_download_only_verbose() {
+        // Test that download-only status is shown in verbose mode for staged deployments
+        let w = human_status_from_spec_fixture_verbose(include_str!(
+            "fixtures/spec-staged-download-only.yaml"
+        ))
+        .expect("No spec found");
+
+        // Verbose output should include download-only status
+        assert!(w.contains("Download-only: yes"));
+    }
+
+    #[test]
+    fn test_human_readable_staged_not_download_only_verbose() {
+        // Test that staged deployment not in download-only mode shows "Download-only: no" in verbose mode
+        let w = human_status_from_spec_fixture_verbose(include_str!(
+            "fixtures/spec-staged-booted.yaml"
+        ))
+        .expect("No spec found");
+
+        // Verbose output should include download-only status as "no" for normal staged deployments
+        assert!(w.contains("Download-only: no"));
     }
 }

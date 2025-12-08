@@ -11,6 +11,7 @@ status:
     cachedUpdate: null
     incompatible: true
     pinned: false
+    downloadOnly: false
     store: null
     ostree:
       checksum: 1c24260fdd1be20f72a4a97a75c582834ee3431fbb0fa8e4f482bb219d633a45
@@ -21,6 +22,7 @@ status:
     cachedUpdate: null
     incompatible: false
     pinned: false
+    downloadOnly: false
     store: null
     ostree:
       checksum: f9fa3a553ceaaaf30cf85bfe7eed46a822f7b8fd7e14c1e3389cbc3f6d27f791

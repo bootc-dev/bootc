@@ -21,6 +21,7 @@ status:
     cachedUpdate: null
     incompatible: false
     pinned: true
+    downloadOnly: false
     ostree:
       checksum: 439f6bd2e2361bee292c1f31840d798c5ac5ba76483b8021dc9f7b0164ac0f48
       deploySerial: 0
@@ -37,6 +38,7 @@ status:
     cachedUpdate: null
     incompatible: false
     pinned: true
+    downloadOnly: false
     ostree:
       checksum: 99b2cc3b6edce9ebaef6a6076effa5ee3e1dcff3523016ffc94a1b27c6c67e12
       deploySerial: 0

@@ -234,6 +234,7 @@ async fn boot_entry_from_composefs_deployment(
         cached_update: None,
         incompatible: false,
         pinned: false,
+        download_only: false, // Not yet supported for composefs backend
         store: None,
         ostree: None,
         composefs: Some(crate::spec::BootEntryComposefs {
