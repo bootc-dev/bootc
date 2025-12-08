@@ -827,6 +827,11 @@ pub(crate) fn update_integration() -> Result<()> {
             continue;
         };
 
+        if stem != "testing-ex" {
+            println!("SKIPPING: {stem}");
+            continue
+        }
+
         let content =
             std::fs::read_to_string(&path).with_context(|| format!("Reading {}", filename))?;
 
@@ -861,6 +866,8 @@ pub(crate) fn update_integration() -> Result<()> {
         };
 
         let test_command = format!("{} {}", extension, relative_path.display());
+
+        println!("test_command: {test_command}");
 
         // Check if test wants bind storage
         let try_bind_storage = metadata

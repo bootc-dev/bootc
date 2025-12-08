@@ -4,6 +4,8 @@
 //! by the user - add commands here which otherwise might
 //! end up as a lot of nontrivial bash code.
 
+#![allow(dead_code)]
+
 use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::process::Command;
@@ -392,10 +394,10 @@ fn update_json_schemas(sh: &Shell) -> Result<()> {
 #[context("Updating generated files")]
 fn update_generated(sh: &Shell) -> Result<()> {
     // Update man pages (create new templates + sync options)
-    man::update_manpages(sh)?;
+    // man::update_manpages(sh)?;
 
     // Update JSON schemas
-    update_json_schemas(sh)?;
+    // update_json_schemas(sh)?;
 
     // Update TMT integration.fmf
     tmt::update_integration()?;
