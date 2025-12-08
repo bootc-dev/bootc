@@ -259,7 +259,7 @@ pub(crate) async fn do_upgrade(
         true,
         boot_type,
         boot_digest,
-        Some(img_manifest_config),
+        img_manifest_config,
     )
     .await?;
 

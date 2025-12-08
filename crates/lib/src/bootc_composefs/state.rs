@@ -24,9 +24,7 @@ use rustix::{
 
 use crate::bootc_composefs::boot::BootType;
 use crate::bootc_composefs::repo::get_imgref;
-use crate::bootc_composefs::status::{
-    get_container_manifest_and_config, get_sorted_type1_boot_entries, ImgConfigManifest,
-};
+use crate::bootc_composefs::status::{get_sorted_type1_boot_entries, ImgConfigManifest};
 use crate::parsers::bls_config::BLSConfigType;
 use crate::store::{BootedComposefs, Storage};
 use crate::{
@@ -168,7 +166,7 @@ pub(crate) fn update_target_imgref_in_origin(
 /// * `staged`            - Whether this is a staged deployment (writes to transient state dir)
 /// * `boot_type`         - Boot loader type (`Bls` or `Uki`)
 /// * `boot_digest`       - Optional boot digest for verification
-/// * `container_details` - Optional container manifest and config. Fetched if not provided
+/// * `container_details` - Container manifest and config used to create this deployment
 ///
 /// # State Directory Structure
 ///
@@ -183,11 +181,11 @@ pub(crate) fn update_target_imgref_in_origin(
 pub(crate) async fn write_composefs_state(
     root_path: &Utf8PathBuf,
     deployment_id: Sha512HashValue,
-    imgref: &ImageReference,
+    target_imgref: &ImageReference,
     staged: bool,
     boot_type: BootType,
     boot_digest: Option<String>,
-    container_details: Option<&ImgConfigManifest>,
+    container_details: &ImgConfigManifest,
 ) -> Result<()> {
     let state_path = root_path
         .join(STATE_DIR_RELATIVE)
@@ -211,14 +209,11 @@ pub(crate) async fn write_composefs_state(
         image: image_name,
         transport,
         ..
-    } = &imgref;
+    } = &target_imgref;
+
+    println!("imgref: {target_imgref:#?}");
 
     let imgref = get_imgref(&transport, &image_name);
-
-    let img_config = match container_details {
-        Some(val) => val,
-        None => &get_container_manifest_and_config(&imgref).await?,
-    };
 
     let mut config = tini::Ini::new().section("origin").item(
         ORIGIN_CONTAINER,
@@ -244,7 +239,7 @@ pub(crate) async fn write_composefs_state(
     state_dir
         .atomic_write(
             format!("{}.imginfo", deployment_id.to_hex()),
-            serde_json::to_vec(&img_config)?,
+            serde_json::to_vec(&container_details)?,
         )
         .context("Failed to write to .imginfo file")?;
 

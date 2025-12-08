@@ -96,11 +96,13 @@ use rustix::{mount::MountFlags, path::Arg};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::bootc_kargs::compute_new_kargs;
-use crate::composefs_consts::{TYPE1_ENT_PATH, TYPE1_ENT_PATH_STAGED};
 use crate::parsers::bls_config::{BLSConfig, BLSConfigType};
 use crate::parsers::grub_menuconfig::MenuEntry;
 use crate::task::Task;
+use crate::{
+    bootc_composefs::repo::get_imgref,
+    composefs_consts::{TYPE1_ENT_PATH, TYPE1_ENT_PATH_STAGED},
+};
 use crate::{
     bootc_composefs::repo::open_composefs_repo,
     store::{ComposefsFilesystem, Storage},
@@ -108,6 +110,9 @@ use crate::{
 use crate::{
     bootc_composefs::state::{get_booted_bls, write_composefs_state},
     bootloader::esp_in,
+};
+use crate::{
+    bootc_composefs::status::get_container_manifest_and_config, bootc_kargs::compute_new_kargs,
 };
 use crate::{bootc_composefs::status::get_sorted_grub_uki_boot_entries, install::PostFetchState};
 use crate::{
@@ -1217,7 +1222,11 @@ pub(crate) async fn setup_composefs_boot(
         false,
         boot_type,
         boot_digest,
-        None,
+        &get_container_manifest_and_config(&get_imgref(
+            &state.source.imageref.transport.to_string(),
+            &state.source.imageref.name,
+        ))
+        .await?,
     )
     .await?;
 
