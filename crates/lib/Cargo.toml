@@ -14,7 +14,7 @@ include = ["/src", "LICENSE-APACHE", "LICENSE-MIT"]
 
 [dependencies]
 # Internal crates
-bootc-blockdev = { package = "bootc-internal-blockdev", path = "../blockdev", version = "0.0.0" }
+bootc-blockdev = { package = "bootc-internal-blockdev", path = "../blockdev", version = "0.1.0" }
 bootc-kernel-cmdline = { path = "../kernel_cmdline", version = "0.0.0" }
 bootc-mount = { path = "../mount" }
 bootc-sysusers = { path = "../sysusers" }
