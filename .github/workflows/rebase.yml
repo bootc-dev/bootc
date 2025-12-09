@@ -27,7 +27,7 @@ jobs:
           fetch-depth: 0
 
       - name: Automatic Rebase
-        uses: peter-evans/rebase@v3
+        uses: peter-evans/rebase@v4
         with:
           token: ${{ steps.token.outputs.token }}
 
