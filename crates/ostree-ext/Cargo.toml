@@ -9,7 +9,7 @@ version = "0.15.3"
 
 [dependencies]
 # Internal crates
-bootc-utils = { package = "bootc-internal-utils", path = "../utils", version = "0.0.0" }
+bootc-utils = { package = "bootc-internal-utils", path = "../utils", version = "0.1.0" }
 
 # Workspace dependencies
 anyhow = { workspace = true }

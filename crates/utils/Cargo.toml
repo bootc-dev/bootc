@@ -1,7 +1,7 @@
 [package]
 name = "bootc-internal-utils"
 description = "Internal implementation component of bootc; do not use"
-version = "0.0.0"
+version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/bootc-dev/bootc"

@@ -19,7 +19,7 @@ bootc-kernel-cmdline = { path = "../kernel_cmdline", version = "0.0.0" }
 bootc-mount = { path = "../mount" }
 bootc-sysusers = { path = "../sysusers" }
 bootc-tmpfiles = { path = "../tmpfiles" }
-bootc-utils = { package = "bootc-internal-utils", path = "../utils", version = "0.0.0" }
+bootc-utils = { package = "bootc-internal-utils", path = "../utils", version = "0.1.0" }
 ostree-ext = { path = "../ostree-ext", features = ["bootc"] }
 etc-merge = { path = "../etc-merge" }
 bootc-initramfs-setup = { path = "../initramfs" }
