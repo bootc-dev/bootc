@@ -28,7 +28,7 @@ RUN --mount=type=secret,id=key \
     # Should be generated externally
     test -n "${COMPOSEFS_FSVERITY}"
 
-    cmdline="composefs=${COMPOSEFS_FSVERITY} console=ttyS0,115200n8 enforcing=0 rw"
+    cmdline="composefs=${COMPOSEFS_FSVERITY} console=ttyS0,115200n8 console=hvc0 enforcing=0 rw"
 
     # pesign uses NSS database so create it from input cert/key
     mkdir pesign
