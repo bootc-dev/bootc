@@ -338,6 +338,30 @@ fn compute_boot_digest(
     Ok(hex::encode(digest))
 }
 
+/// Compute SHA256Sum of .linux + .initrd section of the UKI
+///
+/// # Arguments
+/// * entry - BootEntry containing VMlinuz and Initrd
+/// * repo - The composefs repository
+#[context("Computing boot digest")]
+pub(crate) fn compute_boot_digest_uki(uki: &[u8]) -> Result<String> {
+    let vmlinuz = composefs_boot::uki::get_section(uki, ".linux")
+        .ok_or_else(|| anyhow::anyhow!(".linux not present"))??;
+
+    let initramfs = composefs_boot::uki::get_section(uki, ".initrd")
+        .ok_or_else(|| anyhow::anyhow!(".initrd not present"))??;
+
+    let mut hasher = openssl::hash::Hasher::new(openssl::hash::MessageDigest::sha256())
+        .context("Creating hasher")?;
+
+    hasher.update(&vmlinuz).context("hashing vmlinuz")?;
+    hasher.update(&initramfs).context("hashing initrd")?;
+
+    let digest: &[u8] = &hasher.finish().context("Finishing digest")?;
+
+    Ok(hex::encode(digest))
+}
+
 /// Given the SHA256 sum of current VMlinuz + Initrd combo, find boot entry with the same SHA256Sum
 ///
 /// # Returns
@@ -773,10 +797,11 @@ pub(crate) fn setup_composefs_bls_boot(
     Ok(boot_digest)
 }
 
-struct UKILabels {
+struct UKIInfo {
     boot_label: String,
     version: Option<String>,
     os_id: Option<String>,
+    boot_digest: String,
 }
 
 /// Writes a PortableExecutable to ESP along with any PE specific or Global addons
@@ -790,10 +815,10 @@ fn write_pe_to_esp(
     is_insecure_from_opts: bool,
     mounted_efi: impl AsRef<Path>,
     bootloader: &Bootloader,
-) -> Result<Option<UKILabels>> {
+) -> Result<Option<UKIInfo>> {
     let efi_bin = read_file(file, &repo).context("Reading .efi binary")?;
 
-    let mut boot_label: Option<UKILabels> = None;
+    let mut boot_label: Option<UKIInfo> = None;
 
     // UKI Extension might not even have a cmdline
     // TODO: UKI Addon might also have a composefs= cmdline?
@@ -828,10 +853,13 @@ fn write_pe_to_esp(
 
         let parsed_osrel = OsReleaseInfo::parse(osrel);
 
-        boot_label = Some(UKILabels {
+        let boot_digest = compute_boot_digest_uki(&efi_bin)?;
+
+        boot_label = Some(UKIInfo {
             boot_label: uki::get_boot_label(&efi_bin).context("Getting UKI boot label")?,
             version: parsed_osrel.get_version(),
             os_id: parsed_osrel.get_value(&["ID"]),
+            boot_digest,
         });
     }
 
@@ -981,7 +1009,7 @@ fn write_grub_uki_menuentry(
 fn write_systemd_uki_config(
     esp_dir: &Dir,
     setup_type: &BootSetupType,
-    boot_label: UKILabels,
+    boot_label: UKIInfo,
     id: &Sha512HashValue,
 ) -> Result<()> {
     let os_id = boot_label.os_id.as_deref().unwrap_or("bootc");
@@ -1052,7 +1080,7 @@ pub(crate) fn setup_composefs_uki_boot(
     repo: crate::store::ComposefsRepository,
     id: &Sha512HashValue,
     entries: Vec<ComposefsBootEntry<Sha512HashValue>>,
-) -> Result<()> {
+) -> Result<String> {
     let (root_path, esp_device, bootloader, is_insecure_from_opts, uki_addons) = match setup_type {
         BootSetupType::Setup((root_setup, state, postfetch, ..)) => {
             state.require_no_kargs_for_uki()?;
@@ -1085,7 +1113,7 @@ pub(crate) fn setup_composefs_uki_boot(
 
     let esp_mount = mount_esp(&esp_device).context("Mounting ESP")?;
 
-    let mut uki_label: Option<UKILabels> = None;
+    let mut uki_info: Option<UKIInfo> = None;
 
     for entry in entries {
         match entry {
@@ -1134,28 +1162,26 @@ pub(crate) fn setup_composefs_uki_boot(
                 )?;
 
                 if let Some(label) = ret {
-                    uki_label = Some(label);
+                    uki_info = Some(label);
                 }
             }
         };
     }
 
-    let uki_label = uki_label
-        .ok_or_else(|| anyhow::anyhow!("Failed to get version and boot label from UKI"))?;
+    let uki_info =
+        uki_info.ok_or_else(|| anyhow::anyhow!("Failed to get version and boot label from UKI"))?;
+
+    let boot_digest = uki_info.boot_digest.clone();
 
     match bootloader {
-        Bootloader::Grub => write_grub_uki_menuentry(
-            root_path,
-            &setup_type,
-            uki_label.boot_label,
-            id,
-            &esp_device,
-        )?,
+        Bootloader::Grub => {
+            write_grub_uki_menuentry(root_path, &setup_type, uki_info.boot_label, id, &esp_device)?
+        }
 
-        Bootloader::Systemd => write_systemd_uki_config(&esp_mount.fd, &setup_type, uki_label, id)?,
+        Bootloader::Systemd => write_systemd_uki_config(&esp_mount.fd, &setup_type, uki_info, id)?,
     };
 
-    Ok(())
+    Ok(boot_digest)
 }
 
 pub struct SecurebootKeys {
@@ -1252,20 +1278,15 @@ pub(crate) async fn setup_composefs_boot(
     };
 
     let boot_type = BootType::from(entry);
-    let mut boot_digest: Option<String> = None;
 
-    match boot_type {
-        BootType::Bls => {
-            let digest = setup_composefs_bls_boot(
-                BootSetupType::Setup((&root_setup, &state, &postfetch, &fs)),
-                repo,
-                &id,
-                entry,
-                &mounted_fs,
-            )?;
-
-            boot_digest = Some(digest);
-        }
+    let boot_digest = match boot_type {
+        BootType::Bls => setup_composefs_bls_boot(
+            BootSetupType::Setup((&root_setup, &state, &postfetch, &fs)),
+            repo,
+            &id,
+            entry,
+            &mounted_fs,
+        )?,
         BootType::Uki => setup_composefs_uki_boot(
             BootSetupType::Setup((&root_setup, &state, &postfetch, &fs)),
             repo,

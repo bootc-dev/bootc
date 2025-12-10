@@ -240,18 +240,15 @@ pub(crate) async fn do_upgrade(
     )?;
 
     let boot_type = BootType::from(entry);
-    let mut boot_digest = None;
 
-    match boot_type {
-        BootType::Bls => {
-            boot_digest = Some(setup_composefs_bls_boot(
-                BootSetupType::Upgrade((storage, &fs, &host)),
-                repo,
-                &id,
-                entry,
-                &mounted_fs,
-            )?)
-        }
+    let boot_digest = match boot_type {
+        BootType::Bls => setup_composefs_bls_boot(
+            BootSetupType::Upgrade((storage, &fs, &host)),
+            repo,
+            &id,
+            entry,
+            &mounted_fs,
+        )?,
 
         BootType::Uki => setup_composefs_uki_boot(
             BootSetupType::Upgrade((storage, &fs, &host)),
