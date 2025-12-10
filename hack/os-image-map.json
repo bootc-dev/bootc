@@ -1,5 +1,7 @@
 {
   "base": {
+    "rhel-10.2": "images.paas.redhat.com/bootc/rhel-bootc:latest-10.2",
+    "rhel-9.8": "images.paas.redhat.com/bootc/rhel-bootc:latest-9.8",
     "centos-9": "quay.io/centos-bootc/centos-bootc:stream9",
     "centos-10": "quay.io/centos-bootc/centos-bootc:stream10",
     "fedora-42": "quay.io/fedora/fedora-bootc:42",

@@ -32,11 +32,30 @@ def initial_build [] {
 
     bootc image copy-to-storage
 
+    # copy-to-storage does not copy repo file
+    # but OSCI gating test needs repo to install package
+    let os = open /usr/lib/os-release
+        | lines
+        | filter {|l| $l != "" and not ($l | str starts-with "#") }
+        | parse "{key}={value}"
+        | reduce {|it, acc|
+            $acc | upsert $it.key ($it.value | str trim -c '"')
+    }
+    mut repo_copy = ""
+
+    if $os.ID == "rhel" {
+        cp /etc/yum.repos.d/rhel.repo .
+        $repo_copy = "COPY rhel.repo /etc/yum.repos.d/"
+    }
+
     # Create a derived container that installs a custom SELinux policy module
     # Installing a policy module will change the compiled policy checksum
     # Following Colin's suggestion and the composefs-rs example
     # We create a minimal policy module and install it
-    "FROM localhost/bootc
+    $"
+FROM localhost/bootc
+($repo_copy)
+
 # Install tools needed to build and install SELinux policy modules
 RUN dnf install -y selinux-policy-devel checkpolicy policycoreutils
 
