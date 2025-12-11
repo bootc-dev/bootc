@@ -7,7 +7,11 @@ use fn_error_context::context;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    bootc_composefs::{boot::BootType, repo::get_imgref},
+    bootc_composefs::{
+        boot::BootType,
+        repo::get_imgref,
+        utils::{compute_store_boot_digest_for_uki, get_uki_cmdline},
+    },
     composefs_consts::{
         COMPOSEFS_CMDLINE, ORIGIN_KEY_BOOT_DIGEST, TYPE1_ENT_PATH, TYPE1_ENT_PATH_STAGED, USER_CFG,
     },
@@ -350,26 +354,33 @@ pub(crate) async fn get_composefs_status(
     composefs_deployment_status_from(&storage, booted_cfs.cmdline).await
 }
 
-fn set_soft_reboot_capable_bls(
+/// Check whether any deployment is capable of being soft rebooted or not
+#[context("Checking soft reboot capability")]
+fn set_soft_reboot_capability(
     storage: &Storage,
     host: &mut Host,
-    bls_entries: &Vec<BLSConfig>,
+    bls_entries: Option<Vec<BLSConfig>>,
     cmdline: &ComposefsCmdline,
 ) -> Result<()> {
     let booted = host.require_composefs_booted()?;
 
     match booted.boot_type {
         BootType::Bls => {
-            set_reboot_capable_type1_deployments(storage, cmdline, host, bls_entries)?;
+            let mut bls_entries =
+                bls_entries.ok_or_else(|| anyhow::anyhow!("BLS entries not provided"))?;
+
+            let staged_entries =
+                get_sorted_staged_type1_boot_entries(storage.require_boot_dir()?, false)?;
+
+            // We will have a duplicate booted entry here, but that's fine as we only use this
+            // vector to check for existence of an entry
+            bls_entries.extend(staged_entries);
+
+            set_reboot_capable_type1_deployments(cmdline, host, bls_entries)
         }
 
-        BootType::Uki => match booted.bootloader {
-            Bootloader::Grub => todo!(),
-            Bootloader::Systemd => todo!(),
-        },
-    };
-
-    Ok(())
+        BootType::Uki => set_reboot_capable_uki_deployments(storage, cmdline, host),
+    }
 }
 
 fn find_bls_entry<'a>(
@@ -406,43 +417,11 @@ fn compare_cmdline_skip_cfs(first: &Cmdline<'_>, second: &Cmdline<'_>) -> bool {
     return true;
 }
 
-fn set_soft_reboot_capable_type1(
-    deployment: &mut BootEntry,
-    bls_entries: &Vec<BLSConfig>,
-    booted_bls_entry: &BLSConfig,
-    booted_boot_digest: &String,
-) -> Result<()> {
-    let deployment_cfs = deployment.require_composefs()?;
-
-    // TODO: Unwrap
-    if deployment_cfs.boot_digest.as_ref().unwrap() != booted_boot_digest {
-        deployment.soft_reboot_capable = false;
-        return Ok(());
-    }
-
-    let entry = find_bls_entry(&deployment_cfs.verity, bls_entries)?
-        .ok_or_else(|| anyhow::anyhow!("Entry not found"))?;
-
-    let opts = entry.get_cmdline()?;
-    let booted_cmdline_opts = booted_bls_entry.get_cmdline()?;
-
-    if opts.len() != booted_cmdline_opts.len() {
-        tracing::debug!("Soft reboot not allowed due to differing cmdline");
-        deployment.soft_reboot_capable = false;
-        return Ok(());
-    }
-
-    deployment.soft_reboot_capable = compare_cmdline_skip_cfs(opts, booted_cmdline_opts)
-        && compare_cmdline_skip_cfs(booted_cmdline_opts, opts);
-
-    return Ok(());
-}
-
+#[context("Setting soft reboot capability for Type1 entries")]
 fn set_reboot_capable_type1_deployments(
-    storage: &Storage,
-    cmdline: &ComposefsCmdline,
+    booted_cmdline: &ComposefsCmdline,
     host: &mut Host,
-    bls_entries: &Vec<BLSConfig>,
+    bls_entries: Vec<BLSConfig>,
 ) -> Result<()> {
     let booted = host
         .status
@@ -452,27 +431,98 @@ fn set_reboot_capable_type1_deployments(
 
     let booted_boot_digest = booted.composefs_boot_digest()?;
 
-    let booted_bls_entry = find_bls_entry(&*cmdline.digest, bls_entries)?
-        .ok_or_else(|| anyhow::anyhow!("Booted bls entry not found"))?;
+    let booted_bls_entry = find_bls_entry(&*booted_cmdline.digest, &bls_entries)?
+        .ok_or_else(|| anyhow::anyhow!("Booted BLS entry not found"))?;
 
-    if let Some(staged) = host.status.staged.as_mut() {
-        let staged_entries =
-            get_sorted_staged_type1_boot_entries(storage.require_boot_dir()?, true)?;
+    let booted_cmdline = booted_bls_entry.get_cmdline()?;
 
-        set_soft_reboot_capable_type1(
-            staged,
-            &staged_entries,
-            booted_bls_entry,
+    for depl in host
+        .status
+        .staged
+        .iter_mut()
+        .chain(host.status.rollback.iter_mut())
+        .chain(host.status.other_deployments.iter_mut())
+    {
+        let entry = find_bls_entry(&depl.require_composefs()?.verity, &bls_entries)?
+            .ok_or_else(|| anyhow::anyhow!("Entry not found"))?;
+
+        let depl_cmdline = entry.get_cmdline()?;
+
+        depl.soft_reboot_capable = is_soft_rebootable(
+            depl.composefs_boot_digest()?,
             booted_boot_digest,
-        )?;
+            depl_cmdline,
+            booted_cmdline,
+        );
     }
 
-    if let Some(rollback) = &mut host.status.rollback {
-        set_soft_reboot_capable_type1(rollback, bls_entries, booted_bls_entry, booted_boot_digest)?;
+    Ok(())
+}
+
+fn is_soft_rebootable(
+    depl_boot_digest: &str,
+    booted_boot_digest: &str,
+    depl_cmdline: &Cmdline,
+    booted_cmdline: &Cmdline,
+) -> bool {
+    if depl_boot_digest != booted_boot_digest {
+        tracing::debug!("Soft reboot not allowed due to kernel skew");
+        return false;
     }
 
-    for depl in &mut host.status.other_deployments {
-        set_soft_reboot_capable_type1(depl, bls_entries, booted_bls_entry, booted_boot_digest)?;
+    if depl_cmdline.as_bytes().len() != booted_cmdline.as_bytes().len() {
+        tracing::debug!("Soft reboot not allowed due to differing cmdline");
+        return false;
+    }
+
+    return compare_cmdline_skip_cfs(depl_cmdline, booted_cmdline)
+        && compare_cmdline_skip_cfs(booted_cmdline, depl_cmdline);
+}
+
+#[context("Setting soft reboot capability for UKI deployments")]
+fn set_reboot_capable_uki_deployments(
+    storage: &Storage,
+    cmdline: &ComposefsCmdline,
+    host: &mut Host,
+) -> Result<()> {
+    let booted = host
+        .status
+        .booted
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("Failed to find booted entry"))?;
+
+    // Since older booted systems won't have the boot digest for UKIs
+    let booted_boot_digest = match booted.composefs_boot_digest() {
+        Ok(d) => d,
+        Err(_) => &compute_store_boot_digest_for_uki(storage, &cmdline.digest)?,
+    };
+
+    let booted_cmdline = get_uki_cmdline(storage, &booted.require_composefs()?.verity)?;
+
+    for deployment in host
+        .status
+        .staged
+        .iter_mut()
+        .chain(host.status.rollback.iter_mut())
+        .chain(host.status.other_deployments.iter_mut())
+    {
+        // Since older booted systems won't have the boot digest for UKIs
+        let depl_boot_digest = match deployment.composefs_boot_digest() {
+            Ok(d) => d,
+            Err(_) => &compute_store_boot_digest_for_uki(
+                storage,
+                &deployment.require_composefs()?.verity,
+            )?,
+        };
+
+        let depl_cmdline = get_uki_cmdline(storage, &deployment.require_composefs()?.verity)?;
+
+        deployment.soft_reboot_capable = is_soft_rebootable(
+            depl_boot_digest,
+            booted_boot_digest,
+            &depl_cmdline,
+            &booted_cmdline,
+        );
     }
 
     Ok(())
@@ -645,9 +695,7 @@ pub(crate) async fn composefs_deployment_status_from(
         host.spec.boot_order = BootOrder::Rollback
     };
 
-    if let Some(bls_configs) = sorted_bls_config {
-        set_soft_reboot_capable_bls(storage, &mut host, &bls_configs, cmdline)?;
-    }
+    set_soft_reboot_capability(storage, &mut host, sorted_bls_config, cmdline)?;
 
     Ok(host)
 }

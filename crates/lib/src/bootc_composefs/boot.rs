@@ -79,11 +79,8 @@ use cap_std_ext::{
 use clap::ValueEnum;
 use composefs::fs::read_file;
 use composefs::tree::RegularFile;
+use composefs_boot::bootloader::{PEType, EFI_ADDON_DIR_EXT, EFI_ADDON_FILE_EXT, EFI_EXT};
 use composefs_boot::BootOps;
-use composefs_boot::{
-    bootloader::{PEType, EFI_ADDON_DIR_EXT, EFI_ADDON_FILE_EXT, EFI_EXT},
-    uki::UkiError,
-};
 use fn_error_context::context;
 use ostree_ext::composefs::fsverity::{FsVerityHashValue, Sha512HashValue};
 use ostree_ext::composefs_boot::bootloader::UsrLibModulesVmlinuz;
@@ -848,8 +845,7 @@ fn write_pe_to_esp(
             );
         }
 
-        let osrel = uki::get_text_section(&efi_bin, ".osrel")
-            .ok_or(UkiError::PortableExecutableError)??;
+        let osrel = uki::get_text_section(&efi_bin, ".osrel")?;
 
         let parsed_osrel = OsReleaseInfo::parse(osrel);
 
