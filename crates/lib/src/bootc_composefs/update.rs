@@ -367,7 +367,8 @@ pub(crate) async fn upgrade_composefs(
     }
 
     if opts.check {
-        let current_manifest = get_imginfo(storage, &*composefs.cmdline.digest)?;
+        let current_manifest =
+            get_imginfo(storage, &*composefs.cmdline.digest, booted_imgref).await?;
         let diff = ManifestDiff::new(&current_manifest.manifest, &img_config.manifest);
         diff.print();
         return Ok(());

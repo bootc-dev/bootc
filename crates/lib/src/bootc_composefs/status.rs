@@ -6,7 +6,7 @@ use fn_error_context::context;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    bootc_composefs::boot::BootType,
+    bootc_composefs::{boot::BootType, repo::get_imgref},
     composefs_consts::{COMPOSEFS_CMDLINE, ORIGIN_KEY_BOOT_DIGEST, TYPE1_ENT_PATH, USER_CFG},
     install::EFI_LOADER_INFO,
     parsers::{
@@ -21,7 +21,7 @@ use crate::{
 use std::str::FromStr;
 
 use bootc_utils::try_deserialize_timestamp;
-use cap_std_ext::cap_std::fs::Dir;
+use cap_std_ext::{cap_std::fs::Dir, dirext::CapStdExtDirExt};
 use ostree_container::OstreeImageReference;
 use ostree_ext::container::{self as ostree_container};
 use ostree_ext::containers_image_proxy;
@@ -183,17 +183,46 @@ pub(crate) fn get_bootloader() -> Result<Bootloader> {
 
 /// Reads the .imginfo file for the provided deployment
 #[context("Reading imginfo")]
-pub(crate) fn get_imginfo(storage: &Storage, deployment_id: &str) -> Result<ImgConfigManifest> {
-    let path = std::path::PathBuf::from(STATE_DIR_RELATIVE)
-        .join(deployment_id)
-        .join(format!("{deployment_id}.imginfo"));
+pub(crate) async fn get_imginfo(
+    storage: &Storage,
+    deployment_id: &str,
+    imgref: &ImageReference,
+) -> Result<ImgConfigManifest> {
+    let imginfo_fname = format!("{deployment_id}.imginfo");
 
-    let img_conf = storage
+    let depl_state_path = std::path::PathBuf::from(STATE_DIR_RELATIVE).join(deployment_id);
+    let path = depl_state_path.join(imginfo_fname);
+
+    let mut img_conf = storage
         .physical_root
-        .read_to_string(&path)
+        .open_optional(&path)
         .context("Failed to open file")?;
 
-    let img_conf = serde_json::from_str::<ImgConfigManifest>(&img_conf)
+    let Some(img_conf) = &mut img_conf else {
+        let container_details =
+            get_container_manifest_and_config(&get_imgref(&imgref.transport, &imgref.image))
+                .await?;
+
+        let state_dir = storage.physical_root.open_dir(depl_state_path)?;
+
+        state_dir
+            .atomic_write(
+                format!("{}.imginfo", deployment_id),
+                serde_json::to_vec(&container_details)?,
+            )
+            .context("Failed to write to .imginfo file")?;
+
+        let state_dir = state_dir.reopen_as_ownedfd()?;
+
+        rustix::fs::fsync(state_dir).context("fsync")?;
+
+        return Ok(container_details);
+    };
+
+    let mut buffer = String::new();
+    img_conf.read_to_string(&mut buffer)?;
+
+    let img_conf = serde_json::from_str::<ImgConfigManifest>(&buffer)
         .context("Failed to parse file as JSON")?;
 
     Ok(img_conf)
@@ -210,7 +239,7 @@ async fn boot_entry_from_composefs_deployment(
             let ostree_img_ref = OstreeImageReference::from_str(&img_name_from_config)?;
             let img_ref = ImageReference::from(ostree_img_ref);
 
-            let img_conf = get_imginfo(storage, &verity)?;
+            let img_conf = get_imginfo(storage, &verity, &img_ref).await?;
 
             let image_digest = img_conf.manifest.config().digest().to_string();
             let architecture = img_conf.config.architecture().to_string();

@@ -211,8 +211,6 @@ pub(crate) async fn write_composefs_state(
         ..
     } = &target_imgref;
 
-    println!("imgref: {target_imgref:#?}");
-
     let imgref = get_imgref(&transport, &image_name);
 
     let mut config = tini::Ini::new().section("origin").item(
