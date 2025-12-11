@@ -246,7 +246,11 @@ pub(crate) fn composefs_usr_overlay() -> Result<()> {
         return Ok(());
     }
 
-    overlay_transient(usr, Some(0o755.into()))?;
+    // Get the mode from the underlying /usr directory
+    let usr_metadata = usr.metadata(".").context("Getting /usr metadata")?;
+    let usr_mode = Mode::from_raw_mode(usr_metadata.permissions().mode());
+
+    overlay_transient(usr, Some(usr_mode))?;
 
     println!("A writeable overlayfs is now mounted on /usr");
     println!("All changes there will be discarded on reboot.");
