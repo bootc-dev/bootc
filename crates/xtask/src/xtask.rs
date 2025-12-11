@@ -41,6 +41,8 @@ enum Commands {
     Manpages,
     /// Update generated files (man pages, JSON schemas)
     UpdateGenerated,
+    /// Update TMT integration.fmf from test definitions
+    UpdateIntegration,
     /// Package the source code
     Package,
     /// Package source RPM
@@ -74,6 +76,10 @@ pub(crate) struct RunTmtArgs {
     /// Upgrade image to use when bind-storage-ro is available (e.g., localhost/bootc-integration-upgrade)
     #[clap(long)]
     pub(crate) upgrade_image: Option<String>,
+
+    /// Registry image to use for multi-VM testing (e.g., localhost/bootc-integration-registry)
+    #[clap(long)]
+    pub(crate) registry_image: Option<String>,
 
     /// Preserve VMs after test completion (useful for debugging)
     #[arg(long)]
@@ -130,6 +136,7 @@ fn try_main() -> Result<()> {
     match cli.command {
         Commands::Manpages => man::generate_man_pages(&sh),
         Commands::UpdateGenerated => update_generated(&sh),
+        Commands::UpdateIntegration => tmt::update_integration(),
         Commands::Package => package(&sh),
         Commands::PackageSrpm => package_srpm(&sh),
         Commands::Spec => spec(&sh),

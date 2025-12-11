@@ -25,3 +25,4 @@
 !target/packages/
 # And finally of course all the Rust sources
 !crates/
+!hack/

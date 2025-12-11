@@ -1,0 +1,2 @@
+FROM localhost:5000/bootc
+RUN echo test content > /usr/share/testfile-for-soft-reboot.txt

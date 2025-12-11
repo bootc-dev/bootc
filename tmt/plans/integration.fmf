@@ -1,8 +1,24 @@
 # Common settings for all plans
+#
+# NOTE: This provision section is overridden when running via `just test-tmt`
+# which uses `cargo xtask run-tmt` with bcvk for VM provisioning.
+# The xtask implementation supports multihost provisioning with a registry VM
+# when --registry-image is specified.
 provision:
   how: virtual
   image: $@{test_disk_image}
 prepare:
+  # Configure registry hostname resolution for TLS certificate validation
+  # This runs on image mode VMs when BOOTC_REGISTRY_IP is set
+  - how: shell
+    order: 10
+    script:
+      - |
+        if [ -n "${BOOTC_REGISTRY_IP:-}" ] && [ -n "${BOOTC_REGISTRY_HOSTNAME:-}" ]; then
+          echo "Configuring registry hostname ${BOOTC_REGISTRY_HOSTNAME} -> ${BOOTC_REGISTRY_IP}"
+          echo "${BOOTC_REGISTRY_IP} ${BOOTC_REGISTRY_HOSTNAME}" >> /etc/hosts
+        fi
+    when: running_env == image_mode
   # Install image mode system on package mode system
   # Do not run on image mode VM running on Github CI and Locally
   # Run on package mode VM running on Packit and Gating
@@ -86,14 +102,6 @@ execute:
     how: fmf
     test:
       - /tmt/tests/tests/test-24-image-upgrade-reboot
-  extra-try_bind_storage: true
-
-/plan-25-soft-reboot:
-  summary: Execute soft reboot test
-  discover:
-    how: fmf
-    test:
-      - /tmt/tests/tests/test-25-soft-reboot
 
 /plan-25-download-only-upgrade:
   summary: Execute download-only upgrade tests
@@ -101,6 +109,13 @@ execute:
     how: fmf
     test:
       - /tmt/tests/tests/test-25-download-only-upgrade
+
+/plan-25-soft-reboot:
+  summary: Execute soft reboot test
+  discover:
+    how: fmf
+    test:
+      - /tmt/tests/tests/test-25-soft-reboot
 
 /plan-26-examples-build:
   summary: Test bootc examples build scripts

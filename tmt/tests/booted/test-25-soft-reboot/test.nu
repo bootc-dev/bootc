@@ -5,7 +5,7 @@
 #
 # Verify that soft reboot works (on by default)
 use std assert
-use tap.nu
+use ../tap.nu
 
 let soft_reboot_capable = "/usr/lib/systemd/system/soft-reboot.target" | path exists
 if not $soft_reboot_capable {
@@ -21,21 +21,12 @@ bootc status
 def initial_build [] {
     tap begin "local image push + pull + upgrade"
 
-    let td = mktemp -d
-    cd $td
-
-    bootc image copy-to-storage
-
-    # A simple derived container that adds a file, but also injects some kargs
-    "FROM localhost/bootc
-RUN echo test content > /usr/share/testfile-for-soft-reboot.txt
-" | save Dockerfile
-    # Build it
-    podman build -t localhost/bootc-derived .
+    # Use the pre-built image from the framework
+    let image = $env.BOOTC_TEST_IMAGE_BOOTC_DERIVED
 
     assert (not ("/run/nextroot" | path exists))
-    
-    bootc switch --soft-reboot=auto --transport containers-storage localhost/bootc-derived
+
+    bootc switch --soft-reboot=auto --transport registry $image
     let st = bootc status --json | from json
     assert $st.status.staged.softRebootCapable
 
@@ -53,13 +44,14 @@ def second_boot [] {
     # See ../bug-soft-reboot.md - we can't verify SoftRebootsCount due to TMT limitation
     #assert equal (systemctl show -P SoftRebootsCount) "1"
 
-    # A new derived with new kargs which should stop the soft reboot.
-    "FROM localhost/bootc
-RUN echo test content > /usr/share/testfile-for-soft-reboot.txt
-RUN echo 'kargs = ["foo1=bar2"]' | tee /usr/lib/bootc/kargs.d/00-foo1bar2.toml > /dev/null
-" | save Dockerfile
-    # Build it
-    podman build -t localhost/bootc-derived .
+    # Use the pre-built image with kargs from the framework
+    let image_kargs = $env.BOOTC_TEST_IMAGE_BOOTC_DERIVED_KARGS
+
+    # Tag it as bootc-derived to simulate an image update
+    let target_image = $env.BOOTC_TEST_IMAGE_BOOTC_DERIVED
+
+    print $"Tagging kargs image ($image_kargs) as ($target_image)"
+    skopeo copy $"docker://($image_kargs)" $"docker://($target_image)"
 
     bootc upgrade --soft-reboot=auto
     let st = bootc status --json | from json

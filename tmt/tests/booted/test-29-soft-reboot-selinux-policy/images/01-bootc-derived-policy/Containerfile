@@ -1,0 +1,26 @@
+FROM localhost:5000/bootc
+# Install tools needed to build and install SELinux policy modules
+RUN dnf install -y selinux-policy-devel checkpolicy policycoreutils
+
+# Create a minimal SELinux policy module that will change the policy checksum
+# We install it to ensure it's part of the deployment filesystem
+RUN <<EORUN
+    set -eux
+    mkdir -p /tmp/bootc-test-policy
+    cd /tmp/bootc-test-policy
+    echo 'module bootc_test_policy 1.0;' > bootc_test_policy.te
+    echo 'require {' >> bootc_test_policy.te
+    echo '    type unconfined_t;' >> bootc_test_policy.te
+    echo '    class file { read write };' >> bootc_test_policy.te
+    echo '}' >> bootc_test_policy.te
+    echo 'type bootc_test_t;' >> bootc_test_policy.te
+    checkmodule -M -m -o bootc_test_policy.mod bootc_test_policy.te
+    semodule_package -o bootc_test_policy.pp -m bootc_test_policy.mod
+    semodule -i bootc_test_policy.pp
+    rm -rf /tmp/bootc-test-policy
+    # Clean up dnf cache and logs, and SELinux policy generation artifacts to satisfy lint checks
+    dnf clean all
+    rm -rf /var/log/dnf* /var/log/hawkey.log /var/log/rhsm
+    rm -rf /var/cache/dnf /var/lib/dnf
+    rm -rf /var/lib/sepolgen /var/lib/rhsm /var/cache/ldconfig
+EORUN

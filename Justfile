@@ -17,6 +17,8 @@ base_img := "localhost/bootc"
 integration_img := base_img + "-integration"
 # Has a synthetic upgrade
 integration_upgrade_img := integration_img + "-upgrade"
+# Registry image for multi-VM testing
+integration_registry_img := integration_img + "-registry"
 
 # ostree: The default
 # composefs-sealeduki-sdboot: A system with a sealed composefs using systemd-boot
@@ -41,6 +43,7 @@ buildargs := "--build-arg=base=" + base + " --build-arg=variant=" + variant
 # Note commonly you might want to override the base image via e.g.
 # `just build --build-arg=base=quay.io/fedora/fedora-bootc:42`
 build: package
+    ./hack/setup-registry-certs.sh
     podman build {{base_buildargs}} -t {{base_img}}-bin {{buildargs}} .
     ./tests/build-sealed {{variant}} {{base_img}}-bin {{base_img}} {{buildroot_base}}
 
@@ -98,7 +101,9 @@ copy-packages-from PATH:
 
 # This container image has additional testing content and utilities
 build-integration-test-image: build
-    cd hack && podman build {{base_buildargs}} -t {{integration_img}}-bin -f Containerfile .
+    # Generate TLS certificates for registry trust (idempotent - skips if exists)
+    ./hack/setup-registry-certs.sh
+    podman build {{base_buildargs}} -t {{integration_img}}-bin -f hack/Containerfile .
     ./tests/build-sealed {{variant}} {{integration_img}}-bin {{integration_img}} {{buildroot_base}}
     # Keep these in sync with what's used in hack/lbi
     podman pull -q --retry 5 --retry-delay 5s quay.io/curl/curl:latest quay.io/curl/curl-base:latest registry.access.redhat.com/ubi9/podman:latest
@@ -140,7 +145,7 @@ validate:
 #
 # To run an individual test, pass it as an argument like:
 # `just test-tmt readonly`
-test-tmt *ARGS: build-integration-test-image _build-upgrade-image
+test-tmt *ARGS: build-integration-test-image _build-upgrade-image _build-registry-image
     @just test-tmt-nobuild {{ARGS}}
 
 # Generate a local synthetic upgrade
@@ -148,10 +153,20 @@ _build-upgrade-image:
     cat tmt/tests/Dockerfile.upgrade | podman build -t {{integration_upgrade_img}}-bin --from={{integration_img}}-bin -
     ./tests/build-sealed {{variant}} {{integration_upgrade_img}}-bin {{integration_upgrade_img}} {{buildroot_base}}
 
+# Build a registry VM image for multi-VM testing
+# Uses Podman Quadlet for idiomatic container-as-service setup
+_build-registry-image:
+    # Generate TLS certificates for the registry (idempotent - skips if exists)
+    ./hack/setup-registry-certs.sh
+    # Build registry image with Quadlet configuration
+    # Pre pull registry container to be used as a LBI
+    podman pull quay.io/libpod/registry:2.8.2
+    podman build -t {{integration_registry_img}} -f hack/Containerfile.registry --build-arg=base={{buildroot_base}} .
+
 # Assume the localhost/bootc-integration image is up to date, and just run tests.
 # Useful for iterating on tests quickly.
 test-tmt-nobuild *ARGS:
-    cargo xtask run-tmt --env=BOOTC_variant={{variant}} --upgrade-image={{integration_upgrade_img}} {{integration_img}} {{ARGS}}
+    cargo xtask run-tmt --env=BOOTC_variant={{variant}} --upgrade-image={{integration_upgrade_img}} --registry-image={{integration_registry_img}} {{integration_img}} {{ARGS}}
 
 # Cleanup all test VMs created by tmt tests
 tmt-vm-cleanup:

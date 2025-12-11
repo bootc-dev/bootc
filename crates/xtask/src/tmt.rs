@@ -35,6 +35,47 @@ const DISTRO_CENTOS_9: &str = "centos-9";
 // Import the argument types from xtask.rs
 use crate::{RunTmtArgs, TmtProvisionArgs};
 
+/// RAII guard to ensure VM cleanup on drop unless explicitly preserved
+struct VmCleanupGuard<'a> {
+    sh: &'a Shell,
+    vm_name: String,
+    preserve: bool,
+}
+
+impl<'a> VmCleanupGuard<'a> {
+    fn new(sh: &'a Shell, vm_name: String, preserve: bool) -> Self {
+        Self {
+            sh,
+            vm_name,
+            preserve,
+        }
+    }
+
+    /// Disarm the guard to prevent cleanup (VM will be kept)
+    fn disarm(mut self) {
+        self.preserve = true;
+        // Drop will be called but won't cleanup since preserve=true
+    }
+}
+
+impl<'a> Drop for VmCleanupGuard<'a> {
+    fn drop(&mut self) {
+        if self.preserve {
+            return;
+        }
+
+        // Cleanup the VM
+        let vm_name = &self.vm_name;
+        if let Err(e) = cmd!(self.sh, "bcvk libvirt rm --stop --force {vm_name}")
+            .ignore_stderr()
+            .ignore_status()
+            .run()
+        {
+            eprintln!("Warning: Failed to cleanup VM {}: {}", vm_name, e);
+        }
+    }
+}
+
 /// Generate a random alphanumeric suffix for VM names
 fn generate_random_suffix() -> String {
     let mut rng = rand::rng();
@@ -101,9 +142,9 @@ fn distro_supports_bind_storage_ro(distro: &str) -> bool {
     !distro.starts_with(DISTRO_CENTOS_9)
 }
 
-/// Wait for a bcvk VM to be ready and return SSH connection info
+/// Wait for a bcvk VM to be ready and return SSH connection info and IP address
 #[context("Waiting for VM to be ready")]
-fn wait_for_vm_ready(sh: &Shell, vm_name: &str) -> Result<(u16, String)> {
+fn wait_for_vm_ready(sh: &Shell, vm_name: &str) -> Result<(u16, String, Option<String>)> {
     use std::thread;
     use std::time::Duration;
 
@@ -118,7 +159,17 @@ fn wait_for_vm_ready(sh: &Shell, vm_name: &str) -> Result<(u16, String)> {
                     json.get("ssh_private_key").and_then(|v| v.as_str()),
                 ) {
                     let ssh_port = ssh_port as u16;
-                    return Ok((ssh_port, ssh_key.to_string()));
+                    // Try to get IP address from network interfaces
+                    let ip = json
+                        .get("network_interfaces")
+                        .and_then(|v| v.as_array())
+                        .and_then(|arr| arr.first())
+                        .and_then(|iface| iface.get("ipv4"))
+                        .and_then(|v| v.as_array())
+                        .and_then(|arr| arr.first())
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
+                    return Ok((ssh_port, ssh_key.to_string(), ip));
                 }
             }
         }
@@ -178,6 +229,27 @@ fn verify_ssh_connectivity(sh: &Shell, port: u16, key_path: &Utf8Path) -> Result
     )
 }
 
+/// Save SSH private key to a temporary file with proper permissions (0600)
+/// Returns the temporary file (which must be kept alive) and its path
+#[context("Saving SSH key")]
+fn save_ssh_key(key: &str) -> Result<(tempfile::NamedTempFile, Utf8PathBuf)> {
+    let key_file = tempfile::NamedTempFile::new().context("Failed to create SSH key file")?;
+
+    let key_path = Utf8PathBuf::try_from(key_file.path().to_path_buf())
+        .context("Failed to convert key path to UTF-8")?;
+
+    std::fs::write(&key_path, key).context("Failed to write SSH key")?;
+
+    // Set proper permissions on the key file (SSH requires 0600)
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = std::fs::Permissions::from_mode(0o600);
+        std::fs::set_permissions(&key_path, perms).context("Failed to set key permissions")?;
+    }
+
+    Ok((key_file, key_path))
+}
+
 /// Parse integration.fmf to extract extra-try_bind_storage for all plans
 #[context("Parsing integration.fmf")]
 fn parse_plan_metadata(plans_file: &Utf8Path) -> Result<std::collections::HashMap<String, bool>> {
@@ -213,6 +285,274 @@ fn parse_plan_metadata(plans_file: &Utf8Path) -> Result<std::collections::HashMa
     }
 
     Ok(plan_metadata)
+}
+
+/// Build and push custom images for a specific test
+#[context("Building custom images for test")]
+fn build_test_custom_images(
+    sh: &Shell,
+    plan_name: &str,
+    registry_url: &str,
+) -> Result<Vec<CustomImage>> {
+    // Extract test name prefix from plan (e.g., /tmt/plans/integration/plan-20-... -> test-20-...)
+    let test_name_prefix = plan_name
+        .split('/')
+        .last()
+        .and_then(|s| s.strip_prefix("plan-"))
+        .map(|s| format!("test-{}", s))
+        .context("Failed to extract test name from plan")?;
+
+    let test_dir = Utf8Path::new("tmt/tests/booted").join(&test_name_prefix);
+
+    if !test_dir.is_dir() {
+        // Legacy file-based test, no custom images
+        return Ok(Vec::new());
+    }
+
+    // Discover Containerfiles
+    let custom_images = discover_containerfiles(&test_dir, &test_name_prefix)?;
+
+    if custom_images.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    println!(
+        "\nBuilding {} custom image(s) for {}...",
+        custom_images.len(),
+        plan_name
+    );
+
+    for image in &custom_images {
+        // Build from images/<tag>/ subdirectory
+        let image_dir = test_dir.join("images").join(&image.image_dir);
+        let containerfile_path = image_dir.join("Containerfile");
+        let image_ref = format!("{}/{}", registry_url, image.full_tag);
+
+        println!(
+            "  Building {} from {}/images/{}...",
+            image_ref, test_name_prefix, image.image_dir
+        );
+
+        // Build context is images/<tag>/ subdirectory
+        cmd!(
+            sh,
+            "podman build -t {image_ref} -f {containerfile_path} {image_dir}"
+        )
+        .run()
+        .with_context(|| {
+            format!(
+                "Failed to build {} from images/{}",
+                image.full_tag, image.image_dir
+            )
+        })?;
+
+        println!("  Pushing {} to registry...", image_ref);
+
+        // Push to registry
+        cmd!(sh, "skopeo copy --dest-tls-verify=false containers-storage:{image_ref} docker://{image_ref}")
+            .run()
+            .with_context(|| format!("Failed to push {}", image.full_tag))?;
+
+        println!("  Successfully pushed {}", image_ref);
+    }
+
+    Ok(custom_images)
+}
+
+/// Remove custom images for a test from local storage
+#[context("Cleaning up custom images")]
+fn cleanup_test_images(sh: &Shell, images: &[CustomImage]) -> Result<()> {
+    if images.is_empty() {
+        return Ok(());
+    }
+
+    println!("\nCleaning up {} custom image(s)...", images.len());
+
+    for image in images {
+        // Remove from local storage
+        // We don't remove from registry since it's a test registry that gets torn down anyway
+        let full_tag = &image.full_tag;
+        let _ = cmd!(sh, "podman rmi -f {full_tag}")
+            .ignore_stderr()
+            .ignore_status()
+            .run();
+
+        println!("  Removed local image {}", image.full_tag);
+    }
+
+    Ok(())
+}
+
+/// Information about a running registry VM
+struct RegistryVmInfo {
+    /// VM name
+    vm_name: String,
+    /// SSH port for VM access
+    ssh_port: u16,
+    /// SSH private key
+    ssh_key: String,
+    /// IP address where test VMs can reach the registry (host gateway IP)
+    registry_ip: String,
+}
+
+/// Setup and configure a persistent registry VM for test images
+/// Returns registry VM info and cleanup guard (which will cleanup VM on drop unless disarmed)
+#[context("Setting up registry VM")]
+fn setup_registry_vm<'a>(
+    sh: &'a Shell,
+    registry_image: &str,
+    base_image: &str,
+    random_suffix: &str,
+    preserve_vm: bool,
+) -> Result<(RegistryVmInfo, VmCleanupGuard<'a>)> {
+    let registry_vm_name = format!("bootc-tmt-{}-registry", random_suffix);
+
+    println!("\n========================================");
+    println!("Setting up persistent registry VM");
+    println!("Registry VM name: {}", registry_vm_name);
+    println!("========================================\n");
+
+    println!("Launching registry VM...");
+    cmd!(
+        sh,
+        "bcvk libvirt run --name {registry_vm_name} --detach --network bridge --port 5000:5000 {COMMON_INST_ARGS...} {registry_image}"
+    )
+    .run()
+    .context("Launching registry VM with bcvk")?;
+
+    // Create cleanup guard immediately after successful launch
+    let cleanup_guard = VmCleanupGuard::new(sh, registry_vm_name.clone(), preserve_vm);
+
+    // Wait for registry VM to be ready
+    println!("Waiting for registry VM...");
+    let (port, key, _registry_ip_opt) = wait_for_vm_ready(sh, &registry_vm_name)?;
+    println!("Registry VM ready, SSH port: {}", port);
+
+    // Save SSH key to temporary file
+    let (_registry_key_file, registry_key_path) = save_ssh_key(&key)?;
+
+    // Verify SSH connectivity
+    println!("Verifying SSH connectivity to registry VM...");
+    verify_ssh_connectivity(sh, port, &registry_key_path)
+        .context("SSH verification failed for registry VM")?;
+    println!("Registry VM SSH connectivity verified");
+
+    // The registry is exposed on the host via port forwarding (--port 5000:5000)
+    // Test VMs need to reach the host's IP, which is the default gateway
+    // Get the gateway IP dynamically from the registry VM's default route
+    println!("Getting host gateway IP from registry VM...");
+    let port_str = port.to_string();
+    let gateway_output = cmd!(
+        sh,
+        "ssh -i {registry_key_path} -p {port_str} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 -o IdentitiesOnly=yes root@localhost ip route show default"
+    )
+    .read()
+    .context("Failed to get default route from registry VM")?;
+
+    // Parse the default gateway IP using awk-like logic
+    let registry_ip = gateway_output
+        .split_whitespace()
+        .skip_while(|&word| word != "default")
+        .skip(1) // skip "default"
+        .find(|&word| word != "via") // find first word after "via"
+        .unwrap_or("")
+        .trim();
+
+    // Validate that it's a valid IP address
+    let _ip_addr: std::net::IpAddr = registry_ip.parse().with_context(|| {
+        format!(
+            "Got invalid gateway IP from registry VM: '{}' (output: '{}')",
+            registry_ip, gateway_output
+        )
+    })?;
+
+    let registry_ip = registry_ip.to_string();
+
+    println!(
+        "Registry will be accessible to test VMs at {} (host gateway)",
+        registry_ip
+    );
+
+    // Push base image to registry
+    // Host pushes to localhost:5000
+    // Test VMs use hostname (configured via TMT prepare)
+    println!("Pushing base image to registry...");
+    let registry_url = "localhost:5000".to_string();
+    let base_image_ref = format!("{}/bootc", registry_url);
+
+    // Tag the base image with registry URL
+    cmd!(sh, "podman tag {base_image} {base_image_ref}")
+        .run()
+        .context("Failed to tag base image")?;
+
+    // Push to registry using localhost:5000
+    // Certificate includes localhost in SANs, so TLS verification will work
+    // Test VMs will use proper TLS with hostname
+
+    // Podman --cert-dir expects directory structure: <cert-dir>/<hostname:port>/ca.crt
+    // The setup-registry-certs.sh script creates this structure at hack/.registry-certs/localhost:5000/ca.crt
+    // Note: We're currently in target/tmt-workdir, so we need absolute path
+
+    // Get absolute path to project root cert directory
+    let cert_dir_relative = Utf8Path::new("hack/.registry-certs");
+    let cert_dir = std::fs::canonicalize(cert_dir_relative)
+        .context("Failed to get absolute path to hack/.registry-certs")?;
+    let cert_dir =
+        Utf8PathBuf::try_from(cert_dir).context("Failed to convert cert dir to UTF-8 path")?;
+
+    // Print the contents of cert-dir for debugging
+    println!("Using cert-dir: {}", cert_dir);
+    let _ = cmd!(sh, "ls -laR {cert_dir}").run();
+
+    // Check if the expected localhost:5000 directory exists
+    let localhost_cert = cert_dir.join("localhost:5000/ca.crt");
+    if !localhost_cert.exists() {
+        anyhow::bail!(
+            "Certificate file not found at {}. Please run hack/setup-registry-certs.sh",
+            localhost_cert
+        );
+    }
+
+    // Verify registry is reachable before pushing
+    println!("Verifying registry is reachable at localhost:5000...");
+    let registry_check = cmd!(sh, "curl -k -s https://localhost:5000/v2/")
+        .ignore_status()
+        .read();
+    match registry_check {
+        Ok(output) => println!("Registry check response: {}", output),
+        Err(e) => {
+            eprintln!("Warning: Registry may not be reachable: {}", e);
+            eprintln!("Continuing with push attempt anyway...");
+        }
+    }
+
+    println!("Pushing image to registry at {}...", base_image_ref);
+    println!(
+        "Command: skopeo copy --dest-tls-verify=false containers-storage:{} docker://{}",
+        base_image, base_image_ref
+    );
+
+    // Use skopeo with --dest-tls-verify=false for the test registry
+    // The registry uses self-signed certificates, and --dest-cert-dir doesn't work
+    // reliably when skopeo re-execs in a user namespace
+    cmd!(sh, "skopeo copy --dest-tls-verify=false containers-storage:{base_image} docker://{base_image_ref}")
+        .run()
+        .context("Failed to push base image to registry")?;
+
+    println!(
+        "Successfully pushed base image to registry: {}",
+        base_image_ref
+    );
+
+    Ok((
+        RegistryVmInfo {
+            vm_name: registry_vm_name,
+            ssh_port: port,
+            ssh_key: key,
+            registry_ip,
+        },
+        cleanup_guard,
+    ))
 }
 
 /// Run TMT tests using bcvk for VM management
@@ -301,14 +641,26 @@ pub(crate) fn run_tmt(sh: &Shell, args: &RunTmtArgs) -> Result<()> {
     // Environment variables to pass to tmt (in addition to args.env)
     let mut tmt_env_vars = Vec::new();
 
+    // Launch registry VM once before all tests if registry image is provided
+    let mut registry_vm_info: Option<RegistryVmInfo> = None;
+    // Registry VM cleanup guard - will automatically cleanup on drop unless disarmed
+    let mut registry_cleanup_guard: Option<VmCleanupGuard> = None;
+
+    if let Some(ref registry_image) = args.registry_image {
+        let (info, guard) =
+            setup_registry_vm(sh, registry_image, image, &random_suffix, preserve_vm)?;
+        registry_vm_info = Some(info);
+        registry_cleanup_guard = Some(guard);
+    }
+
     // Run each plan in its own VM
     for plan in plans {
         let plan_name = sanitize_plan_name(plan);
-        let vm_name = format!("bootc-tmt-{}-{}", random_suffix, plan_name);
+        let test_vm_name = format!("bootc-tmt-{}-{}", random_suffix, plan_name);
 
         println!("\n========================================");
         println!("Running plan: {}", plan);
-        println!("VM name: {}", vm_name);
+        println!("Test VM name: {}", test_vm_name);
         println!("========================================\n");
 
         // Reset plan-specific environment variables
@@ -347,137 +699,168 @@ pub(crate) fn run_tmt(sh: &Shell, args: &RunTmtArgs) -> Result<()> {
             opts
         };
 
-        // Launch VM with bcvk
+        // Build custom images for this test (if any)
+        let test_custom_images = match build_test_custom_images(sh, plan, "localhost:5000") {
+            Ok(images) => images,
+            Err(e) => {
+                eprintln!("Failed to build custom images for plan {}: {:#}", plan, e);
+                all_passed = false;
+                test_results.push((plan.to_string(), false, None));
+                continue;
+            }
+        };
+
+        // Launch test VM with bcvk
         let launch_result = cmd!(
             sh,
-            "bcvk libvirt run --name {vm_name} --detach {COMMON_INST_ARGS...} {plan_bcvk_opts...} {image}"
+            "bcvk libvirt run --name {test_vm_name} --detach --network bridge {COMMON_INST_ARGS...} {plan_bcvk_opts...} {image}"
         )
         .run()
-        .context("Launching VM with bcvk");
+        .context("Launching test VM with bcvk");
 
         if let Err(e) = launch_result {
-            eprintln!("Failed to launch VM for plan {}: {:#}", plan, e);
+            eprintln!("Failed to launch test VM for plan {}: {:#}", plan, e);
             all_passed = false;
             test_results.push((plan.to_string(), false, None));
             continue;
         }
 
-        // Ensure VM cleanup happens even on error (unless --preserve-vm is set)
-        let cleanup_vm = || {
-            if preserve_vm {
-                return;
-            }
-            if let Err(e) = cmd!(sh, "bcvk libvirt rm --stop --force {vm_name}")
-                .ignore_stderr()
-                .ignore_status()
-                .run()
-            {
-                eprintln!("Warning: Failed to cleanup VM {}: {}", vm_name, e);
-            }
-        };
+        // Create cleanup guard to ensure VM cleanup on drop (unless --preserve-vm is set)
+        // Note: Registry VM is cleaned up after all tests complete, not per-test
+        let test_vm_cleanup_guard = VmCleanupGuard::new(sh, test_vm_name.clone(), preserve_vm);
 
-        // Wait for VM to be ready and get SSH info
-        let vm_info = wait_for_vm_ready(sh, &vm_name);
-        let (ssh_port, ssh_key) = match vm_info {
-            Ok((port, key)) => (port, key),
+        // Wait for test VM to be ready and get SSH info
+        let (test_ssh_port, test_ssh_key) = match wait_for_vm_ready(sh, &test_vm_name) {
+            Ok((port, key, _ip)) => (port, key), // We don't need the test VM's IP
             Err(e) => {
-                eprintln!("Failed to get VM info for plan {}: {:#}", plan, e);
-                cleanup_vm();
+                eprintln!("Failed to get test VM info for plan {}: {:#}", plan, e);
+                // Guard will cleanup VM on drop
                 all_passed = false;
                 test_results.push((plan.to_string(), false, None));
                 continue;
             }
         };
 
-        println!("VM ready, SSH port: {}", ssh_port);
+        println!("Test VM ready, SSH port: {}", test_ssh_port);
 
-        // Save SSH private key to a temporary file
-        let key_file = tempfile::NamedTempFile::new().context("Creating temporary SSH key file");
-
-        let key_file = match key_file {
-            Ok(f) => f,
+        // Save SSH private key to a temporary file for test VM
+        let (_test_key_file, test_key_path) = match save_ssh_key(&test_ssh_key) {
+            Ok(result) => result,
             Err(e) => {
-                eprintln!("Failed to create SSH key file for plan {}: {:#}", plan, e);
-                cleanup_vm();
+                eprintln!("Failed to save SSH key for plan {}: {:#}", plan, e);
+                // Guard will cleanup VM on drop
                 all_passed = false;
                 test_results.push((plan.to_string(), false, None));
                 continue;
             }
         };
 
-        let key_path = Utf8PathBuf::try_from(key_file.path().to_path_buf())
-            .context("Converting key path to UTF-8");
-
-        let key_path = match key_path {
-            Ok(p) => p,
-            Err(e) => {
-                eprintln!("Failed to convert key path for plan {}: {:#}", plan, e);
-                cleanup_vm();
-                all_passed = false;
-                test_results.push((plan.to_string(), false, None));
-                continue;
-            }
-        };
-
-        if let Err(e) = std::fs::write(&key_path, ssh_key) {
-            eprintln!("Failed to write SSH key for plan {}: {:#}", plan, e);
-            cleanup_vm();
+        // Verify SSH connectivity for test VM
+        println!("Verifying SSH connectivity to test VM...");
+        if let Err(e) = verify_ssh_connectivity(sh, test_ssh_port, &test_key_path) {
+            eprintln!(
+                "SSH verification failed for test VM in plan {}: {:#}",
+                plan, e
+            );
+            // Guard will cleanup VM on drop
             all_passed = false;
             test_results.push((plan.to_string(), false, None));
             continue;
         }
 
-        // Set proper permissions on the key file (SSH requires 0600)
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let perms = std::fs::Permissions::from_mode(0o600);
-            if let Err(e) = std::fs::set_permissions(&key_path, perms) {
-                eprintln!("Failed to set key permissions for plan {}: {:#}", plan, e);
-                cleanup_vm();
-                all_passed = false;
-                test_results.push((plan.to_string(), false, None));
-                continue;
-            }
-        }
+        println!("Test VM SSH connectivity verified");
 
-        // Verify SSH connectivity
-        println!("Verifying SSH connectivity...");
-        if let Err(e) = verify_ssh_connectivity(sh, ssh_port, &key_path) {
-            eprintln!("SSH verification failed for plan {}: {:#}", plan, e);
-            cleanup_vm();
-            all_passed = false;
-            test_results.push((plan.to_string(), false, None));
-            continue;
-        }
-
-        println!("SSH connectivity verified");
-
-        let ssh_port_str = ssh_port.to_string();
+        let test_ssh_port_str = test_ssh_port.to_string();
 
         // Run tmt for this specific plan using connect provisioner
         println!("Running tmt tests for plan {}...", plan);
 
         // Generate a unique run ID for this test
-        // Use the VM name which already contains a random suffix for uniqueness
-        let run_id = vm_name.clone();
+        // Use the test VM name which already contains a random suffix for uniqueness
+        let run_id = test_vm_name.clone();
 
-        // Run tmt for this specific plan
-        // Note: provision must come before plan for connect to work properly
+        // Build provision arguments for multihost or single host
         let context = context.clone();
+
+        // Build environment variables, including registry info if available
+        let mut env_vars = vec![
+            "TMT_SCRIPTS_DIR=/var/lib/tmt/scripts".to_string(),
+            "BCVK_EXPORT=1".to_string(),
+        ];
+        env_vars.extend(args.env.iter().cloned());
+        env_vars.extend(tmt_env_vars.iter().cloned());
+
+        // Add registry environment variables if registry VM was set up
+        // Use a hostname instead of IP for TLS certificate validation
+        if let Some(ref info) = registry_vm_info {
+            env_vars.push(format!("BOOTC_REGISTRY_IP={}", info.registry_ip));
+            env_vars.push(format!("BOOTC_REGISTRY_PORT=5000"));
+            env_vars.push("BOOTC_REGISTRY_HOSTNAME=bootc-registry.test".to_string());
+            env_vars.push("BOOTC_REGISTRY_URL=bootc-registry.test:5000".to_string());
+
+            // Add environment variables for THIS TEST's custom images
+            for image in &test_custom_images {
+                // Environment variable name uses only the suffix (not namespaced)
+                let env_var_name = format!(
+                    "BOOTC_TEST_IMAGE_{}",
+                    image.tag_suffix.to_uppercase().replace('-', "_")
+                );
+                // Full image ref includes namespaced tag for uniqueness
+                let test_vm_image_ref = format!("bootc-registry.test:5000/{}", image.full_tag);
+                env_vars.push(format!("{}={}", env_var_name, test_vm_image_ref));
+            }
+        }
+
+        let env = env_vars
+            .iter()
+            .map(|v| v.as_str())
+            .flat_map(|v| ["--environment", v])
+            .collect::<Vec<_>>();
+
         let how = ["--how=connect", "--guest=localhost", "--user=root"];
-        let env = ["TMT_SCRIPTS_DIR=/var/lib/tmt/scripts", "BCVK_EXPORT=1"]
-            .into_iter()
-            .chain(args.env.iter().map(|v| v.as_str()))
-            .chain(tmt_env_vars.iter().map(|v| v.as_str()))
-            .flat_map(|v| ["--environment", v]);
         let test_result = cmd!(
             sh,
-            "tmt {context...} run --id {run_id} --all {env...} provision {how...} --port {ssh_port_str} --key {key_path} plan --name {plan}"
+            "tmt {context...} run --id {run_id} --all {env...} provision {how...} --port {test_ssh_port_str} --key {test_key_path} plan --name {plan}"
         )
         .run();
 
-        // Clean up VM regardless of test result (unless --preserve-vm is set)
-        cleanup_vm();
+        // Handle VM cleanup/preservation (cleanup guard will cleanup on drop unless disarmed)
+        if preserve_vm {
+            // Disarm the guard to preserve the test VM
+            test_vm_cleanup_guard.disarm();
+
+            // Copy test VM SSH key to a persistent location
+            let test_persistent_key_path =
+                Utf8Path::new("target").join(format!("{}.ssh-key", test_vm_name));
+            if let Err(e) = std::fs::copy(&test_key_path, &test_persistent_key_path) {
+                eprintln!("Warning: Failed to save persistent test VM SSH key: {}", e);
+            } else {
+                println!("\n========================================");
+                println!("VMs preserved for debugging:");
+                println!("========================================");
+                println!("Test VM name: {}", test_vm_name);
+                println!("Test VM SSH port: {}", test_ssh_port_str);
+                println!("Test VM SSH key: {}", test_persistent_key_path);
+                println!("\nTo connect to test VM via SSH:");
+                println!(
+                    "  ssh -i {} -p {} -o IdentitiesOnly=yes root@localhost",
+                    test_persistent_key_path, test_ssh_port_str
+                );
+
+                println!("\nTo cleanup:");
+                println!("  bcvk libvirt rm --stop --force {}", test_vm_name);
+                println!("========================================\n");
+            }
+        }
+        // If not preserving, guard will cleanup VM automatically when it goes out of scope
+
+        // Clean up custom images for this test
+        if let Err(e) = cleanup_test_images(sh, &test_custom_images) {
+            eprintln!(
+                "Warning: Failed to cleanup custom images for plan {}: {:#}",
+                plan, e
+            );
+        }
 
         match test_result {
             Ok(_) => {
@@ -490,29 +873,57 @@ pub(crate) fn run_tmt(sh: &Shell, args: &RunTmtArgs) -> Result<()> {
                 test_results.push((plan.to_string(), false, Some(run_id)));
             }
         }
+    }
 
-        // Print VM connection details if preserving
+    // Handle registry VM cleanup and preservation
+    if let Some(ref info) = registry_vm_info {
         if preserve_vm {
-            // Copy SSH key to a persistent location
-            let persistent_key_path = Utf8Path::new("target").join(format!("{}.ssh-key", vm_name));
-            if let Err(e) = std::fs::copy(&key_path, &persistent_key_path) {
-                eprintln!("Warning: Failed to save persistent SSH key: {}", e);
+            // Disarm the cleanup guard so the VM persists
+            if let Some(guard) = registry_cleanup_guard.take() {
+                guard.disarm();
+            }
+
+            // Save registry VM SSH key to a persistent location
+            let registry_persistent_key_path =
+                Utf8Path::new("target").join(format!("{}.ssh-key", info.vm_name));
+            if let Err(e) = std::fs::write(&registry_persistent_key_path, &info.ssh_key) {
+                eprintln!(
+                    "Warning: Failed to save persistent registry VM SSH key: {}",
+                    e
+                );
             } else {
+                // Set proper permissions
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let perms = std::fs::Permissions::from_mode(0o600);
+                    if let Err(e) = std::fs::set_permissions(&registry_persistent_key_path, perms) {
+                        eprintln!("Warning: Failed to set registry key permissions: {}", e);
+                    }
+                }
+
                 println!("\n========================================");
-                println!("VM preserved for debugging:");
+                println!("Registry VM preserved for debugging:");
                 println!("========================================");
-                println!("VM name: {}", vm_name);
-                println!("SSH port: {}", ssh_port_str);
-                println!("SSH key: {}", persistent_key_path);
-                println!("\nTo connect via SSH:");
+                println!("Registry VM name: {}", info.vm_name);
+                println!("Registry VM SSH port: {}", info.ssh_port);
+                println!("Registry VM IP: {}", info.registry_ip);
+                println!("Registry VM SSH key: {}", registry_persistent_key_path);
+                println!("\nTo connect to registry VM via SSH:");
                 println!(
                     "  ssh -i {} -p {} -o IdentitiesOnly=yes root@localhost",
-                    persistent_key_path, ssh_port_str
+                    registry_persistent_key_path, info.ssh_port
                 );
+                println!("\nRegistry URL: {}:5000", info.registry_ip);
                 println!("\nTo cleanup:");
-                println!("  bcvk libvirt rm --stop --force {}", vm_name);
+                println!("  bcvk libvirt rm --stop --force {}", info.vm_name);
                 println!("========================================\n");
             }
+        } else {
+            // Cleanup registry VM via the guard (which happens automatically on drop)
+            println!("Cleaning up registry VM...");
+            // Drop the guard explicitly to trigger cleanup now
+            drop(registry_cleanup_guard.take());
+            println!("Registry VM cleaned up successfully");
         }
     }
 
@@ -609,7 +1020,7 @@ pub(crate) fn tmt_provision(sh: &Shell, args: &TmtProvisionArgs) -> Result<()> {
     println!("VM launched, waiting for SSH...");
 
     // Wait for VM to be ready and get SSH info
-    let (ssh_port, ssh_key) = wait_for_vm_ready(sh, &vm_name)?;
+    let (ssh_port, ssh_key, _ip) = wait_for_vm_ready(sh, &vm_name)?; // IP not needed for manual provisioning
 
     // Save SSH private key to target directory
     let key_dir = Utf8Path::new("target");
@@ -744,15 +1155,121 @@ struct TmtMetadata {
     tmt: serde_yaml::Value,
 }
 
+#[derive(Debug, Clone)]
+struct CustomImage {
+    /// Tag suffix (e.g., "bootc-derived")
+    tag_suffix: String,
+    /// Full namespaced tag (e.g., "test-20-image-pushpull-upgrade-bootc-derived")
+    full_tag: String,
+    /// Image directory name (e.g., "01-bootc-derived")
+    image_dir: String,
+}
+
 #[derive(Debug)]
 struct TestDef {
     number: u32,
     name: String,
+    /// Test name prefix for directory-based tests (e.g., "test-20-image-pushpull-upgrade")
+    /// Used by runtime code for building custom images
+    #[allow(dead_code)]
+    test_name_prefix: String,
     test_command: String,
     /// Whether this test wants to try bind storage (if distro supports it)
     try_bind_storage: bool,
     /// TMT fmf attributes to pass through (summary, duration, adjust, etc.)
     tmt: serde_yaml::Value,
+    /// Custom images defined in Containerfile.* files
+    /// Used by runtime code for tracking which images to build
+    #[allow(dead_code)]
+    custom_images: Vec<CustomImage>,
+    /// Whether this test is directory-based (true) or file-based (false)
+    /// Used by runtime code for determining test structure
+    #[allow(dead_code)]
+    is_directory: bool,
+}
+
+/// Discover Containerfile directories in a test's images/ subdirectory
+/// Each subdirectory under images/ containing a file named "Containerfile" becomes a custom image
+/// Directory names should be prefixed with numbers for build order (e.g., 01-name, 02-name)
+/// Tag suffix is extracted by stripping numeric prefix. Returns empty Vec if no images/ directory exists.
+#[context("Discovering containerfiles")]
+fn discover_containerfiles(
+    test_dir: &Utf8Path,
+    test_name_prefix: &str,
+) -> Result<Vec<CustomImage>> {
+    let mut images = Vec::new();
+
+    // Check if images/ directory exists
+    let images_dir = test_dir.join("images");
+    if !images_dir.is_dir() {
+        // No images directory, no custom images
+        return Ok(images);
+    }
+
+    // Scan subdirectories under images/
+    for entry in std::fs::read_dir(&images_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+
+        // Only process directories
+        if !path.is_dir() {
+            continue;
+        }
+
+        let Some(dirname) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+
+        // Skip dotfiles
+        if dirname.starts_with('.') {
+            continue;
+        }
+
+        // Check for Containerfile inside directory
+        let containerfile_path = path.join("Containerfile");
+        if !containerfile_path.is_file() {
+            continue;
+        }
+
+        // Extract tag suffix by removing numeric prefix if present
+        // Format: "01-bootc-derived" -> "bootc-derived"
+        let tag_suffix = dirname
+            .split_once('-')
+            .and_then(|(prefix, suffix)| {
+                // Check if prefix is all digits
+                if prefix.chars().all(|c| c.is_ascii_digit()) {
+                    Some(suffix.to_string())
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_else(|| dirname.to_string());
+
+        // Validate tag suffix (alphanumeric, dash, underscore only)
+        if !tag_suffix
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+        {
+            eprintln!(
+                "Warning: Skipping directory with invalid tag suffix: images/{} (tag: {})",
+                dirname, tag_suffix
+            );
+            continue;
+        }
+
+        // Namespace the tag with test name prefix
+        let full_tag = format!("{}-{}", test_name_prefix, tag_suffix);
+
+        images.push(CustomImage {
+            tag_suffix,
+            full_tag,
+            image_dir: dirname.to_string(), // Store full directory name with numeric prefix
+        });
+    }
+
+    // Sort by directory name for build order (numeric prefixes ensure correct ordering)
+    images.sort_by(|a, b| a.image_dir.cmp(&b.image_dir));
+    Ok(images)
 }
 
 /// Generate tmt/plans/integration.fmf from test definitions
@@ -767,72 +1284,169 @@ pub(crate) fn update_integration() -> Result<()> {
     for entry in std::fs::read_dir(booted_dir)? {
         let entry = entry?;
         let path = entry.path();
-        let Some(filename) = path.file_name().and_then(|n| n.to_str()) else {
-            continue;
-        };
+        let path_utf8 = Utf8PathBuf::try_from(path.clone()).context("Converting path to UTF-8")?;
 
-        // Extract stem (filename without "test-" prefix and extension)
-        let Some(stem) = filename
-            .strip_prefix("test-")
-            .and_then(|s| s.strip_suffix(".nu").or_else(|| s.strip_suffix(".sh")))
-        else {
-            continue;
-        };
+        // Handle both files and directories
+        if path.is_file() {
+            // LEGACY: File-based tests (test-*.nu, test-*.sh)
+            let Some(filename) = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
 
-        let content =
-            std::fs::read_to_string(&path).with_context(|| format!("Reading {}", filename))?;
+            // Extract stem (filename without "test-" prefix and extension)
+            let Some(stem) = filename
+                .strip_prefix("test-")
+                .and_then(|s| s.strip_suffix(".nu").or_else(|| s.strip_suffix(".sh")))
+            else {
+                continue;
+            };
 
-        let metadata = parse_tmt_metadata(&content)
-            .with_context(|| format!("Parsing tmt metadata from {}", filename))?
-            .with_context(|| format!("Missing tmt metadata in {}", filename))?;
+            let content =
+                std::fs::read_to_string(&path).with_context(|| format!("Reading {}", filename))?;
 
-        // Remove number prefix if present (e.g., "01-readonly" -> "readonly", "26-examples-build" -> "examples-build")
-        let display_name = stem
-            .split_once('-')
-            .and_then(|(prefix, suffix)| {
-                if prefix.chars().all(|c| c.is_ascii_digit()) {
-                    Some(suffix.to_string())
-                } else {
-                    None
-                }
-            })
-            .unwrap_or_else(|| stem.to_string());
+            let metadata = parse_tmt_metadata(&content)
+                .with_context(|| format!("Parsing tmt metadata from {}", filename))?
+                .with_context(|| format!("Missing tmt metadata in {}", filename))?;
 
-        // Derive relative path from booted_dir
-        let relative_path = path
-            .strip_prefix("tmt/tests/")
-            .with_context(|| format!("Failed to get relative path for {}", filename))?;
+            // Remove number prefix if present (e.g., "01-readonly" -> "readonly", "26-examples-build" -> "examples-build")
+            let display_name = stem
+                .split_once('-')
+                .and_then(|(prefix, suffix)| {
+                    if prefix.chars().all(|c| c.is_ascii_digit()) {
+                        Some(suffix.to_string())
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or_else(|| stem.to_string());
 
-        // Determine test command based on file extension
-        let extension = if filename.ends_with(".nu") {
-            "nu"
-        } else if filename.ends_with(".sh") {
-            "bash"
-        } else {
-            anyhow::bail!("Unsupported test file extension: {}", filename);
-        };
+            // Derive relative path from booted_dir
+            let relative_path = path
+                .strip_prefix("tmt/tests/")
+                .with_context(|| format!("Failed to get relative path for {}", filename))?;
 
-        let test_command = format!("{} {}", extension, relative_path.display());
+            // Determine test command based on file extension
+            let extension = if filename.ends_with(".nu") {
+                "nu"
+            } else {
+                "bash"
+            };
 
-        // Check if test wants bind storage
-        let try_bind_storage = metadata
-            .extra
-            .as_mapping()
-            .and_then(|m| {
-                m.get(&serde_yaml::Value::String(
-                    FIELD_TRY_BIND_STORAGE.to_string(),
-                ))
-            })
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
+            let test_command = format!("{} {}", extension, relative_path.display());
 
-        tests.push(TestDef {
-            number: metadata.number,
-            name: display_name,
-            test_command,
-            try_bind_storage,
-            tmt: metadata.tmt,
-        });
+            // Check if test wants bind storage
+            let try_bind_storage = metadata
+                .extra
+                .as_mapping()
+                .and_then(|m| {
+                    m.get(&serde_yaml::Value::String(
+                        FIELD_TRY_BIND_STORAGE.to_string(),
+                    ))
+                })
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+
+            tests.push(TestDef {
+                number: metadata.number,
+                name: display_name,
+                test_name_prefix: filename.to_string(),
+                test_command,
+                try_bind_storage,
+                tmt: metadata.tmt,
+                custom_images: Vec::new(), // No custom images for file-based tests
+                is_directory: false,
+            });
+        } else if path.is_dir() {
+            // NEW: Directory-based tests (test-*/)
+            let Some(dirname) = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+
+            if !dirname.starts_with("test-") {
+                continue;
+            }
+
+            // Look for test.nu or test.sh
+            let test_nu = path_utf8.join("test.nu");
+            let test_sh = path_utf8.join("test.sh");
+
+            let (test_file, extension) = if test_nu.exists() {
+                (test_nu, "nu")
+            } else if test_sh.exists() {
+                (test_sh, "bash")
+            } else {
+                eprintln!(
+                    "Warning: Directory {} has no test.nu or test.sh, skipping",
+                    dirname
+                );
+                continue;
+            };
+
+            let content = std::fs::read_to_string(&test_file)
+                .with_context(|| format!("Reading {}/test.{}", dirname, extension))?;
+
+            let metadata = parse_tmt_metadata(&content)
+                .with_context(|| {
+                    format!("Parsing tmt metadata from {}/test.{}", dirname, extension)
+                })?
+                .with_context(|| {
+                    format!("Missing tmt metadata in {}/test.{}", dirname, extension)
+                })?;
+
+            // Extract stem from directory name (test-20-foo -> 20-foo)
+            let stem = dirname.strip_prefix("test-").unwrap();
+
+            let display_name = stem
+                .split_once('-')
+                .and_then(|(prefix, suffix)| {
+                    if prefix.chars().all(|c| c.is_ascii_digit()) {
+                        Some(suffix.to_string())
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or_else(|| stem.to_string());
+
+            // Discover Containerfiles
+            let custom_images = discover_containerfiles(&path_utf8, dirname)?;
+
+            if !custom_images.is_empty() {
+                println!(
+                    "Found {} custom image(s) in {}: {:?}",
+                    custom_images.len(),
+                    dirname,
+                    custom_images
+                        .iter()
+                        .map(|i| &i.tag_suffix)
+                        .collect::<Vec<_>>()
+                );
+            }
+
+            // Test command points to directory structure
+            let test_command = format!("{} booted/{}/test.{}", extension, dirname, extension);
+
+            let try_bind_storage = metadata
+                .extra
+                .as_mapping()
+                .and_then(|m| {
+                    m.get(&serde_yaml::Value::String(
+                        FIELD_TRY_BIND_STORAGE.to_string(),
+                    ))
+                })
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+
+            tests.push(TestDef {
+                number: metadata.number,
+                name: display_name,
+                test_name_prefix: dirname.to_string(),
+                test_command,
+                try_bind_storage,
+                tmt: metadata.tmt,
+                custom_images,
+                is_directory: true,
+            });
+        }
     }
 
     // Sort tests by number

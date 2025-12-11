@@ -9,7 +9,7 @@
 /test-20-image-pushpull-upgrade:
   summary: Execute local upgrade tests
   duration: 30m
-  test: nu booted/test-image-pushpull-upgrade.nu
+  test: nu booted/test-20-image-pushpull-upgrade/test.nu
 
 /test-21-logically-bound-switch:
   summary: Execute logically bound images tests for switching images
@@ -34,17 +34,17 @@
 /test-24-image-upgrade-reboot:
   summary: Execute local upgrade tests
   duration: 30m
-  test: nu booted/test-image-upgrade-reboot.nu
-
-/test-25-soft-reboot:
-  summary: Execute soft reboot test
-  duration: 30m
-  test: nu booted/test-soft-reboot.nu
+  test: nu booted/test-24-image-upgrade-reboot/test.nu
 
 /test-25-download-only-upgrade:
   summary: Execute download-only upgrade tests
   duration: 40m
   test: nu booted/test-25-download-only-upgrade.nu
+
+/test-25-soft-reboot:
+  summary: Execute soft reboot test
+  duration: 30m
+  test: nu booted/test-25-soft-reboot/test.nu
 
 /test-26-examples-build:
   summary: Test bootc examples build scripts
@@ -62,7 +62,7 @@
   - when: running_env != image_mode
     enabled: false
     because: these tests require features only available in image mode
-  test: nu booted/test-custom-selinux-policy.nu
+  test: nu booted/test-27-custom-selinux-policy/test.nu
 
 /test-28-factory-reset:
   summary: Execute factory reset tests
@@ -72,4 +72,4 @@
 /test-29-soft-reboot-selinux-policy:
   summary: Test soft reboot with SELinux policy changes
   duration: 30m
-  test: nu booted/test-soft-reboot-selinux-policy.nu
+  test: nu booted/test-29-soft-reboot-selinux-policy/test.nu

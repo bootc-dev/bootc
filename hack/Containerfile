@@ -12,15 +12,34 @@ FROM localhost/bootc as extended
 # And this layer has additional stuff for testing, such as nushell etc.
 RUN --mount=type=bind,from=context,target=/run/context <<EORUN
 set -xeuo pipefail
-cd /run/context/
+cd /run/context/hack
 ./provision-derived.sh
+EORUN
+
+# Add registry CA certificate to trust store for secure registry access
+RUN --mount=type=bind,from=context,target=/run/context <<EORUN
+set -xeuo pipefail
+
+# Install the registry CA certificate if it exists
+# This allows test VMs to trust the registry's TLS certificate
+ls -la /run/context
+if [ -f /run/context/hack/.registry-certs/ca.pem ]; then
+    echo "Installing registry CA certificate to trust store..."
+    cp /run/context/hack/.registry-certs/ca.pem /usr/share/pki/ca-trust-source/anchors/bootc-registry-ca.crt
+    update-ca-trust
+    echo "✓ Registry CA certificate installed"
+else
+    echo "Note: Registry CA certificate not found - registry will need --tls-verify=false"
+    echo "To enable secure registry access, run: hack/setup-registry-certs.sh"
+    exit 1
+fi
 EORUN
 
 # And the configs
 FROM extended
 RUN --mount=type=bind,from=context,target=/run/context <<EORUN
 set -xeuo pipefail
-cd /run/context
+cd /run/context/hack
 # For test-22-logically-bound-install
 cp -a lbi/usr/. /usr
 for x in curl.container curl-base.image podman.image; do

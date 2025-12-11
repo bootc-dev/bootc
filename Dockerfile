@@ -74,5 +74,22 @@ RUN --mount=type=bind,from=packaging,target=/run/packaging \
     --mount=type=bind,from=packages,target=/build-packages \
     --network=none \
     /run/packaging/install-rpm-and-setup /build-packages
+# Install registry CA certificate for secure registry access in tests
+RUN --mount=type=bind,from=src,target=/run/src <<EORUN
+set -xeuo pipefail
+# Install the registry CA certificate if it exists
+# This allows test VMs to trust the registry's TLS certificate
+ls -la /run/src/src
+if [ -f /run/src/src/hack/.registry-certs/ca.pem ]; then
+    echo "Installing registry CA certificate to trust store..."
+    cp /run/src/src/hack/.registry-certs/ca.pem /usr/share/pki/ca-trust-source/anchors/bootc-registry-ca.crt
+    update-ca-trust
+    echo "✓ Registry CA certificate installed"
+else
+    echo "Note: Registry CA certificate not found - registry will need --tls-verify=false"
+    echo "To enable secure registry access, run: hack/setup-registry-certs.sh"
+    exit 1
+fi
+EORUN
 # Finally, testour own linting
 RUN bootc container lint --fatal-warnings

@@ -3,6 +3,14 @@ use tap.nu
 
 tap begin "rhsm facts"
 
+print "#####################################"
+print "#####################################"
+print "#####################################"
+print "#####################################"
+
+bootc status
+hostname
+
 # Verify we have this feature
 if ("/etc/rhsm" | path exists) {
     bootc internals publish-rhsm-facts --help

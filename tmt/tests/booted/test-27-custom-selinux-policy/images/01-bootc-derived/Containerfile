@@ -1,0 +1,2 @@
+FROM localhost:5000/bootc
+RUN mkdir /opt123; echo "/opt123 /opt" >> /etc/selinux/targeted/contexts/files/file_contexts.subs_dist

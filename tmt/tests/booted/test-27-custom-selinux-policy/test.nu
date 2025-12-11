@@ -9,7 +9,7 @@
 #
 # Verify that correct labels are applied after a deployment
 use std assert
-use tap.nu
+use ../tap.nu
 
 # This code runs on *each* boot.
 # Here we just capture information.
@@ -19,19 +19,10 @@ bootc status
 def initial_build [] {
     tap begin "local image push + pull + upgrade"
 
-    let td = mktemp -d
-    cd $td
+    # Use the pre-built image from the framework
+    let image = $env.BOOTC_TEST_IMAGE_BOOTC_DERIVED
 
-    bootc image copy-to-storage
-
-    # A simple derived container that customizes selinux policy for random dir
-    "FROM localhost/bootc
-RUN mkdir /opt123; echo \"/opt123 /opt\" >> /etc/selinux/targeted/contexts/files/file_contexts.subs_dist
-" | save Dockerfile
-    # Build it
-    podman build -t localhost/bootc-derived .
-
-    bootc switch --transport containers-storage localhost/bootc-derived
+    bootc switch --transport registry $image
 
     assert (not ("/opt123" | path exists))
 
