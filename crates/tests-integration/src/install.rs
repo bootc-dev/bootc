@@ -15,7 +15,8 @@ pub(crate) const BASE_ARGS: &[&str] = &[
     "--rm",
     "--privileged",
     "--pid=host",
-    "--env BOOTC_BOOTLOADER_DEBUG=true",
+    "--env",
+    "BOOTC_BOOTLOADER_DEBUG=true",
 ];
 
 // Arbitrary
