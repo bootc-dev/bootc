@@ -55,6 +55,13 @@ pub(crate) fn install_via_bootupd(
     // When not running inside the target container (through `--src-imgref`) we chroot
     // into the deployment before running bootupd. This makes sure we use binaries
     // from the target image rather than the buildroot
+    // But then `/target` (or wherever the user mounted the target FS) is not available,
+    // but since bootupd use that just to find the underlying device,
+    // we can use the deployement path just fine.
+    // Another way of doing this would be to enforce having the target
+    // rootfs mounted under `/run` so we'd get access to it as part of
+    // the standard bind-mounts below.
+    let chroot_root: Option<&str>;
     let bind_mount_dirs = ["/dev", "/run", "/proc", "/sys"];
     let chroot_args = if let Some(target_root) = abs_deployment_path.as_deref() {
         tracing::debug!("Setting up bind-mounts before chrooting to the target deployment");
@@ -66,10 +73,12 @@ pub(crate) fn install_via_bootupd(
             tracing::debug!("bind mounting {}", dest.display());
             rustix::mount::mount_bind_recursive(src, dest)?;
         }
+        chroot_root = Some("/");
         // Append the `bootupctl` command, it will be passed as
         // an argument to chroot
         vec![target_root.as_str(), "bootupctl"]
     } else {
+        chroot_root = None;
         vec![]
     };
 
@@ -85,7 +94,8 @@ pub(crate) fn install_via_bootupd(
         .args(["backend", "install", "--write-uuid"])
         .args(verbose)
         .args(bootupd_opts.iter().copied().flatten())
-        .args(["--device", devpath.as_str(), rootfs.as_str()])
+        .args(["--device", devpath.as_str()])
+        .args(chroot_root.or(Some(rootfs.as_str())))
         .log_debug()
         .run_inherited_with_cmd_context();
 
