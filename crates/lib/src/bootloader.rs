@@ -104,20 +104,18 @@ pub(crate) fn install_via_bootupd(
 
     // Clean up the mounts after ourselves
     if let Some(target_root) = abs_deployment_path {
-        let mut unmount_res = Ok(());
         for dir in bind_mount_dirs {
             let mount = target_root
                 .join(dir.strip_prefix("/").unwrap())
                 .into_std_path_buf();
             if let Err(e) = rustix::mount::unmount(&mount, UnmountFlags::DETACH) {
+                // let's not propagate the error up because in some cases we can't unmount
+                // e.g. when running `to-existing-root`
                 tracing::warn!("Error unmounting {}: {e}", mount.display());
-                unmount_res = Err(e.into());
             }
         }
-        install_result.and(unmount_res)
-    } else {
-        install_result
     }
+    install_result
 }
 
 #[context("Installing bootloader")]
