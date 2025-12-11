@@ -1,5 +1,4 @@
 use std::io::Write;
-use std::ops::Deref;
 use std::os::unix::fs::symlink;
 use std::path::Path;
 use std::{fs::create_dir_all, process::Command};
@@ -108,20 +107,22 @@ pub(crate) fn copy_etc_to_state(
     cp_ret
 }
 
-/// Updates the currently booted image's target imgref
-pub(crate) fn update_target_imgref_in_origin(
+/// Adds or updates the provided key/value pairs in the .origin file of the deployment pointed to
+/// by the `deployment_id`
+fn add_update_in_origin(
     storage: &Storage,
-    booted_cfs: &BootedComposefs,
-    imgref: &ImageReference,
+    deployment_id: &str,
+    section: &str,
+    kv_pairs: &[(&str, &str)],
 ) -> Result<()> {
-    let path = Path::new(STATE_DIR_RELATIVE).join(booted_cfs.cmdline.digest.deref());
+    let path = Path::new(STATE_DIR_RELATIVE).join(deployment_id);
 
     let state_dir = storage
         .physical_root
         .open_dir(path)
         .context("Opening state dir")?;
 
-    let origin_filename = format!("{}.origin", booted_cfs.cmdline.digest.deref());
+    let origin_filename = format!("{deployment_id}.origin");
 
     let origin_file = state_dir
         .read_to_string(&origin_filename)
@@ -130,11 +131,9 @@ pub(crate) fn update_target_imgref_in_origin(
     let mut ini =
         tini::Ini::from_string(&origin_file).context("Failed to parse file origin file as ini")?;
 
-    // Replace the origin
-    ini = ini.section("origin").item(
-        ORIGIN_CONTAINER,
-        format!("ostree-unverified-image:{imgref}"),
-    );
+    for (key, value) in kv_pairs {
+        ini = ini.section(section).item(*key, *value);
+    }
 
     state_dir
         .atomic_replace_with(origin_filename, move |f| -> std::io::Result<_> {
@@ -151,15 +150,45 @@ pub(crate) fn update_target_imgref_in_origin(
     Ok(())
 }
 
+/// Updates the currently booted image's target imgref
+pub(crate) fn update_target_imgref_in_origin(
+    storage: &Storage,
+    booted_cfs: &BootedComposefs,
+    imgref: &ImageReference,
+) -> Result<()> {
+    add_update_in_origin(
+        storage,
+        booted_cfs.cmdline.digest.as_ref(),
+        "origin",
+        &[(
+            ORIGIN_CONTAINER,
+            &format!("ostree-unverified-image:{imgref}"),
+        )],
+    )
+}
+
+pub(crate) fn update_boot_digest_in_origin(
+    storage: &Storage,
+    digest: &str,
+    boot_digest: &str,
+) -> Result<()> {
+    add_update_in_origin(
+        storage,
+        digest,
+        ORIGIN_KEY_BOOT,
+        &[(ORIGIN_KEY_BOOT_DIGEST, boot_digest)],
+    )
+}
+
 /// Creates and populates /sysroot/state/deploy/image_id
 #[context("Writing composefs state")]
 pub(crate) fn write_composefs_state(
     root_path: &Utf8PathBuf,
-    deployment_id: Sha512HashValue,
+    deployment_id: &Sha512HashValue,
     imgref: &ImageReference,
     staged: bool,
     boot_type: BootType,
-    boot_digest: Option<String>,
+    boot_digest: String,
 ) -> Result<()> {
     let state_path = root_path
         .join(STATE_DIR_RELATIVE)
@@ -197,11 +226,9 @@ pub(crate) fn write_composefs_state(
         .section(ORIGIN_KEY_BOOT)
         .item(ORIGIN_KEY_BOOT_TYPE, boot_type);
 
-    if let Some(boot_digest) = boot_digest {
-        config = config
-            .section(ORIGIN_KEY_BOOT)
-            .item(ORIGIN_KEY_BOOT_DIGEST, boot_digest);
-    }
+    config = config
+        .section(ORIGIN_KEY_BOOT)
+        .item(ORIGIN_KEY_BOOT_DIGEST, boot_digest);
 
     let state_dir =
         Dir::open_ambient_dir(&state_path, ambient_authority()).context("Opening state dir")?;

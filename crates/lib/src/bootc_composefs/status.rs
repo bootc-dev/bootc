@@ -2,11 +2,17 @@ use std::{io::Read, sync::OnceLock};
 
 use anyhow::{Context, Result};
 use bootc_kernel_cmdline::utf8::Cmdline;
+use bootc_mount::inspect_filesystem;
 use fn_error_context::context;
 
 use crate::{
-    bootc_composefs::boot::BootType,
-    composefs_consts::{COMPOSEFS_CMDLINE, ORIGIN_KEY_BOOT_DIGEST, TYPE1_ENT_PATH, USER_CFG},
+    bootc_composefs::{
+        boot::BootType,
+        utils::{compute_store_boot_digest_for_uki, get_uki_cmdline},
+    },
+    composefs_consts::{
+        COMPOSEFS_CMDLINE, ORIGIN_KEY_BOOT_DIGEST, TYPE1_ENT_PATH, TYPE1_ENT_PATH_STAGED, USER_CFG,
+    },
     install::EFI_LOADER_INFO,
     parsers::{
         bls_config::{parse_bls_config, BLSConfig, BLSConfigType},
@@ -20,7 +26,7 @@ use crate::{
 use std::str::FromStr;
 
 use bootc_utils::try_deserialize_timestamp;
-use cap_std_ext::cap_std::fs::Dir;
+use cap_std_ext::{cap_std::fs::Dir, dirext::CapStdExtDirExt};
 use ostree_container::OstreeImageReference;
 use ostree_ext::container::deploy::ORIGIN_CONTAINER;
 use ostree_ext::container::{self as ostree_container};
@@ -76,7 +82,23 @@ pub(crate) fn composefs_booted() -> Result<Option<&'static ComposefsCmdline>> {
     };
     let Some(v) = kv.value() else { return Ok(None) };
     let v = ComposefsCmdline::new(v);
-    let r = CACHED_DIGEST_VALUE.get_or_init(|| Some(v));
+
+    // Find the source of / mountpoint as the cmdline doesn't change on soft-reboot
+    let root_mnt = inspect_filesystem("/".into())?;
+
+    // This is of the format composefs:<composefs_hash>
+    let verity_from_mount_src = root_mnt
+        .source
+        .strip_prefix("composefs:")
+        .ok_or_else(|| anyhow::anyhow!("Root not mounted using composefs"))?;
+
+    let r = if *verity_from_mount_src != *v.digest {
+        // soft rebooted into another deployment
+        CACHED_DIGEST_VALUE.get_or_init(|| Some(ComposefsCmdline::new(verity_from_mount_src)))
+    } else {
+        CACHED_DIGEST_VALUE.get_or_init(|| Some(v))
+    };
+
     Ok(r.as_ref())
 }
 
@@ -92,14 +114,43 @@ pub(crate) fn get_sorted_grub_uki_boot_entries<'a>(
     parse_grub_menuentry_file(str)
 }
 
-#[context("Getting sorted Type1 boot entries")]
 pub(crate) fn get_sorted_type1_boot_entries(
     boot_dir: &Dir,
     ascending: bool,
 ) -> Result<Vec<BLSConfig>> {
+    get_sorted_type1_boot_entries_helper(boot_dir, ascending, false)
+}
+
+pub(crate) fn get_sorted_staged_type1_boot_entries(
+    boot_dir: &Dir,
+    ascending: bool,
+) -> Result<Vec<BLSConfig>> {
+    get_sorted_type1_boot_entries_helper(boot_dir, ascending, true)
+}
+
+#[context("Getting sorted Type1 boot entries")]
+fn get_sorted_type1_boot_entries_helper(
+    boot_dir: &Dir,
+    ascending: bool,
+    get_staged_entries: bool,
+) -> Result<Vec<BLSConfig>> {
     let mut all_configs = vec![];
 
-    for entry in boot_dir.read_dir(TYPE1_ENT_PATH)? {
+    let dir = match get_staged_entries {
+        true => {
+            let dir = boot_dir.open_dir_optional(TYPE1_ENT_PATH_STAGED)?;
+
+            let Some(dir) = dir else {
+                return Ok(all_configs);
+            };
+
+            dir.read_dir(".")?
+        }
+
+        false => boot_dir.read_dir(TYPE1_ENT_PATH)?,
+    };
+
+    for entry in dir {
         let entry = entry?;
 
         let file_name = entry.file_name();
@@ -259,12 +310,186 @@ pub(crate) async fn get_composefs_status(
     composefs_deployment_status_from(&storage, booted_cfs.cmdline).await
 }
 
+/// Check whether any deployment is capable of being soft rebooted or not
+#[context("Checking soft reboot capability")]
+fn set_soft_reboot_capability(
+    storage: &Storage,
+    host: &mut Host,
+    bls_entries: Option<Vec<BLSConfig>>,
+    cmdline: &ComposefsCmdline,
+) -> Result<()> {
+    let booted = host.require_composefs_booted()?;
+
+    match booted.boot_type {
+        BootType::Bls => {
+            let mut bls_entries =
+                bls_entries.ok_or_else(|| anyhow::anyhow!("BLS entries not provided"))?;
+
+            let staged_entries =
+                get_sorted_staged_type1_boot_entries(storage.require_boot_dir()?, false)?;
+
+            // We will have a duplicate booted entry here, but that's fine as we only use this
+            // vector to check for existence of an entry
+            bls_entries.extend(staged_entries);
+
+            set_reboot_capable_type1_deployments(cmdline, host, bls_entries)
+        }
+
+        BootType::Uki => set_reboot_capable_uki_deployments(storage, cmdline, host),
+    }
+}
+
+fn find_bls_entry<'a>(
+    verity: &str,
+    bls_entries: &'a Vec<BLSConfig>,
+) -> Result<Option<&'a BLSConfig>> {
+    for ent in bls_entries {
+        if ent.get_verity()? == *verity {
+            return Ok(Some(ent));
+        }
+    }
+
+    Ok(None)
+}
+
+/// Compares cmdline `first` and `second` skipping `composefs=`
+fn compare_cmdline_skip_cfs(first: &Cmdline<'_>, second: &Cmdline<'_>) -> bool {
+    for param in first {
+        if param.key() == COMPOSEFS_CMDLINE.into() {
+            continue;
+        }
+
+        let second_param = second.iter().find(|b| *b == param);
+
+        let Some(found_param) = second_param else {
+            return false;
+        };
+
+        if found_param.value() != param.value() {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+#[context("Setting soft reboot capability for Type1 entries")]
+fn set_reboot_capable_type1_deployments(
+    booted_cmdline: &ComposefsCmdline,
+    host: &mut Host,
+    bls_entries: Vec<BLSConfig>,
+) -> Result<()> {
+    let booted = host
+        .status
+        .booted
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("Failed to find booted entry"))?;
+
+    let booted_boot_digest = booted.composefs_boot_digest()?;
+
+    let booted_bls_entry = find_bls_entry(&*booted_cmdline.digest, &bls_entries)?
+        .ok_or_else(|| anyhow::anyhow!("Booted BLS entry not found"))?;
+
+    let booted_cmdline = booted_bls_entry.get_cmdline()?;
+
+    for depl in host
+        .status
+        .staged
+        .iter_mut()
+        .chain(host.status.rollback.iter_mut())
+        .chain(host.status.other_deployments.iter_mut())
+    {
+        let entry = find_bls_entry(&depl.require_composefs()?.verity, &bls_entries)?
+            .ok_or_else(|| anyhow::anyhow!("Entry not found"))?;
+
+        let depl_cmdline = entry.get_cmdline()?;
+
+        depl.soft_reboot_capable = is_soft_rebootable(
+            depl.composefs_boot_digest()?,
+            booted_boot_digest,
+            depl_cmdline,
+            booted_cmdline,
+        );
+    }
+
+    Ok(())
+}
+
+fn is_soft_rebootable(
+    depl_boot_digest: &str,
+    booted_boot_digest: &str,
+    depl_cmdline: &Cmdline,
+    booted_cmdline: &Cmdline,
+) -> bool {
+    if depl_boot_digest != booted_boot_digest {
+        tracing::debug!("Soft reboot not allowed due to kernel skew");
+        return false;
+    }
+
+    if depl_cmdline.as_bytes().len() != booted_cmdline.as_bytes().len() {
+        tracing::debug!("Soft reboot not allowed due to differing cmdline");
+        return false;
+    }
+
+    return compare_cmdline_skip_cfs(depl_cmdline, booted_cmdline)
+        && compare_cmdline_skip_cfs(booted_cmdline, depl_cmdline);
+}
+
+#[context("Setting soft reboot capability for UKI deployments")]
+fn set_reboot_capable_uki_deployments(
+    storage: &Storage,
+    cmdline: &ComposefsCmdline,
+    host: &mut Host,
+) -> Result<()> {
+    let booted = host
+        .status
+        .booted
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("Failed to find booted entry"))?;
+
+    // Since older booted systems won't have the boot digest for UKIs
+    let booted_boot_digest = match booted.composefs_boot_digest() {
+        Ok(d) => d,
+        Err(_) => &compute_store_boot_digest_for_uki(storage, &cmdline.digest)?,
+    };
+
+    let booted_cmdline = get_uki_cmdline(storage, &booted.require_composefs()?.verity)?;
+
+    for deployment in host
+        .status
+        .staged
+        .iter_mut()
+        .chain(host.status.rollback.iter_mut())
+        .chain(host.status.other_deployments.iter_mut())
+    {
+        // Since older booted systems won't have the boot digest for UKIs
+        let depl_boot_digest = match deployment.composefs_boot_digest() {
+            Ok(d) => d,
+            Err(_) => &compute_store_boot_digest_for_uki(
+                storage,
+                &deployment.require_composefs()?.verity,
+            )?,
+        };
+
+        let depl_cmdline = get_uki_cmdline(storage, &deployment.require_composefs()?.verity)?;
+
+        deployment.soft_reboot_capable = is_soft_rebootable(
+            depl_boot_digest,
+            booted_boot_digest,
+            &depl_cmdline,
+            &booted_cmdline,
+        );
+    }
+
+    Ok(())
+}
+
 #[context("Getting composefs deployment status")]
 pub(crate) async fn composefs_deployment_status_from(
     storage: &Storage,
     cmdline: &ComposefsCmdline,
 ) -> Result<Host> {
-    let composefs_digest = &cmdline.digest;
+    let booted_composefs_digest = &cmdline.digest;
 
     let boot_dir = storage.require_boot_dir()?;
 
@@ -330,7 +555,7 @@ pub(crate) async fn composefs_deployment_status_from(
             }
         };
 
-        if depl.file_name() == composefs_digest.as_ref() {
+        if depl.file_name() == booted_composefs_digest.as_ref() {
             host.spec.image = boot_entry.image.as_ref().map(|x| x.image.clone());
             host.status.booted = Some(boot_entry);
             continue;
@@ -351,60 +576,72 @@ pub(crate) async fn composefs_deployment_status_from(
         anyhow::bail!("Could not determine boot type");
     };
 
-    let booted = host.require_composefs_booted()?;
+    let booted_cfs = host.require_composefs_booted()?;
 
-    let is_rollback_queued = match booted.bootloader {
+    let (is_rollback_queued, sorted_bls_config) = match booted_cfs.bootloader {
         Bootloader::Grub => match boot_type {
             BootType::Bls => {
-                let bls_config = get_sorted_type1_boot_entries(boot_dir, false)?;
-                let bls_config = bls_config
+                let bls_configs = get_sorted_type1_boot_entries(boot_dir, false)?;
+                let bls_config = bls_configs
                     .first()
-                    .ok_or(anyhow::anyhow!("First boot entry not found"))?;
+                    .ok_or_else(|| anyhow::anyhow!("First boot entry not found"))?;
 
                 match &bls_config.cfg_type {
-                    BLSConfigType::NonEFI { options, .. } => !options
-                        .as_ref()
-                        .ok_or(anyhow::anyhow!("options key not found in bls config"))?
-                        .contains(composefs_digest.as_ref()),
+                    BLSConfigType::NonEFI { options, .. } => {
+                        let is_rollback_queued = !options
+                            .as_ref()
+                            .ok_or_else(|| anyhow::anyhow!("options key not found in bls config"))?
+                            .contains(booted_composefs_digest.as_ref());
+
+                        (is_rollback_queued, Some(bls_configs))
+                    }
 
                     BLSConfigType::EFI { .. } => {
                         anyhow::bail!("Found 'efi' field in Type1 boot entry")
                     }
+
                     BLSConfigType::Unknown => anyhow::bail!("Unknown BLS Config Type"),
                 }
             }
 
             BootType::Uki => {
                 let mut s = String::new();
+                let menuentries = get_sorted_grub_uki_boot_entries(boot_dir, &mut s)?;
 
-                !get_sorted_grub_uki_boot_entries(boot_dir, &mut s)?
+                let is_rollback_queued = !menuentries
                     .first()
                     .ok_or(anyhow::anyhow!("First boot entry not found"))?
                     .body
                     .chainloader
-                    .contains(composefs_digest.as_ref())
+                    .contains(booted_composefs_digest.as_ref());
+
+                (is_rollback_queued, None)
             }
         },
 
         // We will have BLS stuff and the UKI stuff in the same DIR
         Bootloader::Systemd => {
-            let bls_config = get_sorted_type1_boot_entries(boot_dir, false)?;
-            let bls_config = bls_config
+            let bls_configs = get_sorted_type1_boot_entries(boot_dir, true)?;
+            let bls_config = bls_configs
                 .first()
                 .ok_or(anyhow::anyhow!("First boot entry not found"))?;
 
-            match &bls_config.cfg_type {
+            let is_rollback_queued = match &bls_config.cfg_type {
                 // For UKI boot
-                BLSConfigType::EFI { efi } => efi.as_str().contains(composefs_digest.as_ref()),
+                BLSConfigType::EFI { efi } => {
+                    efi.as_str().contains(booted_composefs_digest.as_ref())
+                }
 
                 // For boot entry Type1
                 BLSConfigType::NonEFI { options, .. } => !options
                     .as_ref()
                     .ok_or(anyhow::anyhow!("options key not found in bls config"))?
-                    .contains(composefs_digest.as_ref()),
+                    .contains(booted_composefs_digest.as_ref()),
 
                 BLSConfigType::Unknown => anyhow::bail!("Unknown BLS Config Type"),
-            }
+            };
+
+            (is_rollback_queued, Some(bls_configs))
         }
     };
 
@@ -413,6 +650,8 @@ pub(crate) async fn composefs_deployment_status_from(
     if host.status.rollback_queued {
         host.spec.boot_order = BootOrder::Rollback
     };
+
+    set_soft_reboot_capability(storage, &mut host, sorted_bls_config, cmdline)?;
 
     Ok(host)
 }

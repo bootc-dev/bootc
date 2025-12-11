@@ -35,6 +35,7 @@ use serde::{Deserialize, Serialize};
 use tempfile::tempdir_in;
 
 use crate::bootc_composefs::delete::delete_composefs_deployment;
+use crate::bootc_composefs::soft_reboot::prepare_soft_reboot_composefs;
 use crate::bootc_composefs::{
     finalize::{composefs_backend_finalize, get_etc_diff},
     rollback::composefs_rollback,
@@ -572,6 +573,11 @@ pub(crate) enum InternalsOpts {
     #[cfg(feature = "docgen")]
     /// Dump CLI structure as JSON for documentation generation
     DumpCliJson,
+    PrepSoftReboot {
+        deployment: String,
+        #[clap(long)]
+        reboot: bool,
+    },
 }
 
 #[derive(Debug, clap::Subcommand, PartialEq, Eq)]
@@ -1693,6 +1699,20 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
                 }
 
                 Ok(())
+            }
+            InternalsOpts::PrepSoftReboot { deployment, reboot } => {
+                let storage = &get_storage().await?;
+
+                match storage.kind()? {
+                    BootedStorageKind::Ostree(..) => {
+                        // TODO: Call ostree implementation?
+                        anyhow::bail!("soft-reboot only implemented for composefs")
+                    }
+                    BootedStorageKind::Composefs(booted_cfs) => {
+                        prepare_soft_reboot_composefs(&storage, &booted_cfs, &deployment, reboot)
+                            .await
+                    }
+                }
             }
         },
         Opt::State(opts) => match opts {

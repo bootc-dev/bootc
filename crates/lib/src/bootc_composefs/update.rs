@@ -15,10 +15,11 @@ use crate::{
         boot::{setup_composefs_bls_boot, setup_composefs_uki_boot, BootSetupType, BootType},
         repo::{get_imgref, pull_composefs_repo},
         service::start_finalize_stated_svc,
+        soft_reboot::prepare_soft_reboot_composefs,
         state::write_composefs_state,
         status::{get_bootloader, get_composefs_status, get_container_manifest_and_config},
     },
-    cli::UpgradeOpts,
+    cli::{SoftRebootMode, UpgradeOpts},
     composefs_consts::{STATE_DIR_RELATIVE, TYPE1_ENT_PATH_STAGED, USER_CFG_STAGED},
     spec::{Bootloader, Host, ImageReference},
     store::{BootedComposefs, ComposefsRepository, Storage},
@@ -205,12 +206,20 @@ pub(crate) fn validate_update(
     Ok(UpdateAction::Proceed)
 }
 
+/// This is just an intersection of SwitchOpts and UpgradeOpts
+pub(crate) struct DoUpgradeOpts {
+    pub(crate) apply: bool,
+    pub(crate) soft_reboot: Option<SoftRebootMode>,
+}
+
 /// Performs the Update or Switch operation
 #[context("Performing Upgrade Operation")]
 pub(crate) async fn do_upgrade(
     storage: &Storage,
+    booted_cfs: &BootedComposefs,
     host: &Host,
     imgref: &ImageReference,
+    opts: &DoUpgradeOpts,
 ) -> Result<()> {
     start_finalize_stated_svc()?;
 
@@ -227,18 +236,15 @@ pub(crate) async fn do_upgrade(
     )?;
 
     let boot_type = BootType::from(entry);
-    let mut boot_digest = None;
 
-    match boot_type {
-        BootType::Bls => {
-            boot_digest = Some(setup_composefs_bls_boot(
-                BootSetupType::Upgrade((storage, &fs, &host)),
-                repo,
-                &id,
-                entry,
-                &mounted_fs,
-            )?)
-        }
+    let boot_digest = match boot_type {
+        BootType::Bls => setup_composefs_bls_boot(
+            BootSetupType::Upgrade((storage, &fs, &host)),
+            repo,
+            &id,
+            entry,
+            &mounted_fs,
+        )?,
 
         BootType::Uki => setup_composefs_uki_boot(
             BootSetupType::Upgrade((storage, &fs, &host)),
@@ -250,12 +256,20 @@ pub(crate) async fn do_upgrade(
 
     write_composefs_state(
         &Utf8PathBuf::from("/sysroot"),
-        id,
+        &id,
         imgref,
         true,
         boot_type,
         boot_digest,
     )?;
+
+    if opts.apply {
+        return crate::reboot::reboot();
+    }
+
+    if opts.soft_reboot.is_some() {
+        prepare_soft_reboot_composefs(storage, booted_cfs, &id.to_hex(), true).await?;
+    }
 
     Ok(())
 }
@@ -289,6 +303,11 @@ pub(crate) async fn upgrade_composefs(
     // Check if we already have this update staged
     // Or if we have another staged deployment with a different image
     let staged_image = host.status.staged.as_ref().and_then(|i| i.image.as_ref());
+
+    let do_upgrade_opts = DoUpgradeOpts {
+        soft_reboot: opts.soft_reboot,
+        apply: opts.apply,
+    };
 
     if let Some(staged_image) = staged_image {
         // We have a staged image and it has the same digest as the currently booted image's latest
@@ -330,7 +349,8 @@ pub(crate) async fn upgrade_composefs(
                 }
 
                 UpdateAction::Proceed => {
-                    return do_upgrade(storage, &host, booted_imgref).await;
+                    return do_upgrade(storage, composefs, &host, booted_imgref, &do_upgrade_opts)
+                        .await;
                 }
 
                 UpdateAction::UpdateOrigin => {
@@ -358,7 +378,8 @@ pub(crate) async fn upgrade_composefs(
             }
 
             UpdateAction::Proceed => {
-                return do_upgrade(storage, &host, booted_imgref).await;
+                return do_upgrade(storage, composefs, &host, booted_imgref, &do_upgrade_opts)
+                    .await;
             }
 
             UpdateAction::UpdateOrigin => {
@@ -395,11 +416,7 @@ pub(crate) async fn upgrade_composefs(
         return Ok(());
     }
 
-    do_upgrade(storage, &host, booted_imgref).await?;
-
-    if opts.apply {
-        return crate::reboot::reboot();
-    }
+    do_upgrade(storage, composefs, &host, booted_imgref, &do_upgrade_opts).await?;
 
     Ok(())
 }

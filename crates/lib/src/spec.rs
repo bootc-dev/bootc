@@ -277,6 +277,7 @@ pub(crate) struct DeploymentEntry<'a> {
     pub(crate) ty: Option<Slot>,
     pub(crate) deployment: &'a BootEntryComposefs,
     pub(crate) pinned: bool,
+    pub(crate) soft_reboot_capable: bool,
 }
 
 /// The result of a `bootc container inspect` command.
@@ -344,6 +345,7 @@ impl Host {
             ty: Some(Slot::Booted),
             deployment: booted,
             pinned: false,
+            soft_reboot_capable: false,
         });
 
         if let Some(staged) = &self.status.staged {
@@ -351,6 +353,7 @@ impl Host {
                 ty: Some(Slot::Staged),
                 deployment: staged.require_composefs()?,
                 pinned: false,
+                soft_reboot_capable: staged.soft_reboot_capable,
             });
         }
 
@@ -359,6 +362,7 @@ impl Host {
                 ty: Some(Slot::Rollback),
                 deployment: rollback.require_composefs()?,
                 pinned: false,
+                soft_reboot_capable: rollback.soft_reboot_capable,
             });
         }
 
@@ -367,6 +371,7 @@ impl Host {
                 ty: None,
                 deployment: pinned.require_composefs()?,
                 pinned: true,
+                soft_reboot_capable: pinned.soft_reboot_capable,
             });
         }
 
