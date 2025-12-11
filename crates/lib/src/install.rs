@@ -779,6 +779,17 @@ async fn initialize_ostree_root(state: &State, root_setup: &RootSetup) -> Result
     // Another implementation: https://github.com/coreos/coreos-assembler/blob/3cd3307904593b3a131b81567b13a4d0b6fe7c90/src/create_disk.sh#L295
     crate::lsm::ensure_dir_labeled(rootfs_dir, "", Some("/".into()), 0o755.into(), sepolicy)?;
 
+    // If we're installing alongside existing ostree and there's a separate boot partition,
+    // we need to mount it to the sysroot's /boot so ostree can write bootloader entries there
+    if has_ostree && root_setup.boot.is_some() {
+        if let Some(boot) = &root_setup.boot {
+            let source_boot = &boot.source;
+            let target_boot = root_setup.physical_root_path.join(BOOT);
+            tracing::debug!("Mount {source_boot} to {target_boot} on ostree");
+            bootc_mount::mount(source_boot, &target_boot)?;
+        }
+    }
+
     // And also label /boot AKA xbootldr, if it exists
     if rootfs_dir.try_exists("boot")? {
         crate::lsm::ensure_dir_labeled(rootfs_dir, "boot", None, 0o755.into(), sepolicy)?;
@@ -1942,7 +1953,9 @@ fn remove_all_except_loader_dirs(bootdir: &Dir, is_ostree: bool) -> Result<()> {
             anyhow::bail!("Invalid non-UTF8 filename: {file_name:?} in /boot");
         };
 
-        // Only preserve loader on ostree
+        // TODO: Preserve basically everything (including the bootloader entries
+        // on non-ostree) by default until the very end of the install. And ideally
+        // make the "commit" phase an optional step after.
         if is_ostree && file_name.starts_with("loader") {
             continue;
         }
@@ -1953,6 +1966,7 @@ fn remove_all_except_loader_dirs(bootdir: &Dir, is_ostree: bool) -> Result<()> {
             if let Some(subdir) = bootdir.open_dir_noxdev(&file_name)? {
                 remove_all_in_dir_no_xdev(&subdir, false)
                     .with_context(|| format!("Removing directory contents: {}", file_name))?;
+                bootdir.remove_dir(&file_name)?;
             }
         } else {
             bootdir
