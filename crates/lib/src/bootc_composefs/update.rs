@@ -266,6 +266,11 @@ pub(crate) async fn upgrade_composefs(
     storage: &Storage,
     composefs: &BootedComposefs,
 ) -> Result<()> {
+    // Download-only mode is not yet supported for composefs backend
+    if opts.download_only {
+        anyhow::bail!("--download-only is not yet supported for composefs backend");
+    }
+
     let host = get_composefs_status(storage, composefs)
         .await
         .context("Getting composefs deployment status")?;
