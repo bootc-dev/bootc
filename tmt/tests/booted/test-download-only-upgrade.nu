@@ -1,4 +1,4 @@
-# number: 25
+# number: 26
 # tmt:
 #   summary: Execute download-only upgrade tests
 #   duration: 40m
@@ -13,7 +13,7 @@
 # reboot (should still boot into v1, staged deployment discarded)
 # verify staged deployment is null (discarded on reboot)
 # bootc upgrade --download-only (re-stage v2 in download-only mode)
-# bootc upgrade (clear download-only mode)
+# bootc upgrade --from-downloaded (clear download-only mode without fetching from image source)
 # reboot (should boot into v2)
 #
 use std assert
@@ -113,9 +113,9 @@ def third_boot [] {
     assert ($status_json.status.staged != null) "Staged deployment should exist"
     assert ($status_json.status.staged.downloadOnly) "Staged deployment should be in download-only mode"
 
-    # Now clear download-only mode by running upgrade without flags
-    print "Clearing download-only mode with bootc upgrade"
-    bootc upgrade
+    # Now clear download-only mode by running upgrade --from-downloaded (without fetching from image source)
+    print "Clearing download-only mode with bootc upgrade --from-downloaded"
+    bootc upgrade --from-downloaded
 
     # Verify via JSON that deployment is not in download-only mode
     let status_after_json = bootc status --json | from json

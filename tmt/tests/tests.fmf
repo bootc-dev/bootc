@@ -41,10 +41,10 @@
   duration: 30m
   test: nu booted/test-soft-reboot.nu
 
-/test-25-download-only-upgrade:
+/test-26-download-only-upgrade:
   summary: Execute download-only upgrade tests
   duration: 40m
-  test: nu booted/test-25-download-only-upgrade.nu
+  test: nu booted/test-download-only-upgrade.nu
 
 /test-27-custom-selinux-policy:
   summary: Execute custom selinux policy test

@@ -108,6 +108,14 @@ pub(crate) struct UpgradeOpts {
     #[clap(long, conflicts_with_all = ["check", "apply"])]
     pub(crate) download_only: bool,
 
+    /// Apply a staged deployment that was previously downloaded with --download-only.
+    ///
+    /// This unlocks the staged deployment without fetching updates from the container image source.
+    /// The deployment will be applied on the next shutdown or reboot. Use with --apply to
+    /// reboot immediately.
+    #[clap(long, conflicts_with_all = ["check", "download_only"])]
+    pub(crate) from_downloaded: bool,
+
     #[clap(flatten)]
     pub(crate) progress: ProgressOptions,
 }
@@ -933,6 +941,28 @@ async fn upgrade(
     let staged = host.status.staged.as_ref();
     let staged_image = staged.as_ref().and_then(|s| s.image.as_ref());
     let mut changed = false;
+
+    // Handle --from-downloaded: unlock existing staged deployment without fetching from image source
+    if opts.from_downloaded {
+        let ostree = storage.get_ostree()?;
+        let staged_deployment = ostree
+            .staged_deployment()
+            .ok_or_else(|| anyhow::anyhow!("No staged deployment found"))?;
+
+        if staged_deployment.is_finalization_locked() {
+            ostree.change_finalization(&staged_deployment)?;
+            println!("Staged deployment will now be applied on reboot");
+        } else {
+            println!("Staged deployment is already set to apply on reboot");
+        }
+
+        handle_staged_soft_reboot(booted_ostree, opts.soft_reboot, &host)?;
+        if opts.apply {
+            crate::reboot::reboot()?;
+        }
+        return Ok(());
+    }
+
     if opts.check {
         let imgref = imgref.clone().into();
         let mut imp = crate::deploy::new_importer(repo, &imgref).await?;

@@ -276,6 +276,9 @@ pub(crate) async fn upgrade_composefs(
     if opts.download_only {
         anyhow::bail!("--download-only is not yet supported for composefs backend");
     }
+    if opts.from_downloaded {
+        anyhow::bail!("--from-downloaded is not yet supported for composefs backend");
+    }
 
     let host = get_composefs_status(storage, composefs)
         .await

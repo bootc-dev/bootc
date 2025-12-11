@@ -6,7 +6,7 @@ updates from a registry and booting into them, while supporting rollback.
 
 ## The `bootc upgrade` verb
 
-This will query the registry and queue an updated container image for the next boot.
+This will query the container image source and queue an updated container image for the next boot.
 
 This is backed today by ostree, implementing an A/B style upgrade system.
 Changes to the base image are staged, and the running system is not
@@ -23,7 +23,7 @@ them on the next reboot:
 bootc upgrade --download-only
 ```
 
-This will pull the new container image from the registry and create a staged deployment
+This will pull the new container image from the container image source and create a staged deployment
 in download-only mode. The deployment will not be applied on shutdown or reboot until
 you explicitly apply it.
 
@@ -40,24 +40,36 @@ In the output, you'll see `Download-only: yes` for deployments in download-only 
 
 #### Applying download-only updates
 
-There are two ways to apply a staged update that is in download-only mode:
+There are three ways to apply a staged update that is in download-only mode:
 
-**Option 1: Apply immediately with reboot**
+**Option 1: Apply the staged update without checking for newer updates**
 
 ```shell
-bootc upgrade --apply
+bootc upgrade --from-downloaded
 ```
 
-This will clear the download-only flag and immediately reboot into the staged deployment.
+This unlocks the staged deployment for automatic application on the next shutdown or reboot,
+without fetching updates from the container image source. This is useful when you want to apply the
+already-downloaded update at a scheduled time.
 
-**Option 2: Clear download-only for automatic application**
+**Option 2: Apply the staged update and reboot immediately**
+
+```shell
+bootc upgrade --from-downloaded --apply
+```
+
+This unlocks the staged deployment and immediately reboots into it, without checking for
+newer updates.
+
+**Option 3: Check for newer updates and apply**
 
 ```shell
 bootc upgrade
 ```
 
-Running `bootc upgrade` without flags on a staged deployment in download-only mode will
-clear the flag. The deployment will then be applied automatically on the next shutdown or reboot.
+Running `bootc upgrade` without flags will pull from the container image source to check for updates.
+If the staged deployment matches the latest available update, it will be unlocked. If a newer update is
+available, the staged deployment will be replaced with the newer version.
 
 #### Checking for updates without side effects
 
@@ -84,14 +96,22 @@ bootc status --verbose
 # 3. Test or wait for maintenance window...
 
 # 4. Apply the update (choose one):
-# Option A: Clear download-only flag and let it apply on next shutdown
-bootc upgrade
+# Option A: Apply staged update without fetching from image source
+bootc upgrade --from-downloaded
 
-# Option B: Apply immediately with reboot
-bootc upgrade --apply
+# Option B: Apply staged update and reboot immediately (without fetching from image source)
+bootc upgrade --from-downloaded --apply
+
+# Option C: Check for newer updates first, then apply
+bootc upgrade
 ```
 
 **Important notes**:
+
+- **Image source check difference**: `bootc upgrade --from-downloaded` does NOT fetch from the
+  container image source to check for newer updates, while `bootc upgrade` always does.
+  Use `--from-downloaded` when you want to apply the specific version you already downloaded,
+  regardless of whether newer updates are available.
 
 - If you reboot before applying a download-only update, the system will boot into the
   current deployment and the staged deployment will be discarded. However, the downloaded image

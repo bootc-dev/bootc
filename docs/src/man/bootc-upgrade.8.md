@@ -65,6 +65,10 @@ Soft reboot allows faster system restart by avoiding full hardware reboot when p
 
     Download and stage the update without applying it
 
+**--from-downloaded**
+
+    Apply a staged deployment that was previously downloaded with --download-only
+
 <!-- END GENERATED OPTIONS -->
 
 # EXAMPLES
