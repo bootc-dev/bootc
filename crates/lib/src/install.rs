@@ -2168,6 +2168,15 @@ pub(crate) async fn install_to_filesystem(
                 .await??;
         }
         Some(ReplaceMode::Alongside) => {
+            // On existing ostree OS like FCOS, esp is not mounted after booted,
+            // need to find esp and mount before clean
+            if ARCH_USES_EFI {
+                crate::bootloader::mount_esp_part(
+                    &target_rootfs_fd,
+                    &target_root_path,
+                    &rootfs_fd,
+                )?;
+            }
             clean_boot_directories(&target_rootfs_fd, is_already_ostree)?
         }
         None => require_empty_rootdir(&rootfs_fd)?,
