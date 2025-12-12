@@ -4,6 +4,9 @@ set -exuo pipefail
 # Check environment
 printenv
 
+# This must work outside of a container too
+bootc status
+
 # temp folder to save building files and folders
 BOOTC_TEMPDIR=$(mktemp -d)
 trap 'rm -rf -- "$BOOTC_TEMPDIR"' EXIT

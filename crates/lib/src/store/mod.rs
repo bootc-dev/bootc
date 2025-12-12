@@ -143,28 +143,27 @@ pub(crate) enum BootedStorageKind<'a> {
     Composefs(BootedComposefs),
 }
 
+/// Open the physical root (/sysroot) and /run directories for a booted system.
+fn get_physical_root_and_run() -> Result<(Dir, Dir)> {
+    let physical_root = {
+        let d = Dir::open_ambient_dir("/sysroot", cap_std::ambient_authority())
+            .context("Opening /sysroot")?;
+        open_dir_remount_rw(&d, ".".into())?
+    };
+    let run =
+        Dir::open_ambient_dir("/run", cap_std::ambient_authority()).context("Opening /run")?;
+    Ok((physical_root, run))
+}
+
 impl BootedStorage {
     /// Create a new booted storage accessor for the given environment.
     ///
     /// The caller must have already called `prepare_for_write()` if
     /// `env.needs_mount_namespace()` is true.
     pub(crate) async fn new(env: Environment) -> Result<Option<Self>> {
-        let physical_root = {
-            let d = Dir::open_ambient_dir("/sysroot", cap_std::ambient_authority())
-                .context("Opening /sysroot")?;
-            // Remount /sysroot rw only if we are in a new mount ns
-            if env.needs_mount_namespace() {
-                open_dir_remount_rw(&d, ".".into())?
-            } else {
-                d
-            }
-        };
-
-        let run =
-            Dir::open_ambient_dir("/run", cap_std::ambient_authority()).context("Opening /run")?;
-
         let r = match &env {
             Environment::ComposefsBooted(cmdline) => {
+                let (physical_root, run) = get_physical_root_and_run()?;
                 let mut composefs = ComposefsRepository::open_path(&physical_root, COMPOSEFS)?;
                 if cmdline.insecure {
                     composefs.set_insecure(true);
@@ -201,6 +200,7 @@ impl BootedStorage {
                 // remount /sysroot as writable, and we call set_mount_namespace_in_use()
                 // to indicate we're in a mount namespace. Without actually being in a
                 // mount namespace, this would leave the global /sysroot writable.
+                let (physical_root, run) = get_physical_root_and_run()?;
 
                 let sysroot = ostree::Sysroot::new_default();
                 sysroot.set_mount_namespace_in_use();
@@ -219,6 +219,7 @@ impl BootedStorage {
 
                 Some(Self { storage })
             }
+            // For container or non-bootc environments, there's no storage
             Environment::Container | Environment::Other => None,
         };
         Ok(r)

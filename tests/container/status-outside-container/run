@@ -1,0 +1,30 @@
+#!/bin/bash
+# Test that `bootc status` works on a non-bootc-deployed system.
+#
+# This simulates a "package mode" environment where bootc is installed
+# via RPM on a traditional system (not deployed via ostree/composefs).
+# The key is hiding /run/.containerenv so bootc doesn't think it's in a container.
+#
+# xref: https://issues.redhat.com/browse/RHEL-135687
+set -euo pipefail
+image=$1
+
+# Run the container with:
+# - A tmpfs over /run to hide .containerenv (simulates bare metal)
+# - Unset the 'container' environment variable
+# - No /sysroot (simulates package mode)
+# Use --format=humanreadable to get consistent output
+output=$(podman run --rm \
+    --tmpfs /run \
+    --env container= \
+    "$image" \
+    bootc status --format=humanreadable 2>&1)
+
+# Verify the output indicates this is not a bootc-deployed system
+if echo "$output" | grep -q "System is not deployed via bootc"; then
+    echo "ok status-outside-container: correctly reports non-bootc system"
+else
+    echo "FAIL: unexpected output from bootc status:" >&2
+    echo "$output" >&2
+    exit 1
+fi
