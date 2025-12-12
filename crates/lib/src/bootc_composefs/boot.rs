@@ -66,7 +66,7 @@ use std::fs::create_dir_all;
 use std::io::Write;
 use std::path::Path;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use bootc_blockdev::find_parent_devices;
 use bootc_kernel_cmdline::utf8::{Cmdline, Parameter};
 use bootc_mount::inspect_filesystem_of_dir;
@@ -136,6 +136,10 @@ const SYSTEMD_LOADER_CONF_PATH: &str = "loader/loader.conf";
 
 const INITRD: &str = "initrd";
 const VMLINUZ: &str = "vmlinuz";
+
+const BOOTC_AUTOENROLL_PATH: &str = "usr/lib/bootc/install/secureboot-keys";
+
+const AUTH_EXT: &str = "auth";
 
 /// We want to be able to control the ordering of UKIs so we put them in a directory that's not the
 /// directory specified by the BLS spec. We do this because we want systemd-boot to only look at
@@ -1146,6 +1150,52 @@ pub(crate) fn setup_composefs_uki_boot(
     Ok(())
 }
 
+pub struct SecurebootKeys {
+    pub dir: Dir,
+    pub keys: Vec<Utf8PathBuf>,
+}
+
+fn get_secureboot_keys(fs: &Dir, p: &str) -> Result<Option<SecurebootKeys>> {
+    let mut entries = vec![];
+
+    // if the dir doesn't exist, return None
+    let keys_dir = match fs.open_dir_optional(p)? {
+        Some(d) => d,
+        _ => return Ok(None),
+    };
+
+    // https://github.com/systemd/systemd/blob/26b2085d54ebbfca8637362eafcb4a8e3faf832f/man/systemd-boot.xml#L392
+
+    for entry in keys_dir.entries()? {
+        let dir_e = entry?;
+        let dirname = dir_e.file_name();
+        if !dir_e.file_type()?.is_dir() {
+            bail!("/{p}/{dirname:?} is not a directory");
+        }
+
+        let dir_path: Utf8PathBuf = dirname.try_into()?;
+        let dir = dir_e.open_dir()?;
+        for entry in dir.entries()? {
+            let e = entry?;
+            let local: Utf8PathBuf = e.file_name().try_into()?;
+            let path = dir_path.join(local);
+
+            if path.extension() != Some(AUTH_EXT) {
+                continue;
+            }
+
+            if !e.file_type()?.is_file() {
+                bail!("/{p}/{path:?} is not a file");
+            }
+            entries.push(path);
+        }
+    }
+    return Ok(Some(SecurebootKeys {
+        dir: keys_dir,
+        keys: entries,
+    }));
+}
+
 #[context("Setting up composefs boot")]
 pub(crate) async fn setup_composefs_boot(
     root_setup: &RootSetup,
@@ -1185,6 +1235,7 @@ pub(crate) async fn setup_composefs_boot(
             &root_setup.physical_root_path,
             &state.config_opts,
             None,
+            get_secureboot_keys(&mounted_fs, BOOTC_AUTOENROLL_PATH)?,
         )?;
     }
 
