@@ -138,7 +138,7 @@ jobs:
         run: just package
 
       - name: Upload package artifacts
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: packages-${{ matrix.test_os }}
           path: target/packages/*.rpm
@@ -182,7 +182,7 @@ jobs:
           fi
 
       - name: Download package artifacts
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@v7
         with:
           name: packages-${{ matrix.test_os }}
           path: target/packages/
@@ -207,7 +207,7 @@ jobs:
 
       - name: Archive TMT logs
         if: always()
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: tmt-log-PR-${{ github.event.number }}-${{ matrix.test_os }}-${{ matrix.variant }}-${{ env.ARCH }}
           path: /var/tmp/tmt
