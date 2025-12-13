@@ -935,7 +935,6 @@ async fn install_container(
             &spec_imgref,
             Some(&state.target_imgref),
             storage,
-            Some(&root_setup.physical_root_path),
         )
         .await?
     } else {

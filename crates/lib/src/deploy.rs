@@ -422,16 +422,11 @@ pub(crate) async fn image_exists_in_unified_storage(
 
 /// Unified approach: Use bootc's CStorage to pull the image, then prepare from containers-storage.
 /// This reuses the same infrastructure as LBIs.
-///
-/// The `sysroot_path` parameter specifies the path to the sysroot where bootc storage is located.
-/// During install, this should be the path to the target disk's mount point.
-/// During upgrade/switch on a running system, pass `None` to use the default `/sysroot`.
 pub(crate) async fn prepare_for_pull_unified(
     repo: &ostree::Repo,
     imgref: &ImageReference,
     target_imgref: Option<&OstreeImageReference>,
     store: &Storage,
-    sysroot_path: Option<&camino::Utf8Path>,
 ) -> Result<PreparedPullResult> {
     // Get or initialize the bootc container storage (same as used for LBIs)
     let imgstore = store.get_ensure_imgstore()?;
@@ -467,14 +462,10 @@ pub(crate) async fn prepare_for_pull_unified(
     // Configure the importer to use bootc storage as an additional image store
     let mut config = ostree_ext::containers_image_proxy::ImageProxyConfig::default();
     let mut cmd = Command::new("skopeo");
-    // Use the actual physical path to bootc storage
-    // During install, this is the target disk's mount point; otherwise default to /sysroot
-    let sysroot_base = sysroot_path
-        .map(|p| p.to_string())
-        .unwrap_or_else(|| "/sysroot".to_string());
+    // Use the physical path to bootc storage from the Storage struct
     let storage_path = format!(
         "{}/{}",
-        sysroot_base,
+        store.physical_root_path,
         crate::podstorage::CStorage::subpath()
     );
     crate::podstorage::set_additional_image_store(&mut cmd, &storage_path);
@@ -525,9 +516,6 @@ pub(crate) async fn prepare_for_pull_unified(
 }
 
 /// Unified pull: Use podman to pull to containers-storage, then read from there
-///
-/// The `sysroot_path` parameter specifies the path to the sysroot where bootc storage is located.
-/// For normal upgrade/switch operations, pass `None` to use the default `/sysroot`.
 pub(crate) async fn pull_unified(
     repo: &ostree::Repo,
     imgref: &ImageReference,
@@ -535,9 +523,8 @@ pub(crate) async fn pull_unified(
     quiet: bool,
     prog: ProgressWriter,
     store: &Storage,
-    sysroot_path: Option<&camino::Utf8Path>,
 ) -> Result<Box<ImageState>> {
-    match prepare_for_pull_unified(repo, imgref, target_imgref, store, sysroot_path).await? {
+    match prepare_for_pull_unified(repo, imgref, target_imgref, store).await? {
         PreparedPullResult::AlreadyPresent(existing) => {
             // Log that the image was already present (Debug level since it's not actionable)
             const IMAGE_ALREADY_PRESENT_ID: &str = "5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9";

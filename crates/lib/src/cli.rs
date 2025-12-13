@@ -965,7 +965,7 @@ async fn upgrade(
         let use_unified = crate::deploy::image_exists_in_unified_storage(storage, imgref).await?;
 
         let fetched = if use_unified {
-            crate::deploy::pull_unified(repo, imgref, None, opts.quiet, prog.clone(), storage, None)
+            crate::deploy::pull_unified(repo, imgref, None, opts.quiet, prog.clone(), storage)
                 .await?
         } else {
             crate::deploy::pull(repo, imgref, None, opts.quiet, prog.clone()).await?
@@ -1093,8 +1093,7 @@ async fn switch_ostree(
     };
 
     let fetched = if use_unified {
-        crate::deploy::pull_unified(repo, &target, None, opts.quiet, prog.clone(), storage, None)
-            .await?
+        crate::deploy::pull_unified(repo, &target, None, opts.quiet, prog.clone(), storage).await?
     } else {
         crate::deploy::pull(repo, &target, None, opts.quiet, prog.clone()).await?
     };
