@@ -1,0 +1,3 @@
+summary: Test bootc install with experimental unified storage flag
+test: nu booted/test-install-unified-flag.nu
+duration: 30m

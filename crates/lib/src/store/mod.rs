@@ -22,12 +22,14 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use bootc_mount::tempmount::TempMount;
+use camino::Utf8PathBuf;
 use cap_std_ext::cap_std;
 use cap_std_ext::cap_std::fs::{Dir, DirBuilder, DirBuilderExt as _};
 use cap_std_ext::dirext::CapStdExtDirExt;
 use fn_error_context::context;
 
 use ostree_ext::container_utils::ostree_booted;
+use ostree_ext::prelude::FileExt;
 use ostree_ext::sysroot::SysrootLock;
 use ostree_ext::{gio, ostree};
 use rustix::fs::Mode;
@@ -185,6 +187,7 @@ impl BootedStorage {
 
                 let storage = Storage {
                     physical_root,
+                    physical_root_path: Utf8PathBuf::from("/sysroot"),
                     run,
                     boot_dir: Some(boot_dir),
                     esp: Some(esp_mount),
@@ -209,6 +212,7 @@ impl BootedStorage {
 
                 let storage = Storage {
                     physical_root,
+                    physical_root_path: Utf8PathBuf::from("/sysroot"),
                     run,
                     boot_dir: None,
                     esp: None,
@@ -253,6 +257,10 @@ impl BootedStorage {
 pub(crate) struct Storage {
     /// Directory holding the physical root
     pub physical_root: Dir,
+
+    /// Absolute path to the physical root directory.
+    /// This is `/sysroot` on a running system, or the target mount point during install.
+    pub physical_root_path: Utf8PathBuf,
 
     /// The 'boot' directory, useful and `Some` only for composefs systems
     /// For grub booted systems, this points to `/sysroot/boot`
@@ -301,10 +309,17 @@ impl Storage {
         // we need to explicitly distinguish the two and the storage
         // here hence holds a reference to the physical root.
         let ostree_sysroot_dir = crate::utils::sysroot_dir(&sysroot)?;
-        let physical_root = if sysroot.is_booted() {
-            ostree_sysroot_dir.open_dir(SYSROOT)?
+        let (physical_root, physical_root_path) = if sysroot.is_booted() {
+            (
+                ostree_sysroot_dir.open_dir(SYSROOT)?,
+                Utf8PathBuf::from("/sysroot"),
+            )
         } else {
-            ostree_sysroot_dir
+            // For non-booted case (install), get the path from the sysroot
+            let path = sysroot.path();
+            let path_str = path.parse_name().to_string();
+            let path = Utf8PathBuf::from(path_str);
+            (ostree_sysroot_dir, path)
         };
 
         let ostree_cell = OnceCell::new();
@@ -312,6 +327,7 @@ impl Storage {
 
         Ok(Self {
             physical_root,
+            physical_root_path,
             run,
             boot_dir: None,
             esp: None,

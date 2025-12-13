@@ -239,7 +239,7 @@ fn imagestatus(
 
 /// Given an OSTree deployment, parse out metadata into our spec.
 #[context("Reading deployment metadata")]
-fn boot_entry_from_deployment(
+pub(crate) fn boot_entry_from_deployment(
     sysroot: &SysrootLock,
     deployment: &ostree::Deployment,
 ) -> Result<BootEntry> {
