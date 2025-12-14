@@ -161,6 +161,10 @@ _build-upgrade-image:
 test-tmt-nobuild *ARGS:
     cargo xtask run-tmt --env=BOOTC_variant={{variant}} --upgrade-image={{integration_upgrade_img}} {{integration_img}} {{ARGS}}
 
+# Test bootc install on coreos (FCOS)
+test-tmt-on-coreos *ARGS: build-integration-test-image
+    cargo xtask run-tmt --env=BOOTC_variant={{variant}} --env=BOOTC_target={{integration_img}}:latest quay.io/fedora/fedora-coreos:testing-devel {{ARGS}}
+
 # Cleanup all test VMs created by tmt tests
 tmt-vm-cleanup:
     bcvk libvirt rm --stop --force --label bootc.test=1

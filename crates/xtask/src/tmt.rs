@@ -137,6 +137,25 @@ fn build_firmware_args(sh: &Shell, image: &str) -> Result<Vec<String>> {
     Ok(r)
 }
 
+/// Detect VARIANT_ID from container image by reading os-release
+/// Returns string like "coreos" or empty
+#[context("Detecting distro from image")]
+fn detect_variantid_from_image(sh: &Shell, image: &str) -> Result<Option<String>> {
+    let variant_id = cmd!(
+        sh,
+        "podman run --rm {image} bash -c '. /usr/lib/os-release && echo $VARIANT_ID'"
+    )
+    .read()
+    .context("Failed to run image as container to detect distro")?;
+
+    let variant_id = variant_id.trim();
+    if variant_id.is_empty() {
+        return Ok(None);
+    }
+
+    Ok(Some(variant_id.to_string()))
+}
+
 /// Check if a distro supports --bind-storage-ro
 /// CentOS 9 lacks systemd.extra-unit.* support required for bind-storage-ro
 fn distro_supports_bind_storage_ro(distro: &str) -> bool {
@@ -269,6 +288,7 @@ pub(crate) fn run_tmt(sh: &Shell, args: &RunTmtArgs) -> Result<()> {
 
     // Detect distro from the image
     let distro = detect_distro_from_image(sh, image)?;
+    let variant_id = detect_variantid_from_image(sh, image)?.unwrap_or("".to_string());
 
     let context = args
         .context
@@ -276,11 +296,15 @@ pub(crate) fn run_tmt(sh: &Shell, args: &RunTmtArgs) -> Result<()> {
         .map(|v| format!("--context={}", v))
         .chain(std::iter::once(format!("--context=running_env=image_mode")))
         .chain(std::iter::once(format!("--context=distro={}", distro)))
+        .chain(std::iter::once(format!(
+            "--context=VARIANT_ID={variant_id}"
+        )))
         .collect::<Vec<_>>();
     let preserve_vm = args.preserve_vm;
 
     println!("Using bcvk image: {}", image);
     println!("Detected distro: {}", distro);
+    println!("Detected VARIANT_ID: {variant_id}");
 
     let firmware_args = build_firmware_args(sh, image)?;
 
@@ -387,7 +411,16 @@ pub(crate) fn run_tmt(sh: &Shell, args: &RunTmtArgs) -> Result<()> {
                     distro
                 );
             }
-
+            // Add --filesystem=xfs by default on fedora-coreos
+            // Add --bind-storage-ro if supported
+            if variant_id == "coreos" {
+                if distro.starts_with("fedora") {
+                    opts.push("--filesystem=xfs".to_string());
+                }
+                if supports_bind_storage_ro {
+                    opts.push(BCVK_OPT_BIND_STORAGE_RO.to_string());
+                }
+            }
             opts
         };
 
