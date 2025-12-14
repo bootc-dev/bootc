@@ -24,7 +24,7 @@ use cap_std_ext::cmdext::CapStdExtCommandExt;
 use cap_std_ext::dirext::CapStdExtDirExt;
 use fn_error_context::context;
 use ostree_ext::ostree::{self};
-use std::os::fd::OwnedFd;
+use std::os::fd::{AsRawFd, OwnedFd};
 use tokio::process::Command as AsyncCommand;
 
 // Pass only 100 args at a time just to avoid potentially overflowing argument
@@ -353,10 +353,15 @@ impl CStorage {
         cmd.stdin(Stdio::null());
         cmd.stdout(Stdio::null());
         cmd.args(["pull", image]);
-        let authfile = ostree_ext::globals::get_global_authfile(&self.sysroot)?
-            .map(|(authfile, _fd)| authfile);
-        if let Some(authfile) = authfile {
-            cmd.args(["--authfile", authfile.as_str()]);
+        let authfile_fd =
+            ostree_ext::globals::get_global_authfile(&self.sysroot)?.map(|(_authfile, fd)| fd);
+        if let Some(fd) = authfile_fd {
+            let authfile_path = std::fs::read_link(format!("/proc/self/fd/{}", fd.as_raw_fd()))
+                .map_err(Into::into)
+                .and_then(|p| {
+                    Utf8PathBuf::from_path_buf(p).map_err(|_| anyhow::anyhow!("Invalid UTF-8"))
+                })?;
+            cmd.args(["--authfile", authfile_path.as_str()]);
         }
         tracing::debug!("Pulling image: {image}");
         let mut cmd = AsyncCommand::from(cmd);
