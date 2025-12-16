@@ -2235,9 +2235,15 @@ pub(crate) async fn install_to_filesystem(
             Some(MountSpec::new(&spec, "/boot"))
         }
     } else {
-        boot_uuid
-            .as_deref()
-            .map(|boot_uuid| MountSpec::new_uuid_src(boot_uuid, "/boot"))
+        // Read /etc/fstab to get boot entry, but only use it if it's UUID-based
+        // Otherwise fall back to boot_uuid
+        read_boot_fstab_entry(&rootfs_fd)?
+            .filter(|spec| spec.get_source_uuid().is_some())
+            .or_else(|| {
+                boot_uuid
+                    .as_deref()
+                    .map(|boot_uuid| MountSpec::new_uuid_src(boot_uuid, "/boot"))
+            })
     };
     // Ensure that we mount /boot readonly because it's really owned by bootc/ostree
     // and we don't want e.g. apt/dnf trying to mutate it.
