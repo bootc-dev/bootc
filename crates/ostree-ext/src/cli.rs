@@ -1262,7 +1262,7 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
                     imgref,
                     image,
                     transport,
-                    mut no_signature_verification,
+                    no_signature_verification: _,
                     enforce_container_sigpolicy,
                     ostree_remote,
                     target_imgref,
@@ -1273,7 +1273,7 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
                 } => {
                     // As of recent releases, signature verification enforcement is
                     // off by default, and must be explicitly enabled.
-                    no_signature_verification = !enforce_container_sigpolicy;
+                    let no_signature_verification = !enforce_container_sigpolicy;
                     let sysroot = &if let Some(sysroot) = sysroot {
                         ostree::Sysroot::new(Some(&gio::File::for_path(sysroot)))
                     } else {
