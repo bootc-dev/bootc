@@ -9,7 +9,7 @@
 //! At the current time, this is only used for Logically Bound Images.
 
 use std::collections::HashSet;
-use std::io::Seek;
+use std::io::{Seek, Write};
 use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
 use std::sync::Arc;
@@ -17,14 +17,14 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use bootc_utils::{AsyncCommandRunExt, CommandRunExt, ExitStatusExt};
 use camino::{Utf8Path, Utf8PathBuf};
-use cap_std_ext::cap_std;
 use cap_std_ext::cap_std::fs::Dir;
 use cap_std_ext::cap_tempfile::TempDir;
 use cap_std_ext::cmdext::CapStdExtCommandExt;
 use cap_std_ext::dirext::CapStdExtDirExt;
+use cap_std_ext::{cap_std, cap_tempfile};
 use fn_error_context::context;
 use ostree_ext::ostree::{self};
-use std::os::fd::{AsRawFd, OwnedFd};
+use std::os::fd::{AsFd, AsRawFd, OwnedFd};
 use tokio::process::Command as AsyncCommand;
 
 // Pass only 100 args at a time just to avoid potentially overflowing argument
@@ -119,11 +119,38 @@ fn bind_storage_roots(cmd: &mut Command, storage_root: &Dir, run_root: &Dir) -> 
     Ok(())
 }
 
-fn new_podman_cmd_in(storage_root: &Dir, run_root: &Dir) -> Result<Command> {
+// Initialize a `podman` subprocess with:
+// - storage overridden to point to to storage_root
+// - Authentication (auth.json) using the bootc/ostree owned auth
+fn new_podman_cmd_in(sysroot: &Dir, storage_root: &Dir, run_root: &Dir) -> Result<Command> {
     let mut cmd = Command::new("podman");
     bind_storage_roots(&mut cmd, storage_root, run_root)?;
     let run_root = format!("/proc/self/fd/{STORAGE_RUN_FD}");
     cmd.args(["--root", STORAGE_ALIAS_DIR, "--runroot", run_root.as_str()]);
+
+    let tmpd = &cap_std::fs::Dir::open_ambient_dir("/tmp", cap_std::ambient_authority())?;
+    let mut tempfile = cap_tempfile::TempFile::new_anonymous(tmpd).map(std::io::BufWriter::new)?;
+
+    // Keep this in sync with https://github.com/bootc-dev/containers-image-proxy-rs/blob/b5e0861ad5065f47eaf9cda0d48da3529cc1bc43/src/imageproxy.rs#L310
+    // We always override the auth to match the bootc setup.
+    let authfile_fd = ostree_ext::globals::get_global_authfile(sysroot)?.map(|v| v.1);
+    if let Some(mut fd) = authfile_fd {
+        std::io::copy(&mut fd, &mut tempfile)?;
+    } else {
+        // Note that if there's no bootc-owned auth, then we force an empty authfile to ensure
+        // that podman doesn't fall back to searching the user-owned paths.
+        tempfile.write_all(b"{}")?;
+    }
+
+    let tempfile = tempfile
+        .into_inner()
+        .map_err(|e| e.into_error())?
+        .into_std();
+    let fd: Arc<OwnedFd> = std::sync::Arc::new(tempfile.into());
+    let target_fd = fd.as_fd().as_raw_fd();
+    cmd.take_fd_n(fd, target_fd);
+    cmd.env("REGISTRY_AUTH_FILE", format!("/proc/self/fd/{target_fd}"));
+
     Ok(cmd)
 }
 
@@ -167,7 +194,7 @@ impl CStorage {
     /// Create a `podman image` Command instance prepared to operate on our alternative
     /// root.
     pub(crate) fn new_image_cmd(&self) -> Result<Command> {
-        let mut r = new_podman_cmd_in(&self.storage_root, &self.run)?;
+        let mut r = new_podman_cmd_in(&self.sysroot, &self.storage_root, &self.run)?;
         // We want to limit things to only manipulating images by default.
         r.arg("image");
         Ok(r)
@@ -233,7 +260,7 @@ impl CStorage {
             // There's no explicit API to initialize a containers-storage:
             // root, simply passing a path will attempt to auto-create it.
             // We run "podman images" in the new root.
-            new_podman_cmd_in(&storage_root, &run)?
+            new_podman_cmd_in(&sysroot, &storage_root, &run)?
                 .stdout(Stdio::null())
                 .arg("images")
                 .run_capture_stderr()
@@ -353,16 +380,6 @@ impl CStorage {
         cmd.stdin(Stdio::null());
         cmd.stdout(Stdio::null());
         cmd.args(["pull", image]);
-        let authfile_fd =
-            ostree_ext::globals::get_global_authfile(&self.sysroot)?.map(|(_authfile, fd)| fd);
-        if let Some(fd) = authfile_fd {
-            let authfile_path = std::fs::read_link(format!("/proc/self/fd/{}", fd.as_raw_fd()))
-                .map_err(Into::into)
-                .and_then(|p| {
-                    Utf8PathBuf::from_path_buf(p).map_err(|_| anyhow::anyhow!("Invalid UTF-8"))
-                })?;
-            cmd.args(["--authfile", authfile_path.as_str()]);
-        }
         tracing::debug!("Pulling image: {image}");
         let mut cmd = AsyncCommand::from(cmd);
         cmd.run().await.context("Failed to pull image")?;

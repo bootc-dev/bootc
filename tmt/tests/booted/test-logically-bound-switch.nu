@@ -21,6 +21,11 @@ bootc status
 let st = bootc status --json | from json
 let booted = $st.status.booted.image
 
+# The tests here aren't fetching from a registry which requires auth by default,
+# but we can replicate the failure in https://github.com/bootc-dev/bootc/pull/1852
+# by just injecting any auth file.
+echo '{}' | save -f /run/ostree/auth.json
+
 def initial_setup [] {
     bootc image copy-to-storage
     podman images

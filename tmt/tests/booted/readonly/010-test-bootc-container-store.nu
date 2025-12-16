@@ -15,6 +15,14 @@ if $is_composefs {
 
     # And verify this works
     bootc image cmd list -q o>/dev/null
+
+    bootc image cmd pull busybox
+    podman --storage-opt=additionalimagestore=/usr/lib/bootc/storage image exists busybox
+
+    'corrupted JSON!@#%!@#' | save -f /run/ostree/auth.json
+    let e = bootc image cmd pull busybox | complete | get exit_code
+    assert not equal $e 0
+    rm -v /run/ostree/auth.json
 }
 
 tap ok
