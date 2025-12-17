@@ -7,7 +7,6 @@ use std::fs::File;
 use std::io::{BufWriter, Seek};
 use std::os::unix::process::CommandExt;
 use std::process::Command;
-use std::sync::Arc;
 
 use anyhow::{anyhow, ensure, Context, Result};
 use camino::{Utf8Path, Utf8PathBuf};
@@ -32,10 +31,10 @@ use ostree_ext::ostree;
 use ostree_ext::sysroot::SysrootLock;
 use schemars::schema_for;
 use serde::{Deserialize, Serialize};
-use tempfile::tempdir_in;
 
 use crate::bootc_composefs::delete::delete_composefs_deployment;
 use crate::bootc_composefs::{
+    digest::{compute_composefs_digest, new_temp_composefs_repo},
     finalize::{composefs_backend_finalize, get_etc_diff},
     rollback::composefs_rollback,
     state::composefs_usr_overlay,
@@ -48,7 +47,7 @@ use crate::podstorage::set_additional_image_store;
 use crate::progress_jsonl::{ProgressWriter, RawProgressFd};
 use crate::spec::Host;
 use crate::spec::ImageReference;
-use crate::store::{BootedOstree, ComposefsRepository, Storage};
+use crate::store::{BootedOstree, Storage};
 use crate::store::{BootedStorage, BootedStorageKind};
 use crate::utils::sigpolicy_from_opt;
 
@@ -358,9 +357,20 @@ pub(crate) enum ContainerOpts {
         #[clap(long)]
         no_truncate: bool,
     },
-    /// Output the bootable composefs digest.
+    /// Output the bootable composefs digest for a directory.
     #[clap(hide = true)]
     ComputeComposefsDigest {
+        /// Path to the filesystem root
+        #[clap(default_value = "/target")]
+        path: Utf8PathBuf,
+
+        /// Additionally generate a dumpfile written to the target path
+        #[clap(long)]
+        write_dumpfile_to: Option<Utf8PathBuf>,
+    },
+    /// Output the bootable composefs digest from container storage.
+    #[clap(hide = true)]
+    ComputeComposefsDigestFromStorage {
         /// Additionally generate a dumpfile written to the target path
         #[clap(long)]
         write_dumpfile_to: Option<Utf8PathBuf>,
@@ -1499,21 +1509,18 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
                 Ok(())
             }
             ContainerOpts::ComputeComposefsDigest {
+                path,
+                write_dumpfile_to,
+            } => {
+                let digest = compute_composefs_digest(&path, write_dumpfile_to.as_deref())?;
+                println!("{digest}");
+                Ok(())
+            }
+            ContainerOpts::ComputeComposefsDigestFromStorage {
                 write_dumpfile_to,
                 image,
             } => {
-                // Allocate a tempdir
-                let td = tempdir_in("/var/tmp")?;
-                let td = td.path();
-                let td = &Dir::open_ambient_dir(td, cap_std::ambient_authority())?;
-
-                td.create_dir("repo")?;
-                let repo = td.open_dir("repo")?;
-                let mut repo =
-                    ComposefsRepository::open_path(&repo, ".").context("Init cfs repo")?;
-                // We don't need to hard require verity on the *host* system, we're just computing a checksum here
-                repo.set_insecure(true);
-                let repo = &Arc::new(repo);
+                let (_td_guard, repo) = new_temp_composefs_repo()?;
 
                 let mut proxycfg = ImageProxyConfig::default();
 
@@ -1540,11 +1547,11 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
                 };
 
                 let imgref = format!("containers-storage:{image}");
-                let (imgid, verity) = composefs_oci::pull(repo, &imgref, None, Some(proxycfg))
+                let (imgid, verity) = composefs_oci::pull(&repo, &imgref, None, Some(proxycfg))
                     .await
                     .context("Pulling image")?;
                 let imgid = hex::encode(imgid);
-                let mut fs = composefs_oci::image::create_filesystem(repo, &imgid, Some(&verity))
+                let mut fs = composefs_oci::image::create_filesystem(&repo, &imgid, Some(&verity))
                     .context("Populating fs")?;
                 fs.transform_for_boot(&repo).context("Preparing for boot")?;
                 let id = fs.compute_image_id();

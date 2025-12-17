@@ -125,6 +125,61 @@ fn test_variant_base_crosscheck() -> Result<()> {
     Ok(())
 }
 
+/// Test that compute-composefs-digest works on a directory
+pub(crate) fn test_compute_composefs_digest() -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    // Create temp directory with test filesystem structure
+    let td = tempfile::tempdir()?;
+    let root = td.path();
+
+    // Create directories required by transform_for_boot
+    fs::create_dir_all(root.join("boot"))?;
+    fs::create_dir_all(root.join("sysroot"))?;
+
+    // Create usr/bin/hello (executable)
+    let usr_bin = root.join("usr/bin");
+    fs::create_dir_all(&usr_bin)?;
+    let hello_path = usr_bin.join("hello");
+    fs::write(&hello_path, "test\n")?;
+    fs::set_permissions(&hello_path, fs::Permissions::from_mode(0o755))?;
+
+    // Create etc/config (regular file)
+    let etc = root.join("etc");
+    fs::create_dir_all(&etc)?;
+    let config_path = etc.join("config");
+    fs::write(&config_path, "test\n")?;
+    fs::set_permissions(&config_path, fs::Permissions::from_mode(0o644))?;
+
+    // Run bootc container compute-composefs-digest
+    let sh = Shell::new()?;
+    let path_str = root.to_str().unwrap();
+    let digest = cmd!(sh, "bootc container compute-composefs-digest {path_str}").read()?;
+    let digest = digest.trim();
+
+    // Verify it's a valid hex string of expected length (SHA-512 = 128 hex chars)
+    assert_eq!(
+        digest.len(),
+        128,
+        "Expected 512-bit hex digest, got length {}",
+        digest.len()
+    );
+    assert!(
+        digest.chars().all(|c| c.is_ascii_hexdigit()),
+        "Digest contains non-hex characters: {digest}"
+    );
+
+    // Verify consistency - running the command twice produces the same result
+    let digest2 = cmd!(sh, "bootc container compute-composefs-digest {path_str}").read()?;
+    assert_eq!(
+        digest,
+        digest2.trim(),
+        "Digest should be consistent across multiple invocations"
+    );
+
+    Ok(())
+}
+
 /// Tests that should be run in a default container image.
 #[context("Container tests")]
 pub(crate) fn run(testargs: libtest_mimic::Arguments) -> Result<()> {
@@ -136,6 +191,7 @@ pub(crate) fn run(testargs: libtest_mimic::Arguments) -> Result<()> {
         new_test("status", test_bootc_status),
         new_test("container inspect", test_bootc_container_inspect),
         new_test("system-reinstall --help", test_system_reinstall_help),
+        new_test("compute-composefs-digest", test_compute_composefs_digest),
     ];
 
     libtest_mimic::run(&testargs, tests.into()).exit()
