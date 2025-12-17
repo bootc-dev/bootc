@@ -148,6 +148,13 @@ pub(crate) fn install_via_bootupd(
     };
     let install_result = bootupctl
         .args(chroot_args)
+        // Inject a reasonnable PATH here so we find the required tools
+        // when running chrooted in the deployment. Testing show that
+        // the default $PATH value in the chroot is insufficient.
+        .env(
+            "PATH",
+            "/bin:/usr/bin:/sbin:/usr/sbin:/usr/local/bin:/usr/local/sbin",
+        )
         .args(["backend", "install", "--write-uuid"])
         .args(verbose)
         .args(bootupd_opts.iter().copied().flatten())
