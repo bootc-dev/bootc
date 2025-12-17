@@ -93,4 +93,4 @@ podman pull -q --retry 5 --retry-delay 5s quay.io/curl/curl:latest quay.io/curl/
 
 # Run system-reinstall-bootc
 # TODO make it more scriptable instead of expect + send
-./system-reinstall-bootc.exp
+./system-reinstall-bootc.exp composefs

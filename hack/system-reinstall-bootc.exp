@@ -3,7 +3,13 @@
 # Set a timeout
 set timeout 600
 
-spawn system-reinstall-bootc --composefs-backend localhost/bootc-integration
+set mode [lindex $argv 0]
+
+if {"$mode" eq "composefs"} {
+    spawn system-reinstall-bootc --composefs-backend localhost/bootc-integration
+} else {
+    spawn system-reinstall-bootc localhost/bootc-integration
+}
 
 expect {
     "Then you can login as * using those keys. \\\[Y/n\\\]" {

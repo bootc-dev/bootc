@@ -8,6 +8,6 @@
 bootc status -v
 bootc status --json
 
-def main[] {
+def main [] {
     echo "The test has passed"
 }
