@@ -1284,7 +1284,7 @@ async fn edit_ostree(
         let mut r = std::io::BufReader::new(std::fs::File::open(filename)?);
         serde_yaml::from_reader(&mut r)?
     } else {
-        let tmpf = tempfile::NamedTempFile::new()?;
+        let tmpf = tempfile::NamedTempFile::with_suffix(".yaml")?;
         serde_yaml::to_writer(std::io::BufWriter::new(tmpf.as_file()), &host)?;
         crate::utils::spawn_editor(&tmpf)?;
         tmpf.as_file().seek(std::io::SeekFrom::Start(0))?;
