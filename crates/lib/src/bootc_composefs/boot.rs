@@ -730,11 +730,19 @@ pub(crate) fn setup_composefs_bls_boot(
         let mut booted_bls = get_booted_bls(&boot_dir)?;
         booted_bls.sort_key = Some(secondary_sort_key(&os_id));
 
+        let staged_path = loader_path.join(STAGED_BOOT_LOADER_ENTRIES);
+
+        // Delete the staged entries directory if it exists as we want to overwrite the entries
+        // anyway
+        if boot_dir
+            .remove_all_optional(TYPE1_ENT_PATH_STAGED)
+            .context("Failed to remove staged directory")?
+        {
+            tracing::debug!("Removed existing staged entries directory");
+        }
+
         // This will be atomically renamed to 'loader/entries' on shutdown/reboot
-        (
-            loader_path.join(STAGED_BOOT_LOADER_ENTRIES),
-            Some(booted_bls),
-        )
+        (staged_path, Some(booted_bls))
     } else {
         (loader_path.join(BOOT_LOADER_ENTRIES), None)
     };
