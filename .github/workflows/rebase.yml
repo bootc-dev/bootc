@@ -21,13 +21,13 @@ jobs:
           owner: ${{ github.repository_owner }}
 
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v5
         with:
           token: ${{ steps.token.outputs.token }}
           fetch-depth: 0
 
       - name: Automatic Rebase
-        uses: peter-evans/rebase@v4
+        uses: peter-evans/rebase@v3
         with:
           token: ${{ steps.token.outputs.token }}
 
