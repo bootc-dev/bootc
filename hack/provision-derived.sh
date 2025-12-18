@@ -59,6 +59,13 @@ mkdir -p /etc/cloud/cloud.cfg.d
 cat > /etc/cloud/cloud.cfg.d/80-enable-root.cfg <<'CLOUDEOF'
 # Enable root login for testing
 disable_root: false
+
+# In image mode, the host root filesystem is mounted at /sysroot, not /
+# That is the one we should attempt to resize, not what is mounted at /
+growpart:
+  mode: auto
+  devices: ["/sysroot"]
+resize_rootfs: false
 CLOUDEOF
 fi
 
