@@ -19,7 +19,6 @@ mod tests {
     use gvariant::aligned_bytes::TryAsAligned;
     use gvariant::Marker;
 
-    use super::*;
     #[test]
     fn test_dirtree() {
         // Just a compilation test
