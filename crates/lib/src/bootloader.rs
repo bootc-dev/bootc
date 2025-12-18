@@ -5,12 +5,13 @@ use anyhow::{anyhow, bail, Context, Result};
 use bootc_utils::CommandRunExt;
 use camino::Utf8Path;
 use cap_std_ext::cap_std::fs::Dir;
+use cap_std_ext::dirext::CapStdExtDirExt;
 use fn_error_context::context;
 
 use bootc_blockdev::{Partition, PartitionTable};
 use bootc_mount as mount;
 
-use crate::bootc_composefs::boot::{mount_esp, SecurebootKeys};
+use crate::bootc_composefs::boot::{get_sysroot_parent_dev, mount_esp, SecurebootKeys};
 use crate::{discoverable_partition_specification, utils};
 
 /// The name of the mountpoint for efi (as a subdirectory of /boot, or at the toplevel)
@@ -28,6 +29,42 @@ pub(crate) fn esp_in(device: &PartitionTable) -> Result<&Partition> {
     device
         .find_partition_of_type(discoverable_partition_specification::ESP)
         .ok_or(anyhow::anyhow!("ESP not found in partition table"))
+}
+
+/// Get esp partition node based on the root dir
+pub(crate) fn get_esp_partition_node(root: &Dir) -> Result<Option<String>> {
+    let device = get_sysroot_parent_dev(&root)?;
+    let base_partitions = bootc_blockdev::partitions_of(Utf8Path::new(&device))?;
+    let esp = base_partitions.find_partition_of_esp()?;
+    Ok(esp.map(|v| v.node.clone()))
+}
+
+/// Mount ESP part at /boot/efi
+pub(crate) fn mount_esp_part(root: &Dir, root_path: &Utf8Path, is_ostree: bool) -> Result<()> {
+    let efi_path = Utf8Path::new("boot").join(crate::bootloader::EFI_DIR);
+    let Some(esp_fd) = root
+        .open_dir_optional(&efi_path)
+        .context("Opening /boot/efi")?
+    else {
+        return Ok(());
+    };
+
+    let Some(false) = esp_fd.is_mountpoint(".")? else {
+        return Ok(());
+    };
+
+    tracing::debug!("Not a mountpoint: /boot/efi");
+    // On ostree env with enabled composefs, should be /target/sysroot
+    let physical_root = if is_ostree {
+        &root.open_dir("sysroot").context("Opening /sysroot")?
+    } else {
+        root
+    };
+    if let Some(esp_part) = get_esp_partition_node(physical_root)? {
+        bootc_mount::mount(&esp_part, &root_path.join(&efi_path))?;
+        tracing::debug!("Mounted {esp_part} at /boot/efi");
+    }
+    Ok(())
 }
 
 /// Determine if the invoking environment contains bootupd, and if there are bootupd-based
