@@ -17,6 +17,8 @@ pub(crate) const BASE_ARGS: &[&str] = &[
     "--pid=host",
     "--env",
     "BOOTC_BOOTLOADER_DEBUG=true",
+    "--env",
+    "RUST_LOG=debug",
 ];
 
 // Arbitrary
