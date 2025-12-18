@@ -1978,15 +1978,20 @@ fn remove_all_except_loader_dirs(bootdir: &Dir, is_ostree: bool) -> Result<()> {
 }
 
 #[context("Removing boot directory content")]
-fn clean_boot_directories(rootfs: &Dir, is_ostree: bool) -> Result<()> {
+fn clean_boot_directories(rootfs: &Dir, rootfs_path: &Utf8Path, is_ostree: bool) -> Result<()> {
     let bootdir =
         crate::utils::open_dir_remount_rw(rootfs, BOOT.into()).context("Opening /boot")?;
+
+    if ARCH_USES_EFI {
+        // On booted FCOS, esp is not mounted by default
+        // Mount ESP part at /boot/efi before clean
+        crate::bootloader::mount_esp_part(&rootfs, &rootfs_path, is_ostree)?;
+    }
 
     // This should not remove /boot/efi note.
     remove_all_except_loader_dirs(&bootdir, is_ostree).context("Emptying /boot")?;
 
-    // TODO: Discover the ESP the same way bootupd does it; we should also
-    // support not wiping the ESP.
+    // TODO: we should also support not wiping the ESP.
     if ARCH_USES_EFI {
         if let Some(efidir) = bootdir
             .open_dir_optional(crate::bootloader::EFI_DIR)
@@ -2194,7 +2199,7 @@ pub(crate) async fn install_to_filesystem(
                 .await??;
         }
         Some(ReplaceMode::Alongside) => {
-            clean_boot_directories(&target_rootfs_fd, is_already_ostree)?
+            clean_boot_directories(&target_rootfs_fd, &target_root_path, is_already_ostree)?
         }
         None => require_empty_rootdir(&rootfs_fd)?,
     }
