@@ -65,24 +65,20 @@ runs:
     - name: Install libvirt and virtualization stack
       if: ${{ inputs.libvirt == 'true' }}
       shell: bash
-      env:
-        GH_TOKEN: ${{ github.token }}
       run: |
         set -xeuo pipefail
-        export BCVK_VERSION=0.8.0
+        export BCVK_VERSION=0.9.0
+        # see https://github.com/bootc-dev/bcvk/issues/176
         /bin/time -f '%E %C' sudo apt install -y libkrb5-dev pkg-config libvirt-dev genisoimage qemu-utils qemu-kvm virtiofsd libvirt-daemon-system python3-virt-firmware
         # Something in the stack is overriding this, but we want session right now for bcvk
         echo LIBVIRT_DEFAULT_URI=qemu:///session >> $GITHUB_ENV
         td=$(mktemp -d)
         cd $td
-        # Install bcvk from PR 172
-        gh run download 20107212783 --name bcvk-binary-tests --repo bootc-dev/bcvk
-        sudo install -m 755 bcvk /usr/bin/bcvk
-        # Install bcvk from release
-        # target=bcvk-$(arch)-unknown-linux-gnu
-        # /bin/time -f '%E %C' curl -LO https://github.com/bootc-dev/bcvk/releases/download/v${BCVK_VERSION}/${target}.tar.gz
-        # tar xzf ${target}.tar.gz
-        # sudo install -T ${target} /usr/bin/bcvk
+        # Install bcvk
+        target=bcvk-$(arch)-unknown-linux-gnu
+        /bin/time -f '%E %C' curl -LO https://github.com/bootc-dev/bcvk/releases/download/v${BCVK_VERSION}/${target}.tar.gz
+        tar xzf ${target}.tar.gz
+        sudo install -T ${target} /usr/bin/bcvk
         cd -
         rm -rf "$td"
 
