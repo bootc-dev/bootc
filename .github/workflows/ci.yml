@@ -197,12 +197,24 @@ jobs:
       - name: Unit and container integration tests
         run: just test-container
 
-      - name: Run TMT tests
+      - name: Run TMT integration tests
         run: |
           if [ "${{ matrix.variant }}" = "composefs-sealeduki-sdboot" ]; then
             just test-composefs
           else
-            just test-tmt
+            just test-tmt integration
+          fi
+          just clean-local-images
+
+      - name: Run TMT test about bootc install on coreos
+        run: |
+          # Only test fedora-43 on fedora-coreos:testing-devel
+          if [ "${{ matrix.test_os }}" = "fedora-43" ] && [ "${{ matrix.variant }}" = "ostree" ]; then
+            just build-testimage-coreos target/packages
+            just test-tmt-on-coreos plan-bootc-install-on-coreos
+            just clean-local-images
+          else
+            echo "skipped"
           fi
 
       - name: Archive TMT logs
