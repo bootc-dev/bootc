@@ -22,6 +22,18 @@ When generating substantial amounts of code, you SHOULD
 include an `Assisted-by: TOOLNAME (MODELNAME)`. For example,
 `Assisted-by: Goose (Sonnet 4.5)`.
 
+## Code guidelines
+
+The [REVIEW.md](REVIEW.md) file describes expectations around
+testing, code quality, commit organization, etc. If you're
+creating a change, it is strongly encouraged after each 
+commit and especially when you think a task is complete
+to spawn a subagent to perform a review using guidelines (alongside
+looking for any other issues).
+
+If you are performing a review of other's code, the same
+principles apply.
+
 ## Follow other guidelines
 
 Look at the project README.md and look for guidelines
