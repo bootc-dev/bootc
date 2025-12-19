@@ -66,6 +66,9 @@ _git-build-vars:
     echo "SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}"
     echo "VERSION=${VERSION}"
 
+# Needed by bootc install on ostree
+fedora-coreos := "quay.io/fedora/fedora-coreos:testing-devel"
+
 # The default target: build the container image from current sources.
 # Note commonly you might want to override the base image via e.g.
 # `just build --build-arg=base=quay.io/fedora/fedora-bootc:42`
@@ -179,6 +182,8 @@ validate:
 #
 # To run an individual test, pass it as an argument like:
 # `just test-tmt readonly`
+#
+# To run the integration tests, execute `just test-tmt integration`
 test-tmt *ARGS: build-integration-test-image _build-upgrade-image
     @just test-tmt-nobuild {{ARGS}}
 
@@ -191,6 +196,19 @@ _build-upgrade-image:
 # Useful for iterating on tests quickly.
 test-tmt-nobuild *ARGS:
     cargo xtask run-tmt --env=BOOTC_variant={{variant}} --upgrade-image={{integration_upgrade_img}} {{integration_img}} {{ARGS}}
+
+# Build test container image for testing on coreos with SKIP_CONFIGS=1,
+# without configs and no curl container image
+build-testimage-coreos PATH:
+    @just build-from-package {{PATH}}
+    cd hack && podman build {{base_buildargs}} --build-arg SKIP_CONFIGS=1 -t {{integration_img}}-coreos -f Containerfile .
+
+# Run test bootc install on FCOS
+# BOOTC_target is `bootc-integration-coreos`, it will be used for bootc install.
+# Run `just build-testimage-coreos target/packages` to build test image firstly,
+# then run `just test-tmt-on-coreos plan-bootc-install-on-coreos`
+test-tmt-on-coreos *ARGS:
+    cargo xtask run-tmt --env=BOOTC_variant={{variant}} --env=BOOTC_target={{integration_img}}-coreos:latest {{fedora-coreos}} {{ARGS}}
 
 # Cleanup all test VMs created by tmt tests
 tmt-vm-cleanup:
@@ -206,6 +224,8 @@ test-container: build-units build-integration-test-image
 clean-local-images:
     podman images --filter "label={{testimage_label}}"
     podman images --filter "label={{testimage_label}}" --format "{{{{.ID}}" | xargs -r podman rmi -f
+    podman image prune -f
+    podman rmi {{fedora-coreos}} -f
 
 # Print the container image reference for a given short $ID-VERSION_ID for NAME
 # and 'base' or 'buildroot-base' for TYPE (base image type)

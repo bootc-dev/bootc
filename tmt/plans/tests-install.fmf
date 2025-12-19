@@ -1,0 +1,27 @@
+discover:
+  how: fmf
+execute:
+  how: tmt
+# Because of the two issues, run tmt on github runner directly failed
+# - selinux disabled on ubuntu (https://github.com/teemtee/tmt/issues/3364)
+# - uefi firmware is not supported (https://github.com/teemtee/tmt/issues/4203)
+provision:
+  how: virtual
+  hardware:
+    boot:
+      method: uefi
+  image: fedora-coreos-next
+  user: root
+  memory: 4096
+  disk: 20
+
+/plan-bootc-install-on-coreos:
+  summary: Execute bootc install on ostree OS
+  adjust:
+  - when: VARIANT_ID != coreos
+    enabled: false
+    because: this needs to start an ostree OS firstly
+  discover:
+    how: fmf
+    test:
+      - /tmt/tests/test-install/test-bootc-install-on-coreos

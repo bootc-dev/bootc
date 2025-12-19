@@ -1,0 +1,8 @@
+/test-bootc-install-on-coreos:
+  summary: Test bootc install on coreos
+  duration: 30m
+  adjust:
+  - when: VARIANT_ID != coreos
+    enabled: false
+    because: this needs to start an ostree OS firstly
+  test: bash install/test-on-ostree/test-install-on-ostree.sh
