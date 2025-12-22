@@ -808,6 +808,77 @@ fn human_readable_output(mut out: impl Write, host: &Host, verbose: bool) -> Res
     Ok(())
 }
 
+/// Output container inspection in human-readable format
+fn container_inspect_print_human(
+    inspect: &crate::spec::ContainerInspect,
+    mut out: impl Write,
+) -> Result<()> {
+    // Collect rows to determine the max label width
+    let mut rows: Vec<(&str, String)> = Vec::new();
+
+    if let Some(kernel) = &inspect.kernel {
+        rows.push(("Kernel", kernel.version.clone()));
+        let kernel_type = if kernel.unified { "UKI" } else { "vmlinuz" };
+        rows.push(("Type", kernel_type.to_string()));
+    } else {
+        rows.push(("Kernel", "<none>".to_string()));
+    }
+
+    let kargs = if inspect.kargs.is_empty() {
+        "<none>".to_string()
+    } else {
+        inspect.kargs.join(" ")
+    };
+    rows.push(("Kargs", kargs));
+
+    // Find the max label width for right-alignment
+    let max_label_len = rows.iter().map(|(label, _)| label.len()).max().unwrap_or(0);
+
+    for (label, value) in rows {
+        write_row_name(&mut out, label, max_label_len)?;
+        writeln!(out, "{value}")?;
+    }
+
+    Ok(())
+}
+
+/// Inspect a container image and output information about it.
+pub(crate) fn container_inspect(
+    rootfs: &camino::Utf8Path,
+    json: bool,
+    format: Option<OutputFormat>,
+) -> Result<()> {
+    let root = cap_std_ext::cap_std::fs::Dir::open_ambient_dir(
+        rootfs,
+        cap_std_ext::cap_std::ambient_authority(),
+    )?;
+    let kargs = crate::bootc_kargs::get_kargs_in_root(&root, std::env::consts::ARCH)?;
+    let kargs: Vec<String> = kargs.iter_str().map(|s| s.to_owned()).collect();
+    let kernel = crate::kernel::find_kernel(&root)?;
+    let inspect = crate::spec::ContainerInspect { kargs, kernel };
+
+    // Determine output format: explicit --format wins, then --json, then default to human-readable
+    let format = format.unwrap_or(if json {
+        OutputFormat::Json
+    } else {
+        OutputFormat::HumanReadable
+    });
+
+    let mut out = std::io::stdout().lock();
+    match format {
+        OutputFormat::Json => {
+            serde_json::to_writer_pretty(&mut out, &inspect)?;
+        }
+        OutputFormat::Yaml => {
+            serde_yaml::to_writer(&mut out, &inspect)?;
+        }
+        OutputFormat::HumanReadable => {
+            container_inspect_print_human(&inspect, &mut out)?;
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1013,5 +1084,61 @@ mod tests {
 
         // Verbose output should include download-only status as "no" for normal staged deployments
         assert!(w.contains("Download-only: no"));
+    }
+
+    #[test]
+    fn test_container_inspect_human_readable() {
+        let inspect = crate::spec::ContainerInspect {
+            kargs: vec!["console=ttyS0".into(), "quiet".into()],
+            kernel: Some(crate::kernel::Kernel {
+                version: "6.12.0-100.fc41.x86_64".into(),
+                unified: false,
+            }),
+        };
+        let mut w = Vec::new();
+        container_inspect_print_human(&inspect, &mut w).unwrap();
+        let output = String::from_utf8(w).unwrap();
+        let expected = indoc::indoc! { r"
+            Kernel: 6.12.0-100.fc41.x86_64
+              Type: vmlinuz
+             Kargs: console=ttyS0 quiet
+        "};
+        similar_asserts::assert_eq!(output, expected);
+    }
+
+    #[test]
+    fn test_container_inspect_human_readable_uki() {
+        let inspect = crate::spec::ContainerInspect {
+            kargs: vec![],
+            kernel: Some(crate::kernel::Kernel {
+                version: "6.12.0-100.fc41.x86_64".into(),
+                unified: true,
+            }),
+        };
+        let mut w = Vec::new();
+        container_inspect_print_human(&inspect, &mut w).unwrap();
+        let output = String::from_utf8(w).unwrap();
+        let expected = indoc::indoc! { r"
+            Kernel: 6.12.0-100.fc41.x86_64
+              Type: UKI
+             Kargs: <none>
+        "};
+        similar_asserts::assert_eq!(output, expected);
+    }
+
+    #[test]
+    fn test_container_inspect_human_readable_no_kernel() {
+        let inspect = crate::spec::ContainerInspect {
+            kargs: vec!["console=ttyS0".into()],
+            kernel: None,
+        };
+        let mut w = Vec::new();
+        container_inspect_print_human(&inspect, &mut w).unwrap();
+        let output = String::from_utf8(w).unwrap();
+        let expected = indoc::indoc! { r"
+            Kernel: <none>
+             Kargs: console=ttyS0
+        "};
+        similar_asserts::assert_eq!(output, expected);
     }
 }

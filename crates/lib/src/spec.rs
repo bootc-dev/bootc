@@ -1,6 +1,7 @@
 //! The definition for host system state.
 
 use std::fmt::Display;
+
 use std::str::FromStr;
 
 use anyhow::Result;
@@ -304,6 +305,8 @@ pub(crate) struct DeploymentEntry<'a> {
 pub(crate) struct ContainerInspect {
     /// Kernel arguments embedded in the container image.
     pub(crate) kargs: Vec<String>,
+    /// Information about the kernel in the container image.
+    pub(crate) kernel: Option<crate::kernel::Kernel>,
 }
 
 impl Host {

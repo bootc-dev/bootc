@@ -319,11 +319,22 @@ pub(crate) enum InstallOpts {
 /// Subcommands which can be executed as part of a container build.
 #[derive(Debug, clap::Subcommand, PartialEq, Eq)]
 pub(crate) enum ContainerOpts {
-    /// Output JSON to stdout containing the container image metadata.
+    /// Output information about the container image.
+    ///
+    /// By default, a human-readable summary is output. Use --json or --format
+    /// to change the output format.
     Inspect {
         /// Operate on the provided rootfs.
         #[clap(long, default_value = "/")]
         rootfs: Utf8PathBuf,
+
+        /// Output in JSON format.
+        #[clap(long)]
+        json: bool,
+
+        /// The output format.
+        #[clap(long, conflicts_with = "json")]
+        format: Option<OutputFormat>,
     },
     /// Perform relatively inexpensive static analysis checks as part of a container
     /// build.
@@ -1473,14 +1484,11 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
             }
         }
         Opt::Container(opts) => match opts {
-            ContainerOpts::Inspect { rootfs } => {
-                let root = &Dir::open_ambient_dir(&rootfs, cap_std::ambient_authority())?;
-                let kargs = crate::bootc_kargs::get_kargs_in_root(root, std::env::consts::ARCH)?;
-                let kargs: Vec<String> = kargs.iter_str().map(|s| s.to_owned()).collect();
-                let inspect = crate::spec::ContainerInspect { kargs };
-                serde_json::to_writer_pretty(std::io::stdout().lock(), &inspect)?;
-                Ok(())
-            }
+            ContainerOpts::Inspect {
+                rootfs,
+                json,
+                format,
+            } => crate::status::container_inspect(&rootfs, json, format),
             ContainerOpts::Lint {
                 rootfs,
                 fatal_warnings,

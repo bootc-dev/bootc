@@ -21,6 +21,7 @@ mod image;
 mod install;
 pub(crate) mod journal;
 mod k8sapitypes;
+mod kernel;
 mod lints;
 mod lsm;
 pub(crate) mod metadata;

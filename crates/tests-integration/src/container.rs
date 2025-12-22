@@ -24,13 +24,55 @@ pub(crate) fn test_bootc_status() -> Result<()> {
 pub(crate) fn test_bootc_container_inspect() -> Result<()> {
     let sh = Shell::new()?;
     let inspect: serde_json::Value =
-        serde_json::from_str(&cmd!(sh, "bootc container inspect").read()?)?;
+        serde_json::from_str(&cmd!(sh, "bootc container inspect --json").read()?)?;
 
     // check kargs processing
     let kargs = inspect.get("kargs").unwrap().as_array().unwrap();
     assert!(kargs.iter().any(|arg| arg == "kargsd-test=1"));
     assert!(kargs.iter().any(|arg| arg == "kargsd-othertest=2"));
     assert!(kargs.iter().any(|arg| arg == "testing-kargsd=3"));
+
+    // check kernel field
+    let kernel = inspect
+        .get("kernel")
+        .expect("kernel field should be present")
+        .as_object()
+        .expect("kernel should be an object");
+    let version = kernel
+        .get("version")
+        .expect("kernel.version should be present")
+        .as_str()
+        .expect("kernel.version should be a string");
+    // Verify version is non-empty (for traditional kernels it's uname-style, for UKI it's the filename)
+    assert!(!version.is_empty(), "kernel.version should not be empty");
+    let unified = kernel
+        .get("unified")
+        .expect("kernel.unified should be present")
+        .as_bool()
+        .expect("kernel.unified should be a boolean");
+    if let Some(variant) = std::env::var("BOOTC_variant").ok() {
+        match variant.as_str() {
+            "ostree" => {
+                assert!(!unified, "Expected unified=false for ostree variant");
+                // For traditional kernels, version should look like a uname (contains digits)
+                assert!(
+                    version.chars().any(|c| c.is_ascii_digit()),
+                    "version should contain version numbers for traditional kernel: {version}"
+                );
+            }
+            "composefs-sealeduki-sdboot" => {
+                assert!(unified, "Expected unified=true for UKI variant");
+                // For UKI, version is the filename without .efi extension (should not end with .efi)
+                assert!(
+                    !version.ends_with(".efi"),
+                    "version should not include .efi extension: {version}"
+                );
+                // Version should be non-empty after stripping extension
+                assert!(!version.is_empty(), "version should not be empty for UKI");
+            }
+            o => eprintln!("notice: Unhandled variant for kernel check: {o}"),
+        }
+    }
 
     Ok(())
 }

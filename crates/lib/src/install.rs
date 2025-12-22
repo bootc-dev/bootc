@@ -1341,10 +1341,6 @@ async fn verify_target_fetch(
     Ok(())
 }
 
-fn root_has_uki(root: &Dir) -> Result<bool> {
-    crate::bootc_composefs::boot::container_root_has_uki(root)
-}
-
 /// Preparation for an install; validates and prepares some (thereafter immutable) global state.
 async fn prepare_install(
     config_opts: InstallConfigOpts,
@@ -1418,7 +1414,9 @@ async fn prepare_install(
     tracing::debug!("Target image reference: {target_imgref}");
 
     let composefs_required = if let Some(root) = target_rootfs.as_ref() {
-        root_has_uki(root)?
+        crate::kernel::find_kernel(root)?
+            .map(|k| k.unified)
+            .unwrap_or(false)
     } else {
         false
     };
