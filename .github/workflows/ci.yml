@@ -117,6 +117,8 @@ jobs:
       - uses: actions/checkout@v6
       - name: Bootc Ubuntu Setup
         uses: ./.github/actions/bootc-ubuntu-setup
+      - name: Setup Rust
+        uses: ./.github/actions/setup-rust
       - name: Build mdbook
         run: just build-mdbook
   # Build packages for each test OS
@@ -173,6 +175,8 @@ jobs:
         uses: ./.github/actions/bootc-ubuntu-setup
         with:
           libvirt: true
+      - name: Setup Rust
+        uses: ./.github/actions/setup-rust
       - name: Install tmt
         run: pip install --user "tmt[provision-virtual]"
 

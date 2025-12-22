@@ -21,6 +21,8 @@ jobs:
       - uses: actions/checkout@v6
       - name: Bootc Ubuntu Setup
         uses: ./.github/actions/bootc-ubuntu-setup
+      - name: Setup Rust
+        uses: ./.github/actions/setup-rust
       - name: Build mdbook
         run: mkdir target && just build-mdbook-to target/docs
       - name: Setup Pages
