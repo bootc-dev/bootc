@@ -4,6 +4,7 @@ runs:
   using: 'composite'
   steps:
     - run: export CARGO_INCREMENTAL=1
+      shell: bash
     - name: Install Rust toolchain
       uses: dtolnay/rust-toolchain@stable
     - name: Install nextest
