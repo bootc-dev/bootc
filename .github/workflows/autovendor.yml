@@ -13,7 +13,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: ./.github/actions/setup-rust
+      - name: Setup Rust
+        uses: ./.github/actions/setup-rust
       - name: Install vendor tool
         run: cargo install cargo-vendor-filterer
       - name: Run

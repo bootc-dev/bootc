@@ -27,7 +27,8 @@ jobs:
       - name: Install deps
         run: ./ci/installdeps.sh
       # xref containers/containers-image-proxy-rs
-      - uses: ./.github/actions/setup-rust
+      - name: Setup Rust
+        uses: ./.github/actions/setup-rust
       - name: cargo fmt (check)
         run: cargo fmt -- --check -l
       - name: Build
@@ -47,7 +48,8 @@ jobs:
       - uses: actions/checkout@v6
       - name: Install deps
         run: ./ci/installdeps.sh
-      - uses: ./.github/actions/setup-rust
+      - name: Setup Rust
+        uses: ./.github/actions/setup-rust
       - name: Build
         run: cargo build --release --features=internal-testing-api
       - name: Upload binary
@@ -73,7 +75,8 @@ jobs:
           echo "ACTION_MSRV_TOOLCHAIN=$msrv" >> $GITHUB_ENV
       - name: Remove system Rust toolchain
         run: dnf remove -y rust cargo
-      - uses: ./.github/actions/setup-rust
+      - name: Setup Rust
+        uses: ./.github/actions/setup-rust
       - name: cargo check
         run: cargo check
   cargo-deny:

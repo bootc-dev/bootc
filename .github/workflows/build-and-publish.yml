@@ -29,7 +29,8 @@ jobs:
       - uses: actions/checkout@v6
       - name: Bootc Ubuntu Setup
         uses: ./.github/actions/bootc-ubuntu-setup
-      - uses: ./.github/actions/setup-rust
+      - name: Setup Rust
+        uses: ./.github/actions/setup-rust
 
       - name: Setup env
         run: |

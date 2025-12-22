@@ -3,6 +3,7 @@ description: 'Install Rust toolchain with caching and nextest'
 runs:
   using: 'composite'
   steps:
+    - run: export CARGO_INCREMENTAL=1
     - name: Install Rust toolchain
       uses: dtolnay/rust-toolchain@stable
     - name: Install nextest
