@@ -29,6 +29,8 @@ jobs:
           fetch-depth: 0
           token: ${{ steps.app-token.outputs.token }}
 
+      - uses: ./.github/actions/setup-rust
+
       - name: Extract version
         id: extract_version
         run: |
@@ -81,11 +83,6 @@ jobs:
 
       - name: Install vendor tool
         run: cargo install cargo-vendor-filterer
-
-      - name: Cache Dependencies
-        uses: Swatinem/rust-cache@v2
-        with:
-          key: "release"
 
       - name: Run cargo xtask package
         run: cargo xtask package

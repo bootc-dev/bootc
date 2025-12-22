@@ -58,6 +58,7 @@ jobs:
         uses: actions/checkout@v6
       - name: Bootc Ubuntu Setup
         uses: ./.github/actions/bootc-ubuntu-setup
+      - uses: ./.github/actions/setup-rust
       - name: Enable fsverity for /
         run: sudo tune2fs -O verity $(findmnt -vno SOURCE /)
       - name: Install utils

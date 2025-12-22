@@ -38,6 +38,8 @@ jobs:
       - name: Mark git checkout as safe
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
+      - uses: ./.github/actions/setup-rust
+
       - name: Check if it's time for a release
         id: check_schedule
         run: |
