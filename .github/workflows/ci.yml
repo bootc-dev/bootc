@@ -37,6 +37,8 @@ jobs:
       - uses: actions/checkout@v6
       - name: Bootc Ubuntu Setup
         uses: ./.github/actions/bootc-ubuntu-setup
+      - name: Setup Rust
+        uses: ./.github/actions/setup-rust
       - name: Validate (default)
         run: just validate
   # Check for security vulnerabilities and license compliance
