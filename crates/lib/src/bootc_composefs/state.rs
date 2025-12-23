@@ -76,12 +76,14 @@ pub(crate) fn get_booted_bls(boot_dir: &Dir) -> Result<BLSConfig> {
     Err(anyhow::anyhow!("Booted BLS not found"))
 }
 
-/// Mounts an EROFS image and copies the pristine /etc to the deployment's /etc
-#[context("Copying etc")]
-pub(crate) fn copy_etc_to_state(
+/// Mounts an EROFS image and copies the pristine /etc and /var to the deployment's /etc and /var.
+/// Only copies /var for initial installation of deployments (non-staged deployments)
+#[context("Initializing /etc and /var for state")]
+pub(crate) fn initialize_state(
     sysroot_path: &Utf8PathBuf,
     erofs_id: &String,
     state_path: &Utf8PathBuf,
+    initialize_var: bool,
 ) -> Result<()> {
     let sysroot_fd = open(
         sysroot_path.as_std_path(),
@@ -95,6 +97,17 @@ pub(crate) fn copy_etc_to_state(
     let tempdir = TempMount::mount_fd(composefs_fd)?;
 
     // TODO: Replace this with a function to cap_std_ext
+    if initialize_var {
+        Command::new("cp")
+            .args([
+                "-a",
+                "--remove-destination",
+                &format!("{}/var/.", tempdir.dir.path().as_str()?),
+                &format!("{state_path}/var/."),
+            ])
+            .run_capture_stderr()?;
+    }
+
     let cp_ret = Command::new("cp")
         .args([
             "-a",
@@ -225,8 +238,6 @@ pub(crate) async fn write_composefs_state(
 
     create_dir_all(state_path.join("etc"))?;
 
-    copy_etc_to_state(&root_path, &deployment_id.to_hex(), &state_path)?;
-
     let actual_var_path = root_path.join(SHARED_VAR_PATH);
     create_dir_all(&actual_var_path)?;
 
@@ -236,6 +247,8 @@ pub(crate) async fn write_composefs_state(
         state_path.join("var"),
     )
     .context("Failed to create symlink for /var")?;
+
+    initialize_state(&root_path, &deployment_id.to_hex(), &state_path, !staged)?;
 
     let ImageReference {
         image: image_name,
