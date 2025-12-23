@@ -17,10 +17,8 @@
 
 # This image is just the base image plus our updated bootc binary
 base_img := "localhost/bootc"
-# Derives from the above and adds nushell, cloudinit etc.
-integration_img := base_img + "-integration"
 # Has a synthetic upgrade
-integration_upgrade_img := integration_img + "-upgrade"
+upgrade_img := base_img + "-upgrade"
 
 # ostree: The default
 # composefs-sealeduki-sdboot: A system with a sealed composefs using systemd-boot
@@ -43,9 +41,33 @@ lbi_images := "quay.io/curl/curl:latest quay.io/curl/curl-base:latest registry.a
 generic_buildargs := ""
 # Args for package building (no secrets needed, just builds RPMs)
 base_buildargs := generic_buildargs + " --build-arg=base=" + base + " --build-arg=variant=" + variant
-buildargs := base_buildargs + " --secret=id=secureboot_key,src=target/test-secureboot/db.key --secret=id=secureboot_cert,src=target/test-secureboot/db.crt"
+# - scratch builds need extra perms per https://docs.fedoraproject.org/en-US/bootc/building-from-scratch/
+# - we do secure boot signing here, so provide the keys
+buildargs := base_buildargs \
+             + " --cap-add=all --security-opt=label=type:container_runtime_t --device /dev/fuse" \
+             + " --secret=id=secureboot_key,src=target/test-secureboot/db.key --secret=id=secureboot_cert,src=target/test-secureboot/db.crt"
 # Args for build-sealed (no base arg, it sets that itself)
 sealed_buildargs := "--build-arg=variant=" + variant + " --secret=id=secureboot_key,src=target/test-secureboot/db.key --secret=id=secureboot_cert,src=target/test-secureboot/db.crt"
+
+# The default target: build the container image from current sources.
+# Note commonly you might want to override the base image via e.g.
+# `just build --build-arg=base=quay.io/fedora/fedora-bootc:42`
+# into the container image.
+#
+# Note you can set `BOOTC_SKIP_PACKAGE=1` in the environment to bypass this stage. 
+build: package _keygen && _pull-lbi-images
+    #!/bin/bash
+    set -xeuo pipefail
+    test -d target/packages
+    # Resolve to absolute path for podman volume mount
+    # Use :z for SELinux relabeling
+    pkg_path=$(realpath target/packages)
+    podman build --target=final -v "${pkg_path}":/run/packages:ro,z -t {{base_img}}-bin {{buildargs}} .
+    ./hack/build-sealed {{variant}} {{base_img}}-bin {{base_img}} {{sealed_buildargs}}
+
+# Pull images used by hack/lbi
+_pull-lbi-images:
+    podman pull -q --retry 5 --retry-delay 5s {{lbi_images}}
 
 # Compute SOURCE_DATE_EPOCH and VERSION from git for reproducible builds.
 # Outputs shell variable assignments that can be eval'd.
@@ -66,22 +88,6 @@ _git-build-vars:
     echo "SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}"
     echo "VERSION=${VERSION}"
 
-# The default target: build the container image from current sources.
-# Note commonly you might want to override the base image via e.g.
-# `just build --build-arg=base=quay.io/fedora/fedora-bootc:42`
-#
-# The Dockerfile builds RPMs internally in its 'build' stage, so we don't need
-# to call 'package' first. This avoids cache invalidation from external files.
-build: _keygen
-    #!/bin/bash
-    set -xeuo pipefail
-    eval $(just _git-build-vars)
-    podman build {{base_buildargs}} --target=final \
-        --build-arg=SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH} \
-        --build-arg=pkgversion=${VERSION} \
-        -t {{base_img}}-bin {{buildargs}} .
-    ./hack/build-sealed {{variant}} {{base_img}}-bin {{base_img}} {{sealed_buildargs}}
-
 # Generate Secure Boot keys (only for our own CI/testing)
 _keygen:
     ./hack/generate-secureboot-keys
@@ -90,74 +96,37 @@ _keygen:
 build-sealed:
     @just --justfile {{justfile()}} variant=composefs-sealeduki-sdboot build
 
-# Build packages (e.g. RPM) using a container buildroot
-_packagecontainer:
+# Build packages (e.g. RPM) into target/packages/
+# Any old packages will be removed.
+# Set BOOTC_SKIP_PACKAGE=1 in the environment to bypass this stage. We don't
+# yet have an accurate ability to avoid rebuilding this in CI yet.
+package:
     #!/bin/bash
     set -xeuo pipefail
+    packages=target/packages
+    if test -n "${BOOTC_SKIP_PACKAGE:-}"; then
+        if test '!' -d "${packages}"; then
+            echo "BOOTC_SKIP_PACKAGE is set, but missing ${packages}" 1>&2; exit 1
+        fi
+        exit 0
+    fi
     eval $(just _git-build-vars)
     echo "Building RPM with version: ${VERSION}"
     podman build {{base_buildargs}} --build-arg=SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH} --build-arg=pkgversion=${VERSION} -t localhost/bootc-pkg --target=build .
-
-# Build packages (e.g. RPM) into target/packages/
-# Any old packages will be removed.
-package: _packagecontainer
-    mkdir -p target/packages
-    rm -vf target/packages/*.rpm
-    podman run --rm localhost/bootc-pkg tar -C /out/ -cf - . | tar -C target/packages/ -xvf -
-    chmod a+rx target target/packages
-    chmod a+r target/packages/*.rpm
-    podman rmi localhost/bootc-pkg
-
-# Copy pre-existing packages from PATH into target/packages/
-# Note: This is mainly for CI artifact extraction; build-from-package
-# now uses volume mounts directly instead of copying to target/packages/.
-copy-packages-from PATH:
-    #!/bin/bash
-    set -xeuo pipefail
-    if ! compgen -G "{{PATH}}/*.rpm" > /dev/null; then
-        echo "Error: No packages found in {{PATH}}" >&2
-        exit 1
-    fi
-    mkdir -p target/packages
-    rm -vf target/packages/*.rpm
-    cp -v {{PATH}}/*.rpm target/packages/
-    chmod a+rx target target/packages
-    chmod a+r target/packages/*.rpm
-
-# Build the container image using pre-existing packages from PATH
-# Uses the 'final-from-packages' target with a volume mount to inject packages,
-# avoiding Docker context cache invalidation issues.
-build-from-package PATH: _keygen
-    #!/bin/bash
-    set -xeuo pipefail
-    # Resolve to absolute path for podman volume mount
-    # Use :z for SELinux relabeling
-    pkg_path=$(realpath "{{PATH}}")
-    podman build {{base_buildargs}} --target=final-from-packages -v "${pkg_path}":/run/packages:ro,z -t {{base_img}}-bin {{buildargs}} .
-    ./hack/build-sealed {{variant}} {{base_img}}-bin {{base_img}} {{sealed_buildargs}}
-
-# Pull images used by hack/lbi
-_pull-lbi-images:
-    podman pull -q --retry 5 --retry-delay 5s {{lbi_images}}
-
-# This container image has additional testing content and utilities
-build-integration-test-image: build _pull-lbi-images
-    cd hack && podman build {{base_buildargs}} -t {{integration_img}}-bin -f Containerfile .
-    ./hack/build-sealed {{variant}} {{integration_img}}-bin {{integration_img}} {{sealed_buildargs}}
-
-# Build integration test image using pre-existing packages from PATH
-build-integration-test-image-from-package PATH: _pull-lbi-images
-    @just build-from-package {{PATH}}
-    cd hack && podman build {{base_buildargs}} -t {{integration_img}}-bin -f Containerfile .
-    ./hack/build-sealed {{variant}} {{integration_img}}-bin {{integration_img}} {{sealed_buildargs}}
+    mkdir -p "${packages}"
+    rm -vf "${packages}"/*.rpm
+    podman run --rm localhost/bootc-pkg tar -C /out/ -cf - . | tar -C "${packages}"/ -xvf -
+    chmod a+rx target "${packages}"
+    chmod a+r "${packages}"/*.rpm
+    # Keep localhost/bootc-pkg for layer caching; use `just clean-local-images` to reclaim space
 
 # Build+test using the `composefs-sealeduki-sdboot` variant.
 test-composefs:
     just variant=composefs-sealeduki-sdboot test-tmt readonly local-upgrade-reboot
 
 # Only used by ci.yml right now
-build-install-test-image: build-integration-test-image
-    cd hack && podman build {{base_buildargs}} -t {{integration_img}}-install -f Containerfile.drop-lbis
+build-install-test-image: build
+    cd hack && podman build {{base_buildargs}} -t {{base_img}}-install -f Containerfile.drop-lbis
 
 # These tests accept the container image as input, and may spawn it.
 run-container-external-tests:
@@ -179,28 +148,29 @@ validate:
 #
 # To run an individual test, pass it as an argument like:
 # `just test-tmt readonly`
-test-tmt *ARGS: build-integration-test-image _build-upgrade-image
+test-tmt *ARGS: build
+    @just _build-upgrade-image
     @just test-tmt-nobuild {{ARGS}}
 
 # Generate a local synthetic upgrade
 _build-upgrade-image:
-    cat tmt/tests/Dockerfile.upgrade | podman build -t {{integration_upgrade_img}}-bin --from={{integration_img}}-bin -
-    ./hack/build-sealed {{variant}} {{integration_upgrade_img}}-bin {{integration_upgrade_img}} {{sealed_buildargs}}
+    cat tmt/tests/Dockerfile.upgrade | podman build -t {{upgrade_img}}-bin --from={{base_img}}-bin -
+    ./hack/build-sealed {{variant}} {{upgrade_img}}-bin {{upgrade_img}} {{sealed_buildargs}}
 
-# Assume the localhost/bootc-integration image is up to date, and just run tests.
+# Assume the localhost/bootc image is up to date, and just run tests.
 # Useful for iterating on tests quickly.
 test-tmt-nobuild *ARGS:
-    cargo xtask run-tmt --env=BOOTC_variant={{variant}} --upgrade-image={{integration_upgrade_img}} {{integration_img}} {{ARGS}}
+    cargo xtask run-tmt --env=BOOTC_variant={{variant}} --upgrade-image={{upgrade_img}} {{base_img}} {{ARGS}}
 
 # Cleanup all test VMs created by tmt tests
 tmt-vm-cleanup:
     bcvk libvirt rm --stop --force --label bootc.test=1
 
 # Run tests (unit and integration) that are containerized
-test-container: build-units build-integration-test-image
+test-container: build build-units
     podman run --rm --read-only localhost/bootc-units /usr/bin/bootc-units
     # Pass these through for cross-checking
-    podman run --rm --env=BOOTC_variant={{variant}} --env=BOOTC_base={{base}} {{integration_img}} bootc-integration-tests container
+    podman run --rm --env=BOOTC_variant={{variant}} --env=BOOTC_base={{base}} {{base_img}} bootc-integration-tests container
 
 # Remove all container images built (locally) via this Justfile, by matching a label
 clean-local-images:

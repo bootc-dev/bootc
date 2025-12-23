@@ -55,8 +55,8 @@ if test $cloudinit = 1; then
   dnf -y install cloud-init
   ln -s ../cloud-init.target /usr/lib/systemd/system/default.target.wants
   # Allow root SSH login for testing with bcvk/tmt
-mkdir -p /etc/cloud/cloud.cfg.d
-cat > /etc/cloud/cloud.cfg.d/80-enable-root.cfg <<'CLOUDEOF'
+  mkdir -p /etc/cloud/cloud.cfg.d
+  cat > /etc/cloud/cloud.cfg.d/80-enable-root.cfg <<'CLOUDEOF'
 # Enable root login for testing
 disable_root: false
 
@@ -122,3 +122,14 @@ d /var/lib/dhclient 0755 root root - -
 EOF
   rm -rf /var/lib/dhclient
 fi
+
+# For test-22-logically-bound-install
+cp -a lbi/usr/. /usr
+for x in curl.container curl-base.image podman.image; do
+    ln -s /usr/share/containers/systemd/$x /usr/lib/bootc/bound-images.d/$x
+done
+
+# Add some testing kargs into our dev builds
+install -D -t /usr/lib/bootc/kargs.d test-kargs/*
+# Also copy in some default install configs we use for testing
+install -D -t /usr/lib/bootc/install/ install-test-configs/*

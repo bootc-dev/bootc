@@ -31,17 +31,6 @@ dnf -y update bootc
 dnf -y install audit
 ./provision-derived.sh cloudinit
 
-# For test-22-logically-bound-install
-cp -a lbi/usr/. /usr
-for x in curl.container curl-base.image podman.image; do
-    ln -s /usr/share/containers/systemd/$x /usr/lib/bootc/bound-images.d/$x
-done
-
-# Add some testing kargs into our dev builds
-install -D -t /usr/lib/bootc/kargs.d test-kargs/*
-# Also copy in some default install configs we use for testing
-install -D -t /usr/lib/bootc/install/ install-test-configs/*
-
 # Remove bootc repo, bootc updated already
 rm -rf /var/share/test-artifacts /etc/yum.repos.d/test-artifacts.repo
 # Clean up dnf

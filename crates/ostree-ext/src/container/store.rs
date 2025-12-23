@@ -1508,13 +1508,7 @@ pub(crate) fn export_to_oci(
     let srcinfo = query_image(repo, imgref)?.ok_or_else(|| anyhow!("No such image"))?;
     let (commit_layer, component_layers, remaining_layers) =
         parse_manifest_layout(&srcinfo.manifest, &srcinfo.configuration)?;
-    let commit_layer = commit_layer.ok_or_else(|| anyhow!("Missing {DIFFID_LABEL}"))?;
-    let commit_chunk_ref = ref_for_layer(commit_layer)?;
-    let commit_chunk_rev = repo.require_rev(&commit_chunk_ref)?;
-    let mut chunking = chunking::Chunking::new(repo, &commit_chunk_rev)?;
-    for layer in component_layers {
-        chunking_from_layer_committed(repo, layer, &mut chunking)?;
-    }
+
     // Unfortunately today we can't guarantee we reserialize the same tar stream
     // or compression, so we'll need to generate a new copy of the manifest and config
     // with the layers reset.
@@ -1526,8 +1520,6 @@ pub(crate) fn export_to_oci(
     }
     new_config.rootfs_mut().diff_ids_mut().clear();
 
-    let mut dest_oci = ocidir::OciDir::ensure(dest_oci.try_clone()?)?;
-
     let opts = ExportOpts {
         skip_compression: opts.skip_compression,
         authfile: opts.authfile,
@@ -1536,19 +1528,36 @@ pub(crate) fn export_to_oci(
 
     let mut labels = HashMap::new();
 
-    // Given the object chunking information we recomputed from what
-    // we found on disk, re-serialize to layers (tarballs).
-    export_chunked(
-        repo,
-        &srcinfo.base_commit,
-        &mut dest_oci,
-        &mut new_manifest,
-        &mut new_config,
-        &mut labels,
-        chunking,
-        &opts,
-        "",
-    )?;
+    let mut dest_oci = ocidir::OciDir::ensure(dest_oci.try_clone()?)?;
+
+    let commit_chunk_ref = commit_layer
+        .as_ref()
+        .map(|l| ref_for_layer(l))
+        .transpose()?;
+    let commit_chunk_rev = commit_chunk_ref
+        .as_ref()
+        .map(|r| repo.require_rev(&r))
+        .transpose()?;
+    if let Some(commit_chunk_rev) = commit_chunk_rev {
+        let mut chunking = chunking::Chunking::new(repo, &commit_chunk_rev)?;
+        for layer in component_layers {
+            chunking_from_layer_committed(repo, layer, &mut chunking)?;
+        }
+
+        // Given the object chunking information we recomputed from what
+        // we found on disk, re-serialize to layers (tarballs).
+        export_chunked(
+            repo,
+            &srcinfo.base_commit,
+            &mut dest_oci,
+            &mut new_manifest,
+            &mut new_config,
+            &mut labels,
+            chunking,
+            &opts,
+            "",
+        )?;
+    }
 
     // Now, handle the non-ostree layers; this is a simple conversion of
     //

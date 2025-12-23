@@ -129,7 +129,7 @@ There's a small set of tests which are designed to run inside a bootc container
 and are built into the default container image:
 
 ```
-$ podman run --rm -ti localhost/bootc bootc-integration-tests container
+$ just test-container
 ```
 
 ## Submitting a patch

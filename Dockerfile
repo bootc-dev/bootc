@@ -15,14 +15,10 @@ COPY . /src
 FROM scratch as packaging
 COPY contrib/packaging /
 
-FROM $base as base
-# Mark this as a test image (moved from --label build flag to fix layer caching)
-LABEL bootc.testimage="1"
-
 # This image installs build deps, pulls in our source code, and installs updated
 # bootc binaries in /out. The intention is that the target rootfs is extracted from /out
 # back into a final stage (without the build deps etc) below.
-FROM base as buildroot
+FROM $base as buildroot
 # Flip this off to disable initramfs code
 ARG initramfs=1
 # This installs our buildroot, and we want to cache it independently of the rest.
@@ -40,8 +36,39 @@ FROM buildroot as sdboot-content
 # Writes to /out
 RUN /src/contrib/packaging/configure-systemdboot download
 
+# We always do a "from scratch" build
+# https://docs.fedoraproject.org/en-US/bootc/building-from-scratch/
+# because this fixes https://github.com/containers/composefs-rs/issues/132
+# NOTE: Until we have https://gitlab.com/fedora/bootc/base-images/-/merge_requests/317
+#       this stage will end up capturing whatever RPMs we find at this time.
+# NOTE: This is using the *stock* bootc binary, not the one we want to build from
+#       local sources. We'll override it later.
+# NOTE: All your base belong to me.
+FROM $base as target-base
+RUN /usr/libexec/bootc-base-imagectl build-rootfs --manifest=standard /target-rootfs
+
+FROM scratch as base
+COPY --from=target-base /target-rootfs/ /
+COPY --from=src /src/hack/ /run/hack/
+RUN cd /run/hack/ && ./provision-derived.sh
+# Note we don't do any customization here yet
+# Mark this as a test image
+LABEL bootc.testimage="1"
+# Otherwise standard metadata
+LABEL containers.bootc 1
+LABEL ostree.bootable 1
+# https://pagure.io/fedora-kiwi-descriptions/pull-request/52
+ENV container=oci
+# Optional labels that only apply when running this image as a container. These keep the default entry point running under systemd.
+STOPSIGNAL SIGRTMIN+3
+CMD ["/sbin/init"]
+
+# -------------
+# external dependency cutoff point:
 # NOTE: Every RUN instruction past this point should use `--network=none`; we want to ensure
 # all external dependencies are clearly delineated.
+# This is verified in `cargo xtask check-buildsys`.
+# -------------
 
 FROM buildroot as build
 # Version for RPM build (optional, computed from git in Justfile)
@@ -50,7 +77,7 @@ ARG pkgversion
 ARG SOURCE_DATE_EPOCH
 ENV SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}
 # Build RPM directly from source, using cached target directory
-RUN --mount=type=cache,target=/src/target --mount=type=cache,target=/var/roothome --network=none RPM_VERSION="${pkgversion}" /src/contrib/packaging/build-rpm
+RUN --network=none --mount=type=cache,target=/src/target --mount=type=cache,target=/var/roothome RPM_VERSION="${pkgversion}" /src/contrib/packaging/build-rpm
 
 FROM buildroot as sdboot-signed
 # The secureboot key and cert are passed via Justfile
@@ -66,11 +93,11 @@ FROM build as units
 # A place that we're more likely to be able to set xattrs
 VOLUME /var/tmp
 ENV TMPDIR=/var/tmp
-RUN --mount=type=cache,target=/src/target --mount=type=cache,target=/var/roothome --network=none make install-unit-tests
+RUN --network=none --mount=type=cache,target=/src/target --mount=type=cache,target=/var/roothome make install-unit-tests
 
 # This just does syntax checking
 FROM buildroot as validate
-RUN --mount=type=cache,target=/src/target --mount=type=cache,target=/var/roothome --network=none make validate
+RUN --network=none --mount=type=cache,target=/src/target --mount=type=cache,target=/var/roothome make validate
 
 # Common base for final images: configures variant, rootfs, and injects extra content
 FROM base as final-common
@@ -80,22 +107,12 @@ RUN --network=none --mount=type=bind,from=packaging,target=/run/packaging \
     --mount=type=bind,from=sdboot-signed,target=/run/sdboot-signed \
     /run/packaging/configure-variant "${variant}"
 ARG rootfs=""
-RUN --mount=type=bind,from=packaging,target=/run/packaging /run/packaging/configure-rootfs "${variant}" "${rootfs}"
+RUN --network=none --mount=type=bind,from=packaging,target=/run/packaging /run/packaging/configure-rootfs "${variant}" "${rootfs}"
 COPY --from=packaging /usr-extras/ /usr/
 
-# Default target for source builds (just build)
-# Installs packages from the internal build stage
+# Final target: installs pre-built packages from /run/packages volume mount.
+# Use with: podman build --target=final -v path/to/packages:/run/packages:ro
 FROM final-common as final
-RUN --mount=type=bind,from=packaging,target=/run/packaging \
-    --mount=type=bind,from=build,target=/build-output \
-    --network=none \
-    /run/packaging/install-rpm-and-setup /build-output/out
-RUN bootc container lint --fatal-warnings
-
-# Alternative target for pre-built packages (CI workflow)
-# Use with: podman build --target=final-from-packages -v path/to/packages:/run/packages:ro
-FROM final-common as final-from-packages
-RUN --mount=type=bind,from=packaging,target=/run/packaging \
-    --network=none \
+RUN --network=none --mount=type=bind,from=packaging,target=/run/packaging \
     /run/packaging/install-rpm-and-setup /run/packages
-RUN bootc container lint --fatal-warnings
+RUN --network=none bootc container lint --fatal-warnings

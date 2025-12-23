@@ -14,6 +14,7 @@ use clap::{Args, Parser, Subcommand};
 use fn_error_context::context;
 use xshell::{cmd, Shell};
 
+mod buildsys;
 mod man;
 mod tmt;
 
@@ -58,7 +59,7 @@ enum Commands {
 /// Arguments for run-tmt command
 #[derive(Debug, Args)]
 pub(crate) struct RunTmtArgs {
-    /// Image name (e.g., "localhost/bootc-integration")
+    /// Image name (e.g., "localhost/bootc")
     pub(crate) image: String,
 
     /// Test plan filters (e.g., "readonly")
@@ -73,7 +74,7 @@ pub(crate) struct RunTmtArgs {
     #[clap(long)]
     pub(crate) env: Vec<String>,
 
-    /// Upgrade image to use when bind-storage-ro is available (e.g., localhost/bootc-integration-upgrade)
+    /// Upgrade image to use when bind-storage-ro is available (e.g., localhost/bootc-upgrade)
     #[clap(long)]
     pub(crate) upgrade_image: Option<String>,
 
@@ -85,7 +86,7 @@ pub(crate) struct RunTmtArgs {
 /// Arguments for tmt-provision command
 #[derive(Debug, Args)]
 pub(crate) struct TmtProvisionArgs {
-    /// Image name (e.g., "localhost/bootc-integration")
+    /// Image name (e.g., "localhost/bootc")
     pub(crate) image: String,
 
     /// VM name (defaults to "bootc-tmt-manual-<timestamp>")
@@ -137,7 +138,7 @@ fn try_main() -> Result<()> {
         Commands::Spec => spec(&sh),
         Commands::RunTmt(args) => tmt::run_tmt(&sh, &args),
         Commands::TmtProvision(args) => tmt::tmt_provision(&sh, &args),
-        Commands::CheckBuildsys => check_buildsys(&sh),
+        Commands::CheckBuildsys => buildsys::check_buildsys(&sh, "Dockerfile".into()),
     }
 }
 
@@ -402,51 +403,6 @@ fn update_generated(sh: &Shell) -> Result<()> {
 
     // Update TMT integration.fmf
     tmt::update_integration()?;
-
-    Ok(())
-}
-
-/// Check build system properties
-///
-/// - Reproducible builds for the RPM
-#[context("Checking build system")]
-fn check_buildsys(sh: &Shell) -> Result<()> {
-    use std::collections::BTreeMap;
-
-    println!("Checking reproducible builds...");
-    // Helper to compute SHA256 of bootc RPMs in target/packages/
-    fn get_rpm_checksums(sh: &Shell) -> Result<BTreeMap<String, String>> {
-        // Find bootc*.rpm files in target/packages/
-        let packages_dir = Utf8Path::new("target/packages");
-        let mut rpm_files: Vec<Utf8PathBuf> = Vec::new();
-        for entry in std::fs::read_dir(packages_dir).context("Reading target/packages")? {
-            let entry = entry?;
-            let path = Utf8PathBuf::try_from(entry.path())?;
-            if path.extension() == Some("rpm") {
-                rpm_files.push(path);
-            }
-        }
-
-        assert!(!rpm_files.is_empty());
-
-        let mut checksums = BTreeMap::new();
-        for rpm_path in &rpm_files {
-            let output = cmd!(sh, "sha256sum {rpm_path}").read()?;
-            let (hash, filename) = output
-                .split_once("  ")
-                .with_context(|| format!("failed to parse sha256sum output: '{}'", output))?;
-            checksums.insert(filename.to_owned(), hash.to_owned());
-        }
-        Ok(checksums)
-    }
-
-    cmd!(sh, "just package").run()?;
-    let first_checksums = get_rpm_checksums(sh)?;
-    cmd!(sh, "just package").run()?;
-    let second_checksums = get_rpm_checksums(sh)?;
-
-    itertools::assert_equal(first_checksums, second_checksums);
-    println!("ok package reproducibility");
 
     Ok(())
 }

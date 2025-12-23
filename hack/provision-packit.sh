@@ -86,7 +86,7 @@ cp /etc/yum.repos.d/test-artifacts.repo "$BOOTC_TEMPDIR"
 ls -al "$BOOTC_TEMPDIR"
 
 # Do not use just because it's only available on Fedora, not on CS and RHEL
-podman build --jobs=4 --from "$BASE" -v "$BOOTC_TEMPDIR":/bootc-test:z -t localhost/bootc-integration -f "${BOOTC_TEMPDIR}/Containerfile.packit" "$BOOTC_TEMPDIR"
+podman build --jobs=4 --from "$BASE" -v "$BOOTC_TEMPDIR":/bootc-test:z -t localhost/bootc -f "${BOOTC_TEMPDIR}/Containerfile.packit" "$BOOTC_TEMPDIR"
 
 # Keep these in sync with what's used in hack/lbi
 podman pull -q --retry 5 --retry-delay 5s quay.io/curl/curl:latest quay.io/curl/curl-base:latest registry.access.redhat.com/ubi9/podman:latest
