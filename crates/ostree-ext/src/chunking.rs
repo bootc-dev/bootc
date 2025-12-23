@@ -605,14 +605,17 @@ fn get_partitions_with_threshold<'a>(
 ///  required packages
 /// else if pkg structure to be changed || prior build not specified
 ///  Recompute optimal packaging structure (Compute partitions, place packages and optimize build)
+///
+/// A return value of `Ok(None)` indicates there was not an error, but the prior packing structure
+/// is incompatible in some way with the current build.
 fn basic_packing_with_prior_build<'a>(
     components: &'a [ObjectSourceMetaSized],
     bin_size: NonZeroU32,
     prior_build: &oci_spec::image::ImageManifest,
-) -> Result<Vec<Vec<&'a ObjectSourceMetaSized>>> {
+) -> Result<Option<Vec<Vec<&'a ObjectSourceMetaSized>>>> {
     let before_processing_pkgs_len = components.len();
 
-    tracing::debug!("Keeping old package structure");
+    tracing::debug!("Attempting to use old package structure");
 
     // The first layer is the ostree commit, which will always be different for different builds,
     // so we ignore it.  For the remaining layers, extract the components/packages in each one.
@@ -634,6 +637,11 @@ fn basic_packing_with_prior_build<'a>(
         .collect();
     let mut curr_build = curr_build?;
 
+    if (bin_size.get() as usize) < curr_build.len() {
+        tracing::debug!("bin_size = {bin_size} is too small to be compatible with the prior build");
+        return Ok(None);
+    }
+
     // View the packages as unordered sets for lookups and differencing
     let prev_pkgs_set: BTreeSet<String> = curr_build
         .iter()
@@ -651,7 +659,8 @@ fn basic_packing_with_prior_build<'a>(
         last_bin.retain(|name| !name.is_empty());
         last_bin.extend(added.into_iter().cloned());
     } else {
-        panic!("No empty last bin for added packages");
+        tracing::debug!("No empty last bin for added packages.");
+        return Ok(None);
     }
 
     // Handle removed packages
@@ -684,7 +693,7 @@ fn basic_packing_with_prior_build<'a>(
     let after_processing_pkgs_len: usize = modified_build.iter().map(|b| b.len()).sum();
     assert_eq!(after_processing_pkgs_len, before_processing_pkgs_len);
     assert!(modified_build.len() <= bin_size.get() as usize);
-    Ok(modified_build)
+    Ok(Some(modified_build))
 }
 
 /// Given a set of components with size metadata (e.g. boxes of a certain size)
@@ -712,9 +721,16 @@ fn basic_packing<'a>(
 
     anyhow::ensure!(bin_size.get() >= MIN_CHUNKED_LAYERS);
 
-    // If we have a prior build, then use that
+    // If we have a prior build, then try to use that.
     if let Some(prior_build) = prior_build_metadata {
-        return basic_packing_with_prior_build(components, bin_size, prior_build);
+        if let Some(packing) = basic_packing_with_prior_build(components, bin_size, prior_build)? {
+            tracing::debug!("Keeping old package structure");
+            return Ok(packing);
+        } else {
+            tracing::debug!(
+                "Failed to use old package structure; discarding info from prior build."
+            );
+        }
     }
 
     tracing::debug!("Creating new packing structure");
