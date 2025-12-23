@@ -203,6 +203,29 @@ impl<'a> Cmdline<'a> {
         self.0.remove_exact(&param.0)
     }
 
+    /// Returns the canonicalized version of the `Cmdline`.
+    ///
+    /// This:
+    ///
+    /// 1. Sorts the parameter list
+    /// 2. Canonicalizes each `Parameter`
+    /// 3. Joins each parameter together with a single space ' '
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use bootc_kernel_cmdline::utf8::Cmdline;
+    ///
+    /// let cmdline = Cmdline::from("z a=\"b c\"");
+    /// assert_eq!(&cmdline.canonicalized(), "\"a=b c\" z");
+    /// ```
+    pub fn canonicalized(&self) -> String {
+        self.0
+            .canonicalized()
+            .try_into()
+            .expect("We only construct the underlying bytes from valid UTF-8")
+    }
+
     #[cfg(test)]
     pub(crate) fn is_owned(&self) -> bool {
         self.0.is_owned()
@@ -298,6 +321,24 @@ impl<'a> ParameterKey<'a> {
     fn from_bytes(input: bytes::ParameterKey<'a>) -> Self {
         Self(input)
     }
+
+    /// Returns the canonicalized version of the key.  This replaces
+    /// all dashes '-' with underscores '_'.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use bootc_kernel_cmdline::utf8::ParameterKey;
+    ///
+    /// assert_eq!(ParameterKey::from("key-with-dashes").canonicalized(),
+    ///            "key_with_dashes".to_string());
+    /// ```
+    pub fn canonicalized(&self) -> String {
+        self.0
+            .canonicalized()
+            .try_into()
+            .expect("We only construct the underlying bytes from valid UTF-8")
+    }
 }
 
 impl<'a, T: AsRef<str> + ?Sized> From<&'a T> for ParameterKey<'a> {
@@ -357,6 +398,42 @@ impl<'a> Parameter<'a> {
             // construct the underlying `bytes` from valid UTF-8
             str::from_utf8(p).expect("We only construct the underlying bytes from valid UTF-8")
         })
+    }
+
+    /// Returns the canonical representation of the parameter.
+    ///
+    /// The canonical representation:
+    ///
+    /// 1.  Will use the canonicalized form of the key via
+    /// `ParameterKey::canonicalized`
+    ///
+    /// 2.  Will be "externally" quoted if either the key or
+    /// (optional) value contains ascii whitespace.
+    ///
+    /// 3.  Unnecessary quoting will be removed.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use bootc_kernel_cmdline::utf8::Parameter;
+    ///
+    /// // key is canonicalized
+    /// assert_eq!(Parameter::parse("a-dashed-key").unwrap().canonicalized(),
+    ///            "a_dashed_key".to_string());
+    ///
+    /// // quotes are externally added if needed
+    /// assert_eq!(Parameter::parse("foo=\"has some spaces\"").unwrap().canonicalized(),
+    ///            "\"foo=has some spaces\"".to_string());
+    ///
+    /// // unnecessary quotes are removed
+    /// assert_eq!(Parameter::parse("foo=\"bar\"").unwrap().canonicalized(),
+    ///            "foo=bar".to_string());
+    /// ```
+    pub fn canonicalized(&self) -> String {
+        self.0
+            .canonicalized()
+            .try_into()
+            .expect("We only construct the underlying bytes from valid UTF-8")
     }
 }
 

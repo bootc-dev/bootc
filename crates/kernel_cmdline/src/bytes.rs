@@ -340,6 +340,38 @@ impl<'a> Cmdline<'a> {
         removed
     }
 
+    /// Returns the canonicalized version of the `Cmdline`.
+    ///
+    /// This:
+    ///
+    /// 1. Sorts the parameter list
+    /// 2. Canonicalizes each `Parameter`
+    /// 3. Joins each parameter together with a single space ' '
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use bootc_kernel_cmdline::bytes::Cmdline;
+    ///
+    /// let cmdline = Cmdline::from(b"z a=\"b c\"");
+    /// assert_eq!(&cmdline.canonicalized(), b"\"a=b c\" z");
+    /// ```
+    pub fn canonicalized(&self) -> Vec<u8> {
+        let mut params = self.iter().collect::<Vec<_>>();
+        params.sort();
+
+        let mut res = Vec::new();
+
+        for (i, p) in params.iter().enumerate() {
+            if i > 0 {
+                res.push(b' ');
+            }
+            res.extend(p.canonicalized());
+        }
+
+        res
+    }
+
     #[cfg(test)]
     pub(crate) fn is_owned(&self) -> bool {
         matches!(self.0, Cow::Owned(_))
@@ -425,6 +457,21 @@ impl ParameterKey<'_> {
         self.0
             .iter()
             .map(|&c: &u8| if c == b'-' { b'_' } else { c })
+    }
+
+    /// Returns the canonicalized version of the key.  This replaces
+    /// all dashes '-' with underscores '_'.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use bootc_kernel_cmdline::bytes::ParameterKey;
+    ///
+    /// assert_eq!(&ParameterKey::from("key-with-dashes").canonicalized(),
+    ///            "key_with_dashes".as_bytes());
+    /// ```
+    pub fn canonicalized(&self) -> Vec<u8> {
+        self.iter().collect()
     }
 }
 
@@ -527,6 +574,57 @@ impl<'a> Parameter<'a> {
     /// Returns the optional value part of the parameter
     pub fn value(&self) -> Option<&'a [u8]> {
         self.value
+    }
+
+    /// Returns the canonical representation of the parameter.
+    ///
+    /// The canonical representation:
+    ///
+    /// 1.  Will use the canonicalized form of the key via
+    /// `ParameterKey::canonicalized`
+    ///
+    /// 2.  Will be "externally" quoted if either the key or
+    /// (optional) value contains ascii whitespace.
+    ///
+    /// 3.  Unnecessary quoting will be removed.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use bootc_kernel_cmdline::bytes::Parameter;
+    ///
+    /// // key is canonicalized
+    /// assert_eq!(Parameter::parse("a-dashed-key").unwrap().canonicalized(),
+    ///            "a_dashed_key".as_bytes());
+    ///
+    /// // quotes are externally added if needed
+    /// assert_eq!(Parameter::parse("foo=\"has some spaces\"").unwrap().canonicalized(),
+    ///            "\"foo=has some spaces\"".as_bytes());
+    ///
+    /// // unnecessary quotes are removed
+    /// assert_eq!(Parameter::parse("foo=\"bar\"").unwrap().canonicalized(),
+    ///            "foo=bar".as_bytes());
+    /// ```
+    pub fn canonicalized(&self) -> Vec<u8> {
+        let spaces = self.key.iter().any(|b| b.is_ascii_whitespace())
+            || self
+                .value
+                .map_or(false, |val| val.iter().any(|b| b.is_ascii_whitespace()));
+
+        let mut res = if spaces { vec![b'"'] } else { vec![] };
+
+        res.extend(self.key.iter());
+
+        if let Some(val) = self.value {
+            res.push(b'=');
+            res.extend(val);
+        }
+
+        if spaces {
+            res.push(b'"');
+        }
+
+        res
     }
 }
 
