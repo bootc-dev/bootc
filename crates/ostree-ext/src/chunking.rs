@@ -14,7 +14,7 @@ use crate::container::{COMPONENT_SEPARATOR, CONTENT_ANNOTATION};
 use crate::objectsource::{ContentID, ObjectMeta, ObjectMetaMap, ObjectSourceMeta};
 use crate::objgv::*;
 use crate::statistics;
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, bail, Result};
 use camino::{Utf8Path, Utf8PathBuf};
 use containers_image_proxy::oci_spec;
 use gvariant::aligned_bytes::TryAsAligned;
@@ -612,7 +612,7 @@ fn basic_packing_with_prior_build<'a>(
 ) -> Result<Vec<Vec<&'a ObjectSourceMetaSized>>> {
     let before_processing_pkgs_len = components.len();
 
-    tracing::debug!("Keeping old package structure");
+    tracing::debug!("Attempting to use old package structure");
 
     // The first layer is the ostree commit, which will always be different for different builds,
     // so we ignore it.  For the remaining layers, extract the components/packages in each one.
@@ -634,6 +634,12 @@ fn basic_packing_with_prior_build<'a>(
         .collect();
     let mut curr_build = curr_build?;
 
+    if let Ok(bin_size) = usize::try_from(bin_size.get()) {
+        if bin_size < curr_build.len() {
+            bail!("bin_size = {bin_size} is too small to be compatible with the prior build.");
+        }
+    }
+
     // View the packages as unordered sets for lookups and differencing
     let prev_pkgs_set: BTreeSet<String> = curr_build
         .iter()
@@ -651,7 +657,7 @@ fn basic_packing_with_prior_build<'a>(
         last_bin.retain(|name| !name.is_empty());
         last_bin.extend(added.into_iter().cloned());
     } else {
-        panic!("No empty last bin for added packages");
+        bail!("No empty last bin for added packages");
     }
 
     // Handle removed packages
@@ -714,7 +720,18 @@ fn basic_packing<'a>(
 
     // If we have a prior build, then use that
     if let Some(prior_build) = prior_build_metadata {
-        return basic_packing_with_prior_build(components, bin_size, prior_build);
+        match basic_packing_with_prior_build(components, bin_size, prior_build) {
+            Ok(packing) => {
+                tracing::debug!("Keeping old package structure");
+                return Ok(packing);
+            }
+            Err(err) => {
+                tracing::trace!("Error in basic_packing_with_prior_build: {err:?}");
+                tracing::debug!(
+                    "Failed to use old package structure; discarding info from prior build."
+                );
+            }
+        }
     }
 
     tracing::debug!("Creating new packing structure");
