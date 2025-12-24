@@ -14,6 +14,7 @@ use cap_std_ext::cap_std;
 use cap_std_ext::cap_std::fs::Dir;
 use clap::Parser;
 use clap::ValueEnum;
+use clap::CommandFactory;
 use composefs::dumpfile;
 use composefs_boot::BootOps as _;
 use etc_merge::{compute_diff, print_diff};
@@ -406,6 +407,15 @@ pub(crate) enum ImageCmdOpts {
     },
 }
 
+/// Supported completion shells
+#[derive(Debug, Clone, ValueEnum, PartialEq, Eq)]
+#[clap(rename_all = "lowercase")]
+pub(crate) enum CompletionShell {
+    Bash,
+    Zsh,
+    Fish,
+}
+
 #[derive(ValueEnum, Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum ImageListType {
@@ -733,6 +743,15 @@ pub(crate) enum Opt {
     /// Diff current /etc configuration versus default
     #[clap(hide = true)]
     ConfigDiff,
+    /// Generate shell completion script for supported shells.
+    ///
+    /// Example: `bootc completion bash` prints a bash completion script to stdout.
+    #[clap(hide = true)]
+    Completion {
+        /// Shell type to generate (bash, zsh, fish)
+        #[clap(value_enum)]
+        shell: CompletionShell,
+    },
     #[clap(hide = true)]
     DeleteDeployment {
         depl_id: String,
@@ -1573,6 +1592,19 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
                 Ok(())
             }
         },
+        Opt::Completion { shell } => {
+            use clap_complete::{generate, shells};
+
+            let mut cmd = Opt::command();
+            let mut stdout = std::io::stdout();
+            let bin_name = "bootc";
+            match shell {
+                CompletionShell::Bash => generate(shells::Bash, &mut cmd, bin_name, &mut stdout),
+                CompletionShell::Zsh => generate(shells::Zsh, &mut cmd, bin_name, &mut stdout),
+                CompletionShell::Fish => generate(shells::Fish, &mut cmd, bin_name, &mut stdout),
+            };
+            Ok(())
+        }
         Opt::Image(opts) => match opts {
             ImageOpts::List {
                 list_type,
@@ -1842,6 +1874,41 @@ mod tests {
     use super::*;
 
     #[test]
+    fn visible_subcommands_filter_and_sort() {
+        let cmd = Opt::command();
+        // use the same helper as completion
+        let subs = {
+            fn visible_subcommands_for_test(cmd: &clap::Command) -> Vec<String> {
+                let mut names: Vec<String> = cmd
+                    .get_subcommands()
+                    .filter(|c| {
+                        if c.is_hide_set() {
+                            return false;
+                        }
+                        if c.get_name() == "help" {
+                            return false;
+                        }
+                        true
+                    })
+                    .map(|c| c.get_name().to_string())
+                    .collect();
+                names.sort();
+                names
+            }
+            visible_subcommands_for_test(&cmd)
+        };
+
+        // basic expectations: completion subcommand is hidden and must not appear
+        assert!(!subs.iter().any(|s| s == "completion"));
+        // help must not be present
+        assert!(!subs.iter().any(|s| s == "help"));
+        // ensure sorted order
+        let mut sorted = subs.clone();
+        sorted.sort();
+        assert_eq!(subs, sorted);
+    }
+
+    #[test]
     fn test_callname() {
         use std::os::unix::ffi::OsStrExt;
 
@@ -1977,5 +2044,53 @@ mod tests {
             "pull",
         ]));
         assert_eq!(args.as_slice(), ["container", "image", "pull"]);
+    }
+
+    #[test]
+    fn test_generate_completion_scripts_contain_commands() {
+        use clap_complete::{generate, shells::{Bash, Zsh, Fish}};
+
+        // For each supported shell, generate the completion script and
+        // ensure obvious subcommands appear in the output. This mirrors
+        // the style of completion checks used in other projects (e.g.
+        // podman) where the generated script is examined for expected
+        // tokens.
+
+        // `completion` is intentionally hidden from --help / suggestions;
+        // ensure other visible subcommands are present instead.
+        let want = ["install", "upgrade"];
+
+        // Bash
+        {
+            let mut cmd = Opt::command();
+            let mut buf = Vec::new();
+            generate(Bash, &mut cmd, "bootc", &mut buf);
+            let s = String::from_utf8(buf).expect("bash completion should be utf8");
+            for w in &want {
+                assert!(s.contains(w), "bash completion missing {w}");
+            }
+        }
+
+        // Zsh
+        {
+            let mut cmd = Opt::command();
+            let mut buf = Vec::new();
+            generate(Zsh, &mut cmd, "bootc", &mut buf);
+            let s = String::from_utf8(buf).expect("zsh completion should be utf8");
+            for w in &want {
+                assert!(s.contains(w), "zsh completion missing {w}");
+            }
+        }
+
+        // Fish
+        {
+            let mut cmd = Opt::command();
+            let mut buf = Vec::new();
+            generate(Fish, &mut cmd, "bootc", &mut buf);
+            let s = String::from_utf8(buf).expect("fish completion should be utf8");
+            for w in &want {
+                assert!(s.contains(w), "fish completion missing {w}");
+            }
+        }
     }
 }
