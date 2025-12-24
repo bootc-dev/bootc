@@ -30,9 +30,8 @@ umount /var/mnt
 setenforce 0
 systemd-run -p MountFlags=slave -qdPG -- /bin/sh -c $"
 set -xeuo pipefail
+bootc usr-overlay
 if test -d /sysroot/ostree; then mount --bind /usr/share/empty /sysroot/ostree; fi
-mkdir -p /tmp/ovl/{upper,work}
-mount -t overlay -olowerdir=/usr,workdir=/tmp/ovl/work,upperdir=/tmp/ovl/upper overlay /usr
 # Note we do keep the other bootupd state
 rm -vrf /usr/lib/bootupd/updates
 # Another bootc install bug, we should not look at this in outside-of-container flows
