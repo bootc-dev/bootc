@@ -239,6 +239,7 @@ dependencies = [
  "cfg-if",
  "chrono",
  "clap",
+ "clap_complete",
  "clap_mangen",
  "comfy-table",
  "composefs",
@@ -504,6 +505,15 @@ dependencies = [
  "anstyle",
  "clap_lex",
  "strsim",
+]
+
+[[package]]
+name = "clap_complete"
+version = "4.5.61"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "39615915e2ece2550c0149addac32fb5bd312c657f43845bb9088cb9c8a7c992"
+dependencies = [
+ "clap",
 ]
 
 [[package]]
