@@ -18,7 +18,14 @@ EORUN
 
 # And the configs
 FROM extended
+ARG SKIP_CONFIGS
 RUN --mount=type=bind,from=context,target=/run/context <<EORUN
+# Do not need the configs when testing installation on ostree
+echo "SKIP_CONFIGS=${SKIP_CONFIGS:-<unset>}"
+if [ -n "${SKIP_CONFIGS:-}" ]; then
+    echo "Skipping configs installation"
+    exit 0
+fi
 set -xeuo pipefail
 cd /run/context
 # For test-22-logically-bound-install
