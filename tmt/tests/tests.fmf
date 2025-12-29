@@ -21,15 +21,15 @@
   duration: 30m
   test: nu booted/test-logically-bound-install.nu
 
-/test-23-install-outside-container:
-  summary: Execute tests for installing outside of a container
-  duration: 30m
-  test: nu booted/test-install-outside-container.nu
-
 /test-23-usroverlay:
   summary: Execute tests for bootc usrover
   duration: 30m
   test: nu booted/test-usroverlay.nu
+
+/test-23-install-outside-container:
+  summary: Execute tests for installing outside of a container
+  duration: 30m
+  test: nu booted/test-install-outside-container.nu
 
 /test-24-image-upgrade-reboot:
   summary: Execute local upgrade tests
@@ -70,12 +70,12 @@
   duration: 30m
   test: nu booted/test-install-unified-flag.nu
 
-/test-31-switch-to-unified:
-  summary: Onboard to unified storage, build derived image, and switch to it
-  duration: 30m
-  test: nu booted/test-switch-to-unified.nu
-
 /test-31-switch-mutate-in-place:
   summary: switch --mutate-in-place
   duration: 30m
   test: nu booted/test-switch-mutate-in-place.nu
+
+/test-31-switch-to-unified:
+  summary: Onboard to unified storage, build derived image, and switch to it
+  duration: 30m
+  test: nu booted/test-switch-to-unified.nu

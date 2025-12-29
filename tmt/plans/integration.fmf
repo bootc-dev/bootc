@@ -66,19 +66,19 @@ execute:
     test:
       - /tmt/tests/tests/test-22-logically-bound-install
 
-/plan-23-install-outside-container:
-  summary: Execute tests for installing outside of a container
-  discover:
-    how: fmf
-    test:
-      - /tmt/tests/tests/test-23-install-outside-container
-
 /plan-23-usroverlay:
   summary: Execute tests for bootc usrover
   discover:
     how: fmf
     test:
       - /tmt/tests/tests/test-23-usroverlay
+
+/plan-23-install-outside-container:
+  summary: Execute tests for installing outside of a container
+  discover:
+    how: fmf
+    test:
+      - /tmt/tests/tests/test-23-install-outside-container
 
 /plan-24-image-upgrade-reboot:
   summary: Execute local upgrade tests
@@ -134,17 +134,17 @@ execute:
     test:
       - /tmt/tests/tests/test-30-install-unified-flag
 
-/plan-31-switch-to-unified:
-  summary: Onboard to unified storage, build derived image, and switch to it
-  discover:
-    how: fmf
-    test:
-      - /tmt/tests/tests/test-31-switch-to-unified
-
 /plan-31-switch-mutate-in-place:
   summary: switch --mutate-in-place
   discover:
     how: fmf
     test:
       - /tmt/tests/tests/test-31-switch-mutate-in-place
+
+/plan-31-switch-to-unified:
+  summary: Onboard to unified storage, build derived image, and switch to it
+  discover:
+    how: fmf
+    test:
+      - /tmt/tests/tests/test-31-switch-to-unified
 # END GENERATED PLANS
