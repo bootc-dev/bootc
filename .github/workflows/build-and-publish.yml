@@ -42,7 +42,9 @@ jobs:
           fi
 
       - name: Build container
-        run: just build-integration-test-image
+        # TODO: Also consider building + publishing an image that is just "base + bootc"
+        # as this implicitly changed to also publish our integration test images.
+        run: just build
 
       - name: Login to ghcr.io
         uses: redhat-actions/podman-login@v1

@@ -1,3 +1,3 @@
-FROM localhost/bootc-integration
+FROM localhost/bootc
 # Workaround for https://github.com/bootc-dev/bootc/issues/1618
 RUN rm -rf /usr/lib/bootc/bound-images.d/*

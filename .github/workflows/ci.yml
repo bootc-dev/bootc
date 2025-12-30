@@ -85,9 +85,9 @@ jobs:
             --tmpfs /var/lib/containers \
             -v /run/dbus:/run/dbus -v /run/systemd:/run/systemd localhost/bootc /src/crates/ostree-ext/ci/priv-integration.sh
           # Nondestructive but privileged tests
-          sudo bootc-integration-tests host-privileged localhost/bootc-integration-install
+          sudo bootc-integration-tests host-privileged localhost/bootc-install
           # Install tests
-          sudo bootc-integration-tests install-alongside localhost/bootc-integration-install
+          sudo bootc-integration-tests install-alongside localhost/bootc-install
 
           # system-reinstall-bootc tests
           cargo build --release -p system-reinstall-bootc
@@ -97,7 +97,7 @@ jobs:
 
           sudo install -m 0755 target/release/system-reinstall-bootc /usr/bin/system-reinstall-bootc
           # These tests may mutate the system live so we can't run in parallel
-          sudo bootc-integration-tests system-reinstall localhost/bootc-integration --test-threads=1
+          sudo bootc-integration-tests system-reinstall localhost/bootc --test-threads=1
 
           # And the fsverity case
           sudo podman run --privileged --pid=host localhost/bootc-fsverity bootc install to-existing-root --stateroot=other \
@@ -189,9 +189,9 @@ jobs:
 
       - name: Build container
         run: |
-          just build-integration-test-image-from-package target/packages
+          BOOTC_SKIP_PACKAGE=1 just build
           # Extra cross-check (duplicating the integration test) that we're using the right base
-          used_vid=$(podman run --rm localhost/bootc-integration bash -c '. /usr/lib/os-release && echo ${ID}-${VERSION_ID}')
+          used_vid=$(podman run --rm localhost/bootc bash -c '. /usr/lib/os-release && echo ${ID}-${VERSION_ID}')
           test ${{ matrix.test_os }} = "${used_vid}"
 
       - name: Unit and container integration tests
