@@ -491,6 +491,7 @@ pub(crate) fn install_create_rootfs(
         device_info,
         physical_root_path,
         physical_root,
+        target_root_path: None,
         rootfs_uuid: Some(root_uuid.to_string()),
         boot,
         kargs,
