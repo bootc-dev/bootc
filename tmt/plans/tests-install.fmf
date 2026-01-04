@@ -14,6 +14,8 @@ provision:
   user: root
   memory: 4096
   disk: 20
+  ssh-option:
+    - "PubkeyAcceptedAlgorithms=+ssh-rsa"
 
 /plan-bootc-install-on-coreos:
   summary: Execute bootc install on ostree OS
