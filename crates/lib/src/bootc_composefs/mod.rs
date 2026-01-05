@@ -1,6 +1,7 @@
 pub(crate) mod boot;
 pub(crate) mod delete;
 pub(crate) mod digest;
+pub(crate) mod export;
 pub(crate) mod finalize;
 pub(crate) mod gc;
 pub(crate) mod repo;

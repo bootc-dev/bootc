@@ -265,6 +265,7 @@ dependencies = [
  "serde_yaml",
  "similar-asserts",
  "static_assertions",
+ "tar",
  "tempfile",
  "thiserror 2.0.17",
  "tini",

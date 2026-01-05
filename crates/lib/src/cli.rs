@@ -43,7 +43,6 @@ use crate::bootc_composefs::{
     update::upgrade_composefs,
 };
 use crate::deploy::{MergeState, RequiredHostSpec};
-use crate::lints;
 use crate::podstorage::set_additional_image_store;
 use crate::progress_jsonl::{ProgressWriter, RawProgressFd};
 use crate::spec::Host;
@@ -51,6 +50,7 @@ use crate::spec::ImageReference;
 use crate::store::{BootedOstree, Storage};
 use crate::store::{BootedStorage, BootedStorageKind};
 use crate::utils::sigpolicy_from_opt;
+use crate::{bootc_composefs, lints};
 
 /// Shared progress options
 #[derive(Debug, Parser, PartialEq, Eq)]
@@ -1587,7 +1587,16 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
                 list_format,
             } => crate::image::list_entrypoint(list_type, list_format).await,
             ImageOpts::CopyToStorage { source, target } => {
-                crate::image::push_entrypoint(source.as_deref(), target.as_deref()).await
+                let storage = get_storage().await?;
+
+                match storage.kind()? {
+                    BootedStorageKind::Ostree(..) => {
+                        crate::image::push_entrypoint(source.as_deref(), target.as_deref()).await
+                    }
+                    BootedStorageKind::Composefs(booted) => {
+                        bootc_composefs::export::export_repo_to_oci(&storage, &booted).await
+                    }
+                }
             }
             ImageOpts::SetUnified => crate::image::set_unified_entrypoint().await,
             ImageOpts::PullFromDefaultStorage { image } => {

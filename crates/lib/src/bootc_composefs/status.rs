@@ -198,7 +198,10 @@ pub(crate) async fn get_container_manifest_and_config(
     let config = containers_image_proxy::ImageProxyConfig::default();
     let proxy = containers_image_proxy::ImageProxy::new_with_config(config).await?;
 
-    let img = proxy.open_image(&imgref).await.context("Opening image")?;
+    let img = proxy
+        .open_image(&imgref)
+        .await
+        .with_context(|| format!("Opening image {imgref}"))?;
 
     let (_, manifest) = proxy.fetch_manifest(&img).await?;
     let (mut reader, driver) = proxy.get_descriptor(&img, manifest.config()).await?;

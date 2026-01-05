@@ -61,7 +61,7 @@ pub(crate) fn get_imgref(transport: &str, image: &str) -> String {
     let img = image.strip_prefix(":").unwrap_or(&image);
     let transport = transport.strip_suffix(":").unwrap_or(&transport);
 
-    if transport == "registry" {
+    if transport == "registry" || transport == "docker://" {
         format!("docker://{img}")
     } else if transport == "docker-daemon" {
         format!("docker-daemon:{img}")
