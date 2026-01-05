@@ -712,21 +712,22 @@ pub(crate) async fn composefs_deployment_status_from(
                 .map(|menu| menu.get_verity()),
         )
         .collect::<Result<HashSet<_>>>()?;
-    for entry in extra_deployment_boot_entries {
-        // SAFETY: boot_entry.composefs will always be present
-        let verity = &entry.composefs.as_ref().unwrap().verity;
-        if bootloader_configured_verity.contains(verity) {
-            match host.status.rollback {
-                Some(ref _entry) => {
-                    anyhow::bail!(
-                        "Multiple extra entires in /boot, could not determine rollback entry"
-                    );
-                }
-                None => {
-                    host.status.rollback = Some(entry);
-                }
-            }
-        }
+    let rollback_candidates: Vec<_> = extra_deployment_boot_entries
+        .into_iter()
+        .filter(|entry| {
+            let verity = &entry
+                .composefs
+                .as_ref()
+                .expect("composefs is always Some for composefs deployments")
+                .verity;
+            bootloader_configured_verity.contains(verity)
+        })
+        .collect();
+
+    if rollback_candidates.len() > 1 {
+        anyhow::bail!("Multiple extra entries in /boot, could not determine rollback entry");
+    } else if let Some(rollback_entry) = rollback_candidates.into_iter().next() {
+        host.status.rollback = Some(rollback_entry);
     }
 
     host.status.rollback_queued = is_rollback_queued;
