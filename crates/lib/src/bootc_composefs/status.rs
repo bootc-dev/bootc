@@ -1,4 +1,4 @@
-use std::{io::Read, sync::OnceLock};
+use std::{collections::HashSet, io::Read, sync::OnceLock};
 
 use anyhow::{Context, Result};
 use bootc_kernel_cmdline::utf8::Cmdline;
@@ -570,6 +570,10 @@ pub(crate) async fn composefs_deployment_status_from(
     // NOTE: This cannot work if we support both BLS and UKI at the same time
     let mut boot_type: Option<BootType> = None;
 
+    // Boot entries from deployments that are neither booted nor staged deployments
+    // Rollback deployment is in here, but may also contain stale deployment entries
+    let mut extra_deployment_boot_entries: Vec<BootEntry> = Vec::new();
+
     for depl in deployments {
         let depl = depl?;
 
@@ -617,7 +621,7 @@ pub(crate) async fn composefs_deployment_status_from(
             }
         }
 
-        host.status.rollback = Some(boot_entry);
+        extra_deployment_boot_entries.push(boot_entry);
     }
 
     // Shouldn't really happen, but for sanity nonetheless
@@ -627,7 +631,8 @@ pub(crate) async fn composefs_deployment_status_from(
 
     let booted_cfs = host.require_composefs_booted()?;
 
-    let (is_rollback_queued, sorted_bls_config) = match booted_cfs.bootloader {
+    let mut grub_menu_string = String::new();
+    let (is_rollback_queued, sorted_bls_config, grub_menu_entries) = match booted_cfs.bootloader {
         Bootloader::Grub => match boot_type {
             BootType::Bls => {
                 let bls_configs = get_sorted_type1_boot_entries(boot_dir, false)?;
@@ -642,7 +647,7 @@ pub(crate) async fn composefs_deployment_status_from(
                             .ok_or_else(|| anyhow::anyhow!("options key not found in bls config"))?
                             .contains(booted_composefs_digest.as_ref());
 
-                        (is_rollback_queued, Some(bls_configs))
+                        (is_rollback_queued, Some(bls_configs), None)
                     }
 
                     BLSConfigType::EFI { .. } => {
@@ -654,8 +659,8 @@ pub(crate) async fn composefs_deployment_status_from(
             }
 
             BootType::Uki => {
-                let mut s = String::new();
-                let menuentries = get_sorted_grub_uki_boot_entries(boot_dir, &mut s)?;
+                let menuentries =
+                    get_sorted_grub_uki_boot_entries(boot_dir, &mut grub_menu_string)?;
 
                 let is_rollback_queued = !menuentries
                     .first()
@@ -664,7 +669,7 @@ pub(crate) async fn composefs_deployment_status_from(
                     .chainloader
                     .contains(booted_composefs_digest.as_ref());
 
-                (is_rollback_queued, None)
+                (is_rollback_queued, None, Some(menuentries))
             }
         },
 
@@ -690,9 +695,39 @@ pub(crate) async fn composefs_deployment_status_from(
                 BLSConfigType::Unknown => anyhow::bail!("Unknown BLS Config Type"),
             };
 
-            (is_rollback_queued, Some(bls_configs))
+            (is_rollback_queued, Some(bls_configs), None)
         }
     };
+
+    // Determine rollback deployment by matching extra deployment boot entries against entires read from /boot
+    // This collects verity digest across bls and grub enties, we should just have one of them, but still works
+    let bootloader_configured_verity = sorted_bls_config
+        .iter()
+        .flatten()
+        .map(|cfg| cfg.get_verity())
+        .chain(
+            grub_menu_entries
+                .iter()
+                .flatten()
+                .map(|menu| menu.get_verity()),
+        )
+        .collect::<Result<HashSet<_>>>()?;
+    for entry in extra_deployment_boot_entries {
+        // SAFETY: boot_entry.composefs will always be present
+        let verity = &entry.composefs.as_ref().unwrap().verity;
+        if bootloader_configured_verity.contains(verity) {
+            match host.status.rollback {
+                Some(ref _entry) => {
+                    anyhow::bail!(
+                        "Multiple extra entires in /boot, could not determine rollback entry"
+                    );
+                }
+                None => {
+                    host.status.rollback = Some(entry);
+                }
+            }
+        }
+    }
 
     host.status.rollback_queued = is_rollback_queued;
 
