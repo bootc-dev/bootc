@@ -103,8 +103,15 @@ pub(crate) fn test_bootc_install_config() -> Result<()> {
 
 pub(crate) fn test_bootc_install_config_all() -> Result<()> {
     #[derive(Deserialize)]
+    #[serde(rename_all = "kebab-case")]
+    struct TestOstreeConfig {
+        bls_append_except_default: Option<String>,
+    }
+
+    #[derive(Deserialize)]
     struct TestInstallConfig {
         kargs: Vec<String>,
+        ostree: Option<TestOstreeConfig>,
     }
 
     let config_d = std::path::Path::new("/run/bootc/install/");
@@ -113,6 +120,8 @@ pub(crate) fn test_bootc_install_config_all() -> Result<()> {
     let content = indoc! {r#"
         [install]
         kargs = ["karg1=1", "karg2=2"]
+        [install.ostree]
+        bls-append-except-default = "grub_users=\"\""
     "#};
     std::fs::write(&test_toml_path, content)?;
     defer! {
@@ -124,6 +133,13 @@ pub(crate) fn test_bootc_install_config_all() -> Result<()> {
     let config: TestInstallConfig =
         serde_json::from_str(&config).context("Parsing install config")?;
     assert_eq! {config.kargs, vec!["karg1=1".to_string(), "karg2=2".to_string(), "localtestkarg=somevalue".to_string(), "otherlocalkarg=42".to_string()]};
+    assert_eq!(
+        config
+            .ostree
+            .as_ref()
+            .and_then(|o| o.bls_append_except_default.as_deref()),
+        Some("grub_users=\"\"")
+    );
     Ok(())
 }
 

@@ -47,6 +47,7 @@ pub mod ostree_prepareroot;
 pub mod refescape;
 #[doc(hidden)]
 pub mod repair;
+pub mod repo_options;
 pub mod sysroot;
 pub mod tar;
 pub mod tokio_util;

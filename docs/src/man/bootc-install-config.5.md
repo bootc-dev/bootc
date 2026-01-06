@@ -16,7 +16,7 @@ that can be overridden in a derived container image.
 
 This is the only defined toplevel table.
 
-The `install` section supports two subfields:
+The `install` section supports these subfields:
 
 - `block`: An array of supported `to-disk` backends enabled by this base container image;
    if not specified, this will just be `direct`.  The only other supported value is `tpm2-luks`.
@@ -24,6 +24,7 @@ The `install` section supports two subfields:
 - `filesystem`: See below.
 - `kargs`: An array of strings; this will be appended to the set of kernel arguments.
 - `match_architectures`: An array of strings; this filters the install config.
+- `ostree`: See below.
 
 # filesystem
 
@@ -37,6 +38,14 @@ There is one valid field:
 
 `type`: This can be any basic Linux filesystem with a `mkfs.$fstype`.  For example, `ext4`, `xfs`, etc.
 
+# ostree
+
+Configuration options for the ostree repository. There is one valid field:
+
+- `bls-append-except-default`: A string of kernel arguments that will be appended to
+  Boot Loader Spec entries, except for the default entry. This is useful for configuring
+  arguments that should only apply to non-default deployments.
+
 # Examples
 
 ```toml
@@ -44,6 +53,8 @@ There is one valid field:
 type = "xfs"
 [install]
 kargs = ["nosmt", "console=tty0"]
+[install.ostree]
+bls-append-except-default = 'grub_users=""'
 ```
 
 # SEE ALSO

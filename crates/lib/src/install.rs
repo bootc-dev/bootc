@@ -795,7 +795,21 @@ async fn initialize_ostree_root(state: &State, root_setup: &RootSetup) -> Result
         crate::lsm::ensure_dir_labeled(rootfs_dir, "boot", None, 0o755.into(), sepolicy)?;
     }
 
-    for (k, v) in DEFAULT_REPO_CONFIG.iter() {
+    // Build the list of ostree repo config options: defaults + install config
+    let ostree_opts = state
+        .install_config
+        .as_ref()
+        .and_then(|c| c.ostree.as_ref())
+        .into_iter()
+        .flat_map(|o| o.to_config_tuples());
+
+    let repo_config: Vec<_> = DEFAULT_REPO_CONFIG
+        .iter()
+        .copied()
+        .chain(ostree_opts)
+        .collect();
+
+    for (k, v) in repo_config.iter() {
         Command::new("ostree")
             .args(["config", "--repo", "ostree/repo", "set", k, v])
             .cwd_dir(rootfs_dir.try_clone()?)

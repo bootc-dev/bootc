@@ -58,6 +58,9 @@ pub(crate) struct BasicFilesystems {
     // pub(crate) esp: Option<FilesystemCustomization>,
 }
 
+/// Configuration for ostree repository
+pub(crate) type OstreeRepoOpts = ostree_ext::repo_options::RepoOptions;
+
 /// The serialized [install] section
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename = "install", rename_all = "kebab-case", deny_unknown_fields)]
@@ -73,6 +76,8 @@ pub(crate) struct InstallConfiguration {
     pub(crate) kargs: Option<Vec<String>>,
     /// Supported architectures for this configuration
     pub(crate) match_architectures: Option<Vec<String>>,
+    /// Ostree repository configuration
+    pub(crate) ostree: Option<OstreeRepoOpts>,
 }
 
 fn merge_basic<T>(s: &mut Option<T>, o: Option<T>, _env: &EnvProperties) {
@@ -119,6 +124,17 @@ impl Mergeable for BasicFilesystems {
     }
 }
 
+impl Mergeable for OstreeRepoOpts {
+    /// Apply any values in other, overriding any existing values in `self`.
+    fn merge(&mut self, other: Self, env: &EnvProperties) {
+        merge_basic(
+            &mut self.bls_append_except_default,
+            other.bls_append_except_default,
+            env,
+        )
+    }
+}
+
 impl Mergeable for InstallConfiguration {
     /// Apply any values in other, overriding any existing values in `self`.
     fn merge(&mut self, other: Self, env: &EnvProperties) {
@@ -133,6 +149,7 @@ impl Mergeable for InstallConfiguration {
             #[cfg(feature = "install-to-disk")]
             merge_basic(&mut self.block, other.block, env);
             self.filesystem.merge(other.filesystem, env);
+            self.ostree.merge(other.ostree, env);
             if let Some(other_kargs) = other.kargs {
                 self.kargs
                     .get_or_insert_with(Default::default)
@@ -570,6 +587,56 @@ root-fs-type = "xfs"
                     .map(ToOwned::to_owned)
                     .collect()
             )
+        );
+    }
+
+    #[test]
+    fn test_parse_ostree() {
+        let env = EnvProperties {
+            sys_arch: "x86_64".to_string(),
+        };
+
+        // Table-driven test cases for parsing bls-append-except-default
+        let parse_cases = [
+            ("console=ttyS0", "console=ttyS0"),
+            ("console=ttyS0,115200n8", "console=ttyS0,115200n8"),
+            ("rd.lvm.lv=vg/root", "rd.lvm.lv=vg/root"),
+        ];
+        for (input, expected) in parse_cases {
+            let toml_str = format!(
+                r#"[install.ostree]
+bls-append-except-default = "{input}"
+"#
+            );
+            let c: InstallConfigurationToplevel = toml::from_str(&toml_str).unwrap();
+            assert_eq!(
+                c.install
+                    .unwrap()
+                    .ostree
+                    .unwrap()
+                    .bls_append_except_default
+                    .unwrap(),
+                expected
+            );
+        }
+
+        // Test merging: other config should override original
+        let mut install: InstallConfiguration = toml::from_str(
+            r#"[ostree]
+bls-append-except-default = "console=ttyS0"
+"#,
+        )
+        .unwrap();
+        let other = InstallConfiguration {
+            ostree: Some(OstreeRepoOpts {
+                bls_append_except_default: Some("console=tty0".to_string()),
+            }),
+            ..Default::default()
+        };
+        install.merge(other, &env);
+        assert_eq!(
+            install.ostree.unwrap().bls_append_except_default.unwrap(),
+            "console=tty0"
         );
     }
 }
