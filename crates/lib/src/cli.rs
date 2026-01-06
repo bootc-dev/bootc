@@ -1586,6 +1586,7 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
                 list_type,
                 list_format,
             } => crate::image::list_entrypoint(list_type, list_format).await,
+
             ImageOpts::CopyToStorage { source, target } => {
                 let storage = get_storage().await?;
 
@@ -1594,7 +1595,13 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
                         crate::image::push_entrypoint(source.as_deref(), target.as_deref()).await
                     }
                     BootedStorageKind::Composefs(booted) => {
-                        bootc_composefs::export::export_repo_to_oci(&storage, &booted).await
+                        bootc_composefs::export::export_repo_to_image(
+                            &storage,
+                            &booted,
+                            source.as_deref(),
+                            target.as_deref(),
+                        )
+                        .await
                     }
                 }
             }

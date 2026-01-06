@@ -19,7 +19,7 @@ use crate::{
 };
 
 /// The name of the image we push to containers-storage if nothing is specified.
-const IMAGE_DEFAULT: &str = "localhost/bootc";
+pub(crate) const IMAGE_DEFAULT: &str = "localhost/bootc";
 
 /// Check if an image exists in the default containers-storage (podman storage).
 ///

@@ -64,7 +64,7 @@ pub(crate) fn spawn(mut cmd: Command) -> Result<tokio::process::Child> {
 
 /// Use skopeo to copy a container image.
 #[context("Skopeo copy")]
-pub(crate) async fn copy(
+pub async fn copy(
     src: &ImageReference,
     dest: &ImageReference,
     authfile: Option<&Path>,

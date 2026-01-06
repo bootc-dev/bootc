@@ -254,6 +254,7 @@ dependencies = [
  "libsystemd",
  "linkme",
  "nom",
+ "ocidir",
  "openssl",
  "ostree-ext",
  "regex",

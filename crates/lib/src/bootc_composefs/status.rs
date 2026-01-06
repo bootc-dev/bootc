@@ -241,7 +241,7 @@ pub(crate) fn get_bootloader() -> Result<Bootloader> {
 pub(crate) async fn get_imginfo(
     storage: &Storage,
     deployment_id: &str,
-    imgref: &ImageReference,
+    imgref: Option<&ImageReference>,
 ) -> Result<ImgConfigManifest> {
     let imginfo_fname = format!("{deployment_id}.imginfo");
 
@@ -254,6 +254,8 @@ pub(crate) async fn get_imginfo(
         .context("Failed to open file")?;
 
     let Some(img_conf) = &mut img_conf else {
+        let imgref = imgref.ok_or_else(|| anyhow::anyhow!("No imgref or imginfo file found"))?;
+
         let container_details =
             get_container_manifest_and_config(&get_imgref(&imgref.transport, &imgref.image))
                 .await?;
@@ -294,7 +296,7 @@ async fn boot_entry_from_composefs_deployment(
             let ostree_img_ref = OstreeImageReference::from_str(&img_name_from_config)?;
             let img_ref = ImageReference::from(ostree_img_ref);
 
-            let img_conf = get_imginfo(storage, &verity, &img_ref).await?;
+            let img_conf = get_imginfo(storage, &verity, Some(&img_ref)).await?;
 
             let image_digest = img_conf.manifest.config().digest().to_string();
             let architecture = img_conf.config.architecture().to_string();

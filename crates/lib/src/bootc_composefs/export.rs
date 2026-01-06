@@ -1,21 +1,16 @@
-#![allow(dead_code, unused_variables)]
-
-use std::io::{Read, Seek, Write};
+use std::{fs::File, io::Read, os::fd::AsRawFd};
 
 use anyhow::{Context, Result};
-use canon_json::CanonJsonSerialize;
-use cap_std_ext::cap_std::{
-    ambient_authority,
-    fs::{Dir, MetadataExt, OpenOptions},
-};
+use cap_std_ext::cap_std::{ambient_authority, fs::Dir};
 use composefs::{
     fsverity::FsVerityHashValue,
     splitstream::{SplitStreamData, SplitStreamReader},
     tree::{LeafContent, RegularFile},
 };
 use composefs_oci::tar::TarItem;
-use openssl::sha::Sha256;
-use ostree_ext::oci_spec::image::{Descriptor, Digest, ImageConfiguration, MediaType};
+use ocidir::{oci_spec::image::Platform, OciDir};
+use ostree_ext::container::skopeo;
+use ostree_ext::{container::Transport, oci_spec::image::ImageConfiguration};
 use tar::{EntryType, Header};
 
 use crate::{
@@ -23,45 +18,50 @@ use crate::{
         status::{get_composefs_status, get_imginfo},
         update::str_to_sha256digest,
     },
+    image::IMAGE_DEFAULT,
     store::{BootedComposefs, Storage},
 };
 
 fn get_entry_with_header<R: Read, ObjectID: FsVerityHashValue>(
     reader: &mut SplitStreamReader<R, ObjectID>,
 ) -> anyhow::Result<Option<(Header, TarItem<ObjectID>)>> {
-    loop {
-        let mut buf = [0u8; 512];
-        if !reader.read_inline_exact(&mut buf)? || buf == [0u8; 512] {
-            return Ok(None);
-        }
-
-        let header = tar::Header::from_byte_slice(&buf);
-
-        let size = header.entry_size()?;
-
-        let item = match reader.read_exact(size as usize, ((size + 511) & !511) as usize)? {
-            SplitStreamData::External(id) => match header.entry_type() {
-                EntryType::Regular | EntryType::Continuous => {
-                    TarItem::Leaf(LeafContent::Regular(RegularFile::External(id, size)))
-                }
-                _ => anyhow::bail!("Unsupported external-chunked entry {header:?} {id:?}"),
-            },
-
-            SplitStreamData::Inline(content) => match header.entry_type() {
-                EntryType::Directory => TarItem::Directory,
-                // We do not care what the content is as we're re-archiving it anyway
-                _ => TarItem::Leaf(LeafContent::Regular(RegularFile::Inline(content))),
-            },
-        };
-
-        return Ok(Some((header.clone(), item)));
+    let mut buf = [0u8; 512];
+    if !reader.read_inline_exact(&mut buf)? || buf == [0u8; 512] {
+        return Ok(None);
     }
+
+    let header = tar::Header::from_byte_slice(&buf);
+
+    let size = header.entry_size()?;
+
+    let item = match reader.read_exact(size as usize, ((size + 511) & !511) as usize)? {
+        SplitStreamData::External(id) => match header.entry_type() {
+            EntryType::Regular | EntryType::Continuous => {
+                TarItem::Leaf(LeafContent::Regular(RegularFile::External(id, size)))
+            }
+            _ => anyhow::bail!("Unsupported external-chunked entry {header:?} {id:?}"),
+        },
+
+        SplitStreamData::Inline(content) => match header.entry_type() {
+            EntryType::Directory => TarItem::Directory,
+            // We do not care what the content is as we're re-archiving it anyway
+            _ => TarItem::Leaf(LeafContent::Regular(RegularFile::Inline(content))),
+        },
+    };
+
+    return Ok(Some((header.clone(), item)));
 }
 
-pub async fn export_repo_to_oci(storage: &Storage, booted_cfs: &BootedComposefs) -> Result<()> {
+/// Exports a composefs repository to a container image in containers-storage:
+pub async fn export_repo_to_image(
+    storage: &Storage,
+    booted_cfs: &BootedComposefs,
+    source: Option<&str>,
+    target: Option<&str>,
+) -> Result<()> {
     let host = get_composefs_status(storage, booted_cfs).await?;
 
-    let image = host
+    let booted_image = host
         .status
         .booted
         .as_ref()
@@ -70,27 +70,61 @@ pub async fn export_repo_to_oci(storage: &Storage, booted_cfs: &BootedComposefs)
         .as_ref()
         .unwrap();
 
-    let imginfo = get_imginfo(
-        storage,
-        &booted_cfs.cmdline.digest,
-        // TODO: Make this optional
-        &image.image,
-    )
-    .await?;
+    // If the target isn't specified, push to containers-storage + our default image
+    let dest_imgref = match target {
+        Some(target) => ostree_ext::container::ImageReference {
+            transport: Transport::ContainerStorage,
+            name: target.to_owned(),
+        },
+        None => ostree_ext::container::ImageReference {
+            transport: Transport::ContainerStorage,
+            name: IMAGE_DEFAULT.into(),
+        },
+    };
 
-    let config_name = &image.image_digest;
-    let config_name = str_to_sha256digest(&config_name)?;
+    // If the source isn't specified, we use the booted image
+    let source = match source {
+        Some(source) => ostree_ext::container::ImageReference::try_from(source)
+            .context("Parsing source image")?,
+
+        None => ostree_ext::container::ImageReference {
+            transport: Transport::try_from(booted_image.image.transport.as_str()).unwrap(),
+            name: booted_image.image.image.clone(),
+        },
+    };
+
+    let mut depl_verity = None;
+
+    for depl in host
+        .status
+        .booted
+        .iter()
+        .chain(host.status.staged.iter())
+        .chain(host.status.rollback.iter())
+        .chain(host.status.other_deployments.iter())
+    {
+        let img = &depl.image.as_ref().unwrap().image;
+
+        // Not checking transport here as we'll be pulling from the repo anyway
+        // So, image name is all we need
+        if img.image == source.name {
+            depl_verity = Some(depl.require_composefs()?.verity.clone());
+            break;
+        }
+    }
+
+    let depl_verity = depl_verity.ok_or_else(|| anyhow::anyhow!("Image {source} not found"))?;
+
+    let imginfo = get_imginfo(storage, &depl_verity, None).await?;
+
+    let config_name = &imginfo.manifest.config().digest().digest();
+    let config_name = str_to_sha256digest(config_name)?;
 
     let var_tmp =
         Dir::open_ambient_dir("/var/tmp", ambient_authority()).context("Opening /var/tmp")?;
 
-    var_tmp
-        .create_dir_all(&*booted_cfs.cmdline.digest)
-        .context("Creating image dir")?;
-
-    let image_dir = var_tmp
-        .open_dir(&*booted_cfs.cmdline.digest)
-        .context("Opening image dir")?;
+    let tmpdir = cap_std_ext::cap_tempfile::tempdir_in(&var_tmp)?;
+    let oci_dir = OciDir::ensure(tmpdir.try_clone()?).context("Opening OCI")?;
 
     let mut config_stream = booted_cfs
         .repo
@@ -99,7 +133,8 @@ pub async fn export_repo_to_oci(storage: &Storage, booted_cfs: &BootedComposefs)
 
     let config = ImageConfiguration::from_reader(&mut config_stream)?;
 
-    // We can't guarantee that we'll get the same tar as the container image
+    // We can't guarantee that we'll get the same tar stream as the container image
+    // So we create new config and manifest
     let mut new_config = config.clone();
     if let Some(history) = new_config.history_mut() {
         history.clear();
@@ -109,163 +144,113 @@ pub async fn export_repo_to_oci(storage: &Storage, booted_cfs: &BootedComposefs)
     let mut new_manifest = imginfo.manifest.clone();
     new_manifest.layers_mut().clear();
 
-    let mut file_open_opts = OpenOptions::new();
-    file_open_opts.write(true).create(true);
-
-    for (idx, diff_id) in config.rootfs().diff_ids().iter().enumerate() {
-        let layer_sha256 = str_to_sha256digest(diff_id)?;
+    for (idx, old_diff_id) in config.rootfs().diff_ids().iter().enumerate() {
+        let layer_sha256 = str_to_sha256digest(old_diff_id)?;
         let layer_verity = config_stream.lookup(&layer_sha256)?;
 
         let mut layer_stream = booted_cfs
             .repo
             .open_stream(&hex::encode(layer_sha256), Some(layer_verity))?;
 
-        let mut file = image_dir.open_with(hex::encode(layer_sha256), &file_open_opts)?;
-
-        let mut builder = tar::Builder::new(&mut file);
+        let mut layer_writer = oci_dir.create_layer(None)?;
+        layer_writer.follow_symlinks(false);
 
         while let Some((header, entry)) = get_entry_with_header(&mut layer_stream)? {
             let hsize = header.size()? as usize;
             let mut v = vec![0; hsize];
 
             match &entry {
-                TarItem::Directory => {
-                    assert_eq!(hsize, 0);
-                }
-
                 TarItem::Leaf(leaf_content) => {
                     match &leaf_content {
                         LeafContent::Regular(reg) => match reg {
                             RegularFile::Inline(items) => {
-                                assert_eq!(hsize, items.len());
                                 v[..hsize].copy_from_slice(items);
                             }
 
-                            RegularFile::External(obj_id, size) => {
-                                assert_eq!(*size as usize, hsize);
-
-                                let mut file =
-                                    std::fs::File::from(booted_cfs.repo.open_object(obj_id)?);
-
+                            RegularFile::External(obj_id, ..) => {
+                                let mut file = File::from(booted_cfs.repo.open_object(obj_id)?);
                                 file.read_exact(&mut v)?;
                             }
                         },
 
-                        LeafContent::BlockDevice(_) => todo!(),
-                        LeafContent::CharacterDevice(_) => {
-                            todo!()
-                        }
-                        LeafContent::Fifo => todo!(),
-                        LeafContent::Socket => todo!(),
-
-                        LeafContent::Symlink(..) => {
-                            // we don't need to write the data for symlinks as the
-                            // target will be in the header itself
-                            assert_eq!(hsize, 0);
-                        }
+                        // we don't need to write the data for symlinks.
+                        // Same goes for devices, fifos and sockets
+                        _ => {}
                     }
                 }
 
-                TarItem::Hardlink(..) => {
-                    // we don't need to write the data for hardlinks as the
-                    // target will be in the header itself
-                    assert_eq!(hsize, 0);
-                }
+                // we don't need to write the data for hardlinks/dirs
+                TarItem::Directory | TarItem::Hardlink(..) => {}
             };
 
-            builder
+            layer_writer
                 .append(&header, v.as_slice())
                 .context("Failed to write entry")?;
         }
 
-        builder.finish().context("Finishing builder")?;
-        drop(builder);
+        layer_writer.finish()?;
 
-        let mut new_diff_id = openssl::hash::Hasher::new(openssl::hash::MessageDigest::sha256())?;
+        let layer = layer_writer
+            .into_inner()
+            .context("Getting inner layer writer")?
+            .complete()
+            .context("Writing layer to disk")?;
 
-        file.seek(std::io::SeekFrom::Start(0))
-            .context("Seek failed")?;
-        std::io::copy(&mut file, &mut new_diff_id).context("Failed to compute hash")?;
+        tracing::debug!("Wrote layer: {}", layer.uncompressed_sha256_as_digest());
 
-        let final_sha = new_diff_id.finish()?;
-        let final_sha_str = hex::encode(final_sha);
+        let previous_annotations = imginfo
+            .manifest
+            .layers()
+            .get(idx)
+            .and_then(|l| l.annotations().as_ref())
+            .cloned();
 
-        rustix::fs::renameat(&image_dir, hex::encode(layer_sha256), &image_dir, &final_sha_str)
-            .context("Renameat")?;
+        let history = imginfo.config.history().as_ref();
+        let history_entry = history.and_then(|v| v.get(idx));
+        let previous_description = history_entry
+            .clone()
+            .and_then(|h| h.comment().as_deref())
+            .unwrap_or_default();
 
-        let digest = format!("sha256:{}", hex::encode(final_sha));
+        let previous_created = history_entry
+            .and_then(|h| h.created().as_deref())
+            .and_then(bootc_utils::try_deserialize_timestamp)
+            .unwrap_or_default();
 
-        new_config.rootfs_mut().diff_ids_mut().push(digest.clone());
-
-        // TODO: Gzip this for manifest
-        new_manifest.layers_mut().push(Descriptor::new(
-            MediaType::ImageLayer,
-            file.metadata()?.size(),
-            Digest::try_from(digest)?,
-        ));
-
-        if let Some(old_history) = &config.history() {
-            if idx >= old_history.len() {
-                anyhow::bail!("Found more layers than history");
-            }
-
-            let old_history = &old_history[idx];
-
-            let mut history = ostree_ext::oci_spec::image::HistoryBuilder::default();
-
-            if let Some(old_created) = old_history.created() {
-                history = history.created(old_created);
-            }
-
-            if let Some(old_created_by) = old_history.created_by() {
-                history = history.created_by(old_created_by);
-            }
-
-            if let Some(comment) = old_history.comment() {
-                history = history.comment(comment);
-            }
-
-            new_config
-                .history_mut()
-                .get_or_insert(Vec::new())
-                .push(history.build().unwrap());
-        }
-
-        // TODO: Fsync
+        oci_dir.push_layer_full(
+            &mut new_manifest,
+            &mut new_config,
+            layer,
+            previous_annotations,
+            previous_description,
+            previous_created,
+        );
     }
 
-    let config_json = new_config.to_canon_json_vec()?;
+    let descriptor = oci_dir.write_config(new_config).context("Writing config")?;
 
-    // Hash the new config
-    let mut config_hash = Sha256::new();
-    config_hash.update(&config_json);
-    let config_hash = hex::encode(config_hash.finish());
+    new_manifest.set_config(descriptor);
+    oci_dir
+        .insert_manifest(new_manifest, None, Platform::default())
+        .context("Writing manifest")?;
 
-    // Write the config to Directory
-    let mut cfg_file = image_dir
-        .open_with(&config_hash, &file_open_opts)
-        .context("Opening config file")?;
+    // Pass the temporary oci directory as the current working directory for the skopeo process
+    let tempoci = ostree_ext::container::ImageReference {
+        transport: Transport::OciDir,
+        name: format!("/proc/self/fd/{}", tmpdir.as_raw_fd()),
+    };
 
-    cfg_file
-        .write_all(&config_json)
-        .context("Failed to write config")?;
-
-    // Write the manifest
-    let mut manifest_file = image_dir
-        .open_with("manifest.json", &file_open_opts)
-        .context("Opening manifest file")?;
-
-    new_manifest.set_config(Descriptor::new(
-        MediaType::ImageConfig,
-        config_json.len() as u64,
-        Digest::try_from(format!("sha256:{config_hash}"))?,
-    ));
-
-    manifest_file
-        .write_all(&new_manifest.to_canon_json_vec()?)
-        .context("Failed to write manifest")?;
-
-    println!("Image: {config_hash}");
+    skopeo::copy(
+        &tempoci,
+        &dest_imgref,
+        None,
+        Some((
+            std::sync::Arc::new(tmpdir.try_clone()?.into()),
+            tmpdir.as_raw_fd(),
+        )),
+        true,
+    )
+    .await?;
 
     Ok(())
 }

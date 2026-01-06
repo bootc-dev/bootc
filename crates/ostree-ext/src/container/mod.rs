@@ -483,7 +483,7 @@ mod encapsulate;
 pub use encapsulate::*;
 mod unencapsulate;
 pub use unencapsulate::*;
-mod skopeo;
+pub mod skopeo;
 pub mod store;
 mod update_detachedmeta;
 pub use update_detachedmeta::*;
