@@ -7,12 +7,10 @@ use camino::Utf8Path;
 use cap_std_ext::cap_std::fs::Dir;
 use cap_std_ext::dirext::CapStdExtDirExt;
 use fn_error_context::context;
-use tempfile::TempDir;
 
 use bootc_blockdev::{Partition, PartitionTable};
 use bootc_mount as mount;
 use rustix::mount::UnmountFlags;
-use rustix::path::Arg;
 
 use crate::bootc_composefs::boot::{SecurebootKeys, get_sysroot_parent_dev, mount_esp};
 use crate::{discoverable_partition_specification, utils};
@@ -103,20 +101,18 @@ pub(crate) fn install_via_bootupd(
     // let's bind mount it to a temp mountpoint under /run
     // so it gets carried over in the chroot.
 
-    let rootfs_mountpoint: TempDir;
+    // let rootfs_mountpoint: TempDir;
     let rootfs_mount = if rootfs.starts_with("/run") {
         rootfs.as_str()
     } else {
-        rootfs_mountpoint = tempfile::tempdir_in("/run")?;
-        rustix::mount::mount_bind_recursive(
-            rootfs.as_std_path(),
-            &rootfs_mountpoint.path().to_owned(),
-        )?;
-        rootfs_mountpoint
-            .path()
-            .to_str()
-            .expect("Invalid tempdir path")
+        "/"
     };
+
+    // rootfs_mountpoint
+    //     .path()
+    //     .to_str()
+    //     .expect("Invalid tempdir path")
+    //};
 
     // We mount the linux API file systems into the target deployment before chrooting
     // so bootupd can find the proper backing device.
@@ -132,6 +128,21 @@ pub(crate) fn install_via_bootupd(
             tracing::debug!("bind mounting {}", dest.display());
             rustix::mount::mount_bind_recursive(src, dest)?;
         }
+        // WIP : let's try to bind-mount /target/boot into the deployment as well rather than bind-mounting the whole thing??
+        if !rootfs.starts_with("/run") {
+            tracing::debug!(
+                "We need to access the target /boot filesystem so let's also bind-mount it"
+            );
+            let trgt_boot = rootfs.as_std_path().join("boot");
+            let chrooted_boot = target_root.join_os("boot");
+            tracing::debug!(
+                "bind-mounting {} in {}",
+                &trgt_boot.display(),
+                &chrooted_boot.display()
+            );
+            rustix::mount::mount_bind_recursive(trgt_boot, chrooted_boot)?;
+        }
+
         // Append the `bootupctl` command, it will be passed as
         // an argument to chroot
         vec![target_root.as_str(), "bootupctl"]
@@ -164,6 +175,12 @@ pub(crate) fn install_via_bootupd(
 
     // Clean up the mounts after ourselves
     if let Some(target_root) = abs_deployment_path {
+        if let Err(e) = rustix::mount::unmount(
+            target_root.join("boot").into_std_path_buf(),
+            UnmountFlags::DETACH,
+        ) {
+            tracing::warn!("Error unmounting target/boot: {e}");
+        }
         for dir in bind_mount_dirs {
             let mount = target_root
                 .join(dir.strip_prefix("/").unwrap())
