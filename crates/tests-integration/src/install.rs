@@ -9,7 +9,17 @@ use fn_error_context::context;
 use libtest_mimic::Trial;
 use xshell::{Shell, cmd};
 
-pub(crate) const BASE_ARGS: &[&str] = &["podman", "run", "--rm", "--privileged", "--pid=host"];
+pub(crate) const BASE_ARGS: &[&str] = &[
+    "podman",
+    "run",
+    "--rm",
+    "--privileged",
+    "--pid=host",
+    "--env",
+    "BOOTC_BOOTLOADER_DEBUG=true",
+    "--env",
+    "RUST_LOG=debug",
+];
 
 // Arbitrary
 const NON_DEFAULT_STATEROOT: &str = "foo";
