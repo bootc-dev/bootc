@@ -1592,7 +1592,12 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
 
                 match storage.kind()? {
                     BootedStorageKind::Ostree(..) => {
-                        crate::image::push_entrypoint(source.as_deref(), target.as_deref()).await
+                        crate::image::push_entrypoint(
+                            &storage,
+                            source.as_deref(),
+                            target.as_deref(),
+                        )
+                        .await
                     }
                     BootedStorageKind::Composefs(booted) => {
                         bootc_composefs::export::export_repo_to_image(

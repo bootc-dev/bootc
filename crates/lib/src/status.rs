@@ -430,7 +430,7 @@ pub(crate) fn get_status(
     Ok((deployments, host))
 }
 
-async fn get_host() -> Result<Host> {
+pub(crate) async fn get_host() -> Result<Host> {
     let env = crate::store::Environment::detect()?;
     if env.needs_mount_namespace() {
         crate::cli::prepare_for_write()?;

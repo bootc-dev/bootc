@@ -15,6 +15,8 @@ use crate::{
     boundimage::query_bound_images,
     cli::{ImageListFormat, ImageListType},
     podstorage::CStorage,
+    status::get_host,
+    store::Storage,
     utils::async_task_with_spinner,
 };
 
@@ -139,43 +141,65 @@ pub(crate) async fn list_entrypoint(
     Ok(())
 }
 
-/// Implementation of `bootc image push-to-storage`.
-#[context("Pushing image")]
-pub(crate) async fn push_entrypoint(source: Option<&str>, target: Option<&str>) -> Result<()> {
+/// Returns the source and target ImageReference
+/// If the source isn't specified, we use booted image
+/// If the target isn't specified, we push to containers-storage with our default image
+pub(crate) async fn get_imgrefs_for_copy(
+    source: Option<&str>,
+    target: Option<&str>,
+) -> Result<(ImageReference, ImageReference)> {
     // Initialize floating c_storage early - needed for container operations
     crate::podstorage::ensure_floating_c_storage_initialized();
 
-    let transport = Transport::ContainerStorage;
-    let sysroot = crate::cli::get_storage().await?;
-    let ostree = sysroot.get_ostree()?;
-    let repo = &ostree.repo();
-
     // If the target isn't specified, push to containers-storage + our default image
-    let target = if let Some(target) = target {
-        ImageReference {
-            transport,
-            name: target.to_owned(),
-        }
-    } else {
-        ImageReference {
+    let dest_imgref = match target {
+        Some(target) => ostree_ext::container::ImageReference {
             transport: Transport::ContainerStorage,
-            name: IMAGE_DEFAULT.to_string(),
-        }
+            name: target.to_owned(),
+        },
+        None => ostree_ext::container::ImageReference {
+            transport: Transport::ContainerStorage,
+            name: IMAGE_DEFAULT.into(),
+        },
     };
 
     // If the source isn't specified, we use the booted image
-    let source = if let Some(source) = source {
-        ImageReference::try_from(source).context("Parsing source image")?
-    } else {
-        let status = crate::status::get_status_require_booted(&ostree)?;
-        // SAFETY: We know it's booted
-        let booted = status.2.status.booted.unwrap();
-        let booted_image = booted.image.unwrap().image;
-        ImageReference {
-            transport: Transport::try_from(booted_image.transport.as_str()).unwrap(),
-            name: booted_image.image,
+    let src_imgref = match source {
+        Some(source) => ostree_ext::container::ImageReference::try_from(source)
+            .context("Parsing source image")?,
+
+        None => {
+            let host = get_host().await?;
+
+            let booted = host
+                .status
+                .booted
+                .ok_or_else(|| anyhow::anyhow!("Booted deployment not found"))?;
+
+            let booted_image = booted.image.unwrap().image;
+
+            ImageReference {
+                transport: Transport::try_from(booted_image.transport.as_str()).unwrap(),
+                name: booted_image.image,
+            }
         }
     };
+
+    return Ok((src_imgref, dest_imgref));
+}
+
+/// Implementation of `bootc image push-to-storage`.
+#[context("Pushing image")]
+pub(crate) async fn push_entrypoint(
+    storage: &Storage,
+    source: Option<&str>,
+    target: Option<&str>,
+) -> Result<()> {
+    let (source, target) = get_imgrefs_for_copy(source, target).await?;
+
+    let ostree = storage.get_ostree()?;
+    let repo = &ostree.repo();
+
     let mut opts = ostree_ext::container::store::ExportToOCIOpts::default();
     opts.progress_to_stdout = true;
     println!("Copying local image {source} to {target} ...");
