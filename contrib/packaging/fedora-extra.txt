@@ -7,5 +7,3 @@ git-core
 jq
 # We now always build a package in the container build
 rpm-build
-# Used for signing
-sbsigntools

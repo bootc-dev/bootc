@@ -1,0 +1,49 @@
+#!/bin/bash
+# Finalize UKI installation: copy to /boot, remove raw kernel/initramfs, create symlinks
+#
+# For sealed UKI images, the kernel and initramfs are embedded inside the signed
+# UKI PE binary. We remove the standalone vmlinuz/initramfs.img to:
+# - Avoid duplication (they're inside the UKI)
+# - Ensure tools use the UKI path
+# - Make it clear this is a UKI-only boot configuration
+#
+# NOTE: The old Dockerfile.cfsuki had a bug where the final-final stage started
+# FROM base instead of FROM final, then only copied /boot. This meant the
+# vmlinuz/initramfs removal in the final stage was lost. Running this script
+# in the actual final image stage fixes that issue.
+#
+# IMPORTANT: bcvk needs to be updated to find .efi files inside kernel version
+# subdirectories (e.g., /usr/lib/modules/<kver>/<kver>.efi) rather than at the
+# top level of /usr/lib/modules/. See https://github.com/bootc-dev/bcvk/pull/144
+set -xeuo pipefail
+
+# Path to directory containing the generated UKI
+uki_src=$1
+shift
+
+# Find the kernel version from the current system
+kver=$(bootc container inspect --json | jq -r '.kernel.version')
+if [ -z "$kver" ] || [ "$kver" = "null" ]; then
+  echo "Error: No kernel found" >&2
+  exit 1
+fi
+
+# Create the EFI directory structure
+mkdir -p /boot/EFI/Linux
+
+# The UKI in /boot is outside the composefs-verified tree, which is fine
+# because the UKI itself is signed and verified by Secure Boot
+target=/boot/EFI/Linux/${kver}.efi
+cp "${uki_src}/${kver}.efi" "${target}"
+
+# Remove the raw kernel and initramfs since we're using a UKI now.
+# NOTE: We intentionally keep these for now until bcvk is updated to extract
+# kernel/initramfs from UKIs in subdirectories. Once bcvk PR #144 is fixed
+# to look for .efi files in /usr/lib/modules/<kver>/, we can uncomment this.
+# rm -v "/usr/lib/modules/${kver}/vmlinuz" "/usr/lib/modules/${kver}/initramfs.img"
+
+# NOTE: We used to create a symlink from /usr/lib/modules/${kver}/${kver}.efi to the UKI
+# for tooling compatibility. However, composefs-boot's find_uki_components() doesn't
+# handle symlinks correctly and fails with "is not a regular file". The UKI is already
+# found in /boot/EFI/Linux/, so the symlink is not needed.
+# See: https://github.com/containers/composefs-rs/issues/XXX

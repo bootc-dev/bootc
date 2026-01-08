@@ -1,0 +1,24 @@
+#!/bin/bash
+# Switch the target root to use systemd-boot, using the content from SRC
+# SRC should contain an "out" subdirectory with:
+#   - systemd-boot-unsigned RPM (*.rpm)
+#   - signed systemd-boot binary (systemd-boot*.efi)
+set -xeuo pipefail
+
+src=$1/out
+shift
+
+# Uninstall bootupd if present (we're switching to sd-boot managed differently)
+if rpm -q bootupd &>/dev/null; then
+  rpm -e bootupd
+  rm -vrf /usr/lib/bootupd/updates
+fi
+
+# First install the unsigned systemd-boot RPM to get the package in place
+rpm -Uvh "${src}"/*.rpm
+
+# Now find where it installed the binary and override with our signed version
+sdboot=$(ls /usr/lib/systemd/boot/efi/systemd-boot*.efi)
+sdboot_bn=$(basename "${sdboot}")
+# Override with our signed binary
+install -m 0644 "${src}/${sdboot_bn}" "${sdboot}"

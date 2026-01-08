@@ -1,0 +1,15 @@
+#!/bin/bash
+set -xeuo pipefail
+. /usr/lib/os-release
+case "${ID}${ID_LIKE:-}" in
+  *centos*|*rhel*)
+    # Enable EPEL for sbsigntools
+    dnf -y install epel-release
+    ;;
+esac
+dnf -y install systemd-ukify sbsigntools
+# And in the sealing case, we're going to inject and sign systemd-boot
+# into the target image.
+mkdir -p /out
+cd /out
+dnf -y download systemd-boot-unsigned

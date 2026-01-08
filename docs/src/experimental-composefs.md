@@ -11,60 +11,30 @@ The composefs backend is an experimental alternative storage backend that uses [
 
 **Status**: Experimental. The composefs backend is under active development and not yet suitable for production use. The feature is always compiled in as of bootc v1.10.1.
 
-## Key Benefits
+A key goal is custom "sealed" images, signed with your own Secure Boot keys.
+This is based on [Unified Kernel Images](https://uapi-group.org/specifications/specs/unified_kernel_image/)
+that embed a digest of the target container root filesystem, typically alongside a bootloader (such
+as systemd-boot) also signed with your key.
 
-- **Native container integration**: Direct use of container image formats without the ostree layer
-- **UKI support**: First-class support for Unified Kernel Images (UKIs) and systemd-boot
-- **Sealed images**: Enables building cryptographically sealed, securely-bootable images
-- **Simpler architecture**: Reduces dependency on ostree as an implementation detail
+### UKIs in bootc containers
 
-## Building Sealed Images
+There must be exactly one UKI placed in `/boot/EFI/Linux/<name>.efi`.
 
-### Using `just build-sealed`
+### Bootloader support
 
-This is an entrypoint focused on *bootc development* itself - it builds bootc
-from source.
+To use sealed images, ensure that the target container image has systemd-boot,
+and does not have `bootupd`.
 
-```bash
-just build-sealed
-```
+### Installation
 
-We are working on documenting individual steps to build a sealed image outside of
-this tooling.
+There is a `--composefs-backend` option for `bootc install`; however, if
+a UKI and systemd-boot are detected, it will automatically be used.
 
-## How Sealed Images Work
+### Developing and testing bootc with sealed composefs
 
-A sealed image includes:
-- A Unified Kernel Image (UKI) that combines kernel, initramfs, and boot parameters
-- The composefs fsverity digest embedded in the kernel command line
-- Secure Boot signatures on both the UKI and systemd-boot loader
-
-The UKI is placed in `/boot/EFI/Linux/` and includes the composefs digest in its command line:
-```
-composefs=${COMPOSEFS_FSVERITY} root=UUID=...
-```
-
-This enables the boot chain to verify the integrity of the root filesystem.
-
-## Installation
-
-When installing a composefs-backend system, use:
-
-```bash
-bootc install to-disk /dev/sdX
-```
-
-**Note**: Sealed images will require fsverity support on the target filesystem by default.
-
-## Testing Composefs
-
-To run the composefs integration tests:
-
-```bash
-just test-composefs
-```
-
-This builds a sealed image and runs the composefs test suite using `bcvk` (bootc VM tooling).
+Use `just variant=composefs-sealeduki-sdboot build` to build a local sealed
+UKI, using Secure Boot keys generated in `target/test-secureboot`. This is
+not a production path.
 
 ## Current Limitations
 

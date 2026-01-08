@@ -46,9 +46,6 @@ base_buildargs := generic_buildargs + " --build-arg=base=" + base + " --build-ar
 buildargs := base_buildargs \
              + " --cap-add=all --security-opt=label=type:container_runtime_t --device /dev/fuse" \
              + " --secret=id=secureboot_key,src=target/test-secureboot/db.key --secret=id=secureboot_cert,src=target/test-secureboot/db.crt"
-# Args for build-sealed (no base arg, it sets that itself)
-sealed_buildargs := "--build-arg=variant=" + variant + " --secret=id=secureboot_key,src=target/test-secureboot/db.key --secret=id=secureboot_cert,src=target/test-secureboot/db.crt"
-
 # The default target: build the container image from current sources.
 # Note commonly you might want to override the base image via e.g.
 # `just build --build-arg=base=quay.io/fedora/fedora-bootc:42`
@@ -61,8 +58,7 @@ build: package _keygen && _pull-lbi-images
     test -d target/packages
     # Use --build-context to pass packages instead of -v to avoid mount stubs in /run
     pkg_path=$(realpath target/packages)
-    podman build --target=final --build-context "packages=${pkg_path}" -t {{base_img}}-bin {{buildargs}} .
-    ./hack/build-sealed {{variant}} {{base_img}}-bin {{base_img}} {{sealed_buildargs}}
+    podman build --build-context "packages=${pkg_path}" -t {{base_img}} {{buildargs}} .
 
 # Pull images used by hack/lbi
 _pull-lbi-images:
@@ -155,8 +151,7 @@ test-tmt *ARGS: build
 
 # Generate a local synthetic upgrade
 _build-upgrade-image:
-    cat tmt/tests/Dockerfile.upgrade | podman build -t {{upgrade_img}}-bin --from={{base_img}}-bin -
-    ./hack/build-sealed {{variant}} {{upgrade_img}}-bin {{upgrade_img}} {{sealed_buildargs}}
+    cat tmt/tests/Dockerfile.upgrade | podman build -t {{upgrade_img}} --from={{base_img}} -
 
 # Assume the localhost/bootc image is up to date, and just run tests.
 # Useful for iterating on tests quickly.
@@ -170,10 +165,9 @@ build-testimage-coreos PATH: _keygen
     set -xeuo pipefail
     pkg_path=$(realpath "{{PATH}}")
     # Use --build-context to pass packages instead of -v to avoid mount stubs in /run
-    podman build --target=final --build-context "packages=${pkg_path}" \
+    podman build --build-context "packages=${pkg_path}" \
         --build-arg SKIP_CONFIGS=1 \
-        -t {{base_img}}-coreos-bin {{buildargs}} .
-    ./hack/build-sealed {{variant}} {{base_img}}-coreos-bin {{base_img}}-coreos {{sealed_buildargs}}
+        -t {{base_img}}-coreos {{buildargs}} .
 
 # Run test bootc install on FCOS
 # BOOTC_target is `bootc-coreos`, it will be used for bootc install.

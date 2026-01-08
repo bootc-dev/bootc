@@ -1,0 +1,43 @@
+#!/bin/bash
+# Generate a sealed UKI with embedded composefs digest
+set -xeuo pipefail
+
+# Path to the desired root filesystem
+target=$1
+shift
+# Write to this directory
+output=$1
+shift
+# Path to secrets directory
+secrets=$1
+shift
+
+# Compute the composefs digest from the target rootfs
+composefs_digest=$(bootc container compute-composefs-digest "${target}")
+
+# Build the kernel command line
+# enforcing=0: https://github.com/bootc-dev/bootc/issues/1826
+# TODO: pick up kargs from /usr/lib/bootc/kargs.d
+cmdline="composefs=${composefs_digest} console=ttyS0,115200n8 console=hvc0 enforcing=0 rw"
+
+# Find the kernel version
+kver=$(bootc container inspect --rootfs "${target}" --json | jq -r '.kernel.version')
+if [ -z "$kver" ] || [ "$kver" = "null" ]; then
+  echo "Error: No kernel found" >&2
+  exit 1
+fi
+
+mkdir -p "${output}"
+
+ukify build \
+  --linux "${target}/usr/lib/modules/${kver}/vmlinuz" \
+  --initrd "${target}/usr/lib/modules/${kver}/initramfs.img" \
+  --uname="${kver}" \
+  --cmdline "${cmdline}" \
+  --os-release "@${target}/usr/lib/os-release" \
+  --signtool sbsign \
+  --secureboot-private-key "${secrets}/secureboot_key" \
+  --secureboot-certificate "${secrets}/secureboot_cert" \
+  --measure \
+  --json pretty \
+  --output "${output}/${kver}.efi"

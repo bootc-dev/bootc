@@ -1,0 +1,6 @@
+#!/bin/bash
+# Clean up package manager caches and other build artifacts
+set -xeuo pipefail
+
+dnf clean all
+rm -rf /var/cache /var/lib/{dnf,rhsm} /var/log/*

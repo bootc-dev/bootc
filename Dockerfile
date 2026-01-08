@@ -23,6 +23,7 @@ FROM $base as buildroot
 ARG initramfs=1
 # This installs our buildroot, and we want to cache it independently of the rest.
 # Basically we don't want changing a .rs file to blow out the cache of packages.
+# Use tmpfs for /run and /tmp with bind mounts inside to avoid leaking mount stubs into the image
 RUN --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
     --mount=type=bind,from=packaging,src=/,target=/run/packaging \
     /run/packaging/install-buildroot
@@ -33,10 +34,6 @@ WORKDIR /src
 # We aren't using the full recommendations there, just the simple bits.
 # First we download all of our Rust dependencies
 RUN --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp --mount=type=cache,target=/src/target --mount=type=cache,target=/var/roothome cargo fetch
-
-FROM buildroot as sdboot-content
-# Writes to /out
-RUN --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp /src/contrib/packaging/configure-systemdboot download
 
 # We always do a "from scratch" build
 # https://docs.fedoraproject.org/en-US/bootc/building-from-scratch/
@@ -74,6 +71,13 @@ ENV container=oci
 STOPSIGNAL SIGRTMIN+3
 CMD ["/sbin/init"]
 
+# This layer contains things which aren't in the default image and may
+# be used for sealing images in particular.
+FROM base as tools
+RUN --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
+    --mount=type=bind,from=packaging,src=/,target=/run/packaging \
+    /run/packaging/initialize-sealing-tools
+
 # -------------
 # external dependency cutoff point:
 # NOTE: Every RUN instruction past this point should use `--network=none`; we want to ensure
@@ -90,14 +94,35 @@ ENV SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}
 # Build RPM directly from source, using cached target directory
 RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp --mount=type=cache,target=/src/target --mount=type=cache,target=/var/roothome RPM_VERSION="${pkgversion}" /src/contrib/packaging/build-rpm
 
-FROM buildroot as sdboot-signed
+# This image signs systemd-boot using our key, and writes the resulting binary into /out
+FROM tools as sdboot-signed
 # The secureboot key and cert are passed via Justfile
 # We write the signed binary into /out
+# Note: /out already contains systemd-boot-unsigned RPM from initialize-sealing-tools
 RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
-    --mount=type=bind,from=sdboot-content,src=/,target=/run/sdboot-package \
     --mount=type=secret,id=secureboot_key \
-    --mount=type=secret,id=secureboot_cert \
-    /src/contrib/packaging/configure-systemdboot sign
+    --mount=type=secret,id=secureboot_cert <<EORUN
+set -xeuo pipefail
+
+# Extract the unsigned systemd-boot binary from the downloaded RPM
+cd /tmp
+rpm2cpio /out/*.rpm | cpio -idmv
+# Find the extracted unsigned binary
+sdboot_unsigned=$(ls ./usr/lib/systemd/boot/efi/systemd-boot*.efi)
+sdboot_bn=$(basename ${sdboot_unsigned})
+# Sign with sbsign using db certificate and key
+sbsign --key /run/secrets/secureboot_key \
+   --cert /run/secrets/secureboot_cert \
+   --output /out/${sdboot_bn} \
+   ${sdboot_unsigned}
+ls -al /out/${sdboot_bn}
+EORUN
+
+# ----
+# Unit and integration tests
+# The section here (up until the last `FROM` line which acts as the default target)
+# is non-default images for unit and source code validation.
+# ----
 
 # This "build" includes our unit tests
 FROM build as units
@@ -110,29 +135,73 @@ RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp
 FROM buildroot as validate
 RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp --mount=type=cache,target=/src/target --mount=type=cache,target=/var/roothome make validate
 
-# Common base for final images: configures variant, rootfs, and injects extra content
-FROM base as final-common
+# ----
+# Stages for the final image
+# ----
+
+# Perform all filesystem transformations except generating the sealed UKI (if configured)
+FROM base as base-penultimate
 ARG variant
+# Switch to a signed systemd-boot, if configured
 RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
     --mount=type=bind,from=packaging,src=/,target=/run/packaging \
-    --mount=type=bind,from=sdboot-content,src=/,target=/run/sdboot-content \
-    --mount=type=bind,from=sdboot-signed,src=/,target=/run/sdboot-signed \
-    /run/packaging/configure-variant "${variant}"
+    --mount=type=bind,from=sdboot-signed,src=/,target=/run/sdboot-signed <<EORUN
+set -xeuo pipefail
+if test "${variant}" = "composefs-sealeduki-sdboot"; then
+  /run/packaging/switch-to-sdboot /run/sdboot-signed
+fi
+EORUN
+# Configure the rootfs
 ARG rootfs=""
 RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
     --mount=type=bind,from=packaging,src=/,target=/run/packaging \
     /run/packaging/configure-rootfs "${variant}" "${rootfs}"
-COPY --from=packaging /usr-extras/ /usr/
-
-# Final target: installs pre-built packages from the 'packages' build context.
-# Use with: podman build --target=final --build-context packages=path/to/packages
-# We use --build-context instead of -v to avoid volume mount stubs leaking into /run.
-FROM final-common as final
+# Override with our built package
 RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
     --mount=type=bind,from=packaging,src=/,target=/run/packaging \
     --mount=type=bind,from=packages,src=/,target=/run/packages \
     /run/packaging/install-rpm-and-setup /run/packages
-# lint: allow non-tmpfs
+# Inject some other configuration
+COPY --from=packaging /usr-extras/ /usr/
+# Clean up package manager caches
+RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
+    --mount=type=bind,from=packaging,src=/,target=/run/packaging \
+    /run/packaging/cleanup
+
+# Generate the sealed UKI in a separate stage
+# This computes the composefs digest from base-penultimate and creates a signed UKI
+# We need our newly-built bootc for the compute-composefs-digest command
+FROM tools as sealed-uki
+ARG variant
+# Install our bootc package (only needed for the compute-composefs-digest command)
+RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
+    --mount=type=bind,from=packages,src=/,target=/run/packages \
+    rpm -Uvh --oldpackage /run/packages/bootc-*.rpm
+RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
+    --mount=type=secret,id=secureboot_key \
+    --mount=type=secret,id=secureboot_cert \
+    --mount=type=bind,from=packaging,src=/,target=/run/packaging \
+    --mount=type=bind,from=base-penultimate,src=/,target=/run/target <<EORUN
+set -xeuo pipefail
+if test "${variant}" = "composefs-sealeduki-sdboot"; then
+  /run/packaging/seal-uki /run/target /out /run/secrets
+fi
+EORUN
+
+# And now the final image
+FROM base-penultimate
+ARG variant
+# Copy the sealed UKI and finalize the image (remove raw kernel, create symlinks)
+RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
+    --mount=type=bind,from=packaging,src=/,target=/run/packaging \
+    --mount=type=bind,from=sealed-uki,src=/,target=/run/sealed-uki <<EORUN
+set -xeuo pipefail
+if test "${variant}" = "composefs-sealeduki-sdboot"; then
+  /run/packaging/finalize-uki /run/sealed-uki/out
+fi
+EORUN
+# And finally, test our linting
+# lint: allow non-tmpfs - we want to detect leaked files in /run and /tmp
 RUN --network=none <<EORUN
 set -xeuo pipefail
 # workaround for https://github.com/containers/buildah/pull/6233
