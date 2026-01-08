@@ -26,7 +26,7 @@ pub async fn export_repo_to_image(
 ) -> Result<()> {
     let host = get_composefs_status(storage, booted_cfs).await?;
 
-    let (source, dest_imgref) = get_imgrefs_for_copy(source, target).await?;
+    let (source, dest_imgref) = get_imgrefs_for_copy(&host, source, target).await?;
 
     let mut depl_verity = None;
 

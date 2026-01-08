@@ -47,6 +47,7 @@ use crate::podstorage::set_additional_image_store;
 use crate::progress_jsonl::{ProgressWriter, RawProgressFd};
 use crate::spec::Host;
 use crate::spec::ImageReference;
+use crate::status::get_host;
 use crate::store::{BootedOstree, Storage};
 use crate::store::{BootedStorage, BootedStorageKind};
 use crate::utils::sigpolicy_from_opt;
@@ -1588,12 +1589,16 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
             } => crate::image::list_entrypoint(list_type, list_format).await,
 
             ImageOpts::CopyToStorage { source, target } => {
+                // We get "host" here to avoid deadlock in the ostree path
+                let host = get_host().await?;
+
                 let storage = get_storage().await?;
 
                 match storage.kind()? {
                     BootedStorageKind::Ostree(..) => {
                         crate::image::push_entrypoint(
                             &storage,
+                            &host,
                             source.as_deref(),
                             target.as_deref(),
                         )

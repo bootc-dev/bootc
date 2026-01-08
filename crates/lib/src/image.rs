@@ -15,7 +15,7 @@ use crate::{
     boundimage::query_bound_images,
     cli::{ImageListFormat, ImageListType},
     podstorage::CStorage,
-    status::get_host,
+    spec::Host,
     store::Storage,
     utils::async_task_with_spinner,
 };
@@ -145,6 +145,7 @@ pub(crate) async fn list_entrypoint(
 /// If the source isn't specified, we use booted image
 /// If the target isn't specified, we push to containers-storage with our default image
 pub(crate) async fn get_imgrefs_for_copy(
+    host: &Host,
     source: Option<&str>,
     target: Option<&str>,
 ) -> Result<(ImageReference, ImageReference)> {
@@ -169,18 +170,17 @@ pub(crate) async fn get_imgrefs_for_copy(
             .context("Parsing source image")?,
 
         None => {
-            let host = get_host().await?;
-
             let booted = host
                 .status
                 .booted
+                .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("Booted deployment not found"))?;
 
-            let booted_image = booted.image.unwrap().image;
+            let booted_image = &booted.image.as_ref().unwrap().image;
 
             ImageReference {
                 transport: Transport::try_from(booted_image.transport.as_str()).unwrap(),
-                name: booted_image.image,
+                name: booted_image.image.clone(),
             }
         }
     };
@@ -192,10 +192,11 @@ pub(crate) async fn get_imgrefs_for_copy(
 #[context("Pushing image")]
 pub(crate) async fn push_entrypoint(
     storage: &Storage,
+    host: &Host,
     source: Option<&str>,
     target: Option<&str>,
 ) -> Result<()> {
-    let (source, target) = get_imgrefs_for_copy(source, target).await?;
+    let (source, target) = get_imgrefs_for_copy(host, source, target).await?;
 
     let ostree = storage.get_ostree()?;
     let repo = &ostree.repo();
