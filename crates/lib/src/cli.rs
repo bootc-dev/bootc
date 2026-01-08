@@ -12,6 +12,7 @@ use anyhow::{anyhow, ensure, Context, Result};
 use camino::{Utf8Path, Utf8PathBuf};
 use cap_std_ext::cap_std;
 use cap_std_ext::cap_std::fs::Dir;
+use clap::CommandFactory;
 use clap::Parser;
 use clap::ValueEnum;
 use composefs::dumpfile;
@@ -733,6 +734,15 @@ pub(crate) enum Opt {
     /// Diff current /etc configuration versus default
     #[clap(hide = true)]
     ConfigDiff,
+    /// Generate shell completion script for supported shells.
+    ///
+    /// Example: `bootc completion bash` prints a bash completion script to stdout.
+    #[clap(hide = true)]
+    Completion {
+        /// Shell type to generate (bash, zsh, fish)
+        #[clap(value_enum)]
+        shell: clap_complete::aot::Shell,
+    },
     #[clap(hide = true)]
     DeleteDeployment {
         depl_id: String,
@@ -1573,6 +1583,15 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
                 Ok(())
             }
         },
+        Opt::Completion { shell } => {
+            use clap_complete::aot::generate;
+
+            let mut cmd = Opt::command();
+            let mut stdout = std::io::stdout();
+            let bin_name = "bootc";
+            generate(shell, &mut cmd, bin_name, &mut stdout);
+            Ok(())
+        }
         Opt::Image(opts) => match opts {
             ImageOpts::List {
                 list_type,
@@ -1977,5 +1996,30 @@ mod tests {
             "pull",
         ]));
         assert_eq!(args.as_slice(), ["container", "image", "pull"]);
+    }
+
+    #[test]
+    fn test_generate_completion_scripts_contain_commands() {
+        use clap_complete::aot::{generate, Shell};
+
+        // For each supported shell, generate the completion script and
+        // ensure obvious subcommands appear in the output. This mirrors
+        // the style of completion checks used in other projects (e.g.
+        // podman) where the generated script is examined for expected
+        // tokens.
+
+        // `completion` is intentionally hidden from --help / suggestions;
+        // ensure other visible subcommands are present instead.
+        let want = ["install", "upgrade"];
+
+        for shell in [Shell::Bash, Shell::Zsh, Shell::Fish] {
+            let mut cmd = Opt::command();
+            let mut buf = Vec::new();
+            generate(shell, &mut cmd, "bootc", &mut buf);
+            let s = String::from_utf8(buf).expect("completion should be utf8");
+            for w in &want {
+                assert!(s.contains(w), "{shell:?} completion missing {w}");
+            }
+        }
     }
 }

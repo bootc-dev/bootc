@@ -33,6 +33,7 @@ cap-std-ext = { workspace = true, features = ["fs_utf8"] }
 cfg-if = { workspace = true }
 chrono = { workspace = true, features = ["serde"] }
 clap = { workspace = true, features = ["derive","cargo"] }
+clap_complete = "4"
 clap_mangen = { workspace = true, optional = true }
 composefs = { workspace = true }
 composefs-boot = { workspace = true }
