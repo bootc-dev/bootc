@@ -108,12 +108,6 @@ pub(crate) fn install_via_bootupd(
         "/"
     };
 
-    // rootfs_mountpoint
-    //     .path()
-    //     .to_str()
-    //     .expect("Invalid tempdir path")
-    //};
-
     // We mount the linux API file systems into the target deployment before chrooting
     // so bootupd can find the proper backing device.
     // xref https://systemd.io/API_FILE_SYSTEMS/
