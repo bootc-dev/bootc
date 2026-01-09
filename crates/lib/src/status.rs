@@ -15,6 +15,7 @@ use ostree_ext::oci_spec;
 use ostree_ext::oci_spec::image::Digest;
 use ostree_ext::oci_spec::image::ImageConfiguration;
 use ostree_ext::sysroot::SysrootLock;
+use unicode_width::UnicodeWidthStr;
 
 use ostree_ext::ostree;
 
@@ -832,7 +833,11 @@ fn container_inspect_print_human(
     rows.push(("Kargs", kargs));
 
     // Find the max label width for right-alignment
-    let max_label_len = rows.iter().map(|(label, _)| label.len()).max().unwrap_or(0);
+    let max_label_len = rows
+        .iter()
+        .map(|(label, _)| label.width())
+        .max()
+        .unwrap_or(0);
 
     for (label, value) in rows {
         write_row_name(&mut out, label, max_label_len)?;

@@ -60,6 +60,7 @@ xshell = { workspace = true, optional = true }
 anstyle = "1.0.6"
 comfy-table = "7.1.1"
 liboverdrop = "0.1.0"
+unicode-width = "0.2"
 libsystemd = "0.7"
 linkme = "0.3"
 nom = "8.0.0"

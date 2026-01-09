@@ -201,10 +201,10 @@ pub(crate) fn test_compute_composefs_digest() -> Result<()> {
 
     // Verify it's a valid hex string of expected length (SHA-512 = 128 hex chars)
     assert_eq!(
-        digest.len(),
+        digest.as_bytes().len(),
         128,
         "Expected 512-bit hex digest, got length {}",
-        digest.len()
+        digest.as_bytes().len()
     );
     assert!(
         digest.chars().all(|c| c.is_ascii_hexdigit()),
