@@ -3,14 +3,18 @@
 set -xeuo pipefail
 cd $(dirname $0)
 . /usr/lib/os-release
-case $ID in
-  centos|rhel)
+case "${ID}${ID_LIKE:-}" in
+  *centos*|*rhel*)
+    # We'll use crb at build time
     dnf config-manager --set-enabled crb
-    # Enable EPEL for sbsigntools
-    dnf -y install epel-release
     ;;
-  fedora) dnf -y install dnf-utils 'dnf5-command(builddep)';;
 esac
+# Deal with dnf4 vs dnf5
+if test -x /usr/bin/dnf5; then
+  dnf -y install 'dnf5-command(builddep)'
+else
+  dnf -y install 'dnf-command(builddep)'
+fi
 # Handle version skew, xref https://gitlab.com/redhat/centos-stream/containers/bootc/-/issues/1174
 dnf -y distro-sync ostree{,-libs} systemd
 # Install base build requirements
