@@ -3,7 +3,7 @@ use camino::Utf8PathBuf;
 use cap_std_ext::cap_std::fs::Dir;
 use composefs::{
     fsverity::{FsVerityHashValue, Sha512HashValue},
-    util::{parse_sha256, Sha256Digest},
+    util::{Sha256Digest, parse_sha256},
 };
 use composefs_boot::BootOps;
 use composefs_oci::image::create_filesystem;
@@ -12,14 +12,14 @@ use ostree_ext::container::ManifestDiff;
 
 use crate::{
     bootc_composefs::{
-        boot::{setup_composefs_bls_boot, setup_composefs_uki_boot, BootSetupType, BootType},
+        boot::{BootSetupType, BootType, setup_composefs_bls_boot, setup_composefs_uki_boot},
         repo::{get_imgref, pull_composefs_repo},
         service::start_finalize_stated_svc,
         soft_reboot::prepare_soft_reboot_composefs,
         state::write_composefs_state,
         status::{
-            get_bootloader, get_composefs_status, get_container_manifest_and_config, get_imginfo,
-            ImgConfigManifest,
+            ImgConfigManifest, get_bootloader, get_composefs_status,
+            get_container_manifest_and_config, get_imginfo,
         },
     },
     cli::{SoftRebootMode, UpgradeOpts},

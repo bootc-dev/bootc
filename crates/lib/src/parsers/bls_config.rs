@@ -4,7 +4,7 @@
 
 #![allow(dead_code)]
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use bootc_kernel_cmdline::utf8::{Cmdline, CmdlineOwned};
 use camino::Utf8PathBuf;
 use composefs_boot::bootloader::EFI_EXT;
@@ -316,9 +316,20 @@ mod tests {
             Some("Fedora 42.20250623.3.1 (CoreOS)".to_string())
         );
         assert_eq!(config.version, "2");
-        assert_eq!(linux, "/boot/7e11ac46e3e022053e7226a20104ac656bf72d1a84e3a398b7cce70e9df188b6/vmlinuz-5.14.10");
-        assert_eq!(initrd, vec!["/boot/7e11ac46e3e022053e7226a20104ac656bf72d1a84e3a398b7cce70e9df188b6/initramfs-5.14.10.img"]);
-        assert_eq!(&*options.unwrap(), "root=UUID=abc123 rw composefs=7e11ac46e3e022053e7226a20104ac656bf72d1a84e3a398b7cce70e9df188b6");
+        assert_eq!(
+            linux,
+            "/boot/7e11ac46e3e022053e7226a20104ac656bf72d1a84e3a398b7cce70e9df188b6/vmlinuz-5.14.10"
+        );
+        assert_eq!(
+            initrd,
+            vec![
+                "/boot/7e11ac46e3e022053e7226a20104ac656bf72d1a84e3a398b7cce70e9df188b6/initramfs-5.14.10.img"
+            ]
+        );
+        assert_eq!(
+            &*options.unwrap(),
+            "root=UUID=abc123 rw composefs=7e11ac46e3e022053e7226a20104ac656bf72d1a84e3a398b7cce70e9df188b6"
+        );
         assert_eq!(config.extra.get("custom1"), Some(&"value1".to_string()));
         assert_eq!(config.extra.get("custom2"), Some(&"value2".to_string()));
 

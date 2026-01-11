@@ -142,7 +142,7 @@ pub fn unprefix_unescape_ref(prefix: &str, ostree_ref: &str) -> Result<String> {
 #[cfg(test)]
 mod test {
     use super::*;
-    use quickcheck::{quickcheck, TestResult};
+    use quickcheck::{TestResult, quickcheck};
 
     const TESTPREFIX: &str = "testprefix/blah";
 

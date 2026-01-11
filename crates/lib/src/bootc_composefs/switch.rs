@@ -5,9 +5,9 @@ use crate::{
     bootc_composefs::{
         state::update_target_imgref_in_origin,
         status::get_composefs_status,
-        update::{do_upgrade, is_image_pulled, validate_update, DoUpgradeOpts, UpdateAction},
+        update::{DoUpgradeOpts, UpdateAction, do_upgrade, is_image_pulled, validate_update},
     },
-    cli::{imgref_for_switch, SwitchOpts},
+    cli::{SwitchOpts, imgref_for_switch},
     store::{BootedComposefs, Storage},
 };
 

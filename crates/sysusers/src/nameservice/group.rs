@@ -1,7 +1,7 @@
 //! Helpers for [user passwd file](https://man7.org/linux/man-pages/man5/passwd.5.html).
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use cap_std_ext::cap_std::fs::Dir;
 use std::io::{BufRead, BufReader, Write};
 

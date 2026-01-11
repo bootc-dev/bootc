@@ -3,7 +3,7 @@
 use std::path::Path;
 
 use crate::container_utils::{is_ostree_container, ostree_booted};
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use camino::Utf8Path;
 use cap_std::fs::Dir;
 use cap_std_ext::cap_std;
@@ -13,8 +13,8 @@ use fn_error_context::context;
 use gio::prelude::*;
 use oci_spec::image as oci_image;
 use ocidir::{
-    oci_spec::image::{Arch, Platform},
     LayerWriter,
+    oci_spec::image::{Arch, Platform},
 };
 use ostree::gio;
 use xshell::cmd;
@@ -164,7 +164,7 @@ pub(crate) async fn create_fixture() -> Result<()> {
 
 pub(crate) fn test_ima() -> Result<()> {
     use gvariant::aligned_bytes::TryAsAligned;
-    use gvariant::{gv, Marker, Structure};
+    use gvariant::{Marker, Structure, gv};
 
     let cancellable = gio::Cancellable::NONE;
     let fixture = crate::fixture::Fixture::new_v1()?;

@@ -26,7 +26,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use aleph::InstallAleph;
-use anyhow::{anyhow, ensure, Context, Result};
+use anyhow::{Context, Result, anyhow, ensure};
 use bootc_kernel_cmdline::utf8::{Cmdline, CmdlineOwned};
 use bootc_utils::CommandRunExt;
 use camino::Utf8Path;
@@ -45,7 +45,7 @@ use ostree::gio;
 use ostree_ext::ostree;
 use ostree_ext::ostree_prepareroot::{ComposefsState, Tristate};
 use ostree_ext::prelude::Cast;
-use ostree_ext::sysroot::{allocate_new_stateroot, list_stateroots, SysrootLock};
+use ostree_ext::sysroot::{SysrootLock, allocate_new_stateroot, list_stateroots};
 use ostree_ext::{container as ostree_container, ostree_prepareroot};
 #[cfg(feature = "install-to-disk")]
 use rustix::fs::FileTypeExt;
@@ -58,7 +58,7 @@ use crate::bootc_composefs::{boot::setup_composefs_boot, repo::initialize_compos
 use crate::boundimage::{BoundImage, ResolvedBoundImage};
 use crate::containerenv::ContainerExecutionInfo;
 use crate::deploy::{
-    prepare_for_pull, pull_from_prepared, MergeState, PreparedImportMeta, PreparedPullResult,
+    MergeState, PreparedImportMeta, PreparedPullResult, prepare_for_pull, pull_from_prepared,
 };
 use crate::lsm;
 use crate::progress_jsonl::ProgressWriter;
@@ -66,7 +66,7 @@ use crate::spec::{Bootloader, ImageReference};
 use crate::store::Storage;
 use crate::task::Task;
 use crate::utils::sigpolicy_from_opt;
-use bootc_kernel_cmdline::{bytes, utf8, INITRD_ARG_PREFIX, ROOTFLAGS};
+use bootc_kernel_cmdline::{INITRD_ARG_PREFIX, ROOTFLAGS, bytes, utf8};
 use bootc_mount::Filesystem;
 use composefs::fsverity::FsVerityHashValue;
 
@@ -1277,7 +1277,10 @@ fn require_host_userns() -> Result<()> {
         .uid();
     // We must really be in a rootless container, or in some way
     // we're not part of the host user namespace.
-    ensure!(pid1_uid == 0, "{proc1} is owned by {pid1_uid}, not zero; this command must be run in the root user namespace (e.g. not rootless podman)");
+    ensure!(
+        pid1_uid == 0,
+        "{proc1} is owned by {pid1_uid}, not zero; this command must be run in the root user namespace (e.g. not rootless podman)"
+    );
     tracing::trace!("OK: we're in a matching user namespace with pid1");
     Ok(())
 }
@@ -1369,7 +1372,10 @@ async fn prepare_install(
     let external_source = source_opts.source_imgref.is_some();
     let (source, target_rootfs) = match source_opts.source_imgref {
         None => {
-            ensure!(host_is_container, "Either --source-imgref must be defined or this command must be executed inside a podman container.");
+            ensure!(
+                host_is_container,
+                "Either --source-imgref must be defined or this command must be executed inside a podman container."
+            );
 
             crate::cli::require_root(true)?;
 

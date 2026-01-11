@@ -1,14 +1,14 @@
 use std::io::Write;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use cap_std_ext::cap_std::fs::Dir;
 use cap_std_ext::dirext::CapStdExtDirExt;
 use fn_error_context::context;
-use rustix::fs::{fsync, renameat_with, AtFlags, RenameFlags};
+use rustix::fs::{AtFlags, RenameFlags, fsync, renameat_with};
 
 use crate::bootc_composefs::boot::{
-    primary_sort_key, secondary_sort_key, type1_entry_conf_file_name, BootType,
-    FILENAME_PRIORITY_PRIMARY, FILENAME_PRIORITY_SECONDARY,
+    BootType, FILENAME_PRIORITY_PRIMARY, FILENAME_PRIORITY_SECONDARY, primary_sort_key,
+    secondary_sort_key, type1_entry_conf_file_name,
 };
 use crate::bootc_composefs::status::{get_composefs_status, get_sorted_type1_boot_entries};
 use crate::composefs_consts::TYPE1_ENT_PATH_STAGED;

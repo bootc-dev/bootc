@@ -7,7 +7,7 @@ use ostree_ext::composefs::{
     fsverity::{FsVerityHashValue, Sha512HashValue},
     util::Sha256Digest,
 };
-use ostree_ext::composefs_boot::{bootloader::BootEntry as ComposefsBootEntry, BootOps};
+use ostree_ext::composefs_boot::{BootOps, bootloader::BootEntry as ComposefsBootEntry};
 use ostree_ext::composefs_oci::{
     image::create_filesystem as create_composefs_filesystem, pull as composefs_oci_pull,
 };

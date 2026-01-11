@@ -11,7 +11,7 @@ use crate::generic_decompress::Decompressor;
 use crate::logging::system_repo_journal_print;
 use crate::refescape;
 use crate::sysroot::SysrootLock;
-use anyhow::{anyhow, Context};
+use anyhow::{Context, anyhow};
 use bootc_utils::ResultExt;
 use camino::{Utf8Path, Utf8PathBuf};
 use canon_json::CanonJsonSerialize;
@@ -692,7 +692,9 @@ impl ImageImporter {
     pub(crate) async fn prepare_internal(&mut self, verify_layers: bool) -> Result<PrepareResult> {
         match &self.imgref.sigverify {
             SignatureSource::ContainerPolicy if skopeo::container_policy_is_default_insecure()? => {
-                return Err(anyhow!("containers-policy.json specifies a default of `insecureAcceptAnything`; refusing usage"));
+                return Err(anyhow!(
+                    "containers-policy.json specifies a default of `insecureAcceptAnything`; refusing usage"
+                ));
             }
             SignatureSource::OstreeRemote(_) if verify_layers => {
                 return Err(anyhow!(
@@ -795,7 +797,9 @@ impl ImageImporter {
         if matches!(self.imgref.sigverify, SignatureSource::ContainerPolicy)
             && skopeo::container_policy_is_default_insecure()?
         {
-            return Err(anyhow!("containers-policy.json specifies a default of `insecureAcceptAnything`; refusing usage"));
+            return Err(anyhow!(
+                "containers-policy.json specifies a default of `insecureAcceptAnything`; refusing usage"
+            ));
         }
         let remote = match &self.imgref.sigverify {
             SignatureSource::OstreeRemote(remote) => Some(remote.clone()),
@@ -2070,7 +2074,10 @@ mod tests {
             )
             .build()
             .unwrap();
-        assert_eq!(ref_for_layer(&d).unwrap(), "ostree/container/blob/sha256_3A_2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae");
+        assert_eq!(
+            ref_for_layer(&d).unwrap(),
+            "ostree/container/blob/sha256_3A_2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae"
+        );
     }
 
     #[test]

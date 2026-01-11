@@ -8,11 +8,11 @@ use anyhow::Result;
 use camino::Utf8PathBuf;
 use composefs_boot::bootloader::EFI_EXT;
 use nom::{
+    Err, IResult, Parser,
     bytes::complete::{escaped, tag, take_until},
     character::complete::{multispace0, multispace1, none_of},
     error::{Error, ErrorKind, ParseError},
     sequence::delimited,
-    Err, IResult, Parser,
 };
 
 /// Body content of a GRUB menuentry containing parsed commands.

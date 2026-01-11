@@ -8,7 +8,7 @@ use std::io::{BufWriter, Seek};
 use std::os::unix::process::CommandExt;
 use std::process::Command;
 
-use anyhow::{anyhow, ensure, Context, Result};
+use anyhow::{Context, Result, anyhow, ensure};
 use camino::{Utf8Path, Utf8PathBuf};
 use cap_std_ext::cap_std;
 use cap_std_ext::cap_std::fs::Dir;
@@ -1383,6 +1383,7 @@ async fn usroverlay() -> Result<()> {
 
 /// Perform process global initialization. This should be called as early as possible
 /// in the standard `main` function.
+#[allow(unsafe_code)]
 pub fn global_init() -> Result<()> {
     // In some cases we re-exec with a temporary binary,
     // so ensure that the syslog identifier is set.
@@ -1400,7 +1401,10 @@ pub fn global_init() -> Result<()> {
         // Setting the environment is thread-unsafe, but we ask calling code
         // to invoke this as early as possible. (In practice, that's just the cli's `main.rs`)
         // xref https://internals.rust-lang.org/t/synchronized-ffi-access-to-posix-environment-variable-functions/15475
-        std::env::set_var("HOME", "/root");
+        // SAFETY: Called early in main() before any threads are spawned.
+        unsafe {
+            std::env::set_var("HOME", "/root");
+        }
     }
     Ok(())
 }
@@ -2034,7 +2038,7 @@ mod tests {
 
     #[test]
     fn test_generate_completion_scripts_contain_commands() {
-        use clap_complete::aot::{generate, Shell};
+        use clap_complete::aot::{Shell, generate};
 
         // For each supported shell, generate the completion script and
         // ensure obvious subcommands appear in the output. This mirrors

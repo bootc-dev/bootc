@@ -1,6 +1,6 @@
 use std::{
     ffi::OsString,
-    fs::{create_dir_all, File},
+    fs::{File, create_dir_all},
     io::BufWriter,
     path::{Path, PathBuf},
     sync::Arc,
@@ -12,7 +12,7 @@ use clap::{Parser, Subcommand};
 
 use rustix::fs::CWD;
 
-use composefs_boot::{write_boot, BootOps};
+use composefs_boot::{BootOps, write_boot};
 
 use composefs::{
     dumpfile,

@@ -1,6 +1,6 @@
 //! The main entrypoint for the bootc system reinstallation CLI
 
-use anyhow::{ensure, Context, Result};
+use anyhow::{Context, Result, ensure};
 use bootc_utils::CommandRunExt;
 use clap::Parser;
 use fn_error_context::context;
@@ -79,7 +79,9 @@ fn run() -> Result<()> {
     println!("{}", reinstall_podman_command.to_string_pretty());
 
     println!();
-    println!("After reboot, the current root will be available in the /sysroot directory. Existing mounts will not be automatically mounted by the bootc system unless they are defined in the bootc image. Some automatic cleanup of the previous root will be performed.");
+    println!(
+        "After reboot, the current root will be available in the /sysroot directory. Existing mounts will not be automatically mounted by the bootc system unless they are defined in the bootc image. Some automatic cleanup of the previous root will be performed."
+    );
 
     prompt::temporary_developer_protection_prompt()?;
 

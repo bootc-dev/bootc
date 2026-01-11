@@ -35,7 +35,7 @@ use ostree_ext::{gio, ostree};
 use rustix::fs::Mode;
 
 use crate::bootc_composefs::boot::{get_esp_partition, get_sysroot_parent_dev, mount_esp};
-use crate::bootc_composefs::status::{composefs_booted, get_bootloader, ComposefsCmdline};
+use crate::bootc_composefs::status::{ComposefsCmdline, composefs_booted, get_bootloader};
 use crate::lsm;
 use crate::podstorage::CStorage;
 use crate::spec::{Bootloader, ImageStatus};

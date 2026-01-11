@@ -1,6 +1,6 @@
 use crate::{
     bootc_composefs::{
-        boot::{compute_boot_digest_uki, SYSTEMD_UKI_DIR},
+        boot::{SYSTEMD_UKI_DIR, compute_boot_digest_uki},
         state::update_boot_digest_in_origin,
     },
     store::Storage,

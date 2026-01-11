@@ -16,8 +16,8 @@ pub(crate) use gv_dirtree;
 
 #[cfg(test)]
 mod tests {
-    use gvariant::aligned_bytes::TryAsAligned;
     use gvariant::Marker;
+    use gvariant::aligned_bytes::TryAsAligned;
 
     #[test]
     fn test_dirtree() {

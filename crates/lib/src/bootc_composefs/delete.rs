@@ -7,7 +7,7 @@ use composefs_boot::bootloader::{EFI_ADDON_DIR_EXT, EFI_EXT};
 
 use crate::{
     bootc_composefs::{
-        boot::{find_vmlinuz_initrd_duplicates, get_efi_uuid_source, BootType, SYSTEMD_UKI_DIR},
+        boot::{BootType, SYSTEMD_UKI_DIR, find_vmlinuz_initrd_duplicates, get_efi_uuid_source},
         gc::composefs_gc,
         repo::open_composefs_repo,
         rollback::{composefs_rollback, rename_exchange_user_cfg},
@@ -17,7 +17,7 @@ use crate::{
         COMPOSEFS_STAGED_DEPLOYMENT_FNAME, COMPOSEFS_TRANSIENT_STATE_DIR, STATE_DIR_RELATIVE,
         TYPE1_ENT_PATH, TYPE1_ENT_PATH_STAGED, USER_CFG_STAGED,
     },
-    parsers::bls_config::{parse_bls_config, BLSConfigType},
+    parsers::bls_config::{BLSConfigType, parse_bls_config},
     spec::{BootEntry, Bootloader, DeploymentEntry},
     status::Slot,
     store::{BootedComposefs, Storage},

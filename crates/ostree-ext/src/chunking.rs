@@ -14,7 +14,7 @@ use crate::container::{COMPONENT_SEPARATOR, CONTENT_ANNOTATION};
 use crate::objectsource::{ContentID, ObjectMeta, ObjectMetaMap, ObjectSourceMeta};
 use crate::objgv::*;
 use crate::statistics;
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use camino::{Utf8Path, Utf8PathBuf};
 use containers_image_proxy::oci_spec;
 use gvariant::aligned_bytes::TryAsAligned;
@@ -136,35 +136,35 @@ struct Generation {
     dirmeta_found: BTreeSet<RcStr>,
 }
 
-fn push_dirmeta(repo: &ostree::Repo, gen: &mut Generation, checksum: &str) -> Result<()> {
-    if gen.dirtree_found.contains(checksum) {
+fn push_dirmeta(repo: &ostree::Repo, generation: &mut Generation, checksum: &str) -> Result<()> {
+    if generation.dirtree_found.contains(checksum) {
         return Ok(());
     }
     let checksum = RcStr::from(checksum);
-    gen.dirmeta_found.insert(RcStr::clone(&checksum));
+    generation.dirmeta_found.insert(RcStr::clone(&checksum));
     let child_v = repo.load_variant(ostree::ObjectType::DirMeta, checksum.borrow())?;
-    gen.metadata_size += child_v.data_as_bytes().as_ref().len() as u64;
+    generation.metadata_size += child_v.data_as_bytes().as_ref().len() as u64;
     Ok(())
 }
 
 fn push_dirtree(
     repo: &ostree::Repo,
-    gen: &mut Generation,
+    generation: &mut Generation,
     checksum: &str,
 ) -> Result<glib::Variant> {
     let child_v = repo.load_variant(ostree::ObjectType::DirTree, checksum)?;
-    if !gen.dirtree_found.contains(checksum) {
-        gen.metadata_size += child_v.data_as_bytes().as_ref().len() as u64;
+    if !generation.dirtree_found.contains(checksum) {
+        generation.metadata_size += child_v.data_as_bytes().as_ref().len() as u64;
     } else {
         let checksum = RcStr::from(checksum);
-        gen.dirtree_found.insert(checksum);
+        generation.dirtree_found.insert(checksum);
     }
     Ok(child_v)
 }
 
 fn generate_chunking_recurse(
     repo: &ostree::Repo,
-    gen: &mut Generation,
+    generation: &mut Generation,
     chunk: &mut Chunk,
     dt: &glib::Variant,
 ) -> Result<()> {
@@ -176,7 +176,7 @@ fn generate_chunking_recurse(
     let mut hexbuf = [0u8; 64];
     for file in files {
         let (name, csum) = file.to_tuple();
-        let fpath = gen.path.join(name.to_str());
+        let fpath = generation.path.join(name.to_str());
         hex::encode_to_slice(csum, &mut hexbuf)?;
         let checksum = std::str::from_utf8(&hexbuf)?;
         let meta = repo.query_file(checksum, gio::Cancellable::NONE)?.0;
@@ -193,17 +193,17 @@ fn generate_chunking_recurse(
         let (name, contents_csum, meta_csum) = item.to_tuple();
         let name = name.to_str();
         // Extend our current path
-        gen.path.push(name);
+        generation.path.push(name);
         hex::encode_to_slice(contents_csum, &mut hexbuf)?;
         let checksum_s = std::str::from_utf8(&hexbuf)?;
-        let dirtree_v = push_dirtree(repo, gen, checksum_s)?;
-        generate_chunking_recurse(repo, gen, chunk, &dirtree_v)?;
+        let dirtree_v = push_dirtree(repo, generation, checksum_s)?;
+        generate_chunking_recurse(repo, generation, chunk, &dirtree_v)?;
         drop(dirtree_v);
         hex::encode_to_slice(meta_csum, &mut hexbuf)?;
         let checksum_s = std::str::from_utf8(&hexbuf)?;
-        push_dirmeta(repo, gen, checksum_s)?;
+        push_dirmeta(repo, generation, checksum_s)?;
         // We did a push above, so pop must succeed.
-        assert!(gen.path.pop());
+        assert!(generation.path.pop());
     }
     Ok(())
 }
@@ -276,7 +276,7 @@ impl Chunking {
         let commit = commit.to_tuple();
 
         // Load it all into a single chunk
-        let mut gen = Generation {
+        let mut generation = Generation {
             path: Utf8PathBuf::from("/"),
             ..Default::default()
         };
@@ -285,14 +285,14 @@ impl Chunking {
         // Find the root directory tree
         let contents_checksum = &hex::encode(commit.6);
         let contents_v = repo.load_variant(ostree::ObjectType::DirTree, contents_checksum)?;
-        push_dirtree(repo, &mut gen, contents_checksum)?;
+        push_dirtree(repo, &mut generation, contents_checksum)?;
         let meta_checksum = &hex::encode(commit.7);
-        push_dirmeta(repo, &mut gen, meta_checksum.as_str())?;
+        push_dirmeta(repo, &mut generation, meta_checksum.as_str())?;
 
-        generate_chunking_recurse(repo, &mut gen, &mut chunk, &contents_v)?;
+        generate_chunking_recurse(repo, &mut generation, &mut chunk, &contents_v)?;
 
         let chunking = Chunking {
-            metadata_size: gen.metadata_size,
+            metadata_size: generation.metadata_size,
             remainder: chunk,
             ..Default::default()
         };

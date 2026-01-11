@@ -3,7 +3,7 @@ use std::{fs::File, os::fd::AsRawFd};
 use anyhow::{Context, Result};
 use cap_std_ext::cap_std::{ambient_authority, fs::Dir};
 use composefs::splitstream::SplitStreamData;
-use ocidir::{oci_spec::image::Platform, OciDir};
+use ocidir::{OciDir, oci_spec::image::Platform};
 use ostree_ext::container::skopeo;
 use ostree_ext::{container::Transport, oci_spec::image::ImageConfiguration};
 use tar::EntryType;

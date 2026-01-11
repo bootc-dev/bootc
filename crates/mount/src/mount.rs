@@ -7,7 +7,7 @@ use std::{
     process::Command,
 };
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use bootc_utils::CommandRunExt;
 use camino::Utf8Path;
 use cap_std_ext::{cap_std::fs::Dir, cmdext::CapStdExtCommandExt};

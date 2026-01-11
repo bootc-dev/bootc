@@ -5,7 +5,7 @@ use anyhow::{Context, Result};
 use camino::Utf8Path;
 use cap_std_ext::cap_std::{ambient_authority, fs::Dir};
 use fn_error_context::context;
-use rustix::mount::{move_mount, unmount, MountFlags, MoveMountFlags, UnmountFlags};
+use rustix::mount::{MountFlags, MoveMountFlags, UnmountFlags, move_mount, unmount};
 
 pub struct TempMount {
     pub dir: tempfile::TempDir,

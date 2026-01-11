@@ -17,13 +17,13 @@ use fn_error_context::context;
 
 use ostree_ext::container::deploy::ORIGIN_CONTAINER;
 use rustix::{
-    fs::{open, Mode, OFlags},
+    fs::{Mode, OFlags, open},
     path::Arg,
 };
 
 use crate::bootc_composefs::boot::BootType;
 use crate::bootc_composefs::repo::get_imgref;
-use crate::bootc_composefs::status::{get_sorted_type1_boot_entries, ImgConfigManifest};
+use crate::bootc_composefs::status::{ImgConfigManifest, get_sorted_type1_boot_entries};
 use crate::parsers::bls_config::BLSConfigType;
 use crate::store::{BootedComposefs, Storage};
 use crate::{

@@ -5,7 +5,7 @@
 
 use std::ops::Deref;
 
-use crate::{bytes, Action};
+use crate::{Action, bytes};
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -697,15 +697,17 @@ mod tests {
 
         // Test key without value should fail
         let err = kargs.require_value_of("switch").unwrap_err();
-        assert!(err
-            .to_string()
-            .contains("Failed to find kernel argument 'switch'"));
+        assert!(
+            err.to_string()
+                .contains("Failed to find kernel argument 'switch'")
+        );
 
         // Test non-existent key should fail
         let err = kargs.require_value_of("missing").unwrap_err();
-        assert!(err
-            .to_string()
-            .contains("Failed to find kernel argument 'missing'"));
+        assert!(
+            err.to_string()
+                .contains("Failed to find kernel argument 'missing'")
+        );
 
         // Test dash/underscore equivalence
         let kargs = Cmdline::from("dash-key=value1 under_key=value2");

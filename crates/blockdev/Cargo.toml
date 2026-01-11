@@ -1,6 +1,6 @@
 [package]
 description = "Internal implementation component of bootc; do not use"
-edition = "2021"
+edition = "2024"
 license = "MIT OR Apache-2.0"
 name = "bootc-internal-blockdev"
 repository = "https://github.com/bootc-dev/bootc"

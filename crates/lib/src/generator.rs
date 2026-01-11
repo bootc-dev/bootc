@@ -5,7 +5,7 @@ use camino::Utf8PathBuf;
 use cap_std::fs::Dir;
 use cap_std_ext::{cap_std, dirext::CapStdExtDirExt};
 use fn_error_context::context;
-use ostree_ext::container_utils::{is_ostree_booted_in, OSTREE_BOOTED};
+use ostree_ext::container_utils::{OSTREE_BOOTED, is_ostree_booted_in};
 use rustix::{fd::AsFd, fs::StatVfsMountFlags};
 
 use crate::install::DESTRUCTIVE_CLEANUP;
@@ -182,10 +182,12 @@ mod tests {
         unit_enablement_impl(sysroot, &unit_dir).unwrap();
         let wantsdir = &unit_dir.open_dir("multi-user.target.wants")?;
         verify(wantsdir, 2)?;
-        assert!(wantsdir
-            .symlink_metadata_optional(CLEANUP_UNIT)
-            .unwrap()
-            .is_none());
+        assert!(
+            wantsdir
+                .symlink_metadata_optional(CLEANUP_UNIT)
+                .unwrap()
+                .is_none()
+        );
 
         // Now create sysroot and rerun the generator
         unit_enablement_impl(sysroot, &unit_dir).unwrap();
@@ -200,10 +202,12 @@ mod tests {
         verify(wantsdir, 3)?;
 
         // And now the unit should be enabled
-        assert!(wantsdir
-            .symlink_metadata(CLEANUP_UNIT)
-            .unwrap()
-            .is_symlink());
+        assert!(
+            wantsdir
+                .symlink_metadata(CLEANUP_UNIT)
+                .unwrap()
+                .is_symlink()
+        );
 
         Ok(())
     }

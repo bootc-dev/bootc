@@ -7,7 +7,7 @@ use cap_std_ext::cap_std;
 use cap_std_ext::cap_std::fs::Dir;
 use fn_error_context::context;
 use libtest_mimic::Trial;
-use xshell::{cmd, Shell};
+use xshell::{Shell, cmd};
 
 pub(crate) const BASE_ARGS: &[&str] = &["podman", "run", "--rm", "--privileged", "--pid=host"];
 

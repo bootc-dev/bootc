@@ -11,11 +11,11 @@ use std::{
 use anyhow::{Context, Result};
 use clap::Parser;
 use rustix::{
-    fs::{major, minor, mkdirat, openat, stat, symlink, Mode, OFlags, CWD},
+    fs::{CWD, Mode, OFlags, major, minor, mkdirat, openat, stat, symlink},
     io::Errno,
     mount::{
-        fsconfig_create, fsconfig_set_string, fsmount, open_tree, unmount, FsMountFlags,
-        MountAttrFlags, OpenTreeFlags, UnmountFlags,
+        FsMountFlags, MountAttrFlags, OpenTreeFlags, UnmountFlags, fsconfig_create,
+        fsconfig_set_string, fsmount, open_tree, unmount,
     },
     path,
 };

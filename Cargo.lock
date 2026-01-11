@@ -276,6 +276,7 @@ dependencies = [
  "toml",
  "tracing",
  "uapi-version",
+ "unicode-width",
  "uuid",
  "xshell",
 ]

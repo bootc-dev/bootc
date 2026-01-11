@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use fn_error_context::context;
 use libtest_mimic::Trial;
 use rexpect::session::PtySession;

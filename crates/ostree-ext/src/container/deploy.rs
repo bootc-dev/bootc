@@ -5,7 +5,7 @@ use fn_error_context::context;
 use ostree::glib;
 use std::collections::HashSet;
 
-use super::store::{gc_image_layers, LayeredImageState};
+use super::store::{LayeredImageState, gc_image_layers};
 use super::{ImageReference, OstreeImageReference};
 use crate::container::store::PrepareResult;
 use crate::keyfileext::KeyFileExt;

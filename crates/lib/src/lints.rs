@@ -427,7 +427,9 @@ fn check_buildah_injected(root: &Dir, _config: &LintExecutionConfig) -> LintResu
     for ent in RUNTIME_INJECTED {
         if let Some(meta) = root.symlink_metadata_optional(ent)? {
             if meta.is_file() && meta.size() == 0 {
-                return lint_err(format!("/{ent} is an empty file; this may have been synthesized by a container runtime."));
+                return lint_err(format!(
+                    "/{ent} is an empty file; this may have been synthesized by a container runtime."
+                ));
             }
         }
     }
@@ -453,7 +455,7 @@ fn check_usretc(root: &Dir, _config: &LintExecutionConfig) -> LintResult {
     // But having both /etc and /usr/etc is not something we want to support.
     if root.symlink_metadata_optional("usr/etc")?.is_some() {
         return lint_err(
-            "Found /usr/etc - this is a bootc implementation detail and not supported to use in containers"
+            "Found /usr/etc - this is a bootc implementation detail and not supported to use in containers",
         );
     }
     lint_ok()
@@ -1195,7 +1197,10 @@ mod tests {
         // Test case 4: Iterator with items > DEFAULT_TRUNCATED_OUTPUT
         let items_multiple = (1..=8).map(|v| format!("item{v}")).collect::<Vec<_>>();
         format_items(&config, header, items_multiple.iter(), &mut output_str)?;
-        assert_eq!(output_str, "Test Header:\n  item1\n  item2\n  item3\n  item4\n  item5\n  item6\n  item7\n  item8\n");
+        assert_eq!(
+            output_str,
+            "Test Header:\n  item1\n  item2\n  item3\n  item4\n  item5\n  item6\n  item7\n  item8\n"
+        );
         output_str.clear();
 
         Ok(())

@@ -1,7 +1,7 @@
-use crate::{prompt, ReinstallOpts};
+use crate::{ReinstallOpts, prompt};
 
 use super::ROOT_KEY_MOUNT_POINT;
-use anyhow::{ensure, Context, Result};
+use anyhow::{Context, Result, ensure};
 use bootc_utils::CommandRunExt;
 use fn_error_context::context;
 use std::process::Command;
@@ -150,7 +150,10 @@ pub(crate) fn ensure_podman_installed() -> Result<()> {
         return Ok(());
     }
 
-    prompt::ask_yes_no("Podman was not found on this system. It's required in order to install a bootc image. Do you want to install it now?", true)?;
+    prompt::ask_yes_no(
+        "Podman was not found on this system. It's required in order to install a bootc image. Do you want to install it now?",
+        true,
+    )?;
 
     ensure!(
         which(podman_install_script_path()).is_ok(),

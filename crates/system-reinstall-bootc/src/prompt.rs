@@ -10,7 +10,7 @@ macro_rules! println_flush {
 }
 
 use crate::{btrfs, lvm, prompt, users::get_all_users_keys};
-use anyhow::{ensure, Context, Result};
+use anyhow::{Context, Result, ensure};
 use fn_error_context::context;
 
 use crossterm::event::{self, Event};
@@ -127,7 +127,9 @@ pub(crate) fn mount_warning() -> Result<()> {
 
     if !mounts.is_empty() {
         println!();
-        println!("NOTICE: the following mounts are left unchanged by this tool and will not be automatically mounted unless specified in the bootc image. Consult the bootc documentation to determine the appropriate action for your system.");
+        println!(
+            "NOTICE: the following mounts are left unchanged by this tool and will not be automatically mounted unless specified in the bootc image. Consult the bootc documentation to determine the appropriate action for your system."
+        );
         println!();
         for m in mounts {
             println!("{m}");

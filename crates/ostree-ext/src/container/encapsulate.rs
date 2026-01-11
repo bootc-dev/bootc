@@ -1,12 +1,12 @@
 //! APIs for creating container images from OSTree commits
 
-use super::{ImageReference, SignatureSource, OSTREE_COMMIT_LABEL};
-use super::{OstreeImageReference, Transport, COMPONENT_SEPARATOR, CONTENT_ANNOTATION};
+use super::{COMPONENT_SEPARATOR, CONTENT_ANNOTATION, OstreeImageReference, Transport};
+use super::{ImageReference, OSTREE_COMMIT_LABEL, SignatureSource};
 use crate::chunking::{Chunk, Chunking, ObjectMetaSized};
 use crate::container::skopeo;
 use crate::objectsource::ContentID;
 use crate::tar as ostree_tar;
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use camino::{Utf8Path, Utf8PathBuf};
 use cap_std::fs::Dir;
 use cap_std_ext::cap_std;

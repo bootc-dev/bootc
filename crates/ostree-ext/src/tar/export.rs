@@ -2,7 +2,7 @@
 
 use crate::chunking;
 use crate::objgv::*;
-use anyhow::{anyhow, ensure, Context, Result};
+use anyhow::{Context, Result, anyhow, ensure};
 use camino::{Utf8Path, Utf8PathBuf};
 use fn_error_context::context;
 use gio::glib;

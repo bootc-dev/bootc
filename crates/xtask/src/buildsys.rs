@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use anyhow::{Context, Result};
 use camino::{Utf8Path, Utf8PathBuf};
 use fn_error_context::context;
-use xshell::{cmd, Shell};
+use xshell::{Shell, cmd};
 
 const DOCKERFILE_NETWORK_CUTOFF: &str = "external dependency cutoff point";
 

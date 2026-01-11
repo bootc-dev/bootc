@@ -10,7 +10,7 @@ use gio::glib;
 use gio::prelude::*;
 use glib::Variant;
 use gvariant::aligned_bytes::TryAsAligned;
-use gvariant::{gv, Marker, Structure};
+use gvariant::{Marker, Structure, gv};
 use ostree::gio;
 use rustix::fd::BorrowedFd;
 use std::collections::{BTreeMap, HashMap};

@@ -12,7 +12,7 @@ use anyhow::{Context, Result};
 use camino::{Utf8Path, Utf8PathBuf};
 use clap::{Args, Parser, Subcommand};
 use fn_error_context::context;
-use xshell::{cmd, Shell};
+use xshell::{Shell, cmd};
 
 mod buildsys;
 mod man;

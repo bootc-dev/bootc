@@ -2,7 +2,7 @@
 // Copyright (C) 2021 Oracle and/or its affiliates.
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use std::io::{BufRead, Write};
 
 /// Entry from shadow file.

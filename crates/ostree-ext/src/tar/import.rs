@@ -1,7 +1,7 @@
 //! APIs for extracting OSTree commits from container images
 
 use crate::Result;
-use anyhow::{anyhow, bail, ensure, Context};
+use anyhow::{Context, anyhow, bail, ensure};
 use camino::Utf8Path;
 use camino::Utf8PathBuf;
 use fn_error_context::context;
@@ -12,7 +12,7 @@ use ostree::gio;
 use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::io::prelude::*;
-use tracing::{event, instrument, Level};
+use tracing::{Level, event, instrument};
 
 /// Arbitrary limit on xattrs to avoid RAM exhaustion attacks. The actual filesystem limits are often much smaller.
 // See https://en.wikipedia.org/wiki/Extended_file_attributes
@@ -894,8 +894,7 @@ mod tests {
 
     #[test]
     fn test_parse_object_entry_path() {
-        let path =
-            "sysroot/ostree/repo/objects/b8/627e3ef0f255a322d2bd9610cfaaacc8f122b7f8d17c0e7e3caafa160f9fc7.file.xattrs";
+        let path = "sysroot/ostree/repo/objects/b8/627e3ef0f255a322d2bd9610cfaaacc8f122b7f8d17c0e7e3caafa160f9fc7.file.xattrs";
         let input = Utf8PathBuf::from(path);
         let expected_parent = "b8";
         let expected_rest =

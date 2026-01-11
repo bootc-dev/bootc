@@ -1,7 +1,7 @@
 [package]
 authors = ["Colin Walters <walters@verbum.org>"]
 description = "Extension APIs for OSTree"
-edition = "2021"
+edition = "2024"
 license = "MIT OR Apache-2.0"
 name = "ostree-ext"
 repository = "https://github.com/ostreedev/ostree-rs-ext"

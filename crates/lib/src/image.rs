@@ -2,11 +2,11 @@
 //!
 //! APIs for operating on container images in the bootc storage.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use bootc_utils::CommandRunExt;
 use cap_std_ext::cap_std::{self, fs::Dir};
 use clap::ValueEnum;
-use comfy_table::{presets::NOTHING, Table};
+use comfy_table::{Table, presets::NOTHING};
 use fn_error_context::context;
 use ostree_ext::container::{ImageReference, Transport};
 use serde::Serialize;

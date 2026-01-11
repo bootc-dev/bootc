@@ -3,7 +3,7 @@
 
 use anyhow::Result;
 
-use bootc_initramfs_setup::{gpt_workaround, setup_root, Args};
+use bootc_initramfs_setup::{Args, gpt_workaround, setup_root};
 use clap::Parser;
 
 fn main() -> Result<()> {

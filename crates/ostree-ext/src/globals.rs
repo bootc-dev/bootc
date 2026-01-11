@@ -3,8 +3,8 @@
 use super::Result;
 use anyhow::Context;
 use camino::{Utf8Path, Utf8PathBuf};
-use cap_std_ext::cap_std::fs::Dir;
 use cap_std_ext::RootDir;
+use cap_std_ext::cap_std::fs::Dir;
 use fn_error_context::context;
 use ostree::glib;
 use std::fs::File;

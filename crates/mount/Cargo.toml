@@ -2,7 +2,7 @@
 description = "Internal mount code"
 # Should never be published to crates.io
 publish = false
-edition = "2021"
+edition = "2024"
 license = "MIT OR Apache-2.0"
 name = "bootc-mount"
 repository = "https://github.com/bootc-dev/bootc"

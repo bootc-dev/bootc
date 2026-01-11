@@ -8,7 +8,7 @@ use crate::{
 use anyhow::{Context, Result};
 use bootc_initramfs_setup::setup_root;
 use bootc_kernel_cmdline::utf8::Cmdline;
-use bootc_mount::{bind_mount_from_pidns, PID1};
+use bootc_mount::{PID1, bind_mount_from_pidns};
 use camino::Utf8Path;
 use fn_error_context::context;
 use ostree_ext::systemd_has_soft_reboot;

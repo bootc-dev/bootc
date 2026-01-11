@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use camino::{Utf8Path, Utf8PathBuf};
 use clap::Subcommand;
 use fn_error_context::context;
-use xshell::{cmd, Shell};
+use xshell::{Shell, cmd};
 
 const BUILDER_ANNOTATION: &str = "bootc.diskimage-builder";
 const TEST_IMAGE: &str = "localhost/bootc";

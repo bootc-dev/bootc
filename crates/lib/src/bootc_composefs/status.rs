@@ -17,12 +17,12 @@ use crate::{
     },
     install::EFI_LOADER_INFO,
     parsers::{
-        bls_config::{parse_bls_config, BLSConfig, BLSConfigType},
-        grub_menuconfig::{parse_grub_menuentry_file, MenuEntry},
+        bls_config::{BLSConfig, BLSConfigType, parse_bls_config},
+        grub_menuconfig::{MenuEntry, parse_grub_menuentry_file},
     },
     spec::{BootEntry, BootOrder, Host, HostSpec, ImageReference, ImageStatus},
     store::Storage,
-    utils::{read_uefi_var, EfiError},
+    utils::{EfiError, read_uefi_var},
 };
 
 use std::str::FromStr;

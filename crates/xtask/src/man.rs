@@ -8,7 +8,7 @@ use camino::Utf8Path;
 use fn_error_context::context;
 use serde::{Deserialize, Serialize};
 use std::{fs, io::Write};
-use xshell::{cmd, Shell};
+use xshell::{Shell, cmd};
 
 /// Represents a CLI option extracted from the JSON dump
 #[derive(Debug, Serialize, Deserialize)]

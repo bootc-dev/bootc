@@ -167,7 +167,9 @@ pub(crate) fn selinux_ensure_install_or_setenforce() -> Result<Option<SetEnforce
         Some(SetEnforceGuard::new())
     } else {
         let current = get_current_security_context()?;
-        anyhow::bail!("Failed to enter install_t (running as {current}) - use BOOTC_SETENFORCE0_FALLBACK=1 to override");
+        anyhow::bail!(
+            "Failed to enter install_t (running as {current}) - use BOOTC_SETENFORCE0_FALLBACK=1 to override"
+        );
     };
     Ok(g)
 }

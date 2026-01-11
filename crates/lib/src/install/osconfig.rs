@@ -66,9 +66,9 @@ mod tests {
 
         let content = root.read_to_string(format!("etc/tmpfiles.d/{ROOT_SSH_TMPFILE}"))?;
         assert_eq!(
-        content,
-        "f~ /var/roothome/.ssh/authorized_keys 600 root root - c3NoLWVkMjU1MTkgQUJDREUgZXhhbXBsZUBkZW1vCg==\n"
-    );
+            content,
+            "f~ /var/roothome/.ssh/authorized_keys 600 root root - c3NoLWVkMjU1MTkgQUJDREUgZXhhbXBsZUBkZW1vCg==\n"
+        );
 
         Ok(())
     }
@@ -83,9 +83,9 @@ mod tests {
 
         let content = root.read_to_string(format!("etc/tmpfiles.d/{ROOT_SSH_TMPFILE}"))?;
         assert_eq!(
-        content,
-        "f~ /root/.ssh/authorized_keys 600 root root - c3NoLWVkMjU1MTkgQUJDREUgZXhhbXBsZUBkZW1vCg==\n"
-    );
+            content,
+            "f~ /root/.ssh/authorized_keys 600 root root - c3NoLWVkMjU1MTkgQUJDREUgZXhhbXBsZUBkZW1vCg==\n"
+        );
         Ok(())
     }
 }

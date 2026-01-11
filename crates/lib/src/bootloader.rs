@@ -1,7 +1,7 @@
 use std::fs::create_dir_all;
 use std::process::Command;
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use bootc_utils::CommandRunExt;
 use camino::Utf8Path;
 use cap_std_ext::cap_std::fs::Dir;
@@ -11,7 +11,7 @@ use fn_error_context::context;
 use bootc_blockdev::{Partition, PartitionTable};
 use bootc_mount as mount;
 
-use crate::bootc_composefs::boot::{get_sysroot_parent_dev, mount_esp, SecurebootKeys};
+use crate::bootc_composefs::boot::{SecurebootKeys, get_sysroot_parent_dev, mount_esp};
 use crate::{discoverable_partition_specification, utils};
 
 /// The name of the mountpoint for efi (as a subdirectory of /boot, or at the toplevel)

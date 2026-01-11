@@ -6,7 +6,7 @@ use std::collections::HashSet;
 use std::io::{BufRead, Write};
 use std::process::Command;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use bootc_kernel_cmdline::utf8::CmdlineOwned;
 use cap_std::fs::{Dir, MetadataExt};
 use cap_std_ext::cap_std;

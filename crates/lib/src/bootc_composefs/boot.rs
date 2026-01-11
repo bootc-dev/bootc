@@ -66,7 +66,7 @@ use std::fs::create_dir_all;
 use std::io::Write;
 use std::path::Path;
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use bootc_blockdev::find_parent_devices;
 use bootc_kernel_cmdline::utf8::{Cmdline, Parameter};
 use bootc_mount::inspect_filesystem_of_dir;
@@ -79,8 +79,8 @@ use cap_std_ext::{
 use clap::ValueEnum;
 use composefs::fs::read_file;
 use composefs::tree::RegularFile;
-use composefs_boot::bootloader::{PEType, EFI_ADDON_DIR_EXT, EFI_ADDON_FILE_EXT, EFI_EXT};
 use composefs_boot::BootOps;
+use composefs_boot::bootloader::{EFI_ADDON_DIR_EXT, EFI_ADDON_FILE_EXT, EFI_EXT, PEType};
 use fn_error_context::context;
 use ostree_ext::composefs::fsverity::{FsVerityHashValue, Sha512HashValue};
 use ostree_ext::composefs_boot::bootloader::UsrLibModulesVmlinuz;
@@ -699,10 +699,12 @@ pub(crate) fn setup_composefs_bls_boot(
                                 .join(&shared_entry)
                                 .join(VMLINUZ);
 
-                            *initrd = vec![entry_paths
-                                .abs_entries_path
-                                .join(&shared_entry)
-                                .join(INITRD)];
+                            *initrd = vec![
+                                entry_paths
+                                    .abs_entries_path
+                                    .join(&shared_entry)
+                                    .join(INITRD),
+                            ];
                         }
 
                         _ => unreachable!(),

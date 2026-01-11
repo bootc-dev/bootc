@@ -538,10 +538,16 @@ mod tests {
     #[test]
     fn test_tmpfiles_entry_get_path() {
         let cases = [
-              ("z /dev/kvm          0666 - kvm -", "/dev/kvm"),
-              ("d /run/lock/lvm 0700 root root -", "/run/lock/lvm"),
-              ("a+      /var/lib/tpm2-tss/system/keystore   -    -    -     -           default:group:tss:rwx", "/var/lib/tpm2-tss/system/keystore"),
-              ("d \"/run/file with spaces/foo\" 0700 root root -", "/run/file with spaces/foo"),
+            ("z /dev/kvm          0666 - kvm -", "/dev/kvm"),
+            ("d /run/lock/lvm 0700 root root -", "/run/lock/lvm"),
+            (
+                "a+      /var/lib/tpm2-tss/system/keystore   -    -    -     -           default:group:tss:rwx",
+                "/var/lib/tpm2-tss/system/keystore",
+            ),
+            (
+                "d \"/run/file with spaces/foo\" 0700 root root -",
+                "/run/file with spaces/foo",
+            ),
             (
                 r#"d /spaces\x20\x20here/foo 0700 root root -"#,
                 "/spaces  here/foo",
@@ -613,8 +619,8 @@ mod tests {
         var_to_tmpfiles(rootfs, userdb, userdb).unwrap();
 
         // This is the first run
-        let mut gen = BootcTmpfilesGeneration(0);
-        let autovar_path = &gen.path();
+        let mut tmp_gen = BootcTmpfilesGeneration(0);
+        let autovar_path = &tmp_gen.path();
         assert!(rootfs.try_exists(autovar_path).unwrap());
         let entries: Vec<String> = rootfs
             .read_to_string(autovar_path)
@@ -640,8 +646,8 @@ mod tests {
         let wg = w.generated.as_ref().unwrap();
         assert_eq!(wg.0, NonZeroUsize::new(1).unwrap());
         assert_eq!(w.unsupported, 0);
-        gen.increment();
-        let autovar_path = &gen.path();
+        tmp_gen.increment();
+        let autovar_path = &tmp_gen.path();
         assert_eq!(autovar_path, &wg.1);
         assert!(rootfs.try_exists(autovar_path).unwrap());
         Ok(())
@@ -659,9 +665,9 @@ mod tests {
         rootfs.create_dir_all("var/log/foo")?;
         rootfs.write("var/log/foo/foo.log", b"some other log")?;
 
-        let gen = BootcTmpfilesGeneration(0);
+        let tmp_gen = BootcTmpfilesGeneration(0);
         var_to_tmpfiles(rootfs, userdb, userdb).unwrap();
-        let tmpfiles = rootfs.read_to_string(&gen.path()).unwrap();
+        let tmpfiles = rootfs.read_to_string(&tmp_gen.path()).unwrap();
         let ignored = tmpfiles
             .lines()
             .filter(|line| line.starts_with("# bootc ignored"))

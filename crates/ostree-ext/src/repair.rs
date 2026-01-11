@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Display;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use cap_std::fs::{Dir, MetadataExt};
 use cap_std_ext::cap_std;
 use fn_error_context::context;

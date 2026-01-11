@@ -1,7 +1,7 @@
 use super::ImageReference;
-use crate::container::{skopeo, DIFFID_LABEL};
-use crate::container::{store as container_store, Transport};
-use anyhow::{anyhow, Context, Result};
+use crate::container::{DIFFID_LABEL, skopeo};
+use crate::container::{Transport, store as container_store};
+use anyhow::{Context, Result, anyhow};
 use camino::Utf8Path;
 use cap_std::fs::Dir;
 use cap_std_ext::cap_std;

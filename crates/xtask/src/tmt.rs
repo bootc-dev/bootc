@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use camino::{Utf8Path, Utf8PathBuf};
 use fn_error_context::context;
 use rand::Rng;
-use xshell::{cmd, Shell};
+use xshell::{Shell, cmd};
 
 // Generation markers for integration.fmf
 const PLAN_MARKER_BEGIN: &str = "# BEGIN GENERATED PLANS\n";

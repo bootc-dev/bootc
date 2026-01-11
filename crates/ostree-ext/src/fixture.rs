@@ -10,7 +10,7 @@ use crate::objgv::gv_dirtree;
 use crate::prelude::*;
 use crate::tar::SECURITY_SELINUX_XATTR_C;
 use crate::{gio, glib};
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use bootc_utils::CommandRunExt;
 use camino::{Utf8Component, Utf8Path, Utf8PathBuf};
 use cap_std::fs::Dir;
@@ -625,9 +625,11 @@ impl Fixture {
             store::ImageImporter::new(self.destrepo(), &ostree_imgref, Default::default())
                 .await
                 .unwrap();
-        assert!(store::query_image(self.destrepo(), &imgref)
-            .unwrap()
-            .is_none());
+        assert!(
+            store::query_image(self.destrepo(), &imgref)
+                .unwrap()
+                .is_none()
+        );
         let prep = match imp.prepare().await.context("Init prep derived")? {
             store::PrepareResult::AlreadyPresent(_) => panic!("should not be already imported"),
             store::PrepareResult::Ready(r) => r,
@@ -1053,9 +1055,11 @@ impl NonOstreeFixture {
             store::ImageImporter::new(self.destrepo(), &ostree_imgref, Default::default())
                 .await
                 .unwrap();
-        assert!(store::query_image(self.destrepo(), &imgref)
-            .unwrap()
-            .is_none());
+        assert!(
+            store::query_image(self.destrepo(), &imgref)
+                .unwrap()
+                .is_none()
+        );
         let prep = match imp.prepare().await.context("Init prep derived")? {
             store::PrepareResult::AlreadyPresent(_) => panic!("should not be already imported"),
             store::PrepareResult::Ready(r) => r,
