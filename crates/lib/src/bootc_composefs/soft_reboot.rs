@@ -10,11 +10,49 @@ use bootc_initramfs_setup::setup_root;
 use bootc_kernel_cmdline::utf8::Cmdline;
 use bootc_mount::{PID1, bind_mount_from_pidns};
 use camino::Utf8Path;
+use cap_std_ext::cap_std::ambient_authority;
+use cap_std_ext::cap_std::fs::Dir;
+use cap_std_ext::dirext::CapStdExtDirExt;
 use fn_error_context::context;
 use ostree_ext::systemd_has_soft_reboot;
+use rustix::mount::{unmount, UnmountFlags};
 use std::{fs::create_dir_all, os::unix::process::CommandExt, path::PathBuf, process::Command};
 
 const NEXTROOT: &str = "/run/nextroot";
+
+#[context("Resetting soft reboot state")]
+fn reset_soft_reboot() -> Result<()> {
+    let run = Utf8Path::new("/run");
+    bind_mount_from_pidns(PID1, &run, &run, true).context("Bind mounting /run")?;
+
+    let run_dir = Dir::open_ambient_dir("/run", ambient_authority()).context("Opening run")?;
+
+    let nextroot = run_dir
+        .open_dir_optional("nextroot")
+        .context("Opening nextroot")?;
+
+    let Some(nextroot) = nextroot else {
+        tracing::debug!("Nextroot is not a directory");
+        println!("No deployment staged for soft rebooting");
+        return Ok(());
+    };
+
+    let nextroot_mounted = nextroot
+        .is_mountpoint(".")?
+        .ok_or_else(|| anyhow::anyhow!("Failed to get mount info"))?;
+
+    if !nextroot_mounted {
+        tracing::debug!("Nextroot is not a mountpoint");
+        println!("No deployment staged for soft rebooting");
+        return Ok(());
+    }
+
+    unmount(NEXTROOT, UnmountFlags::DETACH).context("Unmounting nextroot")?;
+
+    println!("Soft reboot state cleared successfully");
+
+    Ok(())
+}
 
 /// Checks if the provided deployment is soft reboot capable, and soft reboots the system if
 /// argument `reboot` is true
@@ -22,12 +60,19 @@ const NEXTROOT: &str = "/run/nextroot";
 pub(crate) async fn prepare_soft_reboot_composefs(
     storage: &Storage,
     booted_cfs: &BootedComposefs,
-    deployment_id: &String,
+    deployment_id: Option<&String>,
     reboot: bool,
+    reset: bool,
 ) -> Result<()> {
     if !systemd_has_soft_reboot() {
         anyhow::bail!("System does not support soft reboots")
     }
+
+    if reset {
+        return reset_soft_reboot();
+    }
+
+    let deployment_id = deployment_id.ok_or_else(|| anyhow::anyhow!("Expected deployment id"))?;
 
     if *deployment_id == *booted_cfs.cmdline.digest {
         anyhow::bail!("Cannot soft-reboot to currently booted deployment");

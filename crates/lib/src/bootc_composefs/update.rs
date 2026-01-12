@@ -267,7 +267,7 @@ pub(crate) async fn do_upgrade(
     }
 
     if opts.soft_reboot.is_some() {
-        prepare_soft_reboot_composefs(storage, booted_cfs, &id.to_hex(), true).await?;
+        prepare_soft_reboot_composefs(storage, booted_cfs, Some(&id.to_hex()), true, false).await?;
     }
 
     Ok(())
