@@ -1714,13 +1714,15 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
                 let storage = get_storage().await?;
                 let cfs = storage.get_ensure_composefs()?;
                 let testdata = b"some test data";
-                let testdata_digest = openssl::sha::sha256(testdata);
-                let mut w = SplitStreamWriter::new(&cfs, None, Some(testdata_digest));
+                let testdata_digest = hex::encode(openssl::sha::sha256(testdata));
+                let mut w = SplitStreamWriter::new(&cfs, 0);
                 w.write_inline(testdata);
-                let object = cfs.write_stream(w, Some("testobject"))?.to_hex();
+                let object = cfs
+                    .write_stream(w, &testdata_digest, Some("testobject"))?
+                    .to_hex();
                 assert_eq!(
                     object,
-                    "5d94ceb0b2bb3a78237e0a74bc030a262239ab5f47754a5eb2e42941056b64cb21035d64a8f7c2f156e34b820802fa51884de2b1f7dc3a41b9878fc543cd9b07"
+                    "dc31ae5d2f637e98d2171821d60d2fcafb8084d6a4bb3bd9cdc7ad41decce6e48f85d5413d22371d36b223945042f53a2a6ab449b8e45d8896ba7d8694a16681"
                 );
                 Ok(())
             }

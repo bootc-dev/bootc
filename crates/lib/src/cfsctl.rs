@@ -45,7 +45,7 @@ pub struct App {
 enum OciCommand {
     /// Stores a tar file as a splitstream in the repository.
     ImportLayer {
-        sha256: String,
+        digest: String,
         name: Option<String>,
     },
     /// Lists the contents of a tar stream
@@ -102,7 +102,7 @@ enum Command {
     Transaction,
     /// Reconstitutes a split stream and writes it to stdout
     Cat {
-        /// the name of the stream to cat, either a sha256 digest or prefixed with 'ref/'
+        /// the name of the stream to cat, either a content identifier or prefixed with 'ref/'
         name: String,
     },
     /// Perform garbage collection
@@ -118,7 +118,7 @@ enum Command {
     },
     /// Mounts a composefs, possibly enforcing fsverity of the image
     Mount {
-        /// the name of the image to mount, either a sha256 digest or prefixed with 'ref/'
+        /// the name of the image to mount, either an fs-verity hash or prefixed with 'ref/'
         name: String,
         /// the mountpoint
         mountpoint: String,
@@ -191,24 +191,24 @@ where
             }
         }
         Command::Cat { name } => {
-            repo.merge_splitstream(&name, None, &mut std::io::stdout())?;
+            repo.merge_splitstream(&name, None, None, &mut std::io::stdout())?;
         }
         Command::ImportImage { reference } => {
             let image_id = repo.import_image(&reference, &mut std::io::stdin())?;
             println!("{}", image_id.to_id());
         }
         Command::Oci { cmd: oci_cmd } => match oci_cmd {
-            OciCommand::ImportLayer { name, sha256 } => {
+            OciCommand::ImportLayer { name, digest } => {
                 let object_id = composefs_oci::import_layer(
-                    &repo,
-                    &composefs::util::parse_sha256(sha256)?,
+                    repo,
+                    &digest,
                     name.as_deref(),
                     &mut std::io::stdin(),
                 )?;
                 println!("{}", object_id.to_id());
             }
             OciCommand::LsLayer { name } => {
-                composefs_oci::ls_layer(&repo, &name)?;
+                composefs_oci::ls_layer(repo, &name)?;
             }
             OciCommand::Dump {
                 ref config_name,
@@ -216,7 +216,7 @@ where
             } => {
                 let verity = verity_opt(config_verity)?;
                 let mut fs =
-                    composefs_oci::image::create_filesystem(&repo, config_name, verity.as_ref())?;
+                    composefs_oci::image::create_filesystem(repo, config_name, verity.as_ref())?;
                 fs.print_dumpfile()?;
             }
             OciCommand::ComputeId {
@@ -226,9 +226,9 @@ where
             } => {
                 let verity = verity_opt(config_verity)?;
                 let mut fs =
-                    composefs_oci::image::create_filesystem(&repo, config_name, verity.as_ref())?;
+                    composefs_oci::image::create_filesystem(repo, config_name, verity.as_ref())?;
                 if bootable {
-                    fs.transform_for_boot(&repo)?;
+                    fs.transform_for_boot(repo)?;
                 }
                 let id = fs.compute_image_id();
                 println!("{}", id.to_hex());
@@ -241,18 +241,18 @@ where
             } => {
                 let verity = verity_opt(config_verity)?;
                 let mut fs =
-                    composefs_oci::image::create_filesystem(&repo, config_name, verity.as_ref())?;
+                    composefs_oci::image::create_filesystem(repo, config_name, verity.as_ref())?;
                 if bootable {
-                    fs.transform_for_boot(&repo)?;
+                    fs.transform_for_boot(repo)?;
                 }
-                let image_id = fs.commit_image(&repo, image_name.as_deref())?;
+                let image_id = fs.commit_image(repo, image_name.as_deref())?;
                 println!("{}", image_id.to_id());
             }
             OciCommand::Pull { ref image, name } => {
-                let (sha256, verity) =
-                    composefs_oci::pull(&repo, image, name.as_deref(), None).await?;
+                let (digest, verity) =
+                    composefs_oci::pull(repo, image, name.as_deref(), None).await?;
 
-                println!("sha256 {}", hex::encode(sha256));
+                println!("config {digest}");
                 println!("verity {}", verity.to_hex());
             }
             OciCommand::Seal {
@@ -260,15 +260,15 @@ where
                 ref config_verity,
             } => {
                 let verity = verity_opt(config_verity)?;
-                let (sha256, verity) = composefs_oci::seal(&repo, config_name, verity.as_ref())?;
-                println!("sha256 {}", hex::encode(sha256));
+                let (digest, verity) = composefs_oci::seal(repo, config_name, verity.as_ref())?;
+                println!("config {digest}");
                 println!("verity {}", verity.to_id());
             }
             OciCommand::Mount {
                 ref name,
                 ref mountpoint,
             } => {
-                composefs_oci::mount(&repo, name, mountpoint, None)?;
+                composefs_oci::mount(repo, name, mountpoint, None)?;
             }
             OciCommand::PrepareBoot {
                 ref config_name,
@@ -279,9 +279,9 @@ where
             } => {
                 let verity = verity_opt(config_verity)?;
                 let mut fs =
-                    composefs_oci::image::create_filesystem(&repo, config_name, verity.as_ref())?;
-                let entries = fs.transform_for_boot(&repo)?;
-                let id = fs.commit_image(&repo, None)?;
+                    composefs_oci::image::create_filesystem(repo, config_name, verity.as_ref())?;
+                let entries = fs.transform_for_boot(repo)?;
+                let id = fs.commit_image(repo, None)?;
 
                 let Some(entry) = entries.into_iter().next() else {
                     anyhow::bail!("No boot entries!");
@@ -289,7 +289,7 @@ where
 
                 let cmdline_refs: Vec<&str> = cmdline.iter().map(String::as_str).collect();
                 write_boot::write_boot_simple(
-                    &repo,
+                    repo,
                     entry,
                     &id,
                     args.insecure,
@@ -302,7 +302,7 @@ where
                 let state = args
                     .repo
                     .as_ref()
-                    .map(|p: &PathBuf| p.parent().unwrap_or(p))
+                    .map(|p: &PathBuf| p.parent().unwrap())
                     .unwrap_or(Path::new("/sysroot"))
                     .join("state/deploy")
                     .join(id.to_hex());
@@ -318,9 +318,9 @@ where
             bootable,
             stat_root,
         } => {
-            let mut fs = composefs::fs::read_filesystem(CWD, path, Some(&repo), stat_root)?;
+            let mut fs = composefs::fs::read_filesystem(CWD, path, Some(repo.as_ref()), stat_root)?;
             if bootable {
-                fs.transform_for_boot(&repo)?;
+                fs.transform_for_boot(repo)?;
             }
             let id = fs.compute_image_id();
             println!("{}", id.to_hex());
@@ -337,11 +337,11 @@ where
             stat_root,
             ref image_name,
         } => {
-            let mut fs = composefs::fs::read_filesystem(CWD, path, Some(&repo), stat_root)?;
+            let mut fs = composefs::fs::read_filesystem(CWD, path, Some(repo.as_ref()), stat_root)?;
             if bootable {
-                fs.transform_for_boot(&repo)?;
+                fs.transform_for_boot(repo)?;
             }
-            let id = fs.commit_image(&repo, image_name.as_deref())?;
+            let id = fs.commit_image(repo, image_name.as_deref())?;
             println!("{}", id.to_id());
         }
         Command::CreateDumpfile {
@@ -349,9 +349,9 @@ where
             bootable,
             stat_root,
         } => {
-            let mut fs = composefs::fs::read_filesystem(CWD, path, Some(&repo), stat_root)?;
+            let mut fs = composefs::fs::read_filesystem(CWD, path, Some(repo.as_ref()), stat_root)?;
             if bootable {
-                fs.transform_for_boot(&repo)?;
+                fs.transform_for_boot(repo)?;
             }
             fs.print_dumpfile()?;
         }

@@ -1,10 +1,7 @@
 use anyhow::{Context, Result};
 use camino::Utf8PathBuf;
 use cap_std_ext::cap_std::fs::Dir;
-use composefs::{
-    fsverity::{FsVerityHashValue, Sha512HashValue},
-    util::{Sha256Digest, parse_sha256},
-};
+use composefs::fsverity::{FsVerityHashValue, Sha512HashValue};
 use composefs_boot::BootOps;
 use composefs_oci::image::create_filesystem;
 use fn_error_context::context;
@@ -27,12 +24,6 @@ use crate::{
     spec::{Bootloader, Host, ImageReference},
     store::{BootedComposefs, ComposefsRepository, Storage},
 };
-
-#[context("Getting SHA256 Digest for {id}")]
-pub fn str_to_sha256digest(id: &str) -> Result<Sha256Digest> {
-    let id = id.strip_prefix("sha256:").unwrap_or(id);
-    Ok(parse_sha256(&id)?)
-}
 
 /// Checks if a container image has been pulled to the local composefs repository.
 ///
@@ -61,10 +52,9 @@ pub(crate) async fn is_image_pulled(
     let img_config_manifest = get_container_manifest_and_config(&imgref_repr).await?;
 
     let img_digest = img_config_manifest.manifest.config().digest().digest();
-    let img_sha256 = str_to_sha256digest(&img_digest)?;
 
-    // check_stream is expensive to run, but probably a good idea
-    let container_pulled = repo.check_stream(&img_sha256).context("Checking stream")?;
+    // NB: add deep checking?
+    let container_pulled = repo.has_stream(img_digest).context("Checking stream")?;
 
     Ok((container_pulled, img_config_manifest))
 }

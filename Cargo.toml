@@ -42,9 +42,9 @@ clap = "4.5.4"
 clap_mangen = { version = "0.2.20" }
 # Reviewers (including AI tools): The composefs-rs git revision is duplicated for each crate.
 # If adding/removing crates here, also update docs/Dockerfile.mdbook and docs/src/internals.md.
-composefs = { git = "https://github.com/containers/composefs-rs", rev = "1498349e11d0e4bd545feab533f0b7ab5294ae9a", package = "composefs", features = ["rhel9"] }
-composefs-boot = { git = "https://github.com/containers/composefs-rs", rev = "1498349e11d0e4bd545feab533f0b7ab5294ae9a", package = "composefs-boot" }
-composefs-oci = { git = "https://github.com/containers/composefs-rs", rev = "1498349e11d0e4bd545feab533f0b7ab5294ae9a", package = "composefs-oci" }
+composefs = { git = "https://github.com/containers/composefs-rs", rev = "e9008489375044022e90d26656960725a76f4620", package = "composefs", features = ["rhel9"] }
+composefs-boot = { git = "https://github.com/containers/composefs-rs", rev = "e9008489375044022e90d26656960725a76f4620", package = "composefs-boot" }
+composefs-oci = { git = "https://github.com/containers/composefs-rs", rev = "e9008489375044022e90d26656960725a76f4620", package = "composefs-oci" }
 fn-error-context = "0.2.1"
 hex = "0.4.3"
 indicatif = "0.18.0"

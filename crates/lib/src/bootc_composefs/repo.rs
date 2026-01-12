@@ -3,10 +3,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 
-use ostree_ext::composefs::{
-    fsverity::{FsVerityHashValue, Sha512HashValue},
-    util::Sha256Digest,
-};
+use ostree_ext::composefs::fsverity::{FsVerityHashValue, Sha512HashValue};
 use ostree_ext::composefs_boot::{BootOps, bootloader::BootEntry as ComposefsBootEntry};
 use ostree_ext::composefs_oci::{
     image::create_filesystem as create_composefs_filesystem, pull as composefs_oci_pull,
@@ -26,7 +23,7 @@ pub(crate) fn open_composefs_repo(rootfs_dir: &Dir) -> Result<crate::store::Comp
 pub(crate) async fn initialize_composefs_repository(
     state: &State,
     root_setup: &RootSetup,
-) -> Result<(Sha256Digest, impl FsVerityHashValue)> {
+) -> Result<(String, impl FsVerityHashValue)> {
     let rootfs_dir = &root_setup.physical_root;
 
     rootfs_dir
@@ -94,11 +91,11 @@ pub(crate) async fn pull_composefs_repo(
         .await
         .context("Pulling composefs repo")?;
 
-    tracing::info!("ID: {}, Verity: {}", hex::encode(id), verity.to_hex());
+    tracing::info!("ID: {id}, Verity: {}", verity.to_hex());
 
     let repo = open_composefs_repo(&rootfs_dir)?;
     let mut fs: crate::store::ComposefsFilesystem =
-        create_composefs_filesystem(&repo, &hex::encode(id), None)
+        create_composefs_filesystem(&repo, &id, None)
             .context("Failed to create composefs filesystem")?;
 
     let entries = fs.transform_for_boot(&repo)?;

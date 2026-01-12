@@ -3,17 +3,15 @@ use std::{fs::File, os::fd::AsRawFd};
 use anyhow::{Context, Result};
 use cap_std_ext::cap_std::{ambient_authority, fs::Dir};
 use composefs::splitstream::SplitStreamData;
+use composefs_oci::open_config;
 use ocidir::{OciDir, oci_spec::image::Platform};
+use ostree_ext::container::Transport;
 use ostree_ext::container::skopeo;
-use ostree_ext::{container::Transport, oci_spec::image::ImageConfiguration};
 use tar::EntryType;
 
 use crate::image::get_imgrefs_for_copy;
 use crate::{
-    bootc_composefs::{
-        status::{get_composefs_status, get_imginfo},
-        update::str_to_sha256digest,
-    },
+    bootc_composefs::status::{get_composefs_status, get_imginfo},
     store::{BootedComposefs, Storage},
 };
 
@@ -52,8 +50,7 @@ pub async fn export_repo_to_image(
 
     let imginfo = get_imginfo(storage, &depl_verity, None).await?;
 
-    let config_name = &imginfo.manifest.config().digest().digest();
-    let config_name = str_to_sha256digest(config_name)?;
+    let config_digest = imginfo.manifest.config().digest().digest();
 
     let var_tmp =
         Dir::open_ambient_dir("/var/tmp", ambient_authority()).context("Opening /var/tmp")?;
@@ -61,12 +58,9 @@ pub async fn export_repo_to_image(
     let tmpdir = cap_std_ext::cap_tempfile::tempdir_in(&var_tmp)?;
     let oci_dir = OciDir::ensure(tmpdir.try_clone()?).context("Opening OCI")?;
 
-    let mut config_stream = booted_cfs
-        .repo
-        .open_stream(&hex::encode(config_name), None)
-        .context("Opening config stream")?;
-
-    let config = ImageConfiguration::from_reader(&mut config_stream)?;
+    // Use composefs_oci::open_config to get the config and layer map
+    let (config, layer_map) =
+        open_config(&*booted_cfs.repo, config_digest, None).context("Opening config")?;
 
     // We can't guarantee that we'll get the same tar stream as the container image
     // So we create new config and manifest
@@ -82,12 +76,12 @@ pub async fn export_repo_to_image(
     let total_layers = config.rootfs().diff_ids().len();
 
     for (idx, old_diff_id) in config.rootfs().diff_ids().iter().enumerate() {
-        let layer_sha256 = str_to_sha256digest(old_diff_id)?;
-        let layer_verity = config_stream.lookup(&layer_sha256)?;
+        // Look up the layer verity from the map
+        let layer_verity = layer_map
+            .get(old_diff_id.as_str())
+            .ok_or_else(|| anyhow::anyhow!("Layer {old_diff_id} not found in config"))?;
 
-        let mut layer_stream = booted_cfs
-            .repo
-            .open_stream(&hex::encode(layer_sha256), Some(layer_verity))?;
+        let mut layer_stream = booted_cfs.repo.open_stream("", Some(layer_verity), None)?;
 
         let mut layer_writer = oci_dir.create_layer(None)?;
         layer_writer.follow_symlinks(false);
@@ -120,7 +114,7 @@ pub async fn export_repo_to_image(
 
             let size = header.entry_size()?;
 
-            match layer_stream.read_exact(size as usize, ((size + 511) & !511) as usize)? {
+            match layer_stream.read_exact(size as usize, ((size as usize) + 511) & !511)? {
                 SplitStreamData::External(obj_id) => match header.entry_type() {
                     EntryType::Regular | EntryType::Continuous => {
                         let file = File::from(booted_cfs.repo.open_object(&obj_id)?);
