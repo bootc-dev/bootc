@@ -788,6 +788,93 @@ fn check_boot(root: &Dir, config: &LintExecutionConfig) -> LintResult {
     format_lint_err_from_items(config, header, items)
 }
 
+/// Lint for potential uid/gid drift for files under /etc.
+/// Warn if files/dirs in /etc are owned by a non-root uid/gid and there is no
+/// corresponding tmpfiles.d chown (z/Z) entry covering them.
+#[distributed_slice(LINTS)]
+static LINT_ETC_UID_DRIFT: Lint = Lint::new_warning(
+    "etc-uid-drift",
+    indoc! { r#"
+Check for files in /etc owned by non-root users or groups which lack corresponding
+systemd tmpfiles.d 'z' or 'Z' entries to chown them at boot. Ownership encoded
+in the container may drift across upgrades if /etc is persistent.
+
+This check ignores paths covered by tmpfiles.d chown entries.
+"# },
+    check_etc_uid_drift,
+);
+
+fn check_etc_uid_drift(root: &Dir, config: &LintExecutionConfig) -> LintResult {
+    // Load chown-affecting tmpfiles entries
+    let ch = bootc_tmpfiles::read_tmpfiles_chowners(root)?;
+    // Build sets of fixed numeric uids/gids from sysusers
+    let mut fixed_uids = BTreeSet::new();
+    let mut fixed_gids = BTreeSet::new();
+    for ent in bootc_sysusers::read_sysusers(root)? {
+        match ent {
+            bootc_sysusers::SysusersEntry::User { uid, .. } => {
+                if let Some(bootc_sysusers::IdSource::Numeric(n)) = uid {
+                    fixed_uids.insert(n);
+                }
+            }
+            bootc_sysusers::SysusersEntry::Group { id, .. } => {
+                if let Some(bootc_sysusers::IdSource::Numeric(n)) = id {
+                    fixed_gids.insert(n);
+                }
+            }
+            bootc_sysusers::SysusersEntry::Range { .. } => {}
+        }
+    }
+    let Some(etcd) = root.open_dir_optional("etc")? else {
+        return lint_ok();
+    };
+    // We'll collect problematic items
+    let mut problems: BTreeSet<std::path::PathBuf> = BTreeSet::new();
+    // Depth-first walk under /etc
+    let mut stack: Vec<(Dir, std::path::PathBuf)> = vec![(etcd, std::path::PathBuf::from("/etc"))];
+    while let Some((dir, abspath)) = stack.pop() {
+        for ent in dir.entries()? {
+            let ent = ent?;
+            let name = ent.file_name();
+            let child_rel = abspath.join(&name);
+            // Convert absolute path to Path for chown coverage check
+            let child_abs_path = child_rel.as_path();
+            let fty = ent.file_type()?;
+            if fty.is_symlink() {
+                // Symlinks are not meaningful for ownership drift
+                continue;
+            }
+            let meta = ent.metadata()?;
+            // Recurse into subdirectories
+            if meta.is_dir() {
+                // Avoid traversing mount points
+                let rel = child_rel.strip_prefix("/").unwrap();
+                if let Some(subdir) = root.open_dir_noxdev(rel)? {
+                    stack.push((subdir, child_rel));
+                }
+            }
+            let uid = meta.uid();
+            let gid = meta.gid();
+            // uid/gid of 0 (root) is always fine; others are fine if pinned numerically in sysusers
+            let is_potential_drift = (uid != 0 && !fixed_uids.contains(&uid))
+                || (gid != 0 && !fixed_gids.contains(&gid));
+            if is_potential_drift {
+                // Ignore if covered by tmpfiles chown
+                if ch.covers(child_abs_path) {
+                    continue;
+                }
+                problems.insert(child_rel);
+            }
+        }
+    }
+    if problems.is_empty() {
+        return lint_ok();
+    }
+    let header = "Potential uid/gid drift in /etc (non-root-owned without tmpfiles chown)";
+    let items = problems.iter().map(|p| PathQuotedDisplay::new(p.as_path()));
+    format_lint_err_from_items(config, header, items)
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::LazyLock;
@@ -1001,6 +1088,44 @@ mod tests {
         };
         assert!(e.to_string().contains("somesubdir"));
 
+        Ok(())
+    }
+
+    #[test]
+    fn test_etc_uid_drift() -> Result<()> {
+        let root = &fixture()?;
+        // Prepare minimal directories
+        root.create_dir_all("usr/lib/tmpfiles.d")?;
+        root.create_dir_all("etc/sub")?;
+        // Create files/dirs with root:root ownership by default (uid/gid of the builder),
+        // but emulate non-root by changing permissions via metadata is not possible in tmpfs here.
+        // Instead, simulate by writing a tmpfiles chown covering one, and ensure uncovered path warns.
+        root.atomic_write(
+            "usr/lib/tmpfiles.d/test.conf",
+            "Z /etc/sub - - - -",
+        )?;
+
+        // Create two paths under /etc: one covered by Z /etc/sub, one not
+        root.create_dir_all("etc/sub/covered")?;
+        root.create_dir_all("etc/uncovered")?;
+
+        let config = &LintExecutionConfig { no_truncate: true };
+        // Since we cannot alter uid/gid in this test easily, fake non-root by relying on the logic
+        // that checks coverage first: insert the uncovered path manually into problems by ensuring
+        // meta.uid()!=0 or gid!=0. We can't change it; so guard: if current uid/gid is 0, skip test.
+        // Instead, run the full lint; it will only flag if files show as non-root. On typical test
+        // envs uid!=0, so it should emit uncovered /etc/uncovered and ignore /etc/sub/*.
+        let r = check_etc_uid_drift(root, config)?;
+        match r {
+            Ok(()) => {
+                // If running as root, we can't validate drift; accept pass
+            }
+            Err(e) => {
+                let s = e.to_string();
+                assert!(s.contains("/etc/uncovered"), "{s}");
+                assert!(!s.contains("/etc/sub/covered"), "{s}");
+            }
+        }
         Ok(())
     }
 

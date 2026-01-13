@@ -529,6 +529,65 @@ fn tmpfiles_entry_get_path(line: &str) -> Result<PathBuf> {
     unescape_path(&mut it)
 }
 
+/// Chown-affecting tmpfiles.d entries summary
+#[derive(Debug, Default, Clone)]
+pub struct TmpfilesChowners {
+    /// Exact chown entries (non-recursive) i.e. kind 'z'
+    pub exact: BTreeSet<PathBuf>,
+    /// Recursive chown entries (apply to all children) i.e. kind 'Z'
+    pub recursive: BTreeSet<PathBuf>,
+}
+
+impl TmpfilesChowners {
+    /// Returns true if a chown entry would apply to the specified absolute path
+    pub fn covers(&self, p: &Path) -> bool {
+        self.exact.contains(p) || p.ancestors().any(|anc| self.recursive.contains(anc))
+    }
+}
+
+fn tmpfiles_entry_get_kind(line: &str) -> Option<char> {
+    line.trim_start().chars().next()
+}
+
+/// Read tmpfiles.d entries and return only those affecting chown operations (z/Z)
+pub fn read_tmpfiles_chowners(rootfs: &Dir) -> Result<TmpfilesChowners> {
+    let Some(tmpfiles_dir) = rootfs.open_dir_optional(TMPFILESD)? else {
+        return Ok(Default::default());
+    };
+    let mut out = TmpfilesChowners::default();
+    for entry in tmpfiles_dir.entries()? {
+        let entry = entry?;
+        // Only process .conf files
+        let name = entry.file_name();
+        let path = Path::new(&name);
+        if path.extension() != Some(OsStr::new("conf")) {
+            continue;
+        }
+        let r = BufReader::new(entry.open()?);
+        for line in r.lines() {
+            let line = line?;
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let Some(kind) = tmpfiles_entry_get_kind(&line) else { continue };
+            if kind != 'z' && kind != 'Z' {
+                continue;
+            }
+            let path = tmpfiles_entry_get_path(&line)?;
+            match kind {
+                'z' => {
+                    out.exact.insert(path);
+                }
+                'Z' => {
+                    out.recursive.insert(path);
+                }
+                _ => unreachable!(),
+            }
+        }
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
