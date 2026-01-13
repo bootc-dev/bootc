@@ -158,10 +158,10 @@ pub(crate) fn medium_visibility_warning(s: &str) {
     std::thread::sleep(std::time::Duration::from_secs(1));
 }
 
-/// Call an async task function, and write a message to stdout
+/// Call an async task function, and write a message to stderr
 /// with an automatic spinner to show that we're not blocked.
 /// Note that generally the called function should not output
-/// anything to stdout as this will interfere with the spinner.
+/// anything to stderr as this will interfere with the spinner.
 pub(crate) async fn async_task_with_spinner<F, T>(msg: &str, f: F) -> T
 where
     F: Future<Output = T>,
@@ -175,8 +175,8 @@ where
     // We need to handle the case where we aren't connected to
     // a tty, so indicatif would show nothing by default.
     if pb.is_hidden() {
-        print!("{msg}...");
-        std::io::stdout().flush().unwrap();
+        eprint!("{msg}...");
+        std::io::stderr().flush().unwrap();
     }
     let r = f.await;
     let elapsed = HumanDuration(start_time.elapsed());
@@ -185,7 +185,7 @@ where
         &format!("completed task in {elapsed}: {msg}"),
     );
     if pb.is_hidden() {
-        println!("done ({elapsed})");
+        eprintln!("done ({elapsed})");
     } else {
         pb.finish_with_message(format!("{msg}: done ({elapsed})"));
     }
