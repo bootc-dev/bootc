@@ -13,10 +13,11 @@ const DOCKERFILE_NETWORK_CUTOFF: &str = "external dependency cutoff point";
 ///
 /// - Reproducible builds for the RPM
 /// - Dockerfile network isolation after cutoff point
+/// - Dockerfile tmpfs on /run for all RUN instructions
 #[context("Checking build system")]
 pub fn check_buildsys(sh: &Shell, dockerfile_path: &Utf8Path) -> Result<()> {
     check_package_reproducibility(sh)?;
-    check_dockerfile_network_isolation(dockerfile_path)?;
+    check_dockerfile_rules(dockerfile_path)?;
     Ok(())
 }
 
@@ -61,24 +62,28 @@ fn check_package_reproducibility(sh: &Shell) -> Result<()> {
     Ok(())
 }
 
-/// Verify that all RUN instructions in the Dockerfile after the network cutoff
-/// point include `--network=none`.
-#[context("Checking Dockerfile network isolation")]
-fn check_dockerfile_network_isolation(dockerfile_path: &Utf8Path) -> Result<()> {
-    println!("Checking Dockerfile network isolation...");
+/// Verify Dockerfile rules:
+/// - All RUN instructions must include `--mount=type=tmpfs,target=/run`
+/// - After cutoff, all RUN instructions must start with `--network=none`
+#[context("Checking Dockerfile rules")]
+fn check_dockerfile_rules(dockerfile_path: &Utf8Path) -> Result<()> {
+    println!("Checking Dockerfile rules...");
     let dockerfile = std::fs::read_to_string(dockerfile_path).context("Reading Dockerfile")?;
-    verify_dockerfile_network_isolation(&dockerfile)?;
-    println!("ok Dockerfile network isolation");
+    verify_dockerfile_rules(&dockerfile)?;
+    println!("ok Dockerfile rules");
     Ok(())
 }
 
 const RUN_NETWORK_NONE: &str = "RUN --network=none";
+const RUN_TMPFS: &str = "--mount=type=tmpfs,target=/run";
 
-/// Verify that all RUN instructions after the network cutoff marker start with
-/// `RUN --network=none`.
+/// Verify Dockerfile rules:
+/// - All RUN instructions must include `--mount=type=tmpfs,target=/run` to prevent
+///   podman's DNS resolver files from leaking into the image
+/// - After the network cutoff, all RUN instructions must start with `--network=none`
 ///
 /// Returns Ok(()) if all RUN instructions comply, or an error listing violations.
-pub fn verify_dockerfile_network_isolation(dockerfile: &str) -> Result<()> {
+pub fn verify_dockerfile_rules(dockerfile: &str) -> Result<()> {
     // Find the cutoff point
     let cutoff_line = dockerfile
         .lines()
@@ -90,19 +95,26 @@ pub fn verify_dockerfile_network_isolation(dockerfile: &str) -> Result<()> {
             )
         })?;
 
-    // Check all RUN instructions after the cutoff point
     let mut errors = Vec::new();
 
-    for (idx, line) in dockerfile.lines().enumerate().skip(cutoff_line + 1) {
+    for (idx, line) in dockerfile.lines().enumerate() {
         let line_num = idx + 1; // 1-based line numbers
         let trimmed = line.trim();
 
         // Check if this is a RUN instruction
         if trimmed.starts_with("RUN ") {
-            // Must start with exactly "RUN --network=none"
-            if !trimmed.starts_with(RUN_NETWORK_NONE) {
+            // All RUN instructions must include tmpfs mount on /run
+            if !trimmed.contains(RUN_TMPFS) {
                 errors.push(format!(
-                    "  line {}: RUN instruction must start with `{}`",
+                    "  line {}: RUN instruction must include `{}`",
+                    line_num, RUN_TMPFS
+                ));
+            }
+
+            // After cutoff, must start with exactly "RUN --network=none"
+            if idx > cutoff_line && !trimmed.starts_with(RUN_NETWORK_NONE) {
+                errors.push(format!(
+                    "  line {}: RUN instruction after cutoff must start with `{}`",
                     line_num, RUN_NETWORK_NONE
                 ));
             }
@@ -111,9 +123,7 @@ pub fn verify_dockerfile_network_isolation(dockerfile: &str) -> Result<()> {
 
     if !errors.is_empty() {
         anyhow::bail!(
-            "Dockerfile has RUN instructions after '{}' that don't start with `{}`:\n{}",
-            DOCKERFILE_NETWORK_CUTOFF,
-            RUN_NETWORK_NONE,
+            "Dockerfile has invalid RUN instructions:\n{}",
             errors.join("\n")
         );
     }
@@ -126,40 +136,73 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_network_isolation_valid() {
+    fn test_dockerfile_rules_valid() {
         let dockerfile = r#"
 FROM base
-RUN echo "before cutoff, no network restriction needed"
+RUN --mount=type=tmpfs,target=/run echo "before cutoff, network allowed"
 # external dependency cutoff point
-RUN --network=none echo "good"
-RUN --network=none --mount=type=bind,from=foo,target=/bar some-command
+RUN --network=none --mount=type=tmpfs,target=/run echo "good"
+RUN --network=none --mount=type=tmpfs,target=/run --mount=type=bind,from=foo,target=/bar some-command
 "#;
-        verify_dockerfile_network_isolation(dockerfile).unwrap();
+        verify_dockerfile_rules(dockerfile).unwrap();
     }
 
     #[test]
-    fn test_network_isolation_missing_flag() {
+    fn test_dockerfile_rules_missing_tmpfs_before_cutoff() {
         let dockerfile = r#"
 FROM base
+RUN echo "bad - missing tmpfs"
 # external dependency cutoff point
-RUN --network=none echo "good"
-RUN echo "bad - missing network flag"
+RUN --network=none --mount=type=tmpfs,target=/run echo "good"
 "#;
-        let err = verify_dockerfile_network_isolation(dockerfile).unwrap_err();
+        let err = verify_dockerfile_rules(dockerfile).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("line 3"), "error should mention line 3: {msg}");
+        assert!(msg.contains("tmpfs"), "error should mention tmpfs: {msg}");
+    }
+
+    #[test]
+    fn test_dockerfile_rules_missing_network_flag_after_cutoff() {
+        let dockerfile = r#"
+FROM base
+RUN --mount=type=tmpfs,target=/run echo "before cutoff"
+# external dependency cutoff point
+RUN --mount=type=tmpfs,target=/run echo "bad - missing network flag"
+"#;
+        let err = verify_dockerfile_rules(dockerfile).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("line 5"), "error should mention line 5: {msg}");
+        assert!(
+            msg.contains("--network=none"),
+            "error should mention --network=none: {msg}"
+        );
     }
 
     #[test]
-    fn test_network_isolation_wrong_position() {
+    fn test_dockerfile_rules_missing_tmpfs_after_cutoff() {
+        let dockerfile = r#"
+FROM base
+RUN --mount=type=tmpfs,target=/run echo "before cutoff"
+# external dependency cutoff point
+RUN --network=none echo "bad - missing tmpfs"
+"#;
+        let err = verify_dockerfile_rules(dockerfile).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("line 5"), "error should mention line 5: {msg}");
+        assert!(msg.contains("tmpfs"), "error should mention tmpfs: {msg}");
+    }
+
+    #[test]
+    fn test_dockerfile_rules_network_wrong_position() {
         // --network=none must come immediately after RUN
         let dockerfile = r#"
 FROM base
+RUN --mount=type=tmpfs,target=/run echo "before cutoff"
 # external dependency cutoff point
-RUN --mount=type=bind,from=foo,target=/bar --network=none echo "bad"
+RUN --mount=type=tmpfs,target=/run --network=none echo "bad - network flag not first"
 "#;
-        let err = verify_dockerfile_network_isolation(dockerfile).unwrap_err();
+        let err = verify_dockerfile_rules(dockerfile).unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("line 4"), "error should mention line 4: {msg}");
+        assert!(msg.contains("line 5"), "error should mention line 5: {msg}");
     }
 }

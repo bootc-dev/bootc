@@ -23,18 +23,20 @@ FROM $base as buildroot
 ARG initramfs=1
 # This installs our buildroot, and we want to cache it independently of the rest.
 # Basically we don't want changing a .rs file to blow out the cache of packages.
-RUN --mount=type=bind,from=packaging,target=/run/packaging /run/packaging/install-buildroot
+RUN --mount=type=tmpfs,target=/run \
+    --mount=type=bind,from=packaging,src=/,target=/run/packaging \
+    /run/packaging/install-buildroot
 # Now copy the rest of the source
 COPY --from=src /src /src
 WORKDIR /src
 # See https://www.reddit.com/r/rust/comments/126xeyx/exploring_the_problem_of_faster_cargo_docker/
 # We aren't using the full recommendations there, just the simple bits.
 # First we download all of our Rust dependencies
-RUN --mount=type=cache,target=/src/target --mount=type=cache,target=/var/roothome cargo fetch
+RUN --mount=type=tmpfs,target=/run --mount=type=cache,target=/src/target --mount=type=cache,target=/var/roothome cargo fetch
 
 FROM buildroot as sdboot-content
 # Writes to /out
-RUN /src/contrib/packaging/configure-systemdboot download
+RUN --mount=type=tmpfs,target=/run /src/contrib/packaging/configure-systemdboot download
 
 # We always do a "from scratch" build
 # https://docs.fedoraproject.org/en-US/bootc/building-from-scratch/
@@ -45,14 +47,16 @@ RUN /src/contrib/packaging/configure-systemdboot download
 #       local sources. We'll override it later.
 # NOTE: All your base belong to me.
 FROM $base as target-base
-RUN /usr/libexec/bootc-base-imagectl build-rootfs --manifest=standard /target-rootfs
+RUN --mount=type=tmpfs,target=/run /usr/libexec/bootc-base-imagectl build-rootfs --manifest=standard /target-rootfs
 
 FROM scratch as base
 COPY --from=target-base /target-rootfs/ /
-COPY --from=src /src/hack/ /run/hack/
 # SKIP_CONFIGS=1 skips LBIs, test kargs, and install configs (for FCOS testing)
 ARG SKIP_CONFIGS
-RUN cd /run/hack/ && SKIP_CONFIGS="${SKIP_CONFIGS}" ./provision-derived.sh
+# Use tmpfs,target=/run with bind mounts inside to avoid leaking mount stubs into the image
+RUN --mount=type=tmpfs,target=/run \
+    --mount=type=bind,from=src,src=/src/hack,target=/run/hack \
+    cd /run/hack/ && SKIP_CONFIGS="${SKIP_CONFIGS}" ./provision-derived.sh
 # Note we don't do any customization here yet
 # Mark this as a test image
 LABEL bootc.testimage="1"
@@ -79,13 +83,13 @@ ARG pkgversion
 ARG SOURCE_DATE_EPOCH
 ENV SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}
 # Build RPM directly from source, using cached target directory
-RUN --network=none --mount=type=cache,target=/src/target --mount=type=cache,target=/var/roothome RPM_VERSION="${pkgversion}" /src/contrib/packaging/build-rpm
+RUN --network=none --mount=type=tmpfs,target=/run --mount=type=cache,target=/src/target --mount=type=cache,target=/var/roothome RPM_VERSION="${pkgversion}" /src/contrib/packaging/build-rpm
 
 FROM buildroot as sdboot-signed
 # The secureboot key and cert are passed via Justfile
 # We write the signed binary into /out
-RUN --network=none \
-    --mount=type=bind,from=sdboot-content,target=/run/sdboot-package \
+RUN --network=none --mount=type=tmpfs,target=/run \
+    --mount=type=bind,from=sdboot-content,src=/,target=/run/sdboot-package \
     --mount=type=secret,id=secureboot_key \
     --mount=type=secret,id=secureboot_cert \
     /src/contrib/packaging/configure-systemdboot sign
@@ -95,26 +99,34 @@ FROM build as units
 # A place that we're more likely to be able to set xattrs
 VOLUME /var/tmp
 ENV TMPDIR=/var/tmp
-RUN --network=none --mount=type=cache,target=/src/target --mount=type=cache,target=/var/roothome make install-unit-tests
+RUN --network=none --mount=type=tmpfs,target=/run --mount=type=cache,target=/src/target --mount=type=cache,target=/var/roothome make install-unit-tests
 
 # This just does syntax checking
 FROM buildroot as validate
-RUN --network=none --mount=type=cache,target=/src/target --mount=type=cache,target=/var/roothome make validate
+RUN --network=none --mount=type=tmpfs,target=/run --mount=type=cache,target=/src/target --mount=type=cache,target=/var/roothome make validate
 
 # Common base for final images: configures variant, rootfs, and injects extra content
 FROM base as final-common
 ARG variant
-RUN --network=none --mount=type=bind,from=packaging,target=/run/packaging \
-    --mount=type=bind,from=sdboot-content,target=/run/sdboot-content \
-    --mount=type=bind,from=sdboot-signed,target=/run/sdboot-signed \
+RUN --network=none --mount=type=tmpfs,target=/run \
+    --mount=type=bind,from=packaging,src=/,target=/run/packaging \
+    --mount=type=bind,from=sdboot-content,src=/,target=/run/sdboot-content \
+    --mount=type=bind,from=sdboot-signed,src=/,target=/run/sdboot-signed \
     /run/packaging/configure-variant "${variant}"
 ARG rootfs=""
-RUN --network=none --mount=type=bind,from=packaging,target=/run/packaging /run/packaging/configure-rootfs "${variant}" "${rootfs}"
+RUN --network=none --mount=type=tmpfs,target=/run \
+    --mount=type=bind,from=packaging,src=/,target=/run/packaging \
+    /run/packaging/configure-rootfs "${variant}" "${rootfs}"
 COPY --from=packaging /usr-extras/ /usr/
 
-# Final target: installs pre-built packages from /run/packages volume mount.
-# Use with: podman build --target=final -v path/to/packages:/run/packages:ro
+# Final target: installs pre-built packages from the 'packages' build context.
+# Use with: podman build --target=final --build-context packages=path/to/packages
+# We use --build-context instead of -v to avoid volume mount stubs leaking into /run.
 FROM final-common as final
-RUN --network=none --mount=type=bind,from=packaging,target=/run/packaging \
+RUN --network=none --mount=type=tmpfs,target=/run \
+    --mount=type=bind,from=packaging,src=/,target=/run/packaging \
+    --mount=type=bind,from=packages,src=/,target=/run/packages \
     /run/packaging/install-rpm-and-setup /run/packages
-RUN --network=none bootc container lint --fatal-warnings
+# Use tmpfs on /run to hide any content created by podman for DNS resolution
+# (e.g., /run/systemd/resolve/stub-resolv.conf on Ubuntu hosts)
+RUN --network=none --mount=type=tmpfs,target=/run bootc container lint --fatal-warnings

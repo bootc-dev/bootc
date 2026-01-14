@@ -59,10 +59,9 @@ build: package _keygen && _pull-lbi-images
     #!/bin/bash
     set -xeuo pipefail
     test -d target/packages
-    # Resolve to absolute path for podman volume mount
-    # Use :z for SELinux relabeling
+    # Use --build-context to pass packages instead of -v to avoid mount stubs in /run
     pkg_path=$(realpath target/packages)
-    podman build --target=final -v "${pkg_path}":/run/packages:ro,z -t {{base_img}}-bin {{buildargs}} .
+    podman build --target=final --build-context "packages=${pkg_path}" -t {{base_img}}-bin {{buildargs}} .
     ./hack/build-sealed {{variant}} {{base_img}}-bin {{base_img}} {{sealed_buildargs}}
 
 # Pull images used by hack/lbi
@@ -170,7 +169,8 @@ build-testimage-coreos PATH: _keygen
     #!/bin/bash
     set -xeuo pipefail
     pkg_path=$(realpath "{{PATH}}")
-    podman build --target=final -v "${pkg_path}":/run/packages:ro,z \
+    # Use --build-context to pass packages instead of -v to avoid mount stubs in /run
+    podman build --target=final --build-context "packages=${pkg_path}" \
         --build-arg SKIP_CONFIGS=1 \
         -t {{base_img}}-coreos-bin {{buildargs}} .
     ./hack/build-sealed {{variant}} {{base_img}}-coreos-bin {{base_img}}-coreos {{sealed_buildargs}}
