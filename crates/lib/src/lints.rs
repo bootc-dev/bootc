@@ -29,6 +29,16 @@ use serde::Serialize;
 
 use crate::bootc_composefs::boot::EFI_LINUX;
 
+/// Create a default WalkConfiguration with noxdev enabled.
+///
+/// This ensures we skip directory mount points when walking,
+/// which is important to avoid descending into bind mounts, tmpfs, etc.
+/// Note that non-directory mount points (e.g. bind-mounted regular files)
+/// will still be visited.
+fn walk_configuration() -> WalkConfiguration<'static> {
+    WalkConfiguration::default().noxdev()
+}
+
 /// Reference to embedded default baseimage content that should exist.
 const BASEIMAGE_REF: &str = "usr/share/doc/bootc/baseimage/base";
 // https://systemd.io/API_FILE_SYSTEMS/ with /var added for us
@@ -295,9 +305,7 @@ fn lint_inner<'skip>(
     let mut recursive_lints = BTreeSet::from_iter(recursive_lints);
     let mut recursive_errors = BTreeMap::new();
     root.walk(
-        &WalkConfiguration::default()
-            .noxdev()
-            .path_base(Path::new("/")),
+        &walk_configuration().path_base(Path::new("/")),
         |e| -> std::io::Result<_> {
             // If there's no recursive lints, we're done!
             if recursive_lints.is_empty() {
@@ -813,9 +821,7 @@ fn check_runtime_only_dirs(root: &Dir, config: &LintExecutionConfig) -> LintResu
         };
 
         d.walk(
-            &WalkConfiguration::default()
-                .noxdev()
-                .path_base(Path::new(dirname)),
+            &walk_configuration().path_base(Path::new(dirname)),
             |entry| -> std::io::Result<_> {
                 // Skip mount points (bind mounts, tmpfs, etc.) - these are
                 // container-runtime injected content like .containerenv
@@ -1095,9 +1101,7 @@ mod tests {
         // Helper function to execute a recursive lint function over a directory.
         let mut result = lint_ok();
         root.walk(
-            &WalkConfiguration::default()
-                .noxdev()
-                .path_base(Path::new("/")),
+            &walk_configuration().path_base(Path::new("/")),
             |e| -> Result<_> {
                 let r = f(e, config)?;
                 match r {
