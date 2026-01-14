@@ -159,4 +159,11 @@ execute:
     how: fmf
     test:
       - /tmt/tests/tests/test-32-install-to-filesystem-var-mount
+
+/plan-33-bib-build:
+  summary: Test building a qcow2 disk image with bootc-image-builder
+  discover:
+    how: fmf
+    test:
+      - /tmt/tests/tests/test-33-bib-build
 # END GENERATED PLANS

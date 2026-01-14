@@ -89,3 +89,10 @@
   - dosfstools
   - e2fsprogs
   test: bash booted/test-install-to-filesystem-var-mount.sh
+
+/test-33-bib-build:
+  summary: Test building a qcow2 disk image with bootc-image-builder
+  duration: 45m
+  require:
+  - qemu-img
+  test: nu booted/test-bib-build.nu
