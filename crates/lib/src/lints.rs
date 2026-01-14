@@ -788,6 +788,58 @@ fn check_boot(root: &Dir, config: &LintExecutionConfig) -> LintResult {
     format_lint_err_from_items(config, header, items)
 }
 
+/// Directories that should be empty in container images.
+/// These are tmpfs at runtime and any content is build-time artifacts.
+const RUNTIME_ONLY_DIRS: &[&str] = &["run", "tmp"];
+
+#[distributed_slice(LINTS)]
+static LINT_RUNTIME_ONLY_DIRS: Lint = Lint::new_warning(
+    "nonempty-run-tmp",
+    indoc! { r#"
+The `/run` and `/tmp` directories should be empty in container images.
+These directories are normally mounted as `tmpfs` at runtime
+(masking any content in the underlying image) and any content here is typically build-time
+artifacts that serve no purpose in the final image.
+"#},
+    check_runtime_only_dirs,
+);
+
+fn check_runtime_only_dirs(root: &Dir, config: &LintExecutionConfig) -> LintResult {
+    let mut found_content = BTreeSet::new();
+
+    for dirname in RUNTIME_ONLY_DIRS {
+        let Some(d) = root.open_dir_optional(dirname)? else {
+            continue;
+        };
+
+        d.walk(
+            &WalkConfiguration::default()
+                .noxdev()
+                .path_base(Path::new(dirname)),
+            |entry| -> std::io::Result<_> {
+                // Skip mount points (bind mounts, tmpfs, etc.) - these are
+                // container-runtime injected content like .containerenv
+                if entry.dir.is_mountpoint(entry.filename)? == Some(true) {
+                    return Ok(ControlFlow::Continue(()));
+                }
+
+                let full_path = Utf8Path::new("/").join(entry.path.to_string_lossy().as_ref());
+                found_content.insert(full_path);
+
+                Ok(ControlFlow::Continue(()))
+            },
+        )?;
+    }
+
+    if found_content.is_empty() {
+        return lint_ok();
+    }
+
+    let header = "Found content in runtime-only directories (/run, /tmp)";
+    let items = found_content.iter().map(PathQuotedDisplay::new);
+    format_lint_err_from_items(config, header, items)
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::LazyLock;
@@ -1000,6 +1052,37 @@ mod tests {
             unreachable!()
         };
         assert!(e.to_string().contains("somesubdir"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_runtime_only_dirs() -> Result<()> {
+        let root = &fixture()?;
+        let config = &LintExecutionConfig::default();
+
+        // Empty directories should pass
+        root.create_dir_all("run")?;
+        root.create_dir_all("tmp")?;
+        check_runtime_only_dirs(root, config).unwrap().unwrap();
+
+        // Content in /run should fail
+        root.create_dir("run/some-mount-stub")?;
+        let Err(e) = check_runtime_only_dirs(root, config).unwrap() else {
+            unreachable!()
+        };
+        assert!(e.to_string().contains("/run/some-mount-stub"));
+        root.remove_dir("run/some-mount-stub")?;
+        check_runtime_only_dirs(root, config).unwrap().unwrap();
+
+        // Content in /tmp should fail
+        root.write("tmp/build-artifact", "some data")?;
+        let Err(e) = check_runtime_only_dirs(root, config).unwrap() else {
+            unreachable!()
+        };
+        assert!(e.to_string().contains("/tmp/build-artifact"));
+        root.remove_file("tmp/build-artifact")?;
+        check_runtime_only_dirs(root, config).unwrap().unwrap();
 
         Ok(())
     }
