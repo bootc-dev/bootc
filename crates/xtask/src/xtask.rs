@@ -54,6 +54,15 @@ enum Commands {
     TmtProvision(TmtProvisionArgs),
     /// Check build system properties (e.g., reproducible builds)
     CheckBuildsys,
+    /// Validate composefs digests match between build-time and install-time views
+    ValidateComposefsDigest(ValidateComposefsDigestArgs),
+}
+
+/// Arguments for validate-composefs-digest command
+#[derive(Debug, Args)]
+pub(crate) struct ValidateComposefsDigestArgs {
+    /// Container image to validate (e.g., "localhost/bootc" or "quay.io/centos-bootc/centos-bootc:stream10")
+    pub(crate) image: String,
 }
 
 /// Arguments for run-tmt command
@@ -139,6 +148,7 @@ fn try_main() -> Result<()> {
         Commands::RunTmt(args) => tmt::run_tmt(&sh, &args),
         Commands::TmtProvision(args) => tmt::tmt_provision(&sh, &args),
         Commands::CheckBuildsys => buildsys::check_buildsys(&sh, "Dockerfile".into()),
+        Commands::ValidateComposefsDigest(args) => validate_composefs_digest(&sh, &args),
     }
 }
 
@@ -405,4 +415,57 @@ fn update_generated(sh: &Shell) -> Result<()> {
     tmt::update_integration()?;
 
     Ok(())
+}
+
+/// Validate that composefs digests match between build-time and install-time views.
+///
+/// Compares dumpfiles generated from:
+/// 1. The mounted filesystem (what seal-uki sees at build time via --mount=type=image)
+/// 2. The OCI tar layers in containers-storage (what bootc upgrade sees)
+///
+/// This helps debug mtime and metadata discrepancies that cause sealed boot failures.
+#[context("Validating composefs digest")]
+fn validate_composefs_digest(sh: &Shell, args: &ValidateComposefsDigestArgs) -> Result<()> {
+    let image = &args.image;
+
+    // Generate dumpfile from mounted filesystem (build-time view)
+    let build_dumpfile = cmd!(
+        sh,
+        "podman run --rm --mount=type=image,source={image},target=/target {image} bootc container compute-composefs-digest /target"
+    )
+    .read()?;
+
+    // Generate dumpfile from containers-storage (install-time view)
+    let format_arg = "{{.Store.GraphRoot}}";
+    let graphroot = cmd!(sh, "podman system info -f {format_arg}").read()?;
+    let graphroot = graphroot.trim();
+    let storage_vol = format!("{graphroot}:/run/host-container-storage:ro");
+    let storage_dumpfile = cmd!(
+        sh,
+        "podman run --rm --privileged --security-opt=label=disable
+            -v {storage_vol}
+            -v /sys:/sys:ro
+            --tmpfs=/var
+            {image}
+            bootc container compute-composefs-digest-from-storage"
+    )
+    .read()?;
+
+    // Compare dumpfiles
+    if build_dumpfile == storage_dumpfile {
+        println!("OK: Dumpfiles match");
+        Ok(())
+    } else {
+        println!("MISMATCH: Dumpfiles differ:");
+        // Use diff via process substitution by writing to temp files
+        let tmpdir = tempfile::tempdir()?;
+        let build_path = tmpdir.path().join("build.dumpfile");
+        let storage_path = tmpdir.path().join("storage.dumpfile");
+        std::fs::write(&build_path, &build_dumpfile)?;
+        std::fs::write(&storage_path, &storage_dumpfile)?;
+        cmd!(sh, "diff -u {build_path} {storage_path}")
+            .ignore_status()
+            .run()?;
+        anyhow::bail!("Composefs digest mismatch");
+    }
 }

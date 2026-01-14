@@ -198,6 +198,10 @@ jobs:
       - name: Unit and container integration tests
         run: just test-container
 
+      - name: Validate composefs digest (sealed UKI only)
+        if: matrix.variant == 'composefs-sealeduki-sdboot'
+        run: just validate-composefs-digest
+
       - name: Run TMT integration tests
         run: |
           if [ "${{ matrix.variant }}" = "composefs-sealeduki-sdboot" ]; then

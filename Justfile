@@ -130,6 +130,12 @@ package:
 test-composefs:
     just variant=composefs-sealeduki-sdboot test-tmt readonly local-upgrade-reboot
 
+# Validate composefs digests match between build-time and install-time views.
+# This catches mtime/metadata issues that cause sealed boot failures.
+# Note: This requires a locally-built image with the compute-composefs-digest commands.
+validate-composefs-digest:
+    cargo xtask validate-composefs-digest {{base_img}}
+
 # Only used by ci.yml right now
 build-install-test-image: build
     cd hack && podman build {{base_buildargs}} -t {{base_img}}-install -f Containerfile.drop-lbis
