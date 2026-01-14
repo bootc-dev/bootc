@@ -11,7 +11,7 @@ use bootc_initramfs_setup::mount_composefs_image;
 use bootc_mount::tempmount::TempMount;
 use cap_std_ext::cap_std::{ambient_authority, fs::Dir};
 use cap_std_ext::dirext::CapStdExtDirExt;
-use composefs::generic_tree::Directory;
+use composefs::generic_tree::{Directory, Stat};
 use etc_merge::{compute_diff, merge, print_diff, traverse_etc};
 use rustix::fs::{fsync, renameat};
 use rustix::path::Arg;
@@ -33,7 +33,11 @@ pub(crate) async fn get_etc_diff(storage: &Storage, booted_cfs: &BootedComposefs
     let current_etc = Dir::open_ambient_dir("/etc", ambient_authority())?;
 
     let (pristine_files, current_files, _) = traverse_etc(&pristine_etc, &current_etc, None)?;
-    let diff = compute_diff(&pristine_files, &current_files, &Directory::default())?;
+    let diff = compute_diff(
+        &pristine_files,
+        &current_files,
+        &Directory::new(Stat::uninitialized()),
+    )?;
 
     print_diff(&diff, &mut std::io::stdout());
 

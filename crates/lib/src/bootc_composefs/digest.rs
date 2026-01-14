@@ -61,7 +61,7 @@ pub(crate) fn compute_composefs_digest(
 
     // Read filesystem from path, transform for boot, compute digest
     let mut fs =
-        composefs::fs::read_filesystem(rustix::fs::CWD, path.as_std_path(), Some(&repo), false)?;
+        composefs::fs::read_container_root(rustix::fs::CWD, path.as_std_path(), Some(&repo))?;
     fs.transform_for_boot(&repo).context("Preparing for boot")?;
     let id = fs.compute_image_id();
     let digest = id.to_hex();

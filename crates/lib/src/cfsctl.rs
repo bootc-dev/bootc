@@ -123,14 +123,17 @@ enum Command {
         /// the mountpoint
         mountpoint: String,
     },
+    /// Creates a composefs image from a filesystem
     CreateImage {
         path: PathBuf,
         #[clap(long)]
         bootable: bool,
+        /// Don't copy /usr metadata to root directory (use if root already has well-defined metadata)
         #[clap(long)]
-        stat_root: bool,
+        no_propagate_usr_to_root: bool,
         image_name: Option<String>,
     },
+    /// Computes the composefs image ID for a filesystem
     ComputeId {
         path: PathBuf,
         /// Write the dumpfile to the provided target
@@ -138,15 +141,18 @@ enum Command {
         write_dumpfile_to: Option<Utf8PathBuf>,
         #[clap(long)]
         bootable: bool,
+        /// Don't copy /usr metadata to root directory (use if root already has well-defined metadata)
         #[clap(long)]
-        stat_root: bool,
+        no_propagate_usr_to_root: bool,
     },
+    /// Outputs the composefs dumpfile format for a filesystem
     CreateDumpfile {
         path: PathBuf,
         #[clap(long)]
         bootable: bool,
+        /// Don't copy /usr metadata to root directory (use if root already has well-defined metadata)
         #[clap(long)]
-        stat_root: bool,
+        no_propagate_usr_to_root: bool,
     },
     ImageObjects {
         name: String,
@@ -215,7 +221,7 @@ where
                 ref config_verity,
             } => {
                 let verity = verity_opt(config_verity)?;
-                let mut fs =
+                let fs =
                     composefs_oci::image::create_filesystem(repo, config_name, verity.as_ref())?;
                 fs.print_dumpfile()?;
             }
@@ -316,9 +322,13 @@ where
             ref path,
             write_dumpfile_to,
             bootable,
-            stat_root,
+            no_propagate_usr_to_root,
         } => {
-            let mut fs = composefs::fs::read_filesystem(CWD, path, Some(repo.as_ref()), stat_root)?;
+            let mut fs = if no_propagate_usr_to_root {
+                composefs::fs::read_filesystem(CWD, path, Some(repo.as_ref()))?
+            } else {
+                composefs::fs::read_container_root(CWD, path, Some(repo.as_ref()))?
+            };
             if bootable {
                 fs.transform_for_boot(repo)?;
             }
@@ -334,10 +344,14 @@ where
         Command::CreateImage {
             ref path,
             bootable,
-            stat_root,
+            no_propagate_usr_to_root,
             ref image_name,
         } => {
-            let mut fs = composefs::fs::read_filesystem(CWD, path, Some(repo.as_ref()), stat_root)?;
+            let mut fs = if no_propagate_usr_to_root {
+                composefs::fs::read_filesystem(CWD, path, Some(repo.as_ref()))?
+            } else {
+                composefs::fs::read_container_root(CWD, path, Some(repo.as_ref()))?
+            };
             if bootable {
                 fs.transform_for_boot(repo)?;
             }
@@ -347,9 +361,13 @@ where
         Command::CreateDumpfile {
             ref path,
             bootable,
-            stat_root,
+            no_propagate_usr_to_root,
         } => {
-            let mut fs = composefs::fs::read_filesystem(CWD, path, Some(repo.as_ref()), stat_root)?;
+            let mut fs = if no_propagate_usr_to_root {
+                composefs::fs::read_filesystem(CWD, path, Some(repo.as_ref()))?
+            } else {
+                composefs::fs::read_container_root(CWD, path, Some(repo.as_ref()))?
+            };
             if bootable {
                 fs.transform_for_boot(repo)?;
             }

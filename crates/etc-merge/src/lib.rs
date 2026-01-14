@@ -331,17 +331,17 @@ pub fn traverse_etc(
     Directory<CustomMetadata>,
     Option<Directory<CustomMetadata>>,
 )> {
-    let mut pristine_etc_files = Directory::default();
+    let mut pristine_etc_files = Directory::new(Stat::uninitialized());
     recurse_dir(pristine_etc, &mut pristine_etc_files)
         .context(format!("Recursing {pristine_etc:?}"))?;
 
-    let mut current_etc_files = Directory::default();
+    let mut current_etc_files = Directory::new(Stat::uninitialized());
     recurse_dir(current_etc, &mut current_etc_files)
         .context(format!("Recursing {current_etc:?}"))?;
 
     let new_etc_files = match new_etc {
         Some(new_etc) => {
-            let mut new_etc_files = Directory::default();
+            let mut new_etc_files = Directory::new(Stat::uninitialized());
             recurse_dir(new_etc, &mut new_etc_files).context(format!("Recursing {new_etc:?}"))?;
 
             Some(new_etc_files)
