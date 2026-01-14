@@ -53,8 +53,11 @@ pub(crate) async fn is_image_pulled(
 
     let img_digest = img_config_manifest.manifest.config().digest().digest();
 
+    // TODO: export config_identifier function from composefs-oci/src/lib.rs and use it here
+    let img_id = format!("oci-config-sha256:{img_digest}");
+
     // NB: add deep checking?
-    let container_pulled = repo.has_stream(img_digest).context("Checking stream")?;
+    let container_pulled = repo.has_stream(&img_id).context("Checking stream")?;
 
     Ok((container_pulled, img_config_manifest))
 }
