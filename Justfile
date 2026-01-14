@@ -39,8 +39,17 @@ lbi_images := "quay.io/curl/curl:latest quay.io/curl/curl-base:latest registry.a
 # ```
 # TODO: Gather more info and file a buildah bug
 generic_buildargs := ""
+# Optional: path to extra source directory (e.g. composefs-rs) to bind mount into builds.
+# Usage: BOOTC_extra_src=$HOME/src/github/containers/composefs-rs just build
+# The directory will be mounted at /run/extra-src inside the container.
+# When using this, you must also patch Cargo.toml to use path dependencies:
+#   composefs = { path = "/run/extra-src/crates/composefs", ... }
+# Note: This disables SELinux labeling for the mount.
+extra_src := env("BOOTC_extra_src", "")
+# Generate podman args for extra source mount if configured
+_extra_src_args := if extra_src != "" { "-v " + extra_src + ":/run/extra-src:ro --security-opt=label=disable" } else { "" }
 # Args for package building (no secrets needed, just builds RPMs)
-base_buildargs := generic_buildargs + " --build-arg=base=" + base + " --build-arg=variant=" + variant
+base_buildargs := generic_buildargs + " " + _extra_src_args + " --build-arg=base=" + base + " --build-arg=variant=" + variant
 # - scratch builds need extra perms per https://docs.fedoraproject.org/en-US/bootc/building-from-scratch/
 # - we do secure boot signing here, so provide the keys
 buildargs := base_buildargs \
