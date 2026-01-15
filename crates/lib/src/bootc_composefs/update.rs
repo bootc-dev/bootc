@@ -262,12 +262,19 @@ pub(crate) async fn do_upgrade(
     )
     .await?;
 
+    if let Some(soft_reboot_mode) = opts.soft_reboot {
+        return prepare_soft_reboot_composefs(
+            storage,
+            booted_cfs,
+            Some(&id.to_hex()),
+            soft_reboot_mode,
+            opts.apply,
+        )
+        .await;
+    };
+
     if opts.apply {
         return crate::reboot::reboot();
-    }
-
-    if opts.soft_reboot.is_some() {
-        prepare_soft_reboot_composefs(storage, booted_cfs, Some(&id.to_hex()), true, false).await?;
     }
 
     Ok(())

@@ -2,6 +2,7 @@ use crate::{
     bootc_composefs::{
         service::start_finalize_stated_svc, status::composefs_deployment_status_from,
     },
+    cli::SoftRebootMode,
     composefs_consts::COMPOSEFS_CMDLINE,
     store::{BootedComposefs, Storage},
 };
@@ -21,7 +22,7 @@ use std::{fs::create_dir_all, os::unix::process::CommandExt, path::PathBuf, proc
 const NEXTROOT: &str = "/run/nextroot";
 
 #[context("Resetting soft reboot state")]
-fn reset_soft_reboot() -> Result<()> {
+pub(crate) fn reset_soft_reboot() -> Result<()> {
     let run = Utf8Path::new("/run");
     bind_mount_from_pidns(PID1, &run, &run, true).context("Bind mounting /run")?;
 
@@ -49,7 +50,7 @@ fn reset_soft_reboot() -> Result<()> {
 
     unmount(NEXTROOT, UnmountFlags::DETACH).context("Unmounting nextroot")?;
 
-    println!("Soft reboot state cleared successfully");
+    println!("Cleared soft reboot queued state");
 
     Ok(())
 }
@@ -61,15 +62,11 @@ pub(crate) async fn prepare_soft_reboot_composefs(
     storage: &Storage,
     booted_cfs: &BootedComposefs,
     deployment_id: Option<&String>,
+    soft_reboot_mode: SoftRebootMode,
     reboot: bool,
-    reset: bool,
 ) -> Result<()> {
     if !systemd_has_soft_reboot() {
         anyhow::bail!("System does not support soft reboots")
-    }
-
-    if reset {
-        return reset_soft_reboot();
     }
 
     let deployment_id = deployment_id.ok_or_else(|| anyhow::anyhow!("Expected deployment id"))?;
@@ -89,7 +86,13 @@ pub(crate) async fn prepare_soft_reboot_composefs(
         .ok_or_else(|| anyhow::anyhow!("Deployment '{deployment_id}' not found"))?;
 
     if !requred_deployment.soft_reboot_capable {
-        anyhow::bail!("Cannot soft-reboot to deployment with a different kernel state");
+        match soft_reboot_mode {
+            SoftRebootMode::Required => {
+                anyhow::bail!("Cannot soft-reboot to deployment with a different kernel state")
+            }
+
+            SoftRebootMode::Auto => return Ok(()),
+        }
     }
 
     start_finalize_stated_svc()?;
@@ -112,6 +115,8 @@ pub(crate) async fn prepare_soft_reboot_composefs(
     };
 
     setup_root(args)?;
+
+    println!("Soft reboot setup complete");
 
     if reboot {
         // Replacing the current process should be fine as we restart userspace anyway

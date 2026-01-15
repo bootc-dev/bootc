@@ -34,7 +34,7 @@ use schemars::schema_for;
 use serde::{Deserialize, Serialize};
 
 use crate::bootc_composefs::delete::delete_composefs_deployment;
-use crate::bootc_composefs::soft_reboot::prepare_soft_reboot_composefs;
+use crate::bootc_composefs::soft_reboot::{prepare_soft_reboot_composefs, reset_soft_reboot};
 use crate::bootc_composefs::{
     digest::{compute_composefs_digest, new_temp_composefs_repo},
     finalize::{composefs_backend_finalize, get_etc_diff},
@@ -624,7 +624,6 @@ pub(crate) enum InternalsOpts {
         reboot: bool,
         #[clap(long, conflicts_with = "reboot")]
         reset: bool,
-        reboot: bool,
     },
 }
 
@@ -1852,13 +1851,18 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
                         // TODO: Call ostree implementation?
                         anyhow::bail!("soft-reboot only implemented for composefs")
                     }
+
                     BootedStorageKind::Composefs(booted_cfs) => {
+                        if reset {
+                            return reset_soft_reboot();
+                        }
+
                         prepare_soft_reboot_composefs(
                             &storage,
                             &booted_cfs,
                             deployment.as_ref(),
+                            SoftRebootMode::Required,
                             reboot,
-                            reset,
                         )
                         .await
                     }
