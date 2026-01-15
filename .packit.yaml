@@ -74,8 +74,9 @@ jobs:
       - fedora-42-aarch64
       - fedora-43-x86_64
       - fedora-43-aarch64
-      - fedora-rawhide-x86_64
-      - fedora-rawhide-aarch64
+      # https://bugzilla.redhat.com/show_bug.cgi?id=2429501
+      # - fedora-rawhide-x86_64
+      # - fedora-rawhide-aarch64
     tmt_plan: /tmt/plans/integration
     tf_extra_params:
       environments:
