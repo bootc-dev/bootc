@@ -84,8 +84,8 @@
   summary: Test bootc install to-filesystem with separate /var mount
   duration: 30m
   require:
-    - parted
-    - lvm2
-    - dosfstools
-    - e2fsprogs
+  - parted
+  - lvm2
+  - dosfstools
+  - e2fsprogs
   test: bash booted/test-install-to-filesystem-var-mount.sh
