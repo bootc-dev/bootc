@@ -400,6 +400,12 @@ pub async fn write_tar(
         None
     };
     let mut c = std::process::Command::new("ostree");
+    // Unset G_MESSAGES_DEBUG to prevent GLib debug messages from corrupting stdout.
+    // When G_MESSAGES_DEBUG is set (e.g., "all"), GLib and OSTree emit debug messages
+    // to stdout instead of stderr, which corrupts the commit hash we parse from
+    // the subprocess output. This causes derived layer content to be silently lost
+    // during container imports.
+    c.env_remove("G_MESSAGES_DEBUG");
     let repofd = repo.dfd_as_file()?;
     let repofd: Arc<io_lifetimes::OwnedFd> = Arc::new(repofd.into());
     {
