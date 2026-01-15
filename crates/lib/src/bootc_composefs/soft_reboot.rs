@@ -16,7 +16,7 @@ use cap_std_ext::cap_std::fs::Dir;
 use cap_std_ext::dirext::CapStdExtDirExt;
 use fn_error_context::context;
 use ostree_ext::systemd_has_soft_reboot;
-use rustix::mount::{unmount, UnmountFlags};
+use rustix::mount::{UnmountFlags, unmount};
 use std::{fs::create_dir_all, os::unix::process::CommandExt, path::PathBuf, process::Command};
 
 const NEXTROOT: &str = "/run/nextroot";

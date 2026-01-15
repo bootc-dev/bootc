@@ -50,7 +50,8 @@ pub async fn export_repo_to_image(
 
     let imginfo = get_imginfo(storage, &depl_verity, None).await?;
 
-    let config_digest = imginfo.manifest.config().digest().digest();
+    // We want the digest in the form of "sha256:abc123"
+    let config_digest = format!("{}", imginfo.manifest.config().digest());
 
     let var_tmp =
         Dir::open_ambient_dir("/var/tmp", ambient_authority()).context("Opening /var/tmp")?;
@@ -60,7 +61,7 @@ pub async fn export_repo_to_image(
 
     // Use composefs_oci::open_config to get the config and layer map
     let (config, layer_map) =
-        open_config(&*booted_cfs.repo, config_digest, None).context("Opening config")?;
+        open_config(&*booted_cfs.repo, &config_digest, None).context("Opening config")?;
 
     // We can't guarantee that we'll get the same tar stream as the container image
     // So we create new config and manifest
