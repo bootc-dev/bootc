@@ -40,6 +40,7 @@
 - [`man bootc-install-to-disk`](man/bootc-install-to-disk.8.md)
 - [`man bootc-install-to-filesystem`](man/bootc-install-to-filesystem.8.md)
 - [`man bootc-install-to-existing-root`](man/bootc-install-to-existing-root.8.md)
+- [`man bootc-destructive-cleanup.service`](man/bootc-destructive-cleanup.service.5.md)
 
 # Bootc usage in containers
 
