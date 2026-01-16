@@ -1,0 +1,44 @@
+#!/bin/bash
+# Enable compose repos to avoid version skew between base image and mirrors
+# xref https://gitlab.com/redhat/centos-stream/containers/bootc/-/issues/1174
+set -euo pipefail
+
+. /usr/lib/os-release
+
+case "${ID}" in
+  centos)
+    # The base image may have been built from a compose that has newer packages
+    # than what's available on the public mirrors. Enable the compose repos
+    # with higher priority to ensure we get matching versions.
+    
+    # Extract the gpgkey from the existing centos.repo - c9s uses
+    # RPM-GPG-KEY-centosofficial while c10s uses RPM-GPG-KEY-centosofficial-SHA256
+    gpgkey=$(grep -m1 '^gpgkey=' /etc/yum.repos.d/centos.repo | cut -d= -f2)
+    if [[ -z "${gpgkey}" ]]; then
+      echo "Error: Could not find gpgkey in /etc/yum.repos.d/centos.repo" >&2
+      exit 1
+    fi
+
+    cat > /etc/yum.repos.d/centos-compose.repo << EOF
+[compose-baseos]
+name=CentOS Stream \$releasever Compose BaseOS
+baseurl=https://composes.stream.centos.org/stream-\$releasever/production/latest-CentOS-Stream/compose/BaseOS/\$basearch/os/
+gpgcheck=1
+enabled=1
+priority=1
+gpgkey=${gpgkey}
+
+[compose-appstream]
+name=CentOS Stream \$releasever Compose AppStream
+baseurl=https://composes.stream.centos.org/stream-\$releasever/production/latest-CentOS-Stream/compose/AppStream/\$basearch/os/
+gpgcheck=1
+enabled=1
+priority=1
+gpgkey=${gpgkey}
+EOF
+    echo "Enabled CentOS Stream compose repos (gpgkey: ${gpgkey})"
+    ;;
+  *)
+    # No compose repo needed for other distros
+    ;;
+esac

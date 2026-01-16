@@ -47,6 +47,11 @@ RUN --mount=type=tmpfs,target=/run /src/contrib/packaging/configure-systemdboot 
 #       local sources. We'll override it later.
 # NOTE: All your base belong to me.
 FROM $base as target-base
+# Handle version skew between base image and mirrors for CentOS Stream
+# xref https://gitlab.com/redhat/centos-stream/containers/bootc/-/issues/1174
+RUN --mount=type=tmpfs,target=/run \
+    --mount=type=bind,from=packaging,src=/,target=/run/packaging \
+    /run/packaging/enable-compose-repos
 RUN --mount=type=tmpfs,target=/run /usr/libexec/bootc-base-imagectl build-rootfs --manifest=standard /target-rootfs
 
 FROM scratch as base
