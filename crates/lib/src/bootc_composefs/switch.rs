@@ -45,6 +45,7 @@ pub(crate) async fn switch_composefs(
     let do_upgrade_opts = DoUpgradeOpts {
         soft_reboot: opts.soft_reboot,
         apply: opts.apply,
+        download_only: false,
     };
 
     if let Some(cfg_verity) = image {

@@ -9,6 +9,7 @@ use bootc_kernel_cmdline::utf8::Cmdline;
 use bootc_mount::tempmount::TempMount;
 use bootc_utils::CommandRunExt;
 use camino::Utf8PathBuf;
+use canon_json::CanonJsonSerialize;
 use cap_std_ext::cap_std::ambient_authority;
 use cap_std_ext::cap_std::fs::{Dir, Permissions, PermissionsExt};
 use cap_std_ext::dirext::CapStdExtDirExt;
@@ -23,7 +24,9 @@ use rustix::{
 
 use crate::bootc_composefs::boot::BootType;
 use crate::bootc_composefs::repo::get_imgref;
-use crate::bootc_composefs::status::{ImgConfigManifest, get_sorted_type1_boot_entries};
+use crate::bootc_composefs::status::{
+    ImgConfigManifest, StagedDeployment, get_sorted_type1_boot_entries,
+};
 use crate::parsers::bls_config::BLSConfigType;
 use crate::store::{BootedComposefs, Storage};
 use crate::{
@@ -227,7 +230,7 @@ pub(crate) async fn write_composefs_state(
     root_path: &Utf8PathBuf,
     deployment_id: &Sha512HashValue,
     target_imgref: &ImageReference,
-    staged: bool,
+    staged: Option<StagedDeployment>,
     boot_type: BootType,
     boot_digest: String,
     container_details: &ImgConfigManifest,
@@ -248,7 +251,12 @@ pub(crate) async fn write_composefs_state(
     )
     .context("Failed to create symlink for /var")?;
 
-    initialize_state(&root_path, &deployment_id.to_hex(), &state_path, !staged)?;
+    initialize_state(
+        &root_path,
+        &deployment_id.to_hex(),
+        &state_path,
+        staged.is_none(),
+    )?;
 
     let ImageReference {
         image: image_name,
@@ -291,7 +299,7 @@ pub(crate) async fn write_composefs_state(
         )
         .context("Failed to write to .origin file")?;
 
-    if staged {
+    if let Some(staged) = staged {
         std::fs::create_dir_all(COMPOSEFS_TRANSIENT_STATE_DIR)
             .with_context(|| format!("Creating {COMPOSEFS_TRANSIENT_STATE_DIR}"))?;
 
@@ -302,7 +310,9 @@ pub(crate) async fn write_composefs_state(
         staged_depl_dir
             .atomic_write(
                 COMPOSEFS_STAGED_DEPLOYMENT_FNAME,
-                deployment_id.to_hex().as_bytes(),
+                staged
+                    .to_canon_json_vec()
+                    .context("Failed to serialize staged deployment JSON")?,
             )
             .with_context(|| format!("Writing to {COMPOSEFS_STAGED_DEPLOYMENT_FNAME}"))?;
     }

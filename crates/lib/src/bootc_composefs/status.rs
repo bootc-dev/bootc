@@ -79,6 +79,12 @@ impl std::fmt::Display for ComposefsCmdline {
     }
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct StagedDeployment {
+    pub(crate) depl_id: String,
+    pub(crate) finalization_locked: bool,
+}
+
 /// Detect if we have composefs=<digest> in /proc/cmdline
 pub(crate) fn composefs_booted() -> Result<Option<&'static ComposefsCmdline>> {
     static CACHED_DIGEST_VALUE: OnceLock<Option<ComposefsCmdline>> = OnceLock::new();
@@ -554,7 +560,7 @@ pub(crate) async fn composefs_deployment_status_from(
 
     let mut host = Host::new(host_spec);
 
-    let staged_deployment_id = match std::fs::File::open(format!(
+    let staged_deployment = match std::fs::File::open(format!(
         "{COMPOSEFS_TRANSIENT_STATE_DIR}/{COMPOSEFS_STAGED_DEPLOYMENT_FNAME}"
     )) {
         Ok(mut f) => {
@@ -590,7 +596,7 @@ pub(crate) async fn composefs_deployment_status_from(
         let ini = tini::Ini::from_string(&config)
             .with_context(|| format!("Failed to parse file {depl_file_name}.origin as ini"))?;
 
-        let boot_entry =
+        let mut boot_entry =
             boot_entry_from_composefs_deployment(storage, ini, depl_file_name.to_string()).await?;
 
         // SAFETY: boot_entry.composefs will always be present
@@ -614,8 +620,11 @@ pub(crate) async fn composefs_deployment_status_from(
             continue;
         }
 
-        if let Some(staged_deployment_id) = &staged_deployment_id {
-            if depl_file_name == staged_deployment_id.trim() {
+        if let Some(staged_deployment) = &staged_deployment {
+            let staged_depl = serde_json::from_str::<StagedDeployment>(&staged_deployment)?;
+
+            if depl_file_name == staged_depl.depl_id {
+                boot_entry.download_only = staged_depl.finalization_locked;
                 host.status.staged = Some(boot_entry);
                 continue;
             }

@@ -1,10 +1,14 @@
+use std::io::Write;
+
 use anyhow::{Context, Result};
 use camino::Utf8PathBuf;
-use cap_std_ext::cap_std::fs::Dir;
+use canon_json::CanonJsonSerialize;
+use cap_std_ext::{cap_std::fs::Dir, dirext::CapStdExtDirExt};
 use composefs::fsverity::{FsVerityHashValue, Sha512HashValue};
 use composefs_boot::BootOps;
 use composefs_oci::image::create_filesystem;
 use fn_error_context::context;
+use ocidir::cap_std::ambient_authority;
 use ostree_ext::container::ManifestDiff;
 
 use crate::{
@@ -15,12 +19,15 @@ use crate::{
         soft_reboot::prepare_soft_reboot_composefs,
         state::write_composefs_state,
         status::{
-            ImgConfigManifest, get_bootloader, get_composefs_status,
+            ImgConfigManifest, StagedDeployment, get_bootloader, get_composefs_status,
             get_container_manifest_and_config, get_imginfo,
         },
     },
     cli::{SoftRebootMode, UpgradeOpts},
-    composefs_consts::{STATE_DIR_RELATIVE, TYPE1_ENT_PATH_STAGED, USER_CFG_STAGED},
+    composefs_consts::{
+        COMPOSEFS_STAGED_DEPLOYMENT_FNAME, COMPOSEFS_TRANSIENT_STATE_DIR, STATE_DIR_RELATIVE,
+        TYPE1_ENT_PATH_STAGED, USER_CFG_STAGED,
+    },
     spec::{Bootloader, Host, ImageReference},
     store::{BootedComposefs, ComposefsRepository, Storage},
 };
@@ -206,6 +213,31 @@ pub(crate) fn validate_update(
 pub(crate) struct DoUpgradeOpts {
     pub(crate) apply: bool,
     pub(crate) soft_reboot: Option<SoftRebootMode>,
+    pub(crate) download_only: bool,
+}
+
+async fn apply_upgrade(
+    storage: &Storage,
+    booted_cfs: &BootedComposefs,
+    depl_id: &String,
+    opts: &DoUpgradeOpts,
+) -> Result<()> {
+    if let Some(soft_reboot_mode) = opts.soft_reboot {
+        return prepare_soft_reboot_composefs(
+            storage,
+            booted_cfs,
+            Some(depl_id),
+            soft_reboot_mode,
+            opts.apply,
+        )
+        .await;
+    };
+
+    if opts.apply {
+        return crate::reboot::reboot();
+    }
+
+    Ok(())
 }
 
 /// Performs the Update or Switch operation
@@ -255,29 +287,17 @@ pub(crate) async fn do_upgrade(
         &Utf8PathBuf::from("/sysroot"),
         &id,
         imgref,
-        true,
+        Some(StagedDeployment {
+            depl_id: id.to_hex(),
+            finalization_locked: opts.download_only,
+        }),
         boot_type,
         boot_digest,
         img_manifest_config,
     )
     .await?;
 
-    if let Some(soft_reboot_mode) = opts.soft_reboot {
-        return prepare_soft_reboot_composefs(
-            storage,
-            booted_cfs,
-            Some(&id.to_hex()),
-            soft_reboot_mode,
-            opts.apply,
-        )
-        .await;
-    };
-
-    if opts.apply {
-        return crate::reboot::reboot();
-    }
-
-    Ok(())
+    apply_upgrade(storage, booted_cfs, &id.to_hex(), opts).await
 }
 
 #[context("Upgrading composefs")]
@@ -286,17 +306,59 @@ pub(crate) async fn upgrade_composefs(
     storage: &Storage,
     composefs: &BootedComposefs,
 ) -> Result<()> {
-    // Download-only mode is not yet supported for composefs backend
-    if opts.download_only {
-        anyhow::bail!("--download-only is not yet supported for composefs backend");
-    }
-    if opts.from_downloaded {
-        anyhow::bail!("--from-downloaded is not yet supported for composefs backend");
-    }
-
     let host = get_composefs_status(storage, composefs)
         .await
         .context("Getting composefs deployment status")?;
+
+    let do_upgrade_opts = DoUpgradeOpts {
+        soft_reboot: opts.soft_reboot,
+        apply: opts.apply,
+        download_only: opts.download_only,
+    };
+
+    if opts.from_downloaded {
+        let staged = host
+            .status
+            .staged
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("No staged deployment found"))?;
+
+        // Staged deployment exists, but it will be finalized
+        if !staged.download_only {
+            println!("Staged deployment is present and not in download only mode.");
+            println!("Use `bootc update --apply` to apply the update.");
+            return Ok(());
+        }
+
+        start_finalize_stated_svc()?;
+
+        // Make the staged deployment not download_only
+        let new_staged = StagedDeployment {
+            depl_id: staged.require_composefs()?.verity.clone(),
+            finalization_locked: false,
+        };
+
+        let staged_depl_dir =
+            Dir::open_ambient_dir(COMPOSEFS_TRANSIENT_STATE_DIR, ambient_authority())
+                .context("Opening transient state directory")?;
+
+        staged_depl_dir
+            .atomic_replace_with(
+                COMPOSEFS_STAGED_DEPLOYMENT_FNAME,
+                |f| -> std::io::Result<()> {
+                    f.write_all(new_staged.to_canon_json_string()?.as_bytes())
+                },
+            )
+            .context("Writing staged file")?;
+
+        return apply_upgrade(
+            storage,
+            composefs,
+            &staged.require_composefs()?.verity,
+            &do_upgrade_opts,
+        )
+        .await;
+    }
 
     let mut booted_imgref = host
         .spec
@@ -312,11 +374,6 @@ pub(crate) async fn upgrade_composefs(
     // Check if we already have this update staged
     // Or if we have another staged deployment with a different image
     let staged_image = host.status.staged.as_ref().and_then(|i| i.image.as_ref());
-
-    let do_upgrade_opts = DoUpgradeOpts {
-        soft_reboot: opts.soft_reboot,
-        apply: opts.apply,
-    };
 
     if let Some(staged_image) = staged_image {
         // We have a staged image and it has the same digest as the currently booted image's latest

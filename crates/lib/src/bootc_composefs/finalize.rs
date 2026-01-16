@@ -57,6 +57,11 @@ pub(crate) async fn composefs_backend_finalize(
         return Ok(());
     };
 
+    if staged_depl.download_only {
+        tracing::debug!("Staged deployment is marked download only. Won't finalize");
+        return Ok(());
+    }
+
     let staged_composefs = staged_depl.composefs.as_ref().ok_or(anyhow::anyhow!(
         "Staged deployment is not a composefs deployment"
     ))?;
