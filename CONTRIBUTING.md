@@ -41,11 +41,20 @@ accepted!
 Worth stating: before you start diving into the code you should understand using
 the system as a user and how it works.  See the user documentation for that.
 
-## Understanding the Justfile
+## The Justfile
+
+The [Justfile](Justfile) is the primary interface for building and testing bootc.
+
+```bash
+just --list           # Show all targets organized by group
+just list-variants    # Show available build variants and current config
+```
+
+### Building from source
 
 Edit the source code; a simple thing to do is add e.g.
-`eprintln!("hello world");` into `run_from_opt` in [crates/lib/src/cli.rs](cli.rs).
-You can run `make` or `cargo build` to build that locally.  However, a key
+`eprintln!("hello world");` into `run_from_opt` in [crates/lib/src/cli.rs](crates/lib/src/cli.rs).
+You can run `make` or `cargo build` to build that locally. However, a key
 next step is to get that binary into a bootc container image.
 
 Running `just` defaults to `just build` which will build a container
@@ -58,14 +67,24 @@ and try running `bootc`.
 
 ### Running container-oriented integration tests
 
-`just test-container`
+```bash
+just test-container
+```
 
 ### Running (TMT) integration tests
 
 A common cycle here is you'll edit e.g. `deploy.rs` and want to run the
 tests that perform an upgrade:
 
-`just test-tmt-one test-20-local-upgrade`
+```bash
+just test-tmt local-upgrade-reboot
+```
+
+To run a specific test:
+
+```bash
+just test-tmt readonly
+```
 
 ### Faster iteration cycles
 
@@ -95,6 +114,26 @@ Say for example your host is a Fedora 42 workstation (based on bootc),
 then you can `cargo b --release` directly in a Fedora 42 container
 or even on your host system, and then directly run e.g. `./target/release/bootc upgrade`
 etc.
+
+### Testing with composefs (sealed images)
+
+To build and test with the experimental composefs backend:
+
+```bash
+# Build a sealed image with auto-generated test Secure Boot keys
+just build-sealed
+
+# Run composefs-specific tests
+just test-composefs
+
+# Validate that composefs digests match between build and install views
+# (useful for debugging mtime/metadata issues)
+just validate-composefs-digest
+```
+
+The `build-sealed` target generates test Secure Boot keys in `target/test-secureboot/`
+and builds a complete sealed image with UKI. See [experimental-composefs.md](docs/src/experimental-composefs.md)
+for more information on sealed images.
 
 
 ### Debugging via lldb
