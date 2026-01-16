@@ -28,6 +28,8 @@ buildroot_base := env("BOOTC_buildroot_base", "quay.io/centos/centos:stream10")
 extra_src := env("BOOTC_extra_src", "")
 
 # Internal variables
+nocache := env("BOOTC_nocache", "")
+_nocache_arg := if nocache != "" { "--no-cache" } else { "" }
 testimage_label := "bootc.testimage=1"
 lbi_images := "quay.io/curl/curl:latest quay.io/curl/curl-base:latest registry.access.redhat.com/ubi9/podman:latest"
 fedora-coreos := "quay.io/fedora/fedora-coreos:testing-devel"
@@ -49,7 +51,7 @@ build: package _keygen && _pull-lbi-images
     set -xeuo pipefail
     test -d target/packages
     pkg_path=$(realpath target/packages)
-    podman build --build-context "packages=${pkg_path}" -t {{base_img}} {{buildargs}} .
+    podman build {{_nocache_arg}} --build-context "packages=${pkg_path}" -t {{base_img}} {{buildargs}} .
 
 # Show available build variants and current configuration
 [group('core')]
