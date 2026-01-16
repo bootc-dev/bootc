@@ -16,28 +16,20 @@
 
 set -xeuo pipefail
 
-# Use a generic target image to test skew between the bootc binary doing
-# the install and the target image
-TARGET_IMAGE="docker://quay.io/centos-bootc/centos-bootc:stream10"
+# Build a derived image with LBIs removed for installation
+TARGET_IMAGE="localhost/bootc-install"
 
 echo "Testing bootc install to-filesystem with separate /var mount"
 
-# Disable SELinux enforcement for the install
-setenforce 0
+# Copy the currently booted image to container storage for podman to use
+bootc image copy-to-storage
 
-# Enable usr-overlay to allow modifications
-bootc usr-overlay
-
-# Install required packages (bootc images are immutable, so we need to install
-# after usr-overlay is enabled)
-dnf install -y parted lvm2 dosfstools e2fsprogs
-
-# Mask off conflicting ostree state
-if test -d /sysroot/ostree; then
-    mount --bind /usr/share/empty /sysroot/ostree
-fi
-rm -vrf /usr/lib/bootupd/updates
-rm -vrf /usr/lib/bootc/bound-images.d
+# Build a derived image that removes LBIs
+cat > /tmp/Containerfile.drop-lbis <<'EOF'
+FROM localhost/bootc
+RUN rm -rf /usr/lib/bootc/bound-images.d/*
+EOF
+podman build -t "$TARGET_IMAGE" -f /tmp/Containerfile.drop-lbis
 
 # Create a 12GB sparse disk image in /var/tmp (not /tmp which may be tmpfs)
 DISK_IMG=/var/tmp/disk-var-mount-test.img
@@ -91,7 +83,7 @@ vgcreate BL "$LVM_PART"
 
 # Create logical volumes
 lvcreate -L 4G -n var02 BL
-lvcreate -L 5G -n root02 BL
+lvcreate -l 100%FREE -n root02 BL
 
 # Create filesystems on logical volumes
 mkfs.ext4 -F /dev/BL/var02
@@ -122,8 +114,7 @@ echo "Filesystem layout:"
 mount | grep /var/mnt/target || true
 df -h /var/mnt/target /var/mnt/target/boot /var/mnt/target/boot/efi /var/mnt/target/var
 
-# Run bootc install to-filesystem
-# This should succeed and handle the separate /var mount correctly
+# Run bootc install to-filesystem from within the container image under test
 podman run \
     --rm --privileged \
     -v /var/mnt/target:/target \
