@@ -1823,13 +1823,15 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
                 let (p, c, n) =
                     etc_merge::traverse_etc(&pristine_etc, &current_etc, Some(&new_etc))?;
 
-                let diff = compute_diff(&p, &c)?;
+                let n = n
+                    .as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("Failed to get new directory tree"))?;
+
+                let diff = compute_diff(&p, &c, &n)?;
                 print_diff(&diff, &mut std::io::stdout());
 
                 if merge {
-                    let n =
-                        n.ok_or_else(|| anyhow::anyhow!("Failed to get dirtree for new etc"))?;
-                    etc_merge::merge(&current_etc, &c, &new_etc, &n, diff)?;
+                    etc_merge::merge(&current_etc, &c, &new_etc, &n, &diff)?;
                 }
 
                 Ok(())

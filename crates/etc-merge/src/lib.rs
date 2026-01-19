@@ -188,6 +188,7 @@ fn get_deletions(
 fn get_modifications(
     pristine: &Directory<CustomMetadata>,
     current: &Directory<CustomMetadata>,
+    new: &Directory<CustomMetadata>,
     mut current_path: PathBuf,
     diff: &mut Diff,
 ) -> anyhow::Result<()> {
@@ -205,7 +206,21 @@ fn get_modifications(
                             diff.modified.push(current_path.clone());
                         }
 
-                        get_modifications(old_dir, &curr_dir, current_path.clone(), diff)?
+                        let total_added = diff.added.len();
+                        let total_modified = diff.modified.len();
+
+                        get_modifications(old_dir, &curr_dir, new, current_path.clone(), diff)?;
+
+                        // This directory or its contents were modified/added
+                        // Check if the new directory was deleted from new_etc
+                        // If it was, we want to add the directory back
+                        if new.get_directory_opt(&current_path.as_os_str())?.is_none() {
+                            if diff.added.len() != total_added {
+                                diff.added.insert(total_added, current_path.clone());
+                            } else if diff.modified.len() != total_modified {
+                                diff.modified.insert(total_modified, current_path.clone());
+                            }
+                        }
                     }
 
                     Err(ImageError::NotFound(..)) => {
@@ -343,6 +358,7 @@ pub fn traverse_etc(
 pub fn compute_diff(
     pristine_etc_files: &Directory<CustomMetadata>,
     current_etc_files: &Directory<CustomMetadata>,
+    new_etc_files: &Directory<CustomMetadata>,
 ) -> anyhow::Result<Diff> {
     let mut diff = Diff {
         added: vec![],
@@ -353,6 +369,7 @@ pub fn compute_diff(
     get_modifications(
         &pristine_etc_files,
         &current_etc_files,
+        &new_etc_files,
         PathBuf::new(),
         &mut diff,
     )?;
@@ -641,7 +658,7 @@ fn merge_leaf(
     } else {
         current_etc_fd
             .copy(&file, new_etc_fd, &file)
-            .context(format!("Copying file {file:?}"))?;
+            .with_context(|| format!("Copying file {file:?}"))?;
     };
 
     rustix::fs::chownat(
@@ -719,7 +736,7 @@ pub fn merge(
     current_etc_dirtree: &Directory<CustomMetadata>,
     new_etc_fd: &CapStdDir,
     new_etc_dirtree: &Directory<CustomMetadata>,
-    diff: Diff,
+    diff: &Diff,
 ) -> anyhow::Result<()> {
     merge_modified_files(
         &diff.added,
@@ -739,7 +756,7 @@ pub fn merge(
     )
     .context("Merging modified files")?;
 
-    for removed in diff.removed {
+    for removed in &diff.removed {
         let stat = new_etc_fd.metadata_optional(&removed)?;
 
         let Some(stat) = stat else {
@@ -779,7 +796,7 @@ mod tests {
     ];
 
     #[test]
-    fn test_etc_diff() -> anyhow::Result<()> {
+    fn test_etc_diff_plus_merge() -> anyhow::Result<()> {
         let tempdir = cap_std_ext::cap_tempfile::tempdir(cap_std::ambient_authority())?;
 
         tempdir.create_dir("pristine_etc")?;
@@ -822,17 +839,28 @@ mod tests {
         c.remove_file(deleted_files[0])?;
         c.remove_file(deleted_files[1])?;
 
-        let (pristine_etc_files, current_etc_files, _) = traverse_etc(&p, &c, Some(&n))?;
-        let res = compute_diff(&pristine_etc_files, &current_etc_files)?;
+        let (pristine_etc_files, current_etc_files, new_etc_files) =
+            traverse_etc(&p, &c, Some(&n))?;
 
-        // Test added files
-        assert_eq!(res.added.len(), new_files.len());
-        assert!(res.added.iter().all(|file| {
-            new_files
-                .iter()
-                .find(|x| PathBuf::from(*x) == *file)
-                .is_some()
-        }));
+        let res = compute_diff(
+            &pristine_etc_files,
+            &current_etc_files,
+            new_etc_files.as_ref().unwrap(),
+        )?;
+
+        merge(
+            &c,
+            &current_etc_files,
+            &n,
+            new_etc_files.as_ref().unwrap(),
+            &res,
+        )
+        .expect("Merge failed");
+
+        let added_dirs = ["a", "a/b", "a/b/c"];
+
+        // 3 for the files, and 3 for the directories
+        assert_eq!(res.added.len(), new_files.len() + added_dirs.len());
 
         // Test modified files
         let all_modified_files = overwritten_files
@@ -1008,8 +1036,12 @@ mod tests {
 
         let (pristine_etc_files, current_etc_files, new_etc_files) =
             traverse_etc(&p, &c, Some(&n))?;
-        let diff = compute_diff(&pristine_etc_files, &current_etc_files)?;
-        merge(&c, &current_etc_files, &n, &new_etc_files.unwrap(), diff)?;
+        let diff = compute_diff(
+            &pristine_etc_files,
+            &current_etc_files,
+            &new_etc_files.as_ref().unwrap(),
+        )?;
+        merge(&c, &current_etc_files, &n, &new_etc_files.unwrap(), &diff)?;
 
         assert!(files_eq(&c, &n, "new_file.txt")?);
         assert!(files_eq(&c, &n, "a/new_file.txt")?);
@@ -1081,9 +1113,13 @@ mod tests {
 
         let (pristine_etc_files, current_etc_files, new_etc_files) =
             traverse_etc(&p, &c, Some(&n))?;
-        let diff = compute_diff(&pristine_etc_files, &current_etc_files)?;
+        let diff = compute_diff(
+            &pristine_etc_files,
+            &current_etc_files,
+            &new_etc_files.as_ref().unwrap(),
+        )?;
 
-        let merge_res = merge(&c, &current_etc_files, &n, &new_etc_files.unwrap(), diff);
+        let merge_res = merge(&c, &current_etc_files, &n, &new_etc_files.unwrap(), &diff);
 
         assert!(merge_res.is_err());
         assert_eq!(
