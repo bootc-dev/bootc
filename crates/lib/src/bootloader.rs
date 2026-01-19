@@ -114,6 +114,12 @@ pub(crate) fn install_via_bootupd(
     let bind_mount_dirs = ["/dev", "/run", "/proc", "/sys"];
     let chroot_args = if let Some(target_root) = abs_deployment_path.as_deref() {
         tracing::debug!("Setting up bind-mounts before chrooting to the target deployment");
+        // First off, we bind-mount target on itself, so it becomes a mount point and the chrooted
+        // `findmnt` calls are able to resolve the mount in the chroot
+        // See https://github.com/coreos/bootupd/issues/1051#issuecomment-3768271509 and following comments
+        tracing::debug!("bind mounting the target deployement on itslelf");
+        rustix::mount::mount_bind(target_root.as_std_path(), target_root.as_std_path())?;
+
         for src in bind_mount_dirs {
             let dest = target_root
                 // joining an absolute path
@@ -184,6 +190,11 @@ pub(crate) fn install_via_bootupd(
                 // e.g. when running `to-existing-root`
                 tracing::warn!("Error unmounting {}: {e}", mount.display());
             }
+        }
+        if let Err(e) =
+            rustix::mount::unmount(&target_root.into_std_path_buf(), UnmountFlags::DETACH)
+        {
+            tracing::warn!("Error unmounting target root bind mount: {e}");
         }
     }
     install_result
