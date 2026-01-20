@@ -4,7 +4,18 @@ set -euo pipefail
 op=$1
 shift
 
-sdboot="usr/lib/systemd/boot/efi/systemd-bootx64.efi"
+arch=$(arch)
+case $arch in
+  x86_64)
+    suffix="x64"
+    ;;
+  aarch64)
+    suffix="aa64"
+    ;;
+  *) echo "Unknown architecture $arch" 1>&2; exit 1
+  ;;
+esac
+sdboot="usr/lib/systemd/boot/efi/systemd-boot${suffix}.efi"
 sdboot_bn=$(basename ${sdboot})
 
 case $op in 
