@@ -40,9 +40,6 @@ jobs:
       - centos-stream-10-x86_64
       - centos-stream-10-aarch64
       - centos-stream-10-s390x
-      - fedora-42-x86_64
-      - fedora-42-aarch64
-      - fedora-42-s390x
       - fedora-43-x86_64
       - fedora-43-aarch64
       - fedora-43-s390x
@@ -70,8 +67,6 @@ jobs:
       - centos-stream-9-aarch64
       - centos-stream-10-x86_64
       - centos-stream-10-aarch64
-      - fedora-42-x86_64
-      - fedora-42-aarch64
       - fedora-43-x86_64
       - fedora-43-aarch64
       # https://bugzilla.redhat.com/show_bug.cgi?id=2429501

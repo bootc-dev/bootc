@@ -120,7 +120,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        test_os: [fedora-42, fedora-43, fedora-44, centos-9, centos-10]
+        test_os: [fedora-43, fedora-44, centos-9, centos-10]
 
     runs-on: ubuntu-24.04
 
@@ -153,7 +153,7 @@ jobs:
       fail-fast: false
       matrix:
         # No fedora-44 due to https://bugzilla.redhat.com/show_bug.cgi?id=2429501
-        test_os: [fedora-42, fedora-43, centos-9, centos-10]
+        test_os: [fedora-43, centos-9, centos-10]
         variant: [ostree, composefs-sealeduki-sdboot]
         exclude:
           # centos-9 UKI is experimental/broken (https://github.com/bootc-dev/bootc/issues/1812)
