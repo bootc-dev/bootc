@@ -3,8 +3,8 @@ ARG base=localhost/bootc
 FROM $base AS base
 
 FROM base as kernel
-# Use tmpfs on /run to prevent podman's DNS resolver files from being committed
-RUN --mount=type=tmpfs,target=/run <<EORUN
+# Use tmpfs on /run and /tmp to prevent podman's DNS resolver files from being committed
+RUN --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp <<EORUN
 set -xeuo pipefail
 . /usr/lib/os-release
 case $ID in
@@ -18,7 +18,7 @@ dnf -y install systemd-ukify sbsigntools
 EORUN
 # Must be passed
 ARG COMPOSEFS_FSVERITY
-RUN --network=none --mount=type=tmpfs,target=/run \
+RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
     --mount=type=secret,id=secureboot_key \
     --mount=type=secret,id=secureboot_cert \
     --mount=type=bind,from=base,src=/,target=/target \
@@ -47,7 +47,7 @@ RUN --network=none --mount=type=tmpfs,target=/run \
 EOF
 
 FROM base as final
-RUN --network=none --mount=type=tmpfs,target=/run \
+RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
     --mount=type=bind,from=kernel,src=/,target=/run/kernel <<EOF
 set -xeuo pipefail
 kver=$(cd /usr/lib/modules && echo *)
@@ -61,8 +61,13 @@ rm -v /usr/lib/modules/${kver}/{vmlinuz,initramfs.img}
 # Symlink into the /usr/lib/modules location
 ln -sr $target /usr/lib/modules/${kver}/$(basename $kver.efi)
 EOF
-# Use tmpfs on /run to ensure lint sees empty /run (hiding any podman-created content)
-RUN --network=none --mount=type=tmpfs,target=/run bootc container lint --fatal-warnings
+# lint: allow non-tmpfs
+RUN --network=none <<EORUN
+set -xeuo pipefail
+# workaround for https://github.com/containers/buildah/pull/6233
+rm -vrf /run/systemd
+bootc container lint --fatal-warnings
+EORUN
 
 FROM base as final-final
 COPY --from=final /boot /boot
