@@ -13,7 +13,7 @@ use tap.nu
 
 # Use a generic target image to test skew between the bootc binary doing
 # the install and the target image
-let target_image = "docker://quay.io/centos-bootc/centos-bootc:stream10"
+let target_image = "docker://quay.io/centos-bootc/centos-bootc:stream9"
 
 def main [] {
     tap begin "install with experimental unified storage flag"

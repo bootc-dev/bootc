@@ -10,7 +10,7 @@ use tap.nu
 # this test in theory independent of starting from a bootc host,
 # but also because it's useful to test "skew" between the bootc binary
 # doing the install and the target image.
-let target_image = "docker://quay.io/centos-bootc/centos-bootc:stream10"
+let target_image = "docker://quay.io/centos-bootc/centos-bootc:stream9"
 
 # setup filesystem
 mkdir /var/mnt
