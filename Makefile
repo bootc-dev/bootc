@@ -43,8 +43,15 @@ bin: manpages
 manpages:
 	cargo run --release --package xtask -- manpages
 
+.PHONY: completion
+completion:
+	mkdir -p target/completion
+	for shell in bash elvish fish powershell zsh; do \
+		target/release/bootc completion $$shell > target/completion/bootc.$$shell; \
+	done
+
 STORAGE_RELATIVE_PATH ?= $(shell realpath -m -s --relative-to="$(prefix)/lib/bootc/storage" /sysroot/ostree/bootc/storage)
-install:
+install: completion
 	install -D -m 0755 -t $(DESTDIR)$(prefix)/bin target/release/bootc
 	install -D -m 0755 -t $(DESTDIR)$(prefix)/bin target/release/system-reinstall-bootc
 	install -d -m 0755 $(DESTDIR)$(prefix)/lib/bootc/bound-images.d
@@ -54,6 +61,9 @@ install:
 	install -d $(DESTDIR)$(prefix)/lib/bootc/install
 	install -D -m 0644 -t $(DESTDIR)$(prefix)/share/man/man5 target/man/*.5; \
 	install -D -m 0644 -t $(DESTDIR)$(prefix)/share/man/man8 target/man/*.8; \
+	install -D -m 0644 target/completion/bootc.bash $(DESTDIR)$(prefix)/share/bash-completion/completions/bootc
+	install -D -m 0644 target/completion/bootc.zsh $(DESTDIR)$(prefix)/share/zsh/site-functions/_bootc
+	install -D -m 0644 target/completion/bootc.fish $(DESTDIR)$(prefix)/share/fish/vendor_completions.d/bootc.fish
 	install -D -m 0644 -t $(DESTDIR)/$(prefix)/lib/systemd/system systemd/*.service systemd/*.timer systemd/*.path systemd/*.target
 	install -D -m 0644 -t $(DESTDIR)/$(prefix)/share/doc/bootc/baseimage/base/usr/lib/ostree/ baseimage/base/usr/lib/ostree/prepare-root.conf
 	install -d -m 755 $(DESTDIR)/$(prefix)/share/doc/bootc/baseimage/base/sysroot

@@ -164,6 +164,10 @@ chmod +x %{?buildroot}/%{system_reinstall_bootc_install_podman_path}
 touch %{?buildroot}/%{_docdir}/bootc/baseimage/base/sysroot/.keepdir
 find %{?buildroot}/%{_docdir} ! -type d -printf '%{_docdir}/%%P\n' | sort > bootcdoclist.txt
 
+install -Dpm 0644 target/completion/bootc.bash %{buildroot}%{bash_completions_dir}/bootc
+install -Dpm 0644 target/completion/bootc.zsh %{buildroot}%{zsh_completions_dir}/_bootc
+install -Dpm 0644 target/completion/bootc.fish %{buildroot}%{fish_completions_dir}/bootc.fish
+
 %if %{with check}
 %check
 if grep -qEe 'Seccomp:.*0$' /proc/self/status; then
@@ -190,6 +194,9 @@ fi
 %endif
 %{_unitdir}/*
 %{_mandir}/man*/*bootc*
+%{bash_completions_dir}/bootc
+%{zsh_completions_dir}/_bootc
+%{fish_completions_dir}/bootc.fish
 
 %files -n system-reinstall-bootc
 %{_bindir}/system-reinstall-bootc
