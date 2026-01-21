@@ -5,7 +5,7 @@ set -xeuo pipefail
 
 # Remove all RPMs installed in the physical root (i.e. the previous OS)
 mount -o remount,rw /sysroot
-rpm -qa --root=/sysroot --dbpath=/usr/lib/sysimage/rpm | xargs rpm -e --root=/sysroot --dbpath=/usr/lib/sysimage/rpm
+rpm -qa --root=/sysroot --dbpath=/usr/lib/sysimage/rpm | xargs -r rpm -e --root=/sysroot --dbpath=/usr/lib/sysimage/rpm
 
 # Remove all container images (including the one that was used to install)
 # Note that this does not remove stopped containers, and so some storage
