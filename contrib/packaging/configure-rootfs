@@ -9,6 +9,8 @@ ROOTFS="${2:-}"
 CONFIG_DIR="/usr/lib/bootc/install"
 mkdir -p "${CONFIG_DIR}"
 
+kver=$(bootc container inspect --json | jq -re .kernel.version)
+
 # Do we have an explicit build-time override? Then write it.
 if [ -n "$ROOTFS" ]; then
   cat > "${CONFIG_DIR}/80-rootfs-override.toml" <<EOF
@@ -24,7 +26,7 @@ else
   fs=
   case "${VARIANT}" in
     composefs*)
-      btrfs=$(grep -qEe '^CONFIG_BTRFS_FS' /usr/lib/modules/*/config && echo btrfs || true)
+      btrfs=$(grep -qEe '^CONFIG_BTRFS_FS' /usr/lib/modules/${kver}/config && echo btrfs || true)
       fs=${btrfs:-ext4}
       ;;
     *)
