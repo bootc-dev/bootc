@@ -3,3 +3,8 @@ rsync
 cloud-init
 /usr/bin/flock
 /usr/bin/awk
+# Required by install-to-filesystem-var-mount test
+parted
+lvm2
+dosfstools
+e2fsprogs
