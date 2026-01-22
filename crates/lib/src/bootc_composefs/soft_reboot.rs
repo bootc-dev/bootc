@@ -23,6 +23,11 @@ const NEXTROOT: &str = "/run/nextroot";
 
 #[context("Resetting soft reboot state")]
 pub(crate) fn reset_soft_reboot() -> Result<()> {
+    // NOTE: By default bootc runs in an unshared mount namespace;
+    // this sets up our /runto actually be the same as the host/run
+    // so the umount (at the end of this function) actually affects the host
+    //
+    // Similar operation is performed in `prepare_soft_reboot_composefs`
     let run = Utf8Path::new("/run");
     bind_mount_from_pidns(PID1, &run, &run, true).context("Bind mounting /run")?;
 
@@ -33,7 +38,7 @@ pub(crate) fn reset_soft_reboot() -> Result<()> {
         .context("Opening nextroot")?;
 
     let Some(nextroot) = nextroot else {
-        tracing::debug!("Nextroot is not a directory");
+        tracing::debug!("Nextroot does not exist");
         println!("No deployment staged for soft rebooting");
         return Ok(());
     };
@@ -61,7 +66,7 @@ pub(crate) fn reset_soft_reboot() -> Result<()> {
 pub(crate) async fn prepare_soft_reboot_composefs(
     storage: &Storage,
     booted_cfs: &BootedComposefs,
-    deployment_id: Option<&String>,
+    deployment_id: Option<&str>,
     soft_reboot_mode: SoftRebootMode,
     reboot: bool,
 ) -> Result<()> {

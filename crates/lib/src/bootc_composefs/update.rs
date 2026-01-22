@@ -1,8 +1,5 @@
-use std::io::Write;
-
 use anyhow::{Context, Result};
 use camino::Utf8PathBuf;
-use canon_json::CanonJsonSerialize;
 use cap_std_ext::{cap_std::fs::Dir, dirext::CapStdExtDirExt};
 use composefs::fsverity::{FsVerityHashValue, Sha512HashValue};
 use composefs_boot::BootOps;
@@ -346,7 +343,7 @@ pub(crate) async fn upgrade_composefs(
             .atomic_replace_with(
                 COMPOSEFS_STAGED_DEPLOYMENT_FNAME,
                 |f| -> std::io::Result<()> {
-                    f.write_all(new_staged.to_canon_json_string()?.as_bytes())
+                    serde_json::to_writer(f, &new_staged).map_err(std::io::Error::from)
                 },
             )
             .context("Writing staged file")?;

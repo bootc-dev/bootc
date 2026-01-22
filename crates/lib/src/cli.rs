@@ -1860,7 +1860,7 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
                         prepare_soft_reboot_composefs(
                             &storage,
                             &booted_cfs,
-                            deployment.as_ref(),
+                            deployment.as_deref(),
                             SoftRebootMode::Required,
                             reboot,
                         )

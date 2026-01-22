@@ -311,6 +311,10 @@ impl BootEntry {
         ))
     }
 
+    /// Get the boot digest for this deployment
+    /// This is the
+    /// - SHA256SUM of kernel + initrd for Type1 booted deployments
+    /// - SHA256SUM of UKI for Type2 booted deployments
     pub(crate) fn composefs_boot_digest(&self) -> Result<&String> {
         self.require_composefs()?
             .boot_digest

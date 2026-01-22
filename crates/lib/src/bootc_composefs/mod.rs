@@ -6,6 +6,7 @@ pub(crate) mod finalize;
 pub(crate) mod gc;
 pub(crate) mod repo;
 pub(crate) mod rollback;
+pub(crate) mod selinux;
 pub(crate) mod service;
 pub(crate) mod soft_reboot;
 pub(crate) mod state;
