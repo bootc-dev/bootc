@@ -25,6 +25,7 @@ The `install` section supports these subfields:
 - `kargs`: An array of strings; this will be appended to the set of kernel arguments.
 - `match_architectures`: An array of strings; this filters the install config.
 - `ostree`: See below.
+- `stateroot`: The stateroot name to use. Defaults to `default`.
 
 # filesystem
 
@@ -53,6 +54,8 @@ Configuration options for the ostree repository. There is one valid field:
 type = "xfs"
 [install]
 kargs = ["nosmt", "console=tty0"]
+stateroot = "myos"
+
 [install.ostree]
 bls-append-except-default = 'grub_users=""'
 ```

@@ -562,9 +562,15 @@ impl State {
     }
 
     fn stateroot(&self) -> &str {
+        // CLI takes precedence over config file
         self.config_opts
             .stateroot
             .as_deref()
+            .or_else(|| {
+                self.install_config
+                    .as_ref()
+                    .and_then(|c| c.stateroot.as_deref())
+            })
             .unwrap_or(ostree_ext::container::deploy::STATEROOT_DEFAULT)
     }
 }

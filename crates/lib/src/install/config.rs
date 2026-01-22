@@ -78,6 +78,8 @@ pub(crate) struct InstallConfiguration {
     pub(crate) match_architectures: Option<Vec<String>>,
     /// Ostree repository configuration
     pub(crate) ostree: Option<OstreeRepoOpts>,
+    /// The stateroot name to use. Defaults to `default`
+    pub(crate) stateroot: Option<String>,
 }
 
 fn merge_basic<T>(s: &mut Option<T>, o: Option<T>, _env: &EnvProperties) {
@@ -150,6 +152,7 @@ impl Mergeable for InstallConfiguration {
             merge_basic(&mut self.block, other.block, env);
             self.filesystem.merge(other.filesystem, env);
             self.ostree.merge(other.ostree, env);
+            merge_basic(&mut self.stateroot, other.stateroot, env);
             if let Some(other_kargs) = other.kargs {
                 self.kargs
                     .get_or_insert_with(Default::default)
@@ -630,6 +633,7 @@ bls-append-except-default = "console=ttyS0"
         let other = InstallConfiguration {
             ostree: Some(OstreeRepoOpts {
                 bls_append_except_default: Some("console=tty0".to_string()),
+                ..Default::default()
             }),
             ..Default::default()
         };
@@ -638,5 +642,34 @@ bls-append-except-default = "console=ttyS0"
             install.ostree.unwrap().bls_append_except_default.unwrap(),
             "console=tty0"
         );
+    }
+
+    #[test]
+    fn test_parse_stateroot() {
+        let c: InstallConfigurationToplevel = toml::from_str(
+            r#"[install]
+stateroot = "custom"
+"#,
+        )
+        .unwrap();
+        assert_eq!(c.install.unwrap().stateroot.unwrap(), "custom");
+    }
+
+    #[test]
+    fn test_merge_stateroot() {
+        let env = EnvProperties {
+            sys_arch: "x86_64".to_string(),
+        };
+        let mut install: InstallConfiguration = toml::from_str(
+            r#"stateroot = "original"
+"#,
+        )
+        .unwrap();
+        let other = InstallConfiguration {
+            stateroot: Some("newroot".to_string()),
+            ..Default::default()
+        };
+        install.merge(other, &env);
+        assert_eq!(install.stateroot.unwrap(), "newroot");
     }
 }
