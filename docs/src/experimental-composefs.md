@@ -82,8 +82,6 @@ EORUN
 # Final image: copy the sealed UKI into place
 FROM rootfs
 COPY --from=sealed-uki /out/*.efi /boot/EFI/Linux/
-# Remove raw kernel/initramfs (now embedded in UKI)
-RUN rm -f /usr/lib/modules/*/vmlinuz /usr/lib/modules/*/initramfs.img
 ```
 
 This pattern works because:
