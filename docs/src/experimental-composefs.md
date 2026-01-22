@@ -3,8 +3,6 @@
 Experimental features are subject to change or removal. Please
 do provide feedback on them.
 
-Tracking issue: <https://github.com/bootc-dev/bootc/issues/1190>
-
 ## Overview
 
 The composefs backend is an experimental alternative storage backend that uses [composefs-rs](https://github.com/containers/composefs-rs) instead of ostree for storing and managing bootc system deployments.
@@ -140,21 +138,24 @@ To use sealed images, the container image must have a UKI and systemd-boot insta
 
 There is a `--composefs-backend` option for `bootc install` to explicitly select a composefs backend apart from sealed images; this is not as heavily tested yet.
 
-## Current Limitations
+## Known Issues
 
-- **Experimental**: The on-disk formats are subject to change
-- **UX refinement**: The user experience for building and managing sealed images is still being improved
-- **SELinux**: Currently uses `enforcing=0` in the kernel command line (see [#1826](https://github.com/bootc-dev/bootc/issues/1826))
-- **kargs.d**: Custom kernel arguments from `/usr/lib/bootc/kargs.d` are not yet automatically included in sealed UKIs
+The composefs backend is experimental; on-disk formats are subject to change.
 
-## Related Issues
+### Deployment blockers
 
-- [#1190](https://github.com/bootc-dev/bootc/issues/1190) - composefs-native backend (main tracker)
-- [#1498](https://github.com/bootc-dev/bootc/issues/1498) - Sealed image build UX + implementation
-- [#1703](https://github.com/bootc-dev/bootc/issues/1703) - OCI config mismatch issues
-- [#1826](https://github.com/bootc-dev/bootc/issues/1826) - SELinux enforcement with composefs
-- [#20](https://github.com/bootc-dev/bootc/issues/20) - Unified storage (long-term goal)
-- [#806](https://github.com/bootc-dev/bootc/issues/806) - UKI/systemd-boot tracker
+- [Garbage collection](https://github.com/containers/composefs-rs/pull/200): Old deployments are not cleaned up
+- [SELinux enforcement](https://github.com/bootc-dev/bootc/issues/1826): Currently requires `enforcing=0`
+- [OCI registry install](https://github.com/bootc-dev/bootc/issues/1703): Installing from registry can fail due to config mismatch
+
+### Important
+
+- [Sealed image build UX](https://github.com/bootc-dev/bootc/issues/1498): Streamlined tooling for building sealed images
+- **kargs.d**: Custom kernel arguments from `/usr/lib/bootc/kargs.d` not yet included in sealed UKIs
+
+### Long-term
+
+- [Unified storage](https://github.com/bootc-dev/bootc/issues/20)
 
 ## Additional Resources
 
