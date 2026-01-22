@@ -33,7 +33,7 @@ WORKDIR /src
 # See https://www.reddit.com/r/rust/comments/126xeyx/exploring_the_problem_of_faster_cargo_docker/
 # We aren't using the full recommendations there, just the simple bits.
 # First we download all of our Rust dependencies
-# Note: /run/extra-src is optionally bind-mounted via BOOTC_extra_src for local composefs-rs development
+# Note: Local path dependencies (from [patch] sections) are auto-detected and bind-mounted by the Justfile
 RUN --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp --mount=type=cache,target=/src/target --mount=type=cache,target=/var/roothome cargo fetch
 
 # We always do a "from scratch" build

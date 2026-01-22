@@ -25,7 +25,10 @@ base := env("BOOTC_base", "quay.io/centos-bootc/centos-bootc:stream10")
 # Buildroot base image
 buildroot_base := env("BOOTC_buildroot_base", "quay.io/centos/centos:stream10")
 # Optional: path to extra source (e.g. composefs-rs) for local development
+# DEPRECATED: Use [patch] sections in Cargo.toml instead, which are auto-detected
 extra_src := env("BOOTC_extra_src", "")
+# Set to "1" to disable auto-detection of local Rust dependencies
+no_auto_local_deps := env("BOOTC_no_auto_local_deps", "")
 
 # Internal variables
 nocache := env("BOOTC_nocache", "")
@@ -231,7 +234,12 @@ package:
     fi
     eval $(just _git-build-vars)
     echo "Building RPM with version: ${VERSION}"
-    podman build {{base_buildargs}} --build-arg=SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH} --build-arg=pkgversion=${VERSION} -t localhost/bootc-pkg --target=build .
+    # Auto-detect local Rust path dependencies (e.g., from [patch] sections)
+    local_deps_args=""
+    if [[ -z "{{no_auto_local_deps}}" ]]; then
+        local_deps_args=$(cargo xtask local-rust-deps)
+    fi
+    podman build {{base_buildargs}} --build-arg=SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH} --build-arg=pkgversion=${VERSION} -t localhost/bootc-pkg --target=build $local_deps_args .
     mkdir -p "${packages}"
     rm -vf "${packages}"/*.rpm
     podman run --rm localhost/bootc-pkg tar -C /out/ -cf - . | tar -C "${packages}"/ -xvf -

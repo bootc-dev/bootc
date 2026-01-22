@@ -56,6 +56,8 @@ enum Commands {
     CheckBuildsys,
     /// Validate composefs digests match between build-time and install-time views
     ValidateComposefsDigest(ValidateComposefsDigestArgs),
+    /// Print podman bind mount arguments for local path dependencies
+    LocalRustDeps(LocalRustDepsArgs),
 }
 
 /// Arguments for validate-composefs-digest command
@@ -63,6 +65,14 @@ enum Commands {
 pub(crate) struct ValidateComposefsDigestArgs {
     /// Container image to validate (e.g., "localhost/bootc" or "quay.io/centos-bootc/centos-bootc:stream10")
     pub(crate) image: String,
+}
+
+/// Arguments for local-rust-deps command
+#[derive(Debug, Args)]
+pub(crate) struct LocalRustDepsArgs {
+    /// Output format: "podman" for -v arguments, "json" for structured data
+    #[arg(long, default_value = "podman")]
+    pub(crate) format: String,
 }
 
 /// Arguments for run-tmt command
@@ -149,6 +159,7 @@ fn try_main() -> Result<()> {
         Commands::TmtProvision(args) => tmt::tmt_provision(&sh, &args),
         Commands::CheckBuildsys => buildsys::check_buildsys(&sh, "Dockerfile".into()),
         Commands::ValidateComposefsDigest(args) => validate_composefs_digest(&sh, &args),
+        Commands::LocalRustDeps(args) => local_rust_deps(&sh, &args),
     }
 }
 
@@ -413,6 +424,75 @@ fn update_generated(sh: &Shell) -> Result<()> {
 
     // Update TMT integration.fmf
     tmt::update_integration()?;
+
+    Ok(())
+}
+
+/// Find local path dependencies outside the workspace and output podman bind mount arguments.
+///
+/// This uses `cargo metadata` to find all packages with no source (i.e., local path deps).
+/// For packages outside the workspace root, it computes the minimal set of directories
+/// to bind mount into the container.
+#[context("Finding local Rust dependencies")]
+fn local_rust_deps(_sh: &Shell, args: &LocalRustDepsArgs) -> Result<()> {
+    let metadata = cargo_metadata::MetadataCommand::new()
+        .exec()
+        .context("Running cargo metadata")?;
+
+    let workspace_root = &metadata.workspace_root;
+
+    let mut external_roots: std::collections::BTreeSet<Utf8PathBuf> =
+        std::collections::BTreeSet::new();
+
+    for pkg in &metadata.packages {
+        // Packages with source are from registries/git, skip them
+        if pkg.source.is_some() {
+            continue;
+        }
+
+        // Get the package directory (parent of Cargo.toml)
+        let pkg_dir = pkg
+            .manifest_path
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("No parent for manifest_path"))?;
+
+        // Skip packages inside the workspace
+        if pkg_dir.starts_with(workspace_root) {
+            continue;
+        }
+
+        // Find the workspace root for this external package by running cargo metadata
+        // in the package directory
+        let external_metadata = cargo_metadata::MetadataCommand::new()
+            .current_dir(pkg_dir)
+            .exec()
+            .with_context(|| format!("Running cargo metadata in {pkg_dir}"))?;
+
+        external_roots.insert(external_metadata.workspace_root.clone());
+    }
+
+    match args.format.as_str() {
+        "podman" => {
+            // Output podman -v arguments
+            let mut args_out = Vec::new();
+            for root in &external_roots {
+                // Mount read-only with SELinux disabled (for cross-context access)
+                args_out.push("-v".to_string());
+                args_out.push(format!("{}:{}:ro", root, root));
+                args_out.push("--security-opt=label=disable".to_string());
+            }
+            if !args_out.is_empty() {
+                println!("{}", args_out.join(" "));
+            }
+        }
+        "json" => {
+            let roots: Vec<&str> = external_roots.iter().map(|p| p.as_str()).collect();
+            println!("{}", serde_json::to_string_pretty(&roots)?);
+        }
+        other => {
+            anyhow::bail!("Unknown format: {other}. Use 'podman' or 'json'.");
+        }
+    }
 
     Ok(())
 }

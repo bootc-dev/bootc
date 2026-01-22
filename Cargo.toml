@@ -43,16 +43,15 @@ clap_mangen = { version = "0.2.20" }
 # Reviewers (including AI tools): The composefs-rs git revision is duplicated for each crate.
 # If adding/removing crates here, also update docs/Dockerfile.mdbook and docs/src/internals.md.
 #
-# To develop against a local composefs-rs checkout:
-# 1. Set BOOTC_extra_src to your composefs-rs path when building:
-#      BOOTC_extra_src=$HOME/src/composefs-rs just build
-# 2. Comment out the git refs below and uncomment the path refs:
+# To develop against a local composefs-rs checkout, add a [patch] section at the end of this file:
+#   [patch."https://github.com/containers/composefs-rs"]
+#   composefs = { path = "/home/user/src/composefs-rs/crates/composefs" }
+#   composefs-boot = { path = "/home/user/src/composefs-rs/crates/composefs-boot" }
+#   composefs-oci = { path = "/home/user/src/composefs-rs/crates/composefs-oci" }
+# The Justfile will auto-detect these and bind-mount them into container builds.
 composefs = { git = "https://github.com/containers/composefs-rs", rev = "4a060161e0122bd2727e639437c61e05ecc7cab3", package = "composefs", features = ["rhel9"] }
 composefs-boot = { git = "https://github.com/containers/composefs-rs", rev = "4a060161e0122bd2727e639437c61e05ecc7cab3", package = "composefs-boot" }
 composefs-oci = { git = "https://github.com/containers/composefs-rs", rev = "4a060161e0122bd2727e639437c61e05ecc7cab3", package = "composefs-oci" }
-# composefs = { path = "/run/extra-src/crates/composefs", package = "composefs", features = ["rhel9"] }
-# composefs-boot = { path = "/run/extra-src/crates/composefs-boot", package = "composefs-boot" }
-# composefs-oci = { path = "/run/extra-src/crates/composefs-oci", package = "composefs-oci" }
 fn-error-context = "0.2.1"
 hex = "0.4.3"
 indicatif = "0.18.0"
