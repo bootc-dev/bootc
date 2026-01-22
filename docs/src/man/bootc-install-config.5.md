@@ -26,6 +26,13 @@ The `install` section supports these subfields:
 - `match_architectures`: An array of strings; this filters the install config.
 - `ostree`: See below.
 - `stateroot`: The stateroot name to use. Defaults to `default`.
+- `root-mount-spec`: A string specifying the root filesystem mount specification.
+   For example, `UUID=2e9f4241-229b-4202-8429-62d2302382e1` or `LABEL=rootfs`.
+   If not provided, the UUID of the target filesystem will be used.
+   An empty string signals to omit boot mount kargs entirely.
+- `boot-mount-spec`: A string specifying the /boot filesystem mount specification.
+   If not provided and /boot is a separate mount, its UUID will be used.
+   An empty string signals to omit boot mount kargs entirely.
 
 # filesystem
 
@@ -52,9 +59,12 @@ Configuration options for the ostree repository. There is one valid field:
 ```toml
 [install.filesystem.root]
 type = "xfs"
+
 [install]
 kargs = ["nosmt", "console=tty0"]
 stateroot = "myos"
+root-mount-spec = "LABEL=rootfs"
+boot-mount-spec = "UUID=abcd-1234"
 
 [install.ostree]
 bls-append-except-default = 'grub_users=""'

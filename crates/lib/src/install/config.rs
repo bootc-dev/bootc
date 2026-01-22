@@ -80,6 +80,11 @@ pub(crate) struct InstallConfiguration {
     pub(crate) ostree: Option<OstreeRepoOpts>,
     /// The stateroot name to use. Defaults to `default`
     pub(crate) stateroot: Option<String>,
+    /// Source device specification for the root filesystem.
+    /// For example, `UUID=2e9f4241-229b-4202-8429-62d2302382e1` or `LABEL=rootfs`.
+    pub(crate) root_mount_spec: Option<String>,
+    /// Mount specification for the /boot filesystem.
+    pub(crate) boot_mount_spec: Option<String>,
 }
 
 fn merge_basic<T>(s: &mut Option<T>, o: Option<T>, _env: &EnvProperties) {
@@ -153,6 +158,8 @@ impl Mergeable for InstallConfiguration {
             self.filesystem.merge(other.filesystem, env);
             self.ostree.merge(other.ostree, env);
             merge_basic(&mut self.stateroot, other.stateroot, env);
+            merge_basic(&mut self.root_mount_spec, other.root_mount_spec, env);
+            merge_basic(&mut self.boot_mount_spec, other.boot_mount_spec, env);
             if let Some(other_kargs) = other.kargs {
                 self.kargs
                     .get_or_insert_with(Default::default)
@@ -671,5 +678,57 @@ stateroot = "custom"
         };
         install.merge(other, &env);
         assert_eq!(install.stateroot.unwrap(), "newroot");
+    }
+
+    #[test]
+    fn test_parse_mount_specs() {
+        let c: InstallConfigurationToplevel = toml::from_str(
+            r#"[install]
+root-mount-spec = "LABEL=rootfs"
+boot-mount-spec = "UUID=abcd-1234"
+"#,
+        )
+        .unwrap();
+        let install = c.install.unwrap();
+        assert_eq!(install.root_mount_spec.unwrap(), "LABEL=rootfs");
+        assert_eq!(install.boot_mount_spec.unwrap(), "UUID=abcd-1234");
+    }
+
+    #[test]
+    fn test_merge_mount_specs() {
+        let env = EnvProperties {
+            sys_arch: "x86_64".to_string(),
+        };
+        let mut install: InstallConfiguration = toml::from_str(
+            r#"root-mount-spec = "UUID=old"
+boot-mount-spec = "UUID=oldboot"
+"#,
+        )
+        .unwrap();
+        let other = InstallConfiguration {
+            root_mount_spec: Some("LABEL=newroot".to_string()),
+            ..Default::default()
+        };
+        install.merge(other, &env);
+        // root_mount_spec should be overridden
+        assert_eq!(install.root_mount_spec.as_deref().unwrap(), "LABEL=newroot");
+        // boot_mount_spec should remain unchanged
+        assert_eq!(install.boot_mount_spec.as_deref().unwrap(), "UUID=oldboot");
+    }
+
+    /// Empty mount specs are valid and signal to omit mount kargs entirely.
+    /// See https://github.com/bootc-dev/bootc/issues/1441
+    #[test]
+    fn test_parse_empty_mount_specs() {
+        let c: InstallConfigurationToplevel = toml::from_str(
+            r#"[install]
+root-mount-spec = ""
+boot-mount-spec = ""
+"#,
+        )
+        .unwrap();
+        let install = c.install.unwrap();
+        assert_eq!(install.root_mount_spec.as_deref().unwrap(), "");
+        assert_eq!(install.boot_mount_spec.as_deref().unwrap(), "");
     }
 }
