@@ -164,9 +164,8 @@ chmod +x %{?buildroot}/%{system_reinstall_bootc_install_podman_path}
 touch %{?buildroot}/%{_docdir}/bootc/baseimage/base/sysroot/.keepdir
 find %{?buildroot}/%{_docdir} ! -type d -printf '%{_docdir}/%%P\n' | sort > bootcdoclist.txt
 
-install -Dpm 0644 target/completion/bootc.bash %{buildroot}%{bash_completions_dir}/bootc
-install -Dpm 0644 target/completion/bootc.zsh %{buildroot}%{zsh_completions_dir}/_bootc
-install -Dpm 0644 target/completion/bootc.fish %{buildroot}%{fish_completions_dir}/bootc.fish
+rm -f %{buildroot}/%{_prefix}/share/elvish/lib/bootc.elv
+rm -f %{buildroot}/%{_prefix}/share/powershell/Modules/Bootc/Bootc.psm1
 
 %if %{with check}
 %check

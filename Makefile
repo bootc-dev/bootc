@@ -62,8 +62,10 @@ install: completion
 	install -D -m 0644 -t $(DESTDIR)$(prefix)/share/man/man5 target/man/*.5; \
 	install -D -m 0644 -t $(DESTDIR)$(prefix)/share/man/man8 target/man/*.8; \
 	install -D -m 0644 target/completion/bootc.bash $(DESTDIR)$(prefix)/share/bash-completion/completions/bootc
-	install -D -m 0644 target/completion/bootc.zsh $(DESTDIR)$(prefix)/share/zsh/site-functions/_bootc
+	install -D -m 0644 target/completion/bootc.elvish $(DESTDIR)$(prefix)/share/elvish/lib/bootc.elv
 	install -D -m 0644 target/completion/bootc.fish $(DESTDIR)$(prefix)/share/fish/vendor_completions.d/bootc.fish
+	install -D -m 0644 target/completion/bootc.powershell $(DESTDIR)$(prefix)/share/powershell/Modules/Bootc/Bootc.psm1
+	install -D -m 0644 target/completion/bootc.zsh $(DESTDIR)$(prefix)/share/zsh/site-functions/_bootc
 	install -D -m 0644 -t $(DESTDIR)/$(prefix)/lib/systemd/system systemd/*.service systemd/*.timer systemd/*.path systemd/*.target
 	install -D -m 0644 -t $(DESTDIR)/$(prefix)/share/doc/bootc/baseimage/base/usr/lib/ostree/ baseimage/base/usr/lib/ostree/prepare-root.conf
 	install -d -m 755 $(DESTDIR)/$(prefix)/share/doc/bootc/baseimage/base/sysroot
