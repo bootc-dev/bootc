@@ -194,9 +194,15 @@ fi
 %endif
 %{_unitdir}/*
 %{_mandir}/man*/*bootc*
+%if 0%{?rhel} >= 9
+%{_datadir}/bash-completion/completions/bootc
+%{_datadir}/zsh/site-functions/_bootc
+%{_datadir}/fish/vendor_completions.d/bootc.fish
+%else
 %{bash_completions_dir}/bootc
 %{zsh_completions_dir}/_bootc
 %{fish_completions_dir}/bootc.fish
+%endif
 
 %files -n system-reinstall-bootc
 %{_bindir}/system-reinstall-bootc
