@@ -932,7 +932,7 @@ async fn install_container(
             }
         };
 
-        let proxy_cfg = ostree_container::store::ImageProxyConfig::default();
+        let proxy_cfg = crate::deploy::new_proxy_config();
         (src_imageref, Some(proxy_cfg))
     };
     let src_imageref = ostree_container::OstreeImageReference {

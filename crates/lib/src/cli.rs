@@ -26,7 +26,7 @@ use ostree_ext::composefs::fsverity;
 use ostree_ext::composefs::fsverity::FsVerityHashValue;
 use ostree_ext::composefs::splitstream::SplitStreamWriter;
 use ostree_ext::container as ostree_container;
-use ostree_ext::containers_image_proxy::ImageProxyConfig;
+
 use ostree_ext::keyfileext::KeyFileExt;
 use ostree_ext::ostree;
 use ostree_ext::sysroot::SysrootLock;
@@ -1551,7 +1551,7 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
             } => {
                 let (_td_guard, repo) = new_temp_composefs_repo()?;
 
-                let mut proxycfg = ImageProxyConfig::default();
+                let mut proxycfg = crate::deploy::new_proxy_config();
 
                 let image = if let Some(image) = image {
                     image

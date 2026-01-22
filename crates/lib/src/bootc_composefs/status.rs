@@ -195,7 +195,7 @@ fn get_sorted_type1_boot_entries_helper(
 pub(crate) async fn get_container_manifest_and_config(
     imgref: &String,
 ) -> Result<ImgConfigManifest> {
-    let config = containers_image_proxy::ImageProxyConfig::default();
+    let config = crate::deploy::new_proxy_config();
     let proxy = containers_image_proxy::ImageProxy::new_with_config(config).await?;
 
     let img = proxy

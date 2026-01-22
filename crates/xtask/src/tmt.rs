@@ -851,7 +851,7 @@ pub(crate) fn update_integration() -> Result<()> {
     // Define tests in order
     let mut tests = vec![];
 
-    // Scan for test-*.nu and test-*.sh files in tmt/tests/booted/
+    // Scan for test-*.nu, test-*.sh, and test-*.py files in tmt/tests/booted/
     let booted_dir = Utf8Path::new("tmt/tests/booted");
 
     for entry in std::fs::read_dir(booted_dir)? {
@@ -862,10 +862,11 @@ pub(crate) fn update_integration() -> Result<()> {
         };
 
         // Extract stem (filename without "test-" prefix and extension)
-        let Some(stem) = filename
-            .strip_prefix("test-")
-            .and_then(|s| s.strip_suffix(".nu").or_else(|| s.strip_suffix(".sh")))
-        else {
+        let Some(stem) = filename.strip_prefix("test-").and_then(|s| {
+            s.strip_suffix(".nu")
+                .or_else(|| s.strip_suffix(".sh"))
+                .or_else(|| s.strip_suffix(".py"))
+        }) else {
             continue;
         };
 
@@ -894,15 +895,15 @@ pub(crate) fn update_integration() -> Result<()> {
             .with_context(|| format!("Failed to get relative path for {}", filename))?;
 
         // Determine test command based on file extension
-        let extension = if filename.ends_with(".nu") {
-            "nu"
+        let test_command = if filename.ends_with(".nu") {
+            format!("nu {}", relative_path.display())
         } else if filename.ends_with(".sh") {
-            "bash"
+            format!("bash {}", relative_path.display())
+        } else if filename.ends_with(".py") {
+            format!("python3 {}", relative_path.display())
         } else {
             anyhow::bail!("Unsupported test file extension: {}", filename);
         };
-
-        let test_command = format!("{} {}", extension, relative_path.display());
 
         // Check if test wants bind storage
         let try_bind_storage = metadata

@@ -121,7 +121,8 @@ pub(crate) fn query_bound_images(root: &Dir) -> Result<Vec<BoundImage>> {
 impl ResolvedBoundImage {
     #[context("resolving bound image {}", src.image)]
     pub(crate) async fn from_image(src: &BoundImage) -> Result<Self> {
-        let proxy = containers_image_proxy::ImageProxy::new().await?;
+        let config = crate::deploy::new_proxy_config();
+        let proxy = containers_image_proxy::ImageProxy::new_with_config(config).await?;
         let img = proxy
             .open_image(&format!("containers-storage:{}", src.image))
             .await?;

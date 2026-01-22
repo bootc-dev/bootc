@@ -32,6 +32,17 @@ use crate::utils::async_task_with_spinner;
 // TODO use https://github.com/ostreedev/ostree-rs-ext/pull/493/commits/afc1837ff383681b947de30c0cefc70080a4f87a
 const BASE_IMAGE_PREFIX: &str = "ostree/container/baseimage/bootc";
 
+/// Create an ImageProxyConfig with bootc's user agent prefix set.
+///
+/// This allows registries to distinguish "image pulls for bootc client runs"
+/// from other skopeo/containers-image users.
+pub(crate) fn new_proxy_config() -> ostree_ext::containers_image_proxy::ImageProxyConfig {
+    ostree_ext::containers_image_proxy::ImageProxyConfig {
+        user_agent_prefix: Some(format!("bootc/{}", env!("CARGO_PKG_VERSION"))),
+        ..Default::default()
+    }
+}
+
 /// Set on an ostree commit if this is a derived commit
 const BOOTC_DERIVED_KEY: &str = "bootc.derived";
 
@@ -87,7 +98,7 @@ pub(crate) async fn new_importer(
     repo: &ostree::Repo,
     imgref: &ostree_container::OstreeImageReference,
 ) -> Result<ostree_container::store::ImageImporter> {
-    let config = Default::default();
+    let config = new_proxy_config();
     let mut imp = ostree_container::store::ImageImporter::new(repo, imgref, config).await?;
     imp.require_bootable();
     Ok(imp)
@@ -460,7 +471,7 @@ pub(crate) async fn prepare_for_pull_unified(
     let ostree_imgref = OstreeImageReference::from(containers_storage_imgref);
 
     // Configure the importer to use bootc storage as an additional image store
-    let mut config = ostree_ext::containers_image_proxy::ImageProxyConfig::default();
+    let mut config = new_proxy_config();
     let mut cmd = Command::new("skopeo");
     // Use the physical path to bootc storage from the Storage struct
     let storage_path = format!(
@@ -1247,6 +1258,23 @@ pub(crate) fn fixup_etc_fstab(root: &Dir) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_new_proxy_config_user_agent() {
+        let config = new_proxy_config();
+        let prefix = config
+            .user_agent_prefix
+            .expect("user_agent_prefix should be set");
+        assert!(
+            prefix.starts_with("bootc/"),
+            "User agent should start with bootc/"
+        );
+        // Verify the version is present (not just "bootc/")
+        assert!(
+            prefix.len() > "bootc/".len(),
+            "Version should be present after bootc/"
+        );
+    }
 
     #[test]
     fn test_switch_inplace() -> Result<()> {
