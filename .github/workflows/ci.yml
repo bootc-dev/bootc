@@ -89,6 +89,10 @@ jobs:
           # Install tests
           sudo bootc-integration-tests install-alongside localhost/bootc-install
 
+          # inspect system state after the install tests.
+          sudo lsblk
+          sudo mount
+          
           # system-reinstall-bootc tests
           cargo build --release -p system-reinstall-bootc
 
