@@ -67,8 +67,10 @@ jobs:
           set -xeu
           # Build images to test; TODO investigate doing single container builds
           # via GHA and pushing to a temporary registry to share among workflows?
-          sudo just build
-          sudo just build-install-test-image
+          # Preserve rustup/cargo environment for sudo (rustup needs RUSTUP_HOME to find toolchains)
+          sudojust() { sudo env PATH="$PATH" CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}" RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}" just "$@"; }
+          sudojust build
+          sudojust build-install-test-image
           sudo podman build -t localhost/bootc-fsverity -f ci/Containerfile.install-fsverity
 
           # Grant permission
