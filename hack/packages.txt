@@ -8,3 +8,5 @@ parted
 lvm2
 dosfstools
 e2fsprogs
+# Required by  bib-build test
+qemu-img

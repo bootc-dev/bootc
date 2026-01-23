@@ -95,7 +95,7 @@ DISKEOF
     let bib_image = $BIB_IMAGE
     # Note: we disable SELinux labeling since we're running in a test VM
     # and use unconfined_t to avoid permission issues
-    podman run --rm --privileged -v /var/lib/containers/storage:/var/lib/containers/storage --security-opt label=type:unconfined_t -v ./output:/output $bib_image --type qcow2 --local localhost/bootc-bib-test
+    podman run --rm --privileged -v /var/lib/containers/storage:/var/lib/containers/storage --security-opt label=type:unconfined_t -v ./output:/output $bib_image --type qcow2 --rootfs xfs localhost/bootc-bib-test
 
     # Verify output was created
     print "=== Verifying output ==="
