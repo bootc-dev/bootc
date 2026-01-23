@@ -22,15 +22,34 @@ more complex such as RAID, LVM, LUKS etc.
 ## Partitioning details
 
 The default as of bootc 1.11 uses the [Discoverable Partitions Specification](https://uapi-group.org/specifications/specs/discoverable_partitions_specification/)
-for the generated root filesystem, as well as any required system partitions
+(DPS) for the generated root filesystem, as well as any required system partitions
 such as the EFI system partition.
+
+### Partition layout
+
+The installer creates a GPT partition table with architecture-appropriate
+partitions. The exact layout varies by architecture but generally includes:
+
+- **Boot partition** (architecture-specific): BIOS boot for x86_64, PReP for ppc64le, etc.
+- **ESP**: EFI System Partition on UEFI architectures (x86_64, aarch64), at least 512 MiB
+- **Boot**: Separate `/boot` partition, only created when using LUKS encryption
+- **Root**: The root filesystem, using the remaining disk space
+
+The root partition uses an architecture-specific DPS type GUID. Specific partition
+sizes and type GUIDs are implementation details that may change between versions;
+use `install to-filesystem` if you need precise control over the partition layout.
+
+### Root filesystem discovery
 
 Note that by default when used with "type 1" bootloader setups (i.e. non-UKI)
 a kernel argument `root=UUID=<uuid of filesystem>` is injected by default.
+This provides compatibility with existing initramfs implementations.
 
 When used with the composefs backend and UKIs, it's recommended that
 a bootloader implementing the DPS specification is used and that the root
-partition is auto-discovered.
+partition is auto-discovered. In this configuration, `systemd-gpt-auto-generator`
+in the initramfs will automatically find and mount the root partition based on
+its DPS type GUID, without requiring an explicit `root=` kernel argument.
 
 # OPTIONS
 

@@ -1,8 +1,141 @@
 //! # Writing a container to a block device in a bootable way
 //!
-//! This module supports installing a bootc-compatible image to
-//! a block device directly via the `install` verb, or to an externally
-//! set up filesystem via `install to-filesystem`.
+//! This module implements the core installation logic for bootc, enabling a container
+//! image to be written to storage in a bootable form. It bridges the gap between
+//! OCI container images and traditional bootable Linux systems.
+//!
+//! ## Overview
+//!
+//! The installation process transforms a container image into a bootable system by:
+//!
+//! 1. **Preparing the environment**: Validating we're running in a privileged container,
+//!    handling SELinux re-execution if needed, and loading configuration.
+//!
+//! 2. **Setting up storage**: Either creating partitions (`to-disk`) or using
+//!    externally-prepared filesystems (`to-filesystem`).
+//!
+//! 3. **Deploying the image**: Pulling the container image into an ostree repository
+//!    and creating a deployment, or setting up a composefs-based root.
+//!
+//! 4. **Installing the bootloader**: Using bootupd, systemd-boot, or zipl depending
+//!    on architecture and configuration.
+//!
+//! 5. **Finalizing**: Trimming the filesystem, flushing writes, and freezing/thawing
+//!    the journal.
+//!
+//! ## Installation Modes
+//!
+//! ### `bootc install to-disk`
+//!
+//! Creates a complete bootable system on a block device. This is the simplest path
+//! and handles partitioning automatically using the Discoverable Partitions
+//! Specification (DPS). The partition layout includes:
+//!
+//! - **ESP** (EFI System Partition): Required for UEFI boot
+//! - **BIOS boot partition**: For legacy boot on x86_64
+//! - **Boot partition**: Optional, used when LUKS encryption is enabled
+//! - **Root partition**: Uses architecture-specific DPS type GUIDs for auto-discovery
+//!
+//! ### `bootc install to-filesystem`
+//!
+//! Installs to a pre-mounted filesystem, allowing external tools to handle complex
+//! storage layouts (RAID, LVM, custom LUKS configurations). The caller is responsible
+//! for creating and mounting the filesystem, then providing appropriate `--karg`
+//! options or mount specifications.
+//!
+//! ### `bootc install to-existing-root`
+//!
+//! "Alongside" installation mode that converts an existing Linux system. The boot
+//! partition is wiped and replaced, but the root filesystem content is preserved
+//! until reboot. Post-reboot, the old system is accessible at `/sysroot` for
+//! data migration.
+//!
+//! ### `bootc install reset`
+//!
+//! Creates a new stateroot within an existing bootc system, effectively providing
+//! a factory-reset capability without touching other stateroots.
+//!
+//! ## Storage Backends
+//!
+//! ### OSTree Backend (Default)
+//!
+//! Uses ostree-ext to convert container layers into an ostree repository. The
+//! deployment is created via `ostree admin deploy`, and bootloader entries are
+//! managed via BLS (Boot Loader Specification) files.
+//!
+//! ### Composefs Backend (Experimental)
+//!
+//! Alternative backend using composefs overlayfs for the root filesystem. Provides
+//! stronger integrity guarantees via fs-verity and supports UKI (Unified Kernel
+//! Images) for measured boot scenarios.
+//!
+//! ## Discoverable Partitions Specification (DPS)
+//!
+//! As of bootc 1.11, partitions are created with DPS type GUIDs from the
+//! [UAPI Group specification](https://uapi-group.org/specifications/specs/discoverable_partitions_specification/).
+//! This enables:
+//!
+//! - **Auto-discovery**: systemd-gpt-auto-generator can mount partitions without
+//!   explicit configuration
+//! - **Architecture awareness**: Root partition types are architecture-specific,
+//!   preventing cross-architecture boot issues
+//! - **Future extensibility**: Enables systemd-repart for declarative partition
+//!   management
+//!
+//! See [`crate::discoverable_partition_specification`] for the partition type GUIDs.
+//!
+//! ## Installation Flow
+//!
+//! The high-level flow is:
+//!
+//! 1. **CLI entry** → [`install_to_disk`], [`install_to_filesystem`], or [`install_to_existing_root`]
+//! 2. **Preparation** → [`prepare_install`] validates environment, handles SELinux, loads config
+//! 3. **Storage setup** → (to-disk only) [`baseline::install_create_rootfs`] partitions and formats
+//! 4. **Deployment** → [`install_to_filesystem_impl`] branches to OSTree or Composefs backend
+//! 5. **Bootloader** → [`crate::bootloader::install_via_bootupd`] or architecture-specific installer
+//! 6. **Finalization** → [`finalize_filesystem`] trims, flushes, and freezes the filesystem
+//!
+//! For a visual diagram of this flow, see the bootc documentation.
+//!
+//! ## Key Types
+//!
+//! - [`State`]: Immutable global state for the installation, including source image
+//!   info, SELinux state, configuration, and composefs options.
+//!
+//! - [`RootSetup`]: Represents the prepared root filesystem, including mount paths,
+//!   device information, boot partition specs, and kernel arguments.
+//!
+//! - [`SourceInfo`]: Information about the source container image, including the
+//!   ostree-container reference and whether SELinux labels are present.
+//!
+//! - [`SELinuxFinalState`]: Tracks SELinux handling during installation (enabled,
+//!   disabled, host-disabled, or force-disabled).
+//!
+//! ## Configuration
+//!
+//! Installation is configured via TOML files loaded from multiple paths in
+//! systemd-style priority order:
+//!
+//! - `/usr/lib/bootc/install/*.toml` - Distribution/image defaults
+//! - `/etc/bootc/install/*.toml` - Local overrides
+//!
+//! Files are merged alphanumerically, with higher-numbered files taking precedence.
+//! See [`config::InstallConfiguration`] for the schema.
+//!
+//! Key configurable options include:
+//! - Root filesystem type (xfs, ext4, btrfs)
+//! - Allowed block setups (direct, tpm2-luks)
+//! - Default kernel arguments
+//! - Architecture-specific overrides
+//!
+//! ## Submodules
+//!
+//! - [`baseline`]: The "baseline" installer for simple partitioning (to-disk)
+//! - [`config`]: TOML configuration parsing and merging
+//! - [`completion`]: Post-installation hooks for external installers (Anaconda)
+//! - [`osconfig`]: SSH key injection and OS configuration
+//! - [`aleph`]: Installation provenance tracking (.bootc-aleph.json)
+//! - `osbuild`: Helper APIs for bootc-image-builder integration
 
 // This sub-module is the "basic" installer that handles creating basic block device
 // and filesystem setup.

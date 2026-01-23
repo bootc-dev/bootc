@@ -26,7 +26,7 @@ This requires running the container via `--privileged`; it uses the running Linu
 on the host to write the file content from the running container image; not the kernel
 inside the container.
 
-There are two sub-commands: `bootc install to-disk` and `boot install to-filesystem`.
+There are two sub-commands: `bootc install to-disk` and `bootc install to-filesystem`.
 
 However, nothing *else* (external) is required to perform a basic installation
 to disk - the container image itself comes with a baseline self-sufficient installer
@@ -217,7 +217,7 @@ podman run --rm --privileged -v /dev:/dev -v /var/lib/containers:/var/lib/contai
              bootc install to-existing-root
 ```
 
-It is assumed in this command that the target rootfs is pased via `-v /:/target` at this time.
+It is assumed in this command that the target rootfs is passed via `-v /:/target` at this time.
 
 As noted above, the data in `/boot` will be wiped, but everything else in the existing
 operating `/` is **NOT** automatically cleaned up.  This can
@@ -346,6 +346,84 @@ This argument is mainly useful for 3rd-party tooling for building disk images fr
 containers (e.g. based on [osbuild](https://github.com/osbuild/osbuild)).   
 
 
+## Discoverable Partitions Specification (DPS)
+
+As of bootc 1.11, the default partitioning layout for `bootc install to-disk` uses the
+[Discoverable Partitions Specification (DPS)](https://uapi-group.org/specifications/specs/discoverable_partitions_specification/)
+from the UAPI Group. This is an important foundation for modern Linux systems.
+
+### What is DPS?
+
+The Discoverable Partitions Specification defines well-known partition type GUIDs for
+different purposes (root filesystem, ESP, swap, /home, etc.) and for different CPU
+architectures. When partitions use these standardized type GUIDs, systemd and other
+tools can automatically discover and mount them without explicit configuration.
+
+Each supported CPU architecture has its own root partition type GUID. See the
+[DPS specification](https://uapi-group.org/specifications/specs/discoverable_partitions_specification/)
+for the complete list of partition types.
+
+### How bootc uses DPS
+
+When `bootc install to-disk` creates partitions, it sets the appropriate DPS partition
+type GUID based on the target architecture. This enables:
+
+1. **Automatic root discovery**: With a DPS-aware bootloader and initramfs, the root
+   filesystem can be discovered automatically without a `root=` kernel argument.
+   This is handled by [systemd-gpt-auto-generator](https://www.freedesktop.org/software/systemd/man/latest/systemd-gpt-auto-generator.html).
+
+2. **Sealed/verified boot paths**: When using composefs with UKIs (Unified Kernel Images),
+   bootc can omit the `root=` kernel argument entirely. The initramfs uses DPS to find
+   the root partition, and composefs provides integrity verification.
+
+3. **Future systemd-repart integration**: DPS partition types allow systemd-repart to
+   automatically grow or create partitions based on declarative configuration.
+
+### When is DPS used vs explicit kernel arguments?
+
+| Installation Mode | Root Discovery Method |
+|-------------------|----------------------|
+| `to-disk` | Explicit `root=UUID=...` karg |
+| `to-filesystem --root-mount-spec=""` | DPS auto-discovery (no `root=` karg) |
+| `to-filesystem` (default) | Uses filesystem UUID as `root=UUID=...` karg |
+| `to-existing-root` | Inherits from existing system |
+
+For `to-disk`, bootc always injects a `root=UUID=<uuid>` kernel argument for
+compatibility, even though the partition type is set to the DPS GUID. This
+ensures the system boots on initramfs implementations that don't support
+DPS auto-discovery.
+
+For `to-filesystem`, the `--root-mount-spec=""` option (empty string) can be
+used to omit the `root=` kernel argument entirely, enabling DPS auto-discovery.
+This is useful when the bootloader and initramfs both support the
+[Boot Loader Interface](https://systemd.io/BOOT_LOADER_INTERFACE/).
+
+### Bootloader requirements for DPS auto-discovery
+
+DPS auto-discovery requires a bootloader that implements the Boot Loader
+Interface and sets the `LoaderDevicePartUUID` EFI variable. Supported
+bootloaders include:
+
+- **GRUB 2.12+** with the `bli` module (included in Fedora 43+, requires EFI boot)
+- **systemd-boot** (always supports the Boot Loader Interface)
+
+Older GRUB versions (without the `bli` module) do not set this variable and
+DPS auto-discovery will not work.
+
+### Implications for external installers
+
+If you're building tooling that uses `bootc install to-filesystem`, you should:
+
+1. **Set appropriate partition types**: Use the DPS type GUID for the root partition
+   when creating partitions externally.
+
+2. **Consider auto-discovery**: If your bootloader and initramfs support DPS, you
+   may be able to omit `root=` kernel arguments entirely.
+
+3. **Use `rootflags` for mount options**: Prefer the `rootflags=` kernel argument
+   over `/etc/fstab` for root mount options, as this works better with composefs
+   and DPS auto-discovery.
+
 ## Finding and configuring the physical root filesystem
 
 On a bootc system, the "physical root" is different from
@@ -393,3 +471,74 @@ Installation software such as [Anaconda](https://github.com/rhinstaller/anaconda
 do this today to implement generic `%post` scripts and the like.
 
 However, it is very likely that a generic bootc API to do this will be added.
+
+## Provisioning and first boot
+
+After `bootc install` completes, the system is ready for first boot. A key
+design principle is that **minimal machine-specific configuration should be
+injected at install time**. Instead, most configuration should happen at
+runtime—either at first boot or on every boot—using standard Linux mechanisms.
+
+This approach has several benefits:
+
+- **Simpler installation**: The install process doesn't need to know about
+  every possible configuration option
+- **Better fits the container model**: Configuration logic lives in the
+  container image, not in external tooling
+- **Easier updates**: Runtime configuration naturally applies to updated
+  deployments
+
+### Install-time configuration
+
+When some machine-specific data must be provided at install time, the preferred
+approaches depend on your boot setup:
+
+- **Type 1 BLS setups**: Use `bootc install --karg` to inject kernel arguments.
+  For example, `--karg ip=192.168.1.100::192.168.1.1:255.255.255.0:host1::none`
+  for static IP configuration, or `--karg console=ttyS0,115200` for serial console.
+
+- **UKI setups**: Use [UKI addons](https://uapi-group.org/specifications/specs/unified_kernel_image/#addon-uki-format)
+  (additional signed PE binaries containing extra kernel arguments or initrd content)
+  to provide machine-specific configuration while preserving the signed UKI.
+
+### Runtime configuration approaches
+
+Since bootc systems are standard Linux systems, any provisioning tool that
+works on Linux will work with bootc. Common approaches include:
+
+- **cloud-init**: If included in your container image, runs at first boot to
+  configure users, SSH keys, networking, and run custom scripts
+- **Ignition**: Runs in the initramfs before the real root is mounted; used
+  by Fedora CoreOS-style systems
+- **systemd-firstboot**: Configures locale, timezone, hostname, etc. on first boot
+- **Custom systemd services**: Use `ConditionFirstBoot=yes` for one-time setup,
+  or run on every boot for dynamic configuration
+
+The choice of provisioning tool depends on your base image and deployment
+environment—bootc itself is agnostic.
+
+### SSH key injection
+
+For simple SSH access without a full provisioning system, bootc provides the
+`--root-ssh-authorized-keys` option:
+
+```bash
+bootc install to-disk --root-ssh-authorized-keys /path/to/authorized_keys /dev/sda
+```
+
+This writes a systemd-tmpfiles configuration that ensures the SSH keys are
+present on every boot, even if `/root` is a tmpfs.
+
+### The `.bootc-aleph.json` file
+
+After installation, bootc writes a JSON file at the root of the physical
+filesystem (`.bootc-aleph.json`) containing installation provenance information:
+
+- The source image reference and digest
+- Installation timestamp
+- bootc version
+- Kernel version
+- SELinux state
+
+This file is useful for auditing and understanding how a system was provisioned.
+From the booted system, this file is accessible at `/sysroot/.bootc-aleph.json`.

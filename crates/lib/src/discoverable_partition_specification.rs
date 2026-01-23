@@ -6,6 +6,68 @@
 //! UAPI Group's Discoverable Partitions Specification.
 //!
 //! Reference: <https://uapi-group.org/specifications/specs/discoverable_partitions_specification/>
+//!
+//! # Overview
+//!
+//! The Discoverable Partitions Specification (DPS) defines standardized partition
+//! type GUIDs that enable automatic discovery and mounting of partitions without
+//! explicit configuration. This is a key enabler for bootc's installation process
+//! and for modern systemd-based initramfs implementations.
+//!
+//! # How bootc uses DPS
+//!
+//! When `bootc install to-disk` creates partitions, it sets the appropriate DPS
+//! partition type GUID based on the target CPU architecture. This enables several
+//! important capabilities:
+//!
+//! ## Automatic root discovery
+//!
+//! With a DPS-aware bootloader and initramfs (containing `systemd-gpt-auto-generator`),
+//! the root filesystem can be discovered and mounted automatically without requiring
+//! a `root=` kernel argument. The initramfs:
+//!
+//! 1. Reads the EFI `LoaderDevicePartUUID` variable to identify the boot disk
+//! 2. Scans the GPT for a partition with the architecture-specific root type GUID
+//! 3. Mounts that partition as the root filesystem
+//!
+//! ## Architecture-specific partition types
+//!
+//! Each CPU architecture has its own root partition type GUID. This prevents
+//! accidentally booting a system on incompatible hardware. bootc uses
+//! [`this_arch_root`] to select the correct GUID at compile time.
+//!
+//! ## Composefs and sealed boot
+//!
+//! When using the composefs backend with UKIs (Unified Kernel Images), bootc can
+//! omit the `root=` kernel argument entirely. This enables:
+//!
+//! - Measured boot: The kernel command line is part of the UKI signature
+//! - Simplified image building: No machine-specific kernel arguments needed
+//! - systemd-repart integration: Future support for declarative partition management
+//!
+//! # Partition types included
+//!
+//! This module defines constants for:
+//!
+//! - **Root partitions**: Architecture-specific root filesystem partitions
+//! - **USR partitions**: Separate `/usr` partitions (included for spec completeness; not currently used by bootc)
+//! - **Verity partitions**: dm-verity hash partitions for integrity verification
+//! - **Verity signature partitions**: Signed verity root hashes
+//! - **Special partitions**: ESP, XBOOTLDR, swap, home, var, etc.
+//!
+//! # Usage (internal)
+//!
+//! This is an internal module. Within bootc, it is used like:
+//!
+//! ```ignore
+//! use crate::discoverable_partition_specification::{this_arch_root, ESP};
+//!
+//! // Get the root partition type GUID for the current architecture
+//! let root_type: &str = this_arch_root();
+//!
+//! // ESP GUID is architecture-independent
+//! let esp_type: &str = ESP;
+//! ```
 
 // ============================================================================
 // ROOT PARTITIONS
