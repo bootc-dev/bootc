@@ -4,6 +4,7 @@
 //! by the user - add commands here which otherwise might
 //! end up as a lot of nontrivial bash code.
 
+use std::borrow::Cow;
 use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::process::Command;
@@ -476,9 +477,19 @@ fn local_rust_deps(_sh: &Shell, args: &LocalRustDepsArgs) -> Result<()> {
             // Output podman -v arguments
             let mut args_out = Vec::new();
             for root in &external_roots {
+                // Map /home/... -> /var/home/... for the container destination.
+                // bootc images have /home as a symlink to /var/home, but /var/home
+                // may not exist in the base image. Mounting to /var/home/... creates
+                // the directory, and cargo can then access it via /home/... symlink.
+                let dest: Cow<'_, str> = if let Some(suffix) = root.as_str().strip_prefix("/home/")
+                {
+                    format!("/var/home/{suffix}").into()
+                } else {
+                    root.as_str().into()
+                };
                 // Mount read-only with SELinux disabled (for cross-context access)
                 args_out.push("-v".to_string());
-                args_out.push(format!("{}:{}:ro", root, root));
+                args_out.push(format!("{}:{}:ro", root, dest));
                 args_out.push("--security-opt=label=disable".to_string());
             }
             if !args_out.is_empty() {
