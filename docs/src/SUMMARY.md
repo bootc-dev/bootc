@@ -59,6 +59,7 @@
 
 - [bootc image](experimental-bootc-image.md)
 - [composefs backend](experimental-composefs.md)
+- [unified storage](experimental-unified-storage.md)
 - [`man bootc-root-setup.service`](man/bootc-root-setup.service.5.md)
 - [fsck](experimental-fsck.md)
 - [install reset](experimental-install-reset.md)
