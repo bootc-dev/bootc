@@ -2,7 +2,15 @@
 //!
 //! This crate builds on top of the core ostree C library
 //! and the Rust bindings to it, adding new functionality
-//! written in Rust.  
+//! written in Rust.
+//!
+//! ## Key Modules
+//!
+//! - [`container`]: Bidirectional mapping between OCI container images and ostree commits.
+//!   This is the core of bootc's ability to deploy container images as bootable systems.
+//! - [`tar`]: Lossless export and import of ostree commits as tar archives.
+//! - [`sysroot`]: Extensions for managing ostree deployments.
+//! - [`chunking`]: Splitting ostree commits into layers for efficient container updates.
 
 // See https://doc.rust-lang.org/rustc/lints/listing/allowed-by-default.html
 #![deny(missing_docs)]

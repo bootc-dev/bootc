@@ -1,29 +1,164 @@
 //! # APIs bridging OSTree and container images
 //!
-//! This module contains APIs to bidirectionally map between a single OSTree commit and a container image wrapping it.
-//! Because container images are just layers of tarballs, this builds on the [`crate::tar`] module.
+//! This module provides the core infrastructure for bidirectionally mapping between
+//! OCI/Docker container images and OSTree repositories. It enables bootable container
+//! images to be fetched from registries, stored efficiently, and deployed as ostree
+//! commits.
 //!
-//! To emphasize this, the current high level model is that this is a one-to-one mapping - an ostree commit
-//! can be exported (wrapped) into a container image, which will have exactly one layer.  Upon import
-//! back into an ostree repository, all container metadata except for its digested checksum will be discarded.
+//! ## Overview
+//!
+//! Container images are fundamentally layers of tarballs. This module leverages the
+//! [`crate::tar`] module to import container layers as ostree content, and exports
+//! ostree commits back to container images. The key insight is that ostree's
+//! content-addressed object storage maps naturally to OCI layer deduplication.
+//!
+//! When a container image is imported ("pulled"), each layer becomes an ostree commit.
+//! These layer commits are then merged into a single "merge commit" that represents
+//! the complete filesystem state. This merge commit is what gets deployed as a
+//! bootable system.
+//!
+//! ## On-Disk Storage Structure
+//!
+//! Container images are stored in the ostree repository (typically `/sysroot/ostree/repo/`)
+//! using a structured reference (ref) namespace:
+//!
+//! ### Reference Namespace
+//!
+//! - **`ostree/container/blob/<escaped-digest>`**: Each OCI layer is stored as a
+//!   separate ostree commit. The digest (e.g., `sha256:abc123...`) is escaped using
+//!   [`crate::refescape`] to be valid as an ostree ref. For example:
+//!   `ostree/container/blob/sha256_3A_abc123...`
+//!
+//! - **`ostree/container/image/<escaped-image-reference>`**: Points to the "merge
+//!   commit" for a pulled image. The image reference (e.g., `docker://quay.io/org/image:tag`)
+//!   is escaped similarly. This is the ref that deployments point to.
+//!
+//! - **`ostree/container/baseimage/<project>/<index>`**: Used to protect base images
+//!   from garbage collection. Tooling that builds derived images locally should write
+//!   refs under this prefix to prevent the base layers from being pruned.
+//!
+//! ### Layer Storage
+//!
+//! Each container layer is stored as an ostree commit with a special structure:
+//!
+//! - **OSTree "chunk" layers**: Layers that are part of the base ostree commit use
+//!   the "object set" format - the filenames in the commit *are* the object checksums.
+//!   This enables efficient reconstruction of the original ostree commit.
+//!
+//! - **Derived layers**: Non-ostree layers (e.g., from `RUN` commands in a Containerfile)
+//!   are imported as regular filesystem trees and stored as standard ostree commits.
+//!
+//! ### The Merge Commit
+//!
+//! The merge commit (`ostree/container/image/...`) combines all layers into a single
+//! filesystem tree. It contains critical metadata in its commit metadata:
+//!
+//! - `ostree.manifest-digest`: The OCI manifest digest (e.g., `sha256:...`)
+//! - `ostree.manifest`: The complete OCI manifest as JSON
+//! - `ostree.container.image-config`: The OCI image configuration as JSON
+//!
+//! This metadata enables round-tripping: an imported image can be re-exported with
+//! its original manifest structure preserved.
+//!
+//! ## Import Flow
+//!
+//! The import process (implemented in [`store::ImageImporter`]) follows these steps:
+//!
+//! 1. **Manifest fetch**: Contact the registry via containers-image-proxy (skopeo)
+//!    to retrieve the image manifest and configuration.
+//!
+//! 2. **Layout parsing**: Analyze the manifest to identify:
+//!    - The base ostree layer (identified by the `ostree.final-diffid` label)
+//!    - Component/chunk layers (split object sets)
+//!    - Derived layers (non-ostree content)
+//!
+//! 3. **Layer caching check**: For each layer, check if an ostree ref already exists
+//!    for that digest. Cached layers are skipped, enabling efficient incremental updates.
+//!
+//! 4. **Layer import**: For uncached layers:
+//!    - Fetch the compressed tarball from the registry
+//!    - Decompress and parse the tar stream
+//!    - Import content into ostree (handling xattrs via `bare-split-xattrs` format)
+//!    - Create an ostree commit and write the layer ref
+//!
+//! 5. **Merge commit creation**: Overlay all layers (processing OCI whiteout files)
+//!    to create a unified filesystem tree. Apply SELinux labeling if needed.
+//!    Store manifest/config metadata and write the image ref.
+//!
+//! 6. **Garbage collection**: Prune layer refs that are no longer referenced by any
+//!    image or deployment.
+//!
+//! ## Tar Stream Format
+//!
+//! The tar format used for ostree layers is documented in [`crate::tar`]. Key points:
+//!
+//! - Uses `bare-split-xattrs` repository mode to handle extended attributes
+//! - XAttrs are stored in separate `.file-xattrs` objects, avoiding tar xattr complexity
+//! - `/etc` in container images maps to `/usr/etc` in ostree (the "3-way merge" location)
+//! - Hardlinks are used for deduplication within layers
+//!
+//! ## Connection to Deployments
+//!
+//! When bootc deploys an image, it creates an ostree deployment whose "origin" file
+//! references the container image. The origin contains:
+//!
+//! - The [`OstreeImageReference`] specifying the image and signature verification method
+//! - The merge commit checksum
+//!
+//! On subsequent boots, bootc can compare the deployed commit against the registry
+//! manifest to detect available updates.
 //!
 //! ## Signatures
 //!
-//! OSTree supports GPG and ed25519 signatures natively, and it's expected by default that
-//! when booting from a fetched container image, one verifies ostree-level signatures.
-//! For ostree, a signing configuration is specified via an ostree remote.  In order to
-//! pair this configuration together, this library defines a "URL-like" string schema:
+//! OSTree supports GPG and ed25519 signatures natively. When fetching container images,
+//! signature verification can be configured via [`SignatureSource`]:
 //!
-//! `ostree-remote-registry:<remotename>:<containerimage>`
+//! - `OstreeRemote(name)`: Verify using the named ostree remote's keyring
+//! - `ContainerPolicy`: Defer to containers-policy.json (requires explicit allow)
+//! - `ContainerPolicyAllowInsecure`: Use containers-policy.json defaults (not recommended)
 //!
-//! A concrete instantiation might be e.g.: `ostree-remote-registry:fedora:quay.io/coreos/fedora-coreos:stable`
+//! This library defines a URL-like schema to combine signature verification with
+//! image references:
 //!
-//! To parse and generate these strings, see [`OstreeImageReference`].
+//! - `ostree-remote-registry:<remotename>:<containerimage>` - Verify via ostree remote
+//! - `ostree-image-signed:<transport>:<image>` - Use container policy
+//! - `ostree-unverified-registry:<image>` - No verification (not recommended)
 //!
-//! ## Layering
+//! Example: `ostree-remote-registry:fedora:quay.io/fedora/fedora-bootc:latest`
 //!
-//! A key feature of container images is support for layering.  At the moment, support
-//! for this is [planned but not implemented](https://github.com/ostreedev/ostree-rs-ext/issues/12).
+//! See [`OstreeImageReference`] for parsing and generating these strings.
+//!
+//! ## Layering and Derived Images
+//!
+//! Container image layering is fully supported. A typical bootable image structure:
+//!
+//! 1. **Base ostree layer**: Contains the core OS as an ostree commit
+//! 2. **Chunk layers**: Split objects for efficient updates (optional)
+//! 3. **Derived layers**: Additional content from Containerfile `RUN` commands
+//!
+//! The `ostree.final-diffid` label in the image configuration marks where the
+//! ostree content ends and derived content begins. This enables:
+//!
+//! - Efficient layer sharing between images with the same base
+//! - Proper SELinux labeling of derived content using the base policy
+//! - Round-trip export preserving the layer structure
+//!
+//! ## Key Types
+//!
+//! - [`Transport`]: OCI/Docker transport (registry, oci-dir, containers-storage, etc.)
+//! - [`ImageReference`]: Container image reference with transport
+//! - [`OstreeImageReference`]: Image reference plus signature verification method
+//! - [`SignatureSource`]: How to verify image signatures
+//! - [`store::ImageImporter`]: Main import orchestrator
+//! - [`store::PreparedImport`]: Analysis of layers to fetch
+//! - [`store::LayeredImageState`]: State of a pulled image
+//! - [`ManifestDiff`]: Comparison between two image manifests
+//!
+//! ## Submodules
+//!
+//! - [`store`]: Core storage and import logic
+//! - [`deploy`]: Integration with ostree deployments
+//! - [`skopeo`]: Skopeo subprocess management for registry operations
 
 use anyhow::anyhow;
 use cap_std_ext::cap_std;

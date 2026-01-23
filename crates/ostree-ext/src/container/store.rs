@@ -1,9 +1,129 @@
-//! APIs for storing (layered) container images as OSTree commits
+//! # Storing layered container images as OSTree commits
 //!
-//! # Extension of encapsulation support
+//! This module implements the core storage and import logic for container images in
+//! ostree. It handles fetching images from registries, caching layers as ostree commits,
+//! and creating merge commits that represent the complete image filesystem.
 //!
-//! This code supports ingesting arbitrary layered container images from an ostree-exported
-//! base.  See [`encapsulate`][`super::encapsulate()`] for more information on encapsulation of images.
+//! ## Overview
+//!
+//! The primary entry point is [`ImageImporter`], which orchestrates the import of a
+//! container image. The import process efficiently handles incremental updates by
+//! caching each layer as a separate ostree commit, only fetching layers that aren't
+//! already present.
+//!
+//! ## Reference Namespace Constants
+//!
+//! Layers and images are stored using these ref prefixes (defined as constants in this module):
+//!
+//! - `ostree/container/blob`: Individual OCI layers stored as commits
+//! - `ostree/container/image`: Merge commits for complete images
+//! - [`BASE_IMAGE_PREFIX`] (`ostree/container/baseimage`): Protected base images (public)
+//!
+//! Layer refs use escaped digests (e.g., `sha256:abc...` becomes `sha256_3A_abc...`)
+//! via [`crate::refescape`] to conform to ostree ref naming requirements.
+//!
+//! ## Import Process
+//!
+//! A typical import flow:
+//!
+//! 1. **Create importer**: [`ImageImporter::new`] initializes the proxy connection
+//!    to the container registry (via containers-image-proxy/skopeo).
+//!
+//! 2. **Prepare import**: [`ImageImporter::prepare`] fetches the manifest and
+//!    analyzes which layers need to be downloaded:
+//!    - Returns [`PrepareResult::AlreadyPresent`] if the image is unchanged
+//!    - Returns [`PrepareResult::Ready`] with a [`PreparedImport`] containing
+//!      the download plan
+//!
+//! 3. **Execute import**: [`ImageImporter::import`] downloads missing layers and
+//!    creates the merge commit:
+//!    - Each layer is fetched, decompressed, and imported as an ostree commit
+//!    - The merge commit overlays all layers, processing whiteouts
+//!    - Image metadata (manifest, config) is stored in commit metadata
+//!
+//! ## Layer Types
+//!
+//! The manifest layout is parsed to identify different layer types:
+//!
+//! - **Commit layer**: The base ostree commit layer (identified by `ostree.final-diffid`)
+//! - **Component layers**: Additional ostree "chunk" layers containing split objects
+//! - **Derived layers**: Non-ostree layers from Containerfile `RUN` commands
+//!
+//! Each layer type is handled differently during import:
+//!
+//! - Ostree layers use object-set import mode for efficient reconstruction
+//! - Derived layers are imported as regular filesystem trees with SELinux labeling
+//!
+//! ## Merge Commit Metadata
+//!
+//! The merge commit stores essential metadata for image management:
+//!
+//! - `ostree.manifest-digest`: The canonical manifest digest (e.g., `sha256:...`)
+//! - `ostree.manifest`: Complete OCI manifest as canonical JSON
+//! - `ostree.container.image-config`: OCI image configuration as canonical JSON
+//!
+//! This metadata enables:
+//! - Detecting when updates are available
+//! - Re-exporting images with preserved structure
+//! - Querying image state via [`query_image`] and [`query_image_commit`]
+//!
+//! ## Layer Caching and Deduplication
+//!
+//! Layers are cached by their content digest, enabling:
+//!
+//! - **Incremental updates**: Only changed layers are downloaded
+//! - **Cross-image sharing**: Images sharing layers reuse cached commits
+//! - **Efficient storage**: Ostree's content-addressed storage deduplicates files
+//!
+//! The `query_layer` function checks if a layer is already cached by looking up
+//! its ref. During import, cached layers are skipped entirely.
+//!
+//! ## Garbage Collection
+//!
+//! Unreferenced layers are automatically pruned after imports via [`gc_image_layers`]:
+//!
+//! 1. Collect all layer digests referenced by stored images and deployments
+//! 2. List all layer refs under `ostree/container/blob/`
+//! 3. Remove refs for layers not in the referenced set
+//!
+//! Note: This only removes refs; actual object pruning requires a separate
+//! call to `ostree::Repo::prune`.
+//!
+//! ## Key Types
+//!
+//! - [`ImageImporter`]: Main import orchestrator with progress tracking
+//! - [`PrepareResult`]: Result of preparing an import (already present vs. ready)
+//! - [`PreparedImport`]: Detailed import plan with layer analysis
+//! - [`ManifestLayerState`]: Per-layer state (descriptor, ref, cached commit)
+//! - [`LayeredImageState`]: Complete state of a pulled image
+//! - [`CachedImageUpdate`]: Cached metadata for pending updates
+//! - [`ImportProgress`]: Progress events for layer fetches
+//! - [`LayerProgress`]: Byte-level progress for a single layer
+//!
+//! ## Example Usage
+//!
+//! ```ignore
+//! use ostree_ext::container::{OstreeImageReference, store::ImageImporter};
+//!
+//! let imgref: OstreeImageReference = "ostree-unverified-registry:quay.io/fedora/fedora-bootc:latest".parse()?;
+//! let mut importer = ImageImporter::new(&repo, &imgref, Default::default()).await?;
+//!
+//! match importer.prepare().await? {
+//!     PrepareResult::AlreadyPresent(state) => {
+//!         println!("Image already at {}", state.manifest_digest);
+//!     }
+//!     PrepareResult::Ready(prep) => {
+//!         println!("Fetching {} layers", prep.layers_to_fetch().count());
+//!         let state = importer.import(prep).await?;
+//!         println!("Imported {}", state.merge_commit);
+//!     }
+//! }
+//! ```
+//!
+//! ## See Also
+//!
+//! - [`super::encapsulate`]: Export ostree commits to container images
+//! - [`crate::tar`]: Tar stream format for layer content
 
 use super::*;
 use crate::chunking::{self, Chunk};
