@@ -65,16 +65,16 @@ jobs:
       - name: Integration tests
         run: |
           set -xeu
-          # Build images to test; TODO investigate doing single container builds
-          # via GHA and pushing to a temporary registry to share among workflows?
-          # Preserve rustup/cargo environment for sudo (rustup needs RUSTUP_HOME to find toolchains)
-          sudojust() { sudo env PATH="$PATH" CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}" RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}" just "$@"; }
-          sudojust build
-          sudojust build-install-test-image
+          # Build images as regular user, then copy to root's podman storage
+          # This avoids cargo cache permission issues when running cargo as root
+          just build
+          just build-install-test-image
+          just copy-to-rootful localhost/bootc
+          just copy-to-rootful localhost/bootc-install
+          # Copy bound images (LBI) to root's storage for tests that need them
+          just copy-lbi-to-rootful
           sudo podman build -t localhost/bootc-fsverity -f ci/Containerfile.install-fsverity
 
-          # Grant permission
-          sudo chown -R "$(id -u):$(id -g)" /home/runner/work/bootc/bootc
           # TODO move into a container, and then have this tool run other containers
           cargo build --release -p tests-integration
 

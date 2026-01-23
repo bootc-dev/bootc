@@ -282,3 +282,47 @@ _keygen:
 
 _build-upgrade-image:
     cat tmt/tests/Dockerfile.upgrade | podman build -t {{upgrade_img}} --from={{base_img}} -
+
+# Copy an image from user podman storage to root's podman storage
+# This allows building as regular user then running privileged tests
+[group('testing')]
+copy-to-rootful $image:
+    #!/bin/bash
+    set -euxo pipefail
+
+    # If already running as root, nothing to do
+    if [[ "${UID}" -eq "0" ]]; then
+        echo "Already root, no need to copy image"
+        exit 0
+    fi
+
+    # Check if the image exists in user storage
+    if ! podman image exists "${image}"; then
+        echo "Image ${image} not found in user podman storage" >&2
+        exit 1
+    fi
+
+    # Get the image ID from user storage
+    USER_IMG_ID=$(podman images --filter reference="${image}" --format '{{{{.ID}}')
+
+    # Check if the same image ID exists in root storage
+    ROOT_IMG_ID=$(sudo podman images --filter reference="${image}" --format '{{{{.ID}}' 2>/dev/null || true)
+
+    if [[ "${USER_IMG_ID}" == "${ROOT_IMG_ID}" ]] && [[ -n "${ROOT_IMG_ID}" ]]; then
+        echo "Image ${image} already exists in root storage with same ID"
+        exit 0
+    fi
+
+    # Copy the image from user to root storage
+    # Use podman save/load via pipe (works on systems without machinectl)
+    podman save "${image}" | sudo podman load
+    echo "Copied ${image} to root podman storage"
+
+# Copy all LBI (bound) images to root's podman storage
+[group('testing')]
+copy-lbi-to-rootful:
+    #!/bin/bash
+    set -euxo pipefail
+    for img in {{lbi_images}}; do
+        just copy-to-rootful "$img"
+    done
