@@ -44,7 +44,7 @@ manpages:
 	cargo run --release --package xtask -- manpages
 
 .PHONY: completion
-completion:
+completion: bin
 	mkdir -p target/completion
 	for shell in bash elvish fish powershell zsh; do \
 		target/release/bootc completion $$shell > target/completion/bootc.$$shell; \
