@@ -21,15 +21,15 @@
   duration: 30m
   test: nu booted/test-logically-bound-install.nu
 
-/test-23-usroverlay:
-  summary: Execute tests for bootc usrover
-  duration: 30m
-  test: nu booted/test-usroverlay.nu
-
 /test-23-install-outside-container:
   summary: Execute tests for installing outside of a container
   duration: 30m
   test: nu booted/test-install-outside-container.nu
+
+/test-23-usroverlay:
+  summary: Execute tests for bootc usrover
+  duration: 30m
+  test: nu booted/test-usroverlay.nu
 
 /test-24-image-upgrade-reboot:
   summary: Execute local upgrade tests

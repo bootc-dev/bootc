@@ -71,19 +71,19 @@ execute:
     test:
       - /tmt/tests/tests/test-22-logically-bound-install
 
-/plan-23-usroverlay:
-  summary: Execute tests for bootc usrover
-  discover:
-    how: fmf
-    test:
-      - /tmt/tests/tests/test-23-usroverlay
-
 /plan-23-install-outside-container:
   summary: Execute tests for installing outside of a container
   discover:
     how: fmf
     test:
       - /tmt/tests/tests/test-23-install-outside-container
+
+/plan-23-usroverlay:
+  summary: Execute tests for bootc usrover
+  discover:
+    how: fmf
+    test:
+      - /tmt/tests/tests/test-23-usroverlay
 
 /plan-24-image-upgrade-reboot:
   summary: Execute local upgrade tests

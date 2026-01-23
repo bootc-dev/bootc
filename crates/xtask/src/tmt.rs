@@ -834,7 +834,7 @@ struct TmtMetadata {
     tmt: serde_yaml::Value,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Eq, PartialEq)]
 struct TestDef {
     number: u32,
     name: String,
@@ -843,6 +843,20 @@ struct TestDef {
     try_bind_storage: bool,
     /// TMT fmf attributes to pass through (summary, duration, adjust, etc.)
     tmt: serde_yaml::Value,
+}
+
+impl Ord for TestDef {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.number
+            .cmp(&other.number)
+            .then_with(|| self.name.cmp(&other.name))
+    }
+}
+
+impl PartialOrd for TestDef {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 /// Generate tmt/plans/integration.fmf from test definitions
@@ -925,8 +939,7 @@ pub(crate) fn update_integration() -> Result<()> {
         });
     }
 
-    // Sort tests by number
-    tests.sort_by_key(|t| t.number);
+    tests.sort();
 
     // Generate single tests.fmf file using structured YAML
     let tests_dir = Utf8Path::new("tmt/tests");
