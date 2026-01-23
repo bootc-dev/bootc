@@ -95,7 +95,7 @@ impl FsckCheck {
 #[distributed_slice(FSCK_CHECKS)]
 static CHECK_RESOLVCONF: FsckCheck =
     FsckCheck::new("etc-resolvconf", 5, FsckFnImpl::Sync(check_resolvconf));
-/// See https://github.com/bootc-dev/bootc/pull/1096 and https://github.com/containers/bootc/pull/1167
+/// See <https://github.com/bootc-dev/bootc/pull/1096> and <https://github.com/containers/bootc/pull/1167>
 /// Basically verify that if /usr/etc/resolv.conf exists, it is not a zero-sized file that was
 /// probably injected by buildah and that bootc should have removed.
 ///

@@ -61,7 +61,7 @@ pub(crate) struct BasicFilesystems {
 /// Configuration for ostree repository
 pub(crate) type OstreeRepoOpts = ostree_ext::repo_options::RepoOptions;
 
-/// The serialized [install] section
+/// The serialized `[install]` section
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename = "install", rename_all = "kebab-case", deny_unknown_fields)]
 pub(crate) struct InstallConfiguration {

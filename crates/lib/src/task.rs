@@ -161,7 +161,7 @@ impl Task {
         Ok(())
     }
 
-    /// Like [`run()`], but return stdout.
+    /// Like [`Task::run`], but return stdout.
     pub(crate) fn read(self) -> Result<String> {
         self.pre_run_output();
         let description = self.description;

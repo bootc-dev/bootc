@@ -88,7 +88,7 @@ impl std::fmt::Display for ComposefsCmdline {
 }
 
 /// The JSON schema for staged deployment information
-/// stored in /run/composefs/staged-deployment
+/// stored in `/run/composefs/staged-deployment`
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct StagedDeployment {
     /// The id (verity hash of the EROFS image) of the staged deployment
@@ -98,7 +98,7 @@ pub(crate) struct StagedDeployment {
     pub(crate) finalization_locked: bool,
 }
 
-/// Detect if we have composefs=<digest> in /proc/cmdline
+/// Detect if we have `composefs=<digest>` in `/proc/cmdline`
 pub(crate) fn composefs_booted() -> Result<Option<&'static ComposefsCmdline>> {
     static CACHED_DIGEST_VALUE: OnceLock<Option<ComposefsCmdline>> = OnceLock::new();
     if let Some(v) = CACHED_DIGEST_VALUE.get() {

@@ -103,7 +103,7 @@ impl Drop for Renamer<'_> {
         let _ = self._impl_drop();
     }
 }
-/// Work around https://github.com/containers/buildah/issues/4242#issuecomment-2492480586
+/// Work around <https://github.com/containers/buildah/issues/4242#issuecomment-2492480586>
 /// among other things. We unconditionally replace the contents of `/etc/resolv.conf`
 /// in the target root with whatever the host uses (in Fedora 41+, that's systemd-resolved for Anaconda).
 #[context("Copying host resolv.conf")]

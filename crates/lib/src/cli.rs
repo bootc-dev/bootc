@@ -766,7 +766,7 @@ pub(crate) enum Opt {
 
 /// Ensure we've entered a mount namespace, so that we can remount
 /// `/sysroot` read-write
-/// TODO use https://github.com/ostreedev/ostree/pull/2779 once
+/// TODO use <https://github.com/ostreedev/ostree/pull/2779> once
 /// we can depend on a new enough ostree
 #[context("Ensuring mountns")]
 pub(crate) fn ensure_self_unshared_mount_namespace() -> Result<()> {

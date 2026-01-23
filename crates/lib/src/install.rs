@@ -415,7 +415,7 @@ pub(crate) struct InstallResetOpts {
     pub(crate) target_opts: InstallTargetOpts,
 
     /// Name of the target stateroot. If not provided, one will be automatically
-    /// generated of the form s<year>-<serial> where <serial> starts at zero and
+    /// generated of the form `s<year>-<serial>` where `<serial>` starts at zero and
     /// increments automatically.
     #[clap(long)]
     pub(crate) stateroot: Option<String>,
@@ -579,7 +579,7 @@ impl State {
 ///
 /// There are 3 (ASCII) whitespace separated values:
 ///
-/// SOURCE TARGET [OPTIONS]
+/// `SOURCE TARGET [OPTIONS]`
 ///
 /// Examples:
 ///   - /dev/vda3 /boot ext4 ro

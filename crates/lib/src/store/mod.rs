@@ -1,4 +1,4 @@
-//! The [`Store`] holds references to three different types of
+//! The [`Storage`] type holds references to three different types of
 //! storage:
 //!
 //! # OSTree
@@ -41,7 +41,7 @@ use crate::podstorage::CStorage;
 use crate::spec::{Bootloader, ImageStatus};
 use crate::utils::{deployment_fd, open_dir_remount_rw};
 
-/// See https://github.com/containers/composefs-rs/issues/159
+/// See <https://github.com/containers/composefs-rs/issues/159>
 pub type ComposefsRepository =
     composefs::repository::Repository<composefs::fsverity::Sha512HashValue>;
 pub type ComposefsFilesystem = composefs::tree::FileSystem<composefs::fsverity::Sha512HashValue>;

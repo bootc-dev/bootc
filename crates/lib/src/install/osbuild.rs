@@ -15,7 +15,7 @@ use fn_error_context::context;
 ///
 /// Ufortunately today podman requires that /etc be writable for
 /// `/etc/containers/networks`. bib today creates this as a readonly mount:
-/// https://github.com/osbuild/osbuild/blob/4edbe227d41c767441b9bf4390398afc6dc8f901/osbuild/buildroot.py#L243
+/// <https://github.com/osbuild/osbuild/blob/4edbe227d41c767441b9bf4390398afc6dc8f901/osbuild/buildroot.py#L243>
 ///
 /// Work around that by adding a transient, writable overlayfs.
 fn adjust_etc_containers(tempdir: &Dir) -> Result<()> {

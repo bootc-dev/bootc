@@ -18,7 +18,7 @@ use crate::bootc_composefs::boot::EFI_LINUX;
 #[serde(rename_all = "kebab-case")]
 pub(crate) struct Kernel {
     /// The kernel version identifier. For traditional kernels, this is derived from the
-    /// /usr/lib/modules/<version> directory name. For UKI images, this is the UKI filename
+    /// `/usr/lib/modules/<version>` directory name. For UKI images, this is the UKI filename
     /// (without the .efi extension).
     pub(crate) version: String,
     /// Whether the kernel is packaged as a UKI (Unified Kernel Image).
