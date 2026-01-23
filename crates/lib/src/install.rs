@@ -1147,7 +1147,10 @@ pub(crate) fn exec_in_host_mountns(args: &[std::ffi::OsString]) -> Result<()> {
 pub(crate) struct RootSetup {
     #[cfg(feature = "install-to-disk")]
     luks_device: Option<String>,
-    pub(crate) device_info: bootc_blockdev::PartitionTable,
+    /// Information about the backing block device partition tables.
+    /// Contains all devices that have an ESP partition when the root filesystem
+    /// spans multiple backing devices (e.g., LVM across multiple disks).
+    pub(crate) device_info: Vec<bootc_blockdev::PartitionTable>,
     /// Absolute path to the location where we've mounted the physical
     /// root filesystem for the system we're installing.
     pub(crate) physical_root_path: Utf8PathBuf,
@@ -1608,7 +1611,9 @@ async fn install_with_sysroot(
 
     if cfg!(target_arch = "s390x") {
         // TODO: Integrate s390x support into install_via_bootupd
-        crate::bootloader::install_via_zipl(&rootfs.device_info, boot_uuid)?;
+        // zipl only supports single device
+        let device = rootfs.device_info.first();
+        crate::bootloader::install_via_zipl(device, boot_uuid)?;
     } else {
         match postfetch.detected_bootloader {
             Bootloader::Grub => {
@@ -1739,15 +1744,21 @@ async fn install_to_filesystem_impl(
     // Drop exclusive ownership since we're done with mutation
     let rootfs = &*rootfs;
 
-    match &rootfs.device_info.label {
-        bootc_blockdev::PartitionType::Dos => crate::utils::medium_visibility_warning(
-            "Installing to `dos` format partitions is not recommended",
-        ),
-        bootc_blockdev::PartitionType::Gpt => {
-            // The only thing we should be using in general
-        }
-        bootc_blockdev::PartitionType::Unknown(o) => {
-            crate::utils::medium_visibility_warning(&format!("Unknown partition label {o}"))
+    // Check partition type of all backing devices
+    for device_info in &rootfs.device_info {
+        match &device_info.label {
+            bootc_blockdev::PartitionType::Dos => {
+                crate::utils::medium_visibility_warning(&format!(
+                    "Installing to `dos` format partitions is not recommended: {}",
+                    device_info.path()
+                ))
+            }
+            bootc_blockdev::PartitionType::Gpt => {
+                // The only thing we should be using in general
+            }
+            bootc_blockdev::PartitionType::Unknown(o) => crate::utils::medium_visibility_warning(
+                &format!("Unknown partition label {o}: {}", device_info.path()),
+            ),
         }
     }
 
@@ -2302,27 +2313,77 @@ pub(crate) async fn install_to_filesystem(
     };
     tracing::debug!("boot UUID: {boot_uuid:?}");
 
-    // Find the real underlying backing device for the root.  This is currently just required
-    // for GRUB (BIOS) and in the future zipl (I think).
-    let backing_device = {
+    // Walk up the block device hierarchy to find physical backing device(s).
+    // Examples:
+    //   /dev/sda3 -> /dev/sda (single disk)
+    //   /dev/mapper/vg-lv -> /dev/sda2, /dev/sdb2 (LVM across two disks)
+    let backing_devices: Vec<String> = {
         let mut dev = inspect.source;
         loop {
             tracing::debug!("Finding parents for {dev}");
-            let mut parents = bootc_blockdev::find_parent_devices(&dev)?.into_iter();
-            let Some(parent) = parents.next() else {
-                break;
-            };
-            if let Some(next) = parents.next() {
-                anyhow::bail!(
-                    "Found multiple parent devices {parent} and {next}; not currently supported"
-                );
+            let parents = bootc_blockdev::find_parent_devices(&dev)?;
+            if parents.is_empty() {
+                // Reached a physical disk
+                break vec![dev];
             }
-            dev = parent;
+            if parents.len() > 1 {
+                // Multi-device (e.g., LVM across disks) - return all
+                tracing::debug!(
+                    "Found multiple parent devices: {:?}; will search for ESP",
+                    parents
+                );
+                break parents;
+            }
+            // Single parent (e.g. LVM LV -> VG -> PV) - keep walking up
+            dev = parents.into_iter().next().unwrap();
         }
-        dev
     };
-    tracing::debug!("Backing device: {backing_device}");
-    let device_info = bootc_blockdev::partitions_of(Utf8Path::new(&backing_device))?;
+    tracing::debug!("Backing devices: {backing_devices:?}");
+
+    // Determine the device and partition info to use for bootloader installation.
+    // If there are multiple backing devices, we search for all that contain an ESP.
+    let device_info: Vec<bootc_blockdev::PartitionTable> = if backing_devices.len() == 1 {
+        // Single backing device - use it directly
+        let dev = &backing_devices[0];
+        vec![bootc_blockdev::partitions_of(Utf8Path::new(dev))?]
+    } else {
+        // Multiple backing devices - find all with ESP
+        let mut esp_devices = Vec::new();
+        for dev in &backing_devices {
+            match bootc_blockdev::partitions_of(Utf8Path::new(dev)) {
+                Ok(table) => {
+                    match table.find_partition_of_esp() {
+                        Ok(Some(_)) => {
+                            tracing::info!("Found ESP on device {dev}");
+                            esp_devices.push(table);
+                        }
+                        Ok(None) => (),
+                        Err(e) => {
+                            // Some partition table types may not be supported for ESP detection.
+                            // Log and continue checking other devices.
+                            tracing::debug!("Could not check for ESP on {dev}: {e}");
+                        }
+                    }
+                }
+                Err(e) => {
+                    // Some backing devices may not have partition tables (e.g., raw LVM PVs
+                    // or whole-disk filesystems). These can't have an ESP, so skip them.
+                    tracing::debug!("Failed to read partition table from {dev}: {e}");
+                }
+            }
+        }
+        if esp_devices.is_empty() {
+            // No ESP found on any backing device. This is not fatal because:
+            // - BIOS boot uses MBR, not ESP
+            // - bootupd may auto-detect ESP via mounted /boot/efi
+            // However, UEFI boot without a detectable ESP will fail.
+            tracing::warn!(
+                "No ESP found on any backing device ({:?}); UEFI boot may fail",
+                backing_devices
+            );
+        }
+        esp_devices
+    };
 
     let rootarg = format!("root={}", root_info.mount_spec);
     // CLI takes precedence over config file.

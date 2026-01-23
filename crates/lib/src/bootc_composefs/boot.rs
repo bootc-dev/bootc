@@ -520,8 +520,23 @@ pub(crate) fn setup_composefs_bls_boot(
 
             cmdline_options.extend(&Cmdline::from(&composefs_cmdline));
 
-            // Locate ESP partition device
-            let esp_part = esp_in(&root_setup.device_info)?;
+            // Find all ESP partitions across all backing devices.
+            // For composefs with systemd-boot, we only support a single ESP.
+            let mut esp_parts: Vec<&bootc_blockdev::Partition> = Vec::new();
+            for device in &root_setup.device_info {
+                if let Some(esp) = device.find_partition_of_esp()? {
+                    esp_parts.push(esp);
+                }
+            }
+            let esp_part = match esp_parts.len() {
+                0 => {
+                    anyhow::bail!("Cannot locate ESP: no ESP partition found on any backing device")
+                }
+                1 => esp_parts.into_iter().next().unwrap(),
+                n => anyhow::bail!(
+                    "Found {n} ESP partitions across backing devices; only a single ESP is supported for composefs boot"
+                ),
+            };
 
             (
                 root_setup.physical_root_path.clone(),
@@ -1063,7 +1078,12 @@ pub(crate) fn setup_composefs_uki_boot(
         BootSetupType::Setup((root_setup, state, postfetch, ..)) => {
             state.require_no_kargs_for_uki()?;
 
-            let esp_part = esp_in(&root_setup.device_info)?;
+            //TODO: Handle multiple devices (RAID, LVM, etc)
+            let device_info = root_setup
+                .device_info
+                .first()
+                .ok_or_else(|| anyhow!("Cannot locate ESP: no backing device found"))?;
+            let esp_part = esp_in(device_info)?;
 
             (
                 root_setup.physical_root_path.clone(),
@@ -1233,7 +1253,8 @@ pub(crate) async fn setup_composefs_boot(
 
     if cfg!(target_arch = "s390x") {
         // TODO: Integrate s390x support into install_via_bootupd
-        crate::bootloader::install_via_zipl(&root_setup.device_info, boot_uuid)?;
+        // zipl only supports single device
+        crate::bootloader::install_via_zipl(root_setup.device_info.first(), boot_uuid)?;
     } else if postfetch.detected_bootloader == Bootloader::Grub {
         crate::bootloader::install_via_bootupd(
             &root_setup.device_info,
@@ -1242,8 +1263,9 @@ pub(crate) async fn setup_composefs_boot(
             None,
         )?;
     } else {
+        // systemd-boot only supports a single ESP
         crate::bootloader::install_systemd_boot(
-            &root_setup.device_info,
+            root_setup.device_info.first(),
             &root_setup.physical_root_path,
             &state.config_opts,
             None,

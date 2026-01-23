@@ -82,7 +82,7 @@ pub(crate) fn supports_bootupd(root: &Dir) -> Result<bool> {
 
 #[context("Installing bootloader")]
 pub(crate) fn install_via_bootupd(
-    device: &PartitionTable,
+    devices: &[PartitionTable],
     rootfs: &Utf8Path,
     configopts: &crate::install::InstallConfigOpts,
     deployment_path: Option<&str>,
@@ -97,26 +97,61 @@ pub(crate) fn install_via_bootupd(
     } else {
         vec![]
     };
-    let devpath = device.path();
-    println!("Installing bootloader via bootupd");
-    Command::new("bootupctl")
-        .args(["backend", "install", "--write-uuid"])
-        .args(verbose)
-        .args(bootupd_opts.iter().copied().flatten())
-        .args(src_root_arg)
-        .args(["--device", devpath.as_str(), rootfs.as_str()])
-        .log_debug()
-        .run_inherited_with_cmd_context()
+
+    // No backing devices with ESP found. Run bootupd without --device and let it
+    // try to auto-detect. This works for:
+    // - BIOS boot (uses MBR, not ESP)
+    // - Systems where bootupd can find ESP via mounted /boot/efi
+    // UEFI boot will fail if bootupd cannot locate the ESP.
+    if devices.is_empty() {
+        tracing::warn!(
+            "No backing device with ESP found; UEFI boot may fail if ESP cannot be auto-detected"
+        );
+        println!("Installing bootloader via bootupd (no target device specified)");
+        return Command::new("bootupctl")
+            .args(["backend", "install", "--write-uuid"])
+            .args(verbose)
+            .args(bootupd_opts.iter().copied().flatten())
+            .args(&src_root_arg)
+            .arg(rootfs.as_str())
+            .log_debug()
+            .run_inherited_with_cmd_context();
+    }
+
+    // Install bootloader to each device
+    for dev in devices {
+        let devpath = dev.path();
+        println!("Installing bootloader via bootupd to {devpath}");
+        Command::new("bootupctl")
+            .args(["backend", "install", "--write-uuid"])
+            .args(verbose)
+            .args(bootupd_opts.iter().copied().flatten())
+            .args(&src_root_arg)
+            .args(["--device", devpath.as_str()])
+            .arg(rootfs.as_str())
+            .log_debug()
+            .run_inherited_with_cmd_context()?;
+    }
+
+    Ok(())
 }
 
 #[context("Installing bootloader")]
 pub(crate) fn install_systemd_boot(
-    device: &PartitionTable,
+    device: Option<&PartitionTable>,
     _rootfs: &Utf8Path,
     _configopts: &crate::install::InstallConfigOpts,
     _deployment_path: Option<&str>,
     autoenroll: Option<SecurebootKeys>,
 ) -> Result<()> {
+    // systemd-boot requires the backing device to locate the ESP partition
+    let device = device.ok_or_else(|| {
+        anyhow!(
+            "Cannot install systemd-boot: no single backing device found \
+             (root may span multiple devices such as LVM across multiple disks)"
+        )
+    })?;
+
     let esp_part = device
         .find_partition_of_type(discoverable_partition_specification::ESP)
         .ok_or_else(|| anyhow::anyhow!("ESP partition not found"))?;
@@ -161,7 +196,15 @@ pub(crate) fn install_systemd_boot(
 }
 
 #[context("Installing bootloader using zipl")]
-pub(crate) fn install_via_zipl(device: &PartitionTable, boot_uuid: &str) -> Result<()> {
+pub(crate) fn install_via_zipl(device: Option<&PartitionTable>, boot_uuid: &str) -> Result<()> {
+    // zipl requires the backing device information to install the bootloader
+    let device = device.ok_or_else(|| {
+        anyhow!(
+            "Cannot install zipl bootloader: no single backing device found \
+             (root may span multiple devices such as LVM across multiple disks)"
+        )
+    })?;
+
     // Identify the target boot partition from UUID
     let fs = mount::inspect_filesystem_by_uuid(boot_uuid)?;
     let boot_dir = Utf8Path::new(&fs.target);

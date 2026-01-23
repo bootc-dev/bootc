@@ -1,0 +1,3 @@
+summary: Test multi-device ESP detection for to-existing-root
+test: nu booted/test-multi-device-esp.nu
+duration: 45m

@@ -166,4 +166,10 @@ execute:
     how: fmf
     test:
       - /tmt/tests/tests/test-33-bib-build
+/plan-34-multi-device-esp:
+  summary: Test multi-device ESP detection for to-existing-root
+  discover:
+    how: fmf
+    test:
+      - /tmt/tests/test-32-multi-device-esp
 # END GENERATED PLANS
