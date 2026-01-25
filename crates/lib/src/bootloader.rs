@@ -11,7 +11,7 @@ use fn_error_context::context;
 use bootc_blockdev::{Partition, PartitionTable};
 use bootc_mount as mount;
 
-use crate::bootc_composefs::boot::{SecurebootKeys, get_sysroot_parent_dev, mount_esp};
+use crate::bootc_composefs::boot::{SecurebootKeys, mount_esp};
 use crate::{discoverable_partition_specification, utils};
 
 /// The name of the mountpoint for efi (as a subdirectory of /boot, or at the toplevel)
@@ -31,40 +31,45 @@ pub(crate) fn esp_in(device: &PartitionTable) -> Result<&Partition> {
         .ok_or(anyhow::anyhow!("ESP not found in partition table"))
 }
 
-/// Get esp partition node based on the root dir
-pub(crate) fn get_esp_partition_node(root: &Dir) -> Result<Option<String>> {
-    let device = get_sysroot_parent_dev(&root)?;
-    let base_partitions = bootc_blockdev::partitions_of(Utf8Path::new(&device))?;
-    let esp = base_partitions.find_partition_of_esp()?;
-    Ok(esp.map(|v| v.node.clone()))
+fn normalize_esp_source(source: String) -> String {
+    if let Some(uuid) = source.strip_prefix("UUID=") {
+        format!("/dev/disk/by-uuid/{uuid}")
+    } else if let Some(label) = source.strip_prefix("LABEL=") {
+        format!("/dev/disk/by-label/{label}")
+    } else {
+        source
+    }
 }
 
-/// Mount ESP part at /boot/efi
-pub(crate) fn mount_esp_part(root: &Dir, root_path: &Utf8Path, is_ostree: bool) -> Result<()> {
-    let efi_path = Utf8Path::new("boot").join(crate::bootloader::EFI_DIR);
-    let Some(esp_fd) = root
+pub(crate) fn require_boot_efi_mount(root: &Dir) -> Result<String> {
+    let efi_path = Utf8Path::new("boot").join(EFI_DIR);
+    let esp_fd = root
         .open_dir_optional(&efi_path)
         .context("Opening /boot/efi")?
-    else {
-        return Ok(());
-    };
+        .ok_or_else(|| anyhow::anyhow!("/boot/efi does not exist"))?;
 
-    let Some(false) = esp_fd.is_mountpoint(".")? else {
-        return Ok(());
-    };
-
-    tracing::debug!("Not a mountpoint: /boot/efi");
-    // On ostree env with enabled composefs, should be /target/sysroot
-    let physical_root = if is_ostree {
-        &root.open_dir("sysroot").context("Opening /sysroot")?
-    } else {
-        root
-    };
-    if let Some(esp_part) = get_esp_partition_node(physical_root)? {
-        bootc_mount::mount(&esp_part, &root_path.join(&efi_path))?;
-        tracing::debug!("Mounted {esp_part} at /boot/efi");
+    if !esp_fd.is_mountpoint(".")?.unwrap_or(false) {
+        anyhow::bail!("/boot/efi is not a mountpoint. This is required for installation.");
     }
-    Ok(())
+
+    let fs = bootc_mount::inspect_filesystem_of_dir(&esp_fd)?;
+    if fs.fstype != "vfat" && fs.fstype != "fat" {
+        anyhow::bail!(
+            "/boot/efi is mounted but is not vfat/fat (found {}). This is required for installation.",
+            fs.fstype
+        );
+    }
+
+    let source = normalize_esp_source(fs.source);
+
+    let source_path = Utf8Path::new(&source);
+    if !source_path.try_exists()? {
+        anyhow::bail!(
+            "/boot/efi source device does not exist: {source}. This is required for installation."
+        );
+    }
+
+    Ok(source)
 }
 
 /// Determine if the invoking environment contains bootupd, and if there are bootupd-based
@@ -83,10 +88,16 @@ pub(crate) fn supports_bootupd(root: &Dir) -> Result<bool> {
 #[context("Installing bootloader")]
 pub(crate) fn install_via_bootupd(
     device: &PartitionTable,
+    root: &Dir,
     rootfs: &Utf8Path,
     configopts: &crate::install::InstallConfigOpts,
     deployment_path: Option<&str>,
 ) -> Result<()> {
+    // We require /boot/efi to be mounted; finding the device is just a sanity check that it is.
+    // The device argument is currently used by bootupctl as a fallback if it can't find the ESP.
+    // But we want to fail fast if our own check fails.
+    let _esp_device = require_boot_efi_mount(root)?;
+
     let verbose = std::env::var_os("BOOTC_BOOTLOADER_DEBUG").map(|_| "-vvvv");
     // bootc defaults to only targeting the platform boot method.
     let bootupd_opts = (!configopts.generic_image).then_some(["--update-firmware", "--auto"]);
@@ -165,17 +176,16 @@ pub(crate) fn install_via_bootupd(
 
 #[context("Installing bootloader")]
 pub(crate) fn install_systemd_boot(
-    device: &PartitionTable,
+    root: &Dir,
+    _device: &PartitionTable,
     _rootfs: &Utf8Path,
     _configopts: &crate::install::InstallConfigOpts,
     _deployment_path: Option<&str>,
     autoenroll: Option<SecurebootKeys>,
 ) -> Result<()> {
-    let esp_part = device
-        .find_partition_of_type(discoverable_partition_specification::ESP)
-        .ok_or_else(|| anyhow::anyhow!("ESP partition not found"))?;
+    let esp_device = require_boot_efi_mount(root)?;
 
-    let esp_mount = mount_esp(&esp_part.node).context("Mounting ESP")?;
+    let esp_mount = mount_esp(&esp_device).context("Mounting ESP")?;
     let esp_path = Utf8Path::from_path(esp_mount.dir.path())
         .ok_or_else(|| anyhow::anyhow!("Failed to convert ESP mount path to UTF-8"))?;
 
@@ -290,4 +300,27 @@ pub(crate) fn install_via_zipl(device: &PartitionTable, boot_uuid: &str) -> Resu
         .args(["--add-files", "--verbose"])
         .log_debug()
         .run_inherited_with_cmd_context()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalize_esp_source_uuid() {
+        let normalized = normalize_esp_source("UUID=abcd-1234".to_string());
+        assert_eq!(normalized, "/dev/disk/by-uuid/abcd-1234");
+    }
+
+    #[test]
+    fn normalize_esp_source_label() {
+        let normalized = normalize_esp_source("LABEL=EFI".to_string());
+        assert_eq!(normalized, "/dev/disk/by-label/EFI");
+    }
+
+    #[test]
+    fn normalize_esp_source_passthrough() {
+        let normalized = normalize_esp_source("/dev/sda1".to_string());
+        assert_eq!(normalized, "/dev/sda1");
+    }
 }

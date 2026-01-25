@@ -1753,6 +1753,13 @@ async fn install_with_sysroot(
         .context("Opening deployment dir")?;
     let postfetch = PostFetchState::new(state, &deployment_dir)?;
 
+    let target_root_path = rootfs
+        .target_root_path
+        .clone()
+        .unwrap_or(rootfs.physical_root_path.clone());
+    let target_root = Dir::open_ambient_dir(&target_root_path, cap_std::ambient_authority())
+        .with_context(|| format!("Opening target root directory {target_root_path}"))?;
+
     if cfg!(target_arch = "s390x") {
         // TODO: Integrate s390x support into install_via_bootupd
         crate::bootloader::install_via_zipl(&rootfs.device_info, boot_uuid)?;
@@ -1761,10 +1768,8 @@ async fn install_with_sysroot(
             Bootloader::Grub => {
                 crate::bootloader::install_via_bootupd(
                     &rootfs.device_info,
-                    &rootfs
-                        .target_root_path
-                        .clone()
-                        .unwrap_or(rootfs.physical_root_path.clone()),
+                    &target_root,
+                    &target_root_path,
                     &state.config_opts,
                     Some(&deployment_path.as_str()),
                 )?;
@@ -2154,14 +2159,13 @@ fn remove_all_except_loader_dirs(bootdir: &Dir, is_ostree: bool) -> Result<()> {
 }
 
 #[context("Removing boot directory content")]
-fn clean_boot_directories(rootfs: &Dir, rootfs_path: &Utf8Path, is_ostree: bool) -> Result<()> {
+fn clean_boot_directories(rootfs: &Dir, is_ostree: bool) -> Result<()> {
     let bootdir =
         crate::utils::open_dir_remount_rw(rootfs, BOOT.into()).context("Opening /boot")?;
 
     if ARCH_USES_EFI {
-        // On booted FCOS, esp is not mounted by default
-        // Mount ESP part at /boot/efi before clean
-        crate::bootloader::mount_esp_part(&rootfs, &rootfs_path, is_ostree)?;
+        // Require an explicit /boot/efi mount to avoid cleaning the wrong ESP.
+        crate::bootloader::require_boot_efi_mount(rootfs)?;
     }
 
     // This should not remove /boot/efi note.
@@ -2375,7 +2379,7 @@ pub(crate) async fn install_to_filesystem(
                 .await??;
         }
         Some(ReplaceMode::Alongside) => {
-            clean_boot_directories(&target_rootfs_fd, &target_root_path, is_already_ostree)?
+            clean_boot_directories(&target_rootfs_fd, is_already_ostree)?
         }
         None => require_empty_rootdir(&rootfs_fd)?,
     }
