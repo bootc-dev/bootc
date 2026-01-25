@@ -1160,6 +1160,7 @@ pub(crate) struct RootSetup {
     skip_finalize: bool,
     boot: Option<MountSpec>,
     pub(crate) kargs: CmdlineOwned,
+    pub(crate) require_esp_mount: bool,
 }
 
 fn require_boot_uuid(spec: &MountSpec) -> Result<&str> {
@@ -1625,6 +1626,7 @@ async fn install_with_sysroot(
                     &target_root_path,
                     &state.config_opts,
                     Some(&deployment_path.as_str()),
+                    rootfs.require_esp_mount,
                 )?;
             }
             Bootloader::Systemd => {
@@ -2012,11 +2014,11 @@ fn remove_all_except_loader_dirs(bootdir: &Dir, is_ostree: bool) -> Result<()> {
 }
 
 #[context("Removing boot directory content")]
-fn clean_boot_directories(rootfs: &Dir, is_ostree: bool) -> Result<()> {
+fn clean_boot_directories(rootfs: &Dir, is_ostree: bool, strict_esp: bool) -> Result<()> {
     let bootdir =
         crate::utils::open_dir_remount_rw(rootfs, BOOT.into()).context("Opening /boot")?;
 
-    if ARCH_USES_EFI {
+    if ARCH_USES_EFI && strict_esp {
         // Require an explicit /boot/efi mount to avoid cleaning the wrong ESP.
         crate::bootloader::require_boot_efi_mount(rootfs)?;
     }
@@ -2232,7 +2234,7 @@ pub(crate) async fn install_to_filesystem(
                 .await??;
         }
         Some(ReplaceMode::Alongside) => {
-            clean_boot_directories(&target_rootfs_fd, is_already_ostree)?
+            clean_boot_directories(&target_rootfs_fd, is_already_ostree, !targeting_host_root)?
         }
         None => require_empty_rootdir(&rootfs_fd)?,
     }
@@ -2394,6 +2396,7 @@ pub(crate) async fn install_to_filesystem(
         boot,
         kargs,
         skip_finalize,
+        require_esp_mount: !targeting_host_root,
     };
 
     install_to_filesystem_impl(&state, &mut rootfs, cleanup).await?;
