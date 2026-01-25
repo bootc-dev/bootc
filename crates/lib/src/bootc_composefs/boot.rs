@@ -106,10 +106,8 @@ use crate::{
 };
 use crate::{
     bootc_composefs::state::{get_booted_bls, write_composefs_state},
-    bootloader::esp_in,
-};
-use crate::{
-    bootc_composefs::status::get_container_manifest_and_config, bootc_kargs::compute_new_kargs,
+    bootc_composefs::status::get_container_manifest_and_config,
+    bootc_kargs::compute_new_kargs,
 };
 use crate::{bootc_composefs::status::get_sorted_grub_uki_boot_entries, install::PostFetchState};
 use crate::{
@@ -212,6 +210,17 @@ if [ -f ${{config_directory}}/{EFI_UUID_FILE} ]; then
 fi
 "#
     )
+}
+
+fn open_target_root(root_setup: &RootSetup) -> Result<Dir> {
+    if let Some(target_root) = root_setup.target_root_path.as_ref() {
+        Dir::open_ambient_dir(target_root, ambient_authority()).context("Opening target root path")
+    } else {
+        root_setup
+            .physical_root
+            .try_clone()
+            .context("Cloning target root handle")
+    }
 }
 
 pub fn get_esp_partition(device: &str) -> Result<(String, Option<String>)> {
@@ -521,11 +530,12 @@ pub(crate) fn setup_composefs_bls_boot(
             cmdline_options.extend(&Cmdline::from(&composefs_cmdline));
 
             // Locate ESP partition device
-            let esp_part = esp_in(&root_setup.device_info)?;
+            let esp_root = open_target_root(root_setup)?;
+            let esp_part = crate::bootloader::require_boot_efi_mount(&esp_root)?;
 
             (
                 root_setup.physical_root_path.clone(),
-                esp_part.node.clone(),
+                esp_part,
                 cmdline_options,
                 fs,
                 postfetch.detected_bootloader.clone(),
@@ -1063,11 +1073,12 @@ pub(crate) fn setup_composefs_uki_boot(
         BootSetupType::Setup((root_setup, state, postfetch, ..)) => {
             state.require_no_kargs_for_uki()?;
 
-            let esp_part = esp_in(&root_setup.device_info)?;
+            let esp_root = open_target_root(root_setup)?;
+            let esp_part = crate::bootloader::require_boot_efi_mount(&esp_root)?;
 
             (
                 root_setup.physical_root_path.clone(),
-                esp_part.node.clone(),
+                esp_part,
                 postfetch.detected_bootloader.clone(),
                 state.composefs_options.insecure,
                 state.composefs_options.uki_addon.as_ref(),
@@ -1231,18 +1242,22 @@ pub(crate) async fn setup_composefs_boot(
         .or(root_setup.rootfs_uuid.as_deref())
         .ok_or_else(|| anyhow!("No uuid for boot/root"))?;
 
+    let target_root = open_target_root(root_setup)?;
+
     if cfg!(target_arch = "s390x") {
         // TODO: Integrate s390x support into install_via_bootupd
         crate::bootloader::install_via_zipl(&root_setup.device_info, boot_uuid)?;
     } else if postfetch.detected_bootloader == Bootloader::Grub {
         crate::bootloader::install_via_bootupd(
             &root_setup.device_info,
+            &target_root,
             &root_setup.physical_root_path,
             &state.config_opts,
             None,
         )?;
     } else {
         crate::bootloader::install_systemd_boot(
+            &target_root,
             &root_setup.device_info,
             &root_setup.physical_root_path,
             &state.config_opts,
@@ -1405,5 +1420,12 @@ mod tests {
             rhel > fedora,
             "RHEL should sort before Fedora in descending order"
         );
+    }
+
+    #[test]
+    fn test_efi_uuid_source_formatting() {
+        let source = get_efi_uuid_source();
+        assert!(source.contains("${config_directory}/"));
+        assert!(source.contains(EFI_UUID_FILE));
     }
 }
