@@ -92,11 +92,14 @@ pub(crate) fn install_via_bootupd(
     rootfs: &Utf8Path,
     configopts: &crate::install::InstallConfigOpts,
     deployment_path: Option<&str>,
+    require_mount: bool,
 ) -> Result<()> {
-    // We require /boot/efi to be mounted; finding the device is just a sanity check that it is.
-    // The device argument is currently used by bootupctl as a fallback if it can't find the ESP.
-    // But we want to fail fast if our own check fails.
-    let _esp_device = require_boot_efi_mount(root)?;
+    if require_mount {
+        // We require /boot/efi to be mounted; finding the device is just a sanity check that it is.
+        // The device argument is currently used by bootupctl as a fallback if it can't find the ESP.
+        // But we want to fail fast if our own check fails.
+        let _esp_device = require_boot_efi_mount(root)?;
+    }
 
     let verbose = std::env::var_os("BOOTC_BOOTLOADER_DEBUG").map(|_| "-vvvv");
     // bootc defaults to only targeting the platform boot method.

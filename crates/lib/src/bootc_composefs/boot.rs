@@ -531,7 +531,20 @@ pub(crate) fn setup_composefs_bls_boot(
 
             // Locate ESP partition device
             let esp_root = open_target_root(root_setup)?;
-            let esp_part = crate::bootloader::require_boot_efi_mount(&esp_root)?;
+            let esp_part = if root_setup.require_esp_mount {
+                crate::bootloader::require_boot_efi_mount(&esp_root)?
+            } else {
+                match crate::bootloader::require_boot_efi_mount(&esp_root) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        tracing::debug!(
+                            "ESP mount check failed in permissive mode: {e}; falling back to partition table scan"
+                        );
+                        let esp = crate::bootloader::esp_in(&root_setup.device_info)?;
+                        esp.node.clone()
+                    }
+                }
+            };
 
             (
                 root_setup.physical_root_path.clone(),
@@ -1074,7 +1087,21 @@ pub(crate) fn setup_composefs_uki_boot(
             state.require_no_kargs_for_uki()?;
 
             let esp_root = open_target_root(root_setup)?;
-            let esp_part = crate::bootloader::require_boot_efi_mount(&esp_root)?;
+
+            let esp_part = if root_setup.require_esp_mount {
+                crate::bootloader::require_boot_efi_mount(&esp_root)?
+            } else {
+                match crate::bootloader::require_boot_efi_mount(&esp_root) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        tracing::debug!(
+                            "ESP mount check failed in permissive mode: {e}; falling back to partition table scan"
+                        );
+                        let esp = crate::bootloader::esp_in(&root_setup.device_info)?;
+                        esp.node.clone()
+                    }
+                }
+            };
 
             (
                 root_setup.physical_root_path.clone(),
@@ -1254,6 +1281,7 @@ pub(crate) async fn setup_composefs_boot(
             &root_setup.physical_root_path,
             &state.config_opts,
             None,
+            root_setup.require_esp_mount,
         )?;
     } else {
         crate::bootloader::install_systemd_boot(
