@@ -1,3 +1,4 @@
+use std::ffi::CString;
 use std::fs::create_dir_all;
 use std::process::Command;
 
@@ -7,10 +8,10 @@ use camino::Utf8Path;
 use cap_std_ext::cap_std::fs::Dir;
 use cap_std_ext::dirext::CapStdExtDirExt;
 use fn_error_context::context;
+use rustix::mount::MountFlags;
 
 use bootc_blockdev::{Partition, PartitionTable};
 use bootc_mount as mount;
-use rustix::mount::UnmountFlags;
 
 use crate::bootc_composefs::boot::{SecurebootKeys, get_sysroot_parent_dev, mount_esp};
 use crate::{discoverable_partition_specification, utils};
@@ -106,6 +107,9 @@ pub(crate) fn install_via_bootupd(
         "/"
     };
 
+    // API filesystems to bind mount.
+    // Note that this is safe to use recursive bind mount
+    // because we're already in a private mount namespace via ensure_self_unshared_mount_namespace())
     let bind_mount_dirs = ["/dev", "/proc", "/run", "/sys"];
     let chroot_args = if let Some(target_root) = abs_deployment_path.as_deref() {
         tracing::debug!("Setting up bind-mounts before chrooting to the target deployment");
@@ -115,8 +119,7 @@ pub(crate) fn install_via_bootupd(
         // See https://github.com/coreos/bootupd/issues/1051#issuecomment-3768271509 and following comments
         rustix::mount::mount_bind(target_root.as_std_path(), target_root.as_std_path())?;
 
-        // We mount the linux API file systems into the target deployment before chrooting
-        // so bootupd can find the proper backing device.
+        // Mount API filesystems recursively
         // xref https://systemd.io/API_FILE_SYSTEMS/
         for src in bind_mount_dirs {
             let dest = target_root
@@ -126,6 +129,21 @@ pub(crate) fn install_via_bootupd(
             tracing::debug!("bind mounting {} in {}", src, dest.display());
             // We mount them recursively so nested API FS get carried over
             rustix::mount::mount_bind_recursive(src, dest)?;
+        }
+
+        // Create a fresh devpts mount inside the chroot that will shadow the
+        // host one to avoid PTY corruption
+        let target_dev_pts = target_root.join("dev/pts");
+        if target_dev_pts.exists() {
+            tracing::debug!("mounting devpts at {}", target_dev_pts);
+            let mount_opts = CString::new("newinstance,ptmxmode=0666,mode=620")?;
+            rustix::mount::mount(
+                c"devpts",
+                target_dev_pts.as_std_path(),
+                c"devpts",
+                MountFlags::NOSUID | MountFlags::NOEXEC,
+                Some(mount_opts.as_c_str()),
+            )?;
         }
 
         // Also mount the target /boot inside the chroot
@@ -153,7 +171,7 @@ pub(crate) fn install_via_bootupd(
     } else {
         Command::new("bootupctl")
     };
-    let install_result = bootupctl
+    bootupctl
         .args(chroot_args)
         // Inject a reasonnable PATH here so we find the required tools
         // when running chrooted in the deployment. Testing show that
@@ -167,33 +185,7 @@ pub(crate) fn install_via_bootupd(
         .args(bootupd_opts.iter().copied().flatten())
         .args(["--device", devpath.as_str(), rootfs_mount])
         .log_debug()
-        .run_inherited_with_cmd_context();
-
-    // Clean up the mounts after ourselves
-    if let Some(target_root) = abs_deployment_path {
-        if let Err(e) = rustix::mount::unmount(
-            target_root.join("boot").into_std_path_buf(),
-            UnmountFlags::empty(),
-        ) {
-            tracing::warn!("Error unmounting target/boot: {e}");
-        }
-        for dir in bind_mount_dirs {
-            let mount = target_root
-                .join(dir.strip_prefix("/").unwrap())
-                .into_std_path_buf();
-            if let Err(e) = rustix::mount::unmount(&mount, UnmountFlags::DETACH) {
-                // let's not propagate the error up because in some cases we can't unmount
-                // e.g. when running `to-existing-root`
-                tracing::warn!("Error unmounting {}: {e}", mount.display());
-            }
-        }
-        if let Err(e) =
-            rustix::mount::unmount(&target_root.into_std_path_buf(), UnmountFlags::empty())
-        {
-            tracing::warn!("Error unmounting target root bind mount: {e}");
-        }
-    }
-    install_result
+        .run_inherited_with_cmd_context()
 }
 
 #[context("Installing bootloader")]
