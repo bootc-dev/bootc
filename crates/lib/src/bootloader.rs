@@ -1,19 +1,17 @@
-use std::ffi::CString;
 use std::fs::create_dir_all;
 use std::process::Command;
 
-use anyhow::{Context, Result, anyhow, bail};
-use bootc_utils::CommandRunExt;
+use anyhow::{anyhow, bail, Context, Result};
+use bootc_utils::{CommandRunExt, PodmanCmd};
 use camino::Utf8Path;
 use cap_std_ext::cap_std::fs::Dir;
 use cap_std_ext::dirext::CapStdExtDirExt;
 use fn_error_context::context;
-use rustix::mount::MountFlags;
 
 use bootc_blockdev::{Partition, PartitionTable};
 use bootc_mount as mount;
 
-use crate::bootc_composefs::boot::{SecurebootKeys, get_sysroot_parent_dev, mount_esp};
+use crate::bootc_composefs::boot::{get_sysroot_parent_dev, mount_esp, SecurebootKeys};
 use crate::{discoverable_partition_specification, utils};
 
 /// The name of the mountpoint for efi (as a subdirectory of /boot, or at the toplevel)
@@ -93,99 +91,61 @@ pub(crate) fn install_via_bootupd(
     // bootc defaults to only targeting the platform boot method.
     let bootupd_opts = (!configopts.generic_image).then_some(["--update-firmware", "--auto"]);
 
-    let abs_deployment_path = deployment_path.map(|deploy| rootfs.join(deploy));
+    let devpath = device.path();
 
-    // When not running inside the target container (through `--src-imgref`) we chroot
-    // into the deployment before running bootupd. This makes sure we use binaries
-    // from the target image rather than the buildroot
-    // Bootupd needs to find the underlying device for /boot
-    // (or / if /boot is not on a separate partition)
+    // When not running inside the target container (through `--src-imgref`) we use
+    // systemd-nspawn to run bootupctl in the deployment.
+    // This makes sure we use binaries from the target image rather than the buildroot.
 
-    let rootfs_mount = if abs_deployment_path.is_none() {
+    let rootfs_mount = if deployment_path.is_none() {
         rootfs.as_str()
     } else {
         "/"
     };
 
-    // API filesystems to bind mount.
-    // Note that this is safe to use recursive bind mount
-    // because we're already in a private mount namespace via ensure_self_unshared_mount_namespace())
-    let bind_mount_dirs = ["/dev", "/proc", "/run", "/sys"];
-    let chroot_args = if let Some(target_root) = abs_deployment_path.as_deref() {
-        tracing::debug!("Setting up bind-mounts before chrooting to the target deployment");
-
-        // First off, we bind-mount target on itself, so it becomes a mount point and the chrooted
-        // `findmnt` calls are able to resolve the mount in the chroot
-        // See https://github.com/coreos/bootupd/issues/1051#issuecomment-3768271509 and following comments
-        rustix::mount::mount_bind(target_root.as_std_path(), target_root.as_std_path())?;
-
-        // Mount API filesystems recursively
-        // xref https://systemd.io/API_FILE_SYSTEMS/
-        for src in bind_mount_dirs {
-            let dest = target_root
-                // joining an absolute path
-                // makes it replace self, so we strip the prefix
-                .join_os(src.strip_prefix("/").unwrap());
-            tracing::debug!("bind mounting {} in {}", src, dest.display());
-            // We mount them recursively so nested API FS get carried over
-            rustix::mount::mount_bind_recursive(src, dest)?;
-        }
-
-        // Create a fresh devpts mount inside the chroot that will shadow the
-        // host one to avoid PTY corruption
-        let target_dev_pts = target_root.join("dev/pts");
-        if target_dev_pts.exists() {
-            tracing::debug!("mounting devpts at {}", target_dev_pts);
-            let mount_opts = CString::new("newinstance,ptmxmode=0666,mode=620")?;
-            rustix::mount::mount(
-                c"devpts",
-                target_dev_pts.as_std_path(),
-                c"devpts",
-                MountFlags::NOSUID | MountFlags::NOEXEC,
-                Some(mount_opts.as_c_str()),
-            )?;
-        }
-
-        // Also mount the target /boot inside the chroot
-        let trgt_boot = rootfs.as_std_path().join("boot");
-        let chrooted_boot = target_root.join_os("boot");
-        tracing::debug!(
-            "bind-mounting {} in {}",
-            &trgt_boot.display(),
-            &chrooted_boot.display()
-        );
-        // mounting recursively to get the EFI partition as well
-        rustix::mount::mount_bind_recursive(trgt_boot, chrooted_boot)?;
-
-        // Append the `bootupctl` command, it will be passed as
-        // an argument to chroot
-        vec![target_root.as_str(), "bootupctl"]
-    } else {
-        vec![]
-    };
-
-    let devpath = device.path();
     println!("Installing bootloader via bootupd");
-    let mut bootupctl = if abs_deployment_path.is_some() {
-        Command::new("chroot")
+
+    // Build the bootupctl arguments
+    let mut bootupd_args: Vec<&str> = vec!["backend", "install", "--write-uuid"];
+    if let Some(v) = verbose {
+        bootupd_args.push(v);
+    }
+    if let Some(ref opts) = bootupd_opts {
+        bootupd_args.extend(opts.iter().copied());
+    }
+    bootupd_args.extend(["--device", devpath.as_str(), rootfs_mount]);
+
+    // Run inside a podman container using --rootfs. Podman takes care of
+    // mounting and creating the necessary API filesystems in the target deployment.
+    if let Some(deploy) = deployment_path {
+        let target_root = rootfs.join(deploy);
+        let boot_path = rootfs.join("boot");
+
+        tracing::debug!("Running bootupctl via podman in {}", target_root);
+
+        // Prepend "bootupctl" to the args for podman
+        let mut podman_args = vec!["bootupctl"];
+        podman_args.extend(bootupd_args);
+
+        PodmanCmd::new(target_root.as_str())
+            // Bind mount /boot from the physical target root so bootupctl can find
+            // the boot partition and install the bootloader there
+            .bind(boot_path.as_str(), "/boot")
+            // Bind the target block device so bootupctl can access it
+            .bind_device(devpath.as_str())
+            // Set PATH so we find the required tools
+            .setenv(
+                "PATH",
+                "/bin:/usr/bin:/sbin:/usr/sbin:/usr/local/bin:/usr/local/sbin",
+            )
+            .run(podman_args)
     } else {
+        // Running directly without chroot
         Command::new("bootupctl")
-    };
-    bootupctl
-        .args(chroot_args)
-        // Inject a reasonnable PATH here so we find the required tools
-        // when running chrooted in the deployment. Testing show that
-        // the default $PATH value in the chroot is insufficient.
-        .env(
-            "PATH",
-            "/bin:/usr/bin:/sbin:/usr/sbin:/usr/local/bin:/usr/local/sbin",
-        )
-        .args(["backend", "install", "--write-uuid"])
-        .args(verbose)
-        .args(bootupd_opts.iter().copied().flatten())
-        .args(["--device", devpath.as_str(), rootfs_mount])
-        .log_debug()
-        .run_inherited_with_cmd_context()
+            .args(&bootupd_args)
+            .log_debug()
+            .run_inherited_with_cmd_context()
+    }
 }
 
 #[context("Installing bootloader")]

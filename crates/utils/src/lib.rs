@@ -4,18 +4,22 @@
 //!
 mod command;
 pub use command::*;
-mod path;
-pub use path::*;
 mod iterators;
 pub use iterators::*;
-mod timestamp;
-pub use timestamp::*;
-mod tracing_util;
-pub use tracing_util::*;
+mod nspawn;
+pub use nspawn::*;
+mod path;
+pub use path::*;
+mod podman;
+pub use podman::*;
 /// Re-execute the current process
 pub mod reexec;
 mod result_ext;
 pub use result_ext::*;
+mod timestamp;
+pub use timestamp::*;
+mod tracing_util;
+pub use tracing_util::*;
 
 /// The name of our binary
 pub const NAME: &str = "bootc";
