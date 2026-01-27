@@ -2,6 +2,8 @@
 //! things here that only depend on the standard library and
 //! "core" crates.
 //!
+mod bwrap;
+pub use bwrap::*;
 mod command;
 pub use command::*;
 mod iterators;
@@ -16,6 +18,8 @@ mod result_ext;
 pub use result_ext::*;
 mod timestamp;
 pub use timestamp::*;
+mod nspawn;
+pub use nspawn::*;
 mod tracing_util;
 pub use tracing_util::*;
 

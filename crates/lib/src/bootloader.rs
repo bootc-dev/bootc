@@ -2,7 +2,7 @@ use std::fs::create_dir_all;
 use std::process::Command;
 
 use anyhow::{anyhow, bail, Context, Result};
-use bootc_utils::{CommandRunExt, PodmanCmd};
+use bootc_utils::{BwrapCmd, CommandRunExt};
 use camino::Utf8Path;
 use cap_std_ext::cap_std::fs::Dir;
 use cap_std_ext::dirext::CapStdExtDirExt;
@@ -115,30 +115,38 @@ pub(crate) fn install_via_bootupd(
     }
     bootupd_args.extend(["--device", devpath.as_str(), rootfs_mount]);
 
-    // Run inside a podman container using --rootfs. Podman takes care of
-    // mounting and creating the necessary API filesystems in the target deployment.
+    // Run inside a bwrap container. Bwrap takes care of mounting and creating
+    // the necessary API filesystems in the target deployment.
     if let Some(deploy) = deployment_path {
         let target_root = rootfs.join(deploy);
         let boot_path = rootfs.join("boot");
 
-        tracing::debug!("Running bootupctl via podman in {}", target_root);
+        tracing::debug!("Running bootupctl via bwrap in {}", target_root);
 
-        // Prepend "bootupctl" to the args for podman
-        let mut podman_args = vec!["bootupctl"];
-        podman_args.extend(bootupd_args);
+        // Prepend "bootupctl" to the args for bwrap
+        let mut bwrap_args = vec!["bootupctl"];
+        bwrap_args.extend(bootupd_args);
 
-        PodmanCmd::new(target_root.as_str())
+        let mut cmd = BwrapCmd::new(target_root.as_str())
             // Bind mount /boot from the physical target root so bootupctl can find
             // the boot partition and install the bootloader there
             .bind(boot_path.as_str(), "/boot")
             // Bind the target block device so bootupctl can access it
-            .bind_device(devpath.as_str())
+            .bind_device(devpath.as_str());
+
+        // Also bind all partition devices (e.g., /dev/loop0p1, /dev/loop0p2, etc.)
+        // so that grub2-install and other tools can access them
+        for partition in &device.partitions {
+            cmd = cmd.bind_device(partition.node.as_str());
+        }
+
+        cmd
             // Set PATH so we find the required tools
             .setenv(
                 "PATH",
                 "/bin:/usr/bin:/sbin:/usr/sbin:/usr/local/bin:/usr/local/sbin",
             )
-            .run(podman_args)
+            .run(bwrap_args)
     } else {
         // Running directly without chroot
         Command::new("bootupctl")
