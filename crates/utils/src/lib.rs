@@ -6,8 +6,6 @@ mod command;
 pub use command::*;
 mod iterators;
 pub use iterators::*;
-mod nspawn;
-pub use nspawn::*;
 mod path;
 pub use path::*;
 mod podman;
