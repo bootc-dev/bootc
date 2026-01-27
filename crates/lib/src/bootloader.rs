@@ -134,19 +134,16 @@ pub(crate) fn install_via_bootupd(
             // Bind the target block device so bootupctl can access it
             .bind_device(devpath.as_str());
 
-        // Also bind all partition devices (e.g., /dev/loop0p1, /dev/loop0p2, etc.)
-        // so that grub2-install and other tools can access them
+        // Bind all partition devices so grub2-install can access them
         for partition in &device.partitions {
-            cmd = cmd.bind_device(partition.node.as_str());
+            cmd = cmd.bind_device(&partition.node);
         }
 
-        cmd
-            // Set PATH so we find the required tools
-            .setenv(
-                "PATH",
-                "/bin:/usr/bin:/sbin:/usr/sbin:/usr/local/bin:/usr/local/sbin",
-            )
-            .run(bwrap_args)
+        cmd.setenv(
+            "PATH",
+            "/bin:/usr/bin:/sbin:/usr/sbin:/usr/local/bin:/usr/local/sbin",
+        )
+        .run(bwrap_args)
     } else {
         // Running directly without chroot
         Command::new("bootupctl")
