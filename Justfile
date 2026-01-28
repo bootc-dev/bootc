@@ -105,8 +105,31 @@ test-container: build build-units
 
 # Build and test sealed composefs images
 [group('core')]
-test-composefs:
+test-composefs-sealeduki-sdboot:
     just variant=composefs-sealeduki-sdboot test-tmt readonly local-upgrade-reboot
+
+[group('core')]
+test-composefs bootloader:
+    just variant=composefs test-tmt --composefs-backend --bootloader {{bootloader}} \
+        readonly \
+        bib-build \
+        download-only \
+        image-pushpull-upgrade \
+        image-upgrade-reboot \
+        install-outside-container \
+        install-to-filesystem-var-mount \
+        soft-reboot \
+        usroverlay
+
+# Build and test composefs images booted using Type1 boot entries and systemd-boot as the bootloader
+[group('core')]
+test-composefs-sdboot:
+    just test-composefs systemd
+
+# Build and test composefs images booted using Type1 boot entries and grub as the bootloader
+[group('core')]
+test-composefs-grub:
+    just test-composefs grub
 
 # Run cargo fmt and clippy checks in container
 [group('core')]
@@ -219,6 +242,7 @@ clean-local-images:
     podman images --filter "label={{testimage_label}}" --format "{{{{.ID}}" | xargs -r podman rmi -f
     podman image prune -f
     podman rmi {{fedora-coreos}} -f
+
 
 # Build packages (RPM) into target/packages/
 [group('maintenance')]
