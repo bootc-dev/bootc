@@ -114,6 +114,16 @@ echo "Filesystem layout:"
 mount | grep /var/mnt/target || true
 df -h /var/mnt/target /var/mnt/target/boot /var/mnt/target/boot/efi /var/mnt/target/var
 
+COMPOSEFS_BACKEND=()
+
+is_composefs=$(bootc status --json | jq '.status.booted.composefs')
+
+if [[ $is_composefs != "null" ]]; then
+    COMPOSEFS_BACKEND=("--composefs-backend")
+fi
+
+echo "${COMPOSEFS_BACKEND[@]}"
+
 # Run bootc install to-filesystem from within the container image under test
 podman run \
     --rm --privileged \
@@ -124,6 +134,7 @@ podman run \
     "$TARGET_IMAGE" \
     bootc install to-filesystem \
         --disable-selinux \
+        "${COMPOSEFS_BACKEND[@]}" \
         --karg=root=UUID="$ROOT_UUID" \
         --root-mount-spec=UUID="$ROOT_UUID" \
         --boot-mount-spec=UUID="$BOOT_UUID" \

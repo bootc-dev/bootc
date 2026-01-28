@@ -14,7 +14,7 @@ assert ($opts | any { |o| $o == "ro" }) "/sysroot should be mounted read-only"
 
 let st = bootc status --json | from json
 # Detect composefs by checking if composefs field is present
-let is_composefs = ($st.status.booted.composefs? != null)
+let is_composefs = (tap is_composefs)
 
 assert equal $st.apiVersion org.containers.bootc/v1
 
