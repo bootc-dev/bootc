@@ -29,9 +29,9 @@ use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
 use tracing::instrument;
 
-// Exclude things in https://www.freedesktop.org/wiki/Software/systemd/APIFileSystems/
-// from being placed in the rootfs.
-const EXCLUDED_TOPLEVEL_PATHS: &[&str] = &["run", "tmp", "proc", "sys", "dev"];
+/// Exclude things in https://www.freedesktop.org/wiki/Software/systemd/APIFileSystems/
+/// from being placed in the rootfs.
+pub(crate) const EXCLUDED_TOPLEVEL_PATHS: &[&str] = &["run", "tmp", "proc", "sys", "dev"];
 
 /// Copy a tar entry to a new tar archive, optionally using a different filesystem path.
 #[context("Copying entry")]

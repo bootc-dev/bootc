@@ -39,6 +39,7 @@ pub mod cli;
 pub mod container;
 pub mod container_utils;
 pub mod diff;
+pub mod filesystem;
 pub(crate) mod generic_decompress;
 pub mod ima;
 pub mod keyfileext;

@@ -969,7 +969,13 @@ async fn install_container(
         )
         .await?
     } else {
-        prepare_for_pull(repo, &spec_imgref, Some(&state.target_imgref)).await?
+        prepare_for_pull(
+            repo,
+            &spec_imgref,
+            Some(&state.target_imgref),
+            Some(storage),
+        )
+        .await?
     };
 
     let pulled_image = match prepared {
@@ -2513,6 +2519,7 @@ pub(crate) async fn install_reset(opts: InstallResetOpts) -> Result<()> {
             None,
             opts.quiet,
             prog.clone(),
+            Some(sysroot),
         )
         .await?;
         (fetched, new_spec)

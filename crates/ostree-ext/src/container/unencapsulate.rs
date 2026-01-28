@@ -34,6 +34,8 @@
 use crate::container::store::LayerProgress;
 
 use super::*;
+use anyhow::Context as _;
+use camino::{Utf8Path, Utf8PathBuf};
 use containers_image_proxy::{ImageProxy, OpenedImage};
 use fn_error_context::context;
 use futures_util::{Future, FutureExt};
@@ -183,6 +185,108 @@ pub(crate) async fn join_fetch<T: std::fmt::Debug>(
 pub async fn unencapsulate(repo: &ostree::Repo, imgref: &OstreeImageReference) -> Result<Import> {
     let importer = super::store::ImageImporter::new(repo, imgref, Default::default()).await?;
     importer.unencapsulate().await
+}
+
+/// Try to get the diff path for a layer in containers-storage.
+/// Returns Some(path) if the layer diff directory is available, None to use blob access.
+///
+/// The `storage_root` parameter specifies the containers-storage root directory.
+/// If None, direct filesystem access is not attempted.
+pub(crate) fn try_get_layer_diff_path(
+    storage_root: Option<&Utf8Path>,
+    layer_info: Option<&Vec<containers_image_proxy::ConvertedLayerInfo>>,
+    layer_index: usize,
+    transport_src: Transport,
+) -> Result<Option<Utf8PathBuf>> {
+    match (transport_src, storage_root) {
+        (Transport::ContainerStorage, Some(storage_root)) => {
+            get_layer_diff_path(storage_root, layer_info, layer_index)
+        }
+        _ => Ok(None),
+    }
+}
+
+/// Entry in the overlay-layers/layers.json file
+#[derive(serde::Deserialize, Debug)]
+struct OverlayLayerEntry {
+    /// The directory name under overlay/
+    id: String,
+    /// Uncompressed diff digest (e.g., "sha256:...")
+    #[serde(rename = "diff-digest")]
+    diff_digest: Option<String>,
+    /// Compressed diff digest (e.g., "sha256:...")
+    #[serde(rename = "compressed-diff-digest")]
+    compressed_diff_digest: Option<String>,
+}
+
+/// Look up the overlay directory ID from layers.json given a digest
+fn lookup_layer_id_from_digest(storage_root: &Utf8Path, digest: &str) -> Result<Option<String>> {
+    let layers_json_path = storage_root.join("overlay-layers/layers.json");
+
+    let file = match std::fs::File::open(&layers_json_path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(None);
+        }
+        Err(e) => return Err(anyhow::Error::new(e).context("Failed to open layers.json")),
+    };
+
+    let reader = std::io::BufReader::new(file);
+    let layers: Vec<OverlayLayerEntry> =
+        serde_json::from_reader(reader).context("Failed to parse layers.json")?;
+
+    // Search for matching digest in both diff-digest and compressed-diff-digest
+    for layer in &layers {
+        let matches = layer.diff_digest.as_deref() == Some(digest)
+            || layer.compressed_diff_digest.as_deref() == Some(digest);
+        if matches {
+            return Ok(Some(layer.id.clone()));
+        }
+    }
+
+    Ok(None)
+}
+
+/// Get the diff directory path for a layer in containers-storage
+fn get_layer_diff_path(
+    storage_root: &Utf8Path,
+    layer_info: Option<&Vec<containers_image_proxy::ConvertedLayerInfo>>,
+    layer_index: usize,
+) -> Result<Option<Utf8PathBuf>> {
+    let Some(info) = layer_info else {
+        return Ok(None);
+    };
+
+    let Some(layer) = info.get(layer_index) else {
+        return Ok(None);
+    };
+
+    // Get the digest string (includes "sha256:" prefix)
+    let digest_str = layer.digest.to_string();
+
+    // Look up the layer ID from layers.json
+    let Some(layer_id) = lookup_layer_id_from_digest(storage_root, &digest_str)? else {
+        return Ok(None);
+    };
+
+    // Check if this is a composefs layer (not supported yet)
+    let composefs_blob_path = storage_root.join(format!(
+        "overlay/{}/composefs-data/composefs.blob",
+        layer_id
+    ));
+    if composefs_blob_path.exists() {
+        return Ok(None);
+    }
+
+    // Construct the layer diff path: $STORAGE/overlay/$LAYER_ID/diff
+    let layer_diff_path = storage_root.join(format!("overlay/{}/diff", layer_id));
+
+    // Check if the layer diff directory exists and is a directory
+    if !layer_diff_path.is_dir() {
+        return Ok(None);
+    }
+
+    Ok(Some(layer_diff_path))
 }
 
 /// A wrapper for [`get_blob`] which fetches a layer and decompresses it.

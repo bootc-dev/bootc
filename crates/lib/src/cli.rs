@@ -1047,7 +1047,7 @@ async fn upgrade(
             crate::deploy::pull_unified(repo, imgref, None, opts.quiet, prog.clone(), storage)
                 .await?
         } else {
-            crate::deploy::pull(repo, imgref, None, opts.quiet, prog.clone()).await?
+            crate::deploy::pull(repo, imgref, None, opts.quiet, prog.clone(), Some(storage)).await?
         };
         let staged_digest = staged_image.map(|s| s.digest().expect("valid digest in status"));
         let fetched_digest = &fetched.manifest_digest;
@@ -1210,7 +1210,7 @@ async fn switch_ostree(
     let fetched = if use_unified {
         crate::deploy::pull_unified(repo, &target, None, opts.quiet, prog.clone(), storage).await?
     } else {
-        crate::deploy::pull(repo, &target, None, opts.quiet, prog.clone()).await?
+        crate::deploy::pull(repo, &target, None, opts.quiet, prog.clone(), Some(storage)).await?
     };
 
     if !opts.retain {
@@ -1347,7 +1347,15 @@ async fn edit_ostree(
         return crate::deploy::rollback(storage).await;
     }
 
-    let fetched = crate::deploy::pull(repo, new_spec.image, None, opts.quiet, prog.clone()).await?;
+    let fetched = crate::deploy::pull(
+        repo,
+        new_spec.image,
+        None,
+        opts.quiet,
+        prog.clone(),
+        Some(storage),
+    )
+    .await?;
 
     // TODO gc old layers here
 

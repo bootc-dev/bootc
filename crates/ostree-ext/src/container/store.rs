@@ -187,6 +187,8 @@ pub struct ImageImporter {
     offline: bool,
     /// If true, we have ostree v2024.3 or newer.
     ostree_v2024_3: bool,
+    /// Optional containers-storage root path for direct access to the layer content
+    storage_root: Option<Utf8PathBuf>,
 
     layer_progress: Option<Sender<ImportProgress>>,
     layer_byte_progress: Option<tokio::sync::watch::Sender<Option<LayerProgress>>>,
@@ -530,6 +532,7 @@ impl ImageImporter {
             disable_gc: false,
             require_bootable: false,
             offline: false,
+            storage_root: None,
             imgref: imgref.clone(),
             layer_progress: None,
             layer_byte_progress: None,
@@ -566,6 +569,13 @@ impl ImageImporter {
     /// Do not prune image layers.
     pub fn disable_gc(&mut self) {
         self.disable_gc = true;
+    }
+
+    /// Set the containers-storage root path for direct access to the layer content.
+    /// When set, layers will be imported directly from the layer diff directory
+    /// instead of being streamed through the proxy.
+    pub fn set_storage_root(&mut self, path: impl Into<Utf8PathBuf>) {
+        self.storage_root = Some(path.into());
     }
 
     /// Determine if there is a new manifest, and if so return its digest.
@@ -1120,16 +1130,6 @@ impl ImageImporter {
                     p.send(ImportProgress::DerivedLayerStarted(layer.layer.clone()))
                         .await?;
                 }
-                let (blob, driver, media_type) = super::unencapsulate::fetch_layer(
-                    &proxy,
-                    &import.proxy_img,
-                    &import.manifest,
-                    &layer.layer,
-                    self.layer_byte_progress.as_ref(),
-                    des_layers.as_ref(),
-                    self.imgref.imgref.transport,
-                )
-                .await?;
                 // An important aspect of this is that we SELinux label the derived layers using
                 // the base policy.
                 let opts = crate::tar::WriteTarOptions {
@@ -1138,16 +1138,61 @@ impl ImageImporter {
                     allow_nonusr: root_is_transient,
                     retain_var: self.ostree_v2024_3,
                 };
-                let r = crate::tar::write_tar(
-                    &self.repo,
-                    blob,
-                    media_type,
-                    layer.ostree_ref.as_str(),
-                    Some(opts),
+
+                let layer_index = import
+                    .manifest
+                    .layers()
+                    .iter()
+                    .position(|x| x == &layer.layer)
+                    .ok_or_else(|| {
+                        anyhow!("Layer {} not found in manifest", layer.layer.digest())
+                    })?;
+                tracing::debug!(
+                    "Processing layer {}: digest={}, ostree_ref={}, transport={:?}",
+                    layer_index,
+                    layer.layer.digest(),
+                    layer.ostree_ref,
+                    self.imgref.imgref.transport
                 );
-                let r = super::unencapsulate::join_fetch(r, driver)
-                    .await
-                    .with_context(|| format!("Parsing layer blob {}", layer.layer.digest()))?;
+                let layer_diff_path = super::unencapsulate::try_get_layer_diff_path(
+                    self.storage_root.as_deref(),
+                    des_layers.as_ref(),
+                    layer_index,
+                    self.imgref.imgref.transport,
+                )?;
+
+                let r = if let Some(ref path) = layer_diff_path {
+                    tracing::info!("Importing layer {} from filesystem: {}", layer_index, path);
+                    Self::import_layer_from_filesystem(&self.repo, path, &layer.ostree_ref, &opts)
+                        .await?
+                } else {
+                    // Fall back to blob access
+                    let (blob, driver, media_type) = super::unencapsulate::fetch_layer(
+                        &proxy,
+                        &import.proxy_img,
+                        &import.manifest,
+                        &layer.layer,
+                        self.layer_byte_progress.as_ref(),
+                        des_layers.as_ref(),
+                        self.imgref.imgref.transport,
+                    )
+                    .await?;
+                    tracing::debug!(
+                        "Importing layer {} from tar stream, media_type={:?}",
+                        layer_index,
+                        media_type
+                    );
+                    let r = crate::tar::write_tar(
+                        &self.repo,
+                        blob,
+                        media_type,
+                        layer.ostree_ref.as_str(),
+                        Some(opts),
+                    );
+                    super::unencapsulate::join_fetch(r, driver)
+                        .await
+                        .with_context(|| format!("Parsing layer blob {}", layer.layer.digest()))?
+                };
                 tracing::debug!("Imported layer: {}", r.commit.as_str());
                 layer_commits.push(r.commit);
                 let filtered_owned = HashMap::from_iter(r.filtered.clone());
@@ -1232,6 +1277,55 @@ impl ImageImporter {
         state.verify_text = import.verify_text;
         state.filtered_files = layer_filtered_content;
         Ok(state)
+    }
+
+    /// Import a layer directly from filesystem path instead of tar stream.
+    /// This directly walks the filesystem and writes content objects to OSTree,
+    /// applying path transformations (e.g., /etc -> /usr/etc).
+    async fn import_layer_from_filesystem(
+        repo: &ostree::Repo,
+        layer_path: &Utf8Path,
+        target_ref: &str,
+        options: &crate::tar::WriteTarOptions,
+    ) -> Result<crate::tar::WriteTarResult> {
+        tracing::info!(
+            "import_layer_from_filesystem: layer_path={}, target_ref={}",
+            layer_path,
+            target_ref
+        );
+
+        let config = crate::filesystem::FilesystemFilterConfig::from_tar_options(options);
+        let repo = repo.clone();
+        let layer_path = layer_path.to_owned();
+        let target_ref = target_ref.to_string();
+
+        // Run the synchronous import in a blocking task
+        let result = {
+            let repo = repo.clone();
+            crate::tokio_util::spawn_blocking_flatten(move || {
+                crate::filesystem::import_filesystem_to_ostree(&repo, &layer_path, &config)
+            })
+            .await?
+        };
+
+        // Cache the layer by setting the ref (matching write_tar behavior)
+        {
+            let target_ref = target_ref.clone();
+            let commit = result.commit.clone();
+            crate::tokio_util::spawn_blocking_flatten(move || {
+                repo.set_ref_immediate(None, &target_ref, Some(&commit), gio::Cancellable::NONE)?;
+                Ok::<_, anyhow::Error>(())
+            })
+            .await?;
+        }
+
+        tracing::info!(
+            "Successfully imported layer from filesystem: commit={}, ref={}",
+            result.commit,
+            target_ref
+        );
+
+        Ok(result)
     }
 }
 

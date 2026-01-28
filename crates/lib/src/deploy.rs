@@ -380,6 +380,7 @@ pub(crate) async fn prepare_for_pull(
     repo: &ostree::Repo,
     imgref: &ImageReference,
     target_imgref: Option<&OstreeImageReference>,
+    _store: Option<&Storage>,
 ) -> Result<PreparedPullResult> {
     let imgref_canonicalized = imgref.clone().canonicalize()?;
     tracing::debug!("Canonicalized image reference: {imgref_canonicalized:#}");
@@ -387,6 +388,13 @@ pub(crate) async fn prepare_for_pull(
     let mut imp = new_importer(repo, ostree_imgref).await?;
     if let Some(target) = target_imgref {
         imp.set_target(target);
+    }
+
+    // Set storage root for direct access to the layer content when using containers-storage.
+    // For regular pulls, images come from the host's default container storage.
+    if ostree_imgref.imgref.transport == ostree_container::Transport::ContainerStorage {
+        let storage_path = format!("{}/storage", crate::podman::CONTAINER_STORAGE);
+        imp.set_storage_root(storage_path);
     }
     let prep = match imp.prepare().await? {
         PrepareResult::AlreadyPresent(c) => {
@@ -484,6 +492,8 @@ pub(crate) async fn prepare_for_pull_unified(
 
     // Use the preparation flow with the custom config
     let mut imp = new_importer_with_config(repo, &ostree_imgref, config).await?;
+    // Set storage root for direct access to the layer content
+    imp.set_storage_root(&storage_path);
     if let Some(target) = target_imgref {
         imp.set_target(target);
     }
@@ -642,8 +652,9 @@ pub(crate) async fn pull(
     target_imgref: Option<&OstreeImageReference>,
     quiet: bool,
     prog: ProgressWriter,
+    store: Option<&Storage>,
 ) -> Result<Box<ImageState>> {
-    match prepare_for_pull(repo, imgref, target_imgref).await? {
+    match prepare_for_pull(repo, imgref, target_imgref, store).await? {
         PreparedPullResult::AlreadyPresent(existing) => {
             // Log that the image was already present (Debug level since it's not actionable)
             const IMAGE_ALREADY_PRESENT_ID: &str = "5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9";
