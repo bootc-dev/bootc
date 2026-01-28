@@ -34,7 +34,8 @@ WORKDIR /src
 # We aren't using the full recommendations there, just the simple bits.
 # First we download all of our Rust dependencies
 # Note: Local path dependencies (from [patch] sections) are auto-detected and bind-mounted by the Justfile
-RUN --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp --mount=type=cache,target=/src/target --mount=type=cache,target=/var/roothome cargo fetch
+RUN --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp --mount=type=cache,target=/src/target --mount=type=cache,target=/var/roothome \
+    rm -rf /var/roothome/.cargo/registry; cargo fetch
 
 # We always do a "from scratch" build
 # https://docs.fedoraproject.org/en-US/bootc/building-from-scratch/
