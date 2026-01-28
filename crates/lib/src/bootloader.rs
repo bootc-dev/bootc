@@ -1,7 +1,7 @@
 use std::fs::create_dir_all;
 use std::process::Command;
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use bootc_utils::{BwrapCmd, CommandRunExt};
 use camino::Utf8Path;
 use cap_std_ext::cap_std::fs::Dir;
@@ -11,7 +11,7 @@ use fn_error_context::context;
 use bootc_blockdev::{Partition, PartitionTable};
 use bootc_mount as mount;
 
-use crate::bootc_composefs::boot::{get_sysroot_parent_dev, mount_esp, SecurebootKeys};
+use crate::bootc_composefs::boot::{SecurebootKeys, get_sysroot_parent_dev, mount_esp};
 use crate::{discoverable_partition_specification, utils};
 
 /// The name of the mountpoint for efi (as a subdirectory of /boot, or at the toplevel)
@@ -91,12 +91,11 @@ pub(crate) fn install_via_bootupd(
     // bootc defaults to only targeting the platform boot method.
     let bootupd_opts = (!configopts.generic_image).then_some(["--update-firmware", "--auto"]);
 
-    let devpath = device.path();
-
     // When not running inside the target container (through `--src-imgref`) we use
-    // systemd-nspawn to run bootupctl in the deployment.
+    // will bwrap as a chroot to run bootupctl from the deployment.
     // This makes sure we use binaries from the target image rather than the buildroot.
-
+    // In that case, the target rootfs is replaced with `/` because this is just used by
+    // bootupd to find the backing device.
     let rootfs_mount = if deployment_path.is_none() {
         rootfs.as_str()
     } else {
@@ -110,13 +109,15 @@ pub(crate) fn install_via_bootupd(
     if let Some(v) = verbose {
         bootupd_args.push(v);
     }
+
     if let Some(ref opts) = bootupd_opts {
         bootupd_args.extend(opts.iter().copied());
     }
-    bootupd_args.extend(["--device", devpath.as_str(), rootfs_mount]);
+    bootupd_args.extend(["--device", device.path().as_str(), rootfs_mount]);
 
-    // Run inside a bwrap container. Bwrap takes care of mounting and creating
-    // the necessary API filesystems in the target deployment.
+    // Run inside a bwrap container. It takes care of mounting and creating
+    // the necessary API filesystems in the target deployment and acts as
+    // a nicer `chroot`.
     if let Some(deploy) = deployment_path {
         let target_root = rootfs.join(deploy);
         let boot_path = rootfs.join("boot");
@@ -131,19 +132,19 @@ pub(crate) fn install_via_bootupd(
             // Bind mount /boot from the physical target root so bootupctl can find
             // the boot partition and install the bootloader there
             .bind(boot_path.as_str(), "/boot")
-            // Bind the target block device so bootupctl can access it
-            .bind_device(devpath.as_str());
+            // Bind the target block device inside the bwrap container so bootupctl can access it
+            .bind_device(device.path().as_str());
 
-        // Bind all partition devices so grub2-install can access them
+        // Also bind all partitions of the tafet block device
         for partition in &device.partitions {
             cmd = cmd.bind_device(&partition.node);
         }
-
-        cmd.setenv(
-            "PATH",
-            "/bin:/usr/bin:/sbin:/usr/sbin:/usr/local/bin:/usr/local/sbin",
-        )
-        .run(bwrap_args)
+        // // TODO : is it needed ?
+        // cmd.setenv(
+        //     "PATH",
+        //     "/bin:/usr/bin:/sbin:/usr/sbin:/usr/local/bin:/usr/local/sbin",
+        // )
+        cmd.run(bwrap_args)
     } else {
         // Running directly without chroot
         Command::new("bootupctl")

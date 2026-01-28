@@ -11,7 +11,6 @@ repository = "https://github.com/bootc-dev/bootc"
 anstream = { workspace = true }
 anyhow = { workspace = true }
 chrono = { workspace = true, features = ["std"] }
-fn-error-context = { workspace = true }
 owo-colors = { workspace = true }
 rustix = { workspace = true }
 serde = { workspace = true, features = ["derive"] }

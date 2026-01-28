@@ -1,31 +1,15 @@
-//! Builder for running commands inside a container using bubblewrap (bwrap).
-//!
-//! This provides namespace isolation for running commands in a target
-//! root filesystem, handling API filesystem setup (/dev, /proc, /sys)
-//! automatically.
-
+/// Builder for running commands inside a target os tree using bubblewrap (bwrap).
 use std::ffi::OsStr;
 use std::process::Command;
 
 use anyhow::Result;
-use fn_error_context::context;
 
 use crate::CommandRunExt;
 
-/// Builder for running commands inside a container using bubblewrap (bwrap).
-///
-/// # Example
-/// ```ignore
-/// use bootc_utils::BwrapCmd;
-///
-/// BwrapCmd::new("/path/to/rootfs")
-///     .bind("/host/boot", "/boot")
-///     .bind_device("/dev/sda")
-///     .run(&["grub2-install", "/dev/sda"])?;
-/// ```
+/// Builder for running commands inside a target directory using bwrap.
 #[derive(Debug, Default)]
 pub struct BwrapCmd<'a> {
-    /// The root directory for the container
+    /// The target directory to use as root for the container
     chroot_path: &'a str,
     /// Bind mounts in format (source, target)
     bind_mounts: Vec<(&'a str, &'a str)>,
@@ -63,7 +47,6 @@ impl<'a> BwrapCmd<'a> {
     }
 
     /// Run the specified command inside the container.
-    #[context("Running command in bwrap container")]
     pub fn run<S: AsRef<OsStr>>(self, args: impl IntoIterator<Item = S>) -> Result<()> {
         let mut cmd = Command::new("bwrap");
 

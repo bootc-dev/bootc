@@ -195,7 +195,6 @@ dependencies = [
  "anstream",
  "anyhow",
  "chrono",
- "fn-error-context",
  "owo-colors",
  "rustix",
  "serde",
