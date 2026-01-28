@@ -73,10 +73,11 @@ jobs:
           just copy-to-rootful localhost/bootc-install
           # Copy bound images (LBI) to root's storage for tests that need them
           just copy-lbi-to-rootful
-          sudo podman build -t localhost/bootc-fsverity -f ci/Containerfile.install-fsverity
 
-          # TODO move into a container, and then have this tool run other containers
+          # Build test binaries before any sudo commands to avoid cargo permission issues
           cargo build --release -p tests-integration
+
+          sudo podman build -t localhost/bootc-fsverity -f ci/Containerfile.install-fsverity
 
           df -h /
           sudo install -m 0755 target/release/tests-integration /usr/bin/bootc-integration-tests
