@@ -5,13 +5,14 @@
 //! end up as a lot of nontrivial bash code.
 
 use std::borrow::Cow;
+use std::fmt::Display;
 use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::process::Command;
 
 use anyhow::{Context, Result};
 use camino::{Utf8Path, Utf8PathBuf};
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use fn_error_context::context;
 use xshell::{Shell, cmd};
 
@@ -76,6 +77,25 @@ pub(crate) struct LocalRustDepsArgs {
     pub(crate) format: String,
 }
 
+/// Bootloader passed as --bootloader param for composefs builds
+// TODO: Find a better way to share this Enum between this and crates/lib
+#[derive(Debug, Clone, ValueEnum)]
+pub enum Bootloader {
+    /// grub as bootloader
+    Grub,
+    /// systemd-boot as bootloader
+    Systemd,
+}
+
+impl Display for Bootloader {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Bootloader::Grub => f.write_str("grub"),
+            Bootloader::Systemd => f.write_str("systemd"),
+        }
+    }
+}
+
 /// Arguments for run-tmt command
 #[derive(Debug, Args)]
 pub(crate) struct RunTmtArgs {
@@ -101,6 +121,12 @@ pub(crate) struct RunTmtArgs {
     /// Preserve VMs after test completion (useful for debugging)
     #[arg(long)]
     pub(crate) preserve_vm: bool,
+
+    #[arg(long)]
+    pub(crate) composefs_backend: bool,
+
+    #[arg(long, requires = "composefs_backend")]
+    pub(crate) bootloader: Option<Bootloader>,
 }
 
 /// Arguments for tmt-provision command
