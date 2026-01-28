@@ -13,3 +13,8 @@ export def ok [] {
 export def fail [] {
   print "not ok"
 }
+
+export def is_composefs [] {
+    let st = bootc status --json | from json
+    $st.status.booted.composefs? != null
+}

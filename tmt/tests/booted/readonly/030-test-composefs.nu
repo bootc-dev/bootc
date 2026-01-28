@@ -9,7 +9,7 @@ def parse_cmdline []  {
 
 # Detect composefs by checking if composefs field is present
 let st = bootc status --json | from json
-let is_composefs = ($st.status.booted.composefs? != null)
+let is_composefs = (tap is_composefs)
 let expecting_composefs = ($env.BOOTC_variant? | default "" | find "composefs") != null
 if $expecting_composefs {
     assert $is_composefs

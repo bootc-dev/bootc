@@ -8,7 +8,7 @@ tap begin "verify bootc wrapping ostree-ext"
 # Parse the status and get the booted image
 let st = bootc status --json | from json
 # Detect composefs by checking if composefs field is present
-let is_composefs = ($st.status.booted.composefs? != null)
+let is_composefs = (tap is_composefs)
 if $is_composefs {
     print "# TODO composefs: skipping test - ostree-container commands don't work with composefs"
 } else {
