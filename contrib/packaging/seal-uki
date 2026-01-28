@@ -12,15 +12,7 @@ shift
 secrets=$1
 shift
 
-# Compute the composefs digest from the target rootfs
-composefs_digest=$(bootc container compute-composefs-digest "${target}")
-
-# Build the kernel command line
-# enforcing=0: https://github.com/bootc-dev/bootc/issues/1826
-# TODO: pick up kargs from /usr/lib/bootc/kargs.d
-cmdline="composefs=${composefs_digest} console=ttyS0,115200n8 console=hvc0 enforcing=0 rw"
-
-# Find the kernel version
+# Find the kernel version (needed for output filename)
 kver=$(bootc container inspect --rootfs "${target}" --json | jq -r '.kernel.version')
 if [ -z "$kver" ] || [ "$kver" = "null" ]; then
   echo "Error: No kernel found" >&2
@@ -29,12 +21,14 @@ fi
 
 mkdir -p "${output}"
 
-ukify build \
-  --linux "${target}/usr/lib/modules/${kver}/vmlinuz" \
-  --initrd "${target}/usr/lib/modules/${kver}/initramfs.img" \
-  --uname="${kver}" \
-  --cmdline "${cmdline}" \
-  --os-release "@${target}/usr/lib/os-release" \
+# Build the UKI using bootc container ukify
+# This computes the composefs digest, reads kargs from kargs.d, and invokes ukify
+#
+# WORKAROUND: SELinux must be permissive for sealed UKI boot
+# See https://github.com/bootc-dev/bootc/issues/1826
+bootc container ukify --rootfs "${target}" \
+  --karg enforcing=0 \
+  -- \
   --signtool sbsign \
   --secureboot-private-key "${secrets}/secureboot_key" \
   --secureboot-certificate "${secrets}/secureboot_cert" \

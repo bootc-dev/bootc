@@ -7,6 +7,7 @@
 use std::path::Path;
 
 use anyhow::Result;
+use camino::Utf8PathBuf;
 use cap_std_ext::cap_std::fs::Dir;
 use cap_std_ext::dirext::CapStdExtDirExt;
 use serde::Serialize;
@@ -25,6 +26,28 @@ pub(crate) struct Kernel {
     pub(crate) unified: bool,
 }
 
+/// Internal-only kernel wrapper with extra information (paths to
+/// vmlinuz, initramfs) that are useful but we don't want to leak out
+/// via serialization to inspection.
+///
+/// `Kernel` implements `From<KernelInternal>` so we can just `.into()`
+/// to get the "public" form where needed.
+pub(crate) struct KernelInternal {
+    pub(crate) kernel: Kernel,
+    /// Path to vmlinuz for traditional kernels.
+    /// This is `None` for UKI images.
+    pub(crate) vmlinuz: Option<Utf8PathBuf>,
+    /// Path to initramfs.img for traditional kernels.
+    /// This is `None` for UKI images.
+    pub(crate) initramfs: Option<Utf8PathBuf>,
+}
+
+impl From<KernelInternal> for Kernel {
+    fn from(kernel_internal: KernelInternal) -> Self {
+        kernel_internal.kernel
+    }
+}
+
 /// Find the kernel in a container image root directory.
 ///
 /// This function first attempts to find a UKI in `/boot/EFI/Linux/*.efi`.
@@ -32,28 +55,38 @@ pub(crate) struct Kernel {
 /// layout with `/usr/lib/modules/<version>/vmlinuz`.
 ///
 /// Returns `None` if no kernel is found.
-pub(crate) fn find_kernel(root: &Dir) -> Result<Option<Kernel>> {
+pub(crate) fn find_kernel(root: &Dir) -> Result<Option<KernelInternal>> {
     // First, try to find a UKI
     if let Some(uki_filename) = find_uki_filename(root)? {
         let version = uki_filename
             .strip_suffix(".efi")
             .unwrap_or(&uki_filename)
             .to_owned();
-        return Ok(Some(Kernel {
-            version,
-            unified: true,
+        return Ok(Some(KernelInternal {
+            kernel: Kernel {
+                version,
+                unified: true,
+            },
+            vmlinuz: None,
+            initramfs: None,
         }));
     }
 
     // Fall back to checking for a traditional kernel via ostree_ext
-    if let Some(kernel_dir) = ostree_ext::bootabletree::find_kernel_dir_fs(root)? {
-        let version = kernel_dir
+    if let Some(modules_dir) = ostree_ext::bootabletree::find_kernel_dir_fs(root)? {
+        let version = modules_dir
             .file_name()
-            .ok_or_else(|| anyhow::anyhow!("kernel dir should have a file name: {kernel_dir}"))?
+            .ok_or_else(|| anyhow::anyhow!("kernel dir should have a file name: {modules_dir}"))?
             .to_owned();
-        return Ok(Some(Kernel {
-            version,
-            unified: false,
+        let vmlinuz = modules_dir.join("vmlinuz");
+        let initramfs = modules_dir.join("initramfs.img");
+        return Ok(Some(KernelInternal {
+            kernel: Kernel {
+                version,
+                unified: false,
+            },
+            vmlinuz: Some(vmlinuz),
+            initramfs: Some(initramfs),
         }));
     }
 
@@ -93,6 +126,7 @@ fn find_uki_filename(root: &Dir) -> Result<Option<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use camino::Utf8Path;
     use cap_std_ext::{cap_std, cap_tempfile, dirext::CapStdExtDirExt};
 
     #[test]
@@ -111,9 +145,21 @@ mod tests {
             b"fake kernel",
         )?;
 
-        let kernel = find_kernel(&tempdir)?.expect("should find kernel");
-        assert_eq!(kernel.version, "6.12.0-100.fc41.x86_64");
-        assert!(!kernel.unified);
+        let kernel_internal = find_kernel(&tempdir)?.expect("should find kernel");
+        assert_eq!(kernel_internal.kernel.version, "6.12.0-100.fc41.x86_64");
+        assert!(!kernel_internal.kernel.unified);
+        assert_eq!(
+            kernel_internal.vmlinuz.as_deref(),
+            Some(Utf8Path::new(
+                "usr/lib/modules/6.12.0-100.fc41.x86_64/vmlinuz"
+            ))
+        );
+        assert_eq!(
+            kernel_internal.initramfs.as_deref(),
+            Some(Utf8Path::new(
+                "usr/lib/modules/6.12.0-100.fc41.x86_64/initramfs.img"
+            ))
+        );
         Ok(())
     }
 
@@ -123,9 +169,11 @@ mod tests {
         tempdir.create_dir_all("boot/EFI/Linux")?;
         tempdir.atomic_write("boot/EFI/Linux/fedora-6.12.0.efi", b"fake uki")?;
 
-        let kernel = find_kernel(&tempdir)?.expect("should find kernel");
-        assert_eq!(kernel.version, "fedora-6.12.0");
-        assert!(kernel.unified);
+        let kernel_internal = find_kernel(&tempdir)?.expect("should find kernel");
+        assert_eq!(kernel_internal.kernel.version, "fedora-6.12.0");
+        assert!(kernel_internal.kernel.unified);
+        assert!(kernel_internal.vmlinuz.is_none());
+        assert!(kernel_internal.initramfs.is_none());
         Ok(())
     }
 
@@ -141,10 +189,10 @@ mod tests {
         tempdir.create_dir_all("boot/EFI/Linux")?;
         tempdir.atomic_write("boot/EFI/Linux/fedora-6.12.0.efi", b"fake uki")?;
 
-        let kernel = find_kernel(&tempdir)?.expect("should find kernel");
+        let kernel_internal = find_kernel(&tempdir)?.expect("should find kernel");
         // UKI should take precedence
-        assert_eq!(kernel.version, "fedora-6.12.0");
-        assert!(kernel.unified);
+        assert_eq!(kernel_internal.kernel.version, "fedora-6.12.0");
+        assert!(kernel_internal.kernel.unified);
         Ok(())
     }
 

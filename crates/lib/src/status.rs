@@ -863,7 +863,7 @@ pub(crate) fn container_inspect(
     )?;
     let kargs = crate::bootc_kargs::get_kargs_in_root(&root, std::env::consts::ARCH)?;
     let kargs: Vec<String> = kargs.iter_str().map(|s| s.to_owned()).collect();
-    let kernel = crate::kernel::find_kernel(&root)?;
+    let kernel = crate::kernel::find_kernel(&root)?.map(Into::into);
     let inspect = crate::spec::ContainerInspect { kargs, kernel };
 
     // Determine output format: explicit --format wins, then --json, then default to human-readable

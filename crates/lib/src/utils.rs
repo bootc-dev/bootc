@@ -67,7 +67,6 @@ pub(crate) fn find_mount_option<'a>(
         .next()
 }
 
-#[allow(dead_code)]
 pub fn have_executable(name: &str) -> Result<bool> {
     let Some(path) = std::env::var_os("PATH") else {
         return Ok(false);

@@ -1587,7 +1587,7 @@ async fn prepare_install(
 
     let composefs_required = if let Some(root) = target_rootfs.as_ref() {
         crate::kernel::find_kernel(root)?
-            .map(|k| k.unified)
+            .map(|k| k.kernel.unified)
             .unwrap_or(false)
     } else {
         false

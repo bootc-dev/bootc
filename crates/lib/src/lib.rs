@@ -93,6 +93,7 @@ pub mod spec;
 mod status;
 mod store;
 mod task;
+mod ukify;
 mod utils;
 
 #[cfg(feature = "docgen")]

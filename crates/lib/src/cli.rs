@@ -392,6 +392,29 @@ pub(crate) enum ContainerOpts {
         /// Identifier for image; if not provided, the running image will be used.
         image: Option<String>,
     },
+    /// Build a Unified Kernel Image (UKI) using ukify.
+    ///
+    /// This command computes the necessary arguments from the container image
+    /// (kernel, initrd, cmdline, os-release) and invokes ukify with them.
+    /// Any additional arguments after `--` are passed through to ukify unchanged.
+    ///
+    /// Example:
+    ///   bootc container ukify --rootfs /target -- --output /output/uki.efi
+    Ukify {
+        /// Operate on the provided rootfs.
+        #[clap(long, default_value = "/")]
+        rootfs: Utf8PathBuf,
+
+        /// Additional kernel arguments to append to the cmdline.
+        /// Can be specified multiple times.
+        /// This is a temporary workaround and will be removed.
+        #[clap(long = "karg", hide = true)]
+        kargs: Vec<String>,
+
+        /// Additional arguments to pass to ukify (after `--`).
+        #[clap(last = true)]
+        args: Vec<OsString>,
+    },
 }
 
 /// Subcommands which operate on images.
@@ -1598,6 +1621,11 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
 
                 Ok(())
             }
+            ContainerOpts::Ukify {
+                rootfs,
+                kargs,
+                args,
+            } => crate::ukify::build_ukify(&rootfs, &kargs, &args),
         },
         Opt::Completion { shell } => {
             use clap_complete::aot::generate;
