@@ -14,7 +14,8 @@ runs:
       run: |
         set -xeuo pipefail
         sudo df -h
-        unwanted_pkgs=('^aspnetcore-.*' '^dotnet-.*' '^llvm-.*' 'php.*' '^mongodb-.*' '^mysql-.*'
+        # Use globs for package patterns (apt and dpkg both support fnmatch globs)
+        unwanted_pkgs=('aspnetcore-*' 'dotnet-*' 'llvm-*' 'php*' 'mongodb-*' 'mysql-*'
                        azure-cli google-chrome-stable firefox mono-devel)
         unwanted_dirs=(/usr/share/dotnet /opt/ghc /usr/local/lib/android /opt/hostedtoolcache/CodeQL)
         # Start background removal operations as systemd units; if this causes
@@ -30,9 +31,12 @@ runs:
         for x in ${unwanted_dirs[@]}; do
           runcleanup rm -rf "$x"
         done
-        # Apt removals in foreground, as we can't parallelize these
+        # Apt removals in foreground, as we can't parallelize these.
+        # Only attempt removal if matching packages are installed.
         for x in ${unwanted_pkgs[@]}; do
-          /bin/time -f '%E %C' sudo apt-get remove -y $x
+          if dpkg -l "$x" >/dev/null 2>&1; then
+            /bin/time -f '%E %C' sudo apt-get remove -y "$x"
+          fi
         done
     # We really want support for heredocs
     - name: Update podman and install just

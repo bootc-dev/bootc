@@ -13,9 +13,14 @@
   },
   "features": {},
   "runArgs": [
-    // Because we want to be able to run podman and also use e.g. /dev/kvm
-    // among other things
-    "--privileged"
+    // Minimal security options for nested podman (avoids --privileged):
+    // - label=disable: Required for mounting /proc in nested user namespace
+    // - unmask=/proc/*: Allows access to /proc paths needed for nested containers
+    "--security-opt", "label=disable",
+    "--security-opt", "unmask=/proc/*",
+    // Device access for nested containers and VMs
+    "--device", "/dev/net/tun",
+    "--device", "/dev/kvm"
   ],
   "postCreateCommand": {
     // Our init script
