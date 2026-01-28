@@ -29,6 +29,8 @@ const ENV_BOOTC_UPGRADE_IMAGE: &str = "BOOTC_upgrade_image";
 // Distro identifiers
 const DISTRO_CENTOS_9: &str = "centos-9";
 
+const COMPOSEFS_KERNEL_ARGS: [&str; 1] = ["--karg=enforcing=0"];
+
 // Import the argument types from xtask.rs
 use crate::{RunTmtArgs, TmtProvisionArgs};
 
@@ -430,6 +432,19 @@ pub(crate) fn run_tmt(sh: &Shell, args: &RunTmtArgs) -> Result<()> {
                     opts.push("--filesystem=xfs".to_string());
                 }
             }
+
+            if args.composefs_backend {
+                // TODO(Johan-Liebert1): Filesystem should be a parameter and we should test
+                // insecure with xfs
+                opts.push("--filesystem=ext4".into());
+                opts.push("--composefs-backend".into());
+                opts.extend(COMPOSEFS_KERNEL_ARGS.map(|x| x.into()));
+            }
+
+            if let Some(b) = &args.bootloader {
+                opts.push(format!("--bootloader={b}"));
+            }
+
             opts
         };
 
