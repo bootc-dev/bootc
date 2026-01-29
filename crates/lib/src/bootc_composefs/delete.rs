@@ -1,15 +1,13 @@
-use std::{collections::HashSet, io::Write, path::Path};
+use std::{io::Write, path::Path};
 
 use anyhow::{Context, Result};
 use cap_std_ext::{cap_std::fs::Dir, dirext::CapStdExtDirExt};
-use composefs::fsverity::Sha512HashValue;
 use composefs_boot::bootloader::{EFI_ADDON_DIR_EXT, EFI_EXT};
 
 use crate::{
     bootc_composefs::{
         boot::{BootType, SYSTEMD_UKI_DIR, find_vmlinuz_initrd_duplicates, get_efi_uuid_source},
         gc::composefs_gc,
-        repo::open_composefs_repo,
         rollback::{composefs_rollback, rename_exchange_user_cfg},
         status::{get_composefs_status, get_sorted_grub_uki_boot_entries},
     },
@@ -246,57 +244,38 @@ fn delete_depl_boot_entries(
     }
 }
 
-#[fn_error_context::context("Getting image objects")]
-pub(crate) fn get_image_objects(sysroot: &Dir) -> Result<HashSet<Sha512HashValue>> {
-    let repo = open_composefs_repo(&sysroot)?;
-
-    let images_dir = sysroot
-        .open_dir("composefs/images")
-        .context("Opening images dir")?;
-
-    let image_entries = images_dir
-        .entries_utf8()
-        .context("Reading entries in images dir")?;
-
-    let mut object_refs = HashSet::new();
-
-    for image in image_entries {
-        let image = image?;
-
-        let img_name = image.file_name().context("Getting image name")?;
-
-        let objects = repo
-            .objects_for_image(&img_name)
-            .with_context(|| format!("Getting objects for image {img_name}"))?;
-
-        object_refs.extend(objects);
-    }
-
-    Ok(object_refs)
-}
-
 #[fn_error_context::context("Deleting image for deployment {}", deployment_id)]
-pub(crate) fn delete_image(sysroot: &Dir, deployment_id: &str) -> Result<()> {
+pub(crate) fn delete_image(sysroot: &Dir, deployment_id: &str, dry_run: bool) -> Result<()> {
     let img_path = Path::new("composefs").join("images").join(deployment_id);
 
     tracing::debug!("Deleting EROFS image: {:?}", img_path);
-    sysroot
-        .remove_file(&img_path)
-        .context("Deleting EROFS image")
+
+    if !dry_run {
+        sysroot
+            .remove_file(&img_path)
+            .context("Deleting EROFS image")?;
+    }
+
+    Ok(())
 }
 
 #[fn_error_context::context("Deleting state directory for deployment {}", deployment_id)]
-pub(crate) fn delete_state_dir(sysroot: &Dir, deployment_id: &str) -> Result<()> {
+pub(crate) fn delete_state_dir(sysroot: &Dir, deployment_id: &str, dry_run: bool) -> Result<()> {
     let state_dir = Path::new(STATE_DIR_RELATIVE).join(deployment_id);
 
     tracing::debug!("Deleting state directory: {:?}", state_dir);
-    sysroot
-        .remove_dir_all(&state_dir)
-        .with_context(|| format!("Removing dir {state_dir:?}"))
+
+    if !dry_run {
+        sysroot
+            .remove_dir_all(&state_dir)
+            .with_context(|| format!("Removing dir {state_dir:?}"))?;
+    }
+
+    Ok(())
 }
 
 #[fn_error_context::context("Deleting staged deployment")]
-pub(crate) fn delete_staged(staged: &Option<BootEntry>) -> Result<()> {
+pub(crate) fn delete_staged(staged: &Option<BootEntry>, dry_run: bool) -> Result<()> {
     if staged.is_none() {
         tracing::debug!("No staged deployment");
         return Ok(());
@@ -304,7 +283,10 @@ pub(crate) fn delete_staged(staged: &Option<BootEntry>) -> Result<()> {
 
     let file = Path::new(COMPOSEFS_TRANSIENT_STATE_DIR).join(COMPOSEFS_STAGED_DEPLOYMENT_FNAME);
     tracing::debug!("Deleting staged deployment file: {file:?}");
-    std::fs::remove_file(file).context("Removing staged file")?;
+
+    if !dry_run {
+        std::fs::remove_file(file).context("Removing staged file")?;
+    }
 
     Ok(())
 }
@@ -368,7 +350,7 @@ pub(crate) async fn delete_composefs_deployment(
 
     delete_depl_boot_entries(&depl_to_del, &storage, deleting_staged)?;
 
-    composefs_gc(storage, booted_cfs).await?;
+    composefs_gc(storage, booted_cfs, false).await?;
 
     Ok(())
 }
