@@ -383,7 +383,7 @@ where
             }
         }
         Command::GC => {
-            repo.gc()?;
+            repo.gc(&[])?;
         }
     }
     Ok(())
