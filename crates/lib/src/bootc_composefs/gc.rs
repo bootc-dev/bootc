@@ -5,14 +5,13 @@
 //! - We delete bootloader + image but fail to delete the state/unrefenced objects etc
 
 use anyhow::{Context, Result};
-use cap_std_ext::{cap_std::fs::Dir, dirext::CapStdExtDirExt};
-use composefs::fsverity::{FsVerityHashValue, Sha512HashValue};
+use cap_std_ext::cap_std::fs::Dir;
 
 use crate::{
     bootc_composefs::{
-        delete::{delete_image, delete_staged, delete_state_dir, get_image_objects},
+        delete::{delete_image, delete_staged, delete_state_dir},
         status::{
-            get_bootloader, get_composefs_status, get_sorted_grub_uki_boot_entries,
+            get_bootloader, get_composefs_status, get_imginfo, get_sorted_grub_uki_boot_entries,
             get_sorted_type1_boot_entries,
         },
     },
@@ -108,52 +107,6 @@ fn list_state_dirs(sysroot: &Dir) -> Result<Vec<String>> {
     Ok(dirs)
 }
 
-/// Deletes objects in sysroot/composefs/objects that are not being referenced by any of the
-/// present EROFS images
-///
-/// We do not delete streams though
-#[fn_error_context::context("Garbage collecting objects")]
-// TODO(Johan-Liebert1): This will be moved to composefs-rs
-pub(crate) fn gc_objects(sysroot: &Dir) -> Result<()> {
-    tracing::debug!("Running garbage collection on unreferenced objects");
-
-    // Get all the objects referenced by all available images
-    let obj_refs = get_image_objects(sysroot)?;
-
-    // List all objects in the objects directory
-    let objects_dir = sysroot
-        .open_dir("composefs/objects")
-        .context("Opening objects dir")?;
-
-    for dir_name in 0x0..=0xff {
-        let dir = objects_dir
-            .open_dir_optional(dir_name.to_string())
-            .with_context(|| format!("Opening {dir_name}"))?;
-
-        let Some(dir) = dir else {
-            continue;
-        };
-
-        for entry in dir.entries_utf8()? {
-            let entry = entry?;
-            let filename = entry.file_name()?;
-
-            let id = Sha512HashValue::from_object_dir_and_basename(dir_name, filename.as_bytes())?;
-
-            // If this object is not referenced by any image, delete it
-            if !obj_refs.contains(&id) {
-                tracing::trace!("Deleting unreferenced object: {filename}");
-
-                entry
-                    .remove_file()
-                    .with_context(|| format!("Removing object {filename}"))?;
-            }
-        }
-    }
-
-    Ok(())
-}
-
 /// 1. List all bootloader entries
 /// 2. List all EROFS images
 /// 3. List all state directories
@@ -165,7 +118,11 @@ pub(crate) fn gc_objects(sysroot: &Dir) -> Result<()> {
 /// Similarly if EROFS image B1 doesn't exist, but state dir does, then delete the state dir and
 /// perform GC
 #[fn_error_context::context("Running composefs garbage collection")]
-pub(crate) async fn composefs_gc(storage: &Storage, booted_cfs: &BootedComposefs) -> Result<()> {
+pub(crate) async fn composefs_gc(
+    storage: &Storage,
+    booted_cfs: &BootedComposefs,
+    dry_run: bool,
+) -> Result<()> {
     const COMPOSEFS_GC_JOURNAL_ID: &str = "3b2a1f0e9d8c7b6a5f4e3d2c1b0a9f8e7";
 
     tracing::info!(
@@ -201,9 +158,9 @@ pub(crate) async fn composefs_gc(storage: &Storage, booted_cfs: &BootedComposefs
     for verity in &img_bootloader_diff {
         tracing::debug!("Cleaning up orphaned image: {verity}");
 
-        delete_staged(staged)?;
-        delete_image(&sysroot, verity)?;
-        delete_state_dir(&sysroot, verity)?;
+        delete_staged(staged, dry_run)?;
+        delete_image(&sysroot, verity, dry_run)?;
+        delete_state_dir(&sysroot, verity, dry_run)?;
     }
 
     let state_dirs = list_state_dirs(&sysroot)?;
@@ -216,12 +173,37 @@ pub(crate) async fn composefs_gc(storage: &Storage, booted_cfs: &BootedComposefs
         .collect::<Vec<_>>();
 
     for verity in &state_img_diff {
-        delete_staged(staged)?;
-        delete_state_dir(&sysroot, verity)?;
+        delete_staged(staged, dry_run)?;
+        delete_state_dir(&sysroot, verity, dry_run)?;
     }
 
+    let booted_image = get_imginfo(storage, &booted_cfs_status.verity, None).await?;
+
+    let stream = format!("oci-config-{}", booted_image.manifest.config().digest());
+    let additional_roots = vec![booted_cfs_status.verity.as_str(), &stream];
+
     // Run garbage collection on objects after deleting images
-    gc_objects(&sysroot)?;
+    let gc_result = if dry_run {
+        booted_cfs.repo.gc_dry_run(&additional_roots)?
+    } else {
+        booted_cfs.repo.gc(&additional_roots)?
+    };
+
+    if dry_run {
+        println!("Dry run (no files deleted):");
+    }
+
+    println!(
+        "Objects: {} removed ({} bytes)",
+        gc_result.objects_removed, gc_result.objects_bytes
+    );
+
+    if gc_result.images_pruned > 0 || gc_result.streams_pruned > 0 {
+        println!(
+            "Pruned symlinks: {} images, {} streams",
+            gc_result.images_pruned, gc_result.streams_pruned
+        );
+    }
 
     Ok(())
 }
