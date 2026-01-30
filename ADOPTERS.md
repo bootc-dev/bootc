@@ -9,6 +9,7 @@
 |:-|:-|:-|:-|:-|
 Vendor | Red Hat | 2024 | https://redhat.com | Image Based Linux 
 Vendor | HeliumOS | 2024 | https://www.heliumos.org/ | An atomic desktop operating system for your devices
+Vendor | AlmaLinux (Atomic SIG) | 2025 | [atomic-desktop](https://github.com/AlmaLinux/atomic-desktop), [atomic-workstation](https://github.com/AlmaLinux/atomic-workstation) | Atomic AlmaLinux desktop respins
 
 # bootc Adopters (indirect, via ostree)
 
