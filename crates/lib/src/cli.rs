@@ -415,6 +415,32 @@ pub(crate) enum ContainerOpts {
         #[clap(last = true)]
         args: Vec<OsString>,
     },
+    /// Export container filesystem as a tar archive.
+    ///
+    /// This command exports the container filesystem in a bootable format with proper
+    /// SELinux labeling and optional kernel relocation for legacy compatibility.
+    /// The output is written to stdout by default or to a specified file.
+    ///
+    /// Example:
+    ///   bootc container export /target > output.tar
+    Export {
+        /// Format for export output
+        #[clap(long, default_value = "tar")]
+        format: ExportFormat,
+
+        /// Output file (defaults to stdout)
+        #[clap(long, short = 'o')]
+        output: Option<Utf8PathBuf>,
+
+        /// Path to the container filesystem root
+        target: Utf8PathBuf,
+    },
+}
+
+#[derive(Debug, Clone, ValueEnum, PartialEq, Eq)]
+pub(crate) enum ExportFormat {
+    /// Export as tar archive
+    Tar,
 }
 
 /// Subcommands which operate on images.
@@ -1626,6 +1652,11 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
                 kargs,
                 args,
             } => crate::ukify::build_ukify(&rootfs, &kargs, &args),
+            ContainerOpts::Export {
+                format,
+                target,
+                output,
+            } => crate::container_export::export(&format, &target, output.as_deref()).await,
         },
         Opt::Completion { shell } => {
             use clap_complete::aot::generate;

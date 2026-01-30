@@ -70,6 +70,7 @@ mod boundimage;
 mod cfsctl;
 pub mod cli;
 mod composefs_consts;
+mod container_export;
 mod containerenv;
 pub(crate) mod deploy;
 mod discoverable_partition_specification;

@@ -183,6 +183,140 @@ fn test_variant_base_crosscheck() -> Result<()> {
     Ok(())
 }
 
+/// Test that container export --format=tar creates a valid tar archive
+pub(crate) fn test_container_export_tar() -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    // Create temp directory with test filesystem structure
+    let td = tempfile::tempdir()?;
+    let root = td.path();
+
+    // Create directories and files that should appear in the tar
+    fs::create_dir_all(root.join("usr/bin"))?;
+    fs::create_dir_all(root.join("etc"))?;
+    fs::create_dir_all(root.join("var/log"))?;
+    fs::create_dir_all(root.join("boot"))?;
+
+    // Create a mock kernel structure (required for export)
+    // Using traditional kernel layout: /usr/lib/modules/<version>/vmlinuz
+    let kernel_version = "6.0.0-test";
+    let modules_dir = root.join(format!("usr/lib/modules/{}", kernel_version));
+    fs::create_dir_all(&modules_dir)?;
+    fs::write(modules_dir.join("vmlinuz"), "mock kernel content")?;
+
+    // Create test files
+    let test_file = root.join("usr/bin/test-binary");
+    fs::write(&test_file, "#!/bin/bash\necho 'test'\n")?;
+    fs::set_permissions(&test_file, fs::Permissions::from_mode(0o755))?;
+
+    let config_file = root.join("etc/test.conf");
+    fs::write(&config_file, "test=value\n")?;
+    fs::set_permissions(&config_file, fs::Permissions::from_mode(0o644))?;
+
+    // Create a symlink
+    std::os::unix::fs::symlink("test-binary", root.join("usr/bin/test-link"))?;
+
+    // Create output file for tar
+    let tar_output = td.path().join("export.tar");
+
+    // Run bootc container export
+    let sh = Shell::new()?;
+    let root_str = root.to_str().unwrap();
+    let tar_str = tar_output.to_str().unwrap();
+
+    // Test the export command
+    let export_result = cmd!(
+        sh,
+        "bootc container export --format=tar -o {tar_str} {root_str}"
+    )
+    .run();
+    export_result.context("Running bootc container export")?;
+
+    // Verify the tar file was created
+    assert!(tar_output.exists(), "Export tar file should be created");
+
+    // Verify the tar file is not empty
+    let tar_size = tar_output.metadata()?.len();
+    assert!(
+        tar_size > 0,
+        "Export tar file should not be empty, got size {}",
+        tar_size
+    );
+
+    // Use tar to list contents first (safer than extraction)
+    let list_output = cmd!(sh, "tar -tf {tar_str}").read()?;
+    assert!(
+        list_output.contains("usr/bin/test-binary"),
+        "tar should contain test-binary"
+    );
+    assert!(
+        list_output.contains("etc/test.conf"),
+        "tar should contain test.conf"
+    );
+    assert!(
+        list_output.contains("usr/bin/test-link"),
+        "tar should contain symlink"
+    );
+
+    // Extract and verify contents using tar command
+    let extract_dir = td.path().join("extracted");
+    fs::create_dir_all(&extract_dir)?;
+    let extract_str = extract_dir.to_str().unwrap();
+    cmd!(sh, "tar -xf {tar_str} -C {extract_str}")
+        .run()
+        .context("Extracting tar file")?;
+
+    // Verify expected files exist in extracted tar
+    let extracted_binary = extract_dir.join("usr/bin/test-binary");
+    assert!(
+        extracted_binary.exists(),
+        "test-binary should be in tar after extraction"
+    );
+
+    let extracted_config = extract_dir.join("etc/test.conf");
+    assert!(
+        extracted_config.exists(),
+        "test.conf should be in tar after extraction"
+    );
+
+    let extracted_symlink = extract_dir.join("usr/bin/test-link");
+    assert!(
+        extracted_symlink.exists(),
+        "symlink should be in tar after extraction"
+    );
+
+    // Verify symlink is actually a symlink
+    let link_metadata = extracted_symlink.symlink_metadata()?;
+    assert!(
+        link_metadata.file_type().is_symlink(),
+        "test-link should be a symlink"
+    );
+
+    // Verify file permissions are preserved (at least executable bit for binary)
+    let binary_perms = extracted_binary.metadata()?.permissions().mode() & 0o777;
+    assert_ne!(
+        binary_perms & 0o100,
+        0,
+        "Binary should have execute bit set"
+    );
+
+    // Verify file contents are preserved
+    let binary_content = fs::read_to_string(&extracted_binary)?;
+    assert!(
+        binary_content.contains("echo 'test'"),
+        "Binary content should be preserved"
+    );
+
+    let config_content = fs::read_to_string(&extracted_config)?;
+    assert_eq!(
+        config_content.trim(),
+        "test=value",
+        "Config content should be preserved"
+    );
+
+    Ok(())
+}
+
 /// Test that compute-composefs-digest works on a directory
 pub(crate) fn test_compute_composefs_digest() -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
@@ -249,6 +383,7 @@ pub(crate) fn run(testargs: libtest_mimic::Arguments) -> Result<()> {
         new_test("status", test_bootc_status),
         new_test("container inspect", test_bootc_container_inspect),
         new_test("system-reinstall --help", test_system_reinstall_help),
+        new_test("container export tar", test_container_export_tar),
         new_test("compute-composefs-digest", test_compute_composefs_digest),
     ];
 
