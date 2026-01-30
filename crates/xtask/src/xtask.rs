@@ -16,6 +16,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use fn_error_context::context;
 use xshell::{Shell, cmd};
 
+mod anaconda;
 mod buildsys;
 mod man;
 mod tmt;
@@ -60,6 +61,8 @@ enum Commands {
     ValidateComposefsDigest(ValidateComposefsDigestArgs),
     /// Print podman bind mount arguments for local path dependencies
     LocalRustDeps(LocalRustDepsArgs),
+    /// Test bootc installation via Anaconda with a local container image
+    AnacondaTest(anaconda::AnacondaTestArgs),
 }
 
 /// Arguments for validate-composefs-digest command
@@ -190,6 +193,7 @@ fn try_main() -> Result<()> {
         Commands::CheckBuildsys => buildsys::check_buildsys(&sh, "Dockerfile".into()),
         Commands::ValidateComposefsDigest(args) => validate_composefs_digest(&sh, &args),
         Commands::LocalRustDeps(args) => local_rust_deps(&sh, &args),
+        Commands::AnacondaTest(args) => anaconda::run_anaconda_test(&sh, &args),
     }
 }
 
