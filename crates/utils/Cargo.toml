@@ -10,6 +10,7 @@ repository = "https://github.com/bootc-dev/bootc"
 # Workspace dependencies
 anstream = { workspace = true }
 anyhow = { workspace = true }
+cap-std-ext = {workspace = true, features = ["fs_utf8"] }
 chrono = { workspace = true, features = ["std"] }
 owo-colors = { workspace = true }
 rustix = { workspace = true }

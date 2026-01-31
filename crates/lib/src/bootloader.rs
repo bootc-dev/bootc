@@ -2,7 +2,7 @@ use std::fs::create_dir_all;
 use std::process::Command;
 
 use anyhow::{Context, Result, anyhow, bail};
-use bootc_utils::CommandRunExt;
+use bootc_utils::{BwrapCmd, CommandRunExt};
 use camino::Utf8Path;
 use cap_std_ext::cap_std::fs::Dir;
 use cap_std_ext::dirext::CapStdExtDirExt;
@@ -91,22 +91,71 @@ pub(crate) fn install_via_bootupd(
     // bootc defaults to only targeting the platform boot method.
     let bootupd_opts = (!configopts.generic_image).then_some(["--update-firmware", "--auto"]);
 
-    let abs_deployment_path = deployment_path.map(|v| rootfs.join(v));
-    let src_root_arg = if let Some(p) = abs_deployment_path.as_deref() {
-        vec!["--src-root", p.as_str()]
+    // When not running inside the target container (through `--src-imgref`) we use
+    // will bwrap as a chroot to run bootupctl from the deployment.
+    // This makes sure we use binaries from the target image rather than the buildroot.
+    // In that case, the target rootfs is replaced with `/` because this is just used by
+    // bootupd to find the backing device.
+    let rootfs_mount = if deployment_path.is_none() {
+        rootfs.as_str()
     } else {
-        vec![]
+        "/"
     };
-    let devpath = device.path();
+
     println!("Installing bootloader via bootupd");
-    Command::new("bootupctl")
-        .args(["backend", "install", "--write-uuid"])
-        .args(verbose)
-        .args(bootupd_opts.iter().copied().flatten())
-        .args(src_root_arg)
-        .args(["--device", devpath.as_str(), rootfs.as_str()])
-        .log_debug()
-        .run_inherited_with_cmd_context()
+
+    // Build the bootupctl arguments
+    let mut bootupd_args: Vec<&str> = vec!["backend", "install", "--write-uuid"];
+    if let Some(v) = verbose {
+        bootupd_args.push(v);
+    }
+
+    if let Some(ref opts) = bootupd_opts {
+        bootupd_args.extend(opts.iter().copied());
+    }
+    bootupd_args.extend(["--device", device.path().as_str(), rootfs_mount]);
+
+    // Run inside a bwrap container. It takes care of mounting and creating
+    // the necessary API filesystems in the target deployment and acts as
+    // a nicer `chroot`.
+    if let Some(deploy) = deployment_path {
+        let target_root = rootfs.join(deploy);
+        let boot_path = rootfs.join("boot");
+
+        tracing::debug!("Running bootupctl via bwrap in {}", target_root);
+
+        // Prepend "bootupctl" to the args for bwrap
+        let mut bwrap_args = vec!["bootupctl"];
+        bwrap_args.extend(bootupd_args);
+
+        let mut cmd = BwrapCmd::new(&target_root)
+            // Bind mount /boot from the physical target root so bootupctl can find
+            // the boot partition and install the bootloader there
+            .bind(&boot_path, &"/boot")
+            // Bind the target block device inside the bwrap container so bootupctl can access it
+            .bind_device(device.path().as_str());
+
+        // Also bind all partitions of the tafet block device
+        for partition in &device.partitions {
+            cmd = cmd.bind_device(&partition.node);
+        }
+
+        // The $PATH in the bwrap env is not complete enough for some images
+        // so we inject a reasonnable default.
+        // This is causing bootupctl and/or sfdisk binaries
+        // to be not found with fedora 43.
+        cmd.setenv(
+            "PATH",
+            "/bin:/usr/bin:/sbin:/usr/sbin:/usr/local/bin:/usr/local/sbin",
+        )
+        .run(bwrap_args)
+    } else {
+        // Running directly without chroot
+        Command::new("bootupctl")
+            .args(&bootupd_args)
+            .log_debug()
+            .run_inherited_with_cmd_context()
+    }
 }
 
 #[context("Installing bootloader")]
