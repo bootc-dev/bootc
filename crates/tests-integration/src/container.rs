@@ -52,8 +52,8 @@ pub(crate) fn test_bootc_container_inspect() -> Result<()> {
         .expect("kernel.unified should be a boolean");
     if let Some(variant) = std::env::var("BOOTC_variant").ok() {
         match variant.as_str() {
-            "ostree" => {
-                assert!(!unified, "Expected unified=false for ostree variant");
+            v @ "ostree" | v @ "composefs" => {
+                assert!(!unified, "Expected unified=false for variant {v}");
                 // For traditional kernels, version should look like a uname (contains digits)
                 assert!(
                     version.chars().any(|c| c.is_ascii_digit()),
@@ -159,7 +159,7 @@ fn test_variant_base_crosscheck() -> Result<()> {
         // TODO add this to `bootc status` or so?
         let boot_efi = Utf8Path::new("/boot/EFI");
         match variant.as_str() {
-            "ostree" => {
+            "composefs" | "ostree" => {
                 assert!(!boot_efi.try_exists()?);
             }
             "composefs-sealeduki-sdboot" => {

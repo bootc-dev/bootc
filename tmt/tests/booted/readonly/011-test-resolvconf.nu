@@ -6,7 +6,7 @@ tap begin "verify there's not an empty /etc/resolv.conf in the image"
 let st = bootc status --json | from json
 
 # Detect composefs by checking if composefs field is present
-let is_composefs = ($st.status.booted.composefs? != null)
+let is_composefs = (tap is_composefs)
 if $is_composefs {
     print "# TODO composefs: skipping test - ostree commands don't work with composefs"
 } else {

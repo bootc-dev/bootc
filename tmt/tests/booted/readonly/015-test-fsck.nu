@@ -5,7 +5,7 @@ tap begin "Run fsck"
 
 # Detect composefs by checking if composefs field is present
 let st = bootc status --json | from json
-let is_composefs = ($st.status.booted.composefs? != null)
+let is_composefs = (tap is_composefs)
 
 if $is_composefs {
     print "# TODO composefs: skipping test - fsck requires ostree-booted host"
