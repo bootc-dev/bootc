@@ -511,6 +511,8 @@ pub const fn this_arch_root() -> &'static str {
     cfg_if::cfg_if! {
         if #[cfg(target_arch = "x86_64")] {
             ROOT_X86_64
+        } else if #[cfg(target_arch = "arm")] {
+            ROOT_ARM
         } else if #[cfg(target_arch = "aarch64")] {
             ROOT_ARM64
         } else if #[cfg(target_arch = "s390x")] {
