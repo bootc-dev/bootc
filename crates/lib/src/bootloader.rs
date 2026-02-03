@@ -105,7 +105,12 @@ pub(crate) fn install_via_bootupd(
     println!("Installing bootloader via bootupd");
 
     // Build the bootupctl arguments
-    let mut bootupd_args: Vec<&str> = vec!["backend", "install", "--write-uuid"];
+    let mut bootupd_args: Vec<&str> = vec!["backend", "install"];
+    if configopts.bootupd_skip_boot_uuid {
+        bootupd_args.push("--with-static-configs")
+    } else {
+        bootupd_args.push("--write-uuid");
+    }
     if let Some(v) = verbose {
         bootupd_args.push(v);
     }

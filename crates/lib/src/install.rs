@@ -368,6 +368,11 @@ pub(crate) struct InstallConfigOpts {
     /// The stateroot name to use. Defaults to `default`.
     #[clap(long)]
     pub(crate) stateroot: Option<String>,
+
+    /// Don't pass --write-uuid to bootupd during bootloader installation.
+    #[clap(long)]
+    #[serde(default)]
+    pub(crate) bootupd_skip_boot_uuid: bool,
 }
 
 #[derive(Debug, Default, Clone, clap::Parser, Serialize, Deserialize, PartialEq, Eq)]
