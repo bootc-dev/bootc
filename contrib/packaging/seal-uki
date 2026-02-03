@@ -21,17 +21,23 @@ fi
 
 mkdir -p "${output}"
 
-# Build the UKI using bootc container ukify
-# This computes the composefs digest, reads kargs from kargs.d, and invokes ukify
-#
+# Baseline ukify options
+ukifyargs=(--measure
+           --json pretty
+           --output "${output}/${kver}.efi")
+
+# Signing options, we use sbsign by default
+ukifyargs+=(--signtool sbsign
+            --secureboot-private-key "${secrets}/secureboot_key"
+            --secureboot-certificate "${secrets}/secureboot_cert")
+
+# Baseline container ukify options
+containerukifyargs=(--rootfs "${target}")
+
 # WORKAROUND: SELinux must be permissive for sealed UKI boot
 # See https://github.com/bootc-dev/bootc/issues/1826
-bootc container ukify --rootfs "${target}" \
-  --karg enforcing=0 \
-  -- \
-  --signtool sbsign \
-  --secureboot-private-key "${secrets}/secureboot_key" \
-  --secureboot-certificate "${secrets}/secureboot_cert" \
-  --measure \
-  --json pretty \
-  --output "${output}/${kver}.efi"
+containerukifyargs+=(--karg enforcing=0)
+
+# Build the UKI using bootc container ukify
+# This computes the composefs digest, reads kargs from kargs.d, and invokes ukify
+bootc container ukify "${containerukifyargs[@]}" -- "${ukifyargs[@]}"
