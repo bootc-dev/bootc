@@ -54,21 +54,13 @@ pub(crate) fn build_ukify(
     let kernel = crate::kernel::find_kernel(&root)?
         .ok_or_else(|| anyhow::anyhow!("No kernel found in {rootfs}"))?;
 
-    // We can only build a UKI from a traditional kernel, not from an existing UKI
-    if kernel.kernel.unified {
-        anyhow::bail!(
-            "Cannot build UKI: rootfs already contains a UKI at boot/EFI/Linux/{}.efi",
-            kernel.kernel.version
-        );
-    }
-
-    // Get paths from the kernel info
-    let vmlinuz_path = kernel
-        .vmlinuz
-        .ok_or_else(|| anyhow::anyhow!("Traditional kernel should have vmlinuz path"))?;
-    let initramfs_path = kernel
-        .initramfs
-        .ok_or_else(|| anyhow::anyhow!("Traditional kernel should have initramfs path"))?;
+    // Extract vmlinuz and initramfs paths, or bail if this is already a UKI
+    let (vmlinuz_path, initramfs_path) = match kernel.path {
+        crate::kernel::KernelPath::Vmlinuz { path, initramfs } => (path, initramfs),
+        crate::kernel::KernelPath::Uki(path) => {
+            anyhow::bail!("Cannot build UKI: rootfs already contains a UKI at {path}");
+        }
+    };
 
     // Verify kernel and initramfs exist
     if !root
