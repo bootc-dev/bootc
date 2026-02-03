@@ -144,12 +144,13 @@ RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp
 # Perform all filesystem transformations except generating the sealed UKI (if configured)
 FROM base as base-penultimate
 ARG variant
+ARG bootloader
 # Switch to a signed systemd-boot, if configured
 RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
     --mount=type=bind,from=packaging,src=/,target=/run/packaging \
     --mount=type=bind,from=sdboot-signed,src=/,target=/run/sdboot-signed <<EORUN
 set -xeuo pipefail
-if test "${variant}" = "composefs-sealeduki-sdboot"; then
+if [[ "${bootloader}" == "systemd" ]]; then
   /run/packaging/switch-to-sdboot /run/sdboot-signed
 fi
 EORUN
