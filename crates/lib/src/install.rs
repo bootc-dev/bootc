@@ -1517,7 +1517,7 @@ async fn verify_target_fetch(
 
 /// Preparation for an install; validates and prepares some (thereafter immutable) global state.
 async fn prepare_install(
-    config_opts: InstallConfigOpts,
+    mut config_opts: InstallConfigOpts,
     source_opts: InstallSourceOpts,
     target_opts: InstallTargetOpts,
     mut composefs_options: InstallComposefsOpts,
@@ -1642,8 +1642,17 @@ async fn prepare_install(
     }
 
     let install_config = config::load_config()?;
-    if install_config.is_some() {
+    if let Some(ref config) = install_config {
         tracing::debug!("Loaded install configuration");
+        // Merge config file values into config_opts (CLI takes precedence)
+        // Only apply config file value if CLI didn't explicitly set it
+        if !config_opts.bootupd_skip_boot_uuid {
+            config_opts.bootupd_skip_boot_uuid = config
+                .bootupd
+                .as_ref()
+                .and_then(|b| b.skip_boot_uuid)
+                .unwrap_or(false);
+        }
     } else {
         tracing::debug!("No install configuration found");
     }

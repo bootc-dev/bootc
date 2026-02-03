@@ -54,6 +54,14 @@ Configuration options for the ostree repository. There is one valid field:
   Boot Loader Spec entries, except for the default entry. This is useful for configuring
   arguments that should only apply to non-default deployments.
 
+# bootupd
+
+Configuration options for bootupd, responsible of setting up the bootloader.
+There is only one valid field:
+- `skip-boot-uuid`: A boolean that controls whether to skip writing partition UUIDs
+   to the bootloader configuration. When `true`, bootupd is invoked with `--with-static-configs`
+   instead of `--write-uuid`. Defaults to `false` (UUIDs are written by default).
+
 # Examples
 
 ```toml

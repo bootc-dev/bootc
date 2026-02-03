@@ -61,6 +61,16 @@ pub(crate) struct BasicFilesystems {
 /// Configuration for ostree repository
 pub(crate) type OstreeRepoOpts = ostree_ext::repo_options::RepoOptions;
 
+/// Configuration options for bootupd, responsible for setting up the bootloader.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub(crate) struct Bootupd {
+    /// Whether to skip writing the boot partition UUID to the bootloader configuration.
+    /// When true, bootupd is invoked with `--with-static-configs` instead of `--write-uuid`.
+    /// Defaults to false (UUIDs are written by default).
+    pub(crate) skip_boot_uuid: Option<bool>,
+}
+
 /// The serialized `[install]` section
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename = "install", rename_all = "kebab-case", deny_unknown_fields)]
@@ -85,6 +95,8 @@ pub(crate) struct InstallConfiguration {
     pub(crate) root_mount_spec: Option<String>,
     /// Mount specification for the /boot filesystem.
     pub(crate) boot_mount_spec: Option<String>,
+    /// Bootupd configuration
+    pub(crate) bootupd: Option<Bootupd>,
 }
 
 fn merge_basic<T>(s: &mut Option<T>, o: Option<T>, _env: &EnvProperties) {
@@ -142,6 +154,13 @@ impl Mergeable for OstreeRepoOpts {
     }
 }
 
+impl Mergeable for Bootupd {
+    /// Apply any values in other, overriding any existing values in `self`.
+    fn merge(&mut self, other: Self, env: &EnvProperties) {
+        merge_basic(&mut self.skip_boot_uuid, other.skip_boot_uuid, env)
+    }
+}
+
 impl Mergeable for InstallConfiguration {
     /// Apply any values in other, overriding any existing values in `self`.
     fn merge(&mut self, other: Self, env: &EnvProperties) {
@@ -160,6 +179,7 @@ impl Mergeable for InstallConfiguration {
             merge_basic(&mut self.stateroot, other.stateroot, env);
             merge_basic(&mut self.root_mount_spec, other.root_mount_spec, env);
             merge_basic(&mut self.boot_mount_spec, other.boot_mount_spec, env);
+            self.bootupd.merge(other.bootupd, env);
             if let Some(other_kargs) = other.kargs {
                 self.kargs
                     .get_or_insert_with(Default::default)
@@ -730,5 +750,63 @@ boot-mount-spec = ""
         let install = c.install.unwrap();
         assert_eq!(install.root_mount_spec.as_deref().unwrap(), "");
         assert_eq!(install.boot_mount_spec.as_deref().unwrap(), "");
+    }
+
+    #[test]
+    fn test_parse_bootupd_skip_boot_uuid() {
+        // Test parsing true
+        let c: InstallConfigurationToplevel = toml::from_str(
+            r#"[install.bootupd]
+skip-boot-uuid = true
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            c.install.unwrap().bootupd.unwrap().skip_boot_uuid.unwrap(),
+            true
+        );
+
+        // Test parsing false
+        let c: InstallConfigurationToplevel = toml::from_str(
+            r#"[install.bootupd]
+skip-boot-uuid = false
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            c.install.unwrap().bootupd.unwrap().skip_boot_uuid.unwrap(),
+            false
+        );
+
+        // Test default (not specified) is None
+        let c: InstallConfigurationToplevel = toml::from_str(
+            r#"[install]
+root-fs-type = "xfs"
+"#,
+        )
+        .unwrap();
+        assert!(c.install.unwrap().bootupd.is_none());
+    }
+
+    #[test]
+    fn test_merge_bootupd_skip_boot_uuid() {
+        let env = EnvProperties {
+            sys_arch: "x86_64".to_string(),
+        };
+        let mut install: InstallConfiguration = toml::from_str(
+            r#"[bootupd]
+skip-boot-uuid = false
+"#,
+        )
+        .unwrap();
+        let other = InstallConfiguration {
+            bootupd: Some(Bootupd {
+                skip_boot_uuid: Some(true),
+            }),
+            ..Default::default()
+        };
+        install.merge(other, &env);
+        // skip_boot_uuid should be overridden to true
+        assert_eq!(install.bootupd.unwrap().skip_boot_uuid.unwrap(), true);
     }
 }
