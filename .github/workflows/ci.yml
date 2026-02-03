@@ -182,14 +182,28 @@ jobs:
         run: |
           BASE=$(just pullspec-for-os base ${{ matrix.test_os }})
           echo "BOOTC_base=${BASE}" >> $GITHUB_ENV
+          echo "RUST_BACKTRACE=full" >> $GITHUB_ENV
+          echo "RUST_LOG=trace" >> $GITHUB_ENV
 
           case "${{ matrix.variant }}" in
-            composefs-grub|composefs-sdboot)
+            composefs-grub)
               echo "BOOTC_variant=composefs" >> $GITHUB_ENV
+              echo "BOOTC_bootloader=grub" >> $GITHUB_ENV
             ;;
 
-            *)
+            composefs-sdboot)
+              echo "BOOTC_variant=composefs" >> $GITHUB_ENV
+              echo "BOOTC_bootloader=systemd" >> $GITHUB_ENV
+            ;;
+
+            composefs-sealeduki-sdboot)
               echo "BOOTC_variant=${{ matrix.variant }}" >> $GITHUB_ENV
+              echo "BOOTC_bootloader=systemd" >> $GITHUB_ENV
+            ;;
+
+            ostree)
+              echo "BOOTC_variant=${{ matrix.variant }}" >> $GITHUB_ENV
+              echo "BOOTC_bootloader=grub" >> $GITHUB_ENV
             ;;
           esac
 
@@ -208,7 +222,8 @@ jobs:
 
       - name: Build container
         run: |
-          BOOTC_SKIP_PACKAGE=1 just build
+          BOOTC_SKIP_PACKAGE=1 just bootloader=$BOOTC_bootloader build
+
           # Extra cross-check (duplicating the integration test) that we're using the right base
           used_vid=$(podman run --rm localhost/bootc bash -c '. /usr/lib/os-release && echo ${ID}-${VERSION_ID}')
           test ${{ matrix.test_os }} = "${used_vid}"

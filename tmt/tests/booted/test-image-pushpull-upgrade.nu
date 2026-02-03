@@ -54,7 +54,7 @@ RUN echo test content > /usr/share/blah.txt
     let v = podman run --rm localhost/bootc-derived cat /usr/share/blah.txt | str trim
     assert equal $v "test content"
 
-    mut orig_root_mtime = null;
+    mut orig_root_mtime = 0;
 
     if not $is_composefs {
         $orig_root_mtime = ls -Dl /ostree/bootc | get modified
