@@ -80,7 +80,7 @@ impl<'a> BwrapCmd<'a> {
         // See https://systemd.io/API_FILE_SYSTEMS/
         cmd.args(["--proc", "/proc"]);
         cmd.args(["--dev", "/dev"]);
-        cmd.args(["--ro-bind", "/sys", "/sys"]);
+        cmd.args(["--bind", "/sys", "/sys"]);
 
         // Add bind mounts
         for (source, target) in &self.bind_mounts {
