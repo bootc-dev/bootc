@@ -101,7 +101,7 @@ test-tmt *ARGS: build
 [group('core')]
 test-container: build build-units
     podman run --rm --read-only localhost/bootc-units /usr/bin/bootc-units
-    podman run --rm --env=BOOTC_variant={{variant}} --env=BOOTC_base={{base}} {{base_img}} bootc-integration-tests container
+    podman run --rm --env=BOOTC_variant={{variant}} --env=BOOTC_base={{base}} --mount=type=image,source={{base_img}},target=/run/target {{base_img}} bootc-integration-tests container
 
 # Build and test sealed composefs images
 [group('core')]
