@@ -19,3 +19,4 @@ This group can represent the project for administrative and program manager duti
 | ----              | ----                                                                 | ----            | ----             |
 | Laura Santamaria  | [nimbinatus](https://github.com/nimbinatus)                          | Red Hat         | Representative   |
 | Mohan Shash       | [mohan-shash](https://github.com/mohan-shash)                        | Red Hat         | Representative   |
+| Preethi Thomas    | [preethit](https://github.com/preethit)                              | Red Hat         | Representative   |
