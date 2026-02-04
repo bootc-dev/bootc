@@ -6,6 +6,7 @@ use cap_std_ext::cap_std::fs::Dir;
 use cap_std_ext::cap_std::fs_utf8::Dir as DirUtf8;
 use cap_std_ext::dirext::CapStdExtDirExt;
 use cap_std_ext::dirext::CapStdExtDirExtUtf8;
+use fn_error_context::context;
 use ostree::gio;
 use ostree_ext::ostree;
 use ostree_ext::ostree::Deployment;
@@ -107,6 +108,7 @@ pub(crate) fn compute_new_kargs(
 
 /// Load and parse all bootc kargs.d files in the specified root, returning
 /// a combined list.
+#[context("Getting kargs in root")]
 pub(crate) fn get_kargs_in_root(d: &Dir, sys_arch: &str) -> Result<CmdlineOwned> {
     // If the directory doesn't exist, that's OK.
     let Some(d) = d.open_dir_optional(KARGS_PATH)?.map(DirUtf8::from_cap_std) else {
