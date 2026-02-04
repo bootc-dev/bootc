@@ -41,7 +41,7 @@ xshell = { workspace = true, optional = true }
 
 # Crate-specific dependencies
 comfy-table = "7.1.1"
-containers-image-proxy = "0.9.1"
+containers-image-proxy = "0.9.2"
 flate2 = { features = ["zlib"], default-features = false, version = "1.0.20" }
 futures-util = "0.3.13"
 gvariant = "0.5.0"

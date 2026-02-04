@@ -598,7 +598,7 @@ checksum = "55b672471b4e9f9e95499ea597ff64941a309b2cdbffcc46f2cc5e2d971fd335"
 [[package]]
 name = "composefs"
 version = "0.3.0"
-source = "git+https://github.com/containers/composefs-rs?rev=ce3cd9bf7aa0ad2ee8d3814101aa9cd50fd3598d#ce3cd9bf7aa0ad2ee8d3814101aa9cd50fd3598d"
+source = "git+https://github.com/containers/composefs-rs?rev=0c6134653d66ac42c43bac4e1298bfb626aeba87#0c6134653d66ac42c43bac4e1298bfb626aeba87"
 dependencies = [
  "anyhow",
  "hex",
@@ -618,7 +618,7 @@ dependencies = [
 [[package]]
 name = "composefs-boot"
 version = "0.3.0"
-source = "git+https://github.com/containers/composefs-rs?rev=ce3cd9bf7aa0ad2ee8d3814101aa9cd50fd3598d#ce3cd9bf7aa0ad2ee8d3814101aa9cd50fd3598d"
+source = "git+https://github.com/containers/composefs-rs?rev=0c6134653d66ac42c43bac4e1298bfb626aeba87#0c6134653d66ac42c43bac4e1298bfb626aeba87"
 dependencies = [
  "anyhow",
  "composefs",
@@ -631,7 +631,7 @@ dependencies = [
 [[package]]
 name = "composefs-oci"
 version = "0.3.0"
-source = "git+https://github.com/containers/composefs-rs?rev=ce3cd9bf7aa0ad2ee8d3814101aa9cd50fd3598d#ce3cd9bf7aa0ad2ee8d3814101aa9cd50fd3598d"
+source = "git+https://github.com/containers/composefs-rs?rev=0c6134653d66ac42c43bac4e1298bfb626aeba87#0c6134653d66ac42c43bac4e1298bfb626aeba87"
 dependencies = [
  "anyhow",
  "async-compression",
@@ -714,9 +714,9 @@ dependencies = [
 
 [[package]]
 name = "containers-image-proxy"
-version = "0.9.1"
+version = "0.9.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "71a4f5afd361728fbc377e8ec4194040cbd733e9171ff6e35ab31a866ccef1a7"
+checksum = "f4efbec7ca93c60462005402029839fcc8958eb5239bab1dd09f6d3e5165911a"
 dependencies = [
  "cap-std-ext",
  "futures-util",
