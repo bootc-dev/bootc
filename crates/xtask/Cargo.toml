@@ -33,6 +33,7 @@ rand = "0.9"
 serde_yaml = "0.9"
 tar = "0.4"
 itertools = "0.14.0"
+shlex = { workspace = true }
 
 [lints]
 workspace = true

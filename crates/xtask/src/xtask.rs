@@ -15,6 +15,7 @@ use clap::{Args, Parser, Subcommand};
 use fn_error_context::context;
 use xshell::{Shell, cmd};
 
+mod anaconda;
 mod buildsys;
 mod man;
 mod tmt;
@@ -59,6 +60,10 @@ enum Commands {
     ValidateComposefsDigest(ValidateComposefsDigestArgs),
     /// Print podman bind mount arguments for local path dependencies
     LocalRustDeps(LocalRustDepsArgs),
+    /// Run end-to-end Anaconda installation test
+    Anaconda(AnacondaTestArgs),
+    /// Test container os-release detection and installer mapping
+    TestOsRelease(TestOsReleaseArgs),
 }
 
 /// Arguments for validate-composefs-digest command
@@ -114,6 +119,66 @@ pub(crate) struct TmtProvisionArgs {
     pub(crate) vm_name: Option<String>,
 }
 
+/// Arguments for test-os-release command
+#[derive(Debug, Args)]
+pub(crate) struct TestOsReleaseArgs {
+    /// Container image to test os-release detection on
+    pub(crate) image: String,
+}
+
+/// Arguments for anaconda command
+#[derive(Debug, Args)]
+pub(crate) struct AnacondaTestArgs {
+    /// Container image to test (e.g., "quay.io/fedora/fedora-bootc:41")
+    pub(crate) image: String,
+    /// Output disk image path (e.g., "/tmp/test-disk.raw")
+    pub(crate) output_disk: String,
+    /// VM memory in MB
+    #[arg(long, default_value = "4096")]
+    pub(crate) memory: u32,
+    /// Number of virtual CPUs
+    #[arg(long, default_value = "2")]
+    pub(crate) vcpus: u32,
+    /// Installation timeout in minutes
+    #[arg(long, default_value = "25")]
+    pub(crate) timeout: u32,
+    /// HTTP server port for serving export tar
+    #[arg(long, default_value = "8080")]
+    pub(crate) http_port: u16,
+    /// Path to installer ISO (auto-download if not provided)
+    #[arg(long)]
+    pub(crate) installer_iso: Option<String>,
+    /// Installer type: fedora, centos-stream-9, centos-stream-10, auto
+    #[arg(long, default_value = "auto")]
+    pub(crate) installer_type: String,
+    /// Custom installer ISO URL
+    #[arg(long)]
+    pub(crate) installer_url: Option<String>,
+    /// Preserve VM for debugging (don't auto-cleanup)
+    #[arg(long)]
+    pub(crate) preserve_vm: bool,
+    /// Dry run mode - validate setup without running VM
+    #[arg(long)]
+    pub(crate) dry_run: bool,
+    /// Enable SSH access to the installed VM and optionally run custom commands
+    ///
+    /// When used alone, performs default SSH verification including system health checks.
+    /// When followed by -- and command arguments, executes the specified command via SSH instead.
+    ///
+    /// Examples:
+    ///   --ssh                              (default verification)
+    ///   --ssh -- bootc status             (run single command)  
+    ///   --ssh -- "bootc status && uname -a"  (run shell command string)
+    #[arg(
+        long,
+        help = "Enable SSH access with optional custom commands (use -- to specify commands)"
+    )]
+    pub(crate) ssh: bool,
+    /// Custom SSH command to execute (captured after -- separator)
+    #[arg(skip)]
+    pub(crate) ssh_command: Option<Vec<String>>,
+}
+
 fn main() {
     use std::io::Write as _;
 
@@ -123,6 +188,34 @@ fn main() {
         // Don't panic if writing fails.
         let _ = writeln!(stderr, "{}{:#}", "error: ".red(), e);
         std::process::exit(1);
+    }
+}
+
+/// Parse command line arguments, separating main CLI args from SSH command
+///
+/// This function splits the original command line arguments at the -- separator,
+/// returning the main CLI arguments (for clap parsing) and any SSH command
+/// specified after the separator.
+fn parse_args_with_ssh_command() -> Result<(Vec<String>, Option<Vec<String>>)> {
+    let cmd_args: Vec<String> = std::env::args().collect();
+
+    // Find the position of the -- separator
+    if let Some(separator_pos) = cmd_args.iter().position(|arg| arg == "--") {
+        // Split arguments at the separator
+        let cli_args: Vec<String> = cmd_args.iter().take(separator_pos).cloned().collect();
+
+        let ssh_command: Vec<String> = cmd_args.into_iter().skip(separator_pos + 1).collect();
+
+        let ssh_command = if ssh_command.is_empty() {
+            None
+        } else {
+            Some(ssh_command)
+        };
+
+        Ok((cli_args, ssh_command))
+    } else {
+        // No separator found, return all arguments as CLI args
+        Ok((cmd_args, None))
     }
 }
 
@@ -147,7 +240,19 @@ fn try_main() -> Result<()> {
         }
     }
 
-    let cli = Cli::parse();
+    // Parse arguments manually to handle SSH command after -- separator
+    let (cli_args, ssh_command) = parse_args_with_ssh_command()?;
+
+    // Parse CLI with the filtered arguments
+    let mut cli = Cli::parse_from(cli_args);
+
+    // Handle SSH command injection for Anaconda command
+    if let Commands::Anaconda(ref mut args) = cli.command {
+        if args.ssh && ssh_command.is_some() {
+            args.ssh_command = ssh_command;
+        }
+    }
+
     let sh = xshell::Shell::new()?;
 
     match cli.command {
@@ -161,6 +266,8 @@ fn try_main() -> Result<()> {
         Commands::CheckBuildsys => buildsys::check_buildsys(&sh, "Dockerfile".into()),
         Commands::ValidateComposefsDigest(args) => validate_composefs_digest(&sh, &args),
         Commands::LocalRustDeps(args) => local_rust_deps(&sh, &args),
+        Commands::TestOsRelease(args) => anaconda::test_os_release_detection(&sh, &args),
+        Commands::Anaconda(args) => anaconda::run_anaconda_test(&sh, &args),
     }
 }
 
