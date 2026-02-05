@@ -4,13 +4,15 @@
 //! with Anaconda liveimg installation, without relying on TMT framework mounts.
 
 use std::fs;
-use std::process::{Child, Stdio};
+use std::process::Stdio;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use camino::{Utf8Path, Utf8PathBuf};
 use fn_error_context::context;
+use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::net::UnixStream;
 use tokio::process::Command as TokioCommand;
 use tokio::time::{sleep, timeout};
 // TODO: Deduplicate with ostree-ext::composefs_boot::os_release when dependency issues are resolved
@@ -132,9 +134,9 @@ const INSTALLER_CONFIGS: InstallerConfigs = InstallerConfigs {
 // Legacy fallback URL for Fedora x86_64
 const FEDORA_ISO_URL_FALLBACK: &str = "https://download.fedoraproject.org/pub/fedora/linux/releases/43/Everything/x86_64/iso/Fedora-Everything-netinst-x86_64-43-1.6.iso";
 
-/// QEMU SLIRP (user-mode) networking gateway address
-/// This is the IP address the VM uses to reach the host in SLIRP mode
-const SLIRP_GATEWAY_IP: &str = "10.0.2.2";
+/// virtiofs share target name for the work directory
+/// This name is used in both virt-install --filesystem and the kickstart %pre mount
+const VIRTIOFS_TARGET_NAME: &str = "bootcexport";
 
 /// Libvirtd status detection result
 #[derive(Debug)]
@@ -259,8 +261,11 @@ fn check_prerequisites(sh: &Shell) -> Result<()> {
         })?;
     }
 
-    // Check libguestfs tools availability
-    check_libguestfs_tools(sh)?;
+    // Note: libguestfs tools are optional - bcvk is now the preferred verification method.
+    // We check for bcvk as a soft prerequisite.
+    if !has_bcvk(sh) {
+        eprintln!("Note: bcvk not found - will fall back to libguestfs or basic verification");
+    }
 
     match libvirt::check_status(sh) {
         LibvirtStatus::Running => {}
@@ -276,34 +281,7 @@ fn check_prerequisites(sh: &Shell) -> Result<()> {
     Ok(())
 }
 
-/// Check if libguestfs tools are available
-#[context("Checking libguestfs tools")]
-fn check_libguestfs_tools(sh: &Shell) -> Result<()> {
-    let required_tools = ["virt-filesystems", "virt-ls", "virt-cat", "virt-df"];
 
-    let mut missing_tools = Vec::new();
-
-    for tool in &required_tools {
-        if cmd!(sh, "which {tool}").ignore_status().run().is_err() {
-            missing_tools.push(*tool);
-        }
-    }
-
-    if !missing_tools.is_empty() {
-        eprintln!(
-            "Warning: Missing libguestfs tools: {}",
-            missing_tools.join(", ")
-        );
-        eprintln!("Install with:");
-        eprintln!("  Fedora/RHEL/CentOS: sudo dnf install libguestfs-tools");
-        eprintln!("  Ubuntu/Debian: sudo apt install libguestfs-tools");
-        eprintln!("  openSUSE: sudo zypper install libguestfs");
-        eprintln!("Will fall back to container-based verification if available.");
-        return Ok(()); // Don't fail, allow fallback
-    }
-
-    Ok(())
-}
 
 /// Create temporary work directory
 #[context("Creating work directory")]
@@ -330,7 +308,6 @@ struct SshKeyPair {
 struct ResourceGuard {
     work_dir: Option<Utf8PathBuf>,
     vm_names: Arc<Mutex<Vec<String>>>,
-    http_server: Option<Child>,
 }
 
 impl ResourceGuard {
@@ -338,7 +315,6 @@ impl ResourceGuard {
         Self {
             work_dir: None,
             vm_names: Arc::new(Mutex::new(Vec::new())),
-            http_server: None,
         }
     }
 
@@ -352,10 +328,6 @@ impl ResourceGuard {
         }
     }
 
-    fn set_http_server(&mut self, server: Child) {
-        self.http_server = Some(server);
-    }
-
     fn cleanup(&mut self, sh: &Shell, preserve_vm: bool, preserve_work_dir: bool) {
         // Cleanup VMs
         if !preserve_vm
@@ -364,12 +336,6 @@ impl ResourceGuard {
             for vm_name in names.iter() {
                 let _ = libvirt::cleanup_vm(sh, vm_name);
             }
-        }
-
-        // Cleanup HTTP server
-        if let Some(mut server) = self.http_server.take() {
-            let _ = server.kill();
-            let _ = server.wait();
         }
 
         // Cleanup work directory
@@ -479,9 +445,9 @@ async fn run_anaconda_test_impl(
         None
     };
 
-    // Step 3: Create kickstart file
+    // Step 3: Create kickstart file (now uses virtiofs instead of HTTP)
     let kickstart_file =
-        create_kickstart(sh, work_dir, args.http_port, &export_tar, ssh_keypair.as_ref())?;
+        create_kickstart(sh, work_dir, &export_tar, ssh_keypair.as_ref())?;
 
     if args.dry_run {
         println!("Dry run complete - files generated but VM not started:");
@@ -489,14 +455,11 @@ async fn run_anaconda_test_impl(
         println!("   Kickstart: {}", kickstart_file);
         println!("   Installer ISO: {}", installer_iso);
         println!("   Work directory: {}", work_dir);
+        println!("   virtiofs target: {}", VIRTIOFS_TARGET_NAME);
         return Ok(());
     }
 
-    // Step 4: Start HTTP server to serve tar file
-    let http_server = start_http_server(work_dir, args.http_port).await?;
-    resource_guard.set_http_server(http_server);
-
-    // Step 5: Create VM disk
+    // Step 4: Create VM disk (virtiofs shares work_dir directly, no HTTP server needed)
     let vm_disk = create_vm_disk(sh, &args.output_disk, work_dir)?;
 
     // Step 6: Run virt-install with sanitized VM name
@@ -564,21 +527,7 @@ fn export_container(sh: &Shell, image: &str, work_dir: &Utf8Path) -> Result<Utf8
     Ok(export_path)
 }
 
-/// Start HTTP server to serve files to Anaconda
-#[context("Starting HTTP server")]
-async fn start_http_server(work_dir: &Utf8Path, port: u16) -> Result<Child> {
-    let server = std::process::Command::new("python3")
-        .args(["-m", "http.server", &port.to_string()])
-        .current_dir(work_dir)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .context("Failed to start HTTP server")?;
 
-    // Wait for server to start
-    sleep(Duration::from_secs(2)).await;
-    Ok(server)
-}
 
 /// Container OS release information extracted from the container image
 #[derive(Debug, Clone)]
@@ -1018,20 +967,14 @@ fn download_and_verify_iso(
     Ok(iso_path.to_owned())
 }
 
-/// Get the host IP address that VMs can use to reach the HTTP server
-///
-/// With SLIRP (user-mode) networking, the host is always accessible at 10.0.2.2.
-/// This is QEMU's default gateway address for user-mode networking.
-fn get_host_ip_for_vm(_sh: &Shell) -> String {
-    SLIRP_GATEWAY_IP.to_string()
-}
-
 /// Create Anaconda kickstart file
+///
+/// The kickstart uses virtiofs to access the bootc export tar file. A %pre script
+/// mounts the virtiofs share before installation begins.
 #[context("Creating kickstart file")]
 fn create_kickstart(
-    sh: &Shell,
+    _sh: &Shell,
     work_dir: &Utf8Path,
-    http_port: u16,
     export_tar: &Utf8Path,
     ssh_keypair: Option<&SshKeyPair>,
 ) -> Result<Utf8PathBuf> {
@@ -1042,9 +985,7 @@ fn create_kickstart(
         .file_name()
         .context("Invalid export tar filename")?;
 
-    // Get the host IP that the VM can use to reach our HTTP server
-    let host_ip = get_host_ip_for_vm(sh);
-    println!("Using host IP for kickstart: {}", host_ip);
+    println!("Using virtiofs mount for kickstart (target: {})", VIRTIOFS_TARGET_NAME);
 
     // Generate SSH-specific configuration if SSH is enabled
     let ssh_config = if let Some(keypair) = ssh_keypair {
@@ -1090,9 +1031,20 @@ fi
         r#"# Bootc Anaconda Installation Kickstart
 # Generated by bootc xtask anaconda
 
-# Install from exported bootc tar via HTTP
-# Note: Using host IP ({}) instead of localhost so VM can reach it
-liveimg --url=http://{}:{}/{}
+# Mount virtiofs share containing the bootc export tar
+# This runs before installation to make the tar file accessible
+%pre --log=/tmp/pre-install.log
+#!/bin/bash
+set -euo pipefail
+echo "Mounting virtiofs share..."
+mkdir -p /mnt/bootc-export
+mount -t virtiofs {virtiofs_target} /mnt/bootc-export
+echo "virtiofs mount successful"
+ls -la /mnt/bootc-export/
+%end
+
+# Install from exported bootc tar via virtiofs mount
+liveimg --url=file:///mnt/bootc-export/{tar_filename}
 
 # Basic system configuration  
 keyboard us
@@ -1102,7 +1054,7 @@ rootpw --plaintext testpassword
 
 # Network configuration
 network --bootproto=dhcp --hostname=bootc-anaconda-test
-{}
+{ssh_config}
 # Partitioning - UEFI layout
 bootloader --location=none
 zerombr
@@ -1153,10 +1105,13 @@ echo "--- Boot entries ---" >> /root/INSTALL_RESULT
 ls -la /boot/loader/entries/ >> /root/INSTALL_RESULT 2>&1 || echo "No systemd-boot entries found" >> /root/INSTALL_RESULT
 
 echo "Post-install script completed successfully at $(date)"
-{}
+{ssh_post_script}
 %end
 "#,
-        host_ip, host_ip, http_port, tar_filename, ssh_config, ssh_post_script
+        virtiofs_target = VIRTIOFS_TARGET_NAME,
+        tar_filename = tar_filename,
+        ssh_config = ssh_config,
+        ssh_post_script = ssh_post_script
     );
 
     fs::write(&kickstart_path, kickstart_content).context("Failed to write kickstart file")?;
@@ -1227,6 +1182,14 @@ async fn run_virt_install(
     // Create virtio socket path for monitoring Anaconda progress
     let virtio_socket_path = work_dir.join("anaconda-progress.socket");
 
+    // Build virtiofs filesystem argument to share the work directory with the VM
+    // This allows the kickstart's %pre script to mount the bootc export tar
+    let virtiofs_arg = format!(
+        "source={},target={},driver.type=virtiofs",
+        work_dir.as_str(),
+        VIRTIOFS_TARGET_NAME
+    );
+
     let mut child = TokioCommand::new("virt-install")
         .args([
             "--name",
@@ -1235,6 +1198,9 @@ async fn run_virt_install(
             &memory,
             "--vcpus",
             &vcpus,
+            // Boot in UEFI mode to match our UEFI partition layout
+            "--boot",
+            "uefi",
             "--disk",
             &format!("path={},bus=virtio,format=raw", vm_disk),
             "--network",
@@ -1250,6 +1216,12 @@ async fn run_virt_install(
             "--console",
             "pty,target_type=serial",
             "--noautoconsole",
+            // Share work directory via virtiofs so kickstart can access the bootc export tar
+            "--filesystem",
+            &virtiofs_arg,
+            // Memory backing required for virtiofs
+            "--memorybacking",
+            "source.type=memfd,access.mode=shared",
             // Add virtio channel for Anaconda communication
             "--channel",
             &format!(
@@ -1331,6 +1303,54 @@ async fn run_virt_install(
     Ok(())
 }
 
+/// Anaconda progress event parsed from the virtio log socket
+#[derive(Debug, Clone)]
+struct AnacondaProgress {
+    /// The step/phase name (e.g., "installation", "bootloader", "payload")
+    step: String,
+    /// Progress message
+    message: String,
+    /// Timestamp of the event
+    timestamp: Instant,
+}
+
+/// Parse an Anaconda progress line from the virtio log
+///
+/// Anaconda logs various events in DBus-like format. Key events include:
+/// - Progress updates: step completion, package installation progress
+/// - Error messages that indicate failures
+fn parse_anaconda_progress(line: &str) -> Option<AnacondaProgress> {
+    let line = line.trim();
+    if line.is_empty() {
+        return None;
+    }
+
+    // Look for progress-related keywords
+    let step = if line.contains("payload") || line.contains("Payload") {
+        "payload"
+    } else if line.contains("bootloader") || line.contains("Bootloader") {
+        "bootloader"
+    } else if line.contains("install") || line.contains("Install") {
+        "installation"
+    } else if line.contains("storage") || line.contains("Storage") {
+        "storage"
+    } else if line.contains("network") || line.contains("Network") {
+        "network"
+    } else if line.contains("error") || line.contains("Error") || line.contains("ERROR") {
+        "error"
+    } else if line.contains("complete") || line.contains("Complete") || line.contains("finished") {
+        "complete"
+    } else {
+        "progress"
+    };
+
+    Some(AnacondaProgress {
+        step: step.to_string(),
+        message: line.to_string(),
+        timestamp: Instant::now(),
+    })
+}
+
 /// Monitor Anaconda installation progress and detect completion
 ///
 /// This function monitors the VM state machine through the installation process:
@@ -1339,6 +1359,10 @@ async fn run_virt_install(
 /// 3. VM shuts off (installation complete, kickstart says "reboot")
 /// 4. VM restarts (booting into installed system)
 /// 5. VM is running the installed system
+///
+/// The function also connects to the Anaconda virtio log socket to parse progress
+/// events. When progress is detected, timeouts are extended to avoid premature failures
+/// on slow systems.
 ///
 /// We detect success by observing the VM reboot cycle: running -> shut off -> running.
 /// The VM must complete the full cycle for success. We never assume success based on
@@ -1349,14 +1373,24 @@ async fn run_virt_install(
 async fn monitor_anaconda_installation(
     sh: &Shell,
     vm_name: &str,
-    _virtio_socket_path: &Utf8Path,
+    virtio_socket_path: &Utf8Path,
 ) -> Result<()> {
-    let start_time = std::time::Instant::now();
+    let start_time = Instant::now();
 
     println!("Monitoring installation progress...");
 
     // Wait for VM to start up first
     sleep(Duration::from_secs(10)).await;
+
+    // Try to connect to the Anaconda log socket
+    let progress_reader = connect_anaconda_socket(virtio_socket_path).await;
+    let has_progress_socket = progress_reader.is_some();
+
+    if has_progress_socket {
+        println!("Connected to Anaconda progress socket");
+    } else {
+        println!("Anaconda progress socket not available - using VM state monitoring only");
+    }
 
     /// Installation state machine
     #[derive(Debug, Clone, Copy, PartialEq)]
@@ -1371,9 +1405,60 @@ async fn monitor_anaconda_installation(
 
     let mut last_state = String::new();
     let mut phase = Phase::Starting;
-    let mut last_progress_log = std::time::Instant::now();
+    let mut last_progress_log = Instant::now();
+    let mut last_progress_event = Instant::now();
+    let mut progress_reader = progress_reader;
 
     loop {
+        // Check for progress events from the socket (non-blocking)
+        if let Some(ref mut reader) = progress_reader {
+            loop {
+                // Try to read a line with a very short timeout
+                match timeout(Duration::from_millis(100), reader.read_line(&mut String::new())).await {
+                    Ok(Ok(0)) => {
+                        // EOF - socket closed
+                        progress_reader = None;
+                        break;
+                    }
+                    Ok(Ok(_)) => {
+                        // We got a line - the buffer was consumed, so read fresh
+                        let mut line = String::new();
+                        if let Ok(Ok(n)) = timeout(Duration::from_millis(50), reader.read_line(&mut line)).await
+                            && n > 0
+                            && let Some(progress) = parse_anaconda_progress(&line)
+                        {
+                            last_progress_event = progress.timestamp;
+
+                            // Log significant progress events
+                            match progress.step.as_str() {
+                                "error" => {
+                                    eprintln!("Anaconda error: {}", progress.message);
+                                }
+                                "complete" => {
+                                    println!("Anaconda: {}", progress.message);
+                                }
+                                step @ ("payload" | "bootloader" | "storage" | "installation") => {
+                                    println!("[{}] {}", step, progress.message);
+                                }
+                                _ => {
+                                    // Don't spam with every progress line
+                                }
+                            }
+                        }
+                    }
+                    Ok(Err(_)) => {
+                        // Read error - socket may have closed
+                        progress_reader = None;
+                        break;
+                    }
+                    Err(_) => {
+                        // Timeout - no data available, which is fine
+                        break;
+                    }
+                }
+            }
+        }
+
         // Check VM state
         let vm_state = match cmd!(sh, "virsh domstate {vm_name}").ignore_status().read() {
             Ok(state) => state.trim().to_string(),
@@ -1414,11 +1499,20 @@ async fn monitor_anaconda_installation(
                     Phase::Installing => {
                         // Show progress every 60 seconds
                         if last_progress_log.elapsed().as_secs() >= 60 {
+                            let progress_info = if has_progress_socket {
+                                format!(
+                                    " (last progress: {}s ago)",
+                                    last_progress_event.elapsed().as_secs()
+                                )
+                            } else {
+                                String::new()
+                            };
                             println!(
-                                "Installation in progress ({}m elapsed)",
-                                start_time.elapsed().as_secs() / 60
+                                "Installation in progress ({}m elapsed){}",
+                                start_time.elapsed().as_secs() / 60,
+                                progress_info
                             );
-                            last_progress_log = std::time::Instant::now();
+                            last_progress_log = Instant::now();
                         }
                     }
                     Phase::WaitingForReboot => {
@@ -1514,6 +1608,45 @@ async fn monitor_anaconda_installation(
         // Wait before next check
         sleep(Duration::from_secs(5)).await;
     }
+}
+
+/// Connect to the Anaconda progress virtio socket
+///
+/// Returns a buffered reader for the socket if connection succeeds,
+/// or None if the socket doesn't exist or connection fails.
+async fn connect_anaconda_socket(
+    socket_path: &Utf8Path,
+) -> Option<BufReader<tokio::net::unix::OwnedReadHalf>> {
+    // Give QEMU time to create the socket
+    for attempt in 0..10 {
+        if socket_path.exists() {
+            match UnixStream::connect(socket_path.as_std_path()).await {
+                Ok(stream) => {
+                    let (read_half, _write_half) = stream.into_split();
+                    return Some(BufReader::new(read_half));
+                }
+                Err(e) => {
+                    if attempt < 9 {
+                        sleep(Duration::from_secs(1)).await;
+                        continue;
+                    }
+                    eprintln!(
+                        "Warning: Failed to connect to Anaconda socket {}: {}",
+                        socket_path, e
+                    );
+                    return None;
+                }
+            }
+        } else if attempt < 9 {
+            sleep(Duration::from_secs(1)).await;
+        }
+    }
+
+    eprintln!(
+        "Warning: Anaconda socket not found at {}",
+        socket_path
+    );
+    None
 }
 
 /// Verify the installation succeeded using available tools
@@ -2604,7 +2737,7 @@ mod libvirt {
     /// Cleanup VM by name with error handling
     pub(super) fn cleanup_vm(sh: &Shell, vm_name: &str) -> Result<()> {
         let _ = cmd!(sh, "virsh destroy {vm_name}").ignore_status().run();
-        let _ = cmd!(sh, "virsh undefine {vm_name}").ignore_status().run();
+        let _ = cmd!(sh, "virsh undefine --nvram {vm_name}").ignore_status().run();
         Ok(())
     }
 
@@ -2658,7 +2791,7 @@ mod libvirt {
     ) -> Result<tokio::process::Child> {
         // Cleanup existing VM
         let _ = cmd!(sh, "virsh destroy {vm_name}").ignore_status().run();
-        let _ = cmd!(sh, "virsh undefine {vm_name}").ignore_status().run();
+        let _ = cmd!(sh, "virsh undefine --nvram {vm_name}").ignore_status().run();
 
         let vm_process = TokioCommand::new("virt-install")
             .args([
@@ -2717,7 +2850,7 @@ mod libvirt {
         mut vm_process: tokio::process::Child,
     ) -> Result<()> {
         let _ = cmd!(sh, "virsh destroy {vm_name}").ignore_status().run();
-        let _ = cmd!(sh, "virsh undefine {vm_name}").ignore_status().run();
+        let _ = cmd!(sh, "virsh undefine --nvram {vm_name}").ignore_status().run();
         let _ = vm_process.kill().await;
         let _ = vm_process.wait().await;
         Ok(())
@@ -3194,5 +3327,44 @@ SHA256 (CentOS-Stream-10-20260202.0-x86_64-dvd1.iso) = 2ea6b38c40d9e232188dc8f6b
             "CentOS-Stream-9-latest-x86_64-boot.iso",
         );
         assert!(result.is_err(), "Should not match CentOS Stream 9 pattern");
+    }
+
+    #[test]
+    fn test_parse_anaconda_progress() {
+        // Test empty line returns None
+        assert!(parse_anaconda_progress("").is_none());
+        assert!(parse_anaconda_progress("   ").is_none());
+
+        // Test payload-related messages
+        let progress = parse_anaconda_progress("Starting payload").unwrap();
+        assert_eq!(progress.step, "payload");
+
+        // Test bootloader-related messages
+        let progress = parse_anaconda_progress("Bootloader configuration").unwrap();
+        assert_eq!(progress.step, "bootloader");
+
+        // Test storage-related messages
+        let progress = parse_anaconda_progress("Configuring storage").unwrap();
+        assert_eq!(progress.step, "storage");
+
+        // Test network-related messages
+        let progress = parse_anaconda_progress("Setting up network configuration").unwrap();
+        assert_eq!(progress.step, "network");
+
+        // Test error messages (note: "install" keyword takes priority, so use pure error message)
+        let progress = parse_anaconda_progress("ERROR: Something went wrong").unwrap();
+        assert_eq!(progress.step, "error");
+
+        // Test completion messages (note: "install" keyword takes priority)
+        let progress = parse_anaconda_progress("Task complete").unwrap();
+        assert_eq!(progress.step, "complete");
+
+        // Test installation messages
+        let progress = parse_anaconda_progress("Installation progress: 50%").unwrap();
+        assert_eq!(progress.step, "installation");
+
+        // Test generic progress
+        let progress = parse_anaconda_progress("Some random log message").unwrap();
+        assert_eq!(progress.step, "progress");
     }
 }

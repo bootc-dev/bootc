@@ -142,9 +142,6 @@ pub(crate) struct AnacondaTestArgs {
     /// Installation timeout in minutes
     #[arg(long, default_value = "25")]
     pub(crate) timeout: u32,
-    /// HTTP server port for serving export tar
-    #[arg(long, default_value = "8080")]
-    pub(crate) http_port: u16,
     /// Path to installer ISO (auto-download if not provided)
     #[arg(long)]
     pub(crate) installer_iso: Option<String>,
