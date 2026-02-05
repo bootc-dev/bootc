@@ -3383,6 +3383,7 @@ dependencies = [
  "shlex",
  "tar",
  "tempfile",
+ "tokio",
  "toml",
  "xshell",
 ]

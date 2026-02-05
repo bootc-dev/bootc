@@ -28,6 +28,7 @@ xshell = { workspace = true }
 
 # Crate-specific dependencies
 cargo_metadata = "0.23"
+tokio = { version = "1", features = ["process", "time", "rt-multi-thread", "macros"] }
 mandown = "1.1.0"
 rand = "0.9"
 serde_yaml = "0.9"

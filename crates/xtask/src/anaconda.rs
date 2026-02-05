@@ -4,15 +4,15 @@
 //! with Anaconda liveimg installation, without relying on TMT framework mounts.
 
 use std::fs;
-use std::io::Read;
 use std::process::{Child, Stdio};
 use std::sync::{Arc, Mutex};
-use std::thread;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
 use camino::{Utf8Path, Utf8PathBuf};
 use fn_error_context::context;
+use tokio::process::Command as TokioCommand;
+use tokio::time::{sleep, timeout};
 // TODO: Deduplicate with ostree-ext::composefs_boot::os_release when dependency issues are resolved
 use xshell::{cmd, Shell};
 
@@ -64,10 +64,12 @@ impl OsReleaseInfo {
                 let mut value = value.trim();
 
                 // Remove quotes if present
-                if value.starts_with('"') && value.ends_with('"') && value.len() > 1 {
-                    value = &value[1..value.len() - 1];
-                } else if value.starts_with('\'') && value.ends_with('\'') && value.len() > 1 {
-                    value = &value[1..value.len() - 1];
+                if let Some(stripped) = value.strip_prefix('"').and_then(|v| v.strip_suffix('"')) {
+                    value = stripped;
+                } else if let Some(stripped) =
+                    value.strip_prefix('\'').and_then(|v| v.strip_suffix('\''))
+                {
+                    value = stripped;
                 }
 
                 fields.insert(key, value.to_string());
@@ -130,6 +132,10 @@ const INSTALLER_CONFIGS: InstallerConfigs = InstallerConfigs {
 // Legacy fallback URL for Fedora x86_64
 const FEDORA_ISO_URL_FALLBACK: &str = "https://download.fedoraproject.org/pub/fedora/linux/releases/43/Everything/x86_64/iso/Fedora-Everything-netinst-x86_64-43-1.6.iso";
 
+/// QEMU SLIRP (user-mode) networking gateway address
+/// This is the IP address the VM uses to reach the host in SLIRP mode
+const SLIRP_GATEWAY_IP: &str = "10.0.2.2";
+
 /// Libvirtd status detection result
 #[derive(Debug)]
 enum LibvirtStatus {
@@ -178,6 +184,13 @@ impl Architecture {
 /// Run complete Anaconda installation test
 #[context("Running Anaconda test")]
 pub(crate) fn run_anaconda_test(sh: &Shell, args: &crate::AnacondaTestArgs) -> Result<()> {
+    // Create tokio runtime and run the async test
+    let rt = tokio::runtime::Runtime::new().context("Failed to create tokio runtime")?;
+    rt.block_on(run_anaconda_test_async(sh, args))
+}
+
+/// Async implementation of the Anaconda test
+async fn run_anaconda_test_async(sh: &Shell, args: &crate::AnacondaTestArgs) -> Result<()> {
     println!(
         "Starting Anaconda test: {} → {}",
         args.image, args.output_disk
@@ -185,7 +198,7 @@ pub(crate) fn run_anaconda_test(sh: &Shell, args: &crate::AnacondaTestArgs) -> R
 
     check_prerequisites(sh)?;
     let work_dir = create_work_directory()?;
-    let result = run_anaconda_test_impl(sh, args, &work_dir);
+    let result = run_anaconda_test_impl(sh, args, &work_dir).await;
 
     if !args.preserve_vm && result.is_ok() {
         let _ = cleanup_work_directory(&work_dir);
@@ -345,11 +358,11 @@ impl ResourceGuard {
 
     fn cleanup(&mut self, sh: &Shell, preserve_vm: bool, preserve_work_dir: bool) {
         // Cleanup VMs
-        if !preserve_vm {
-            if let Ok(names) = self.vm_names.lock() {
-                for vm_name in names.iter() {
-                    let _ = libvirt::cleanup_vm(sh, vm_name);
-                }
+        if !preserve_vm
+            && let Ok(names) = self.vm_names.lock()
+        {
+            for vm_name in names.iter() {
+                let _ = libvirt::cleanup_vm(sh, vm_name);
             }
         }
 
@@ -360,10 +373,10 @@ impl ResourceGuard {
         }
 
         // Cleanup work directory
-        if !preserve_work_dir {
-            if let Some(work_dir) = &self.work_dir {
-                let _ = cleanup_work_directory(work_dir);
-            }
+        if !preserve_work_dir
+            && let Some(work_dir) = &self.work_dir
+        {
+            let _ = cleanup_work_directory(work_dir);
         }
     }
 }
@@ -445,7 +458,7 @@ pub(crate) fn test_os_release_detection(sh: &Shell, args: &crate::TestOsReleaseA
 
 /// Main test implementation with resource management
 #[context("Running Anaconda test implementation")]
-fn run_anaconda_test_impl(
+async fn run_anaconda_test_impl(
     sh: &Shell,
     args: &crate::AnacondaTestArgs,
     work_dir: &Utf8Path,
@@ -468,7 +481,7 @@ fn run_anaconda_test_impl(
 
     // Step 3: Create kickstart file
     let kickstart_file =
-        create_kickstart(work_dir, args.http_port, &export_tar, ssh_keypair.as_ref())?;
+        create_kickstart(sh, work_dir, args.http_port, &export_tar, ssh_keypair.as_ref())?;
 
     if args.dry_run {
         println!("Dry run complete - files generated but VM not started:");
@@ -480,41 +493,39 @@ fn run_anaconda_test_impl(
     }
 
     // Step 4: Start HTTP server to serve tar file
-    let http_server = start_http_server(work_dir, args.http_port)?;
+    let http_server = start_http_server(work_dir, args.http_port).await?;
     resource_guard.set_http_server(http_server);
 
     // Step 5: Create VM disk
     let vm_disk = create_vm_disk(sh, &args.output_disk, work_dir)?;
 
     // Step 6: Run virt-install with sanitized VM name
-    let result = (|| -> Result<()> {
-        run_virt_install(
-            sh,
-            args,
-            &installer_iso,
-            &kickstart_file,
-            &vm_disk,
-            work_dir,
-            &resource_guard,
-        )?;
+    let result = run_virt_install(
+        sh,
+        args,
+        &installer_iso,
+        &kickstart_file,
+        &vm_disk,
+        work_dir,
+        &resource_guard,
+    )
+    .await;
 
-        // Step 7: Verify installation
-        verify_installation(sh, &vm_disk)?;
+    // Handle installation result
+    let result = match result {
+        Ok(()) => {
+            // Step 7: Verify installation
+            let verify_result = verify_installation(sh, &vm_disk, &args.image);
 
-        // Step 8: SSH access (if enabled)
-        if let Some(keypair) = ssh_keypair {
-            verify_ssh_access(
-                sh,
-                args,
-                &vm_disk,
-                &keypair,
-                args.ssh_command.as_ref(),
-                &resource_guard,
-            )?;
+            // Step 8: SSH access (if enabled)
+            if let (Ok(()), Some(keypair)) = (&verify_result, ssh_keypair) {
+                verify_ssh_access(sh, args, &vm_disk, &keypair, args.ssh_command.as_ref(), &resource_guard).await
+            } else {
+                verify_result
+            }
         }
-
-        Ok(())
-    })();
+        Err(e) => Err(e),
+    };
 
     // Cleanup resources
     resource_guard.cleanup(sh, args.preserve_vm, args.preserve_vm);
@@ -555,7 +566,7 @@ fn export_container(sh: &Shell, image: &str, work_dir: &Utf8Path) -> Result<Utf8
 
 /// Start HTTP server to serve files to Anaconda
 #[context("Starting HTTP server")]
-fn start_http_server(work_dir: &Utf8Path, port: u16) -> Result<Child> {
+async fn start_http_server(work_dir: &Utf8Path, port: u16) -> Result<Child> {
     let server = std::process::Command::new("python3")
         .args(["-m", "http.server", &port.to_string()])
         .current_dir(work_dir)
@@ -564,7 +575,8 @@ fn start_http_server(work_dir: &Utf8Path, port: u16) -> Result<Child> {
         .spawn()
         .context("Failed to start HTTP server")?;
 
-    thread::sleep(Duration::from_secs(2));
+    // Wait for server to start
+    sleep(Duration::from_secs(2)).await;
     Ok(server)
 }
 
@@ -876,7 +888,7 @@ fn get_installer_iso(
                 return Ok(work_iso_path);
             }
             Err(e) => {
-                println!("⚠ Cached ISO checksum verification failed: {}", e);
+                println!("Warning: Cached ISO checksum verification failed: {}", e);
                 println!("Removing invalid cached ISO and re-downloading...");
                 std::fs::remove_file(&cached_iso_path)?;
             }
@@ -1006,9 +1018,18 @@ fn download_and_verify_iso(
     Ok(iso_path.to_owned())
 }
 
+/// Get the host IP address that VMs can use to reach the HTTP server
+///
+/// With SLIRP (user-mode) networking, the host is always accessible at 10.0.2.2.
+/// This is QEMU's default gateway address for user-mode networking.
+fn get_host_ip_for_vm(_sh: &Shell) -> String {
+    SLIRP_GATEWAY_IP.to_string()
+}
+
 /// Create Anaconda kickstart file
 #[context("Creating kickstart file")]
 fn create_kickstart(
+    sh: &Shell,
     work_dir: &Utf8Path,
     http_port: u16,
     export_tar: &Utf8Path,
@@ -1020,6 +1041,10 @@ fn create_kickstart(
     let tar_filename = export_tar
         .file_name()
         .context("Invalid export tar filename")?;
+
+    // Get the host IP that the VM can use to reach our HTTP server
+    let host_ip = get_host_ip_for_vm(sh);
+    println!("Using host IP for kickstart: {}", host_ip);
 
     // Generate SSH-specific configuration if SSH is enabled
     let ssh_config = if let Some(keypair) = ssh_keypair {
@@ -1066,7 +1091,8 @@ fi
 # Generated by bootc xtask anaconda
 
 # Install from exported bootc tar via HTTP
-liveimg --url=http://localhost:{}/{}
+# Note: Using host IP ({}) instead of localhost so VM can reach it
+liveimg --url=http://{}:{}/{}
 
 # Basic system configuration  
 keyboard us
@@ -1130,7 +1156,7 @@ echo "Post-install script completed successfully at $(date)"
 {}
 %end
 "#,
-        http_port, tar_filename, ssh_config, ssh_post_script
+        host_ip, host_ip, http_port, tar_filename, ssh_config, ssh_post_script
     );
 
     fs::write(&kickstart_path, kickstart_content).context("Failed to write kickstart file")?;
@@ -1170,7 +1196,7 @@ fn create_vm_disk(sh: &Shell, output_disk: &str, work_dir: &Utf8Path) -> Result<
 
 /// Run virt-install to perform installation with monitoring and auto-shutdown
 #[context("Running virt-install")]
-fn run_virt_install(
+async fn run_virt_install(
     sh: &Shell,
     args: &crate::AnacondaTestArgs,
     installer_iso: &Utf8Path,
@@ -1201,7 +1227,7 @@ fn run_virt_install(
     // Create virtio socket path for monitoring Anaconda progress
     let virtio_socket_path = work_dir.join("anaconda-progress.socket");
 
-    let mut child = std::process::Command::new("virt-install")
+    let mut child = TokioCommand::new("virt-install")
         .args([
             "--name",
             &vm_name,
@@ -1212,7 +1238,7 @@ fn run_virt_install(
             "--disk",
             &format!("path={},bus=virtio,format=raw", vm_disk),
             "--network",
-            "default,model=virtio",
+            "user,model=virtio",
             "--location",
             installer_iso.as_str(),
             "--initrd-inject",
@@ -1237,27 +1263,21 @@ fn run_virt_install(
         .context("Failed to start virt-install")?;
 
     // Give virt-install time to create and start the VM
-    thread::sleep(Duration::from_secs(10));
+    sleep(Duration::from_secs(10)).await;
 
     // Check if virt-install process is still running
     match child.try_wait() {
         Ok(Some(status)) => {
             if !status.success() {
-                let stderr = child.stderr.take();
-                if let Some(mut stderr) = stderr {
-                    let mut error_output = String::new();
-                    let _ = stderr.read_to_string(&mut error_output);
-                    return Err(anyhow::anyhow!(
-                        "virt-install failed immediately: exit code {}, stderr: {}",
-                        status.code().unwrap_or(-1),
-                        error_output
-                    ));
-                } else {
-                    return Err(anyhow::anyhow!(
-                        "virt-install failed immediately: exit code {}",
-                        status.code().unwrap_or(-1)
-                    ));
-                }
+                let output = child.wait_with_output().await;
+                let error_output = output
+                    .map(|o| String::from_utf8_lossy(&o.stderr).to_string())
+                    .unwrap_or_default();
+                return Err(anyhow::anyhow!(
+                    "virt-install failed immediately: exit code {}, stderr: {}",
+                    status.code().unwrap_or(-1),
+                    error_output
+                ));
             }
         }
         Ok(None) => {
@@ -1272,16 +1292,27 @@ fn run_virt_install(
         }
     }
 
-    // Monitor VM and wait for completion
-    let monitor_result =
-        monitor_anaconda_installation(sh, &vm_name, timeout_seconds as u64, &virtio_socket_path);
+    // Monitor VM and wait for completion with timeout
+    let monitor_result = timeout(
+        Duration::from_secs(timeout_seconds as u64),
+        monitor_anaconda_installation(sh, &vm_name, &virtio_socket_path),
+    )
+    .await;
 
     // Clean up virt-install process if it's still running
-    let _ = child.kill();
-    let _ = child.wait();
+    let _ = child.kill().await;
+    let _ = child.wait().await;
 
     // Check monitoring result
-    monitor_result?;
+    match monitor_result {
+        Ok(inner_result) => inner_result?,
+        Err(_) => {
+            return Err(anyhow::anyhow!(
+                "Installation timeout after {} minutes",
+                args.timeout
+            ));
+        }
+    }
 
     // Installation complete! VM has rebooted into installed system
     // Now we need to shut it down gracefully for cleanup
@@ -1289,7 +1320,7 @@ fn run_virt_install(
 
     if !args.preserve_vm {
         println!("Shutting down VM after successful installation...");
-        libvirt::shutdown_vm(sh, &vm_name)?;
+        libvirt::shutdown_vm(sh, &vm_name).await?;
         libvirt::cleanup_vm(sh, &vm_name)?;
     } else {
         println!("VM preserved for inspection: {}", vm_name);
@@ -1301,224 +1332,233 @@ fn run_virt_install(
 }
 
 /// Monitor Anaconda installation progress and detect completion
+///
+/// This function monitors the VM state machine through the installation process:
+/// 1. VM starts running (Anaconda installer boots)
+/// 2. Installation runs (VM stays running)
+/// 3. VM shuts off (installation complete, kickstart says "reboot")
+/// 4. VM restarts (booting into installed system)
+/// 5. VM is running the installed system
+///
+/// We detect success by observing the VM reboot cycle: running -> shut off -> running.
+/// The VM must complete the full cycle for success. We never assume success based on
+/// arbitrary timeouts - the VM must actually reboot into the installed system.
+///
+/// Note: Timeout is handled by the caller using tokio::time::timeout.
 #[context("Monitoring Anaconda installation")]
-fn monitor_anaconda_installation(
+async fn monitor_anaconda_installation(
     sh: &Shell,
     vm_name: &str,
-    timeout_seconds: u64,
     _virtio_socket_path: &Utf8Path,
 ) -> Result<()> {
     let start_time = std::time::Instant::now();
-    let timeout_duration = Duration::from_secs(timeout_seconds);
 
-    println!(
-        "Monitoring installation progress (timeout: {} minutes)...",
-        timeout_seconds / 60
-    );
+    println!("Monitoring installation progress...");
 
     // Wait for VM to start up first
-    thread::sleep(Duration::from_secs(10));
+    sleep(Duration::from_secs(10)).await;
+
+    /// Installation state machine
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    enum Phase {
+        /// VM just started, waiting for installation to begin
+        Starting,
+        /// Installation is running
+        Installing,
+        /// VM shut off after installation, waiting for reboot
+        WaitingForReboot,
+    }
 
     let mut last_state = String::new();
-    let mut installation_phase = "starting"; // starting, installing, rebooting, booted
-    let mut reboot_detection_time = None;
-    let mut consecutive_shutoffs = 0;
-
-    // Track VM uptime to detect reboots more reliably
-    let mut vm_start_time = None;
-    let mut last_uptime_check = std::time::Instant::now();
+    let mut phase = Phase::Starting;
+    let mut last_progress_log = std::time::Instant::now();
 
     loop {
-        // Check if we've exceeded timeout
-        if start_time.elapsed() > timeout_duration {
-            return Err(anyhow::anyhow!(
-                "Installation timeout after {} minutes",
-                timeout_seconds / 60
-            ));
-        }
-
         // Check VM state
         let vm_state = match cmd!(sh, "virsh domstate {vm_name}").ignore_status().read() {
             Ok(state) => state.trim().to_string(),
-            Err(_) => {
-                // VM might not exist anymore - could indicate completion or failure
-                println!("Warning: Could not get VM state, retrying...");
-                thread::sleep(Duration::from_secs(5));
-                continue;
+            Err(e) => {
+                // VM doesn't exist - this is always a failure
+                return Err(anyhow::anyhow!(
+                    "VM '{}' no longer exists (phase: {:?}): {}",
+                    vm_name,
+                    phase,
+                    e
+                ));
             }
         };
 
-        // Get VM information to detect if it has been restarted
-        let _vm_info = cmd!(sh, "virsh dominfo {vm_name}")
-            .ignore_status()
-            .read()
-            .unwrap_or_default();
-
-        // Show state changes with more context
+        // Show state changes
         if vm_state != last_state {
             println!(
-                "VM state changed: {} -> {} ({}s elapsed)",
-                last_state,
+                "VM state: {} -> {} ({}s elapsed, phase: {:?})",
+                if last_state.is_empty() {
+                    "initial"
+                } else {
+                    &last_state
+                },
                 vm_state,
-                start_time.elapsed().as_secs()
+                start_time.elapsed().as_secs(),
+                phase
             );
             last_state = vm_state.clone();
         }
 
         match vm_state.as_str() {
             "running" => {
-                if vm_start_time.is_none() {
-                    vm_start_time = Some(std::time::Instant::now());
-                }
-
-                match installation_phase {
-                    "starting" => {
-                        installation_phase = "installing";
-                        println!("Installation: Anaconda installation started...");
+                match phase {
+                    Phase::Starting => {
+                        phase = Phase::Installing;
+                        println!("Anaconda installation started");
                     }
-                    "installing" => {
+                    Phase::Installing => {
                         // Show progress every 60 seconds
-                        if last_uptime_check.elapsed().as_secs() >= 60 {
+                        if last_progress_log.elapsed().as_secs() >= 60 {
                             println!(
-                                "Installation in progress: Installation in progress... ({}m elapsed)",
+                                "Installation in progress ({}m elapsed)",
                                 start_time.elapsed().as_secs() / 60
                             );
-                            last_uptime_check = std::time::Instant::now();
+                            last_progress_log = std::time::Instant::now();
                         }
                     }
-                    "rebooting" => {
-                        // VM came back online after reboot into the installed system
-                        println!("Success: VM has rebooted into installed system!");
+                    Phase::WaitingForReboot => {
+                        // VM came back online - this is the success case
+                        println!("VM has rebooted into installed system");
 
-                        // Give the system time to fully boot, then declare success
-                        println!("Waiting: Waiting for system to fully boot...");
-                        thread::sleep(Duration::from_secs(45));
+                        // Give the system time to fully boot
+                        println!("Waiting for system to fully boot...");
+                        sleep(Duration::from_secs(30)).await;
 
-                        // Check if VM is still running and responsive
+                        // Verify VM is still running after boot
                         let final_state = cmd!(sh, "virsh domstate {vm_name}")
-                            .ignore_status()
                             .read()
-                            .unwrap_or_default();
+                            .context("Failed to check final VM state")?;
+
                         if final_state.trim() == "running" {
-                            println!(
-                                "Success: Installation completed successfully! VM booted into installed system."
-                            );
+                            println!("Installation completed successfully");
                             return Ok(());
                         } else {
-                            println!(
-                                "Warning: VM state changed to '{}' during final boot",
+                            return Err(anyhow::anyhow!(
+                                "VM failed to stay running after reboot. Final state: {}",
                                 final_state.trim()
-                            );
-                            // Still consider this successful if the state is reasonable
-                            if final_state.trim() == "shut off" || final_state.trim() == "crashed" {
-                                println!(
-                                    "Warning: VM shut down but installation may have completed. Checking disk..."
-                                );
-                            }
-                            return Ok(());
+                            ));
                         }
                     }
-                    "booted" => {
-                        // Already booted, this is good
-                        println!(
-                            "Success: Installation completed successfully! VM is running the installed system."
-                        );
-                        return Ok(());
-                    }
-                    _ => {}
                 }
-
-                consecutive_shutoffs = 0; // Reset shutdown counter
             }
             "shut off" => {
-                consecutive_shutoffs += 1;
+                match phase {
+                    Phase::Starting => {
+                        // VM shut off before installation started - error
+                        return Err(anyhow::anyhow!(
+                            "VM shut off before installation could start. Check virt-install output for errors."
+                        ));
+                    }
+                    Phase::Installing => {
+                        // Installation complete, VM shut off for reboot
+                        phase = Phase::WaitingForReboot;
+                        println!("Installation complete, waiting for VM to reboot...");
 
-                if installation_phase == "starting" && consecutive_shutoffs < 3 {
-                    println!("Warning: VM shut off during startup, retrying in 10 seconds...");
-                    thread::sleep(Duration::from_secs(10));
-                    continue;
-                } else if installation_phase == "installing" {
-                    // This is likely the expected shutdown after installation
-                    installation_phase = "rebooting";
-                    reboot_detection_time = Some(std::time::Instant::now());
-                    consecutive_shutoffs = 0;
-                    println!(
-                        "Status: Installation appears to be complete, VM shutting down for reboot..."
-                    );
-                } else if installation_phase == "rebooting" {
-                    if let Some(reboot_time) = reboot_detection_time {
-                        if reboot_time.elapsed().as_secs() > 120 {
-                            // 2 minutes instead of 5
-                            println!(
-                                "Success: VM has been shut off for over 2 minutes. Installation completed successfully."
-                            );
-                            println!(
-                                "Note: bootc installations may not automatically restart the VM."
-                            );
-                            return Ok(());
-                        } else {
-                            println!(
-                                "Status: Waiting for VM to restart after installation... ({}s)",
-                                reboot_time.elapsed().as_secs()
-                            );
+                        // Start the VM again since kickstart uses 'reboot' but libvirt
+                        // may not auto-restart depending on configuration
+                        println!("Starting VM to boot into installed system...");
+                        let start_result = cmd!(sh, "virsh start {vm_name}").run();
+                        if let Err(e) = start_result {
+                            return Err(anyhow::anyhow!(
+                                "Failed to start VM after installation: {}",
+                                e
+                            ));
                         }
                     }
-                } else if consecutive_shutoffs >= 5 {
-                    println!(
-                        "Warning: VM has been shut off for multiple checks. Assuming installation completed."
-                    );
-                    return Ok(());
+                    Phase::WaitingForReboot => {
+                        // Still waiting for reboot, try to start it
+                        println!("VM still shut off, attempting to start...");
+                        let start_result = cmd!(sh, "virsh start {vm_name}").run();
+                        if let Err(e) = start_result {
+                            return Err(anyhow::anyhow!("Failed to start VM for reboot: {}", e));
+                        }
+                    }
                 }
             }
             "crashed" => {
-                return Err(anyhow::anyhow!("VM crashed during installation"));
+                return Err(anyhow::anyhow!(
+                    "VM crashed during installation (phase: {:?})",
+                    phase
+                ));
             }
             "paused" => {
                 return Err(anyhow::anyhow!(
-                    "VM unexpectedly paused during installation"
+                    "VM unexpectedly paused during installation (phase: {:?})",
+                    phase
                 ));
             }
             "in shutdown" => {
-                println!("Installation in progress: VM is shutting down...");
-                if installation_phase == "installing" {
-                    installation_phase = "rebooting";
-                    reboot_detection_time = Some(std::time::Instant::now());
-                    println!("Status: Installation completed, VM shutting down for reboot...");
-                }
+                // VM is in the process of shutting down - just wait
+                println!("VM is shutting down (phase: {:?})", phase);
             }
             "" => {
-                println!("Warning: Warning: Empty VM state, VM might not exist");
+                return Err(anyhow::anyhow!(
+                    "Empty VM state returned - VM may have been destroyed (phase: {:?})",
+                    phase
+                ));
             }
-            _ => {
-                println!("Unknown: VM in unknown state: {}", vm_state);
+            other => {
+                return Err(anyhow::anyhow!(
+                    "VM in unexpected state '{}' (phase: {:?})",
+                    other,
+                    phase
+                ));
             }
         }
 
-        // Wait before next check (shorter intervals for better responsiveness)
-        thread::sleep(Duration::from_secs(5));
+        // Wait before next check
+        sleep(Duration::from_secs(5)).await;
     }
 }
 
-/// Verify the installation succeeded using libguestfs userspace inspection
+/// Verify the installation succeeded using available tools
+///
+/// Tries verification methods in order of preference:
+/// 1. bcvk - preferred, doesn't require libguestfs kernel module loading
+/// 2. libguestfs - fallback if bcvk not available or fails
+/// 3. container-based (fdisk/parted) - last resort basic verification
 #[context("Verifying installation")]
-fn verify_installation(sh: &Shell, vm_disk: &Utf8Path) -> Result<()> {
+fn verify_installation(sh: &Shell, vm_disk: &Utf8Path, image: &str) -> Result<()> {
     println!("Verifying installation...");
 
-    // Try libguestfs first
+    // Try bcvk first (preferred method)
+    if has_bcvk(sh) {
+        println!("Using bcvk for disk verification");
+        match verify_installation_bcvk(sh, vm_disk, image) {
+            Ok(()) => {
+                println!("Installation verification completed successfully");
+                return Ok(());
+            }
+            Err(e) => {
+                println!("bcvk verification failed: {}", e);
+                println!("Falling back to libguestfs verification...");
+            }
+        }
+    }
+
+    // Try libguestfs as fallback
     if has_libguestfs_tools(sh) {
         println!("Using libguestfs userspace inspection");
         match verify_installation_userspace(sh, vm_disk) {
-            Ok(()) => {}
+            Ok(()) => {
+                println!("Installation verification completed successfully");
+                return Ok(());
+            }
             Err(e) => {
                 println!("libguestfs verification failed: {}", e);
                 println!("Falling back to container-based verification...");
-                verify_installation_container_based(sh, vm_disk)?;
             }
         }
-    } else {
-        println!("libguestfs not available, using container-based verification");
-        verify_installation_container_based(sh, vm_disk)?;
     }
+
+    // Last resort: basic container-based verification
+    println!("Using basic container-based verification");
+    verify_installation_container_based(sh, vm_disk)?;
 
     println!("Installation verification completed successfully");
     Ok(())
@@ -1534,6 +1574,169 @@ fn has_libguestfs_tools(sh: &Shell) -> bool {
         }
     }
     true
+}
+
+/// Check if bcvk tool is available
+fn has_bcvk(sh: &Shell) -> bool {
+    cmd!(sh, "which bcvk").ignore_status().run().is_ok()
+}
+
+/// Verify installation using bcvk ephemeral run-ssh with mounted disk
+///
+/// This function uses bcvk to mount the installed disk inside an ephemeral container
+/// and verify the installation artifacts. The disk appears as /dev/disk/by-id/virtio-testdisk
+/// with typical partitions:
+/// - /dev/vda1 = EFI System Partition
+/// - /dev/vda2 = boot partition
+/// - /dev/vda3 = root partition
+#[context("Verifying installation with bcvk")]
+fn verify_installation_bcvk(sh: &Shell, vm_disk: &Utf8Path, image: &str) -> Result<()> {
+    println!("Verifying installation with bcvk...");
+
+    // Build the verification script that will run inside the ephemeral container
+    // We mount the root partition and check for required files
+    let verify_script = r#"
+set -eo pipefail
+echo "=== bcvk disk verification ==="
+
+# Find the root partition (typically vda3 for UEFI installs)
+ROOT_DEV=""
+for dev in /dev/vda3 /dev/vda2 /dev/vda1; do
+    if [ -b "$dev" ]; then
+        # Try to mount and check if it looks like a root filesystem
+        if mount -o ro "$dev" /mnt 2>/dev/null; then
+            if [ -d /mnt/etc ] && [ -d /mnt/usr ]; then
+                ROOT_DEV="$dev"
+                echo "Found root partition: $ROOT_DEV"
+                break
+            fi
+            umount /mnt
+        fi
+    fi
+done
+
+if [ -z "$ROOT_DEV" ]; then
+    echo "ERROR: Could not find root partition"
+    exit 1
+fi
+
+# Verify /etc/os-release exists
+if [ -f /mnt/etc/os-release ]; then
+    echo "PASS: /etc/os-release exists"
+    cat /mnt/etc/os-release | head -5
+else
+    echo "FAIL: /etc/os-release not found"
+    exit 1
+fi
+
+# Verify /usr/bin/bootc exists
+if [ -f /mnt/usr/bin/bootc ]; then
+    echo "PASS: /usr/bin/bootc exists"
+else
+    echo "FAIL: /usr/bin/bootc not found"
+    exit 1
+fi
+
+# Verify installation success marker
+if [ -f /mnt/root/INSTALL_RESULT ]; then
+    if grep -q "BOOTC_ANACONDA_INSTALL_SUCCESS" /mnt/root/INSTALL_RESULT; then
+        echo "PASS: Installation success marker found"
+    else
+        echo "FAIL: Installation marker does not contain success flag"
+        cat /mnt/root/INSTALL_RESULT
+        exit 1
+    fi
+else
+    echo "FAIL: /root/INSTALL_RESULT not found"
+    exit 1
+fi
+
+umount /mnt
+
+# Now check boot partition (typically vda2)
+BOOT_DEV=""
+for dev in /dev/vda2 /dev/vda1; do
+    if [ -b "$dev" ]; then
+        if mount -o ro "$dev" /mnt 2>/dev/null; then
+            # Check if it looks like a boot partition
+            if ls /mnt/vmlinuz-* >/dev/null 2>&1 || ls /mnt/loader >/dev/null 2>&1; then
+                BOOT_DEV="$dev"
+                echo "Found boot partition: $BOOT_DEV"
+                break
+            fi
+            umount /mnt
+        fi
+    fi
+done
+
+if [ -n "$BOOT_DEV" ]; then
+    # Verify kernel exists
+    if ls /mnt/vmlinuz-* >/dev/null 2>&1; then
+        echo "PASS: Kernel found"
+        ls /mnt/vmlinuz-* | head -1
+    else
+        echo "WARNING: No vmlinuz found in boot partition"
+    fi
+
+    # Verify initramfs exists
+    if ls /mnt/initramfs-*.img >/dev/null 2>&1; then
+        echo "PASS: Initramfs found"
+        ls /mnt/initramfs-*.img | head -1
+    else
+        echo "WARNING: No initramfs found in boot partition"
+    fi
+    umount /mnt
+else
+    echo "WARNING: Could not identify boot partition"
+fi
+
+echo "=== bcvk verification complete ==="
+"#;
+
+    // Run bcvk with the disk mounted
+    let vm_disk_str = vm_disk.as_str();
+    let disk_mount_arg = format!("{}:testdisk", vm_disk_str);
+
+    let output = cmd!(
+        sh,
+        "bcvk ephemeral run-ssh --mount-disk-file {disk_mount_arg} {image} {verify_script}"
+    )
+    .output()
+    .context("Failed to run bcvk verification")?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    // Print output for visibility
+    if !stdout.is_empty() {
+        for line in stdout.lines() {
+            println!("  {}", line);
+        }
+    }
+
+    if !output.status.success() {
+        if !stderr.is_empty() {
+            eprintln!("bcvk stderr: {}", stderr);
+        }
+        anyhow::bail!(
+            "bcvk verification failed with exit code {}",
+            output.status.code().unwrap_or(-1)
+        );
+    }
+
+    // Check for PASS markers in output
+    if !stdout.contains("PASS: /etc/os-release exists") {
+        anyhow::bail!("bcvk verification: /etc/os-release check failed");
+    }
+    if !stdout.contains("PASS: /usr/bin/bootc exists") {
+        anyhow::bail!("bcvk verification: /usr/bin/bootc check failed");
+    }
+    if !stdout.contains("PASS: Installation success marker found") {
+        anyhow::bail!("bcvk verification: installation marker check failed");
+    }
+
+    println!("- bcvk verification completed successfully");
+    Ok(())
 }
 
 /// Main verification function using libguestfs userspace inspection
@@ -1934,7 +2137,7 @@ fn verify_partition_table_basic(sh: &Shell, vm_disk: &Utf8Path) -> Result<()> {
                 .trim()
                 .chars()
                 .next()
-                .map_or(false, |c| c.is_ascii_digit())
+                .is_some_and(|c| c.is_ascii_digit())
             {
                 println!("  {}", line);
                 partition_count += 1;
@@ -1985,10 +2188,11 @@ fn detect_filesystem_signatures(sh: &Shell, vm_disk: &Utf8Path) -> Result<()> {
     }
 
     // Try to check if it's a valid disk image using fdisk
-    if let Ok(fdisk_output) = cmd!(sh, "fdisk -l {vm_disk}").ignore_status().read() {
-        if fdisk_output.contains("Device") && fdisk_output.contains("Start") {
-            println!("- Valid partition table detected via fdisk");
-        }
+    if let Ok(fdisk_output) = cmd!(sh, "fdisk -l {vm_disk}").ignore_status().read()
+        && fdisk_output.contains("Device")
+        && fdisk_output.contains("Start")
+    {
+        println!("- Valid partition table detected via fdisk");
     }
 
     println!("- Filesystem signature detection completed");
@@ -1997,7 +2201,7 @@ fn detect_filesystem_signatures(sh: &Shell, vm_disk: &Utf8Path) -> Result<()> {
 
 /// Verify SSH access to the installed system
 #[context("Verifying SSH access to installed system")]
-fn verify_ssh_access(
+async fn verify_ssh_access(
     sh: &Shell,
     args: &crate::AnacondaTestArgs,
     vm_disk: &Utf8Path,
@@ -2018,11 +2222,11 @@ fn verify_ssh_access(
     // Register VM with resource guard
     resource_guard.add_vm_name(vm_name.clone());
 
-    let vm_process = libvirt::start_verification_vm(sh, args, vm_disk, &vm_name)?;
+    let vm_process = libvirt::start_verification_vm(sh, args, vm_disk, &vm_name).await?;
 
-    let result = (|| -> Result<()> {
-        let vm_ip = libvirt::wait_for_network(sh, &vm_name, 300, 5)?;
-        test_ssh_connectivity(sh, &vm_ip, keypair, 300)?;
+    let result: Result<()> = async {
+        let vm_ip = libvirt::wait_for_network(sh, &vm_name, 300, 5).await?;
+        test_ssh_connectivity(sh, &vm_ip, keypair, 300).await?;
 
         if let Some(commands) = ssh_command {
             execute_ssh_commands(sh, &vm_ip, keypair, commands)?;
@@ -2030,9 +2234,10 @@ fn verify_ssh_access(
             run_ssh_system_validation(sh, &vm_ip, keypair)?;
         }
         Ok(())
-    })();
+    }
+    .await;
 
-    libvirt::cleanup_verification_vm(sh, &vm_name, vm_process)?;
+    libvirt::cleanup_verification_vm(sh, &vm_name, vm_process).await?;
     result?;
     println!("{} completed", action);
     Ok(())
@@ -2105,32 +2310,34 @@ fn escape_ssh_commands(commands: &[String]) -> Result<String> {
         .context("Failed to escape shell command arguments")
 }
 
-/// Test SSH connectivity with retries
+/// Test SSH connectivity with retries using tokio timeout
 #[context("Testing SSH connectivity")]
-fn test_ssh_connectivity(
+async fn test_ssh_connectivity(
     sh: &Shell,
     vm_ip: &str,
     keypair: &SshKeyPair,
     timeout_seconds: u32,
 ) -> Result<bool> {
-    let start_time = std::time::Instant::now();
     let private_key_str = keypair.private_key_path.as_str();
     let ssh_target = format!("root@{}", vm_ip);
 
-    loop {
-        if start_time.elapsed().as_secs() > timeout_seconds as u64 {
-            anyhow::bail!("SSH timeout after {} seconds", timeout_seconds);
-        }
-
-        if let Ok(output) = cmd!(sh, "ssh -i {private_key_str} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 {ssh_target} echo SSH_OK")
-            .ignore_status().read()
-        {
-            if output.trim() == "SSH_OK" {
+    let result = timeout(Duration::from_secs(timeout_seconds as u64), async {
+        loop {
+            if let Ok(output) = cmd!(sh, "ssh -i {private_key_str} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 {ssh_target} echo SSH_OK")
+                .ignore_status().read()
+                && output.trim() == "SSH_OK"
+            {
                 return Ok(true);
             }
-        }
 
-        thread::sleep(Duration::from_secs(5));
+            sleep(Duration::from_secs(5)).await;
+        }
+    })
+    .await;
+
+    match result {
+        Ok(inner) => inner,
+        Err(_) => anyhow::bail!("SSH timeout after {} seconds", timeout_seconds),
     }
 }
 
@@ -2140,16 +2347,42 @@ fn run_ssh_system_validation(sh: &Shell, vm_ip: &str, keypair: &SshKeyPair) -> R
     let private_key_str = keypair.private_key_path.as_str();
     let ssh_target = format!("root@{}", vm_ip);
 
+    // These validations are critical - failures should be reported
     let validations = [
-        ("bootc status", "bootc status || echo 'bootc not available'"),
+        ("bootc status", "bootc status"),
         ("install marker", "cat /root/INSTALL_RESULT"),
         ("ssh service", "systemctl is-active sshd"),
     ];
 
-    for (_name, command) in validations {
-        let _ = cmd!(sh, "ssh -i {private_key_str} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=30 {ssh_target} {command}")
-            .ignore_status()
-            .run();
+    let mut failures = Vec::new();
+
+    for (name, command) in validations {
+        let output = cmd!(sh, "ssh -i {private_key_str} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=30 {ssh_target} {command}")
+            .output();
+
+        match output {
+            Ok(out) if out.status.success() => {
+                let stdout = String::from_utf8_lossy(&out.stdout);
+                println!("{}: OK", name);
+                if !stdout.trim().is_empty() {
+                    for line in stdout.lines().take(5) {
+                        println!("  {}", line);
+                    }
+                }
+            }
+            Ok(out) => {
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                let code = out.status.code().unwrap_or(-1);
+                failures.push(format!("{}: exit code {} - {}", name, code, stderr.trim()));
+            }
+            Err(e) => {
+                failures.push(format!("{}: connection failed - {}", name, e));
+            }
+        }
+    }
+
+    if !failures.is_empty() {
+        anyhow::bail!("SSH validation failed:\n  {}", failures.join("\n  "));
     }
 
     Ok(())
@@ -2265,24 +2498,23 @@ fn extract_iso_base_pattern(filename: &str) -> String {
 
 /// Parse BSD-style checksum line: "SHA256 (filename) = hash"
 fn parse_bsd_checksum_line(line: &str, pattern: &str) -> Option<String> {
-    if line.starts_with("SHA256 (") && line.contains(") = ") {
-        if let Some(start) = line.find('(') {
-            if let Some(end) = line.find(')') {
-                if start < end {
-                    let file_in_line = &line[start + 1..end];
-                    if filename_matches_pattern(file_in_line, pattern) {
-                        if let Some(hash_start) = line.find(") = ") {
-                            let hash = &line[hash_start + 4..].trim();
-                            if hash.len() == 64 && hash.chars().all(|c| c.is_ascii_hexdigit()) {
-                                return Some(hash.to_lowercase());
-                            }
-                        }
-                    }
-                }
-            }
+    // Format: "SHA256 (filename) = hash"
+    let rest = line.strip_prefix("SHA256 (")?;
+    let (filename_part, hash_part) = rest.split_once(") = ")?;
+
+    if filename_matches_pattern(filename_part, pattern) {
+        let hash = hash_part.trim();
+        if is_valid_sha256_hash(hash) {
+            return Some(hash.to_lowercase());
         }
     }
     None
+}
+
+/// Check if a string is a valid SHA256 hash (64 hex characters)
+#[allow(clippy::needless_as_bytes)] // Required by project's disallowed-methods for str::len
+fn is_valid_sha256_hash(s: &str) -> bool {
+    s.as_bytes().len() == 64 && s.chars().all(|c| c.is_ascii_hexdigit())
 }
 
 /// Parse GNU-style checksum line: "hash filename" or "hash *filename"
@@ -2293,10 +2525,8 @@ fn parse_gnu_checksum_line(line: &str, pattern: &str) -> Option<String> {
         let file_part = parts[1..].join(" ");
         let filename_in_line = file_part.strip_prefix('*').unwrap_or(&file_part);
 
-        if filename_matches_pattern(filename_in_line, pattern) {
-            if hash.len() == 64 && hash.chars().all(|c| c.is_ascii_hexdigit()) {
-                return Some(hash.to_lowercase());
-            }
+        if filename_matches_pattern(filename_in_line, pattern) && is_valid_sha256_hash(hash) {
+            return Some(hash.to_lowercase());
         }
     }
     None
@@ -2335,18 +2565,17 @@ mod libvirt {
         }
 
         // Secondary checks for better error reporting
-        if let Ok(ps_output) = cmd!(sh, "ps aux").ignore_stderr().ignore_status().read() {
-            if ps_output.contains("libvirtd") {
+        if let Ok(ps_output) = cmd!(sh, "ps aux").ignore_stderr().ignore_status().read()
+            && ps_output.contains("libvirtd") {
                 return LibvirtStatus::NotRunning("process found but not accessible".to_string());
             }
-        }
 
         LibvirtStatus::NotRunning("not running".to_string())
     }
 
     /// Shutdown VM gracefully (if needed for manual intervention)
     #[allow(dead_code)]
-    pub(super) fn shutdown_vm(sh: &Shell, vm_name: &str) -> Result<()> {
+    pub(super) async fn shutdown_vm(sh: &Shell, vm_name: &str) -> Result<()> {
         println!("Gracefully shutting down VM: {}", vm_name);
 
         // Try graceful shutdown first
@@ -2357,13 +2586,12 @@ mod libvirt {
         {
             // Wait up to 30 seconds for graceful shutdown
             for _ in 0..30 {
-                if let Ok(state) = cmd!(sh, "virsh domstate {vm_name}").ignore_status().read() {
-                    if state.trim() == "shut off" {
+                if let Ok(state) = cmd!(sh, "virsh domstate {vm_name}").ignore_status().read()
+                    && state.trim() == "shut off" {
                         println!("VM gracefully shut down");
                         return Ok(());
                     }
-                }
-                thread::sleep(Duration::from_secs(1));
+                sleep(Duration::from_secs(1)).await;
             }
             println!("Graceful shutdown timeout, forcing shutdown...");
         }
@@ -2380,6 +2608,9 @@ mod libvirt {
         Ok(())
     }
 
+    /// Maximum length for libvirt VM names
+    const MAX_VM_NAME_LEN: usize = 64;
+
     /// Sanitize VM name to prevent command injection and ensure valid libvirt naming
     #[context("Sanitizing VM name")]
     pub(super) fn sanitize_name(base_name: &str) -> Result<String> {
@@ -2387,8 +2618,9 @@ mod libvirt {
             anyhow::bail!("VM name cannot be empty");
         }
 
-        if base_name.len() > 64 {
-            anyhow::bail!("VM name too long: {} characters (max 64)", base_name.len());
+        let name_len = base_name.chars().count();
+        if name_len > MAX_VM_NAME_LEN {
+            anyhow::bail!("VM name too long: {} characters (max {})", name_len, MAX_VM_NAME_LEN);
         }
 
         // Libvirt requires names that match: [a-zA-Z0-9_-]+
@@ -2418,17 +2650,17 @@ mod libvirt {
 
     /// Start the VM for SSH verification
     #[context("Starting verification VM")]
-    pub(super) fn start_verification_vm(
+    pub(super) async fn start_verification_vm(
         sh: &Shell,
         args: &crate::AnacondaTestArgs,
         vm_disk: &Utf8Path,
         vm_name: &str,
-    ) -> Result<Child> {
+    ) -> Result<tokio::process::Child> {
         // Cleanup existing VM
         let _ = cmd!(sh, "virsh destroy {vm_name}").ignore_status().run();
         let _ = cmd!(sh, "virsh undefine {vm_name}").ignore_status().run();
 
-        let vm_process = std::process::Command::new("virt-install")
+        let vm_process = TokioCommand::new("virt-install")
             .args([
                 "--name",
                 vm_name,
@@ -2439,7 +2671,7 @@ mod libvirt {
                 "--disk",
                 &format!("path={},bus=virtio,format=raw", vm_disk),
                 "--network",
-                "default,model=virtio",
+                "user,model=virtio",
                 "--graphics",
                 "none",
                 "--console",
@@ -2452,89 +2684,65 @@ mod libvirt {
             .spawn()
             .context("Failed to start verification VM")?;
 
-        thread::sleep(Duration::from_secs(10));
+        sleep(Duration::from_secs(10)).await;
         Ok(vm_process)
     }
 
     /// Wait for VM to get network connectivity and return its IP address
+    ///
+    /// Note: With SLIRP (user-mode) networking, VM IP addresses are not visible
+    /// to the host via virsh commands. SSH verification requires bridge networking.
     #[context("Waiting for VM network")]
-    pub(super) fn wait_for_network(
-        sh: &Shell,
-        vm_name: &str,
-        timeout_seconds: u32,
-        retry_interval: u32,
+    pub(super) async fn wait_for_network(
+        _sh: &Shell,
+        _vm_name: &str,
+        _timeout_seconds: u32,
+        _retry_interval: u32,
     ) -> Result<String> {
-        let start_time = std::time::Instant::now();
-
-        loop {
-            if start_time.elapsed().as_secs() > timeout_seconds as u64 {
-                anyhow::bail!(
-                    "Timeout waiting for VM IP after {} seconds",
-                    timeout_seconds
-                );
-            }
-
-            // Try domifaddr first
-            if let Ok(output) = cmd!(sh, "virsh domifaddr {vm_name} --source lease")
-                .ignore_status()
-                .read()
-            {
-                for line in output.lines().skip(2) {
-                    if let Some(ip) = super::extract_ip_from_domifaddr_line(line) {
-                        return Ok(ip);
-                    }
-                }
-            }
-
-            // Try DHCP leases as fallback
-            if let Ok(output) = cmd!(sh, "virsh net-dhcp-leases default")
-                .ignore_status()
-                .read()
-            {
-                for line in output.lines().skip(2) {
-                    if line.contains(vm_name) || line.contains("bootc") {
-                        if let Some(ip) = super::extract_ip_from_dhcp_lease_line(line) {
-                            return Ok(ip);
-                        }
-                    }
-                }
-            }
-
-            thread::sleep(Duration::from_secs(retry_interval as u64));
-        }
+        // With SLIRP (user-mode) networking, the VM's IP (10.0.2.15) is internal
+        // to the QEMU process and not visible via virsh domifaddr or DHCP leases.
+        // SSH verification would require port forwarding which we haven't implemented.
+        anyhow::bail!(
+            "SSH verification is not supported with SLIRP (user-mode) networking. \
+             The VM's internal IP is not accessible from the host. \
+             Use --no-ssh or configure port forwarding manually."
+        )
     }
 
     /// Clean up verification VM
     #[context("Cleaning up verification VM")]
-    pub(super) fn cleanup_verification_vm(
+    pub(super) async fn cleanup_verification_vm(
         sh: &Shell,
         vm_name: &str,
-        mut vm_process: Child,
+        mut vm_process: tokio::process::Child,
     ) -> Result<()> {
         let _ = cmd!(sh, "virsh destroy {vm_name}").ignore_status().run();
         let _ = cmd!(sh, "virsh undefine {vm_name}").ignore_status().run();
-        let _ = vm_process.kill();
-        let _ = vm_process.wait();
+        let _ = vm_process.kill().await;
+        let _ = vm_process.wait().await;
         Ok(())
     }
 }
 
-/// Extract IP address from virsh domifaddr output line  
+/// Extract IP address from virsh domifaddr output line
+/// Note: Currently unused with SLIRP networking, kept for potential future bridge networking support
+#[allow(dead_code)]
 fn extract_ip_from_domifaddr_line(line: &str) -> Option<String> {
     // virsh domifaddr output format: "vnet0      52:54:00:xx:xx:xx    ipv4         192.168.122.xx/24"
     let parts: Vec<&str> = line.split_whitespace().collect();
-    if parts.len() >= 4 && parts[2] == "ipv4" {
-        if let Some(ip_cidr) = parts.get(3) {
+    if parts.len() >= 4 && parts[2] == "ipv4"
+        && let Some(ip_cidr) = parts.get(3) {
             // Extract IP from CIDR notation (remove /24)
             if let Some(ip) = ip_cidr.split('/').next() {
                 return Some(ip.to_string());
             }
         }
-    }
     None
 }
 
 /// Extract IP address from DHCP lease line
+/// Note: Currently unused with SLIRP networking, kept for potential future bridge networking support
+#[allow(dead_code)]
 fn extract_ip_from_dhcp_lease_line(line: &str) -> Option<String> {
     // DHCP lease format: "2024-01-01 12:00:00  52:54:00:xx:xx:xx  192.168.122.xx  hostname  *"
     let parts: Vec<&str> = line.split_whitespace().collect();
@@ -2692,6 +2900,14 @@ SUPPORT_END=2025-12-01
         let sh = Shell::new().unwrap();
         // Just verify the function doesn't panic
         let _result = has_libguestfs_tools(&sh);
+    }
+
+    #[test]
+    fn test_bcvk_availability() {
+        // Test basic detection (doesn't actually require bcvk)
+        let sh = Shell::new().unwrap();
+        // Just verify the function doesn't panic
+        let _result = has_bcvk(&sh);
     }
 
     #[test]

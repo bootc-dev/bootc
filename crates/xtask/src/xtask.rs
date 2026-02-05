@@ -225,12 +225,10 @@ fn try_main() -> Result<()> {
         if let Ok(toplevel_path) = Command::new("git")
             .args(["rev-parse", "--show-toplevel"])
             .output()
-        {
-            if toplevel_path.status.success() {
+            && toplevel_path.status.success() {
                 let path = String::from_utf8(toplevel_path.stdout)?;
                 std::env::set_current_dir(path.trim()).context("Changing to toplevel")?;
             }
-        }
         // Otherwise verify we're in the toplevel
         if !Utf8Path::new("ADOPTERS.md")
             .try_exists()
@@ -247,11 +245,10 @@ fn try_main() -> Result<()> {
     let mut cli = Cli::parse_from(cli_args);
 
     // Handle SSH command injection for Anaconda command
-    if let Commands::Anaconda(ref mut args) = cli.command {
-        if args.ssh && ssh_command.is_some() {
+    if let Commands::Anaconda(ref mut args) = cli.command
+        && args.ssh && ssh_command.is_some() {
             args.ssh_command = ssh_command;
         }
-    }
 
     let sh = xshell::Shell::new()?;
 
@@ -430,11 +427,10 @@ fn impl_srpm(sh: &Shell) -> Result<Utf8PathBuf> {
     {
         let _g = sh.push_dir("target");
         for name in sh.read_dir(".")? {
-            if let Some(name) = name.to_str() {
-                if name.ends_with(".src.rpm") {
+            if let Some(name) = name.to_str()
+                && name.ends_with(".src.rpm") {
                     sh.remove_path(name)?;
                 }
-            }
         }
     }
     let pkg = impl_package(sh)?;
