@@ -114,7 +114,6 @@ test-composefs bootloader:
     just variant=composefs bootloader={{bootloader}} \
         test-tmt --composefs-backend --bootloader {{bootloader}} \
         readonly \
-        bib-build \
         download-only \
         image-pushpull-upgrade \
         image-upgrade-reboot \

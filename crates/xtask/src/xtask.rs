@@ -79,7 +79,7 @@ pub(crate) struct LocalRustDepsArgs {
 
 /// Bootloader passed as --bootloader param for composefs builds
 // TODO: Find a better way to share this Enum between this and crates/lib
-#[derive(Debug, Clone, ValueEnum)]
+#[derive(Debug, Clone, ValueEnum, PartialEq, Eq)]
 pub enum Bootloader {
     /// grub as bootloader
     Grub,
