@@ -132,6 +132,21 @@ test-tmt-on-coreos *ARGS:
 run-container-external-tests:
    ./tests/container/run {{base_img}}
 
+# Run end-to-end Anaconda installation test
+[group('testing')]
+test-anaconda IMAGE=base_img OUTPUT="test-disk.raw" *ARGS:
+    cargo xtask anaconda {{IMAGE}} {{OUTPUT}} {{ARGS}}
+
+# Test with auto-detected installer
+[group('testing')]
+test-anaconda-auto IMAGE=base_img OUTPUT="test-disk.raw" *ARGS:
+    cargo xtask anaconda --installer-type auto {{IMAGE}} {{OUTPUT}} {{ARGS}}
+
+# Test with CentOS Stream installer
+[group('testing')]
+test-anaconda-centos IMAGE=base_img OUTPUT="test-disk.raw" *ARGS:
+    cargo xtask anaconda --installer-type centos-stream {{IMAGE}} {{OUTPUT}} {{ARGS}}
+
 # Remove all test VMs created by tmt tests
 [group('testing')]
 tmt-vm-cleanup:
