@@ -138,6 +138,10 @@ const FEDORA_ISO_URL_FALLBACK: &str = "https://download.fedoraproject.org/pub/fe
 /// This name is used in both virt-install --filesystem and the kickstart %pre mount
 const VIRTIOFS_TARGET_NAME: &str = "bootcexport";
 
+/// Port on localhost for SSH forwarding with SLIRP networking
+/// SLIRP forwards host:2222 -> guest:22
+const SSH_FORWARDED_PORT: u16 = 2222;
+
 /// Libvirtd status detection result
 #[derive(Debug)]
 enum LibvirtStatus {
@@ -1204,7 +1208,9 @@ async fn run_virt_install(
             "--disk",
             &format!("path={},bus=virtio,format=raw", vm_disk),
             "--network",
-            "user,model=virtio",
+            // Use simple SLIRP user networking for installation
+            // Port forwarding is not needed during installation, only for post-reboot SSH
+            "type=user,model=virtio",
             "--location",
             installer_iso.as_str(),
             "--initrd-inject",
@@ -1647,6 +1653,50 @@ async fn connect_anaconda_socket(
         socket_path
     );
     None
+}
+
+/// Capture console output from a running VM for debugging
+///
+/// Uses `virsh console` to read output from the VM's virtio console (hvc0).
+/// This is useful for debugging boot issues after the VM reboots into the
+/// installed system.
+///
+/// Note: This function captures output for a limited time and returns what
+/// was captured. It's not meant for interactive use.
+#[context("Capturing console output")]
+#[allow(dead_code)]
+fn capture_console_output(sh: &Shell, vm_name: &str, timeout_seconds: u32) -> Result<String> {
+    println!(
+        "Capturing console output from {} ({}s timeout)...",
+        vm_name, timeout_seconds
+    );
+
+    // Use timeout command to limit virsh console duration
+    // virsh console requires --force to connect non-interactively
+    let timeout_str = timeout_seconds.to_string();
+    let output = cmd!(
+        sh,
+        "timeout {timeout_str} virsh console --force {vm_name}"
+    )
+    .ignore_status()
+    .output()
+    .context("Failed to capture console output")?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+    // virsh console may exit with timeout status, that's OK
+    if !stderr.is_empty() && !stderr.contains("Escape character") {
+        eprintln!("Console stderr: {}", stderr);
+    }
+
+    if stdout.is_empty() {
+        println!("No console output captured (VM may not have console=hvc0 configured)");
+    } else {
+        println!("Captured {} bytes of console output", stdout.len());
+    }
+
+    Ok(stdout)
 }
 
 /// Verify the installation succeeded using available tools
@@ -2377,6 +2427,8 @@ async fn verify_ssh_access(
 }
 
 /// Execute custom SSH commands and display results with professional formatting
+///
+/// Uses port forwarding (localhost:SSH_FORWARDED_PORT) to connect to the VM.
 #[context("Executing SSH commands")]
 fn execute_ssh_commands(
     sh: &Shell,
@@ -2385,6 +2437,7 @@ fn execute_ssh_commands(
     ssh_commands: &[String],
 ) -> Result<()> {
     let private_key_str = keypair.private_key_path.as_str();
+    let port_str = SSH_FORWARDED_PORT.to_string();
     let ssh_target = format!("root@{}", vm_ip);
 
     // Validate and sanitize SSH commands to prevent command injection
@@ -2392,7 +2445,7 @@ fn execute_ssh_commands(
 
     println!("Executing: {}", command_str);
 
-    let output = cmd!(sh, "ssh -i {private_key_str} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=30 {ssh_target} {command_str}")
+    let output = cmd!(sh, "ssh -p {port_str} -i {private_key_str} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=30 {ssh_target} {command_str}")
         .output()
         .context("SSH command failed")?;
 
@@ -2444,6 +2497,8 @@ fn escape_ssh_commands(commands: &[String]) -> Result<String> {
 }
 
 /// Test SSH connectivity with retries using tokio timeout
+///
+/// Uses port forwarding (localhost:SSH_FORWARDED_PORT) to connect to the VM.
 #[context("Testing SSH connectivity")]
 async fn test_ssh_connectivity(
     sh: &Shell,
@@ -2452,11 +2507,13 @@ async fn test_ssh_connectivity(
     timeout_seconds: u32,
 ) -> Result<bool> {
     let private_key_str = keypair.private_key_path.as_str();
+    // Build SSH target with port forwarding
+    let port_str = SSH_FORWARDED_PORT.to_string();
     let ssh_target = format!("root@{}", vm_ip);
 
     let result = timeout(Duration::from_secs(timeout_seconds as u64), async {
         loop {
-            if let Ok(output) = cmd!(sh, "ssh -i {private_key_str} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 {ssh_target} echo SSH_OK")
+            if let Ok(output) = cmd!(sh, "ssh -p {port_str} -i {private_key_str} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 {ssh_target} echo SSH_OK")
                 .ignore_status().read()
                 && output.trim() == "SSH_OK"
             {
@@ -2475,9 +2532,12 @@ async fn test_ssh_connectivity(
 }
 
 /// Run system validation commands over SSH
+///
+/// Uses port forwarding (localhost:SSH_FORWARDED_PORT) to connect to the VM.
 #[context("Running SSH system validation")]
 fn run_ssh_system_validation(sh: &Shell, vm_ip: &str, keypair: &SshKeyPair) -> Result<()> {
     let private_key_str = keypair.private_key_path.as_str();
+    let port_str = SSH_FORWARDED_PORT.to_string();
     let ssh_target = format!("root@{}", vm_ip);
 
     // These validations are critical - failures should be reported
@@ -2490,7 +2550,7 @@ fn run_ssh_system_validation(sh: &Shell, vm_ip: &str, keypair: &SshKeyPair) -> R
     let mut failures = Vec::new();
 
     for (name, command) in validations {
-        let output = cmd!(sh, "ssh -i {private_key_str} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=30 {ssh_target} {command}")
+        let output = cmd!(sh, "ssh -p {port_str} -i {private_key_str} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=30 {ssh_target} {command}")
             .output();
 
         match output {
@@ -2782,6 +2842,8 @@ mod libvirt {
     }
 
     /// Start the VM for SSH verification
+    ///
+    /// Uses SLIRP networking with port forwarding for SSH access.
     #[context("Starting verification VM")]
     pub(super) async fn start_verification_vm(
         sh: &Shell,
@@ -2792,6 +2854,11 @@ mod libvirt {
         // Cleanup existing VM
         let _ = cmd!(sh, "virsh destroy {vm_name}").ignore_status().run();
         let _ = cmd!(sh, "virsh undefine --nvram {vm_name}").ignore_status().run();
+
+        let network_arg = format!(
+            "type=user,model=virtio,backend.type=passt,portForward0.proto=tcp,portForward0.range0.start={},portForward0.range0.to=22",
+            SSH_FORWARDED_PORT
+        );
 
         let vm_process = TokioCommand::new("virt-install")
             .args([
@@ -2804,11 +2871,14 @@ mod libvirt {
                 "--disk",
                 &format!("path={},bus=virtio,format=raw", vm_disk),
                 "--network",
-                "user,model=virtio",
+                &network_arg,
                 "--graphics",
                 "none",
                 "--console",
                 "pty,target_type=serial",
+                // Add virtio console for hvc0
+                "--console",
+                "pty,target_type=virtio",
                 "--noautoconsole",
                 "--import",
             ])
@@ -2821,24 +2891,50 @@ mod libvirt {
         Ok(vm_process)
     }
 
-    /// Wait for VM to get network connectivity and return its IP address
+    /// Wait for SSH to become available via port forwarding
     ///
-    /// Note: With SLIRP (user-mode) networking, VM IP addresses are not visible
-    /// to the host via virsh commands. SSH verification requires bridge networking.
-    #[context("Waiting for VM network")]
+    /// With SLIRP networking and port forwarding (hostfwd=tcp::2222-:22),
+    /// we can SSH to localhost:2222 to reach the VM's port 22.
+    #[context("Waiting for SSH via port forwarding")]
     pub(super) async fn wait_for_network(
-        _sh: &Shell,
+        sh: &Shell,
         _vm_name: &str,
-        _timeout_seconds: u32,
-        _retry_interval: u32,
+        timeout_seconds: u32,
+        retry_interval: u32,
     ) -> Result<String> {
-        // With SLIRP (user-mode) networking, the VM's IP (10.0.2.15) is internal
-        // to the QEMU process and not visible via virsh domifaddr or DHCP leases.
-        // SSH verification would require port forwarding which we haven't implemented.
+        println!(
+            "Waiting for SSH port {} to become available...",
+            SSH_FORWARDED_PORT
+        );
+
+        let start = Instant::now();
+        let timeout_duration = Duration::from_secs(timeout_seconds as u64);
+        let retry_duration = Duration::from_secs(retry_interval as u64);
+
+        while start.elapsed() < timeout_duration {
+            // Try to connect to the forwarded SSH port
+            let port_str = SSH_FORWARDED_PORT.to_string();
+            let result = cmd!(
+                sh,
+                "nc -z -w 2 localhost {port_str}"
+            )
+            .ignore_status()
+            .ignore_stderr()
+            .run();
+
+            if result.is_ok() {
+                println!("SSH port {} is now available", SSH_FORWARDED_PORT);
+                // Return localhost as the "IP" since we use port forwarding
+                return Ok("localhost".to_string());
+            }
+
+            sleep(retry_duration).await;
+        }
+
         anyhow::bail!(
-            "SSH verification is not supported with SLIRP (user-mode) networking. \
-             The VM's internal IP is not accessible from the host. \
-             Use --no-ssh or configure port forwarding manually."
+            "Timeout waiting for SSH port {} after {} seconds",
+            SSH_FORWARDED_PORT,
+            timeout_seconds
         )
     }
 
