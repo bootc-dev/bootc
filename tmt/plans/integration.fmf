@@ -173,4 +173,11 @@ execute:
     how: fmf
     test:
       - /tmt/tests/tests/test-34-user-agent
+
+/plan-40-anaconda:
+  summary: Test Anaconda installation of bootc images via liveimg
+  discover:
+    how: fmf
+    test:
+      - /tmt/tests/tests/test-40-anaconda
 # END GENERATED PLANS

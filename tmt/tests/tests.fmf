@@ -101,3 +101,12 @@
   summary: Verify bootc sends correct User-Agent header to registries
   duration: 10m
   test: python3 booted/test-user-agent.py
+
+/test-40-anaconda:
+  summary: Test Anaconda installation of bootc images via liveimg
+  duration: 45m
+  require:
+  - qemu-img
+  - virt-install
+  - libvirt
+  test: nu booted/test-anaconda.nu
