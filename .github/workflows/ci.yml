@@ -263,10 +263,49 @@ jobs:
           name: tmt-log-PR-${{ github.event.number }}-fedora-43-coreos-${{ env.ARCH }}
           path: /var/tmp/tmt
 
+  # Test Anaconda installation with SSH verification
+  # Tests the complete Anaconda workflow including SSH access to installed systems
+  test-anaconda:
+    needs: package
+    runs-on: ubuntu-24.04
+
+    strategy:
+      fail-fast: false
+      matrix:
+        test_os: [fedora-43, centos-9]
+
+    steps:
+      - uses: actions/checkout@v6
+      - name: Bootc Ubuntu Setup
+        uses: bootc-dev/actions/bootc-ubuntu-setup@main
+        with:
+          libvirt: true
+
+      - name: Setup env
+        run: |
+          BASE=$(just pullspec-for-os base ${{ matrix.test_os }})
+          echo "BOOTC_base=${BASE}" >> $GITHUB_ENV
+          echo "BOOTC_variant=ostree" >> $GITHUB_ENV
+
+      - name: Download package artifacts
+        uses: actions/download-artifact@v7
+        with:
+          name: packages-${{ matrix.test_os }}
+          path: target/packages/
+
+      - name: Build container and run Anaconda SSH test
+        run: |
+          BOOTC_SKIP_PACKAGE=1 just build
+          # Run Anaconda test with SSH verification directly
+          just test-anaconda localhost/bootc /tmp/bootc-anaconda-${{ matrix.test_os }}.raw --ssh -- bootc status
+          just clean-local-images
+
+
+
   # Sentinel job for required checks - configure this job name in repository settings
   required-checks:
     if: always()
-    needs: [cargo-deny, validate, package, test-integration, test-coreos]
+    needs: [cargo-deny, validate, package, test-integration, test-coreos, test-anaconda]
     runs-on: ubuntu-latest
     steps:
       - run: exit 1
@@ -275,4 +314,5 @@ jobs:
           needs.validate.result != 'success' ||
           needs.package.result != 'success' ||
           needs.test-integration.result != 'success' ||
-          needs.test-coreos.result != 'success'
+          needs.test-coreos.result != 'success' ||
+          needs.test-anaconda.result != 'success'
