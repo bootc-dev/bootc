@@ -13,15 +13,21 @@ let is_composefs = (tap is_composefs)
 let expecting_composefs = ($env.BOOTC_variant? | default "" | find "composefs") != null
 if $expecting_composefs {
     assert $is_composefs
-    # When using systemd-boot with DPS (Discoverable Partition Specification),
-    # /proc/cmdline should NOT contain a root= parameter because systemd-gpt-auto-generator
-    # discovers the root partition automatically
-    # Note that there is `bootctl --json=pretty` but it doesn't actually output JSON
-    let bootctl_output = (bootctl)
-    if ($bootctl_output | str contains 'Product: systemd-boot') {
-        let cmdline = parse_cmdline
-        let has_root_param = ($cmdline | any { |param| $param | str starts-with 'root=' })
-        assert (not $has_root_param) "systemd-boot image should not have root= in kernel cmdline; systemd-gpt-auto-generator should discover the root partition via DPS"
+
+    let bootloader = ($st.status.booted.composefs.bootloader | str downcase)
+
+    if $bootloader == "systemd" {
+        # When using systemd-boot with DPS (Discoverable Partition Specification),
+        # /proc/cmdline should NOT contain a root= parameter because systemd-gpt-auto-generator
+        # discovers the root partition automatically
+        # Note that there is `bootctl --json=pretty` but it doesn't actually output JSON
+        let bootctl_output = (bootctl)
+
+        if ($bootctl_output | str contains 'Product: systemd-boot') {
+            let cmdline = parse_cmdline
+            let has_root_param = ($cmdline | any { |param| $param | str starts-with 'root=' })
+            assert (not $has_root_param) "systemd-boot image should not have root= in kernel cmdline; systemd-gpt-auto-generator should discover the root partition via DPS"
+        }
     }
 }
 
