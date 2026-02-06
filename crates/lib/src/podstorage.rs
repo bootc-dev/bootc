@@ -48,13 +48,41 @@ pub(crate) const SUBPATH: &str = "storage";
 const RUNROOT: &str = "bootc/storage";
 
 /// A bootc-owned instance of `containers-storage:`.
+///
+/// This struct manages bootc's container image storage, used for:
+/// - Logically bound images (LBIs)
+/// - Unified image pulls (pulling the host image into bootc storage)
+/// - Other container image operations
+///
+/// ## Auth file lookup
+///
+/// When pulling images that require authentication, we need to locate auth.json.
+/// This struct maintains two root directories to handle auth lookup correctly:
+///
+/// - `sysroot`: The ostree sysroot directory. This is checked first for auth.json.
+///   Depending on the operation, this may be the staged deployment's sysroot (during
+///   LBI pulls for an upgrade) or the current sysroot.
+///
+/// - `booted_root`: The currently running deployment's root filesystem, obtained via
+///   `deployment_fd()`. This is used as a fallback when auth.json is not found in
+///   the sysroot. This handles the upgrade scenario where the user has auth.json on
+///   their running system but is upgrading to an image that doesn't have it baked in.
+///
+/// This fallback is essential for LBI pulls during upgrades: the LBIs are defined
+/// in the *new* image, but we may need to authenticate using credentials from the
+/// *running* system.
 pub(crate) struct CStorage {
-    /// The root directory
+    /// The ostree sysroot directory. This is also checked first for auth.json.
     sysroot: Dir,
-    /// The location of container storage
+    /// The booted (currently running) deployment's root directory, obtained via
+    /// `deployment_fd()`. Used as a fallback for auth file lookup when the sysroot
+    /// doesn't contain auth.json. This is `None` during fresh installs where there
+    /// is no booted deployment.
+    booted_root: Option<Dir>,
+    /// The location of container storage, relative to the sysroot.
     storage_root: Dir,
     #[allow(dead_code)]
-    /// Our runtime state
+    /// Our runtime state directory.
     run: Dir,
     /// Disallow using this across multiple threads concurrently; while we
     /// have internal locking in podman, in the future we may change how
@@ -119,10 +147,50 @@ fn bind_storage_roots(cmd: &mut Command, storage_root: &Dir, run_root: &Dir) -> 
     Ok(())
 }
 
-// Initialize a `podman` subprocess with:
-// - storage overridden to point to to storage_root
-// - Authentication (auth.json) using the bootc/ostree owned auth
-fn new_podman_cmd_in(sysroot: &Dir, storage_root: &Dir, run_root: &Dir) -> Result<Command> {
+/// Get the global authfile from the booted deployment's root filesystem.
+///
+/// This is used as a fallback when the authfile is not found in the sysroot.
+/// The booted deployment's root is obtained via `deployment_fd()`, which gives us
+/// a Dir handle to the on-disk deployment directory.
+///
+/// This fallback handles the upgrade scenario where:
+/// 1. The user's running system has auth.json (manually added or from the current image)
+/// 2. They upgrade to a new image that does NOT have auth.json baked in
+/// 3. The new image has LBIs that require authentication
+/// 4. We need to use the running system's auth.json to pull those LBIs
+fn get_booted_authfile(
+    booted_root: Option<&Dir>,
+) -> Result<Option<(camino::Utf8PathBuf, std::fs::File)>> {
+    let Some(booted_root) = booted_root else {
+        return Ok(None);
+    };
+    ostree_ext::globals::get_global_authfile(booted_root)
+}
+
+/// Initialize a `podman` subprocess configured for bootc's container storage.
+///
+/// This sets up podman with:
+/// - `--root` pointing to bootc's container storage
+/// - `--runroot` pointing to runtime state
+/// - `REGISTRY_AUTH_FILE` set to an auth.json for authenticated registry access
+///
+/// # Auth file lookup order
+///
+/// The auth.json is resolved with the following priority:
+/// 1. **Sysroot** (`sysroot` param): Check the ostree sysroot for auth.json.
+///    This finds credentials in the sysroot, which depending on the operation
+///    may be the staged deployment or the current deployment.
+/// 2. **Booted deployment** (`booted_root` param): Fall back to the currently running
+///    deployment's root. This finds credentials from the user's running system,
+///    which is essential during upgrades where the new image lacks auth.json.
+/// 3. **Empty auth**: If neither has auth.json, use an empty `{}` to prevent podman
+///    from searching user-owned paths.
+fn new_podman_cmd_in(
+    sysroot: &Dir,
+    booted_root: Option<&Dir>,
+    storage_root: &Dir,
+    run_root: &Dir,
+) -> Result<Command> {
     let mut cmd = Command::new("podman");
     bind_storage_roots(&mut cmd, storage_root, run_root)?;
     let run_root = format!("/proc/self/fd/{STORAGE_RUN_FD}");
@@ -132,11 +200,21 @@ fn new_podman_cmd_in(sysroot: &Dir, storage_root: &Dir, run_root: &Dir) -> Resul
     let mut tempfile = cap_tempfile::TempFile::new_anonymous(tmpd).map(std::io::BufWriter::new)?;
 
     // Keep this in sync with https://github.com/bootc-dev/containers-image-proxy-rs/blob/b5e0861ad5065f47eaf9cda0d48da3529cc1bc43/src/imageproxy.rs#L310
-    // We always override the auth to match the bootc setup.
-    let authfile_fd = ostree_ext::globals::get_global_authfile(sysroot)?.map(|v| v.1);
-    if let Some(mut fd) = authfile_fd {
+    // We always override the auth to match the bootc setup. See the function doc comment
+    // for the full auth lookup order explanation.
+    let authfile = if let Some((path, file)) = ostree_ext::globals::get_global_authfile(sysroot)? {
+        tracing::debug!("Using authfile from staged sysroot: {path}");
+        Some(file)
+    } else if let Some((path, file)) = get_booted_authfile(booted_root)? {
+        tracing::debug!("Using authfile from booted deployment: {path}");
+        Some(file)
+    } else {
+        None
+    };
+    if let Some(mut fd) = authfile {
         std::io::copy(&mut fd, &mut tempfile)?;
     } else {
+        tracing::debug!("No authfile found, using empty auth");
         // Note that if there's no bootc-owned auth, then we force an empty authfile to ensure
         // that podman doesn't fall back to searching the user-owned paths.
         tempfile.write_all(b"{}")?;
@@ -194,7 +272,12 @@ impl CStorage {
     /// Create a `podman image` Command instance prepared to operate on our alternative
     /// root.
     pub(crate) fn new_image_cmd(&self) -> Result<Command> {
-        let mut r = new_podman_cmd_in(&self.sysroot, &self.storage_root, &self.run)?;
+        let mut r = new_podman_cmd_in(
+            &self.sysroot,
+            self.booted_root.as_ref(),
+            &self.storage_root,
+            &self.run,
+        )?;
         // We want to limit things to only manipulating images by default.
         r.arg("image");
         Ok(r)
@@ -237,6 +320,7 @@ impl CStorage {
     #[context("Creating imgstorage")]
     pub(crate) fn create(
         sysroot: &Dir,
+        booted_root: Option<&Dir>,
         run: &Dir,
         sepolicy: Option<&ostree::SePolicy>,
     ) -> Result<Self> {
@@ -260,7 +344,7 @@ impl CStorage {
             // There's no explicit API to initialize a containers-storage:
             // root, simply passing a path will attempt to auto-create it.
             // We run "podman images" in the new root.
-            new_podman_cmd_in(&sysroot, &storage_root, &run)?
+            new_podman_cmd_in(&sysroot, booted_root, &storage_root, &run)?
                 .stdout(Stdio::null())
                 .arg("images")
                 .run_capture_stderr()
@@ -277,11 +361,11 @@ impl CStorage {
             Self::ensure_labeled(&storage_root, sepolicy)?;
         }
 
-        Self::open(sysroot, run)
+        Self::open(sysroot, booted_root, run)
     }
 
     #[context("Opening imgstorage")]
-    pub(crate) fn open(sysroot: &Dir, run: &Dir) -> Result<Self> {
+    pub(crate) fn open(sysroot: &Dir, booted_root: Option<&Dir>, run: &Dir) -> Result<Self> {
         tracing::trace!("Opening container image store");
         Self::init_globals()?;
         let subpath = &Self::subpath();
@@ -294,6 +378,7 @@ impl CStorage {
         let run = run.open_dir(RUNROOT)?;
         Ok(Self {
             sysroot: sysroot.try_clone()?,
+            booted_root: booted_root.map(|d| d.try_clone()).transpose()?,
             storage_root,
             run,
             _unsync: Default::default(),
