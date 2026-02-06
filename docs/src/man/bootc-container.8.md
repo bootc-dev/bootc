@@ -22,6 +22,7 @@ Operations which can be executed as part of a container build
 | **bootc container inspect** | Output information about the container image |
 | **bootc container lint** | Perform relatively inexpensive static analysis checks as part of a container build |
 | **bootc container ukify** | Build a Unified Kernel Image (UKI) using ukify |
+| **bootc container export** | Export container filesystem as a tar archive |
 
 <!-- END GENERATED SUBCOMMANDS -->
 
