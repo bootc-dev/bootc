@@ -421,8 +421,13 @@ pub(crate) enum ContainerOpts {
     /// SELinux labeling. The output is written to stdout by default or to a specified file.
     ///
     /// Example:
-    ///   bootc container export /target > output.tar
+    ///   bootc container export --experimental /target > output.tar
+    #[clap(hide = true)]
     Export {
+        /// Acknowledge that this is an experimental command that may change or be removed.
+        #[clap(long)]
+        experimental: bool,
+
         /// Format for export output
         #[clap(long, default_value = "tar")]
         format: ExportFormat,
@@ -1661,12 +1666,16 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
                 args,
             } => crate::ukify::build_ukify(&rootfs, &kargs, &args),
             ContainerOpts::Export {
+                experimental,
                 format,
                 target,
                 output,
                 kernel_in_boot,
                 disable_selinux,
             } => {
+                if !experimental {
+                    anyhow::bail!("This command requires --experimental");
+                }
                 crate::container_export::export(
                     &format,
                     &target,

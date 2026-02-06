@@ -28,11 +28,13 @@ xshell = { workspace = true }
 
 # Crate-specific dependencies
 cargo_metadata = "0.23"
+tokio = { version = "1", features = ["process", "time", "rt-multi-thread", "macros", "io-util", "net"] }
 mandown = "1.1.0"
 rand = "0.9"
 serde_yaml = "0.9"
 tar = "0.4"
 itertools = "0.14.0"
+shlex = { workspace = true }
 
 [lints]
 workspace = true
