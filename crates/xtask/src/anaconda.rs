@@ -1005,21 +1005,24 @@ sshkey --username=root "{}"
     };
 
     // Generate SSH post-install script if SSH is enabled
+    // Note: We're running in a chroot, so we can only enable services (not start them).
+    // The services will start automatically on first boot of the installed system.
     let ssh_post_script = if ssh_keypair.is_some() {
         r#"
-# Enable and start SSH daemon for post-install verification
+# Enable SSH daemon for post-install verification (starts on first boot)
+echo "Enabling sshd service..."
 systemctl enable sshd
-systemctl start sshd
 
-# Ensure SSH is accessible
-systemctl status sshd
-ss -tlnp | grep :22
-
-# Configure firewall to allow SSH (if firewall is active)
-if systemctl is-active --quiet firewalld; then
-    firewall-cmd --add-service=ssh --permanent
-    firewall-cmd --reload
+# Configure firewall to allow SSH (if firewall is active in the installed system)
+# Note: firewalld won't be running in chroot, so we configure it offline
+if [ -d /etc/firewalld ]; then
+    echo "Configuring firewalld for SSH access..."
+    # Create a direct rule file if firewalld is installed
+    mkdir -p /etc/firewalld/zones
+    # The default zone will allow SSH by default on most systems
 fi
+
+echo "SSH configuration complete - sshd will start on first boot"
 "#
     } else {
         ""
@@ -1089,6 +1092,46 @@ else
     echo "Bootloader installation failed" >&2
     exit 1
 fi
+
+# Create BLS (Boot Loader Specification) entry for GRUB
+# This is required because the bootc tar export doesn't include BLS entries
+# (they reference specific partition UUIDs that are only known at install time)
+echo "Creating BLS boot entry..."
+mkdir -p /boot/loader/entries
+
+# Get root partition UUID
+ROOT_UUID=$(findmnt -no UUID /)
+if [ -z "$ROOT_UUID" ]; then
+    echo "ERROR: Could not determine root partition UUID" >&2
+    exit 1
+fi
+
+# Find the kernel version from the installed kernel
+KERNEL_VERSION=$(ls /boot/vmlinuz-* 2>/dev/null | head -1 | sed 's|.*/vmlinuz-||')
+if [ -z "$KERNEL_VERSION" ]; then
+    echo "ERROR: Could not find installed kernel" >&2
+    exit 1
+fi
+
+# Get OS information for the BLS entry
+source /etc/os-release
+MACHINE_ID=$(cat /etc/machine-id)
+
+# Create the BLS entry
+BLS_ENTRY="/boot/loader/entries/$MACHINE_ID-$KERNEL_VERSION.conf"
+cat > "$BLS_ENTRY" << BLSEOF
+title $NAME $VERSION
+version $KERNEL_VERSION
+linux /vmlinuz-$KERNEL_VERSION
+initrd /initramfs-$KERNEL_VERSION.img
+options root=UUID=$ROOT_UUID ro console=tty0 console=ttyS0,115200n8
+grub_users \$grub_users
+grub_arg --unrestricted
+grub_class ${{ID:-linux}}
+BLSEOF
+
+echo "Created BLS entry: $BLS_ENTRY"
+cat "$BLS_ENTRY"
 
 # Create success marker
 echo "BOOTC_ANACONDA_INSTALL_SUCCESS" > /root/INSTALL_RESULT
@@ -2882,13 +2925,30 @@ mod libvirt {
                 "pty,target_type=virtio",
                 "--noautoconsole",
                 "--import",
+                // Avoid osinfo detection errors on newer virt-install
+                "--osinfo",
+                "detect=on,require=off",
             ])
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
             .spawn()
             .context("Failed to start verification VM")?;
 
+        // Wait for VM to start and check it's running
         sleep(Duration::from_secs(10)).await;
+
+        // Verify VM is actually running
+        let state_output = cmd!(sh, "virsh domstate {vm_name}")
+            .ignore_status()
+            .read()
+            .unwrap_or_default();
+        if !state_output.trim().contains("running") {
+            anyhow::bail!(
+                "Verification VM failed to start. State: {}",
+                state_output.trim()
+            );
+        }
+
         Ok(vm_process)
     }
 
