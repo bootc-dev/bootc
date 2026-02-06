@@ -1,0 +1,13 @@
+#!/bin/bash
+# Install unsigned systemd-boot RPM (already downloaded by tools stage)
+set -xeuo pipefail
+
+# Uninstall bootupd if present (we're switching to sd-boot managed differently)
+if rpm -q bootupd &>/dev/null; then
+  rpm -e bootupd
+  rm -vrf /usr/lib/bootupd/updates
+fi
+
+# Install the unsigned systemd-boot RPM that was downloaded by the tools stage
+# The RPM is available in /run/sdboot-signed/out (copied from tools stage)
+rpm -Uvh /run/sdboot-signed/out/*.rpm

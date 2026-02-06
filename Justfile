@@ -20,6 +20,7 @@ upgrade_img := base_img + "-upgrade"
 
 # Build variant: ostree (default) or composefs-sealeduki-sdboot (sealed UKI)
 variant := env("BOOTC_variant", "ostree")
+bootloader := env("BOOTC_bootloader", "grub")
 # Base container image to build from
 base := env("BOOTC_base", "quay.io/centos-bootc/centos-bootc:stream10")
 # Buildroot base image
@@ -38,7 +39,7 @@ lbi_images := "quay.io/curl/curl:latest quay.io/curl/curl-base:latest registry.a
 fedora-coreos := "quay.io/fedora/fedora-coreos:testing-devel"
 generic_buildargs := ""
 _extra_src_args := if extra_src != "" { "-v " + extra_src + ":/run/extra-src:ro --security-opt=label=disable" } else { "" }
-base_buildargs := generic_buildargs + " " + _extra_src_args + " --build-arg=base=" + base + " --build-arg=variant=" + variant
+base_buildargs := generic_buildargs + " " + _extra_src_args + " --build-arg=base=" + base + " --build-arg=variant=" + variant + " --build-arg=bootloader=" + bootloader
 buildargs := base_buildargs \
              + " --cap-add=all --security-opt=label=type:container_runtime_t --device /dev/fuse" \
              + " --secret=id=secureboot_key,src=target/test-secureboot/db.key --secret=id=secureboot_cert,src=target/test-secureboot/db.crt"
@@ -105,8 +106,31 @@ test-container: build build-units
 
 # Build and test sealed composefs images
 [group('core')]
-test-composefs:
+test-composefs-sealeduki-sdboot:
     just variant=composefs-sealeduki-sdboot test-tmt readonly local-upgrade-reboot
+
+[group('core')]
+test-composefs bootloader:
+    just variant=composefs bootloader={{bootloader}} \
+        test-tmt --composefs-backend --bootloader {{bootloader}} \
+        readonly \
+        download-only \
+        image-pushpull-upgrade \
+        image-upgrade-reboot \
+        install-outside-container \
+        install-to-filesystem-var-mount \
+        soft-reboot \
+        usroverlay
+
+# Build and test composefs images booted using Type1 boot entries and systemd-boot as the bootloader
+[group('core')]
+test-composefs-sdboot:
+    just test-composefs systemd
+
+# Build and test composefs images booted using Type1 boot entries and grub as the bootloader
+[group('core')]
+test-composefs-grub:
+    just test-composefs grub
 
 # Run cargo fmt and clippy checks in container
 [group('core')]
@@ -219,6 +243,7 @@ clean-local-images:
     podman images --filter "label={{testimage_label}}" --format "{{{{.ID}}" | xargs -r podman rmi -f
     podman image prune -f
     podman rmi {{fedora-coreos}} -f
+
 
 # Build packages (RPM) into target/packages/
 [group('maintenance')]

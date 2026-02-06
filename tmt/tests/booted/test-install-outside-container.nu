@@ -28,6 +28,16 @@ umount /var/mnt
 # so we mask off /sysroot/ostree
 # And using systemd-run here breaks our install_t so we disable SELinux enforcement
 setenforce 0
+
+let st = bootc status --json | from json
+let bootloader = ($st.status.booted.composefs.bootloader | str downcase)
+
+let install_cmd = if (tap is_composefs) {
+    $"bootc install to-disk --disable-selinux --via-loopback --composefs-backend --bootloader=($bootloader) --filesystem ext4 --source-imgref ($target_image) ./disk.img"
+} else {
+    $"bootc install to-disk --disable-selinux --via-loopback --filesystem xfs --source-imgref ($target_image) ./disk.img"
+}
+
 systemd-run -p MountFlags=slave -qdPG -- /bin/sh -c $"
 set -xeuo pipefail
 bootc usr-overlay
@@ -36,7 +46,7 @@ if test -d /sysroot/ostree; then mount --bind /usr/share/empty /sysroot/ostree; 
 rm -vrf /usr/lib/bootupd/updates
 # Another bootc install bug, we should not look at this in outside-of-container flows
 rm -vrf /usr/lib/bootc/bound-images.d
-bootc install to-disk --disable-selinux --via-loopback --filesystem xfs --source-imgref ($target_image) ./disk.img
+($install_cmd)
 "
 
 tap ok

@@ -34,7 +34,8 @@ WORKDIR /src
 # We aren't using the full recommendations there, just the simple bits.
 # First we download all of our Rust dependencies
 # Note: Local path dependencies (from [patch] sections) are auto-detected and bind-mounted by the Justfile
-RUN --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp --mount=type=cache,target=/src/target --mount=type=cache,target=/var/roothome cargo fetch
+RUN --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp --mount=type=cache,target=/src/target --mount=type=cache,target=/var/roothome \
+    rm -rf /var/roothome/.cargo/registry; cargo fetch
 
 # We always do a "from scratch" build
 # https://docs.fedoraproject.org/en-US/bootc/building-from-scratch/
@@ -143,12 +144,13 @@ RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp
 # Perform all filesystem transformations except generating the sealed UKI (if configured)
 FROM base as base-penultimate
 ARG variant
-# Switch to a signed systemd-boot, if configured
+ARG bootloader
+# Switch to systemd-boot (signed or unsigned), if configured
 RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
     --mount=type=bind,from=packaging,src=/,target=/run/packaging \
     --mount=type=bind,from=sdboot-signed,src=/,target=/run/sdboot-signed <<EORUN
 set -xeuo pipefail
-if test "${variant}" = "composefs-sealeduki-sdboot"; then
+if [[ "${bootloader}" == "systemd" ]]; then
   /run/packaging/switch-to-sdboot /run/sdboot-signed
 fi
 EORUN

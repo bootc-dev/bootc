@@ -9,9 +9,7 @@ use bootc_testlib.nu
 
 # See https://github.com/bootc-dev/bootc/issues/1854
 
-let st = bootc status --json | from json
-let is_composefs = ($st.status.booted.composefs? != null)
-if not $is_composefs {
+if not (tap is_composefs) {
     # This is aiming to reproduce an environment closer to the Anaconda case
     # where we're chrooted into a non-booted system. TODO: What we really want
     # is to add `bootc switch --sysroot` too.

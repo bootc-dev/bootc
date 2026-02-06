@@ -29,8 +29,10 @@ const ENV_BOOTC_UPGRADE_IMAGE: &str = "BOOTC_upgrade_image";
 // Distro identifiers
 const DISTRO_CENTOS_9: &str = "centos-9";
 
+const COMPOSEFS_KERNEL_ARGS: [&str; 1] = ["--karg=enforcing=0"];
+
 // Import the argument types from xtask.rs
-use crate::{RunTmtArgs, TmtProvisionArgs};
+use crate::{Bootloader, RunTmtArgs, TmtProvisionArgs};
 
 /// Generate a random alphanumeric suffix for VM names
 fn generate_random_suffix() -> String {
@@ -109,7 +111,11 @@ const DEFAULT_SB_KEYS_DIR: &str = "target/test-secureboot";
 ///
 /// For sealed images, secure boot keys must be present or an error is returned.
 #[context("Building firmware arguments")]
-fn build_firmware_args(sh: &Shell, image: &str) -> Result<Vec<String>> {
+fn build_firmware_args(
+    sh: &Shell,
+    image: &str,
+    bootloader: &Option<Bootloader>,
+) -> Result<Vec<String>> {
     let is_sealed = is_sealed_image(sh, image)?;
     let sb_keys_dir = Utf8Path::new(DEFAULT_SB_KEYS_DIR);
 
@@ -131,6 +137,8 @@ fn build_firmware_args(sh: &Shell, image: &str) -> Result<Vec<String>> {
                 sb_keys_dir
             );
         }
+    } else if matches!(bootloader, Some(Bootloader::Systemd)) {
+        vec!["--firmware=uefi-insecure".into()]
     } else {
         Vec::new()
     };
@@ -308,7 +316,7 @@ pub(crate) fn run_tmt(sh: &Shell, args: &RunTmtArgs) -> Result<()> {
     println!("Detected distro: {}", distro);
     println!("Detected VARIANT_ID: {variant_id}");
 
-    let firmware_args = build_firmware_args(sh, image)?;
+    let firmware_args = build_firmware_args(sh, image, &args.bootloader)?;
 
     // Create tmt-workdir and copy tmt bits to it
     // This works around https://github.com/teemtee/tmt/issues/4062
@@ -430,6 +438,17 @@ pub(crate) fn run_tmt(sh: &Shell, args: &RunTmtArgs) -> Result<()> {
                     opts.push("--filesystem=xfs".to_string());
                 }
             }
+
+            if args.composefs_backend {
+                opts.push("--filesystem=ext4".into());
+                opts.push("--composefs-backend".into());
+                opts.extend(COMPOSEFS_KERNEL_ARGS.map(|x| x.into()));
+            }
+
+            if let Some(b) = &args.bootloader {
+                opts.push(format!("--bootloader={b}"));
+            }
+
             opts
         };
 
@@ -684,7 +703,8 @@ pub(crate) fn tmt_provision(sh: &Shell, args: &TmtProvisionArgs) -> Result<()> {
     println!("  Image: {}", image);
     println!("  VM name: {}\n", vm_name);
 
-    let firmware_args = build_firmware_args(sh, image)?;
+    // TODO: Send bootloader param here
+    let firmware_args = build_firmware_args(sh, image, &None)?;
 
     // Launch VM with bcvk
     // Use ds=iid-datasource-none to disable cloud-init for faster boot

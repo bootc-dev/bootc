@@ -165,6 +165,7 @@ pub(crate) fn install_systemd_boot(
     _configopts: &crate::install::InstallConfigOpts,
     _deployment_path: Option<&str>,
     autoenroll: Option<SecurebootKeys>,
+    mounted_erofs: &Dir,
 ) -> Result<()> {
     let esp_part = device
         .find_partition_of_type(discoverable_partition_specification::ESP)
@@ -179,6 +180,73 @@ pub(crate) fn install_systemd_boot(
         .args(["install", "--esp-path", esp_path.as_str()])
         .log_debug()
         .run_inherited_with_cmd_context()?;
+
+    // Check for systemd-boot binaries in the EFI/systemd directory
+    // systemd v258 won't copy the binary if an EFI booted system is not detected
+    let systemd_dir = esp_mount.fd.open_dir_optional("EFI/systemd")?;
+
+    let systemd_boot_found = if let Some(dir) = systemd_dir {
+        let mut found = false;
+        for entry in dir.entries()? {
+            let entry = entry?;
+            let name = entry.file_name();
+
+            if let Some(name_str) = name.to_str() {
+                if name_str.starts_with("systemd-boot") && name_str.ends_with(".efi") {
+                    found = true;
+                    break;
+                }
+            }
+        }
+
+        found
+    } else {
+        false
+    };
+
+    if !systemd_boot_found {
+        println!("Copying systemd-boot binary manually");
+
+        // Find the systemd-boot binary in the source directory
+        let boot_dir = mounted_erofs.open_dir("usr/lib/systemd/boot/efi")?;
+        let mut systemd_boot_binary = None;
+
+        for entry in boot_dir.entries()? {
+            let entry = entry?;
+            let name = entry.file_name();
+            if let Some(name_str) = name.to_str() {
+                if name_str.starts_with("systemd-boot") && name_str.ends_with(".efi") {
+                    systemd_boot_binary = Some(name_str.to_string());
+                    break;
+                }
+            }
+        }
+
+        let binary_name = systemd_boot_binary
+            .ok_or_else(|| anyhow::anyhow!("No systemd-boot binary found in source"))?;
+
+        let src_path = format!("usr/lib/systemd/boot/efi/{}", binary_name);
+        let systemd_dest_path = format!("EFI/systemd/{}", binary_name);
+
+        // Determine the appropriate BOOT binary name based on architecture
+        let boot_binary_name = if binary_name.contains("x64") {
+            "BOOTX64.EFI"
+        } else if binary_name.contains("ia32") {
+            "BOOTIA32.EFI"
+        } else if binary_name.contains("aa64") {
+            "BOOTAA64.EFI"
+        } else {
+            "BOOTX64.EFI" // Default fallback
+        };
+
+        mounted_erofs.copy(&src_path, &esp_mount.fd, &systemd_dest_path)?;
+
+        mounted_erofs.copy(
+            &src_path,
+            &esp_mount.fd,
+            &format!("EFI/BOOT/{}", boot_binary_name),
+        )?;
+    }
 
     if let Some(SecurebootKeys { dir, keys }) = autoenroll {
         let path = esp_path.join(SYSTEMD_KEY_DIR);
