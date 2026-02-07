@@ -13,6 +13,8 @@ Currently, `bootc` only runs `bootupd` during the installation process. It does 
 
 ## systemd-boot
 
+NOTE: systemd-boot is only supported for Composefs Backend and not for Ostree
+
 If bootupd is not present in the input container image, then systemd-boot will be used
 by default (except on s390x).
 
