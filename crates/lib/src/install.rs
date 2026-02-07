@@ -383,18 +383,18 @@ pub(crate) struct InstallComposefsOpts {
     pub(crate) composefs_backend: bool,
 
     /// Make fs-verity validation optional in case the filesystem doesn't support it
-    #[clap(long, default_value_t)]
+    #[clap(long, default_value_t, requires = "composefs_backend")]
     #[serde(default)]
     pub(crate) insecure: bool,
 
     /// The bootloader to use.
-    #[clap(long)]
+    #[clap(long, requires = "composefs_backend")]
     #[serde(default)]
     pub(crate) bootloader: Option<Bootloader>,
 
     /// Name of the UKI addons to install without the ".efi.addon" suffix.
     /// This option can be provided multiple times if multiple addons are to be installed.
-    #[clap(long)]
+    #[clap(long, requires = "composefs_backend")]
     #[serde(default)]
     pub(crate) uki_addon: Option<Vec<String>>,
 }
@@ -801,20 +801,6 @@ impl FromStr for MountSpec {
             target: target.to_string(),
             options,
         })
-    }
-}
-
-#[cfg(feature = "install-to-disk")]
-impl InstallToDiskOpts {
-    pub(crate) fn validate(&self) -> Result<()> {
-        if !self.composefs_opts.composefs_backend {
-            // Reject using --insecure without --composefs-backend
-            if self.composefs_opts.insecure != false {
-                anyhow::bail!("--insecure must not be provided without --composefs-backend");
-            }
-        }
-
-        Ok(())
     }
 }
 
@@ -1928,8 +1914,6 @@ fn installation_complete() {
 #[context("Installing to disk")]
 #[cfg(feature = "install-to-disk")]
 pub(crate) async fn install_to_disk(mut opts: InstallToDiskOpts) -> Result<()> {
-    opts.validate()?;
-
     // Log the disk installation operation to systemd journal
     const INSTALL_DISK_JOURNAL_ID: &str = "8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2";
     let source_image = opts
