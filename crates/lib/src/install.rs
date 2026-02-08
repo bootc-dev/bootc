@@ -2176,21 +2176,31 @@ fn clean_boot_directories(rootfs: &Dir, is_ostree: bool, strict_esp: bool) -> Re
     let bootdir =
         crate::utils::open_dir_remount_rw(rootfs, BOOT.into()).context("Opening /boot")?;
 
-    if ARCH_USES_EFI && strict_esp {
-        // Require an explicit /boot/efi mount to avoid cleaning the wrong ESP.
-        crate::bootloader::require_boot_efi_mount(rootfs)?;
-    }
+    let esp = if ARCH_USES_EFI {
+        if strict_esp {
+            Some(crate::bootloader::find_esp_mount(rootfs)?)
+        } else {
+            crate::bootloader::find_esp_mount(rootfs).ok()
+        }
+    } else {
+        None
+    };
 
-    // This should not remove /boot/efi note.
+    // This should not remove the ESP if it is a mount point.
     remove_all_except_loader_dirs(&bootdir, is_ostree).context("Emptying /boot")?;
 
+    // If we have an ESP that is NOT /boot, we empty it.
+    // If it is /boot, we already did a selective empty above.
     // TODO: we should also support not wiping the ESP.
-    if ARCH_USES_EFI {
-        if let Some(efidir) = bootdir
-            .open_dir_optional(crate::bootloader::EFI_DIR)
-            .context("Opening /boot/efi")?
-        {
-            remove_all_in_dir_no_xdev(&efidir, false).context("Emptying EFI system partition")?;
+    if let Some(esp) = esp {
+        if esp.path != BOOT {
+            if let Some(efidir) = rootfs
+                .open_dir_optional(&esp.path)
+                .with_context(|| format!("Opening ESP at {}", esp.path))?
+            {
+                remove_all_in_dir_no_xdev(&efidir, false)
+                    .context("Emptying EFI system partition")?;
+            }
         }
     }
 

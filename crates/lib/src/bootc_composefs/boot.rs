@@ -520,11 +520,11 @@ pub(crate) fn setup_composefs_bls_boot(
 
             // Locate ESP partition device
             let esp_root = root_setup.open_target_root()?;
-            let esp_part = if root_setup.require_esp_mount {
-                crate::bootloader::require_boot_efi_mount(&esp_root)?
+            let esp_device = if root_setup.require_esp_mount {
+                crate::bootloader::find_esp_mount(&esp_root)?.device
             } else {
-                match crate::bootloader::require_boot_efi_mount(&esp_root) {
-                    Ok(p) => p,
+                match crate::bootloader::find_esp_mount(&esp_root) {
+                    Ok(esp) => esp.device,
                     Err(e) => {
                         tracing::debug!(
                             "ESP mount check failed in permissive mode: {e}; falling back to partition table scan"
@@ -537,7 +537,7 @@ pub(crate) fn setup_composefs_bls_boot(
 
             (
                 root_setup.physical_root_path.clone(),
-                esp_part,
+                esp_device,
                 cmdline_options,
                 fs,
                 postfetch.detected_bootloader.clone(),
@@ -1077,11 +1077,11 @@ pub(crate) fn setup_composefs_uki_boot(
 
             let esp_root = root_setup.open_target_root()?;
 
-            let esp_part = if root_setup.require_esp_mount {
-                crate::bootloader::require_boot_efi_mount(&esp_root)?
+            let esp_device = if root_setup.require_esp_mount {
+                crate::bootloader::find_esp_mount(&esp_root)?.device
             } else {
-                match crate::bootloader::require_boot_efi_mount(&esp_root) {
-                    Ok(p) => p,
+                match crate::bootloader::find_esp_mount(&esp_root) {
+                    Ok(esp) => esp.device,
                     Err(e) => {
                         tracing::debug!(
                             "ESP mount check failed in permissive mode: {e}; falling back to partition table scan"
@@ -1094,7 +1094,7 @@ pub(crate) fn setup_composefs_uki_boot(
 
             (
                 root_setup.physical_root_path.clone(),
-                esp_part,
+                esp_device,
                 postfetch.detected_bootloader.clone(),
                 state.composefs_options.insecure,
                 state.composefs_options.uki_addon.as_ref(),
