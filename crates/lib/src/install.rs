@@ -1307,6 +1307,17 @@ fn require_boot_uuid(spec: &MountSpec) -> Result<&str> {
 }
 
 impl RootSetup {
+    pub(crate) fn open_target_root(&self) -> Result<Dir> {
+        if let Some(target_root) = self.target_root_path.as_ref() {
+            Dir::open_ambient_dir(target_root, cap_std::ambient_authority())
+                .context("Opening target root path")
+        } else {
+            self.physical_root
+                .try_clone()
+                .context("Cloning target root handle")
+        }
+    }
+
     /// Get the UUID= mount specifier for the /boot filesystem; if there isn't one, the root UUID will
     /// be returned.
     pub(crate) fn get_boot_uuid(&self) -> Result<Option<&str>> {

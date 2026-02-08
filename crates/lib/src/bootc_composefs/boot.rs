@@ -212,17 +212,6 @@ fi
     )
 }
 
-fn open_target_root(root_setup: &RootSetup) -> Result<Dir> {
-    if let Some(target_root) = root_setup.target_root_path.as_ref() {
-        Dir::open_ambient_dir(target_root, ambient_authority()).context("Opening target root path")
-    } else {
-        root_setup
-            .physical_root
-            .try_clone()
-            .context("Cloning target root handle")
-    }
-}
-
 pub fn get_esp_partition(device: &str) -> Result<(String, Option<String>)> {
     let device_info = bootc_blockdev::partitions_of(Utf8Path::new(device))?;
     let esp = crate::bootloader::esp_in(&device_info)?;
@@ -530,7 +519,7 @@ pub(crate) fn setup_composefs_bls_boot(
             cmdline_options.extend(&Cmdline::from(&composefs_cmdline));
 
             // Locate ESP partition device
-            let esp_root = open_target_root(root_setup)?;
+            let esp_root = root_setup.open_target_root()?;
             let esp_part = if root_setup.require_esp_mount {
                 crate::bootloader::require_boot_efi_mount(&esp_root)?
             } else {
@@ -1086,7 +1075,7 @@ pub(crate) fn setup_composefs_uki_boot(
         BootSetupType::Setup((root_setup, state, postfetch, ..)) => {
             state.require_no_kargs_for_uki()?;
 
-            let esp_root = open_target_root(root_setup)?;
+            let esp_root = root_setup.open_target_root()?;
 
             let esp_part = if root_setup.require_esp_mount {
                 crate::bootloader::require_boot_efi_mount(&esp_root)?
@@ -1269,7 +1258,7 @@ pub(crate) async fn setup_composefs_boot(
         .or(root_setup.rootfs_uuid.as_deref())
         .ok_or_else(|| anyhow!("No uuid for boot/root"))?;
 
-    let target_root = open_target_root(root_setup)?;
+    let target_root = root_setup.open_target_root()?;
 
     if cfg!(target_arch = "s390x") {
         // TODO: Integrate s390x support into install_via_bootupd
