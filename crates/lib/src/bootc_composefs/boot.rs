@@ -1291,6 +1291,7 @@ pub(crate) async fn setup_composefs_boot(
             &state.config_opts,
             None,
             get_secureboot_keys(&mounted_fs, BOOTC_AUTOENROLL_PATH)?,
+            root_setup.require_esp_mount,
         )?;
     }
 

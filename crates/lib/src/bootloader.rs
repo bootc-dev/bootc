@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::fs::create_dir_all;
 use std::process::Command;
 
@@ -70,6 +71,28 @@ pub(crate) fn require_boot_efi_mount(root: &Dir) -> Result<String> {
     }
 
     Ok(source)
+}
+
+/// Helper to find the ESP device, either via mount or partition table scan
+pub(crate) fn get_esp_device<'a>(
+    root: &Dir,
+    device_info: &'a PartitionTable,
+    require_mount: bool,
+) -> Result<Cow<'a, str>> {
+    if require_mount {
+        Ok(Cow::Owned(require_boot_efi_mount(root)?))
+    } else {
+        match require_boot_efi_mount(root) {
+            Ok(p) => Ok(Cow::Owned(p)),
+            Err(e) => {
+                tracing::debug!(
+                    "ESP mount check failed in permissive mode: {e}; falling back to partition table scan"
+                );
+                let esp = esp_in(device_info)?;
+                Ok(Cow::Borrowed(&esp.node))
+            }
+        }
+    }
 }
 
 /// Determine if the invoking environment contains bootupd, and if there are bootupd-based
@@ -180,13 +203,14 @@ pub(crate) fn install_via_bootupd(
 #[context("Installing bootloader")]
 pub(crate) fn install_systemd_boot(
     root: &Dir,
-    _device: &PartitionTable,
+    device: &PartitionTable,
     _rootfs: &Utf8Path,
     _configopts: &crate::install::InstallConfigOpts,
     _deployment_path: Option<&str>,
     autoenroll: Option<SecurebootKeys>,
+    require_mount: bool,
 ) -> Result<()> {
-    let esp_device = require_boot_efi_mount(root)?;
+    let esp_device = get_esp_device(root, device, require_mount)?;
 
     let esp_mount = mount_esp(&esp_device).context("Mounting ESP")?;
     let esp_path = Utf8Path::from_path(esp_mount.dir.path())

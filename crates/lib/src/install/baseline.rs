@@ -496,6 +496,6 @@ pub(crate) fn install_create_rootfs(
         boot,
         kargs,
         skip_finalize: false,
-        require_esp_mount: true,
+        require_esp_mount: false,
     })
 }
