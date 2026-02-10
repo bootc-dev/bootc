@@ -166,6 +166,12 @@ jobs:
           # centos-9 UKI is experimental/broken (https://github.com/bootc-dev/bootc/issues/1812)
           - test_os: centos-9
             variant: composefs-sealeduki-sdboot
+          # centos-9 fails with EUCLEAN (https://github.com/bootc-dev/bootc/issues/1812)
+          # See: https://github.com/bootc-dev/bcvk/pull/204
+          - test_os: centos-9
+            variant: composefs-sdboot
+          - test_os: centos-9
+            variant: composefs-grub
 
     runs-on: ubuntu-24.04
 

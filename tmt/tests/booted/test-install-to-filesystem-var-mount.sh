@@ -33,9 +33,10 @@ RUN rm -rf /usr/lib/bootc/bound-images.d/*
 EOF
 podman build -t "$TARGET_IMAGE" -f /tmp/Containerfile.drop-lbis
 
-# Create a 12GB sparse disk image in /var/tmp (not /tmp which may be tmpfs)
+# Create a 15GB sparse disk image in /var/tmp (not /tmp which may be tmpfs)
+# Increased this as we want a larger ESP for composefs
 DISK_IMG=/var/tmp/disk-var-mount-test.img
-truncate -s 12G "$DISK_IMG"
+truncate -s 15G "$DISK_IMG"
 
 # Setup loop device
 LOOP_DEV=$(losetup -f --show "$DISK_IMG")
