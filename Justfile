@@ -101,7 +101,7 @@ test-tmt *ARGS: build
 [group('core')]
 test-container: build build-units
     podman run --rm --read-only localhost/bootc-units /usr/bin/bootc-units
-    podman run --rm --env=BOOTC_variant={{variant}} --env=BOOTC_base={{base}} {{base_img}} bootc-integration-tests container
+    podman run --rm --env=BOOTC_variant={{variant}} --env=BOOTC_base={{base}} --mount=type=image,source={{base_img}},target=/run/target {{base_img}} bootc-integration-tests container
 
 # Build and test sealed composefs images
 [group('core')]
@@ -131,6 +131,21 @@ test-tmt-on-coreos *ARGS:
 [group('testing')]
 run-container-external-tests:
    ./tests/container/run {{base_img}}
+
+# Run end-to-end Anaconda installation test
+[group('testing')]
+test-anaconda IMAGE=base_img OUTPUT="test-disk.raw" *ARGS:
+    cargo xtask anaconda {{IMAGE}} {{OUTPUT}} {{ARGS}}
+
+# Test with auto-detected installer
+[group('testing')]
+test-anaconda-auto IMAGE=base_img OUTPUT="test-disk.raw" *ARGS:
+    cargo xtask anaconda --installer-type auto {{IMAGE}} {{OUTPUT}} {{ARGS}}
+
+# Test with CentOS Stream installer
+[group('testing')]
+test-anaconda-centos IMAGE=base_img OUTPUT="test-disk.raw" *ARGS:
+    cargo xtask anaconda --installer-type centos-stream {{IMAGE}} {{OUTPUT}} {{ARGS}}
 
 # Remove all test VMs created by tmt tests
 [group('testing')]

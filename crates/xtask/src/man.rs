@@ -305,8 +305,8 @@ fn discover_man_page_mappings(
             .and_then(|s| s.strip_suffix(".md"))
             .and_then(|s| s.rsplit_once('.').map(|(name, _section)| name))
         {
-            let path = find_command_path_for_filename(cli_structure, cmd_part);
-            path
+            
+            find_command_path_for_filename(cli_structure, cmd_part)
         } else {
             None
         };
@@ -603,7 +603,7 @@ TODO: Add practical examples showing how to use this command.
     sync_all_man_pages(sh)?;
 
     println!("Man pages updated.");
-    println!("");
+    println!();
     println!("Next steps for new templates:");
     println!("   - Edit the templates to add detailed descriptions and examples");
     println!("   - Run 'cargo xtask manpages' to generate final man pages");
@@ -622,7 +622,7 @@ fn apply_man_page_fixes(sh: &Shell, dir: &Utf8Path) -> Result<()> {
         if path
             .extension()
             .and_then(|s| s.to_str())
-            .map_or(false, |e| e.chars().all(|c| c.is_numeric()))
+            .is_some_and(|e| e.chars().all(|c| c.is_numeric()))
         {
             // Check if the file already has the fix applied
             let content = fs::read_to_string(&path).with_context(|| format!("Reading {path:?}"))?;
