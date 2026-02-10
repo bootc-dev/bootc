@@ -19,6 +19,7 @@ use crate::store::ComposefsRepository;
 ///
 /// Returns the TempDir guard (must be kept alive for the repo to remain valid)
 /// and the repository wrapped in Arc.
+#[fn_error_context::context("Creating new temp composefs repo")]
 pub(crate) fn new_temp_composefs_repo() -> Result<(TempDir, Arc<ComposefsRepository>)> {
     let td_guard = tempfile::tempdir_in("/var/tmp")?;
     let td_path = td_guard.path();
@@ -49,6 +50,7 @@ pub(crate) fn new_temp_composefs_repo() -> Result<(TempDir, Arc<ComposefsReposit
 /// * The path is "/" (cannot operate on active root filesystem)
 /// * The filesystem cannot be read
 /// * The transform or digest computation fails
+#[fn_error_context::context("Computing composefs digest")]
 pub(crate) fn compute_composefs_digest(
     path: &Utf8Path,
     write_dumpfile_to: Option<&Utf8Path>,
@@ -61,7 +63,8 @@ pub(crate) fn compute_composefs_digest(
 
     // Read filesystem from path, transform for boot, compute digest
     let mut fs =
-        composefs::fs::read_container_root(rustix::fs::CWD, path.as_std_path(), Some(&repo))?;
+        composefs::fs::read_container_root(rustix::fs::CWD, path.as_std_path(), Some(&repo))
+            .context("Reading container root")?;
     fs.transform_for_boot(&repo).context("Preparing for boot")?;
     let id = fs.compute_image_id();
     let digest = id.to_hex();
@@ -143,10 +146,12 @@ mod tests {
     fn test_compute_composefs_digest_rejects_root() {
         let result = compute_composefs_digest(Utf8Path::new("/"), None);
         assert!(result.is_err());
-        let err = result.unwrap_err().to_string();
-        assert!(
-            err.contains("Cannot operate on active root filesystem"),
-            "Unexpected error message: {err}"
-        );
+        let err = result.unwrap_err();
+        let found = err.chain().any(|e| {
+            e.to_string()
+                .contains("Cannot operate on active root filesystem")
+        });
+
+        assert!(found, "Unexpected error chain: {err:?}");
     }
 }
