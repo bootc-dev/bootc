@@ -2,6 +2,8 @@
 # tmt:
 #   summary: Execute tests for bootc usrover
 #   duration: 30m
+# extra:
+#   works_for_composefs: true
 #
 # Verify that bootc usroverlay works
 use std assert

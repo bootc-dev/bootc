@@ -2,6 +2,8 @@
 # tmt:
 #   summary: Execute local upgrade tests
 #   duration: 30m
+# extra:
+#   works_for_composefs: true
 #
 # This test does:
 # bootc image copy-to-storage

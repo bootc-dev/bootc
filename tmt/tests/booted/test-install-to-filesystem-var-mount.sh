@@ -1,4 +1,6 @@
 # number: 32
+# extra:
+#   works_for_composefs: true
 # tmt:
 #   summary: Test bootc install to-filesystem with separate /var mount
 #   duration: 30m

@@ -49,6 +49,7 @@ execute:
     test:
       - /tmt/tests/tests/test-01-readonly
   extra-try_bind_storage: true
+  extra-works_for_composefs: true
 
 /plan-20-image-pushpull-upgrade:
   summary: Execute local upgrade tests
@@ -56,6 +57,7 @@ execute:
     how: fmf
     test:
       - /tmt/tests/tests/test-20-image-pushpull-upgrade
+  extra-works_for_composefs: true
 
 /plan-21-logically-bound-switch:
   summary: Execute logically bound images tests for switching images
@@ -77,6 +79,7 @@ execute:
     how: fmf
     test:
       - /tmt/tests/tests/test-23-install-outside-container
+  extra-works_for_composefs: true
 
 /plan-23-usroverlay:
   summary: Execute tests for bootc usrover
@@ -84,6 +87,7 @@ execute:
     how: fmf
     test:
       - /tmt/tests/tests/test-23-usroverlay
+  extra-works_for_composefs: true
 
 /plan-24-image-upgrade-reboot:
   summary: Execute local upgrade tests
@@ -92,6 +96,7 @@ execute:
     test:
       - /tmt/tests/tests/test-24-image-upgrade-reboot
   extra-try_bind_storage: true
+  extra-works_for_composefs: true
 
 /plan-25-soft-reboot:
   summary: Execute soft reboot test
@@ -99,6 +104,7 @@ execute:
     how: fmf
     test:
       - /tmt/tests/tests/test-25-soft-reboot
+  extra-works_for_composefs: true
 
 /plan-26-download-only-upgrade:
   summary: Execute download-only upgrade tests
@@ -106,6 +112,7 @@ execute:
     how: fmf
     test:
       - /tmt/tests/tests/test-26-download-only-upgrade
+  extra-works_for_composefs: true
 
 /plan-27-custom-selinux-policy:
   summary: Execute custom selinux policy test
@@ -159,6 +166,7 @@ execute:
     how: fmf
     test:
       - /tmt/tests/tests/test-32-install-to-filesystem-var-mount
+  extra-works_for_composefs: true
 
 /plan-33-bib-build:
   summary: Test building a qcow2 disk image with bootc-image-builder
