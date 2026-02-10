@@ -112,15 +112,7 @@ test-composefs-sealeduki-sdboot:
 [group('core')]
 test-composefs bootloader:
     just variant=composefs bootloader={{bootloader}} \
-        test-tmt --composefs-backend --bootloader {{bootloader}} \
-        readonly \
-        download-only \
-        image-pushpull-upgrade \
-        image-upgrade-reboot \
-        install-outside-container \
-        install-to-filesystem-var-mount \
-        soft-reboot \
-        usroverlay
+        test-tmt --composefs-backend --bootloader {{bootloader}} integration
 
 # Build and test composefs images booted using Type1 boot entries and systemd-boot as the bootloader
 [group('core')]

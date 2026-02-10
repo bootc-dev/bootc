@@ -22,6 +22,8 @@ const FIELD_TRY_BIND_STORAGE: &str = "try_bind_storage";
 const FIELD_SUMMARY: &str = "summary";
 const FIELD_ADJUST: &str = "adjust";
 
+const FIELD_WORKS_FOR_COMPOSEFS: &str = "works_for_composefs";
+
 // bcvk options
 const BCVK_OPT_BIND_STORAGE_RO: &str = "--bind-storage-ro";
 const ENV_BOOTC_UPGRADE_IMAGE: &str = "BOOTC_upgrade_image";
@@ -247,9 +249,17 @@ fn verify_ssh_connectivity(sh: &Shell, port: u16, key_path: &Utf8Path) -> Result
     )
 }
 
+#[derive(Debug)]
+struct PlanMetadata {
+    try_bind_storage: bool,
+    works_for_composefs: bool,
+}
+
 /// Parse integration.fmf to extract extra-try_bind_storage for all plans
 #[context("Parsing integration.fmf")]
-fn parse_plan_metadata(plans_file: &Utf8Path) -> Result<std::collections::HashMap<String, bool>> {
+fn parse_plan_metadata(
+    plans_file: &Utf8Path,
+) -> Result<std::collections::HashMap<String, PlanMetadata>> {
     let content = std::fs::read_to_string(plans_file)?;
     let yaml = serde_yaml::from_str::<serde_yaml::Value>(&content)
         .context("Failed to parse integration.fmf YAML")?;
@@ -258,7 +268,8 @@ fn parse_plan_metadata(plans_file: &Utf8Path) -> Result<std::collections::HashMa
         anyhow::bail!("Expected YAML mapping in integration.fmf");
     };
 
-    let mut plan_metadata = std::collections::HashMap::new();
+    let mut plan_metadata: std::collections::HashMap<String, PlanMetadata> =
+        std::collections::HashMap::new();
 
     for (key, value) in mapping {
         let Some(plan_name) = key.as_str() else {
@@ -271,12 +282,34 @@ fn parse_plan_metadata(plans_file: &Utf8Path) -> Result<std::collections::HashMa
         let Some(plan_data) = value.as_mapping() else {
             continue;
         };
+
         if let Some(try_bind) = plan_data.get(&serde_yaml::Value::String(format!(
             "extra-{}",
             FIELD_TRY_BIND_STORAGE
         ))) {
             if let Some(b) = try_bind.as_bool() {
-                plan_metadata.insert(plan_name.to_string(), b);
+                plan_metadata
+                    .entry(plan_name.to_string())
+                    .and_modify(|m| m.try_bind_storage = b)
+                    .or_insert(PlanMetadata {
+                        try_bind_storage: b,
+                        works_for_composefs: false,
+                    });
+            }
+        }
+
+        if let Some(works_for_composefs) = plan_data.get(&serde_yaml::Value::String(format!(
+            "extra-{}",
+            FIELD_WORKS_FOR_COMPOSEFS
+        ))) {
+            if let Some(b) = works_for_composefs.as_bool() {
+                plan_metadata
+                    .entry(plan_name.to_string())
+                    .and_modify(|m| m.works_for_composefs = b)
+                    .or_insert(PlanMetadata {
+                        works_for_composefs: b,
+                        try_bind_storage: false,
+                    });
             }
         }
     }
@@ -359,18 +392,30 @@ pub(crate) fn run_tmt(sh: &Shell, args: &RunTmtArgs) -> Result<()> {
         .filter(|line| !line.is_empty() && line.starts_with("/"))
         .collect();
 
+    let original_plans_count = plans.len();
+
     // Filter plans based on user arguments
     if !filter_args.is_empty() {
-        let original_count = plans.len();
         plans.retain(|plan| filter_args.iter().any(|arg| plan.contains(arg.as_str())));
-        if plans.len() < original_count {
-            println!(
-                "Filtered from {} to {} plan(s) based on arguments: {:?}",
-                original_count,
-                plans.len(),
-                filter_args
-            );
-        }
+    }
+
+    if args.composefs_backend {
+        plans.retain(|plan| {
+            plan_metadata
+                .iter()
+                .find(|(key, _)| plan.ends_with(key.as_str()))
+                .map(|(_, v)| v.works_for_composefs)
+                .unwrap_or(false)
+        });
+    }
+
+    if plans.len() < original_plans_count {
+        println!(
+            "Filtered from {} to {} plan(s) based on arguments: {:?}",
+            original_plans_count,
+            plans.len(),
+            filter_args
+        );
     }
 
     if plans.is_empty() {
@@ -412,7 +457,7 @@ pub(crate) fn run_tmt(sh: &Shell, args: &RunTmtArgs) -> Result<()> {
             let try_bind_storage = plan_metadata
                 .iter()
                 .find(|(key, _)| plan.ends_with(key.as_str()))
-                .map(|(_, &v)| v)
+                .map(|(_, v)| v.try_bind_storage)
                 .unwrap_or(false);
 
             let mut opts = Vec::new();
@@ -863,6 +908,8 @@ struct TestDef {
     test_command: String,
     /// Whether this test wants to try bind storage (if distro supports it)
     try_bind_storage: bool,
+    /// Whether this test will work for composefs backend
+    works_for_composefs: bool,
     /// TMT fmf attributes to pass through (summary, duration, adjust, etc.)
     tmt: serde_yaml::Value,
 }
@@ -953,11 +1000,23 @@ pub(crate) fn update_integration() -> Result<()> {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
+        let works_for_composefs = metadata
+            .extra
+            .as_mapping()
+            .and_then(|m| {
+                m.get(&serde_yaml::Value::String(
+                    FIELD_WORKS_FOR_COMPOSEFS.to_string(),
+                ))
+            })
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
         tests.push(TestDef {
             number: metadata.number,
             name: display_name,
             test_command,
             try_bind_storage,
+            works_for_composefs,
             tmt: metadata.tmt,
         });
     }
@@ -1072,6 +1131,13 @@ pub(crate) fn update_integration() -> Result<()> {
         if test.try_bind_storage {
             plan_value.insert(
                 serde_yaml::Value::String(format!("extra-{}", FIELD_TRY_BIND_STORAGE)),
+                serde_yaml::Value::Bool(true),
+            );
+        }
+
+        if test.works_for_composefs {
+            plan_value.insert(
+                serde_yaml::Value::String(format!("extra-{}", FIELD_WORKS_FOR_COMPOSEFS)),
                 serde_yaml::Value::Bool(true),
             );
         }

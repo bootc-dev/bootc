@@ -2,6 +2,8 @@
 # tmt:
 #   summary: Execute tests for installing outside of a container
 #   duration: 30m
+# extra:
+#   works_for_composefs: true
 #
 use std assert
 use tap.nu

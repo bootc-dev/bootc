@@ -1,6 +1,7 @@
 # number: 24
 # extra:
 #   try_bind_storage: true
+#   works_for_composefs: true
 # tmt:
 #   summary: Execute local upgrade tests
 #   duration: 30m
