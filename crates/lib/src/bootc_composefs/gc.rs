@@ -12,7 +12,7 @@ use crate::{
         delete::{delete_image, delete_staged, delete_state_dir},
         status::{
             get_bootloader, get_composefs_status, get_imginfo, get_sorted_grub_uki_boot_entries,
-            get_sorted_type1_boot_entries,
+            get_sorted_staged_type1_boot_entries, get_sorted_type1_boot_entries,
         },
     },
     composefs_consts::{STATE_DIR_RELATIVE, USER_CFG},
@@ -37,6 +37,21 @@ fn list_erofs_images(sysroot: &Dir) -> Result<Vec<String>> {
     Ok(images)
 }
 
+fn list_type1_entries(boot_dir: &Dir) -> Result<Vec<String>> {
+    // Type1 Entry
+    let boot_entries = get_sorted_type1_boot_entries(boot_dir, true)?;
+
+    // We wouldn't want to delete the staged deployment if the GC runs when a
+    // deployment is staged
+    let staged_boot_entries = get_sorted_staged_type1_boot_entries(boot_dir, true)?;
+
+    boot_entries
+        .into_iter()
+        .chain(staged_boot_entries)
+        .map(|entry| entry.get_verity())
+        .collect::<Result<Vec<_>, _>>()
+}
+
 /// Get all Type1/Type2 bootloader entries
 ///
 /// # Returns
@@ -51,8 +66,8 @@ fn list_bootloader_entries(storage: &Storage) -> Result<Vec<String>> {
             // Grub entries are always in boot
             let grub_dir = boot_dir.open_dir("grub2").context("Opening grub dir")?;
 
+            // Grub UKI
             if grub_dir.exists(USER_CFG) {
-                // Grub UKI
                 let mut s = String::new();
                 let boot_entries = get_sorted_grub_uki_boot_entries(boot_dir, &mut s)?;
 
@@ -61,24 +76,11 @@ fn list_bootloader_entries(storage: &Storage) -> Result<Vec<String>> {
                     .map(|entry| entry.get_verity())
                     .collect::<Result<Vec<_>, _>>()?
             } else {
-                // Type1 Entry
-                let boot_entries = get_sorted_type1_boot_entries(boot_dir, true)?;
-
-                boot_entries
-                    .into_iter()
-                    .map(|entry| entry.get_verity())
-                    .collect::<Result<Vec<_>, _>>()?
+                list_type1_entries(boot_dir)?
             }
         }
 
-        Bootloader::Systemd => {
-            let boot_entries = get_sorted_type1_boot_entries(boot_dir, true)?;
-
-            boot_entries
-                .into_iter()
-                .map(|entry| entry.get_verity())
-                .collect::<Result<Vec<_>, _>>()?
-        }
+        Bootloader::Systemd => list_type1_entries(boot_dir)?,
 
         Bootloader::None => unreachable!("Checked at install time"),
     };
@@ -117,6 +119,12 @@ fn list_state_dirs(sysroot: &Dir) -> Result<Vec<String>> {
 ///
 /// Similarly if EROFS image B1 doesn't exist, but state dir does, then delete the state dir and
 /// perform GC
+//
+// Cases
+// - BLS Entries
+//      - On upgrade/switch, if only two are left, the staged and the current, then no GC
+//          - If there are three, rollback, booted and staged, GC the rollback, so the current
+//          becomes rollback
 #[fn_error_context::context("Running composefs garbage collection")]
 pub(crate) async fn composefs_gc(
     storage: &Storage,
@@ -141,10 +149,14 @@ pub(crate) async fn composefs_gc(
     let images = list_erofs_images(&sysroot)?;
 
     // Collect the deployments that have an image but no bootloader entry
+    // and vice versa
     let img_bootloader_diff = images
         .iter()
         .filter(|i| !bootloader_entries.contains(i))
+        .chain(bootloader_entries.iter().filter(|b| !images.contains(b)))
         .collect::<Vec<_>>();
+
+    println!("img_bootloader_diff: {img_bootloader_diff:#?}");
 
     let staged = &host.status.staged;
 
@@ -158,7 +170,7 @@ pub(crate) async fn composefs_gc(
     for verity in &img_bootloader_diff {
         tracing::debug!("Cleaning up orphaned image: {verity}");
 
-        delete_staged(staged, dry_run)?;
+        delete_staged(staged, &img_bootloader_diff, dry_run)?;
         delete_image(&sysroot, verity, dry_run)?;
         delete_state_dir(&sysroot, verity, dry_run)?;
     }
@@ -173,14 +185,35 @@ pub(crate) async fn composefs_gc(
         .collect::<Vec<_>>();
 
     for verity in &state_img_diff {
-        delete_staged(staged, dry_run)?;
+        delete_staged(staged, &state_img_diff, dry_run)?;
         delete_state_dir(&sysroot, verity, dry_run)?;
     }
 
-    let booted_image = get_imginfo(storage, &booted_cfs_status.verity, None).await?;
+    let mut additional_roots = vec![];
 
-    let stream = format!("oci-config-{}", booted_image.manifest.config().digest());
-    let additional_roots = vec![booted_cfs_status.verity.as_str(), &stream];
+    for deployment in host
+        .status
+        .staged
+        .iter()
+        .chain(host.status.booted.iter())
+        .chain(host.status.rollback.iter())
+        .chain(host.status.other_deployments.iter())
+    {
+        let verity = &deployment.require_composefs()?.verity;
+
+        let image = get_imginfo(storage, verity, None).await?;
+        let stream = format!("oci-config-{}", image.manifest.config().digest());
+
+        additional_roots.push(verity.clone());
+        additional_roots.push(stream);
+    }
+
+    println!("additional_roots: {additional_roots:#?}");
+
+    let additional_roots = additional_roots
+        .iter()
+        .map(|x| x.as_str())
+        .collect::<Vec<_>>();
 
     // Run garbage collection on objects after deleting images
     let gc_result = if dry_run {

@@ -87,6 +87,8 @@ fn delete_type1_entry(depl: &DeploymentEntry, boot_dir: &Dir, deleting_staged: b
 
                 if should_del_kernel {
                     delete_kernel_initrd(&bls_config.cfg_type, boot_dir)?;
+                } else {
+                    tracing::debug!("Kernel/Initrd being used by other deployments. Won't delete");
                 }
 
                 break;
@@ -248,7 +250,7 @@ fn delete_depl_boot_entries(
 pub(crate) fn delete_image(sysroot: &Dir, deployment_id: &str, dry_run: bool) -> Result<()> {
     let img_path = Path::new("composefs").join("images").join(deployment_id);
 
-    tracing::debug!("Deleting EROFS image: {:?}", img_path);
+    tracing::debug!("Will delete EROFS image: {:?}", img_path);
 
     if !dry_run {
         sysroot
@@ -263,7 +265,7 @@ pub(crate) fn delete_image(sysroot: &Dir, deployment_id: &str, dry_run: bool) ->
 pub(crate) fn delete_state_dir(sysroot: &Dir, deployment_id: &str, dry_run: bool) -> Result<()> {
     let state_dir = Path::new(STATE_DIR_RELATIVE).join(deployment_id);
 
-    tracing::debug!("Deleting state directory: {:?}", state_dir);
+    tracing::debug!("Will delete state directory: {:?}", state_dir);
 
     if !dry_run {
         sysroot
@@ -275,11 +277,20 @@ pub(crate) fn delete_state_dir(sysroot: &Dir, deployment_id: &str, dry_run: bool
 }
 
 #[fn_error_context::context("Deleting staged deployment")]
-pub(crate) fn delete_staged(staged: &Option<BootEntry>, dry_run: bool) -> Result<()> {
-    if staged.is_none() {
+pub(crate) fn delete_staged(
+    staged: &Option<BootEntry>,
+    cleanup_list: &Vec<&String>,
+    dry_run: bool,
+) -> Result<()> {
+    let Some(staged_depl) = staged else {
         tracing::debug!("No staged deployment");
         return Ok(());
     };
+
+    if !cleanup_list.contains(&&staged_depl.require_composefs()?.verity) {
+        tracing::debug!("Staged deployment not in cleanup list");
+        return Ok(());
+    }
 
     let file = Path::new(COMPOSEFS_TRANSIENT_STATE_DIR).join(COMPOSEFS_STAGED_DEPLOYMENT_FNAME);
     tracing::debug!("Deleting staged deployment file: {file:?}");
@@ -346,7 +357,7 @@ pub(crate) async fn delete_composefs_deployment(
         ""
     };
 
-    tracing::info!("Deleting {kind}deployment '{deployment_id}'");
+    tracing::debug!("Deleting {kind}deployment '{deployment_id}'");
 
     delete_depl_boot_entries(&depl_to_del, &storage, deleting_staged)?;
 
