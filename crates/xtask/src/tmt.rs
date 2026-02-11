@@ -908,8 +908,8 @@ struct TestDef {
     test_command: String,
     /// Whether this test wants to try bind storage (if distro supports it)
     try_bind_storage: bool,
-    /// Whether this test will work for composefs backend
-    works_for_composefs: bool,
+    /// Whether to skip this test for composefs backend
+    skip_if_composefs: bool,
     /// TMT fmf attributes to pass through (summary, duration, adjust, etc.)
     tmt: serde_yaml::Value,
 }
@@ -1000,7 +1000,7 @@ pub(crate) fn update_integration() -> Result<()> {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
-        let works_for_composefs = metadata
+        let skip_if_composefs = metadata
             .extra
             .as_mapping()
             .and_then(|m| {
@@ -1016,7 +1016,7 @@ pub(crate) fn update_integration() -> Result<()> {
             name: display_name,
             test_command,
             try_bind_storage,
-            works_for_composefs,
+            skip_if_composefs,
             tmt: metadata.tmt,
         });
     }
@@ -1135,7 +1135,7 @@ pub(crate) fn update_integration() -> Result<()> {
             );
         }
 
-        if test.works_for_composefs {
+        if test.skip_if_composefs {
             plan_value.insert(
                 serde_yaml::Value::String(format!("extra-{}", FIELD_FIXME_SKIP_IF_COMPOSEFS)),
                 serde_yaml::Value::Bool(true),

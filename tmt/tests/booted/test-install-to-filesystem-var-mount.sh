@@ -125,8 +125,6 @@ if [[ $is_composefs != "null" ]]; then
     tune2fs -O verity /dev/BL/root02
 fi
 
-echo "${COMPOSEFS_BACKEND[@]}"
-
 # Run bootc install to-filesystem from within the container image under test
 podman run \
     --rm --privileged \
