@@ -2,8 +2,6 @@
 # tmt:
 #   summary: Execute local upgrade tests
 #   duration: 30m
-# extra:
-#   works_for_composefs: true
 #
 # This test does:
 # bootc image copy-to-storage
@@ -75,6 +73,8 @@ RUN echo test content > /usr/share/blah.txt
     # nushell doesn't do fd passing right now either, so run via bash
     bash -c $"bootc switch --progress-fd 3 --transport containers-storage localhost/bootc-derived 3>($progress_fifo)"
 
+    # Composefs installation right now do not share progress
+    # See https://github.com/containers/composefs-rs/issues/140
     if not $is_composefs {
         # Now, let's do some checking of the progress json
         let progress = open --raw $progress_json | from json -o

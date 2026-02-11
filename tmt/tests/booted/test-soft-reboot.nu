@@ -2,8 +2,6 @@
 # tmt:
 #   summary: Execute soft reboot test
 #   duration: 30m
-# extra:
-#   works_for_composefs: true
 #
 # Verify that soft reboot works (on by default)
 use std assert

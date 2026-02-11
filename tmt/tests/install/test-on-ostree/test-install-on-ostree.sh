@@ -6,6 +6,8 @@
 #     - when: VARIANT_ID != coreos
 #       enabled: false
 #       because: this needs to start an ostree OS firstly
+# extra:
+#   skip_if_composefs: true
 #
 #!/bin/bash
 set -eux

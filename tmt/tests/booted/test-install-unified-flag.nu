@@ -1,5 +1,6 @@
 # number: 30
 # extra:
+#   fixme_skip_if_composefs: true
 # tmt:
 #   summary: Test bootc install with experimental unified storage flag
 #   duration: 30m

@@ -2,8 +2,6 @@
 # tmt:
 #   summary: Execute tests for installing outside of a container
 #   duration: 30m
-# extra:
-#   works_for_composefs: true
 #
 use std assert
 use tap.nu
@@ -31,12 +29,14 @@ umount /var/mnt
 # And using systemd-run here breaks our install_t so we disable SELinux enforcement
 setenforce 0
 
+let base_args = $"bootc install to-disk --disable-selinux --via-loopback --source-imgref ($target_image)"
+
 let install_cmd = if (tap is_composefs) {
     let st = bootc status --json | from json
     let bootloader = ($st.status.booted.composefs.bootloader | str downcase)
-    $"bootc install to-disk --disable-selinux --via-loopback --composefs-backend --bootloader=($bootloader) --filesystem ext4 --source-imgref ($target_image) ./disk.img"
+    $"($base_args) --composefs-backend --bootloader=($bootloader) --filesystem ext4 ./disk.img"
 } else {
-    $"bootc install to-disk --disable-selinux --via-loopback --filesystem xfs --source-imgref ($target_image) ./disk.img"
+    $"($base_args) --filesystem xfs ./disk.img"
 }
 
 systemd-run -p MountFlags=slave -qdPG -- /bin/sh -c $"

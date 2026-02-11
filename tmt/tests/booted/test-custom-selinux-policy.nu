@@ -6,6 +6,8 @@
 #     - when: running_env != image_mode
 #       enabled: false
 #       because: these tests require features only available in image mode
+# extra:
+#   fixme_skip_if_composefs: true
 #
 # Verify that correct labels are applied after a deployment
 use std assert

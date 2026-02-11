@@ -22,7 +22,7 @@ const FIELD_TRY_BIND_STORAGE: &str = "try_bind_storage";
 const FIELD_SUMMARY: &str = "summary";
 const FIELD_ADJUST: &str = "adjust";
 
-const FIELD_WORKS_FOR_COMPOSEFS: &str = "works_for_composefs";
+const FIELD_FIXME_SKIP_IF_COMPOSEFS: &str = "fixme_skip_if_composefs";
 
 // bcvk options
 const BCVK_OPT_BIND_STORAGE_RO: &str = "--bind-storage-ro";
@@ -252,7 +252,7 @@ fn verify_ssh_connectivity(sh: &Shell, port: u16, key_path: &Utf8Path) -> Result
 #[derive(Debug)]
 struct PlanMetadata {
     try_bind_storage: bool,
-    works_for_composefs: bool,
+    skip_if_composefs: bool,
 }
 
 /// Parse integration.fmf to extract extra-try_bind_storage for all plans
@@ -293,21 +293,21 @@ fn parse_plan_metadata(
                     .and_modify(|m| m.try_bind_storage = b)
                     .or_insert(PlanMetadata {
                         try_bind_storage: b,
-                        works_for_composefs: false,
+                        skip_if_composefs: false,
                     });
             }
         }
 
         if let Some(works_for_composefs) = plan_data.get(&serde_yaml::Value::String(format!(
             "extra-{}",
-            FIELD_WORKS_FOR_COMPOSEFS
+            FIELD_FIXME_SKIP_IF_COMPOSEFS
         ))) {
             if let Some(b) = works_for_composefs.as_bool() {
                 plan_metadata
                     .entry(plan_name.to_string())
-                    .and_modify(|m| m.works_for_composefs = b)
+                    .and_modify(|m| m.skip_if_composefs = b)
                     .or_insert(PlanMetadata {
-                        works_for_composefs: b,
+                        skip_if_composefs: b,
                         try_bind_storage: false,
                     });
             }
@@ -401,10 +401,10 @@ pub(crate) fn run_tmt(sh: &Shell, args: &RunTmtArgs) -> Result<()> {
 
     if args.composefs_backend {
         plans.retain(|plan| {
-            plan_metadata
+            !plan_metadata
                 .iter()
                 .find(|(key, _)| plan.ends_with(key.as_str()))
-                .map(|(_, v)| v.works_for_composefs)
+                .map(|(_, v)| v.skip_if_composefs)
                 .unwrap_or(false)
         });
     }
@@ -1005,7 +1005,7 @@ pub(crate) fn update_integration() -> Result<()> {
             .as_mapping()
             .and_then(|m| {
                 m.get(&serde_yaml::Value::String(
-                    FIELD_WORKS_FOR_COMPOSEFS.to_string(),
+                    FIELD_FIXME_SKIP_IF_COMPOSEFS.to_string(),
                 ))
             })
             .and_then(|v| v.as_bool())
@@ -1137,7 +1137,7 @@ pub(crate) fn update_integration() -> Result<()> {
 
         if test.works_for_composefs {
             plan_value.insert(
-                serde_yaml::Value::String(format!("extra-{}", FIELD_WORKS_FOR_COMPOSEFS)),
+                serde_yaml::Value::String(format!("extra-{}", FIELD_FIXME_SKIP_IF_COMPOSEFS)),
                 serde_yaml::Value::Bool(true),
             );
         }
