@@ -2,6 +2,8 @@
 # tmt:
 #   summary: Onboard to unified storage, build derived image, and switch to it
 #   duration: 30m
+# extra:
+#   fixme_skip_if_composefs: true
 #
 use std assert
 use tap.nu

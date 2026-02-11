@@ -2,6 +2,8 @@
 # tmt:
 #   summary: switch --mutate-in-place
 #   duration: 30m
+# extra:
+#   fixme_skip_if_composefs: true
 #
 use std assert
 use tap.nu

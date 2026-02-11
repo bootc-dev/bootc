@@ -2,8 +2,6 @@
 # tmt:
 #   summary: Execute download-only upgrade tests
 #   duration: 40m
-# extra:
-#   works_for_composefs: true
 #
 # This test does:
 # bootc image copy-to-storage

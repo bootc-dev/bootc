@@ -4,6 +4,8 @@
 #   duration: 45m
 #   require:
 #     - qemu-img
+# extra:
+#   fixme_skip_if_composefs: true
 #
 # This test validates that bootc-image-builder (bib) can successfully
 # create disk images from the current booted image. This is a critical

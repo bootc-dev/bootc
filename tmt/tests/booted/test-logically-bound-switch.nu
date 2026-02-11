@@ -2,6 +2,8 @@
 # tmt:
 #   summary: Execute logically bound images tests for switching images
 #   duration: 30m
+# extra:
+#   fixme_skip_if_composefs: true
 #
 # This test does:
 # bootc image switch bootc-bound-image
