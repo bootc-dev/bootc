@@ -1231,7 +1231,12 @@ pub(crate) async fn setup_composefs_boot(
         .or(root_setup.rootfs_uuid.as_deref())
         .ok_or_else(|| anyhow!("No uuid for boot/root"))?;
 
-    if cfg!(target_arch = "s390x") {
+    // If bootloader is disabled, we skip the installer calls
+    let skip_bootloader = state.config_opts.no_bootloader;
+
+    if skip_bootloader {
+        tracing::info!("Skipping bootloader installation (--no-bootloader requested)");
+    } else if cfg!(target_arch = "s390x") {
         // TODO: Integrate s390x support into install_via_bootupd
         crate::bootloader::install_via_zipl(&root_setup.device_info, boot_uuid)?;
     } else if postfetch.detected_bootloader == Bootloader::Grub {
@@ -1257,20 +1262,26 @@ pub(crate) async fn setup_composefs_boot(
 
     let boot_type = BootType::from(entry);
 
-    let boot_digest = match boot_type {
-        BootType::Bls => setup_composefs_bls_boot(
-            BootSetupType::Setup((&root_setup, &state, &postfetch, &fs)),
-            repo,
-            &id,
-            entry,
-            &mounted_fs,
-        )?,
-        BootType::Uki => setup_composefs_uki_boot(
-            BootSetupType::Setup((&root_setup, &state, &postfetch, &fs)),
-            repo,
-            &id,
-            entries,
-        )?,
+    // We calculate the digest only if we are actually setting up the boot files.
+    // If we skip, we use a placeholder digest for the state file.
+    let boot_digest = if skip_bootloader {
+        "skipped".to_string()
+    } else {
+        match boot_type {
+            BootType::Bls => setup_composefs_bls_boot(
+                BootSetupType::Setup((&root_setup, &state, &postfetch, &fs)),
+                repo,
+                &id,
+                entry,
+                &mounted_fs,
+            )?,
+            BootType::Uki => setup_composefs_uki_boot(
+                BootSetupType::Setup((&root_setup, &state, &postfetch, &fs)),
+                repo,
+                &id,
+                entries,
+            )?,
+        }
     };
 
     write_composefs_state(
