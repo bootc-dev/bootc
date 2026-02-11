@@ -2412,15 +2412,15 @@ pub(crate) async fn install_to_filesystem(
     tracing::debug!("Root mount: {} {:?}", root_info.mount_spec, root_info.kargs);
 
     let boot_is_mount = {
-        let root_dev = rootfs_fd.dir_metadata()?.dev();
-        let boot_dev = target_rootfs_fd
-            .symlink_metadata_optional(BOOT)?
-            .ok_or_else(|| {
-                anyhow!("No /{BOOT} directory found in root; this is is currently required")
-            })?
-            .dev();
-        tracing::debug!("root_dev={root_dev} boot_dev={boot_dev}");
-        root_dev != boot_dev
+        if let Some(boot_metadata) = target_rootfs_fd.symlink_metadata_optional(BOOT)? {
+            let root_dev = rootfs_fd.dir_metadata()?.dev();
+            let boot_dev = boot_metadata.dev();
+            tracing::debug!("root_dev={root_dev} boot_dev={boot_dev}");
+            root_dev != boot_dev
+        } else {
+            tracing::debug!("No /{BOOT} directory found");
+            false
+        }
     };
     // Find the UUID of /boot because we need it for GRUB.
     let boot_uuid = if boot_is_mount {
