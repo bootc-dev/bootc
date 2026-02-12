@@ -1,14 +1,11 @@
-use std::collections::HashMap;
 use std::env;
 use std::path::Path;
 use std::process::{Command, Stdio};
-use std::sync::OnceLock;
 
 use anyhow::{Context, Result, anyhow};
 use camino::{Utf8Path, Utf8PathBuf};
 use cap_std_ext::cap_std::fs::Dir;
 use fn_error_context::context;
-use regex::Regex;
 use serde::Deserialize;
 
 use bootc_utils::CommandRunExt;
@@ -56,10 +53,15 @@ pub struct Device {
 }
 
 impl Device {
-    #[allow(dead_code)]
     // RHEL8's lsblk doesn't have PATH, so we do it
     pub fn path(&self) -> String {
         self.path.clone().unwrap_or(format!("/dev/{}", &self.name))
+    }
+
+    /// Alias for path() for compatibility
+    #[allow(dead_code)]
+    pub fn node(&self) -> String {
+        self.path()
     }
 
     #[allow(dead_code)]
@@ -254,122 +256,6 @@ pub fn list_dev_by_dir(dir: &Dir) -> Result<Device> {
     list_dev(&Utf8PathBuf::from(&fsinfo.source))
 }
 
-#[derive(Debug, Deserialize)]
-struct SfDiskOutput {
-    partitiontable: PartitionTable,
-}
-
-#[derive(Debug, Deserialize)]
-#[allow(dead_code)]
-pub struct Partition {
-    pub node: String,
-    pub start: u64,
-    pub size: u64,
-    #[serde(rename = "type")]
-    pub parttype: String,
-    pub uuid: Option<String>,
-    pub name: Option<String>,
-    pub bootable: Option<bool>,
-}
-
-#[derive(Debug, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
-pub enum PartitionType {
-    Dos,
-    Gpt,
-    Unknown(String),
-}
-
-#[derive(Debug, Deserialize)]
-#[allow(dead_code)]
-pub struct PartitionTable {
-    pub label: PartitionType,
-    pub id: String,
-    pub device: String,
-    // We're not using these fields
-    // pub unit: String,
-    // pub firstlba: u64,
-    // pub lastlba: u64,
-    // pub sectorsize: u64,
-    pub partitions: Vec<Partition>,
-}
-
-impl PartitionTable {
-    /// Find the partition with the given device name
-    #[allow(dead_code)]
-    pub fn find<'a>(&'a self, devname: &str) -> Option<&'a Partition> {
-        self.partitions.iter().find(|p| p.node.as_str() == devname)
-    }
-
-    pub fn path(&self) -> &Utf8Path {
-        self.device.as_str().into()
-    }
-
-    // Find the partition with the given offset (starting at 1)
-    #[allow(dead_code)]
-    pub fn find_partno(&self, partno: u32) -> Result<&Partition> {
-        let r = self
-            .partitions
-            .get(partno.checked_sub(1).expect("1 based partition offset") as usize)
-            .ok_or_else(|| anyhow::anyhow!("Missing partition for index {partno}"))?;
-        Ok(r)
-    }
-
-    /// Find the partition with the given type UUID (case-insensitive).
-    ///
-    /// Partition type UUIDs are compared case-insensitively per the GPT specification,
-    /// as different tools may report them in different cases.
-    pub fn find_partition_of_type(&self, uuid: &str) -> Option<&Partition> {
-        self.partitions.iter().find(|p| p.parttype_matches(uuid))
-    }
-
-    /// Find the partition with bootable is 'true'.
-    pub fn find_partition_of_bootable(&self) -> Option<&Partition> {
-        self.partitions.iter().find(|p| p.is_bootable())
-    }
-
-    /// Find the esp partition.
-    pub fn find_partition_of_esp(&self) -> Result<Option<&Partition>> {
-        match &self.label {
-            PartitionType::Dos => Ok(self.partitions.iter().find(|b| {
-                u8::from_str_radix(&b.parttype, 16)
-                    .map(|pt| ESP_ID_MBR.contains(&pt))
-                    .unwrap_or(false)
-            })),
-            PartitionType::Gpt => Ok(self.find_partition_of_type(ESP)),
-            _ => Err(anyhow::anyhow!("Unsupported partition table type")),
-        }
-    }
-}
-
-impl Partition {
-    #[allow(dead_code)]
-    pub fn path(&self) -> &Utf8Path {
-        self.node.as_str().into()
-    }
-
-    /// Check if this partition's type matches the given UUID (case-insensitive).
-    ///
-    /// Partition type UUIDs are compared case-insensitively per the GPT specification,
-    /// as different tools may report them in different cases.
-    pub fn parttype_matches(&self, uuid: &str) -> bool {
-        self.parttype.eq_ignore_ascii_case(uuid)
-    }
-
-    /// Check this partition's bootable property.
-    pub fn is_bootable(&self) -> bool {
-        self.bootable.unwrap_or(false)
-    }
-}
-
-#[context("Listing partitions of {dev}")]
-pub fn partitions_of(dev: &Utf8Path) -> Result<PartitionTable> {
-    let o: SfDiskOutput = Command::new("sfdisk")
-        .args(["-J", dev.as_str()])
-        .run_and_parse_json()?;
-    Ok(o.partitiontable)
-}
-
 pub struct LoopbackDevice {
     pub dev: Option<Utf8PathBuf>,
     // Handle to the cleanup helper process
@@ -548,52 +434,6 @@ pub async fn run_loopback_cleanup_helper(device_path: &str) -> Result<()> {
     }
 }
 
-/// Parse key-value pairs from lsblk --pairs.
-/// Newer versions of lsblk support JSON but the one in CentOS 7 doesn't.
-fn split_lsblk_line(line: &str) -> HashMap<String, String> {
-    static REGEX: OnceLock<Regex> = OnceLock::new();
-    let regex = REGEX.get_or_init(|| Regex::new(r#"([A-Z-_]+)="([^"]+)""#).unwrap());
-    let mut fields: HashMap<String, String> = HashMap::new();
-    for cap in regex.captures_iter(line) {
-        fields.insert(cap[1].to_string(), cap[2].to_string());
-    }
-    fields
-}
-
-/// This is a bit fuzzy, but... this function will return every block device in the parent
-/// hierarchy of `device` capable of containing other partitions. So e.g. parent devices of type
-/// "part" doesn't match, but "disk" and "mpath" does.
-pub fn find_parent_devices(device: &str) -> Result<Vec<String>> {
-    let output = Command::new("lsblk")
-        // Older lsblk, e.g. in CentOS 7.6, doesn't support PATH, but --paths option
-        .arg("--pairs")
-        .arg("--paths")
-        .arg("--inverse")
-        .arg("--output")
-        .arg("NAME,TYPE")
-        .arg(device)
-        .run_get_string()?;
-    let mut parents = Vec::new();
-    // skip first line, which is the device itself
-    for line in output.lines().skip(1) {
-        let dev = split_lsblk_line(line);
-        let name = dev
-            .get("NAME")
-            .with_context(|| format!("device in hierarchy of {device} missing NAME"))?;
-        let kind = dev
-            .get("TYPE")
-            .with_context(|| format!("device in hierarchy of {device} missing TYPE"))?;
-        if kind == "disk" || kind == "loop" {
-            parents.push(name.clone());
-        } else if kind == "mpath" {
-            parents.push(name.clone());
-            // we don't need to know what disks back the multipath
-            break;
-        }
-    }
-    Ok(parents)
-}
-
 /// Parse a string into mibibytes
 pub fn parse_size_mib(mut s: &str) -> Result<u64> {
     let suffixes = [
@@ -645,9 +485,12 @@ mod test {
         let fixture = include_str!("../tests/fixtures/lsblk.json");
         let devs: DevicesOutput = serde_json::from_str(fixture).unwrap();
         let dev = devs.blockdevices.into_iter().next().unwrap();
+        // The parent device has no partition number
+        assert_eq!(dev.partn, None);
         let children = dev.children.as_deref().unwrap();
         assert_eq!(children.len(), 3);
         let first_child = &children[0];
+        assert_eq!(first_child.partn, Some(1));
         assert_eq!(
             first_child.parttype.as_deref().unwrap(),
             "21686148-6449-6e6f-744e-656564454649"
@@ -656,179 +499,13 @@ mod test {
             first_child.partuuid.as_deref().unwrap(),
             "3979e399-262f-4666-aabc-7ab5d3add2f0"
         );
-    }
-
-    #[test]
-    fn test_parse_sfdisk() -> Result<()> {
-        let fixture = indoc::indoc! { r#"
-        {
-            "partitiontable": {
-               "label": "gpt",
-               "id": "A67AA901-2C72-4818-B098-7F1CAC127279",
-               "device": "/dev/loop0",
-               "unit": "sectors",
-               "firstlba": 34,
-               "lastlba": 20971486,
-               "sectorsize": 512,
-               "partitions": [
-                  {
-                     "node": "/dev/loop0p1",
-                     "start": 2048,
-                     "size": 8192,
-                     "type": "9E1A2D38-C612-4316-AA26-8B49521E5A8B",
-                     "uuid": "58A4C5F0-BD12-424C-B563-195AC65A25DD",
-                     "name": "PowerPC-PReP-boot"
-                  },{
-                     "node": "/dev/loop0p2",
-                     "start": 10240,
-                     "size": 20961247,
-                     "type": "0FC63DAF-8483-4772-8E79-3D69D8477DE4",
-                     "uuid": "F51ABB0D-DA16-4A21-83CB-37F4C805AAA0",
-                     "name": "root"
-                  }
-               ]
-            }
-         }
-        "# };
-        let table: SfDiskOutput = serde_json::from_str(fixture).unwrap();
-        assert_eq!(
-            table.partitiontable.find("/dev/loop0p2").unwrap().size,
-            20961247
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn test_parttype_matches() {
-        let partition = Partition {
-            node: "/dev/loop0p1".to_string(),
-            start: 2048,
-            size: 8192,
-            parttype: "c12a7328-f81f-11d2-ba4b-00a0c93ec93b".to_string(), // lowercase ESP UUID
-            uuid: Some("58A4C5F0-BD12-424C-B563-195AC65A25DD".to_string()),
-            name: Some("EFI System".to_string()),
-            bootable: None,
-        };
-
-        // Test exact match (lowercase)
-        assert!(partition.parttype_matches("c12a7328-f81f-11d2-ba4b-00a0c93ec93b"));
-
-        // Test case-insensitive match (uppercase)
-        assert!(partition.parttype_matches("C12A7328-F81F-11D2-BA4B-00A0C93EC93B"));
-
-        // Test case-insensitive match (mixed case)
-        assert!(partition.parttype_matches("C12a7328-F81f-11d2-Ba4b-00a0C93ec93b"));
-
-        // Test non-match
-        assert!(!partition.parttype_matches("0FC63DAF-8483-4772-8E79-3D69D8477DE4"));
-    }
-
-    #[test]
-    fn test_find_partition_of_type() -> Result<()> {
-        let fixture = indoc::indoc! { r#"
-        {
-            "partitiontable": {
-               "label": "gpt",
-               "id": "A67AA901-2C72-4818-B098-7F1CAC127279",
-               "device": "/dev/loop0",
-               "unit": "sectors",
-               "firstlba": 34,
-               "lastlba": 20971486,
-               "sectorsize": 512,
-               "partitions": [
-                  {
-                     "node": "/dev/loop0p1",
-                     "start": 2048,
-                     "size": 8192,
-                     "type": "C12A7328-F81F-11D2-BA4B-00A0C93EC93B",
-                     "uuid": "58A4C5F0-BD12-424C-B563-195AC65A25DD",
-                     "name": "EFI System"
-                  },{
-                     "node": "/dev/loop0p2",
-                     "start": 10240,
-                     "size": 20961247,
-                     "type": "0FC63DAF-8483-4772-8E79-3D69D8477DE4",
-                     "uuid": "F51ABB0D-DA16-4A21-83CB-37F4C805AAA0",
-                     "name": "root"
-                  }
-               ]
-            }
-         }
-        "# };
-        let table: SfDiskOutput = serde_json::from_str(fixture).unwrap();
-
-        // Find ESP partition using lowercase UUID (should match uppercase in fixture)
-        let esp = table
-            .partitiontable
-            .find_partition_of_type("c12a7328-f81f-11d2-ba4b-00a0c93ec93b");
-        assert!(esp.is_some());
-        assert_eq!(esp.unwrap().node, "/dev/loop0p1");
-
-        // Find root partition using uppercase UUID (should match case-insensitively)
-        let root = table
-            .partitiontable
-            .find_partition_of_type("0fc63daf-8483-4772-8e79-3d69d8477de4");
-        assert!(root.is_some());
-        assert_eq!(root.unwrap().node, "/dev/loop0p2");
-
-        // Try to find non-existent partition type
-        let nonexistent = table
-            .partitiontable
-            .find_partition_of_type("00000000-0000-0000-0000-000000000000");
-        assert!(nonexistent.is_none());
-
-        // Find esp partition on GPT
-        let esp = table.partitiontable.find_partition_of_esp()?.unwrap();
-        assert_eq!(esp.node, "/dev/loop0p1");
-
-        Ok(())
-    }
-    #[test]
-    fn test_find_partition_of_type_mbr() -> Result<()> {
-        let fixture = indoc::indoc! { r#"
-        {
-            "partitiontable": {
-                "label": "dos",
-                "id": "0xc1748067",
-                "device": "/dev/mmcblk0",
-                "unit": "sectors",
-                "sectorsize": 512,
-                "partitions": [
-                    {
-                        "node": "/dev/mmcblk0p1",
-                        "start": 2048,
-                        "size": 1026048,
-                        "type": "6",
-                        "bootable": true
-                    },{
-                        "node": "/dev/mmcblk0p2",
-                        "start": 1028096,
-                        "size": 2097152,
-                        "type": "83"
-                    },{
-                        "node": "/dev/mmcblk0p3",
-                        "start": 3125248,
-                        "size": 121610240,
-                        "type": "ef"
-                    }
-                ]
-            }
-        }
-        "# };
-        let table: SfDiskOutput = serde_json::from_str(fixture).unwrap();
-
-        // Find ESP partition using bootalbe is true
-        assert_eq!(table.partitiontable.label, PartitionType::Dos);
-        let esp = table
-            .partitiontable
-            .find_partition_of_bootable()
-            .expect("bootable partition not found");
-        assert_eq!(esp.node, "/dev/mmcblk0p1");
-
-        // Find esp partition on MBR
-        let esp1 = table.partitiontable.find_partition_of_esp()?.unwrap();
-        assert_eq!(esp1.node, "/dev/mmcblk0p1");
-        Ok(())
+        // Verify find_device_by_partno works
+        let part2 = dev.find_device_by_partno(2).unwrap();
+        assert_eq!(part2.partn, Some(2));
+        assert_eq!(part2.parttype.as_deref().unwrap(), ESP);
+        // Verify find_partition_of_esp works
+        let esp = dev.find_partition_of_esp().unwrap();
+        assert_eq!(esp.partn, Some(2));
     }
 
     #[test]
