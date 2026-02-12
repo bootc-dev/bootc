@@ -33,6 +33,8 @@ pub struct Device {
     pub partlabel: Option<String>,
     pub parttype: Option<String>,
     pub partuuid: Option<String>,
+    /// Partition number (1-indexed). None for whole disk devices.
+    pub partn: Option<u32>,
     pub children: Option<Vec<Device>>,
     pub size: u64,
     #[serde(rename = "maj:min")]
@@ -60,33 +62,42 @@ impl Device {
         self.children.as_ref().is_some_and(|v| !v.is_empty())
     }
 
-    // The "start" parameter was only added in a version of util-linux that's only
-    // in Fedora 40 as of this writing.
-    fn backfill_start(&mut self) -> Result<()> {
+    /// Read a sysfs property for this device and parse it as the target type.
+    fn read_sysfs_property<T>(&self, property: &str) -> Result<Option<T>>
+    where
+        T: std::str::FromStr,
+        T::Err: std::error::Error + Send + Sync + 'static,
+    {
         let Some(majmin) = self.maj_min.as_deref() else {
-            // This shouldn't happen
-            return Ok(());
+            return Ok(None);
         };
-        let sysfs_start_path = format!("/sys/dev/block/{majmin}/start");
-        if Utf8Path::new(&sysfs_start_path).try_exists()? {
-            let start = std::fs::read_to_string(&sysfs_start_path)
-                .with_context(|| format!("Reading {sysfs_start_path}"))?;
-            tracing::debug!("backfilled start to {start}");
-            self.start = Some(
-                start
-                    .trim()
-                    .parse()
-                    .context("Parsing sysfs start property")?,
-            );
+        let sysfs_path = format!("/sys/dev/block/{majmin}/{property}");
+        if !Utf8Path::new(&sysfs_path).try_exists()? {
+            return Ok(None);
         }
-        Ok(())
+        let value = std::fs::read_to_string(&sysfs_path)
+            .with_context(|| format!("Reading {sysfs_path}"))?;
+        let parsed = value
+            .trim()
+            .parse()
+            .with_context(|| format!("Parsing sysfs {property} property"))?;
+        tracing::debug!("backfilled {property} to {value}");
+        Ok(Some(parsed))
     }
 
     /// Older versions of util-linux may be missing some properties. Backfill them if they're missing.
     pub fn backfill_missing(&mut self) -> Result<()> {
-        // Add new properties to backfill here
-        self.backfill_start()?;
-        // And recurse to child devices
+        // The "start" parameter was only added in a version of util-linux that's only
+        // in Fedora 40 as of this writing.
+        if self.start.is_none() {
+            self.start = self.read_sysfs_property("start")?;
+        }
+        // The "partn" column was added in util-linux 2.39, which is newer than
+        // what CentOS 9 / RHEL 9 ship (2.37). Note: sysfs uses "partition" not "partn".
+        if self.partn.is_none() {
+            self.partn = self.read_sysfs_property("partition")?;
+        }
+        // Recurse to child devices
         for child in self.children.iter_mut().flatten() {
             child.backfill_missing()?;
         }
