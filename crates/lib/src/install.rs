@@ -373,6 +373,12 @@ pub(crate) struct InstallConfigOpts {
     #[clap(long)]
     #[serde(default)]
     pub(crate) bootupd_skip_boot_uuid: bool,
+
+    /// Disable all bootloader integration and requirements
+    // This allows installing to a filesystem without boot and ESP partitions.
+    #[clap(long)]
+    #[serde(default)]
+    pub(crate) no_bootloader: bool,
 }
 
 #[derive(Debug, Default, Clone, clap::Parser, Serialize, Deserialize, PartialEq, Eq)]
@@ -1740,30 +1746,35 @@ async fn install_with_sysroot(
         .physical_root
         .open_dir(&deployment_path)
         .context("Opening deployment dir")?;
-    let postfetch = PostFetchState::new(state, &deployment_dir)?;
 
-    if cfg!(target_arch = "s390x") {
-        // TODO: Integrate s390x support into install_via_bootupd
-        crate::bootloader::install_via_zipl(&rootfs.device_info, boot_uuid)?;
+    if state.config_opts.no_bootloader {
+        tracing::debug!("Skipping bootloader installation (--no-bootloader requested)");
     } else {
-        match postfetch.detected_bootloader {
-            Bootloader::Grub => {
-                crate::bootloader::install_via_bootupd(
-                    &rootfs.device_info,
-                    &rootfs
-                        .target_root_path
-                        .clone()
-                        .unwrap_or(rootfs.physical_root_path.clone()),
-                    &state.config_opts,
-                    Some(&deployment_path.as_str()),
-                )?;
-            }
-            Bootloader::Systemd => {
-                anyhow::bail!("bootupd is required for ostree-based installs");
+        let postfetch = PostFetchState::new(state, &deployment_dir)?;
+
+        if cfg!(target_arch = "s390x") {
+            // TODO: Integrate s390x support into install_via_bootupd
+            crate::bootloader::install_via_zipl(&rootfs.device_info, boot_uuid)?;
+        } else {
+            match postfetch.detected_bootloader {
+                Bootloader::Grub => {
+                    crate::bootloader::install_via_bootupd(
+                        &rootfs.device_info,
+                        &rootfs
+                            .target_root_path
+                            .clone()
+                            .unwrap_or(rootfs.physical_root_path.clone()),
+                        &state.config_opts,
+                        Some(&deployment_path.as_str()),
+                    )?;
+                }
+                Bootloader::Systemd => {
+                    anyhow::bail!("bootupd is required for ostree-based installs");
+                }
             }
         }
+        tracing::debug!("Installed bootloader");
     }
-    tracing::debug!("Installed bootloader");
 
     tracing::debug!("Performing post-deployment operations");
 
@@ -1893,7 +1904,11 @@ async fn install_to_filesystem_impl(
         let (id, verity) = initialize_composefs_repository(state, rootfs).await?;
         tracing::info!("id: {id}, verity: {}", verity.to_hex());
 
-        setup_composefs_boot(rootfs, state, &id).await?;
+        if state.config_opts.no_bootloader {
+            tracing::debug!("Skipping setup composefs boot (--no-bootloader requested)");
+        } else {
+            setup_composefs_boot(rootfs, state, &id).await?;
+        }
     } else {
         ostree_install(state, rootfs, cleanup).await?;
     }
@@ -2141,7 +2156,16 @@ fn remove_all_except_loader_dirs(bootdir: &Dir, is_ostree: bool) -> Result<()> {
 }
 
 #[context("Removing boot directory content")]
-fn clean_boot_directories(rootfs: &Dir, rootfs_path: &Utf8Path, is_ostree: bool) -> Result<()> {
+fn clean_boot_directories(
+    rootfs: &Dir,
+    rootfs_path: &Utf8Path,
+    is_ostree: bool,
+    skip: bool,
+) -> Result<()> {
+    if skip {
+        return Ok(());
+    }
+
     let bootdir =
         crate::utils::open_dir_remount_rw(rootfs, BOOT.into()).context("Opening /boot")?;
 
@@ -2362,7 +2386,13 @@ pub(crate) async fn install_to_filesystem(
                 .await??;
         }
         Some(ReplaceMode::Alongside) => {
-            clean_boot_directories(&target_rootfs_fd, &target_root_path, is_already_ostree)?
+            let skip_cleaning = state.config_opts.no_bootloader;
+            clean_boot_directories(
+                &target_rootfs_fd,
+                &target_root_path,
+                is_already_ostree,
+                skip_cleaning,
+            )?
         }
         None => require_empty_rootdir(&rootfs_fd)?,
     }
@@ -2413,14 +2443,14 @@ pub(crate) async fn install_to_filesystem(
 
     let boot_is_mount = {
         let root_dev = rootfs_fd.dir_metadata()?.dev();
-        let boot_dev = target_rootfs_fd
-            .symlink_metadata_optional(BOOT)?
-            .ok_or_else(|| {
-                anyhow!("No /{BOOT} directory found in root; this is is currently required")
-            })?
-            .dev();
-        tracing::debug!("root_dev={root_dev} boot_dev={boot_dev}");
-        root_dev != boot_dev
+        if let Some(boot_metadata) = target_rootfs_fd.symlink_metadata_optional(BOOT)? {
+            let boot_dev = boot_metadata.dev();
+            tracing::debug!("root_dev={root_dev} boot_dev={boot_dev}");
+            root_dev != boot_dev
+        } else {
+            tracing::debug!("No /{BOOT} directory found");
+            false
+        }
     };
     // Find the UUID of /boot because we need it for GRUB.
     let boot_uuid = if boot_is_mount {
@@ -2464,7 +2494,10 @@ pub(crate) async fn install_to_filesystem(
         .install_config
         .as_ref()
         .and_then(|c| c.boot_mount_spec.as_ref());
-    let mut boot = if let Some(spec) = fsopts.boot_mount_spec.as_ref().or(config_boot_mount_spec) {
+
+    let mut boot = if state.config_opts.no_bootloader {
+        None
+    } else if let Some(spec) = fsopts.boot_mount_spec.as_ref().or(config_boot_mount_spec) {
         // An empty boot mount spec signals to omit the mountspec kargs
         // See https://github.com/bootc-dev/bootc/issues/1441
         if spec.is_empty() {
@@ -2964,6 +2997,16 @@ UUID=boot-uuid /boot ext4 defaults 0 0
             assert!(require_dir_contains_only_mounts(&td, "var").is_err());
         }
 
+        Ok(())
+    }
+
+    #[test]
+    fn test_clean_boot_directories_explicit_skip() -> Result<()> {
+        let td = cap_std_ext::cap_tempfile::TempDir::new(cap_std::ambient_authority())?;
+        let root_path = Utf8Path::new("/target");
+        // Case: Explicit Skip should succeed even if /boot doesn't exist
+        let res = clean_boot_directories(&td, root_path, false, true);
+        assert!(res.is_ok());
         Ok(())
     }
 }

@@ -49,6 +49,11 @@ is currently expected to be empty by default.
 
     The default mode is to "finalize" the target filesystem by invoking `fstrim` and similar operations, and finally mounting it readonly.  This option skips those operations.  It is then the responsibility of the invoking code to perform those operations
 
+**--no-bootloader**
+
+    Disable all bootloader integration and requirements. This allows installing to a
+    filesystem without boot and ESP partitions
+
 **--source-imgref**=*SOURCE_IMGREF*
 
     Install the system from an explicitly given source
