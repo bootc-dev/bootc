@@ -101,3 +101,8 @@
   summary: Verify bootc sends correct User-Agent header to registries
   duration: 10m
   test: python3 booted/test-user-agent.py
+
+/test-36-rollback:
+  summary: Test bootc rollback functionality through image switch and rollback cycle
+  duration: 30m
+  test: nu booted/test-rollback.nu
