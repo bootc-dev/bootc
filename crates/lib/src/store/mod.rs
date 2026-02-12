@@ -24,7 +24,9 @@ use anyhow::{Context, Result};
 use bootc_mount::tempmount::TempMount;
 use camino::Utf8PathBuf;
 use cap_std_ext::cap_std;
-use cap_std_ext::cap_std::fs::{Dir, DirBuilder, DirBuilderExt as _};
+use cap_std_ext::cap_std::fs::{
+    Dir, DirBuilder, DirBuilderExt as _, Permissions, PermissionsExt as _,
+};
 use cap_std_ext::dirext::CapStdExtDirExt;
 use fn_error_context::context;
 
@@ -51,8 +53,29 @@ pub const SYSROOT: &str = "sysroot";
 
 /// The toplevel composefs directory path
 pub const COMPOSEFS: &str = "composefs";
-#[allow(dead_code)]
-pub const COMPOSEFS_MODE: Mode = Mode::from_raw_mode(0o700);
+
+/// The mode for the composefs directory; this is intentionally restrictive
+/// to avoid leaking information.
+pub(crate) const COMPOSEFS_MODE: Mode = Mode::from_raw_mode(0o700);
+
+/// Ensure the composefs directory exists in the given physical root
+/// with the correct permissions (mode 0700).
+pub(crate) fn ensure_composefs_dir(physical_root: &Dir) -> Result<()> {
+    let mut db = DirBuilder::new();
+    db.mode(COMPOSEFS_MODE.as_raw_mode());
+    physical_root
+        .ensure_dir_with(COMPOSEFS, &db)
+        .context("Creating composefs directory")?;
+    // Always update permissions, in case the directory pre-existed
+    // with incorrect mode (e.g. from an older version of bootc).
+    physical_root
+        .set_permissions(
+            COMPOSEFS,
+            Permissions::from_mode(COMPOSEFS_MODE.as_raw_mode()),
+        )
+        .context("Setting composefs directory permissions")?;
+    Ok(())
+}
 
 /// The path to the bootc root directory, relative to the physical
 /// system root
@@ -399,9 +422,7 @@ impl Storage {
             return Ok(Arc::clone(composefs));
         }
 
-        let mut db = DirBuilder::new();
-        db.mode(COMPOSEFS_MODE.as_raw_mode());
-        self.physical_root.ensure_dir_with(COMPOSEFS, &db)?;
+        ensure_composefs_dir(&self.physical_root)?;
 
         // Bootstrap verity off of the ostree state. In practice this means disabled by
         // default right now.
@@ -428,5 +449,64 @@ impl Storage {
         sysroot_dir
             .update_timestamps(std::path::Path::new(BOOTC_ROOT))
             .context("update_timestamps")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The raw mode returned by metadata includes file type bits (S_IFDIR,
+    /// etc.) in addition to permission bits. This constant masks to only
+    /// the permission bits (owner/group/other rwx).
+    const PERMS: Mode = Mode::from_raw_mode(0o777);
+
+    #[test]
+    fn test_ensure_composefs_dir_mode() -> Result<()> {
+        use cap_std_ext::cap_primitives::fs::PermissionsExt as _;
+
+        let td = cap_std_ext::cap_tempfile::TempDir::new(cap_std::ambient_authority())?;
+
+        let assert_mode = || -> Result<()> {
+            let perms = td.metadata(COMPOSEFS)?.permissions();
+            let mode = Mode::from_raw_mode(perms.mode());
+            assert_eq!(mode & PERMS, COMPOSEFS_MODE);
+            Ok(())
+        };
+
+        ensure_composefs_dir(&td)?;
+        assert_mode()?;
+
+        // Calling again should be a no-op (ensure is idempotent)
+        ensure_composefs_dir(&td)?;
+        assert_mode()?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_ensure_composefs_dir_fixes_existing() -> Result<()> {
+        use cap_std_ext::cap_primitives::fs::PermissionsExt as _;
+
+        let td = cap_std_ext::cap_tempfile::TempDir::new(cap_std::ambient_authority())?;
+
+        // Create with overly permissive mode (simulating old bootc behavior)
+        let mut db = DirBuilder::new();
+        db.mode(0o755);
+        td.create_dir_with(COMPOSEFS, &db)?;
+
+        // Verify it starts with wrong permissions
+        let perms = td.metadata(COMPOSEFS)?.permissions();
+        let mode = Mode::from_raw_mode(perms.mode());
+        assert_eq!(mode & PERMS, Mode::from_raw_mode(0o755));
+
+        // ensure_composefs_dir should fix the permissions
+        ensure_composefs_dir(&td)?;
+
+        let perms = td.metadata(COMPOSEFS)?.permissions();
+        let mode = Mode::from_raw_mode(perms.mode());
+        assert_eq!(mode & PERMS, COMPOSEFS_MODE);
+
+        Ok(())
     }
 }
