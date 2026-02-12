@@ -11,6 +11,8 @@ shift
 # Path to secrets directory
 secrets=$1
 shift
+allow_missing_verity=$1
+shift
 
 # Find the kernel version (needed for output filename)
 kver=$(bootc container inspect --rootfs "${target}" --json | jq -r '.kernel.version')
@@ -38,6 +40,12 @@ containerukifyargs=(--rootfs "${target}")
 # See https://github.com/bootc-dev/bootc/issues/1826
 containerukifyargs+=(--karg enforcing=0)
 
+missing_verity=()
+
+if [[ $allow_missing_verity == "true" ]]; then
+    missing_verity+=(--allow-missing-verity)
+fi
+
 # Build the UKI using bootc container ukify
 # This computes the composefs digest, reads kargs from kargs.d, and invokes ukify
-bootc container ukify "${containerukifyargs[@]}" -- "${ukifyargs[@]}"
+bootc container ukify "${containerukifyargs[@]}" "${missing_verity[@]}" -- "${ukifyargs[@]}"

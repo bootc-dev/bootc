@@ -411,6 +411,10 @@ pub(crate) enum ContainerOpts {
         #[clap(long = "karg", hide = true)]
         kargs: Vec<String>,
 
+        /// Make fs-verity validation optional in case the filesystem doesn't support it
+        #[clap(long)]
+        allow_missing_verity: bool,
+
         /// Additional arguments to pass to ukify (after `--`).
         #[clap(last = true)]
         args: Vec<OsString>,
@@ -1624,8 +1628,9 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
             ContainerOpts::Ukify {
                 rootfs,
                 kargs,
+                allow_missing_verity,
                 args,
-            } => crate::ukify::build_ukify(&rootfs, &kargs, &args),
+            } => crate::ukify::build_ukify(&rootfs, &kargs, &args, allow_missing_verity),
         },
         Opt::Completion { shell } => {
             use clap_complete::aot::generate;
