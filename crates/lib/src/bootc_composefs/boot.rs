@@ -519,7 +519,7 @@ pub(crate) fn setup_composefs_bls_boot(
 
             cmdline_options.extend(&root_setup.kargs);
 
-            let composefs_cmdline = if state.composefs_options.insecure {
+            let composefs_cmdline = if state.composefs_options.allow_missing_verity {
                 format!("{COMPOSEFS_CMDLINE}=?{id_hex}")
             } else {
                 format!("{COMPOSEFS_CMDLINE}={id_hex}")
@@ -558,7 +558,7 @@ pub(crate) fn setup_composefs_bls_boot(
             };
 
             // Copy all cmdline args, replacing only `composefs=`
-            let param = if booted_cfs.cmdline.insecure {
+            let param = if booted_cfs.cmdline.allow_missing_fsverity {
                 format!("{COMPOSEFS_CMDLINE}=?{id_hex}")
             } else {
                 format!("{COMPOSEFS_CMDLINE}={id_hex}")
@@ -809,7 +809,7 @@ fn write_pe_to_esp(
     file_path: &Utf8Path,
     pe_type: PEType,
     uki_id: &Sha512HashValue,
-    is_insecure_from_opts: bool,
+    missing_fsverity_allowed: bool,
     mounted_efi: impl AsRef<Path>,
     bootloader: &Bootloader,
 ) -> Result<Option<UKIInfo>> {
@@ -822,17 +822,19 @@ fn write_pe_to_esp(
     if matches!(pe_type, PEType::Uki) {
         let cmdline = uki::get_cmdline(&efi_bin).context("Getting UKI cmdline")?;
 
-        let (composefs_cmdline, insecure) =
+        let (composefs_cmdline, missing_verity_allowed_cmdline) =
             get_cmdline_composefs::<Sha512HashValue>(cmdline).context("Parsing composefs=")?;
 
         // If the UKI cmdline does not match what the user has passed as cmdline option
         // NOTE: This will only be checked for new installs and now upgrades/switches
-        match is_insecure_from_opts {
-            true if !insecure => {
-                tracing::warn!("--insecure passed as option but UKI cmdline does not support it");
+        match missing_fsverity_allowed {
+            true if !missing_verity_allowed_cmdline => {
+                tracing::warn!(
+                    "--allow-missing-fsverity passed as option but UKI cmdline does not support it"
+                );
             }
 
-            false if insecure => {
+            false if missing_verity_allowed_cmdline => {
                 tracing::warn!("UKI cmdline has composefs set as insecure");
             }
 
@@ -1077,7 +1079,8 @@ pub(crate) fn setup_composefs_uki_boot(
     id: &Sha512HashValue,
     entries: Vec<ComposefsBootEntry<Sha512HashValue>>,
 ) -> Result<String> {
-    let (root_path, esp_device, bootloader, is_insecure_from_opts, uki_addons) = match setup_type {
+    let (root_path, esp_device, bootloader, missing_fsverity_allowed, uki_addons) = match setup_type
+    {
         BootSetupType::Setup((root_setup, state, postfetch, ..)) => {
             state.require_no_kargs_for_uki()?;
 
@@ -1087,7 +1090,7 @@ pub(crate) fn setup_composefs_uki_boot(
                 root_setup.physical_root_path.clone(),
                 esp_part.node.clone(),
                 postfetch.detected_bootloader.clone(),
-                state.composefs_options.insecure,
+                state.composefs_options.allow_missing_verity,
                 state.composefs_options.uki_addon.as_ref(),
             )
         }
@@ -1101,7 +1104,7 @@ pub(crate) fn setup_composefs_uki_boot(
                 sysroot,
                 get_esp_partition(&sysroot_parent)?.0,
                 bootloader,
-                booted_cfs.cmdline.insecure,
+                booted_cfs.cmdline.allow_missing_fsverity,
                 None,
             )
         }
@@ -1152,7 +1155,7 @@ pub(crate) fn setup_composefs_uki_boot(
                     utf8_file_path,
                     entry.pe_type,
                     &id,
-                    is_insecure_from_opts,
+                    missing_fsverity_allowed,
                     esp_mount.dir.path(),
                     &bootloader,
                 )?;
@@ -1231,10 +1234,10 @@ pub(crate) async fn setup_composefs_boot(
     root_setup: &RootSetup,
     state: &State,
     image_id: &str,
-    insecure: bool,
+    allow_missing_fsverity: bool,
 ) -> Result<()> {
     let mut repo = open_composefs_repo(&root_setup.physical_root)?;
-    repo.set_insecure(insecure);
+    repo.set_insecure(allow_missing_fsverity);
 
     let mut fs = create_composefs_filesystem(&repo, image_id, None)?;
     let entries = fs.transform_for_boot(&repo)?;
@@ -1306,7 +1309,7 @@ pub(crate) async fn setup_composefs_boot(
             &state.source.imageref.name,
         ))
         .await?,
-        insecure,
+        allow_missing_fsverity,
     )
     .await?;
 
