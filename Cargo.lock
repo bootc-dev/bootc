@@ -205,7 +205,6 @@ dependencies = [
  "fn-error-context",
  "indoc",
  "libc",
- "regex",
  "rustix",
  "serde",
  "serde_json",
