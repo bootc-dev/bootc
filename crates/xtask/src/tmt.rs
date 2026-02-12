@@ -485,10 +485,15 @@ pub(crate) fn run_tmt(sh: &Shell, args: &RunTmtArgs) -> Result<()> {
             }
 
             if args.composefs_backend {
-                // TODO(Johan-Liebert1): Filesystem should be a parameter and we should test
-                // insecure with xfs
-                opts.push("--filesystem=ext4".into());
+                let filesystem = args.filesystem.as_deref().unwrap_or("ext4");
+                opts.push(format!("--filesystem={}", filesystem));
                 opts.push("--composefs-backend".into());
+
+                if filesystem == "xfs" {
+                    // As xfs doesn't support fsverity
+                    opts.push("--allow-missing-verity".into());
+                }
+
                 opts.extend(COMPOSEFS_KERNEL_ARGS.map(|x| x.into()));
             }
 

@@ -21,6 +21,8 @@ upgrade_img := base_img + "-upgrade"
 # Build variant: ostree (default) or composefs-sealeduki-sdboot (sealed UKI)
 variant := env("BOOTC_variant", "ostree")
 bootloader := env("BOOTC_bootloader", "grub")
+# Only used for composefs tests
+filesystem := env("BOOTC_filesystem", "ext4")
 # Base container image to build from
 base := env("BOOTC_base", "quay.io/centos-bootc/centos-bootc:stream10")
 # Buildroot base image
@@ -106,23 +108,26 @@ test-container: build build-units
 
 # Build and test sealed composefs images
 [group('core')]
-test-composefs-sealeduki-sdboot:
-    just variant=composefs-sealeduki-sdboot test-tmt readonly local-upgrade-reboot
+test-composefs-sealeduki-sdboot filesystem:
+    just variant=composefs-sealeduki-sdboot filesystem={{filesystem}} test-tmt readonly local-upgrade-reboot
 
 [group('core')]
-test-composefs bootloader:
-    just variant=composefs bootloader={{bootloader}} \
-        test-tmt --composefs-backend --bootloader {{bootloader}} integration
+test-composefs bootloader filesystem:
+    just variant=composefs bootloader={{bootloader}} filesystem={{filesystem}} \
+        test-tmt --composefs-backend \
+            --bootloader {{bootloader}} \
+            --filesystem {{filesystem}} \
+            integration
 
 # Build and test composefs images booted using Type1 boot entries and systemd-boot as the bootloader
 [group('core')]
-test-composefs-sdboot:
-    just test-composefs systemd
+test-composefs-sdboot filesystem:
+    just test-composefs systemd {{filesystem}}
 
 # Build and test composefs images booted using Type1 boot entries and grub as the bootloader
 [group('core')]
-test-composefs-grub:
-    just test-composefs grub
+test-composefs-grub filesystem:
+    just test-composefs grub {{filesystem}}
 
 # Run cargo fmt and clippy checks in container
 [group('core')]
