@@ -41,7 +41,11 @@ lbi_images := "quay.io/curl/curl:latest quay.io/curl/curl-base:latest registry.a
 fedora-coreos := "quay.io/fedora/fedora-coreos:testing-devel"
 generic_buildargs := ""
 _extra_src_args := if extra_src != "" { "-v " + extra_src + ":/run/extra-src:ro --security-opt=label=disable" } else { "" }
-base_buildargs := generic_buildargs + " " + _extra_src_args + " --build-arg=base=" + base + " --build-arg=variant=" + variant + " --build-arg=bootloader=" + bootloader
+base_buildargs := generic_buildargs + " " + _extra_src_args \
+                  + " --build-arg=base=" + base \
+                  + " --build-arg=variant=" + variant \
+                  + " --build-arg=bootloader=" + bootloader \
+                  + " --build-arg=filesystem=" + filesystem # required for bootc container ukify to allow missing fsverity
 buildargs := base_buildargs \
              + " --cap-add=all --security-opt=label=type:container_runtime_t --device /dev/fuse" \
              + " --secret=id=secureboot_key,src=target/test-secureboot/db.key --secret=id=secureboot_cert,src=target/test-secureboot/db.crt"
