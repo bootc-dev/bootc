@@ -1272,7 +1272,7 @@ pub(crate) fn exec_in_host_mountns(args: &[std::ffi::OsString]) -> Result<()> {
 pub(crate) struct RootSetup {
     #[cfg(feature = "install-to-disk")]
     luks_device: Option<String>,
-    pub(crate) device_info: bootc_blockdev::PartitionTable,
+    pub(crate) device_info: bootc_blockdev::Device,
     /// Absolute path to the location where we've mounted the physical
     /// root filesystem for the system we're installing.
     pub(crate) physical_root_path: Utf8PathBuf,
@@ -1952,15 +1952,18 @@ async fn install_to_filesystem_impl(
     // Drop exclusive ownership since we're done with mutation
     let rootfs = &*rootfs;
 
-    match &rootfs.device_info.label {
-        bootc_blockdev::PartitionType::Dos => crate::utils::medium_visibility_warning(
+    match rootfs.device_info.pttype.as_deref() {
+        Some("dos") => crate::utils::medium_visibility_warning(
             "Installing to `dos` format partitions is not recommended",
         ),
-        bootc_blockdev::PartitionType::Gpt => {
+        Some("gpt") => {
             // The only thing we should be using in general
         }
-        bootc_blockdev::PartitionType::Unknown(o) => {
-            crate::utils::medium_visibility_warning(&format!("Unknown partition label {o}"))
+        Some(o) => {
+            crate::utils::medium_visibility_warning(&format!("Unknown partition table type {o}"))
+        }
+        None => {
+            // No partition table type - may be a filesystem install or loop device
         }
     }
 
@@ -2529,25 +2532,11 @@ pub(crate) async fn install_to_filesystem(
 
     // Find the real underlying backing device for the root.  This is currently just required
     // for GRUB (BIOS) and in the future zipl (I think).
-    let backing_device = {
-        let mut dev = inspect.source;
-        loop {
-            tracing::debug!("Finding parents for {dev}");
-            let mut parents = bootc_blockdev::find_parent_devices(&dev)?.into_iter();
-            let Some(parent) = parents.next() else {
-                break;
-            };
-            if let Some(next) = parents.next() {
-                anyhow::bail!(
-                    "Found multiple parent devices {parent} and {next}; not currently supported"
-                );
-            }
-            dev = parent;
-        }
+    let device_info = {
+        let dev = bootc_blockdev::list_dev(Utf8Path::new(&inspect.source))?.root_disk()?;
+        tracing::debug!("Backing device: {}", dev.path());
         dev
     };
-    tracing::debug!("Backing device: {backing_device}");
-    let device_info = bootc_blockdev::partitions_of(Utf8Path::new(&backing_device))?;
 
     let rootarg = format!("root={}", root_info.mount_spec);
     // CLI takes precedence over config file.

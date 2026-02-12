@@ -67,9 +67,7 @@ use std::io::Write;
 use std::path::Path;
 
 use anyhow::{Context, Result, anyhow, bail};
-use bootc_blockdev::find_parent_devices;
 use bootc_kernel_cmdline::utf8::{Cmdline, Parameter, ParameterKey};
-use bootc_mount::inspect_filesystem_of_dir;
 use bootc_mount::tempmount::TempMount;
 use camino::{Utf8Path, Utf8PathBuf};
 use cap_std_ext::{
@@ -93,6 +91,7 @@ use rustix::{mount::MountFlags, path::Arg};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::bootc_composefs::state::{get_booted_bls, write_composefs_state};
 use crate::parsers::bls_config::{BLSConfig, BLSConfigType};
 use crate::task::Task;
 use crate::{
@@ -102,10 +101,6 @@ use crate::{
 use crate::{
     bootc_composefs::repo::open_composefs_repo,
     store::{ComposefsFilesystem, Storage},
-};
-use crate::{
-    bootc_composefs::state::{get_booted_bls, write_composefs_state},
-    bootloader::esp_in,
 };
 use crate::{
     bootc_composefs::status::get_container_manifest_and_config, bootc_kargs::compute_new_kargs,
@@ -221,28 +216,10 @@ fi
     )
 }
 
-pub fn get_esp_partition(device: &str) -> Result<(String, Option<String>)> {
-    let device_info = bootc_blockdev::partitions_of(Utf8Path::new(device))?;
-    let esp = crate::bootloader::esp_in(&device_info)?;
-
-    Ok((esp.node.clone(), esp.uuid.clone()))
-}
-
 /// Mount the ESP from the provided device
 pub fn mount_esp(device: &str) -> Result<TempMount> {
     let flags = MountFlags::NOEXEC | MountFlags::NOSUID;
     TempMount::mount_dev(device, "vfat", flags, Some(c"fmask=0177,dmask=0077"))
-}
-
-pub fn get_sysroot_parent_dev(physical_root: &Dir) -> Result<String> {
-    let fsinfo = inspect_filesystem_of_dir(physical_root)?;
-    let parent_devices = find_parent_devices(&fsinfo.source)?;
-
-    let Some(parent) = parent_devices.into_iter().next() else {
-        anyhow::bail!("Could not find parent device of system root");
-    };
-
-    Ok(parent)
 }
 
 /// Filename release field for primary (new/upgraded) entry.
@@ -528,11 +505,11 @@ pub(crate) fn setup_composefs_bls_boot(
             cmdline_options.extend(&Cmdline::from(&composefs_cmdline));
 
             // Locate ESP partition device
-            let esp_part = esp_in(&root_setup.device_info)?;
+            let esp_part = root_setup.device_info.find_partition_of_esp()?;
 
             (
                 root_setup.physical_root_path.clone(),
-                esp_part.node.clone(),
+                esp_part.path(),
                 cmdline_options,
                 fs,
                 postfetch.detected_bootloader.clone(),
@@ -540,7 +517,6 @@ pub(crate) fn setup_composefs_bls_boot(
         }
 
         BootSetupType::Upgrade((storage, booted_cfs, fs, host)) => {
-            let sysroot_parent = get_sysroot_parent_dev(&storage.physical_root)?;
             let bootloader = host.require_composefs_booted()?.bootloader.clone();
 
             let boot_dir = storage.require_boot_dir()?;
@@ -568,9 +544,13 @@ pub(crate) fn setup_composefs_bls_boot(
                 Parameter::parse(&param).context("Failed to create 'composefs=' parameter")?;
             cmdline.add_or_modify(&param);
 
+            // Locate ESP partition device
+            let root_dev = bootc_blockdev::list_dev_by_dir(&storage.physical_root)?.root_disk()?;
+            let esp_dev = root_dev.find_partition_of_esp()?;
+
             (
                 Utf8PathBuf::from("/sysroot"),
-                get_esp_partition(&sysroot_parent)?.0,
+                esp_dev.path(),
                 cmdline,
                 fs,
                 bootloader,
@@ -1087,11 +1067,11 @@ pub(crate) fn setup_composefs_uki_boot(
         BootSetupType::Setup((root_setup, state, postfetch, ..)) => {
             state.require_no_kargs_for_uki()?;
 
-            let esp_part = esp_in(&root_setup.device_info)?;
+            let esp_part = root_setup.device_info.find_partition_of_esp()?;
 
             (
                 root_setup.physical_root_path.clone(),
-                esp_part.node.clone(),
+                esp_part.path(),
                 postfetch.detected_bootloader.clone(),
                 state.composefs_options.allow_missing_verity,
                 state.composefs_options.uki_addon.as_ref(),
@@ -1100,12 +1080,15 @@ pub(crate) fn setup_composefs_uki_boot(
 
         BootSetupType::Upgrade((storage, booted_cfs, _, host)) => {
             let sysroot = Utf8PathBuf::from("/sysroot"); // Still needed for root_path
-            let sysroot_parent = get_sysroot_parent_dev(&storage.physical_root)?;
             let bootloader = host.require_composefs_booted()?.bootloader.clone();
+
+            // Locate ESP partition device
+            let root_dev = bootc_blockdev::list_dev_by_dir(&storage.physical_root)?.root_disk()?;
+            let esp_dev = root_dev.find_partition_of_esp()?;
 
             (
                 sysroot,
-                get_esp_partition(&sysroot_parent)?.0,
+                esp_dev.path(),
                 bootloader,
                 booted_cfs.cmdline.allow_missing_fsverity,
                 None,
