@@ -87,7 +87,7 @@ pub(crate) fn initialize_state(
     erofs_id: &String,
     state_path: &Utf8PathBuf,
     initialize_var: bool,
-    insecure: bool,
+    allow_missing_fsverity: bool,
 ) -> Result<()> {
     let sysroot_fd = open(
         sysroot_path.as_std_path(),
@@ -96,8 +96,11 @@ pub(crate) fn initialize_state(
     )
     .context("Opening sysroot")?;
 
-    let composefs_fd =
-        bootc_initramfs_setup::mount_composefs_image(&sysroot_fd, &erofs_id, insecure)?;
+    let composefs_fd = bootc_initramfs_setup::mount_composefs_image(
+        &sysroot_fd,
+        &erofs_id,
+        allow_missing_fsverity,
+    )?;
 
     let tempdir = TempMount::mount_fd(composefs_fd)?;
 
@@ -236,7 +239,7 @@ pub(crate) async fn write_composefs_state(
     boot_type: BootType,
     boot_digest: String,
     container_details: &ImgConfigManifest,
-    insecure: bool,
+    allow_missing_fsverity: bool,
 ) -> Result<()> {
     let state_path = root_path
         .join(STATE_DIR_RELATIVE)
@@ -259,7 +262,7 @@ pub(crate) async fn write_composefs_state(
         &deployment_id.to_hex(),
         &state_path,
         staged.is_none(),
-        insecure,
+        allow_missing_fsverity,
     )?;
 
     let ImageReference {

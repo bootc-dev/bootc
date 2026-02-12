@@ -108,7 +108,7 @@ pub(crate) async fn prepare_soft_reboot_composefs(
 
     create_dir_all(NEXTROOT).context("Creating nextroot")?;
 
-    let cmdline = if booted_cfs.cmdline.insecure {
+    let cmdline = if booted_cfs.cmdline.allow_missing_fsverity {
         Cmdline::from(format!("{COMPOSEFS_CMDLINE}=?{deployment_id}"))
     } else {
         Cmdline::from(format!("{COMPOSEFS_CMDLINE}={deployment_id}"))
