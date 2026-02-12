@@ -26,9 +26,7 @@ pub(crate) async fn initialize_composefs_repository(
 ) -> Result<(String, impl FsVerityHashValue)> {
     let rootfs_dir = &root_setup.physical_root;
 
-    rootfs_dir
-        .create_dir_all("composefs")
-        .context("Creating dir composefs")?;
+    crate::store::ensure_composefs_dir(rootfs_dir)?;
 
     let repo = open_composefs_repo(rootfs_dir)?;
 
