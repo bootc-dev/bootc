@@ -175,7 +175,9 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bootc-internal-utils",
+ "bootc-mount",
  "camino",
+ "cap-std-ext",
  "fn-error-context",
  "indoc",
  "libc",

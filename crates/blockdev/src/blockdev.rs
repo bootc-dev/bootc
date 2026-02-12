@@ -6,13 +6,16 @@ use std::sync::OnceLock;
 
 use anyhow::{Context, Result, anyhow};
 use camino::{Utf8Path, Utf8PathBuf};
+use cap_std_ext::cap_std::fs::Dir;
 use fn_error_context::context;
 use regex::Regex;
 use serde::Deserialize;
 
 use bootc_utils::CommandRunExt;
 
-/// EFI System Partition (ESP) on MBR
+/// MBR partition type IDs that indicate an EFI System Partition.
+/// 0x06 is FAT16 (used as ESP on some MBR systems), 0xEF is the
+/// explicit EFI System Partition type.
 /// Refer to <https://en.wikipedia.org/wiki/Partition_type>
 pub const ESP_ID_MBR: &[u8] = &[0x06, 0xEF];
 
@@ -25,7 +28,7 @@ struct DevicesOutput {
 }
 
 #[allow(dead_code)]
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct Device {
     pub name: String,
     pub serial: Option<String>,
@@ -48,6 +51,8 @@ pub struct Device {
     pub fstype: Option<String>,
     pub uuid: Option<String>,
     pub path: Option<String>,
+    /// Partition table type (e.g., "gpt", "dos"). Only present on whole disk devices.
+    pub pttype: Option<String>,
 }
 
 impl Device {
@@ -60,6 +65,67 @@ impl Device {
     #[allow(dead_code)]
     pub fn has_children(&self) -> bool {
         self.children.as_ref().is_some_and(|v| !v.is_empty())
+    }
+
+    /// Find a child partition by partition type (case-insensitive).
+    pub fn find_partition_of_type(&self, parttype: &str) -> Option<&Device> {
+        self.children.as_ref()?.iter().find(|child| {
+            child
+                .parttype
+                .as_ref()
+                .is_some_and(|pt| pt.eq_ignore_ascii_case(parttype))
+        })
+    }
+
+    /// Find the EFI System Partition (ESP) among children.
+    ///
+    /// For GPT disks, this matches by the ESP partition type GUID.
+    /// For MBR (dos) disks, this matches by the MBR partition type IDs (0x06 or 0xEF).
+    pub fn find_partition_of_esp(&self) -> Result<&Device> {
+        let children = self
+            .children
+            .as_ref()
+            .ok_or_else(|| anyhow!("Device has no children"))?;
+        match self.pttype.as_deref() {
+            Some("dos") => children
+                .iter()
+                .find(|child| {
+                    child
+                        .parttype
+                        .as_ref()
+                        .and_then(|pt| {
+                            let pt = pt.strip_prefix("0x").unwrap_or(pt);
+                            u8::from_str_radix(pt, 16).ok()
+                        })
+                        .is_some_and(|pt| ESP_ID_MBR.contains(&pt))
+                })
+                .ok_or_else(|| anyhow!("ESP not found in MBR partition table")),
+            // When pttype is None (e.g. older lsblk or partition devices), default
+            // to GPT UUID matching which will simply not match MBR hex types.
+            Some("gpt") | None => self
+                .find_partition_of_type(ESP)
+                .ok_or_else(|| anyhow!("ESP not found in GPT partition table")),
+            Some(other) => Err(anyhow!("Unsupported partition table type: {other}")),
+        }
+    }
+
+    /// Find a child partition by partition number (1-indexed).
+    pub fn find_device_by_partno(&self, partno: u32) -> Result<&Device> {
+        self.children
+            .as_ref()
+            .ok_or_else(|| anyhow!("Device has no children"))?
+            .iter()
+            .find(|child| child.partn == Some(partno))
+            .ok_or_else(|| anyhow!("Missing partition for index {partno}"))
+    }
+
+    /// Re-query this device's information from lsblk, updating all fields.
+    /// This is useful after partitioning when the device's children have changed.
+    pub fn refresh(&mut self) -> Result<()> {
+        let path = self.path();
+        let new_device = list_dev(Utf8Path::new(&path))?;
+        *self = new_device;
+        Ok(())
     }
 
     /// Read a sysfs property for this device and parse it as the target type.
@@ -103,6 +169,67 @@ impl Device {
         }
         Ok(())
     }
+
+    /// Query parent devices via `lsblk --inverse`.
+    ///
+    /// Returns `Ok(None)` if this device is already a root device (no parents).
+    /// In the returned `Vec<Device>`, each device's `children` field contains
+    /// *its own* parents (grandparents, etc.), forming the full chain to the
+    /// root device(s). A device can have multiple parents (e.g. RAID, LVM).
+    pub fn list_parents(&self) -> Result<Option<Vec<Device>>> {
+        let path = self.path();
+        let output: DevicesOutput = Command::new("lsblk")
+            .args(["-J", "-b", "-O", "--inverse"])
+            .arg(&path)
+            .log_debug()
+            .run_and_parse_json()?;
+
+        let device = output
+            .blockdevices
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow!("no device output from lsblk --inverse for {path}"))?;
+
+        match device.children {
+            Some(mut children) if !children.is_empty() => {
+                for child in &mut children {
+                    child.backfill_missing()?;
+                }
+                Ok(Some(children))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// Walk the parent chain to find the root (whole disk) device.
+    ///
+    /// Returns the root device with its children (partitions) populated.
+    /// If this device is already a root device, returns a clone of `self`.
+    /// Fails if the device has multiple parents at any level.
+    pub fn root_disk(&self) -> Result<Device> {
+        let Some(parents) = self.list_parents()? else {
+            // Already a root device; re-query to ensure children are populated
+            return list_dev(Utf8Path::new(&self.path()));
+        };
+        let mut current = parents;
+        loop {
+            anyhow::ensure!(
+                current.len() == 1,
+                "Device {} has multiple parents; cannot determine root disk",
+                self.path()
+            );
+            let mut parent = current.into_iter().next().unwrap();
+            match parent.children.take() {
+                Some(grandparents) if !grandparents.is_empty() => {
+                    current = grandparents;
+                }
+                _ => {
+                    // Found the root; re-query to populate its actual children
+                    return list_dev(Utf8Path::new(&parent.path()));
+                }
+            }
+        }
+    }
 }
 
 #[context("Listing device {dev}")]
@@ -119,6 +246,12 @@ pub fn list_dev(dev: &Utf8Path) -> Result<Device> {
         .into_iter()
         .next()
         .ok_or_else(|| anyhow!("no device output from lsblk for {dev}"))
+}
+
+/// List the device containing the filesystem mounted at the given directory.
+pub fn list_dev_by_dir(dir: &Dir) -> Result<Device> {
+    let fsinfo = bootc_mount::inspect_filesystem_of_dir(dir)?;
+    list_dev(&Utf8PathBuf::from(&fsinfo.source))
 }
 
 #[derive(Debug, Deserialize)]
@@ -696,5 +829,101 @@ mod test {
         let esp1 = table.partitiontable.find_partition_of_esp()?.unwrap();
         assert_eq!(esp1.node, "/dev/mmcblk0p1");
         Ok(())
+    }
+
+    #[test]
+    fn test_parse_lsblk_mbr() {
+        let fixture = include_str!("../tests/fixtures/lsblk-mbr.json");
+        let devs: DevicesOutput = serde_json::from_str(fixture).unwrap();
+        let dev = devs.blockdevices.into_iter().next().unwrap();
+        // The parent device has no partition number and is MBR
+        assert_eq!(dev.partn, None);
+        assert_eq!(dev.pttype.as_deref().unwrap(), "dos");
+        let children = dev.children.as_deref().unwrap();
+        assert_eq!(children.len(), 3);
+        // First partition: FAT16 boot partition (MBR type 0x06, an ESP type)
+        let first_child = &children[0];
+        assert_eq!(first_child.partn, Some(1));
+        assert_eq!(first_child.parttype.as_deref().unwrap(), "0x06");
+        assert_eq!(first_child.partuuid.as_deref().unwrap(), "a1b2c3d4-01");
+        assert_eq!(first_child.fstype.as_deref().unwrap(), "vfat");
+        // MBR partitions have no partlabel
+        assert!(first_child.partlabel.is_none());
+        // Second partition: Linux root (MBR type 0x83)
+        let second_child = &children[1];
+        assert_eq!(second_child.partn, Some(2));
+        assert_eq!(second_child.parttype.as_deref().unwrap(), "0x83");
+        assert_eq!(second_child.partuuid.as_deref().unwrap(), "a1b2c3d4-02");
+        // Third partition: EFI System Partition (MBR type 0xef)
+        let third_child = &children[2];
+        assert_eq!(third_child.partn, Some(3));
+        assert_eq!(third_child.parttype.as_deref().unwrap(), "0xef");
+        assert_eq!(third_child.partuuid.as_deref().unwrap(), "a1b2c3d4-03");
+        // Verify find_device_by_partno works on MBR
+        let part1 = dev.find_device_by_partno(1).unwrap();
+        assert_eq!(part1.partn, Some(1));
+        // find_partition_of_esp returns the first matching ESP type (0x06 on partition 1)
+        let esp = dev.find_partition_of_esp().unwrap();
+        assert_eq!(esp.partn, Some(1));
+    }
+
+    /// Helper to construct a minimal MBR disk Device with given child partition types.
+    fn make_mbr_disk(parttypes: &[&str]) -> Device {
+        Device {
+            name: "vda".into(),
+            serial: None,
+            model: None,
+            partlabel: None,
+            parttype: None,
+            partuuid: None,
+            partn: None,
+            size: 10737418240,
+            maj_min: None,
+            start: None,
+            label: None,
+            fstype: None,
+            uuid: None,
+            path: Some("/dev/vda".into()),
+            pttype: Some("dos".into()),
+            children: Some(
+                parttypes
+                    .iter()
+                    .enumerate()
+                    .map(|(i, pt)| Device {
+                        name: format!("vda{}", i + 1),
+                        serial: None,
+                        model: None,
+                        partlabel: None,
+                        parttype: Some(pt.to_string()),
+                        partuuid: None,
+                        partn: Some(i as u32 + 1),
+                        size: 1048576,
+                        maj_min: None,
+                        start: Some(2048),
+                        label: None,
+                        fstype: None,
+                        uuid: None,
+                        path: None,
+                        pttype: Some("dos".into()),
+                        children: None,
+                    })
+                    .collect(),
+            ),
+        }
+    }
+
+    #[test]
+    fn test_mbr_esp_detection() {
+        // 0x06 (FAT16) is recognized as ESP
+        let dev = make_mbr_disk(&["0x06"]);
+        assert_eq!(dev.find_partition_of_esp().unwrap().partn, Some(1));
+
+        // 0xef (EFI System Partition) is recognized as ESP
+        let dev = make_mbr_disk(&["0x83", "0xef"]);
+        assert_eq!(dev.find_partition_of_esp().unwrap().partn, Some(2));
+
+        // No ESP types present: 0x83 (Linux) and 0x82 (swap)
+        let dev = make_mbr_disk(&["0x83", "0x82"]);
+        assert!(dev.find_partition_of_esp().is_err());
     }
 }

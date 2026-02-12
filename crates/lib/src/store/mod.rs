@@ -36,7 +36,7 @@ use ostree_ext::sysroot::SysrootLock;
 use ostree_ext::{gio, ostree};
 use rustix::fs::Mode;
 
-use crate::bootc_composefs::boot::{get_esp_partition, get_sysroot_parent_dev, mount_esp};
+use crate::bootc_composefs::boot::mount_esp;
 use crate::bootc_composefs::status::{ComposefsCmdline, composefs_booted, get_bootloader};
 use crate::lsm;
 use crate::podstorage::CStorage;
@@ -195,11 +195,10 @@ impl BootedStorage {
                 }
                 let composefs = Arc::new(composefs);
 
-                // NOTE: This is assuming that we'll only have composefs in a UEFI system
-                // We do have this assumptions in a lot of other places
-                let parent = get_sysroot_parent_dev(&physical_root)?;
-                let (esp_part, ..) = get_esp_partition(&parent)?;
-                let esp_mount = mount_esp(&esp_part)?;
+                //TODO: this assumes a single ESP on the root device
+                let root_dev = bootc_blockdev::list_dev_by_dir(&physical_root)?.root_disk()?;
+                let esp_dev = root_dev.find_partition_of_esp()?;
+                let esp_mount = mount_esp(&esp_dev.path())?;
 
                 let boot_dir = match get_bootloader()? {
                     Bootloader::Grub => physical_root.open_dir("boot").context("Opening boot")?,

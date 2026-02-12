@@ -8,10 +8,9 @@ use cap_std_ext::cap_std::fs::Dir;
 use cap_std_ext::dirext::CapStdExtDirExt;
 use fn_error_context::context;
 
-use bootc_blockdev::{Partition, PartitionTable};
 use bootc_mount as mount;
 
-use crate::bootc_composefs::boot::{SecurebootKeys, get_sysroot_parent_dev, mount_esp};
+use crate::bootc_composefs::boot::{SecurebootKeys, mount_esp};
 use crate::{discoverable_partition_specification, utils};
 
 /// The name of the mountpoint for efi (as a subdirectory of /boot, or at the toplevel)
@@ -23,21 +22,6 @@ const BOOTUPD_UPDATES: &str = "usr/lib/bootupd/updates";
 
 // from: https://github.com/systemd/systemd/blob/26b2085d54ebbfca8637362eafcb4a8e3faf832f/man/systemd-boot.xml#L392
 const SYSTEMD_KEY_DIR: &str = "loader/keys";
-
-#[allow(dead_code)]
-pub(crate) fn esp_in(device: &PartitionTable) -> Result<&Partition> {
-    device
-        .find_partition_of_type(discoverable_partition_specification::ESP)
-        .ok_or(anyhow::anyhow!("ESP not found in partition table"))
-}
-
-/// Get esp partition node based on the root dir
-pub(crate) fn get_esp_partition_node(root: &Dir) -> Result<Option<String>> {
-    let device = get_sysroot_parent_dev(&root)?;
-    let base_partitions = bootc_blockdev::partitions_of(Utf8Path::new(&device))?;
-    let esp = base_partitions.find_partition_of_esp()?;
-    Ok(esp.map(|v| v.node.clone()))
-}
 
 /// Mount ESP part at /boot/efi
 pub(crate) fn mount_esp_part(root: &Dir, root_path: &Utf8Path, is_ostree: bool) -> Result<()> {
@@ -60,9 +44,12 @@ pub(crate) fn mount_esp_part(root: &Dir, root_path: &Utf8Path, is_ostree: bool) 
     } else {
         root
     };
-    if let Some(esp_part) = get_esp_partition_node(physical_root)? {
-        bootc_mount::mount(&esp_part, &root_path.join(&efi_path))?;
-        tracing::debug!("Mounted {esp_part} at /boot/efi");
+
+    let dev = bootc_blockdev::list_dev_by_dir(physical_root)?.root_disk()?;
+    if let Some(esp_dev) = dev.find_partition_of_type(bootc_blockdev::ESP) {
+        let esp_path = esp_dev.path();
+        bootc_mount::mount(&esp_path, &root_path.join(&efi_path))?;
+        tracing::debug!("Mounted {esp_path} at /boot/efi");
     }
     Ok(())
 }
@@ -82,7 +69,7 @@ pub(crate) fn supports_bootupd(root: &Dir) -> Result<bool> {
 
 #[context("Installing bootloader")]
 pub(crate) fn install_via_bootupd(
-    device: &PartitionTable,
+    device: &bootc_blockdev::Device,
     rootfs: &Utf8Path,
     configopts: &crate::install::InstallConfigOpts,
     deployment_path: Option<&str>,
@@ -104,6 +91,8 @@ pub(crate) fn install_via_bootupd(
 
     println!("Installing bootloader via bootupd");
 
+    let device_path = device.path();
+
     // Build the bootupctl arguments
     let mut bootupd_args: Vec<&str> = vec!["backend", "install"];
     if configopts.bootupd_skip_boot_uuid {
@@ -118,7 +107,7 @@ pub(crate) fn install_via_bootupd(
     if let Some(ref opts) = bootupd_opts {
         bootupd_args.extend(opts.iter().copied());
     }
-    bootupd_args.extend(["--device", device.path().as_str(), rootfs_mount]);
+    bootupd_args.extend(["--device", &device_path, rootfs_mount]);
 
     // Run inside a bwrap container. It takes care of mounting and creating
     // the necessary API filesystems in the target deployment and acts as
@@ -133,16 +122,20 @@ pub(crate) fn install_via_bootupd(
         let mut bwrap_args = vec!["bootupctl"];
         bwrap_args.extend(bootupd_args);
 
+        // Collect partition paths first so they live long enough
+        let partition_paths: Vec<String> =
+            device.children.iter().flatten().map(|p| p.path()).collect();
+
         let mut cmd = BwrapCmd::new(&target_root)
             // Bind mount /boot from the physical target root so bootupctl can find
             // the boot partition and install the bootloader there
             .bind(&boot_path, &"/boot")
             // Bind the target block device inside the bwrap container so bootupctl can access it
-            .bind_device(device.path().as_str());
+            .bind_device(&device_path);
 
-        // Also bind all partitions of the tafet block device
-        for partition in &device.partitions {
-            cmd = cmd.bind_device(&partition.node);
+        // Also bind all partitions of the target block device
+        for part_path in &partition_paths {
+            cmd = cmd.bind_device(part_path);
         }
 
         // The $PATH in the bwrap env is not complete enough for some images
@@ -165,7 +158,7 @@ pub(crate) fn install_via_bootupd(
 
 #[context("Installing bootloader")]
 pub(crate) fn install_systemd_boot(
-    device: &PartitionTable,
+    device: &bootc_blockdev::Device,
     _rootfs: &Utf8Path,
     _configopts: &crate::install::InstallConfigOpts,
     _deployment_path: Option<&str>,
@@ -175,7 +168,7 @@ pub(crate) fn install_systemd_boot(
         .find_partition_of_type(discoverable_partition_specification::ESP)
         .ok_or_else(|| anyhow::anyhow!("ESP partition not found"))?;
 
-    let esp_mount = mount_esp(&esp_part.node).context("Mounting ESP")?;
+    let esp_mount = mount_esp(&esp_part.path()).context("Mounting ESP")?;
     let esp_path = Utf8Path::from_path(esp_mount.dir.path())
         .ok_or_else(|| anyhow::anyhow!("Failed to convert ESP mount path to UTF-8"))?;
 
@@ -215,7 +208,7 @@ pub(crate) fn install_systemd_boot(
 }
 
 #[context("Installing bootloader using zipl")]
-pub(crate) fn install_via_zipl(device: &PartitionTable, boot_uuid: &str) -> Result<()> {
+pub(crate) fn install_via_zipl(device: &bootc_blockdev::Device, boot_uuid: &str) -> Result<()> {
     // Identify the target boot partition from UUID
     let fs = mount::inspect_filesystem_by_uuid(boot_uuid)?;
     let boot_dir = Utf8Path::new(&fs.target);
@@ -224,7 +217,7 @@ pub(crate) fn install_via_zipl(device: &PartitionTable, boot_uuid: &str) -> Resu
     // Ensure that the found partition is a part of the target device
     let device_path = device.path();
 
-    let partitions = bootc_blockdev::list_dev(device_path)?
+    let partitions = bootc_blockdev::list_dev(Utf8Path::new(&device_path))?
         .children
         .with_context(|| format!("no partition found on {device_path}"))?;
     let boot_part = partitions
@@ -283,7 +276,7 @@ pub(crate) fn install_via_zipl(device: &PartitionTable, boot_uuid: &str) -> Resu
         .args(["--image", image.as_str()])
         .args(["--ramdisk", ramdisk.as_str()])
         .args(["--parameters", options])
-        .args(["--targetbase", device_path.as_str()])
+        .args(["--targetbase", &device_path])
         .args(["--targettype", "SCSI"])
         .args(["--targetblocksize", "512"])
         .args(["--targetoffset", &boot_part_offset.to_string()])
