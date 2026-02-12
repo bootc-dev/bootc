@@ -18,6 +18,7 @@
 # Using bootc
 
 - [Upgrade and rollback](upgrades.md)
+- [Boot failure detection](boot-failure-detection.md)
 - [Accessing registries and offline updates](registries-and-offline.md)
 - [Logically bound images](logically-bound-images.md)
 - [Booting local builds](booting-local-builds.md)
