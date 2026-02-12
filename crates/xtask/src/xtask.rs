@@ -127,6 +127,9 @@ pub(crate) struct RunTmtArgs {
 
     #[arg(long, requires = "composefs_backend")]
     pub(crate) bootloader: Option<Bootloader>,
+
+    #[arg(long, requires = "composefs_backend")]
+    pub(crate) filesystem: Option<String>,
 }
 
 /// Arguments for tmt-provision command
