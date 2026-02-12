@@ -176,6 +176,7 @@ RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp
 # We need our newly-built bootc for the compute-composefs-digest command
 FROM tools as sealed-uki
 ARG variant
+ARG filesystem
 # Install our bootc package (only needed for the compute-composefs-digest command)
 RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
     --mount=type=bind,from=packages,src=/,target=/run/packages \
@@ -186,8 +187,15 @@ RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp
     --mount=type=bind,from=packaging,src=/,target=/run/packaging \
     --mount=type=bind,from=base-penultimate,src=/,target=/run/target <<EORUN
 set -xeuo pipefail
+
+allow_missing_verity=false
+
+if [[ $filesystem == "xfs" ]]; then
+    allow_missing_verity=true
+fi
+
 if test "${variant}" = "composefs-sealeduki-sdboot"; then
-  /run/packaging/seal-uki /run/target /out /run/secrets
+  /run/packaging/seal-uki /run/target /out /run/secrets $allow_missing_verity
 fi
 EORUN
 

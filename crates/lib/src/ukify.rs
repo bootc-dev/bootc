@@ -30,6 +30,7 @@ pub(crate) fn build_ukify(
     rootfs: &Utf8Path,
     extra_kargs: &[String],
     args: &[OsString],
+    allow_missing_fsverity: bool,
 ) -> Result<()> {
     // Warn if --karg is used (temporary workaround)
     if !extra_kargs.is_empty() {
@@ -83,7 +84,11 @@ pub(crate) fn build_ukify(
     let mut cmdline = crate::bootc_kargs::get_kargs_in_root(&root, std::env::consts::ARCH)?;
 
     // Add the composefs digest
-    let composefs_param = format!("{COMPOSEFS_CMDLINE}={composefs_digest}");
+    let composefs_param = if allow_missing_fsverity {
+        format!("{COMPOSEFS_CMDLINE}=?{composefs_digest}")
+    } else {
+        format!("{COMPOSEFS_CMDLINE}={composefs_digest}")
+    };
     cmdline.extend(&Cmdline::from(composefs_param));
 
     // Add any extra kargs provided via --karg
@@ -129,7 +134,7 @@ mod tests {
         let tempdir = tempfile::tempdir().unwrap();
         let path = Utf8Path::from_path(tempdir.path()).unwrap();
 
-        let result = build_ukify(path, &[], &[]);
+        let result = build_ukify(path, &[], &[], false);
         assert!(result.is_err());
         let err = format!("{:#}", result.unwrap_err());
         assert!(
@@ -147,7 +152,7 @@ mod tests {
         fs::create_dir_all(tempdir.path().join("boot/EFI/Linux")).unwrap();
         fs::write(tempdir.path().join("boot/EFI/Linux/test.efi"), b"fake uki").unwrap();
 
-        let result = build_ukify(path, &[], &[]);
+        let result = build_ukify(path, &[], &[], false);
         assert!(result.is_err());
         let err = format!("{:#}", result.unwrap_err());
         assert!(
