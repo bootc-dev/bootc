@@ -108,7 +108,11 @@ pub(crate) async fn prepare_soft_reboot_composefs(
 
     create_dir_all(NEXTROOT).context("Creating nextroot")?;
 
-    let cmdline = Cmdline::from(format!("{COMPOSEFS_CMDLINE}={deployment_id}"));
+    let cmdline = if booted_cfs.cmdline.insecure {
+        Cmdline::from(format!("{COMPOSEFS_CMDLINE}=?{deployment_id}"))
+    } else {
+        Cmdline::from(format!("{COMPOSEFS_CMDLINE}={deployment_id}"))
+    };
 
     let args = bootc_initramfs_setup::Args {
         cmd: vec![],

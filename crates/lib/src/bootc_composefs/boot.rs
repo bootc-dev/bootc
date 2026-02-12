@@ -94,7 +94,6 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::parsers::bls_config::{BLSConfig, BLSConfigType};
-use crate::parsers::grub_menuconfig::MenuEntry;
 use crate::task::Task;
 use crate::{
     bootc_composefs::repo::get_imgref,
@@ -119,6 +118,7 @@ use crate::{
     },
     spec::{Bootloader, Host},
 };
+use crate::{parsers::grub_menuconfig::MenuEntry, store::BootedComposefs};
 
 use crate::install::{RootSetup, State};
 
@@ -155,7 +155,14 @@ pub(crate) enum BootSetupType<'a> {
         ),
     ),
     /// For `bootc upgrade`
-    Upgrade((&'a Storage, &'a ComposefsFilesystem, &'a Host)),
+    Upgrade(
+        (
+            &'a Storage,
+            &'a BootedComposefs,
+            &'a ComposefsFilesystem,
+            &'a Host,
+        ),
+    ),
 }
 
 #[derive(
@@ -532,7 +539,7 @@ pub(crate) fn setup_composefs_bls_boot(
             )
         }
 
-        BootSetupType::Upgrade((storage, fs, host)) => {
+        BootSetupType::Upgrade((storage, booted_cfs, fs, host)) => {
             let sysroot_parent = get_sysroot_parent_dev(&storage.physical_root)?;
             let bootloader = host.require_composefs_booted()?.bootloader.clone();
 
@@ -551,7 +558,12 @@ pub(crate) fn setup_composefs_bls_boot(
             };
 
             // Copy all cmdline args, replacing only `composefs=`
-            let param = format!("{COMPOSEFS_CMDLINE}={id_hex}");
+            let param = if booted_cfs.cmdline.insecure {
+                format!("{COMPOSEFS_CMDLINE}=?{id_hex}")
+            } else {
+                format!("{COMPOSEFS_CMDLINE}={id_hex}")
+            };
+
             let param =
                 Parameter::parse(&param).context("Failed to create 'composefs=' parameter")?;
             cmdline.add_or_modify(&param);
@@ -1083,7 +1095,7 @@ pub(crate) fn setup_composefs_uki_boot(
             )
         }
 
-        BootSetupType::Upgrade((storage, _, host)) => {
+        BootSetupType::Upgrade((storage, booted_cfs, _, host)) => {
             let sysroot = Utf8PathBuf::from("/sysroot"); // Still needed for root_path
             let sysroot_parent = get_sysroot_parent_dev(&storage.physical_root)?;
             let bootloader = host.require_composefs_booted()?.bootloader.clone();
@@ -1092,7 +1104,7 @@ pub(crate) fn setup_composefs_uki_boot(
                 sysroot,
                 get_esp_partition(&sysroot_parent)?.0,
                 bootloader,
-                false,
+                booted_cfs.cmdline.insecure,
                 None,
             )
         }
@@ -1224,8 +1236,11 @@ pub(crate) async fn setup_composefs_boot(
     root_setup: &RootSetup,
     state: &State,
     image_id: &str,
+    insecure: bool,
 ) -> Result<()> {
-    let repo = open_composefs_repo(&root_setup.physical_root)?;
+    let mut repo = open_composefs_repo(&root_setup.physical_root)?;
+    repo.set_insecure(insecure);
+
     let mut fs = create_composefs_filesystem(&repo, image_id, None)?;
     let entries = fs.transform_for_boot(&repo)?;
     let id = fs.commit_image(&repo, None)?;
@@ -1296,6 +1311,7 @@ pub(crate) async fn setup_composefs_boot(
             &state.source.imageref.name,
         ))
         .await?,
+        insecure,
     )
     .await?;
 
