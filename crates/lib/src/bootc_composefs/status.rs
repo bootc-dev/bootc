@@ -55,7 +55,6 @@ pub(crate) struct ImgConfigManifest {
 /// A parsed composefs command line
 #[derive(Clone)]
 pub(crate) struct ComposefsCmdline {
-    #[allow(dead_code)]
     pub insecure: bool,
     pub digest: Box<str>,
 }

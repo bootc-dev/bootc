@@ -24,7 +24,11 @@ pub(crate) async fn get_etc_diff(storage: &Storage, booted_cfs: &BootedComposefs
 
     // Mount the booted EROFS image to get pristine etc
     let sysroot_fd = storage.physical_root.reopen_as_ownedfd()?;
-    let composefs_fd = mount_composefs_image(&sysroot_fd, &booted_composefs.verity, false)?;
+    let composefs_fd = mount_composefs_image(
+        &sysroot_fd,
+        &booted_composefs.verity,
+        booted_cfs.cmdline.insecure,
+    )?;
 
     let erofs_tmp_mnt = TempMount::mount_fd(&composefs_fd)?;
 
@@ -68,7 +72,11 @@ pub(crate) async fn composefs_backend_finalize(
 
     // Mount the booted EROFS image to get pristine etc
     let sysroot_fd = storage.physical_root.reopen_as_ownedfd()?;
-    let composefs_fd = mount_composefs_image(&sysroot_fd, &booted_composefs.verity, false)?;
+    let composefs_fd = mount_composefs_image(
+        &sysroot_fd,
+        &booted_composefs.verity,
+        booted_cfs.cmdline.insecure,
+    )?;
 
     let erofs_tmp_mnt = TempMount::mount_fd(&composefs_fd)?;
 

@@ -76,7 +76,7 @@ fn get_selinux_policy_for_deployment(
     let (deployment_root, _mount_guard) = if *booted_cmdline.digest == *depl_id {
         (Dir::open_ambient_dir("/", ambient_authority())?, None)
     } else {
-        let composefs_fd = mount_composefs_image(&sysroot_fd, depl_id, false)?;
+        let composefs_fd = mount_composefs_image(&sysroot_fd, depl_id, booted_cmdline.insecure)?;
         let erofs_tmp_mnt = TempMount::mount_fd(&composefs_fd)?;
 
         (erofs_tmp_mnt.fd.try_clone()?, Some(erofs_tmp_mnt))
