@@ -23,12 +23,14 @@ pub(crate) fn open_composefs_repo(rootfs_dir: &Dir) -> Result<crate::store::Comp
 pub(crate) async fn initialize_composefs_repository(
     state: &State,
     root_setup: &RootSetup,
+    insecure: bool,
 ) -> Result<(String, impl FsVerityHashValue)> {
     let rootfs_dir = &root_setup.physical_root;
 
     crate::store::ensure_composefs_dir(rootfs_dir)?;
 
-    let repo = open_composefs_repo(rootfs_dir)?;
+    let mut repo = open_composefs_repo(rootfs_dir)?;
+    repo.set_insecure(insecure);
 
     let OstreeExtImgRef {
         name: image_name,
@@ -71,6 +73,7 @@ pub(crate) fn get_imgref(transport: &str, image: &str) -> String {
 pub(crate) async fn pull_composefs_repo(
     transport: &String,
     image: &String,
+    insecure: bool,
 ) -> Result<(
     crate::store::ComposefsRepository,
     Vec<ComposefsBootEntry<Sha512HashValue>>,
@@ -79,7 +82,8 @@ pub(crate) async fn pull_composefs_repo(
 )> {
     let rootfs_dir = Dir::open_ambient_dir("/sysroot", ambient_authority())?;
 
-    let repo = open_composefs_repo(&rootfs_dir).context("Opening composefs repo")?;
+    let mut repo = open_composefs_repo(&rootfs_dir).context("Opening composefs repo")?;
+    repo.set_insecure(insecure);
 
     let final_imgref = get_imgref(transport, image);
 
@@ -91,7 +95,9 @@ pub(crate) async fn pull_composefs_repo(
 
     tracing::info!("ID: {id}, Verity: {}", verity.to_hex());
 
-    let repo = open_composefs_repo(&rootfs_dir)?;
+    let mut repo = open_composefs_repo(&rootfs_dir)?;
+    repo.set_insecure(insecure);
+
     let mut fs: crate::store::ComposefsFilesystem =
         create_composefs_filesystem(&repo, &id, None)
             .context("Failed to create composefs filesystem")?;

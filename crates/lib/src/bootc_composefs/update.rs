@@ -251,7 +251,12 @@ pub(crate) async fn do_upgrade(
 ) -> Result<()> {
     start_finalize_stated_svc()?;
 
-    let (repo, entries, id, fs) = pull_composefs_repo(&imgref.transport, &imgref.image).await?;
+    let (repo, entries, id, fs) = pull_composefs_repo(
+        &imgref.transport,
+        &imgref.image,
+        booted_cfs.cmdline.insecure,
+    )
+    .await?;
 
     let Some(entry) = entries.iter().next() else {
         anyhow::bail!("No boot entries!");
@@ -267,7 +272,7 @@ pub(crate) async fn do_upgrade(
 
     let boot_digest = match boot_type {
         BootType::Bls => setup_composefs_bls_boot(
-            BootSetupType::Upgrade((storage, &fs, &host)),
+            BootSetupType::Upgrade((storage, booted_cfs, &fs, &host)),
             repo,
             &id,
             entry,
@@ -275,7 +280,7 @@ pub(crate) async fn do_upgrade(
         )?,
 
         BootType::Uki => setup_composefs_uki_boot(
-            BootSetupType::Upgrade((storage, &fs, &host)),
+            BootSetupType::Upgrade((storage, booted_cfs, &fs, &host)),
             repo,
             &id,
             entries,
@@ -293,6 +298,7 @@ pub(crate) async fn do_upgrade(
         boot_type,
         boot_digest,
         img_manifest_config,
+        booted_cfs.cmdline.insecure,
     )
     .await?;
 
