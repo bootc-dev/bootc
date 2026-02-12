@@ -190,7 +190,7 @@ impl BootedStorage {
             Environment::ComposefsBooted(cmdline) => {
                 let (physical_root, run) = get_physical_root_and_run()?;
                 let mut composefs = ComposefsRepository::open_path(&physical_root, COMPOSEFS)?;
-                if cmdline.insecure {
+                if cmdline.allow_missing_fsverity {
                     composefs.set_insecure(true);
                 }
                 let composefs = Arc::new(composefs);

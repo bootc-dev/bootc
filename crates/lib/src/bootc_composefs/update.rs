@@ -254,7 +254,7 @@ pub(crate) async fn do_upgrade(
     let (repo, entries, id, fs) = pull_composefs_repo(
         &imgref.transport,
         &imgref.image,
-        booted_cfs.cmdline.insecure,
+        booted_cfs.cmdline.allow_missing_fsverity,
     )
     .await?;
 
@@ -298,7 +298,7 @@ pub(crate) async fn do_upgrade(
         boot_type,
         boot_digest,
         img_manifest_config,
-        booted_cfs.cmdline.insecure,
+        booted_cfs.cmdline.allow_missing_fsverity,
     )
     .await?;
 

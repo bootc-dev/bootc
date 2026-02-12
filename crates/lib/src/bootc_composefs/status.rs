@@ -55,7 +55,7 @@ pub(crate) struct ImgConfigManifest {
 /// A parsed composefs command line
 #[derive(Clone)]
 pub(crate) struct ComposefsCmdline {
-    pub insecure: bool,
+    pub allow_missing_fsverity: bool,
     pub digest: Box<str>,
 }
 
@@ -68,12 +68,12 @@ struct DeploymentBootInfo<'a> {
 
 impl ComposefsCmdline {
     pub(crate) fn new(s: &str) -> Self {
-        let (insecure, digest_str) = s
+        let (allow_missing_fsverity, digest_str) = s
             .strip_prefix('?')
             .map(|v| (true, v))
             .unwrap_or_else(|| (false, s));
         ComposefsCmdline {
-            insecure,
+            allow_missing_fsverity,
             digest: digest_str.into(),
         }
     }
@@ -81,8 +81,12 @@ impl ComposefsCmdline {
 
 impl std::fmt::Display for ComposefsCmdline {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let insecure = if self.insecure { "?" } else { "" };
-        write!(f, "{}={}{}", COMPOSEFS_CMDLINE, insecure, self.digest)
+        let allow_missing_fsverity = if self.allow_missing_fsverity { "?" } else { "" };
+        write!(
+            f,
+            "{}={}{}",
+            COMPOSEFS_CMDLINE, allow_missing_fsverity, self.digest
+        )
     }
 }
 
@@ -808,10 +812,10 @@ mod tests {
     fn test_composefs_parsing() {
         const DIGEST: &str = "8b7df143d91c716ecfa5fc1730022f6b421b05cedee8fd52b1fc65a96030ad52";
         let v = ComposefsCmdline::new(DIGEST);
-        assert!(!v.insecure);
+        assert!(!v.allow_missing_fsverity);
         assert_eq!(v.digest.as_ref(), DIGEST);
         let v = ComposefsCmdline::new(&format!("?{}", DIGEST));
-        assert!(v.insecure);
+        assert!(v.allow_missing_fsverity);
         assert_eq!(v.digest.as_ref(), DIGEST);
     }
 

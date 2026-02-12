@@ -258,13 +258,17 @@ fn open_root_fs(path: &Path) -> Result<OwnedFd> {
 /// Prepares a floating mount for composefs and returns the fd
 ///
 /// # Arguments
-/// * sysroot  - fd for /sysroot
-/// * name     - Name of the EROFS image to be mounted
-/// * insecure - Whether fsverity is optional or not
+/// * sysroot                - fd for /sysroot
+/// * name                   - Name of the EROFS image to be mounted
+/// * allow_missing_fsverity - Whether to allow mount without fsverity support
 #[context("Mounting composefs image")]
-pub fn mount_composefs_image(sysroot: &OwnedFd, name: &str, insecure: bool) -> Result<OwnedFd> {
+pub fn mount_composefs_image(
+    sysroot: &OwnedFd,
+    name: &str,
+    allow_missing_fsverity: bool,
+) -> Result<OwnedFd> {
     let mut repo = Repository::<Sha512HashValue>::open_path(sysroot, "composefs")?;
-    repo.set_insecure(insecure);
+    repo.set_insecure(allow_missing_fsverity);
     let rootfs = repo
         .mount(name)
         .context("Failed to mount composefs image")?;

@@ -390,7 +390,7 @@ pub(crate) struct InstallComposefsOpts {
     /// Make fs-verity validation optional in case the filesystem doesn't support it
     #[clap(long, default_value_t, requires = "composefs_backend")]
     #[serde(default)]
-    pub(crate) insecure: bool,
+    pub(crate) allow_missing_verity: bool,
 
     /// Name of the UKI addons to install without the ".efi.addon" suffix.
     /// This option can be provided multiple times if multiple addons are to be installed.
@@ -1909,12 +1909,21 @@ async fn install_to_filesystem_impl(
     if state.composefs_options.composefs_backend {
         // Load a fd for the mounted target physical root
 
-        let (id, verity) =
-            initialize_composefs_repository(state, rootfs, state.composefs_options.insecure)
-                .await?;
+        let (id, verity) = initialize_composefs_repository(
+            state,
+            rootfs,
+            state.composefs_options.allow_missing_verity,
+        )
+        .await?;
         tracing::info!("id: {id}, verity: {}", verity.to_hex());
 
-        setup_composefs_boot(rootfs, state, &id, state.composefs_options.insecure).await?;
+        setup_composefs_boot(
+            rootfs,
+            state,
+            &id,
+            state.composefs_options.allow_missing_verity,
+        )
+        .await?;
     } else {
         ostree_install(state, rootfs, cleanup).await?;
     }
