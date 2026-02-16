@@ -2,6 +2,7 @@
 //!
 //! This module handles the TOML configuration file for `bootc install`.
 
+use crate::spec::Bootloader;
 use anyhow::{Context, Result};
 use clap::ValueEnum;
 use fn_error_context::context;
@@ -97,6 +98,8 @@ pub(crate) struct InstallConfiguration {
     pub(crate) boot_mount_spec: Option<String>,
     /// Bootupd configuration
     pub(crate) bootupd: Option<Bootupd>,
+    /// Bootloader to use (grub, systemd, none)
+    pub(crate) bootloader: Option<Bootloader>,
 }
 
 fn merge_basic<T>(s: &mut Option<T>, o: Option<T>, _env: &EnvProperties) {
@@ -180,6 +183,7 @@ impl Mergeable for InstallConfiguration {
             merge_basic(&mut self.root_mount_spec, other.root_mount_spec, env);
             merge_basic(&mut self.boot_mount_spec, other.boot_mount_spec, env);
             self.bootupd.merge(other.bootupd, env);
+            merge_basic(&mut self.bootloader, other.bootloader, env);
             if let Some(other_kargs) = other.kargs {
                 self.kargs
                     .get_or_insert_with(Default::default)
@@ -809,4 +813,47 @@ skip-boot-uuid = false
         // skip_boot_uuid should be overridden to true
         assert_eq!(install.bootupd.unwrap().skip_boot_uuid.unwrap(), true);
     }
+}
+
+#[test]
+fn test_parse_bootloader() {
+    let env = EnvProperties {
+        sys_arch: "x86_64".to_string(),
+    };
+
+    // 1. Test parsing "none"
+    let c: InstallConfigurationToplevel = toml::from_str(
+        r##"[install]
+bootloader = "none"
+"##,
+    )
+    .unwrap();
+    assert_eq!(c.install.unwrap().bootloader, Some(Bootloader::None));
+
+    // 2. Test parsing "grub"
+    let c: InstallConfigurationToplevel = toml::from_str(
+        r##"[install]
+bootloader = "grub"
+"##,
+    )
+    .unwrap();
+    assert_eq!(c.install.unwrap().bootloader, Some(Bootloader::Grub));
+
+    // 3. Test merging
+    // Initial config has "systemd"
+    let mut install: InstallConfiguration = toml::from_str(
+        r#"bootloader = "systemd"
+"#,
+    )
+    .unwrap();
+
+    // Incoming config has "none"
+    let other = InstallConfiguration {
+        bootloader: Some(Bootloader::None),
+        ..Default::default()
+    };
+
+    // Merge should overwrite systemd with none
+    install.merge(other, &env);
+    assert_eq!(install.bootloader, Some(Bootloader::None));
 }

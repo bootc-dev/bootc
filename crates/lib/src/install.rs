@@ -1648,6 +1648,10 @@ async fn prepare_install(
                 .and_then(|b| b.skip_boot_uuid)
                 .unwrap_or(false);
         }
+
+        if config_opts.bootloader.is_none() {
+            config_opts.bootloader = config.bootloader.clone();
+        }
     } else {
         tracing::debug!("No install configuration found");
     }

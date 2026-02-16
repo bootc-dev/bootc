@@ -185,6 +185,7 @@ pub struct BootEntryOstree {
 #[derive(
     clap::ValueEnum, Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema,
 )]
+#[serde(rename_all = "kebab-case")]
 pub enum Bootloader {
     /// Use Grub as the bootloader
     #[default]
