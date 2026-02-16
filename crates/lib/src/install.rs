@@ -1590,6 +1590,12 @@ async fn prepare_install(
         composefs_options.composefs_backend = true;
     }
 
+    if composefs_options.composefs_backend
+        && matches!(config_opts.bootloader, Some(Bootloader::None))
+    {
+        anyhow::bail!("Bootloader set to none is not supported with the composefs backend");
+    }
+
     // We need to access devices that are set up by the host udev
     bootc_mount::ensure_mirrored_host_mount("/dev")?;
     // We need to read our own container image (and any logically bound images)
@@ -1644,6 +1650,12 @@ async fn prepare_install(
         }
     } else {
         tracing::debug!("No install configuration found");
+    }
+
+    if let Some(crate::spec::Bootloader::None) = config_opts.bootloader {
+        if cfg!(target_arch = "s390x") {
+            anyhow::bail!("Bootloader set to none is not supported for the s390x architecture");
+        }
     }
 
     // Convert the keyfile to a hashmap because GKeyFile isnt Send for probably bad reasons.
@@ -1760,6 +1772,9 @@ async fn install_with_sysroot(
             }
             Bootloader::Systemd => {
                 anyhow::bail!("bootupd is required for ostree-based installs");
+            }
+            Bootloader::None => {
+                tracing::debug!("Skip bootloader installation due set to None");
             }
         }
     }

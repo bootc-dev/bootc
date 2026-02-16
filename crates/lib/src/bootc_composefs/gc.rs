@@ -80,6 +80,8 @@ fn list_bootloader_entries(storage: &Storage) -> Result<Vec<String>> {
                 .map(|entry| entry.get_verity())
                 .collect::<Result<Vec<_>, _>>()?
         }
+
+        Bootloader::None => unreachable!("Checked at install time"),
     };
 
     Ok(entries)

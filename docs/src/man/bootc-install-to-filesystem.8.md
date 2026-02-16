@@ -125,6 +125,7 @@ is currently expected to be empty by default.
     Possible values:
     - grub
     - systemd
+    - none
 
 **--uki-addon**=*UKI_ADDON*
 

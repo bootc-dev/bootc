@@ -120,6 +120,8 @@ pub(crate) async fn composefs_backend_finalize(
             let entries_dir = boot_dir.open_dir("loader")?;
             rename_exchange_bls_entries(&entries_dir)?;
         }
+
+        Bootloader::None => unreachable!("Checked at install time"),
     };
 
     Ok(())

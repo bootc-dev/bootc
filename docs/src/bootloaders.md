@@ -21,3 +21,11 @@ by default (except on s390x).
 ## s390x
 
 bootc uses `zipl`.
+
+## none
+
+It is possible to skip bootloader installation entirely by using `--bootloader=none` (or `bootloader = "none"` in the [install] section of the config file).
+
+With this option, users can have explicit control over how the boot loading is handled, without bootc or bootupd intervention.
+
+NOTE: none is only supported for the Ostree backend and not for Composefs. It is also not supported for the s390x architecture. If used with `--generic-image`, it will lead to a generic image that does not have support for any bootloader.

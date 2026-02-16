@@ -189,6 +189,8 @@ pub(crate) fn validate_update(
         },
 
         Bootloader::Systemd => rm_staged_type1_ent(boot_dir)?,
+
+        Bootloader::None => unreachable!("Checked at install time"),
     }
 
     // Remove state directory
