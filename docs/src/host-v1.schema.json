@@ -206,12 +206,17 @@
         {
           "description": "Use Grub as the bootloader",
           "type": "string",
-          "const": "Grub"
+          "const": "grub"
         },
         {
           "description": "Use SystemdBoot as the bootloader",
           "type": "string",
-          "const": "Systemd"
+          "const": "systemd"
+        },
+        {
+          "description": "Don't use a bootloader managed by bootc",
+          "type": "string",
+          "const": "none"
         }
       ]
     },
