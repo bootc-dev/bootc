@@ -233,6 +233,8 @@ pub(crate) async fn composefs_rollback(
             // We use BLS entries for systemd UKI as well
             rollback_composefs_entries(boot_dir, rollback_entry.bootloader.clone())?;
         }
+
+        Bootloader::None => unreachable!("Checked at install time"),
     }
 
     if reverting {

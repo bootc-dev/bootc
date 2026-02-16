@@ -751,6 +751,8 @@ pub(crate) async fn composefs_deployment_status_from(
 
             (is_rollback_queued, Some(bls_configs), None)
         }
+
+        Bootloader::None => unreachable!("Checked at install time"),
     };
 
     // Determine rollback deployment by matching extra deployment boot entries against entires read from /boot

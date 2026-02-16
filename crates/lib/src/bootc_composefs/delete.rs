@@ -241,6 +241,8 @@ fn delete_depl_boot_entries(
             // For Systemd UKI as well, we use .conf files
             delete_type1_entry(deployment, boot_dir, deleting_staged)
         }
+
+        Bootloader::None => unreachable!("Checked at install time"),
     }
 }
 

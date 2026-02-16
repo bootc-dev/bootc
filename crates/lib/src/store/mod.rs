@@ -205,6 +205,7 @@ impl BootedStorage {
                     Bootloader::Grub => physical_root.open_dir("boot").context("Opening boot")?,
                     // NOTE: Handle XBOOTLDR partitions here if and when we use it
                     Bootloader::Systemd => esp_mount.fd.try_clone().context("Cloning fd")?,
+                    Bootloader::None => unreachable!("Checked at install time"),
                 };
 
                 let storage = Storage {

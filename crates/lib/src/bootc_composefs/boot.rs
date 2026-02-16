@@ -622,6 +622,8 @@ pub(crate) fn setup_composefs_bls_boot(
                 Some(efi_mount),
             )
         }
+
+        Bootloader::None => unreachable!("Checked at install time"),
     };
 
     let (bls_config, boot_digest, os_id) = match &entry {
@@ -851,6 +853,7 @@ fn write_pe_to_esp(
     let efi_linux_path = mounted_efi.as_ref().join(match bootloader {
         Bootloader::Grub => EFI_LINUX,
         Bootloader::Systemd => SYSTEMD_UKI_DIR,
+        Bootloader::None => unreachable!("Checked at install time"),
     });
 
     create_dir_all(&efi_linux_path).context("Creating EFI/Linux")?;
@@ -1163,6 +1166,8 @@ pub(crate) fn setup_composefs_uki_boot(
         }
 
         Bootloader::Systemd => write_systemd_uki_config(&esp_mount.fd, &setup_type, uki_info, id)?,
+
+        Bootloader::None => unreachable!("Checked at install time"),
     };
 
     Ok(boot_digest)

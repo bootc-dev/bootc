@@ -191,6 +191,8 @@ pub enum Bootloader {
     Grub,
     /// Use SystemdBoot as the bootloader
     Systemd,
+    /// Don't use a bootloader managed by bootc
+    None,
 }
 
 impl Display for Bootloader {
@@ -198,6 +200,7 @@ impl Display for Bootloader {
         let string = match self {
             Bootloader::Grub => "grub",
             Bootloader::Systemd => "systemd",
+            Bootloader::None => "none",
         };
 
         write!(f, "{}", string)
@@ -211,6 +214,7 @@ impl FromStr for Bootloader {
         match value {
             "grub" => Ok(Self::Grub),
             "systemd" => Ok(Self::Systemd),
+            "none" => Ok(Self::None),
             unrecognized => Err(anyhow::anyhow!("Unrecognized bootloader: '{unrecognized}'")),
         }
     }
