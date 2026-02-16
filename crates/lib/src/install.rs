@@ -373,6 +373,11 @@ pub(crate) struct InstallConfigOpts {
     #[clap(long)]
     #[serde(default)]
     pub(crate) bootupd_skip_boot_uuid: bool,
+
+    /// The bootloader to use.
+    #[clap(long)]
+    #[serde(default)]
+    pub(crate) bootloader: Option<Bootloader>,
 }
 
 #[derive(Debug, Default, Clone, clap::Parser, Serialize, Deserialize, PartialEq, Eq)]
@@ -386,11 +391,6 @@ pub(crate) struct InstallComposefsOpts {
     #[clap(long, default_value_t, requires = "composefs_backend")]
     #[serde(default)]
     pub(crate) insecure: bool,
-
-    /// The bootloader to use.
-    #[clap(long, requires = "composefs_backend")]
-    #[serde(default)]
-    pub(crate) bootloader: Option<Bootloader>,
 
     /// Name of the UKI addons to install without the ".efi.addon" suffix.
     /// This option can be provided multiple times if multiple addons are to be installed.
@@ -1695,7 +1695,7 @@ impl PostFetchState {
         // Determine bootloader type for the target system
         // Priority: user-specified > bootupd availability > systemd-boot fallback
         let detected_bootloader = {
-            if let Some(bootloader) = state.composefs_options.bootloader.clone() {
+            if let Some(bootloader) = state.config_opts.bootloader.clone() {
                 bootloader
             } else {
                 if crate::bootloader::supports_bootupd(d)? {
