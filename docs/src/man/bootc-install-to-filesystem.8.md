@@ -106,6 +106,10 @@ is currently expected to be empty by default.
 
     The stateroot name to use. Defaults to `default`
 
+**--bootupd-skip-boot-uuid**
+
+    Don't pass --write-uuid to bootupd during bootloader installation
+
 **--composefs-backend**
 
     If true, composefs backend is used, else ostree backend is used
