@@ -106,6 +106,19 @@ is currently expected to be empty by default.
 
     The stateroot name to use. Defaults to `default`
 
+**--bootupd-skip-boot-uuid**
+
+    Don't pass --write-uuid to bootupd during bootloader installation
+
+**--bootloader**=*BOOTLOADER*
+
+    The bootloader to use
+
+    Possible values:
+    - grub
+    - systemd
+    - none
+
 **--composefs-backend**
 
     If true, composefs backend is used, else ostree backend is used
@@ -117,15 +130,6 @@ is currently expected to be empty by default.
     Make fs-verity validation optional in case the filesystem doesn't support it
 
     Default: false
-
-**--bootloader**=*BOOTLOADER*
-
-    The bootloader to use
-
-    Possible values:
-    - grub
-    - systemd
-    - none
 
 **--uki-addon**=*UKI_ADDON*
 

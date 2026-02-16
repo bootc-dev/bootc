@@ -142,6 +142,19 @@ its DPS type GUID, without requiring an explicit `root=` kernel argument.
 
     The stateroot name to use. Defaults to `default`
 
+**--bootupd-skip-boot-uuid**
+
+    Don't pass --write-uuid to bootupd during bootloader installation
+
+**--bootloader**=*BOOTLOADER*
+
+    The bootloader to use
+
+    Possible values:
+    - grub
+    - systemd
+    - none
+
 **--via-loopback**
 
     Instead of targeting a block device, write to a file via loopback
@@ -157,14 +170,6 @@ its DPS type GUID, without requiring an explicit `root=` kernel argument.
     Make fs-verity validation optional in case the filesystem doesn't support it
 
     Default: false
-
-**--bootloader**=*BOOTLOADER*
-
-    The bootloader to use
-
-    Possible values:
-    - grub
-    - systemd
 
 **--uki-addon**=*UKI_ADDON*
 

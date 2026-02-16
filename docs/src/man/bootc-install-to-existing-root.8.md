@@ -198,6 +198,19 @@ of migrating the fstab entries. See the "Injecting kernel arguments" section abo
 
     The stateroot name to use. Defaults to `default`
 
+**--bootupd-skip-boot-uuid**
+
+    Don't pass --write-uuid to bootupd during bootloader installation
+
+**--bootloader**=*BOOTLOADER*
+
+    The bootloader to use
+
+    Possible values:
+    - grub
+    - systemd
+    - none
+
 **--acknowledge-destructive**
 
     Accept that this is a destructive action and skip a warning timer
@@ -217,14 +230,6 @@ of migrating the fstab entries. See the "Injecting kernel arguments" section abo
     Make fs-verity validation optional in case the filesystem doesn't support it
 
     Default: false
-
-**--bootloader**=*BOOTLOADER*
-
-    The bootloader to use
-
-    Possible values:
-    - grub
-    - systemd
 
 **--uki-addon**=*UKI_ADDON*
 
