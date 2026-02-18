@@ -224,6 +224,57 @@ fn get_sorted_type1_boot_entries_helper(
     Ok(all_configs)
 }
 
+fn list_type1_entries(boot_dir: &Dir) -> Result<Vec<String>> {
+    // Type1 Entry
+    let boot_entries = get_sorted_type1_boot_entries(boot_dir, true)?;
+
+    // We wouldn't want to delete the staged deployment if the GC runs when a
+    // deployment is staged
+    let staged_boot_entries = get_sorted_staged_type1_boot_entries(boot_dir, true)?;
+
+    boot_entries
+        .into_iter()
+        .chain(staged_boot_entries)
+        .map(|entry| entry.get_verity())
+        .collect::<Result<Vec<_>, _>>()
+}
+
+/// Get all Type1/Type2 bootloader entries
+///
+/// # Returns
+/// The fsverity of EROFS images corresponding to boot entries
+#[fn_error_context::context("Listing bootloader entries")]
+pub(crate) fn list_bootloader_entries(storage: &Storage) -> Result<Vec<String>> {
+    let bootloader = get_bootloader()?;
+    let boot_dir = storage.require_boot_dir()?;
+
+    let entries = match bootloader {
+        Bootloader::Grub => {
+            // Grub entries are always in boot
+            let grub_dir = boot_dir.open_dir("grub2").context("Opening grub dir")?;
+
+            // Grub UKI
+            if grub_dir.exists(USER_CFG) {
+                let mut s = String::new();
+                let boot_entries = get_sorted_grub_uki_boot_entries(boot_dir, &mut s)?;
+
+                boot_entries
+                    .into_iter()
+                    .map(|entry| entry.get_verity())
+                    .collect::<Result<Vec<_>, _>>()?
+            } else {
+                list_type1_entries(boot_dir)?
+            }
+        }
+
+        Bootloader::Systemd => list_type1_entries(boot_dir)?,
+
+        Bootloader::None => unreachable!("Checked at install time")
+    };
+
+    Ok(entries)
+}
+
 /// imgref = transport:image_name
 #[context("Getting container info")]
 pub(crate) async fn get_container_manifest_and_config(
@@ -323,7 +374,7 @@ pub(crate) async fn get_imginfo(
 async fn boot_entry_from_composefs_deployment(
     storage: &Storage,
     origin: tini::Ini,
-    verity: String,
+    verity: &str,
 ) -> Result<BootEntry> {
     let image = match origin.get::<String>("origin", ORIGIN_CONTAINER) {
         Some(img_name_from_config) => {
@@ -368,11 +419,11 @@ async fn boot_entry_from_composefs_deployment(
         cached_update: None,
         incompatible: false,
         pinned: false,
-        download_only: false, // Not yet supported for composefs backend
+        download_only: false, // Set later on
         store: None,
         ostree: None,
         composefs: Some(crate::spec::BootEntryComposefs {
-            verity,
+            verity: verity.into(),
             boot_type,
             bootloader: get_bootloader()?,
             boot_digest,
@@ -600,7 +651,7 @@ fn set_reboot_capable_uki_deployments(
 }
 
 #[context("Getting composefs deployment status")]
-pub(crate) async fn composefs_deployment_status_from(
+async fn composefs_deployment_status_from(
     storage: &Storage,
     cmdline: &ComposefsCmdline,
 ) -> Result<Host> {
@@ -608,10 +659,13 @@ pub(crate) async fn composefs_deployment_status_from(
 
     let boot_dir = storage.require_boot_dir()?;
 
-    let deployments = storage
+    // This is our source of truth
+    let bootloader_entry_verity = list_bootloader_entries(storage)?;
+
+    let state_dir = storage
         .physical_root
-        .read_dir(STATE_DIR_RELATIVE)
-        .with_context(|| format!("Reading sysroot {STATE_DIR_RELATIVE}"))?;
+        .open_dir(STATE_DIR_RELATIVE)
+        .with_context(|| format!("Opening {STATE_DIR_RELATIVE}"))?;
 
     let host_spec = HostSpec {
         image: None,
@@ -640,24 +694,19 @@ pub(crate) async fn composefs_deployment_status_from(
     // Rollback deployment is in here, but may also contain stale deployment entries
     let mut extra_deployment_boot_entries: Vec<BootEntry> = Vec::new();
 
-    for depl in deployments {
-        let depl = depl?;
-
-        let depl_file_name = depl.file_name();
-        let depl_file_name = depl_file_name.to_string_lossy();
-
+    for verity_digest in bootloader_entry_verity {
         // read the origin file
-        let config = depl
-            .open_dir()
-            .with_context(|| format!("Failed to open {depl_file_name}"))?
-            .read_to_string(format!("{depl_file_name}.origin"))
-            .with_context(|| format!("Reading file {depl_file_name}.origin"))?;
+        let config = state_dir
+            .open_dir(&verity_digest)
+            .with_context(|| format!("Failed to open {verity_digest}"))?
+            .read_to_string(format!("{verity_digest}.origin"))
+            .with_context(|| format!("Reading file {verity_digest}.origin"))?;
 
         let ini = tini::Ini::from_string(&config)
-            .with_context(|| format!("Failed to parse file {depl_file_name}.origin as ini"))?;
+            .with_context(|| format!("Failed to parse file {verity_digest}.origin as ini"))?;
 
         let mut boot_entry =
-            boot_entry_from_composefs_deployment(storage, ini, depl_file_name.to_string()).await?;
+            boot_entry_from_composefs_deployment(storage, ini, &verity_digest).await?;
 
         // SAFETY: boot_entry.composefs will always be present
         let boot_type_from_origin = boot_entry.composefs.as_ref().unwrap().boot_type;
@@ -674,7 +723,7 @@ pub(crate) async fn composefs_deployment_status_from(
             }
         };
 
-        if depl.file_name() == booted_composefs_digest.as_ref() {
+        if verity_digest == booted_composefs_digest.as_ref() {
             host.spec.image = boot_entry.image.as_ref().map(|x| x.image.clone());
             host.status.booted = Some(boot_entry);
             continue;
@@ -683,7 +732,7 @@ pub(crate) async fn composefs_deployment_status_from(
         if let Some(staged_deployment) = &staged_deployment {
             let staged_depl = serde_json::from_str::<StagedDeployment>(&staged_deployment)?;
 
-            if depl_file_name == staged_depl.depl_id {
+            if verity_digest == staged_depl.depl_id {
                 boot_entry.download_only = staged_depl.finalization_locked;
                 host.status.staged = Some(boot_entry);
                 continue;

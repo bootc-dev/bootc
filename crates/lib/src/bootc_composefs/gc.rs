@@ -10,13 +10,9 @@ use cap_std_ext::cap_std::fs::Dir;
 use crate::{
     bootc_composefs::{
         delete::{delete_image, delete_staged, delete_state_dir},
-        status::{
-            get_bootloader, get_composefs_status, get_imginfo, get_sorted_grub_uki_boot_entries,
-            get_sorted_staged_type1_boot_entries, get_sorted_type1_boot_entries,
-        },
+        status::{get_composefs_status, get_imginfo, list_bootloader_entries},
     },
-    composefs_consts::{STATE_DIR_RELATIVE, USER_CFG},
-    spec::Bootloader,
+    composefs_consts::STATE_DIR_RELATIVE,
     store::{BootedComposefs, Storage},
 };
 
@@ -35,57 +31,6 @@ fn list_erofs_images(sysroot: &Dir) -> Result<Vec<String>> {
     }
 
     Ok(images)
-}
-
-fn list_type1_entries(boot_dir: &Dir) -> Result<Vec<String>> {
-    // Type1 Entry
-    let boot_entries = get_sorted_type1_boot_entries(boot_dir, true)?;
-
-    // We wouldn't want to delete the staged deployment if the GC runs when a
-    // deployment is staged
-    let staged_boot_entries = get_sorted_staged_type1_boot_entries(boot_dir, true)?;
-
-    boot_entries
-        .into_iter()
-        .chain(staged_boot_entries)
-        .map(|entry| entry.get_verity())
-        .collect::<Result<Vec<_>, _>>()
-}
-
-/// Get all Type1/Type2 bootloader entries
-///
-/// # Returns
-/// The fsverity of EROFS images corresponding to boot entries
-#[fn_error_context::context("Listing bootloader entries")]
-fn list_bootloader_entries(storage: &Storage) -> Result<Vec<String>> {
-    let bootloader = get_bootloader()?;
-    let boot_dir = storage.require_boot_dir()?;
-
-    let entries = match bootloader {
-        Bootloader::Grub => {
-            // Grub entries are always in boot
-            let grub_dir = boot_dir.open_dir("grub2").context("Opening grub dir")?;
-
-            // Grub UKI
-            if grub_dir.exists(USER_CFG) {
-                let mut s = String::new();
-                let boot_entries = get_sorted_grub_uki_boot_entries(boot_dir, &mut s)?;
-
-                boot_entries
-                    .into_iter()
-                    .map(|entry| entry.get_verity())
-                    .collect::<Result<Vec<_>, _>>()?
-            } else {
-                list_type1_entries(boot_dir)?
-            }
-        }
-
-        Bootloader::Systemd => list_type1_entries(boot_dir)?,
-
-        Bootloader::None => unreachable!("Checked at install time"),
-    };
-
-    Ok(entries)
 }
 
 #[fn_error_context::context("Listing state directories")]
@@ -207,8 +152,6 @@ pub(crate) async fn composefs_gc(
         additional_roots.push(verity.clone());
         additional_roots.push(stream);
     }
-
-    println!("additional_roots: {additional_roots:#?}");
 
     let additional_roots = additional_roots
         .iter()
