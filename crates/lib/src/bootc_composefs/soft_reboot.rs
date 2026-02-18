@@ -1,7 +1,5 @@
 use crate::{
-    bootc_composefs::{
-        service::start_finalize_stated_svc, status::composefs_deployment_status_from,
-    },
+    bootc_composefs::{service::start_finalize_stated_svc, status::get_composefs_status},
     cli::SoftRebootMode,
     composefs_consts::COMPOSEFS_CMDLINE,
     store::{BootedComposefs, Storage},
@@ -81,7 +79,7 @@ pub(crate) async fn prepare_soft_reboot_composefs(
     }
 
     // We definitely need to re-query the state as some deployment might've been staged
-    let host = composefs_deployment_status_from(storage, booted_cfs.cmdline).await?;
+    let host = get_composefs_status(storage, &booted_cfs).await?;
 
     let all_deployments = host.all_composefs_deployments()?;
 
