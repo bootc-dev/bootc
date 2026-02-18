@@ -31,11 +31,11 @@ inherits = "release"
 lto = "yes"
 
 [workspace.dependencies]
-anstream = "0.6"
+anstream = "1.0"
 anyhow = "1.0.82"
 camino = "1.1.6"
 canon-json = "0.2.1"
-cap-std-ext = "4.0.3"
+cap-std-ext = "5.0.0"
 cfg-if = "1.0"
 chrono = { version = "0.4.38", default-features = false }
 clap = "4.5.4"
@@ -72,7 +72,7 @@ tempfile = "3.10.1"
 thiserror = "2.0.11"
 tokio = ">= 1.37.0"
 tokio-util = { features = ["io-util"], version = "0.7.10" }
-toml = "0.9.5"
+toml = "1.0.0"
 tracing = "0.1.40"
 tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 tracing-journald = "0.3.1"
