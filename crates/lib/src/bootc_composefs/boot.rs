@@ -126,8 +126,8 @@ pub(crate) const EFI_LINUX: &str = "EFI/Linux";
 const SYSTEMD_TIMEOUT: &str = "timeout 5";
 const SYSTEMD_LOADER_CONF_PATH: &str = "loader/loader.conf";
 
-const INITRD: &str = "initrd";
-const VMLINUZ: &str = "vmlinuz";
+pub(crate) const INITRD: &str = "initrd";
+pub(crate) const VMLINUZ: &str = "vmlinuz";
 
 const BOOTC_AUTOENROLL_PATH: &str = "usr/lib/bootc/install/secureboot-keys";
 

@@ -123,10 +123,7 @@ pub(crate) async fn composefs_backend_finalize(
 
     let boot_dir = storage.require_boot_dir()?;
 
-    let esp_mount = storage
-        .esp
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("ESP not found"))?;
+    let esp_mount = storage.require_esp()?;
 
     // NOTE: Assuming here we won't have two bootloaders at the same time
     match booted_composefs.bootloader {

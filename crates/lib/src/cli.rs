@@ -793,6 +793,8 @@ pub(crate) enum Opt {
     #[clap(hide = true)]
     DeleteDeployment {
         depl_id: String,
+        #[clap(long)]
+        dry_run: bool,
     },
 }
 
@@ -1953,14 +1955,14 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
             }
         }
 
-        Opt::DeleteDeployment { depl_id } => {
+        Opt::DeleteDeployment { depl_id, dry_run } => {
             let storage = &get_storage().await?;
             match storage.kind()? {
                 BootedStorageKind::Ostree(_) => {
                     anyhow::bail!("DeleteDeployment is only supported for composefs backend")
                 }
                 BootedStorageKind::Composefs(booted_cfs) => {
-                    delete_composefs_deployment(&depl_id, storage, &booted_cfs).await
+                    delete_composefs_deployment(&depl_id, storage, &booted_cfs, dry_run).await
                 }
             }
         }
