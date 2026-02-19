@@ -430,6 +430,17 @@ impl Host {
         }
     }
 
+    /// Returns a vector of all deployments, i.e. staged, booted, rollback and other deployments
+    pub(crate) fn list_deployments(&self) -> Vec<&BootEntry> {
+        self.status
+            .staged
+            .iter()
+            .chain(self.status.booted.iter())
+            .chain(self.status.rollback.iter())
+            .chain(self.status.other_deployments.iter())
+            .collect::<Vec<_>>()
+    }
+
     pub(crate) fn require_composefs_booted(&self) -> anyhow::Result<&BootEntryComposefs> {
         let cfs = self
             .status

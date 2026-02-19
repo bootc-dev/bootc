@@ -4,11 +4,16 @@
 //! - We delete the bootloader entry but fail to delete image
 //! - We delete bootloader + image but fail to delete the state/unrefenced objects etc
 
+use std::os::fd::AsRawFd;
+
 use anyhow::{Context, Result};
-use cap_std_ext::cap_std::fs::Dir;
+use cap_std_ext::{cap_std::fs::Dir, dirext::CapStdExtDirExt};
+use composefs_boot::bootloader::{EFI_ADDON_DIR_EXT, EFI_EXT};
+use rustix::fs::readlink;
 
 use crate::{
     bootc_composefs::{
+        boot::{BootType, SYSTEMD_UKI_DIR, VMLINUZ},
         delete::{delete_image, delete_staged, delete_state_dir},
         status::{get_composefs_status, get_imginfo, list_bootloader_entries},
     },
@@ -54,6 +59,143 @@ fn list_state_dirs(sysroot: &Dir) -> Result<Vec<String>> {
     Ok(dirs)
 }
 
+type BootBinary = (BootType, String);
+
+/// Collect all BLS Type1 boot binaries and UKI binaries by scanning filesystem
+///
+/// Returns a vector of binary type (UKI/Type1) + verity digest of all boot binaries
+#[fn_error_context::context("Collecting boot binaries")]
+fn collect_boot_binaries(storage: &Storage) -> Result<Vec<BootBinary>> {
+    let mut boot_binaries = Vec::new();
+    let boot_dir = storage.require_boot_dir()?;
+    let esp = storage.require_esp()?;
+
+    // Scan for UKI binaries in EFI/Linux/bootc
+    collect_uki_binaries(&esp.fd, &mut boot_binaries)?;
+
+    // Scan for Type1 boot binaries (kernels + initrds) in `boot_dir`
+    // depending upon whether systemd-boot is being used, or grub
+    collect_type1_boot_binaries(&boot_dir, &mut boot_binaries)?;
+
+    Ok(boot_binaries)
+}
+
+/// Scan for UKI binaries in EFI/Linux/bootc
+#[fn_error_context::context("Collecting UKI binaries")]
+fn collect_uki_binaries(boot_dir: &Dir, boot_binaries: &mut Vec<BootBinary>) -> Result<()> {
+    let Ok(Some(efi_dir)) = boot_dir.open_dir_optional(SYSTEMD_UKI_DIR) else {
+        return Ok(());
+    };
+
+    for entry in efi_dir.entries_utf8()? {
+        let entry = entry?;
+        let name = entry.file_name()?;
+
+        if name.ends_with(EFI_EXT) {
+            boot_binaries.push((BootType::Uki, name));
+        }
+    }
+
+    Ok(())
+}
+
+/// Scan for Type1 boot binaries (kernels + initrds) by looking for directories with verity hashes
+#[fn_error_context::context("Collecting Type1 boot binaries")]
+fn collect_type1_boot_binaries(boot_dir: &Dir, boot_binaries: &mut Vec<BootBinary>) -> Result<()> {
+    for entry in boot_dir.entries_utf8()? {
+        let entry = entry?;
+        let dir_path = entry.file_name()?;
+
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+
+        // Check if the directory name looks like a verity hash
+        // 128 hex chars for SHA512, 64 hex chars for SHA256
+        // TODO: There might be a better way to do this
+        let valid_len = matches!(dir_path.len(), 64 | 128);
+        let valid_hex = dir_path.bytes().all(|b| b.is_ascii_hexdigit());
+
+        if !(valid_len && valid_hex) {
+            continue;
+        }
+
+        let verity_dir = boot_dir
+            .open_dir(&dir_path)
+            .with_context(|| format!("Opening {dir_path}"))?;
+
+        // Scan inside this directory for kernel and initrd files
+        for file_entry in verity_dir.entries_utf8()? {
+            let file_entry = file_entry?;
+            let file_name = file_entry.file_name()?;
+
+            // Look for kernel and initrd files
+            if file_name.starts_with(VMLINUZ) {
+                boot_binaries.push((BootType::Bls, dir_path.clone()));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+#[fn_error_context::context("Deleting kernel and initrd")]
+fn delete_kernel_initrd(storage: &Storage, entry_to_delete: &str, dry_run: bool) -> Result<()> {
+    let boot_dir = storage.require_boot_dir()?;
+
+    let path = readlink(format!("/proc/self/fd/{}", boot_dir.as_raw_fd()), [])
+        .context("Getting kernel path")?;
+
+    tracing::debug!("Deleting {path:?}/{entry_to_delete}");
+
+    if dry_run {
+        return Ok(());
+    }
+
+    boot_dir
+        .remove_dir_all(entry_to_delete)
+        .with_context(|| anyhow::anyhow!("Deleting {entry_to_delete}"))
+}
+
+/// Deletes the UKI `uki_id` and any addons specific to it
+#[fn_error_context::context("Deleting UKI and UKI addons {uki_id}")]
+fn delete_uki(storage: &Storage, uki_id: &str, dry_run: bool) -> Result<()> {
+    let esp_mnt = storage.require_esp()?;
+
+    // NOTE: We don't delete global addons here
+    // Which is fine as global addons don't belong to any single deployment
+    let uki_dir = esp_mnt.fd.open_dir(SYSTEMD_UKI_DIR)?;
+
+    for entry in uki_dir.entries_utf8()? {
+        let entry = entry?;
+        let entry_name = entry.file_name()?;
+
+        // The actual UKI PE binary
+        if entry_name == format!("{}{}", uki_id, EFI_EXT) {
+            tracing::debug!("Deleting UKI: {}", entry_name);
+
+            if dry_run {
+                continue;
+            }
+
+            entry.remove_file().context("Deleting UKI")?;
+        } else if entry_name == format!("{}{}", uki_id, EFI_ADDON_DIR_EXT) {
+            // Addons dir
+            tracing::debug!("Deleting UKI addons directory: {}", entry_name);
+
+            if dry_run {
+                continue;
+            }
+
+            uki_dir
+                .remove_dir_all(entry_name)
+                .context("Deleting UKI addons dir")?;
+        }
+    }
+
+    Ok(())
+}
+
 /// 1. List all bootloader entries
 /// 2. List all EROFS images
 /// 3. List all state directories
@@ -68,7 +210,7 @@ fn list_state_dirs(sysroot: &Dir) -> Result<Vec<String>> {
 // Cases
 // - BLS Entries
 //      - On upgrade/switch, if only two are left, the staged and the current, then no GC
-//          - If there are three, rollback, booted and staged, GC the rollback, so the current
+//          - If there are three - rollback, booted and staged, GC the rollback, so the current
 //          becomes rollback
 #[fn_error_context::context("Running composefs garbage collection")]
 pub(crate) async fn composefs_gc(
@@ -90,7 +232,46 @@ pub(crate) async fn composefs_gc(
 
     let sysroot = &storage.physical_root;
 
-    let bootloader_entries = list_bootloader_entries(&storage)?;
+    let bootloader_entries = list_bootloader_entries(storage)?;
+    let boot_binaries = collect_boot_binaries(storage)?;
+
+    tracing::debug!("bootloader_entries: {bootloader_entries:?}");
+
+    // Bootloader entry is deleted, but the binary (UKI/kernel+initrd) still exists
+    let unrefenced_boot_binaries = boot_binaries
+        .iter()
+        .filter(|bin_path| {
+            // We reuse kernel + initrd if they're the same for two deployments
+            // We don't want to delete the (being deleted) deployment's kernel + initrd
+            // if it's in use by any other deployment
+            //
+            // filter the ones that are not referenced by any bootloader entry
+            !bootloader_entries
+                .iter()
+                .any(|boot_entry| bin_path.1.contains(boot_entry))
+        })
+        .collect::<Vec<_>>();
+
+    tracing::debug!("unrefenced_boot_binaries: {unrefenced_boot_binaries:?}");
+
+    if unrefenced_boot_binaries
+        .iter()
+        .find(|be| be.1 == booted_cfs_status.verity)
+        .is_some()
+    {
+        anyhow::bail!(
+            "Inconsistent state. Booted binaries '{}' found for cleanup",
+            booted_cfs_status.verity
+        )
+    }
+
+    for (ty, verity) in unrefenced_boot_binaries {
+        match ty {
+            BootType::Bls => delete_kernel_initrd(storage, verity, dry_run)?,
+            BootType::Uki => delete_uki(storage, verity, dry_run)?,
+        }
+    }
+
     let images = list_erofs_images(&sysroot)?;
 
     // Collect the deployments that have an image but no bootloader entry
@@ -101,7 +282,7 @@ pub(crate) async fn composefs_gc(
         .chain(bootloader_entries.iter().filter(|b| !images.contains(b)))
         .collect::<Vec<_>>();
 
-    println!("img_bootloader_diff: {img_bootloader_diff:#?}");
+    tracing::debug!("img_bootloader_diff: {img_bootloader_diff:#?}");
 
     let staged = &host.status.staged;
 
@@ -134,17 +315,16 @@ pub(crate) async fn composefs_gc(
         delete_state_dir(&sysroot, verity, dry_run)?;
     }
 
+    // Now we GC the unrefenced objects in composefs repo
     let mut additional_roots = vec![];
 
-    for deployment in host
-        .status
-        .staged
-        .iter()
-        .chain(host.status.booted.iter())
-        .chain(host.status.rollback.iter())
-        .chain(host.status.other_deployments.iter())
-    {
+    for deployment in host.list_deployments() {
         let verity = &deployment.require_composefs()?.verity;
+
+        // These need to be GC'd
+        if img_bootloader_diff.contains(&verity) || state_img_diff.contains(&verity) {
+            continue;
+        }
 
         let image = get_imginfo(storage, verity, None).await?;
         let stream = format!("oci-config-{}", image.manifest.config().digest());
@@ -166,7 +346,7 @@ pub(crate) async fn composefs_gc(
     };
 
     if dry_run {
-        println!("Dry run (no files deleted):");
+        println!("Dry run (no files deleted)");
     }
 
     println!(
