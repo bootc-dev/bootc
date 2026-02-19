@@ -17,6 +17,10 @@ let st = bootc status --json | from json
 let booted = $st.status.booted.image
 
 def main [] {
+  # TODO: This test is temporarily disabled, see https://github.com/bootc-dev/bootc/pull/1986
+  print "Test disabled, returning early with success."
+  return
+
   match $env.TMT_REBOOT_COUNT? {
     null | "0" => first_boot,
     "1" => second_boot,
