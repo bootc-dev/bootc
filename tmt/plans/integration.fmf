@@ -181,4 +181,11 @@ execute:
     how: fmf
     test:
       - /tmt/tests/tests/test-34-user-agent
+
+/plan-36-rollback:
+  summary: Test bootc rollback functionality through image switch and rollback cycle
+  discover:
+    how: fmf
+    test:
+      - /tmt/tests/tests/test-36-rollback
 # END GENERATED PLANS

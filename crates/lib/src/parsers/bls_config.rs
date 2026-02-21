@@ -13,6 +13,7 @@ use std::collections::HashMap;
 use std::fmt::Display;
 use uapi_version::Version;
 
+use crate::bootc_composefs::status::ComposefsCmdline;
 use crate::composefs_consts::COMPOSEFS_CMDLINE;
 
 #[derive(Debug, PartialEq, Eq, Default)]
@@ -189,15 +190,16 @@ impl BLSConfig {
 
                 let kv = cmdline
                     .find(COMPOSEFS_CMDLINE)
-                    .ok_or(anyhow::anyhow!("No composefs= param"))?;
+                    .ok_or_else(|| anyhow::anyhow!("No composefs= param"))?;
 
                 let value = kv
                     .value()
-                    .ok_or(anyhow::anyhow!("Empty composefs= param"))?;
+                    .ok_or_else(|| anyhow::anyhow!("Empty composefs= param"))?;
 
-                let value = value.to_owned();
+                let cfs_cmdline = ComposefsCmdline::new(value);
 
-                Ok(value)
+                // TODO(Johan-Liebert1): We lose the info here that this is insecure
+                Ok(cfs_cmdline.digest.to_string().clone())
             }
 
             BLSConfigType::Unknown => anyhow::bail!("Unknown config type"),

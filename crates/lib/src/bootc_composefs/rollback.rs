@@ -114,36 +114,34 @@ fn rollback_grub_uki_entries(boot_dir: &Dir) -> Result<()> {
 /// - Grub Type1 boot entries
 /// - Systemd Typ1 boot entries
 /// - Systemd UKI (Type2) boot entries [since we use BLS entries for systemd boot]
+///
+/// Cases
+/// 1. We're actually booted into the deployment that has it's sort_key as 0
+///    a. Just swap the primary and secondary bootloader entries
+///    b. If they're already swapped (rollback was queued), re-swap them (unqueue rollback)
+///
+/// 2. We're booted into the depl with sort_key 1 (choose the rollback deployment on boot screen)
+///    a. Here we assume that rollback is queued as there's no way to differentiate between this
+///    case and Case 1-b. This is what ostree does as well
 #[context("Rolling back {bootloader} entries")]
 fn rollback_composefs_entries(boot_dir: &Dir, bootloader: Bootloader) -> Result<()> {
-    use crate::bootc_composefs::state::get_booted_bls;
-
     // Get all boot entries sorted in descending order by sort-key
     let mut all_configs = get_sorted_type1_boot_entries(&boot_dir, false)?;
 
     // TODO(Johan-Liebert): Currently assuming there are only two deployments
     assert!(all_configs.len() == 2);
 
-    // Identify which entry is the currently booted one
-    let booted_bls = get_booted_bls(&boot_dir)?;
-    let booted_verity = booted_bls.get_verity()?;
-
     // For rollback: previous gets primary sort-key, booted gets secondary sort-key
     // Use "bootc" as default os_id for rollback scenarios
     // TODO: Extract actual os_id from deployment
     let os_id = "bootc";
 
-    for cfg in &mut all_configs {
-        let cfg_verity = cfg.get_verity()?;
-
-        if cfg_verity == booted_verity {
-            // This is the currently booted deployment - it should become secondary
-            cfg.sort_key = Some(secondary_sort_key(os_id));
-        } else {
-            // This is the previous deployment - it should become primary (rollback target)
-            cfg.sort_key = Some(primary_sort_key(os_id));
-        }
-    }
+    // This is the currently booted deployment - it should become secondary
+    // OR if rollback was queued, it would become primary
+    all_configs[0].sort_key = Some(primary_sort_key(os_id));
+    // This is the previous deployment - it should become primary (rollback target)
+    // OR if rollback was queued, it would become secondary
+    all_configs[1].sort_key = Some(secondary_sort_key(os_id));
 
     // Write these
     boot_dir
@@ -156,9 +154,8 @@ fn rollback_composefs_entries(boot_dir: &Dir, bootloader: Bootloader) -> Result<
 
     // Write the BLS configs in there
     for cfg in all_configs {
-        let cfg_verity = cfg.get_verity()?;
         // After rollback: previous deployment becomes primary, booted becomes secondary
-        let priority = if cfg_verity == booted_verity {
+        let priority = if cfg.sort_key == Some(secondary_sort_key(os_id)) {
             FILENAME_PRIORITY_SECONDARY
         } else {
             FILENAME_PRIORITY_PRIMARY
