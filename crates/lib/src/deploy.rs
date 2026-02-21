@@ -21,6 +21,7 @@ use ostree_ext::ostree::Deployment;
 use ostree_ext::ostree::{self, Sysroot};
 use ostree_ext::sysroot::SysrootLock;
 use ostree_ext::tokio_util::spawn_blocking_cancellable_flatten;
+use std::os::fd::AsFd;
 
 use crate::progress_jsonl::{Event, ProgressWriter, SubTaskBytes, SubTaskStep};
 use crate::spec::ImageReference;
@@ -361,6 +362,31 @@ pub(crate) async fn prune_container_store(sysroot: &Storage) -> Result<()> {
     Ok(())
 }
 
+/// Verify there is sufficient disk space to pull an image.
+///
+/// This checks the available space on the filesystem containing the OSTree repository
+/// against the number of bytes that need to be fetched for the image.
+pub(crate) fn check_disk_space(
+    repo_fd: impl AsFd,
+    image_meta: &PreparedImportMeta,
+    imgref: &ImageReference,
+) -> Result<()> {
+    let stat = rustix::fs::fstatvfs(repo_fd)?;
+    let bytes_avail: u64 = stat.f_bsize * stat.f_bavail;
+    tracing::trace!("bytes_avail: {bytes_avail}");
+
+    if image_meta.bytes_to_fetch > bytes_avail {
+        anyhow::bail!(
+            "Insufficient free space for {image} (available: {bytes_avail} required: {bytes_to_fetch})",
+            bytes_avail = ostree_ext::glib::format_size(bytes_avail),
+            bytes_to_fetch = ostree_ext::glib::format_size(image_meta.bytes_to_fetch),
+            image = imgref.image,
+        );
+    }
+
+    Ok(())
+}
+
 pub(crate) struct PreparedImportMeta {
     pub imp: ImageImporter,
     pub prep: Box<PreparedImport>,
@@ -658,6 +684,9 @@ pub(crate) async fn pull(
             Ok(existing)
         }
         PreparedPullResult::Ready(prepared_image_meta) => {
+            // Check disk space before attempting to pull
+            check_disk_space(repo.dfd_borrow(), &prepared_image_meta, imgref)?;
+
             // Log that we're pulling a new image
             const PULLING_NEW_IMAGE_ID: &str = "6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0";
             tracing::info!(
