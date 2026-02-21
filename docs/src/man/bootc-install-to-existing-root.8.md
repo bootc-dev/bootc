@@ -198,6 +198,10 @@ of migrating the fstab entries. See the "Injecting kernel arguments" section abo
 
     The stateroot name to use. Defaults to `default`
 
+**--bootupd-skip-boot-uuid**
+
+    Don't pass --write-uuid to bootupd during bootloader installation
+
 **--acknowledge-destructive**
 
     Accept that this is a destructive action and skip a warning timer
