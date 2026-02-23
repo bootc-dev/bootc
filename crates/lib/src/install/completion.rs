@@ -315,7 +315,9 @@ pub(crate) async fn impl_completion(
 
         // When we're run through ostree, we only lazily initialize the podman storage to avoid
         // having a hard dependency on it.
-        let imgstorage = &CStorage::create(&sysroot_dir, &rundir, sepolicy.as_ref())?;
+        // Note: We pass None for booted_root since during install completion there's no
+        // booted deployment to fall back to for auth file lookup.
+        let imgstorage = &CStorage::create(&sysroot_dir, None, &rundir, sepolicy.as_ref())?;
         crate::boundimage::pull_images_impl(imgstorage, bound_images)
             .await
             .context("pulling bound images")?;

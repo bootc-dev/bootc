@@ -393,7 +393,15 @@ impl Storage {
         let ostree = self.get_ostree()?;
         let sysroot_dir = crate::utils::sysroot_dir(ostree)?;
 
-        let sepolicy = if ostree.booted_deployment().is_none() {
+        // Get the booted deployment's root filesystem if available.
+        // This is used for auth file lookup during upgrades.
+        let booted_root = if let Some(dep) = ostree.booted_deployment() {
+            Some(deployment_fd(ostree, &dep)?)
+        } else {
+            None
+        };
+
+        let sepolicy = if booted_root.is_none() {
             // fallback to policy from container root
             // this should only happen during cleanup of a broken install
             tracing::trace!("falling back to container root's selinux policy");
@@ -403,14 +411,17 @@ impl Storage {
             // load the sepolicy from the booted ostree deployment so the imgstorage can be
             // properly labeled with /var/lib/container/storage labels
             tracing::trace!("loading sepolicy from booted ostree deployment");
-            let dep = ostree.booted_deployment().unwrap();
-            let dep_fs = deployment_fd(ostree, &dep)?;
-            lsm::new_sepolicy_at(&dep_fs)?
+            lsm::new_sepolicy_at(booted_root.as_ref().unwrap())?
         };
 
         tracing::trace!("sepolicy in get_ensure_imgstore: {sepolicy:?}");
 
-        let imgstore = CStorage::create(&sysroot_dir, &self.run, sepolicy.as_ref())?;
+        let imgstore = CStorage::create(
+            &sysroot_dir,
+            booted_root.as_ref(),
+            &self.run,
+            sepolicy.as_ref(),
+        )?;
         Ok(self.imgstore.get_or_init(|| imgstore))
     }
 
