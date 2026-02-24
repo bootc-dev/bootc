@@ -56,6 +56,13 @@ pub(crate) struct CStorage {
     #[allow(dead_code)]
     /// Our runtime state
     run: Dir,
+    /// The SELinux policy used to relabel files after podman operations.
+    /// Files written by podman into our storage get incorrect SELinux labels
+    /// because the storage path (/sysroot/ostree/bootc/storage, bind-mounted
+    /// to /run/bootc/storage) has no file context rules in the system policy.
+    /// We use this policy to relabel files as if they lived under
+    /// /var/lib/containers/storage after every write operation.
+    sepolicy: Option<ostree::SePolicy>,
     /// Disallow using this across multiple threads concurrently; while we
     /// have internal locking in podman, in the future we may change how
     /// things work here. And we don't have a use case right now for
@@ -234,6 +241,28 @@ impl CStorage {
         Ok(())
     }
 
+    /// Relabel the storage directory to have correct SELinux labels.
+    ///
+    /// Podman writes files into our storage with incorrect SELinux labels
+    /// because the actual storage path has no file context rules in the
+    /// system SELinux policy. This method recursively relabels all files
+    /// as if they were under /var/lib/containers/storage, which is the
+    /// path the SELinux policy does have rules for.
+    #[context("Relabeling imgstorage after write")]
+    pub(crate) fn relabel(&self) -> Result<()> {
+        let Some(sepolicy) = self.sepolicy.as_ref() else {
+            return Ok(());
+        };
+
+        crate::lsm::relabel_recurse(
+            &self.storage_root,
+            ".",
+            Some(Utf8Path::new("/var/lib/containers/storage")),
+            sepolicy,
+        )
+        .context("labeling storage root")
+    }
+
     #[context("Creating imgstorage")]
     pub(crate) fn create(
         sysroot: &Dir,
@@ -277,11 +306,15 @@ impl CStorage {
             Self::ensure_labeled(&storage_root, sepolicy)?;
         }
 
-        Self::open(sysroot, run)
+        Self::open(sysroot, run, sepolicy)
     }
 
     #[context("Opening imgstorage")]
-    pub(crate) fn open(sysroot: &Dir, run: &Dir) -> Result<Self> {
+    pub(crate) fn open(
+        sysroot: &Dir,
+        run: &Dir,
+        sepolicy: Option<&ostree::SePolicy>,
+    ) -> Result<Self> {
         tracing::trace!("Opening container image store");
         Self::init_globals()?;
         let subpath = &Self::subpath();
@@ -296,6 +329,7 @@ impl CStorage {
             sysroot: sysroot.try_clone()?,
             storage_root,
             run,
+            sepolicy: sepolicy.cloned(),
             _unsync: Default::default(),
         })
     }
@@ -383,6 +417,7 @@ impl CStorage {
         tracing::debug!("Pulling image: {image}");
         let mut cmd = AsyncCommand::from(cmd);
         cmd.run().await.context("Failed to pull image")?;
+        self.relabel()?;
         Ok(true)
     }
 
@@ -405,6 +440,7 @@ impl CStorage {
             .arg(format!("{storage_dest}{image}"));
         let mut cmd = AsyncCommand::from(cmd);
         cmd.run().await?;
+        self.relabel()?;
         temp_runroot.close()?;
         Ok(())
     }

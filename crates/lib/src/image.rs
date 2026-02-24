@@ -220,7 +220,16 @@ pub(crate) async fn imgcmd_entrypoint(
     let mut cmd = storage.new_image_cmd()?;
     cmd.arg(arg);
     cmd.args(args);
-    cmd.run_capture_stderr()
+    cmd.run_capture_stderr()?;
+    // Relabel after podman operations that write new files into storage.
+    // Commands like `build` and `pull` write image layers with incorrect
+    // SELinux labels because our storage path has no file context rules
+    // in the system SELinux policy.
+    match arg {
+        "build" | "pull" => storage.relabel()?,
+        _ => {}
+    }
+    Ok(())
 }
 
 /// Re-pull the currently booted image into the bootc-owned container storage.
