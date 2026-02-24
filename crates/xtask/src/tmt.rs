@@ -488,12 +488,6 @@ pub(crate) fn run_tmt(sh: &Shell, args: &RunTmtArgs) -> Result<()> {
                 let filesystem = args.filesystem.as_deref().unwrap_or("ext4");
                 opts.push(format!("--filesystem={}", filesystem));
                 opts.push("--composefs-backend".into());
-
-                if filesystem == "xfs" {
-                    // As xfs doesn't support fsverity
-                    opts.push("--allow-missing-verity".into());
-                }
-
                 opts.extend(COMPOSEFS_KERNEL_ARGS.map(|x| x.into()));
             }
 
