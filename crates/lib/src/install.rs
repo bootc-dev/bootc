@@ -201,7 +201,7 @@ use crate::store::Storage;
 use crate::task::Task;
 use crate::utils::sigpolicy_from_opt;
 use bootc_kernel_cmdline::{INITRD_ARG_PREFIX, ROOTFLAGS, bytes, utf8};
-use bootc_mount::{Filesystem, inspect_filesystem};
+use bootc_mount::Filesystem;
 use composefs::fsverity::FsVerityHashValue;
 
 /// The toplevel boot directory
@@ -2353,22 +2353,6 @@ pub(crate) async fn install_to_filesystem(
         target_path
     );
 
-    let fs_inspect = inspect_filesystem(&opts.filesystem_opts.root_path)?;
-
-    // Gather global state, destructuring the provided options.
-    // IMPORTANT: We might re-execute the current process in this function (for SELinux among other things)
-    // IMPORTANT: and hence anything that is done before MUST BE IDEMPOTENT.
-    // IMPORTANT: In practice, we should only be gathering information before this point,
-    // IMPORTANT: and not performing any mutations at all.
-    let state = prepare_install(
-        opts.config_opts,
-        opts.source_opts,
-        opts.target_opts,
-        opts.composefs_opts,
-        Some(fs_inspect.fstype.as_str().try_into()?),
-    )
-    .await?;
-
     // And the last bit of state here is the fsopts, which we also destructure now.
     let mut fsopts = opts.filesystem_opts;
 
@@ -2390,6 +2374,7 @@ pub(crate) async fn install_to_filesystem(
     }
 
     let target_root_path = fsopts.root_path.clone();
+
     // Get a file descriptor for the root path /target
     let target_rootfs_fd =
         Dir::open_ambient_dir(&target_root_path, cap_std::ambient_authority())
@@ -2410,11 +2395,6 @@ pub(crate) async fn install_to_filesystem(
         if !st.is_dir() {
             anyhow::bail!("Not a directory: {root_path}");
         }
-    }
-
-    // Check to see if this happens to be the real host root
-    if !fsopts.acknowledge_destructive {
-        warn_on_host_root(&target_rootfs_fd)?;
     }
 
     // If we're installing to an ostree root, then find the physical root from
@@ -2446,6 +2426,28 @@ pub(crate) async fn install_to_filesystem(
         target_rootfs_fd.try_clone()?
     };
 
+    // Gather data about the root filesystem
+    let inspect = bootc_mount::inspect_filesystem(&fsopts.root_path)?;
+
+    // Gather global state, destructuring the provided options.
+    // IMPORTANT: We might re-execute the current process in this function (for SELinux among other things)
+    // IMPORTANT: and hence anything that is done before MUST BE IDEMPOTENT.
+    // IMPORTANT: In practice, we should only be gathering information before this point,
+    // IMPORTANT: and not performing any mutations at all.
+    let state = prepare_install(
+        opts.config_opts,
+        opts.source_opts,
+        opts.target_opts,
+        opts.composefs_opts,
+        Some(inspect.fstype.as_str().try_into()?),
+    )
+    .await?;
+
+    // Check to see if this happens to be the real host root
+    if !fsopts.acknowledge_destructive {
+        warn_on_host_root(&target_rootfs_fd)?;
+    }
+
     match fsopts.replace {
         Some(ReplaceMode::Wipe) => {
             let rootfs_fd = rootfs_fd.try_clone()?;
@@ -2458,9 +2460,6 @@ pub(crate) async fn install_to_filesystem(
         }
         None => require_empty_rootdir(&rootfs_fd)?,
     }
-
-    // Gather data about the root filesystem
-    let inspect = bootc_mount::inspect_filesystem(&fsopts.root_path)?;
 
     // We support overriding the mount specification for root (i.e. LABEL vs UUID versus
     // raw paths).
