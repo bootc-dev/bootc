@@ -18,7 +18,8 @@ use fn_error_context::context;
 
 use ostree_ext::container::deploy::ORIGIN_CONTAINER;
 use rustix::{
-    fs::{Mode, OFlags, open},
+    fd::AsFd,
+    fs::{Mode, OFlags, StatVfsMountFlags, open},
     path::Arg,
 };
 
@@ -37,6 +38,7 @@ use crate::{
     },
     parsers::bls_config::BLSConfig,
     spec::ImageReference,
+    spec::{FilesystemOverlayAccessMode, FilesystemOverlayPersistence, FilesystemOverlay},
     utils::path_relative_to,
 };
 
@@ -321,18 +323,13 @@ pub(crate) async fn write_composefs_state(
 }
 
 pub(crate) fn composefs_usr_overlay() -> Result<()> {
-    let usr = Dir::open_ambient_dir("/usr", ambient_authority()).context("Opening /usr")?;
-    let is_usr_mounted = usr
-        .is_mountpoint(".")
-        .context("Failed to get mount details for /usr")?;
-
-    let is_usr_mounted =
-        is_usr_mounted.ok_or_else(|| anyhow::anyhow!("Failed to get mountinfo"))?;
-
-    if is_usr_mounted {
-        println!("A writeable overlayfs is already mounted on /usr");
+    let status = get_composefs_usr_overlay_status()?;
+    if status.is_some() {
+        println!("An overlayfs is already mounted on /usr");
         return Ok(());
     }
+
+    let usr = Dir::open_ambient_dir("/usr", ambient_authority()).context("Opening /usr")?;
 
     // Get the mode from the underlying /usr directory
     let usr_metadata = usr.metadata(".").context("Getting /usr metadata")?;
@@ -344,4 +341,26 @@ pub(crate) fn composefs_usr_overlay() -> Result<()> {
     println!("All changes there will be discarded on reboot.");
 
     Ok(())
+}
+
+pub(crate) fn get_composefs_usr_overlay_status() -> Result<Option<FilesystemOverlay>> {
+    let usr = Dir::open_ambient_dir("/usr", ambient_authority()).context("Opening /usr")?;
+    let is_usr_mounted = usr
+        .is_mountpoint(".")
+        .context("Failed to get mount details for /usr")?
+        .ok_or_else(|| anyhow::anyhow!("Failed to get mountinfo"))?;
+
+    if is_usr_mounted {
+        let st = rustix::fs::fstatvfs(usr.as_fd())
+            .context("Failed to get filesystem info for /usr")?;
+        let permissions = if st.f_flag.contains(StatVfsMountFlags::RDONLY) {
+            FilesystemOverlayAccessMode::ReadOnly
+        } else {
+            FilesystemOverlayAccessMode::ReadWrite
+        };
+        // For the composefs backend, assume the /usr overlay is always transient.
+        Ok(Some(FilesystemOverlay { access_mode: permissions, persistence: FilesystemOverlayPersistence::Transient }))
+    } else {
+        Ok(None)
+    }
 }

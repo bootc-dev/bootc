@@ -423,6 +423,11 @@ pub(crate) fn get_status(
         None
     };
 
+    let usr_overlay = booted_deployment
+        .as_ref()
+        .map(|d| d.unlocked())
+        .and_then(crate::spec::deployment_unlocked_state_to_usr_overlay);
+
     let mut host = Host::new(spec);
     host.status = HostStatus {
         staged,
@@ -431,6 +436,7 @@ pub(crate) fn get_status(
         other_deployments,
         rollback_queued,
         ty,
+        usr_overlay,
     };
     Ok((deployments, host))
 }
@@ -598,6 +604,7 @@ fn human_render_slot(
     slot: Option<Slot>,
     entry: &crate::spec::BootEntry,
     image: &crate::spec::ImageStatus,
+    host_status: &crate::spec::HostStatus,
     verbose: bool,
 ) -> Result<()> {
     let transport = &image.image.transport;
@@ -655,6 +662,9 @@ fn human_render_slot(
         writeln!(out, "yes")?;
     }
 
+    // Show /usr overlay status
+    write_usr_overlay(&mut out, slot, host_status, prefix_len)?;
+
     if verbose {
         // Show additional information in verbose mode similar to rpm-ostree
         if let Some(ostree) = &entry.ostree {
@@ -693,12 +703,31 @@ fn human_render_slot(
     Ok(())
 }
 
+/// Helper function to render usr overlay status
+fn write_usr_overlay(
+    mut out: impl Write,
+    slot: Option<Slot>,
+    host_status: &crate::spec::HostStatus,
+    prefix_len: usize,
+) -> Result<()> {
+    // Only booted deployments can have /usr overlay status
+    if matches!(slot, Some(Slot::Booted)) {
+        // Only print row if overlay is present
+        if let Some(ref overlay) = host_status.usr_overlay {
+            write_row_name(&mut out, "/usr overlay", prefix_len)?;
+            writeln!(out, "{}", overlay)?;
+        }
+    }
+    Ok(())
+}
+
 /// Output a rendering of a non-container boot entry.
 fn human_render_slot_ostree(
     mut out: impl Write,
     slot: Option<Slot>,
     entry: &crate::spec::BootEntry,
     ostree_commit: &str,
+    host_status: &crate::spec::HostStatus,
     verbose: bool,
 ) -> Result<()> {
     // TODO consider rendering more ostree stuff here like rpm-ostree status does
@@ -717,6 +746,9 @@ fn human_render_slot_ostree(
         write_row_name(&mut out, "Pinned", prefix_len)?;
         writeln!(out, "yes")?;
     }
+
+    // Show /usr overlay status
+    write_usr_overlay(&mut out, slot, host_status, prefix_len)?;
 
     if verbose {
         // Show additional information in verbose mode similar to rpm-ostree
@@ -771,13 +803,14 @@ fn human_readable_output_booted(mut out: impl Write, host: &Host, verbose: bool)
             }
 
             if let Some(image) = &host_status.image {
-                human_render_slot(&mut out, Some(slot_name), host_status, image, verbose)?;
+                human_render_slot(&mut out, Some(slot_name), host_status, image, &host.status, verbose)?;
             } else if let Some(ostree) = host_status.ostree.as_ref() {
                 human_render_slot_ostree(
                     &mut out,
                     Some(slot_name),
                     host_status,
                     &ostree.checksum,
+                    &host.status,
                     verbose,
                 )?;
             } else if let Some(composefs) = &host_status.composefs {
@@ -793,9 +826,9 @@ fn human_readable_output_booted(mut out: impl Write, host: &Host, verbose: bool)
             writeln!(out)?;
 
             if let Some(image) = &entry.image {
-                human_render_slot(&mut out, None, entry, image, verbose)?;
+                human_render_slot(&mut out, None, entry, image, &host.status, verbose)?;
             } else if let Some(ostree) = entry.ostree.as_ref() {
-                human_render_slot_ostree(&mut out, None, entry, &ostree.checksum, verbose)?;
+                human_render_slot_ostree(&mut out, None, entry, &ostree.checksum, &host.status, verbose)?;
             }
         }
     }
