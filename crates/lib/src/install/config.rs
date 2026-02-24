@@ -32,6 +32,25 @@ impl std::fmt::Display for Filesystem {
     }
 }
 
+impl TryFrom<&str> for Filesystem {
+    type Error = anyhow::Error;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "xfs" => Ok(Self::Xfs),
+            "ext4" => Ok(Self::Ext4),
+            "btrfs" => Ok(Self::Btrfs),
+            other => anyhow::bail!("Unknown filesystem: {}", other),
+        }
+    }
+}
+
+impl Filesystem {
+    pub(crate) fn supports_fsverity(&self) -> bool {
+        matches!(self, Self::Ext4 | Self::Btrfs)
+    }
+}
+
 /// The toplevel config entry for installation configs stored
 /// in bootc/install (e.g. /etc/bootc/install/05-custom.toml)
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

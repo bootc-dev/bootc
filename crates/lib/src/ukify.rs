@@ -56,9 +56,9 @@ pub(crate) fn build_ukify(
         .ok_or_else(|| anyhow::anyhow!("No kernel found in {rootfs}"))?;
 
     // Extract vmlinuz and initramfs paths, or bail if this is already a UKI
-    let (vmlinuz_path, initramfs_path) = match kernel.path {
-        crate::kernel::KernelPath::Vmlinuz { path, initramfs } => (path, initramfs),
-        crate::kernel::KernelPath::Uki(path) => {
+    let (vmlinuz_path, initramfs_path) = match kernel.k_type {
+        crate::kernel::KernelType::Vmlinuz { path, initramfs } => (path, initramfs),
+        crate::kernel::KernelType::Uki { path, .. } => {
             anyhow::bail!("Cannot build UKI: rootfs already contains a UKI at {path}");
         }
     };

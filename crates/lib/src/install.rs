@@ -193,6 +193,7 @@ use crate::containerenv::ContainerExecutionInfo;
 use crate::deploy::{
     MergeState, PreparedImportMeta, PreparedPullResult, prepare_for_pull, pull_from_prepared,
 };
+use crate::install::config::Filesystem as FilesystemEnum;
 use crate::lsm;
 use crate::progress_jsonl::ProgressWriter;
 use crate::spec::{Bootloader, ImageReference};
@@ -200,7 +201,7 @@ use crate::store::Storage;
 use crate::task::Task;
 use crate::utils::sigpolicy_from_opt;
 use bootc_kernel_cmdline::{INITRD_ARG_PREFIX, ROOTFLAGS, bytes, utf8};
-use bootc_mount::Filesystem;
+use bootc_mount::{Filesystem, inspect_filesystem};
 use composefs::fsverity::FsVerityHashValue;
 
 /// The toplevel boot directory
@@ -1507,6 +1508,7 @@ async fn prepare_install(
     source_opts: InstallSourceOpts,
     target_opts: InstallTargetOpts,
     mut composefs_options: InstallComposefsOpts,
+    target_fs: Option<FilesystemEnum>,
 ) -> Result<Arc<State>> {
     tracing::trace!("Preparing install");
     let rootfs = cap_std::fs::Dir::open_ambient_dir("/", cap_std::ambient_authority())
@@ -1576,12 +1578,15 @@ async fn prepare_install(
     };
     tracing::debug!("Target image reference: {target_imgref}");
 
-    let composefs_required = if let Some(root) = target_rootfs.as_ref() {
-        crate::kernel::find_kernel(root)?
-            .map(|k| k.kernel.unified)
-            .unwrap_or(false)
+    let (composefs_required, kernel) = if let Some(root) = target_rootfs.as_ref() {
+        let kernel = crate::kernel::find_kernel(root)?;
+
+        (
+            kernel.as_ref().map(|k| k.kernel.unified).unwrap_or(false),
+            kernel,
+        )
     } else {
-        false
+        (false, None)
     };
 
     tracing::debug!("Composefs required: {composefs_required}");
@@ -1654,6 +1659,59 @@ async fn prepare_install(
         }
     } else {
         tracing::debug!("No install configuration found");
+    }
+
+    let root_filesystem = target_fs
+        .or(install_config
+            .as_ref()
+            .and_then(|c| c.filesystem_root())
+            .and_then(|r| r.fstype))
+        .ok_or_else(|| anyhow::anyhow!("No root filesystem specified"))?;
+
+    let mut is_uki = false;
+
+    // For composefs backend, automatically disable fs-verity hard requirement if the
+    // filesystem doesn't support it
+    //
+    // If we have a sealed UKI on our hands, then we can assume that user wanted fs-verity so
+    // we hard require it in that particular case
+    //
+    // NOTE: This isn't really 100% accurate 100% of the time as the cmdline can be in an addon
+    match kernel {
+        Some(k) => match k.k_type {
+            crate::kernel::KernelType::Uki {
+                allow_missing_fsverity,
+                ..
+            } => {
+                if !allow_missing_fsverity {
+                    anyhow::ensure!(
+                        root_filesystem.supports_fsverity(),
+                        "Specified filesystem {root_filesystem} does not support fs-verity"
+                    );
+                }
+
+                composefs_options.allow_missing_verity = allow_missing_fsverity;
+                is_uki = true;
+            }
+
+            crate::kernel::KernelType::Vmlinuz { .. } => {}
+        },
+
+        None => {}
+    }
+
+    // If `--allow-missing-verity` is already passed via CLI, don't modify
+    if composefs_options.composefs_backend && !composefs_options.allow_missing_verity && !is_uki {
+        composefs_options.allow_missing_verity = !root_filesystem.supports_fsverity();
+
+        tracing::debug!(
+            "Missing fsverity {}",
+            if composefs_options.allow_missing_verity {
+                "allowed"
+            } else {
+                "not allowed"
+            }
+        );
     }
 
     if let Some(crate::spec::Bootloader::None) = config_opts.bootloader {
@@ -1994,6 +2052,7 @@ pub(crate) async fn install_to_disk(mut opts: InstallToDiskOpts) -> Result<()> {
         opts.source_opts,
         opts.target_opts,
         opts.composefs_opts,
+        block_opts.filesystem,
     )
     .await?;
 
@@ -2294,6 +2353,8 @@ pub(crate) async fn install_to_filesystem(
         target_path
     );
 
+    let fs_inspect = inspect_filesystem(&opts.filesystem_opts.root_path)?;
+
     // Gather global state, destructuring the provided options.
     // IMPORTANT: We might re-execute the current process in this function (for SELinux among other things)
     // IMPORTANT: and hence anything that is done before MUST BE IDEMPOTENT.
@@ -2304,6 +2365,7 @@ pub(crate) async fn install_to_filesystem(
         opts.source_opts,
         opts.target_opts,
         opts.composefs_opts,
+        Some(fs_inspect.fstype.as_str().try_into()?),
     )
     .await?;
 

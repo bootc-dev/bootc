@@ -6,13 +6,16 @@
 
 use std::path::Path;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
+use bootc_kernel_cmdline::utf8::Cmdline;
 use camino::Utf8PathBuf;
 use cap_std_ext::cap_std::fs::Dir;
 use cap_std_ext::dirext::CapStdExtDirExt;
 use serde::Serialize;
 
 use crate::bootc_composefs::boot::EFI_LINUX;
+use crate::bootc_composefs::status::ComposefsCmdline;
+use crate::composefs_consts::COMPOSEFS_CMDLINE;
 
 /// Information about the kernel in a container image.
 #[derive(Debug, Serialize)]
@@ -31,8 +34,11 @@ pub(crate) struct Kernel {
 /// UKI kernels only have the single PE binary, whereas
 /// traditional "vmlinuz" kernels have distinct kernel and
 /// initramfs.
-pub(crate) enum KernelPath {
-    Uki(Utf8PathBuf),
+pub(crate) enum KernelType {
+    Uki {
+        path: Utf8PathBuf,
+        allow_missing_fsverity: bool,
+    },
     Vmlinuz {
         path: Utf8PathBuf,
         initramfs: Utf8PathBuf,
@@ -47,7 +53,7 @@ pub(crate) enum KernelPath {
 /// to get the "public" form where needed.
 pub(crate) struct KernelInternal {
     pub(crate) kernel: Kernel,
-    pub(crate) path: KernelPath,
+    pub(crate) k_type: KernelType,
 }
 
 impl From<KernelInternal> for Kernel {
@@ -67,12 +73,48 @@ pub(crate) fn find_kernel(root: &Dir) -> Result<Option<KernelInternal>> {
     // First, try to find a UKI
     if let Some(uki_path) = find_uki_path(root)? {
         let version = uki_path.file_stem().unwrap_or(uki_path.as_str()).to_owned();
+
+        let uki = root.read(&uki_path).context("Reading UKI")?;
+
+        // Best effort to check for composefs=?verity in the UKI cmdline
+        let cmdline = composefs_boot::uki::get_section(&uki, ".cmdline");
+
+        let allow_missing_fsverity = match cmdline {
+            Some(Ok(cmdline)) => {
+                let cmdline_str = std::str::from_utf8(cmdline)?;
+
+                let cmdline = Cmdline::from(cmdline_str);
+
+                match cmdline.find(COMPOSEFS_CMDLINE) {
+                    Some(param) => ComposefsCmdline::new(&param).allow_missing_fsverity,
+
+                    // The cmdline might be in an addon, so don't allow missing verity
+                    None => false,
+                }
+            }
+
+            Some(Err(uki_error)) => match uki_error {
+                composefs_boot::uki::UkiError::MissingSection(_) => {
+                    // TODO(Johan-Liebert1): Check this when we have full UKI Addons support
+                    // The cmdline might be in an addon, so don't allow missing verity
+                    false
+                }
+
+                e => anyhow::bail!("Failed to read UKI cmdline: {e:?}"),
+            },
+
+            None => false,
+        };
+
         return Ok(Some(KernelInternal {
             kernel: Kernel {
                 version,
                 unified: true,
             },
-            path: KernelPath::Uki(uki_path),
+            k_type: KernelType::Uki {
+                path: uki_path,
+                allow_missing_fsverity,
+            },
         }));
     }
 
@@ -89,7 +131,7 @@ pub(crate) fn find_kernel(root: &Dir) -> Result<Option<KernelInternal>> {
                 version,
                 unified: false,
             },
-            path: KernelPath::Vmlinuz {
+            k_type: KernelType::Vmlinuz {
                 path: vmlinuz,
                 initramfs,
             },
@@ -156,8 +198,8 @@ mod tests {
         let kernel_internal = find_kernel(&tempdir)?.expect("should find kernel");
         assert_eq!(kernel_internal.kernel.version, "6.12.0-100.fc41.x86_64");
         assert!(!kernel_internal.kernel.unified);
-        match &kernel_internal.path {
-            KernelPath::Vmlinuz { path, initramfs } => {
+        match &kernel_internal.k_type {
+            KernelType::Vmlinuz { path, initramfs } => {
                 assert_eq!(
                     path.as_str(),
                     "usr/lib/modules/6.12.0-100.fc41.x86_64/vmlinuz"
@@ -167,7 +209,7 @@ mod tests {
                     "usr/lib/modules/6.12.0-100.fc41.x86_64/initramfs.img"
                 );
             }
-            KernelPath::Uki(_) => panic!("Expected Vmlinuz, got Uki"),
+            KernelType::Uki { .. } => panic!("Expected Vmlinuz, got Uki"),
         }
         Ok(())
     }
@@ -181,11 +223,11 @@ mod tests {
         let kernel_internal = find_kernel(&tempdir)?.expect("should find kernel");
         assert_eq!(kernel_internal.kernel.version, "fedora-6.12.0");
         assert!(kernel_internal.kernel.unified);
-        match &kernel_internal.path {
-            KernelPath::Uki(path) => {
+        match &kernel_internal.k_type {
+            KernelType::Uki { path, .. } => {
                 assert_eq!(path.as_str(), "boot/EFI/Linux/fedora-6.12.0.efi");
             }
-            KernelPath::Vmlinuz { .. } => panic!("Expected Uki, got Vmlinuz"),
+            KernelType::Vmlinuz { .. } => panic!("Expected Uki, got Vmlinuz"),
         }
         Ok(())
     }
