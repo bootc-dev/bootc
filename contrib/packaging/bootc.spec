@@ -146,7 +146,8 @@ sed -i -e '/https:\/\//d' cargo-vendor.txt
 %endif
 
 %install
-%make_install INSTALL="install -p -c"
+# Pass CARGO_FEATURES explicitly to prevent auto-detection rebuild in install environment
+%make_install INSTALL="install -p -c" CARGO_FEATURES="%{?with_rhsm:rhsm}"
 %if %{with ostree_ext}
 make install-ostree-hooks DESTDIR=%{?buildroot}
 %endif
