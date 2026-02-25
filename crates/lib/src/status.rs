@@ -1183,4 +1183,18 @@ mod tests {
         "};
         similar_asserts::assert_eq!(output, expected);
     }
+
+    #[test]
+    fn test_human_readable_booted_usroverlay() {
+        let w =
+            human_status_from_spec_fixture(include_str!("fixtures/spec-booted-usroverlay.yaml"))
+                .unwrap();
+        let expected = indoc::indoc! { r"
+          ● Booted image: quay.io/example/someimage:latest
+                  Digest: sha256:736b359467c9437c1ac915acaae952aad854e07eb4a16a94999a48af08c83c34 (arm64)
+                 Version: nightly (2023-09-30T19:22:16Z)
+            /usr overlay: transient, read/write
+        "};
+        similar_asserts::assert_eq!(w, expected);
+    }
 }
