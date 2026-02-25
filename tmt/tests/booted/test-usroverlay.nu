@@ -8,7 +8,9 @@ use std assert
 use tap.nu
 use bootc_testlib.nu
 
-bootc status
+# Status should initially report no overlay in JSON
+let status_json_before = bootc status --json | from json
+assert ($status_json_before.status.usrOverlay? == null)
 
 # We should start out in a non-writable state on each boot
 let is_writable = (do -i { /bin/test -w /usr } | complete | get exit_code) == 0
@@ -19,12 +21,20 @@ def initial_run [] {
     let is_writable = (do -i { /bin/test -w /usr } | complete | get exit_code) == 0
     assert ($is_writable)
 
+    # After `usroverlay`, status JSON should report a transient read/write overlay
+    let status_json_after = bootc status --json | from json
+    let overlay = $status_json_after.status.usrOverlay
+    assert ($overlay.accessMode == "readWrite")
+    assert ($overlay.persistence == "transient")
+
     bootc_testlib reboot
 }
 
 # The second boot; verify we're in the derived image
 def second_boot [] {
-    # Nothing, we already verified non-writability above
+    # After reboot, usr overlay should be gone
+    let status_after_reboot = bootc status --json | from json
+    assert ($status_after_reboot.status.usrOverlay? == null)
 }
 
 def main [] {
