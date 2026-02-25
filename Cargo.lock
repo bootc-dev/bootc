@@ -609,9 +609,11 @@ checksum = "55b672471b4e9f9e95499ea597ff64941a309b2cdbffcc46f2cc5e2d971fd335"
 [[package]]
 name = "composefs"
 version = "0.3.0"
-source = "git+https://github.com/containers/composefs-rs?rev=0c6134653d66ac42c43bac4e1298bfb626aeba87#0c6134653d66ac42c43bac4e1298bfb626aeba87"
+source = "git+https://github.com/composefs/composefs-rs?rev=b928c6bd6c051e111d3efc3d25cdaf9159182ed0#b928c6bd6c051e111d3efc3d25cdaf9159182ed0"
 dependencies = [
  "anyhow",
+ "composefs-ioctls",
+ "fn-error-context",
  "hex",
  "log",
  "once_cell",
@@ -629,10 +631,11 @@ dependencies = [
 [[package]]
 name = "composefs-boot"
 version = "0.3.0"
-source = "git+https://github.com/containers/composefs-rs?rev=0c6134653d66ac42c43bac4e1298bfb626aeba87#0c6134653d66ac42c43bac4e1298bfb626aeba87"
+source = "git+https://github.com/composefs/composefs-rs?rev=b928c6bd6c051e111d3efc3d25cdaf9159182ed0#b928c6bd6c051e111d3efc3d25cdaf9159182ed0"
 dependencies = [
  "anyhow",
  "composefs",
+ "fn-error-context",
  "hex",
  "regex-automata",
  "thiserror 2.0.17",
@@ -640,19 +643,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "composefs-ioctls"
+version = "0.3.0"
+source = "git+https://github.com/composefs/composefs-rs?rev=b928c6bd6c051e111d3efc3d25cdaf9159182ed0#b928c6bd6c051e111d3efc3d25cdaf9159182ed0"
+dependencies = [
+ "rustix",
+ "thiserror 2.0.17",
+]
+
+[[package]]
 name = "composefs-oci"
 version = "0.3.0"
-source = "git+https://github.com/containers/composefs-rs?rev=0c6134653d66ac42c43bac4e1298bfb626aeba87#0c6134653d66ac42c43bac4e1298bfb626aeba87"
+source = "git+https://github.com/composefs/composefs-rs?rev=b928c6bd6c051e111d3efc3d25cdaf9159182ed0#b928c6bd6c051e111d3efc3d25cdaf9159182ed0"
 dependencies = [
  "anyhow",
  "async-compression",
  "bytes",
  "composefs",
  "containers-image-proxy",
+ "fn-error-context",
  "hex",
  "indicatif 0.17.11",
  "oci-spec",
  "rustix",
+ "serde",
+ "serde_json",
  "sha2",
  "tar",
  "tokio",
