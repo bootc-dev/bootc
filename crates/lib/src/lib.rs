@@ -67,7 +67,6 @@ mod bootc_composefs;
 pub(crate) mod bootc_kargs;
 mod bootloader;
 mod boundimage;
-mod cfsctl;
 pub mod cli;
 mod composefs_consts;
 mod containerenv;

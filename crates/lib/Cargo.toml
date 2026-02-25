@@ -36,6 +36,7 @@ clap = { workspace = true, features = ["derive","cargo"] }
 clap_complete = "4"
 clap_mangen = { workspace = true, optional = true }
 composefs = { workspace = true }
+cfsctl = { workspace = true }
 composefs-boot = { workspace = true }
 composefs-oci = { workspace = true }
 fn-error-context = { workspace = true }

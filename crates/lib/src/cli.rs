@@ -1779,7 +1779,7 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
                     Ok(())
                 }
             },
-            InternalsOpts::Cfs { args } => crate::cfsctl::run_from_iter(args.iter()).await,
+            InternalsOpts::Cfs { args } => cfsctl::run_from_iter(args.iter()).await,
             InternalsOpts::Reboot => crate::reboot::reboot(),
             InternalsOpts::Fsck => {
                 let storage = &get_storage().await?;
