@@ -77,6 +77,17 @@ impl ComposefsCmdline {
             digest: digest_str.into(),
         }
     }
+
+    /// Search for the `composefs=` parameter in the passed in kernel command line
+    pub(crate) fn find_in_cmdline(cmdline: &Cmdline) -> Option<Self> {
+        match cmdline.find(COMPOSEFS_CMDLINE) {
+            Some(param) => {
+                let value = param.value()?;
+                Some(Self::new(value))
+            }
+            None => None,
+        }
+    }
 }
 
 impl std::fmt::Display for ComposefsCmdline {
@@ -934,5 +945,57 @@ mod tests {
         assert_eq!(result, expected);
 
         Ok(())
+    }
+
+    #[test]
+    fn test_find_in_cmdline() {
+        const DIGEST: &str = "8b7df143d91c716ecfa5fc1730022f6b421b05cedee8fd52b1fc65a96030ad52";
+
+        // Test case: cmdline contains composefs parameter
+        let cmdline = Cmdline::from(format!("root=UUID=abc123 rw composefs={}", DIGEST));
+        let result = ComposefsCmdline::find_in_cmdline(&cmdline);
+        assert!(result.is_some());
+        let cfs = result.unwrap();
+        assert_eq!(cfs.digest.as_ref(), DIGEST);
+        assert!(!cfs.allow_missing_fsverity);
+
+        // Test case: cmdline contains composefs parameter with allow_missing_fsverity
+        let cmdline = Cmdline::from(format!("root=UUID=abc123 rw composefs=?{}", DIGEST));
+        let result = ComposefsCmdline::find_in_cmdline(&cmdline);
+        assert!(result.is_some());
+        let cfs = result.unwrap();
+        assert_eq!(cfs.digest.as_ref(), DIGEST);
+        assert!(cfs.allow_missing_fsverity);
+
+        // Test case: cmdline does not contain composefs parameter
+        let cmdline = Cmdline::from("root=UUID=abc123 rw quiet");
+        let result = ComposefsCmdline::find_in_cmdline(&cmdline);
+        assert!(result.is_none());
+
+        // Test case: empty cmdline
+        let cmdline = Cmdline::from("");
+        let result = ComposefsCmdline::find_in_cmdline(&cmdline);
+        assert!(result.is_none());
+
+        // Test case: cmdline with other parameters and composefs at different positions
+        let cmdline = Cmdline::from(format!("quiet composefs={} loglevel=3", DIGEST));
+        let result = ComposefsCmdline::find_in_cmdline(&cmdline);
+        assert!(result.is_some());
+        let cfs = result.unwrap();
+        assert_eq!(cfs.digest.as_ref(), DIGEST);
+        assert!(!cfs.allow_missing_fsverity);
+
+        // Test case: cmdline with composefs at the beginning
+        let cmdline = Cmdline::from(format!("composefs=?{} root=UUID=abc123 quiet", DIGEST));
+        let result = ComposefsCmdline::find_in_cmdline(&cmdline);
+        assert!(result.is_some());
+        let cfs = result.unwrap();
+        assert_eq!(cfs.digest.as_ref(), DIGEST);
+        assert!(cfs.allow_missing_fsverity);
+
+        // Test case: cmdline with similar parameter names (should not match)
+        let cmdline = Cmdline::from(format!("composefs_backup={} root=UUID=abc123", DIGEST));
+        let result = ComposefsCmdline::find_in_cmdline(&cmdline);
+        assert!(result.is_none());
     }
 }

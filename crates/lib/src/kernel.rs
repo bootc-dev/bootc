@@ -14,8 +14,6 @@ use cap_std_ext::dirext::CapStdExtDirExt;
 use serde::Serialize;
 
 use crate::bootc_composefs::boot::EFI_LINUX;
-use crate::bootc_composefs::status::ComposefsCmdline;
-use crate::composefs_consts::COMPOSEFS_CMDLINE;
 
 /// Information about the kernel in a container image.
 #[derive(Debug, Serialize)]
@@ -37,7 +35,9 @@ pub(crate) struct Kernel {
 pub(crate) enum KernelType {
     Uki {
         path: Utf8PathBuf,
-        allow_missing_fsverity: bool,
+        /// The commandline we found in the UKI
+        /// Again due to UKI Addons, we may or may not have it in the UKI itself
+        cmdline: Option<Cmdline<'static>>,
     },
     Vmlinuz {
         path: Utf8PathBuf,
@@ -79,31 +79,23 @@ pub(crate) fn find_kernel(root: &Dir) -> Result<Option<KernelInternal>> {
         // Best effort to check for composefs=?verity in the UKI cmdline
         let cmdline = composefs_boot::uki::get_section(&uki, ".cmdline");
 
-        let allow_missing_fsverity = match cmdline {
+        let cmdline = match cmdline {
             Some(Ok(cmdline)) => {
                 let cmdline_str = std::str::from_utf8(cmdline)?;
-
-                let cmdline = Cmdline::from(cmdline_str);
-
-                match cmdline.find(COMPOSEFS_CMDLINE) {
-                    Some(param) => ComposefsCmdline::new(&param).allow_missing_fsverity,
-
-                    // The cmdline might be in an addon, so don't allow missing verity
-                    None => false,
-                }
+                Some(Cmdline::from(cmdline_str.to_owned()))
             }
 
             Some(Err(uki_error)) => match uki_error {
                 composefs_boot::uki::UkiError::MissingSection(_) => {
                     // TODO(Johan-Liebert1): Check this when we have full UKI Addons support
                     // The cmdline might be in an addon, so don't allow missing verity
-                    false
+                    None
                 }
 
                 e => anyhow::bail!("Failed to read UKI cmdline: {e:?}"),
             },
 
-            None => false,
+            None => None,
         };
 
         return Ok(Some(KernelInternal {
@@ -113,7 +105,7 @@ pub(crate) fn find_kernel(root: &Dir) -> Result<Option<KernelInternal>> {
             },
             k_type: KernelType::Uki {
                 path: uki_path,
-                allow_missing_fsverity,
+                cmdline,
             },
         }));
     }
