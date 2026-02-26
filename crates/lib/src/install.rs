@@ -1704,13 +1704,10 @@ async fn prepare_install(
     if composefs_options.composefs_backend && !composefs_options.allow_missing_verity && !is_uki {
         composefs_options.allow_missing_verity = !root_filesystem.supports_fsverity();
 
-        tracing::debug!(
-            "Missing fsverity {}",
-            if composefs_options.allow_missing_verity {
-                "allowed"
-            } else {
-                "not allowed"
-            }
+        tracing::info!(
+            allow_missing_fsverity = composefs_options.allow_missing_verity,
+            uki = is_uki,
+            "ComposeFS install prep",
         );
     }
 

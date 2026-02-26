@@ -166,6 +166,15 @@ pub(crate) fn gc_objects(sysroot: &Dir) -> Result<()> {
 /// perform GC
 #[fn_error_context::context("Running composefs garbage collection")]
 pub(crate) async fn composefs_gc(storage: &Storage, booted_cfs: &BootedComposefs) -> Result<()> {
+    const COMPOSEFS_GC_JOURNAL_ID: &str = "3b2a1f0e9d8c7b6a5f4e3d2c1b0a9f8e7";
+
+    tracing::info!(
+        message_id = COMPOSEFS_GC_JOURNAL_ID,
+        bootc.operation = "gc",
+        bootc.current_deployment = booted_cfs.cmdline.digest,
+        "Starting composefs garbage collection"
+    );
+
     let host = get_composefs_status(storage, booted_cfs).await?;
     let booted_cfs_status = host.require_composefs_booted()?;
 

@@ -25,7 +25,22 @@ pub(crate) async fn initialize_composefs_repository(
     root_setup: &RootSetup,
     allow_missing_fsverity: bool,
 ) -> Result<(String, impl FsVerityHashValue)> {
+    const COMPOSEFS_REPO_INIT_JOURNAL_ID: &str = "5d4c3b2a1f0e9d8c7b6a5f4e3d2c1b0a9";
+
     let rootfs_dir = &root_setup.physical_root;
+    let image_name = &state.source.imageref.name;
+    let transport = &state.source.imageref.transport;
+
+    tracing::info!(
+        message_id = COMPOSEFS_REPO_INIT_JOURNAL_ID,
+        bootc.operation = "repository_init",
+        bootc.source_image = %image_name,
+        bootc.transport = %transport,
+        bootc.allow_missing_fsverity = allow_missing_fsverity,
+        "Initializing composefs repository for image {}:{}",
+        transport,
+        image_name
+    );
 
     crate::store::ensure_composefs_dir(rootfs_dir)?;
 
@@ -80,6 +95,19 @@ pub(crate) async fn pull_composefs_repo(
     Sha512HashValue,
     crate::store::ComposefsFilesystem,
 )> {
+    const COMPOSEFS_PULL_JOURNAL_ID: &str = "4c3b2a1f0e9d8c7b6a5f4e3d2c1b0a9f8";
+
+    tracing::info!(
+        message_id = COMPOSEFS_PULL_JOURNAL_ID,
+        bootc.operation = "pull",
+        bootc.source_image = image,
+        bootc.transport = transport,
+        bootc.allow_missing_fsverity = allow_missing_fsverity,
+        "Pulling composefs image {}:{}",
+        transport,
+        image
+    );
+
     let rootfs_dir = Dir::open_ambient_dir("/sysroot", ambient_authority())?;
 
     let mut repo = open_composefs_repo(&rootfs_dir).context("Opening composefs repo")?;
@@ -93,7 +121,12 @@ pub(crate) async fn pull_composefs_repo(
         .await
         .context("Pulling composefs repo")?;
 
-    tracing::info!("ID: {id}, Verity: {}", verity.to_hex());
+    tracing::info!(
+        message_id = COMPOSEFS_PULL_JOURNAL_ID,
+        id = id,
+        verity = verity.to_hex(),
+        "Pulled image into repository"
+    );
 
     let mut repo = open_composefs_repo(&rootfs_dir)?;
     repo.set_insecure(allow_missing_fsverity);

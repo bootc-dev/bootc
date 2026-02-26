@@ -311,6 +311,17 @@ pub(crate) async fn upgrade_composefs(
     storage: &Storage,
     composefs: &BootedComposefs,
 ) -> Result<()> {
+    const COMPOSEFS_UPGRADE_JOURNAL_ID: &str = "9c8d7f6e5a4b3c2d1e0f9a8b7c6d5e4f3";
+
+    tracing::info!(
+        message_id = COMPOSEFS_UPGRADE_JOURNAL_ID,
+        bootc.operation = "upgrade",
+        bootc.apply_mode = opts.apply,
+        bootc.download_only = opts.download_only,
+        bootc.from_downloaded = opts.from_downloaded,
+        "Starting composefs upgrade operation"
+    );
+
     let host = get_composefs_status(storage, composefs)
         .await
         .context("Getting composefs deployment status")?;

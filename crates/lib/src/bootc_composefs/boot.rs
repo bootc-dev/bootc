@@ -1224,6 +1224,16 @@ pub(crate) async fn setup_composefs_boot(
     image_id: &str,
     allow_missing_fsverity: bool,
 ) -> Result<()> {
+    const COMPOSEFS_BOOT_SETUP_JOURNAL_ID: &str = "1f0e9d8c7b6a5f4e3d2c1b0a9f8e7d6c5";
+
+    tracing::info!(
+        message_id = COMPOSEFS_BOOT_SETUP_JOURNAL_ID,
+        bootc.operation = "boot_setup",
+        bootc.image_id = image_id,
+        bootc.allow_missing_fsverity = allow_missing_fsverity,
+        "Setting up composefs boot",
+    );
+
     let mut repo = open_composefs_repo(&root_setup.physical_root)?;
     repo.set_insecure(allow_missing_fsverity);
 
