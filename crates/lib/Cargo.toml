@@ -64,7 +64,7 @@ unicode-width = "0.2"
 libsystemd = "0.7"
 linkme = "0.3"
 nom = "8.0.0"
-ocidir = "0.6.0"
+ocidir = "0.7.0"
 schemars = { version = "1.0.4", features = ["chrono04"] }
 serde_ignored = "0.1.10"
 serde_yaml = "0.9.34"
