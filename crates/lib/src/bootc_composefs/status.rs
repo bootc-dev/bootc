@@ -59,6 +59,16 @@ pub(crate) struct ComposefsCmdline {
     pub digest: Box<str>,
 }
 
+impl ComposefsCmdline {
+    /// Search for the `composefs=` parameter in the passed in kernel command line
+    pub(crate) fn search_in_cmdline(cmdline: &Cmdline) -> Option<Self> {
+        match cmdline.find(COMPOSEFS_CMDLINE) {
+            Some(param) => Some(Self::new(&param)),
+            None => None,
+        }
+    }
+}
+
 /// Information about a deployment for soft reboot comparison
 struct DeploymentBootInfo<'a> {
     boot_digest: &'a str,
