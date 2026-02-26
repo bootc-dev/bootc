@@ -108,7 +108,7 @@ test-tmt *ARGS: build
 [group('core')]
 test-container: build build-units
     podman run --rm --read-only localhost/bootc-units /usr/bin/bootc-units
-    podman run --rm --env=BOOTC_variant={{variant}} --env=BOOTC_base={{base}} {{base_img}} bootc-integration-tests container
+    podman run --rm --env=BOOTC_variant={{variant}} --env=BOOTC_base={{base}} --mount=type=image,source={{base_img}},target=/run/target {{base_img}} bootc-integration-tests container
 
 # Build and test sealed composefs images
 [group('core')]
@@ -137,6 +137,28 @@ test-composefs-grub filesystem:
 [group('core')]
 validate:
     podman build {{base_buildargs}} --target validate .
+
+# Test container export via Anaconda liveimg install in a QEMU VM
+[group('testing')]
+test-container-export: build
+    #!/bin/bash
+    set -xeuo pipefail
+    iso=target/anaconda-test/boot.iso
+    if [ ! -f "$iso" ]; then
+        # Determine the ISO download URL from the base image's os-release
+        eval $(podman run --rm {{base_img}} bash -c '. /etc/os-release && echo "ID=$ID VERSION_ID=$VERSION_ID"')
+        case "${ID}-${VERSION_ID}" in
+            centos-10)
+                url="https://mirror.stream.centos.org/10-stream/BaseOS/x86_64/iso/CentOS-Stream-10-latest-x86_64-boot.iso" ;;
+            fedora-*)
+                url="https://download.fedoraproject.org/pub/fedora/linux/releases/${VERSION_ID}/Everything/x86_64/iso/Fedora-Everything-netinst-x86_64-${VERSION_ID}-1.1.iso" ;;
+            *)
+                echo "Unsupported OS: ${ID}-${VERSION_ID}" >&2; exit 1 ;;
+        esac
+        mkdir -p target/anaconda-test
+        curl -L --retry 3 --progress-bar -o "$iso" "$url"
+    fi
+    cargo xtask anaconda-test --iso "$iso" {{base_img}}
 
 # ============================================================================
 # Testing variants and utilities

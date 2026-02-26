@@ -183,6 +183,93 @@ fn test_variant_base_crosscheck() -> Result<()> {
     Ok(())
 }
 
+/// Verify exported tar has correct size/mode/content vs source.
+/// Checks all critical paths (kernel, boot) plus ~10% random sample.
+pub(crate) fn test_container_export_tar() -> Result<()> {
+    use rand::{Rng, SeedableRng};
+    use std::io::Read;
+    use std::os::unix::fs::MetadataExt;
+
+    const TARGET: &str = "/run/target";
+    const CRITICAL: &[&str] = &["usr/lib/modules/", "usr/lib/ostree-boot/", "boot/"];
+
+    anyhow::ensure!(
+        std::path::Path::new(TARGET).exists(),
+        "Test requires image mounted at {TARGET}"
+    );
+
+    let td = tempfile::tempdir()?;
+    let tar_path = td.path().join("export.tar");
+    let tar_str = tar_path.to_str().unwrap();
+
+    let sh = Shell::new()?;
+    cmd!(
+        sh,
+        "bootc container export --format=tar -o {tar_str} {TARGET}"
+    )
+    .run()?;
+
+    // Collect tar entries: path -> (size, mode, first 4KB content)
+    let mut entries: Vec<(String, u64, u32, Vec<u8>)> = Vec::new();
+    for entry in tar::Archive::new(fs::File::open(&tar_path)?).entries()? {
+        let mut entry = entry?;
+        let header = entry.header();
+        if header.entry_type() != tar::EntryType::Regular {
+            continue;
+        }
+        let path = entry.path()?.to_string_lossy().into_owned();
+        let size: u64 = header.size()?;
+        let mode = header.mode()?;
+        let sample_len = usize::try_from(size).unwrap_or(usize::MAX).min(4096);
+        let mut sample = vec![0u8; sample_len];
+        entry.read_exact(&mut sample)?;
+        entries.push((path, size, mode, sample));
+    }
+    assert!(entries.len() > 100, "too few files: {}", entries.len());
+
+    let mut rng = rand::rngs::StdRng::seed_from_u64(42);
+    let (mut verified, mut critical_count) = (0, 0);
+
+    for (path, tar_size, tar_mode, tar_sample) in &entries {
+        let is_critical = CRITICAL.iter().any(|p| path.contains(p));
+        if !is_critical && !rng.random_bool(0.1) {
+            continue;
+        }
+
+        let src = std::path::Path::new(TARGET).join(path);
+        let Ok(meta) = src.symlink_metadata() else {
+            continue;
+        };
+        if !meta.is_file() {
+            continue;
+        }
+
+        assert_eq!(*tar_size, meta.len(), "{path}: size mismatch");
+        assert_eq!(
+            tar_mode & 0o7777,
+            meta.mode() & 0o7777,
+            "{path}: mode mismatch"
+        );
+
+        let mut src_sample = vec![0u8; tar_sample.len()];
+        fs::File::open(&src)?.read_exact(&mut src_sample)?;
+        assert_eq!(tar_sample, &src_sample, "{path}: content mismatch");
+
+        verified += 1;
+        if is_critical {
+            critical_count += 1;
+        }
+    }
+
+    assert!(verified >= 50, "only verified {verified} files");
+    assert!(critical_count >= 5, "only {critical_count} critical files");
+    eprintln!(
+        "Verified {verified}/{} files ({critical_count} critical)",
+        entries.len()
+    );
+    Ok(())
+}
+
 /// Test that compute-composefs-digest works on a directory
 pub(crate) fn test_compute_composefs_digest() -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
@@ -249,6 +336,7 @@ pub(crate) fn run(testargs: libtest_mimic::Arguments) -> Result<()> {
         new_test("status", test_bootc_status),
         new_test("container inspect", test_bootc_container_inspect),
         new_test("system-reinstall --help", test_system_reinstall_help),
+        new_test("container export tar", test_container_export_tar),
         new_test("compute-composefs-digest", test_compute_composefs_digest),
     ];
 
