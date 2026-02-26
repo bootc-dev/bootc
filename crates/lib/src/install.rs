@@ -1931,6 +1931,10 @@ async fn ostree_install(state: &State, rootfs: &RootSetup, cleanup: Cleanup) -> 
             sysroot_dir.atomic_write(DESTRUCTIVE_CLEANUP, b"")?;
         }
 
+        // Ensure the image storage is SELinux-labeled. This must happen
+        // after all image pulls are complete.
+        sysroot.ensure_imgstore_labeled()?;
+
         // We must drop the sysroot here in order to close any open file
         // descriptors.
     };

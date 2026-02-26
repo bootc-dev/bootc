@@ -41,6 +41,10 @@ const STORAGE_RUN_FD: i32 = 3;
 
 const LABELED: &str = ".bootc_labeled";
 
+/// The system path to the canonical containers-storage instance,
+/// used as the SELinux label reference path.
+const SYS_CSTOR_PATH: &str = "/var/lib/containers/storage";
+
 /// The path to the image storage, relative to the bootc root directory.
 pub(crate) const SUBPATH: &str = "storage";
 /// The path to the "runroot" with transient runtime state; this is
@@ -56,6 +60,8 @@ pub(crate) struct CStorage {
     #[allow(dead_code)]
     /// Our runtime state
     run: Dir,
+    /// The SELinux policy used for labeling the storage.
+    sepolicy: Option<ostree::SePolicy>,
     /// Disallow using this across multiple threads concurrently; while we
     /// have internal locking in podman, in the future we may change how
     /// things work here. And we don't have a use case right now for
@@ -211,25 +217,35 @@ impl CStorage {
     /// containers-storage: instance. We use a `LABELED` stamp file for
     /// idempotence.
     #[context("Labeling imgstorage dirs")]
-    fn ensure_labeled(root: &Dir, sepolicy: Option<&ostree::SePolicy>) -> Result<()> {
-        if root.try_exists(LABELED)? {
+    pub(crate) fn ensure_labeled(&self) -> Result<()> {
+        if self.storage_root.try_exists(LABELED)? {
             return Ok(());
         }
-        let Some(sepolicy) = sepolicy else {
+        let Some(sepolicy) = self.sepolicy.as_ref() else {
             return Ok(());
         };
 
         // recursively set the labels because they were previously set to usr_t,
         // and there is no policy defined to set them to the c/storage labels
         crate::lsm::relabel_recurse(
-            &root,
+            &self.storage_root,
             ".",
-            Some(Utf8Path::new("/var/lib/containers/storage")),
+            Some(Utf8Path::new(SYS_CSTOR_PATH)),
             sepolicy,
         )
         .context("labeling storage root")?;
 
-        root.create(LABELED)?;
+        self.storage_root.create(LABELED)?;
+
+        // Label the stamp file itself to match the storage directory context
+        crate::lsm::relabel(
+            &self.storage_root,
+            &self.storage_root.symlink_metadata(LABELED)?,
+            LABELED.into(),
+            Some(&Utf8Path::new(SYS_CSTOR_PATH).join(LABELED)),
+            sepolicy,
+        )
+        .context("labeling stamp file")?;
 
         Ok(())
     }
@@ -246,10 +262,10 @@ impl CStorage {
         // SAFETY: We know there's a parent
         let parent = subpath.parent().unwrap();
         let tmp = format!("{subpath}.tmp");
-        if !sysroot
+        let existed = sysroot
             .try_exists(subpath)
-            .with_context(|| format!("Querying {subpath}"))?
-        {
+            .with_context(|| format!("Querying {subpath}"))?;
+        if !existed {
             sysroot.remove_all_optional(&tmp).context("Removing tmp")?;
             sysroot
                 .create_dir_all(parent)
@@ -265,23 +281,30 @@ impl CStorage {
                 .arg("images")
                 .run_capture_stderr()
                 .context("Initializing images")?;
-            Self::ensure_labeled(&storage_root, sepolicy)?;
             drop(storage_root);
             sysroot
                 .rename(&tmp, sysroot, subpath)
                 .context("Renaming tmpdir")?;
             tracing::debug!("Created image store");
-        } else {
-            // the storage already exists, make sure it has selinux labels
-            let storage_root = sysroot.open_dir(subpath).context("opening storage dir")?;
-            Self::ensure_labeled(&storage_root, sepolicy)?;
         }
 
-        Self::open(sysroot, run)
+        let s = Self::open(sysroot, run, sepolicy.cloned())?;
+        if existed {
+            // For pre-existing storage (e.g. on a booted system), ensure
+            // labels are correct now. For freshly created storage (e.g.
+            // during install), labeling is deferred until after all image
+            // pulls are complete via an explicit ensure_labeled() call.
+            s.ensure_labeled()?;
+        }
+        Ok(s)
     }
 
     #[context("Opening imgstorage")]
-    pub(crate) fn open(sysroot: &Dir, run: &Dir) -> Result<Self> {
+    pub(crate) fn open(
+        sysroot: &Dir,
+        run: &Dir,
+        sepolicy: Option<ostree::SePolicy>,
+    ) -> Result<Self> {
         tracing::trace!("Opening container image store");
         Self::init_globals()?;
         let subpath = &Self::subpath();
@@ -296,6 +319,7 @@ impl CStorage {
             sysroot: sysroot.try_clone()?,
             storage_root,
             run,
+            sepolicy,
             _unsync: Default::default(),
         })
     }

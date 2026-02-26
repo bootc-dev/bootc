@@ -315,10 +315,12 @@ pub(crate) async fn impl_completion(
 
         // When we're run through ostree, we only lazily initialize the podman storage to avoid
         // having a hard dependency on it.
-        let imgstorage = &CStorage::create(&sysroot_dir, &rundir, sepolicy.as_ref())?;
-        crate::boundimage::pull_images_impl(imgstorage, bound_images)
+        let imgstorage = CStorage::create(&sysroot_dir, &rundir, sepolicy.as_ref())?;
+        crate::boundimage::pull_images_impl(&imgstorage, bound_images)
             .await
             .context("pulling bound images")?;
+        // Ensure the image storage is SELinux-labeled after all pulls are complete.
+        imgstorage.ensure_labeled()?;
     }
 
     // Log completion success

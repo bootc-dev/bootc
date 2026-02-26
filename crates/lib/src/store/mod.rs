@@ -414,6 +414,15 @@ impl Storage {
         Ok(self.imgstore.get_or_init(|| imgstore))
     }
 
+    /// Ensure the image storage is properly SELinux-labeled. This should be
+    /// called after all image pulls are complete.
+    pub(crate) fn ensure_imgstore_labeled(&self) -> Result<()> {
+        if let Some(imgstore) = self.imgstore.get() {
+            imgstore.ensure_labeled()?;
+        }
+        Ok(())
+    }
+
     /// Access the composefs repository; will automatically initialize it if necessary.
     ///
     /// This lazily opens the composefs repository, creating the directory if needed
