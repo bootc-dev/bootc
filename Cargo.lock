@@ -39,7 +39,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "43d5b281e737544384e969a5ccad3f1cdd24b48086a0fc1b2a5262a26b8f4f4a"
 dependencies = [
  "anstyle",
- "anstyle-parse",
+ "anstyle-parse 0.2.7",
+ "anstyle-query",
+ "anstyle-wincon",
+ "colorchoice",
+ "is_terminal_polyfill",
+ "utf8parse",
+]
+
+[[package]]
+name = "anstream"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "824a212faf96e9acacdbd09febd34438f8f711fb84e09a8916013cd7815ca28d"
+dependencies = [
+ "anstyle",
+ "anstyle-parse 1.0.0",
  "anstyle-query",
  "anstyle-wincon",
  "colorchoice",
@@ -58,6 +73,15 @@ name = "anstyle-parse"
 version = "0.2.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4e7644824f0aa2c7b9384579234ef10eb7efb6a0deb83f9630a49594dd9c15c2"
+dependencies = [
+ "utf8parse",
+]
+
+[[package]]
+name = "anstyle-parse"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "52ce7f38b242319f7cabaa6813055467063ecdc9d355bbb4ce0c68908cd8130e"
 dependencies = [
  "utf8parse",
 ]
@@ -144,7 +168,7 @@ dependencies = [
 name = "bootc"
 version = "0.0.0"
 dependencies = [
- "anstream",
+ "anstream 1.0.0",
  "anyhow",
  "bootc-internal-utils",
  "bootc-lib",
@@ -166,7 +190,7 @@ dependencies = [
  "libc",
  "rustix",
  "serde",
- "toml",
+ "toml 1.0.3+spec-1.1.0",
 ]
 
 [[package]]
@@ -192,9 +216,9 @@ dependencies = [
 name = "bootc-internal-utils"
 version = "0.1.0"
 dependencies = [
- "anstream",
+ "anstream 1.0.0",
  "anyhow",
- "cap-std-ext",
+ "cap-std-ext 5.0.0",
  "chrono",
  "owo-colors",
  "rustix",
@@ -224,7 +248,7 @@ dependencies = [
 name = "bootc-lib"
 version = "1.12.1"
 dependencies = [
- "anstream",
+ "anstream 1.0.0",
  "anstyle",
  "anyhow",
  "bootc-initramfs-setup",
@@ -236,7 +260,7 @@ dependencies = [
  "bootc-tmpfiles",
  "camino",
  "canon-json",
- "cap-std-ext",
+ "cap-std-ext 5.0.0",
  "cfg-if",
  "chrono",
  "clap",
@@ -274,7 +298,7 @@ dependencies = [
  "tini",
  "tokio",
  "tokio-util",
- "toml",
+ "toml 1.0.3+spec-1.1.0",
  "tracing",
  "uapi-version",
  "unicode-width",
@@ -289,7 +313,7 @@ dependencies = [
  "anyhow",
  "bootc-internal-utils",
  "camino",
- "cap-std-ext",
+ "cap-std-ext 5.0.0",
  "fn-error-context",
  "indoc",
  "libc",
@@ -306,7 +330,7 @@ dependencies = [
  "anyhow",
  "bootc-internal-utils",
  "camino",
- "cap-std-ext",
+ "cap-std-ext 5.0.0",
  "fn-error-context",
  "hex",
  "indoc",
@@ -324,7 +348,7 @@ dependencies = [
  "anyhow",
  "bootc-internal-utils",
  "camino",
- "cap-std-ext",
+ "cap-std-ext 5.0.0",
  "fn-error-context",
  "indoc",
  "rustix",
@@ -392,7 +416,7 @@ checksum = "b6cf3aea8a5081171859ef57bc1606b1df6999df4f1110f8eef68b30098d1d3a"
 dependencies = [
  "ambient-authority",
  "fs-set-times",
- "io-extras",
+ "io-extras 0.18.4",
  "io-lifetimes 2.0.4",
  "ipnet",
  "maybe-owned",
@@ -403,15 +427,45 @@ dependencies = [
 ]
 
 [[package]]
+name = "cap-primitives"
+version = "4.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cdadbd7c002d3a484b35243669abdae85a0ebaded5a61117169dc3400f9a7ff0"
+dependencies = [
+ "ambient-authority",
+ "fs-set-times",
+ "io-extras 0.19.0",
+ "io-lifetimes 3.0.1",
+ "ipnet",
+ "maybe-owned",
+ "rustix",
+ "rustix-linux-procfs",
+ "windows-sys 0.61.2",
+ "winx",
+]
+
+[[package]]
 name = "cap-std"
 version = "3.4.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6dc3090992a735d23219de5c204927163d922f42f575a0189b005c62d37549a"
 dependencies = [
- "camino",
- "cap-primitives",
- "io-extras",
+ "cap-primitives 3.4.5",
+ "io-extras 0.18.4",
  "io-lifetimes 2.0.4",
+ "rustix",
+]
+
+[[package]]
+name = "cap-std"
+version = "4.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7281235d6e96d3544ca18bba9049be92f4190f8d923e3caef1b5f66cfa752608"
+dependencies = [
+ "camino",
+ "cap-primitives 4.0.2",
+ "io-extras 0.19.0",
+ "io-lifetimes 3.0.1",
  "rustix",
 ]
 
@@ -421,8 +475,20 @@ version = "4.0.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6fe962d42e07c22aec2618191c3683412735b7e6dcd7bab2eec811ab4697c58e"
 dependencies = [
- "cap-primitives",
- "cap-tempfile",
+ "cap-primitives 3.4.5",
+ "cap-tempfile 3.4.5",
+ "libc",
+ "rustix",
+]
+
+[[package]]
+name = "cap-std-ext"
+version = "5.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d201b8b353bc963f2e8c374be7866dba47082ff041fb0db2d7543f2b9c8367ce"
+dependencies = [
+ "cap-primitives 4.0.2",
+ "cap-tempfile 4.0.2",
  "libc",
  "rustix",
 ]
@@ -433,12 +499,26 @@ version = "3.4.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "68d8ad5cfac469e58e632590f033d45c66415ef7a8aa801409884818036706f5"
 dependencies = [
- "camino",
- "cap-std",
+ "cap-std 3.4.5",
  "rand 0.8.5",
  "rustix",
  "rustix-linux-procfs",
  "uuid",
+]
+
+[[package]]
+name = "cap-tempfile"
+version = "4.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "42f22d5c0b1147e8bd9105fa004450f673c139d7e632f7edc3980f94a51f20f3"
+dependencies = [
+ "camino",
+ "cap-std 4.0.2",
+ "rand 0.9.2",
+ "rustix",
+ "rustix-linux-procfs",
+ "uuid",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -540,7 +620,7 @@ version = "4.5.54"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fa42cf4d2b7a41bc8f663a7cab4031ebafa1bf3875705bfaf8466dc60ab52c00"
 dependencies = [
- "anstream",
+ "anstream 0.6.21",
  "anstyle",
  "clap_lex",
  "strsim",
@@ -651,7 +731,7 @@ dependencies = [
  "containers-image-proxy",
  "hex",
  "indicatif 0.17.11",
- "oci-spec",
+ "oci-spec 0.8.4",
  "rustix",
  "sha2",
  "tar",
@@ -729,10 +809,10 @@ version = "0.9.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f4efbec7ca93c60462005402029839fcc8958eb5239bab1dd09f6d3e5165911a"
 dependencies = [
- "cap-std-ext",
+ "cap-std-ext 4.0.7",
  "futures-util",
  "itertools",
- "oci-spec",
+ "oci-spec 0.8.4",
  "rustix",
  "semver",
  "serde",
@@ -1007,9 +1087,9 @@ checksum = "5692dd7b5a1978a5aeb0ce83b7655c58ca8efdcb79d21036ea249da95afec2c6"
 name = "etc-merge"
 version = "0.1.0"
 dependencies = [
- "anstream",
+ "anstream 1.0.0",
  "anyhow",
- "cap-std-ext",
+ "cap-std-ext 5.0.0",
  "composefs",
  "fn-error-context",
  "hex",
@@ -1475,6 +1555,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "io-extras"
+version = "0.19.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "20fd6de4ccfcc187e38bc21cfa543cb5a302cb86a8b114eb7f0bf0dc9f8ac00f"
+dependencies = [
+ "io-lifetimes 3.0.1",
+ "windows-sys 0.60.2",
+]
+
+[[package]]
 name = "io-lifetimes"
 version = "2.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1595,7 +1685,7 @@ version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5297962ef19edda4ce33aaa484386e0a5b3d7f2f4e037cbeee00503ef6b29d33"
 dependencies = [
- "anstream",
+ "anstream 0.6.21",
  "anstyle",
  "clap",
  "escape8259",
@@ -1807,18 +1897,35 @@ dependencies = [
 ]
 
 [[package]]
-name = "ocidir"
-version = "0.6.0"
+name = "oci-spec"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "92e746e3e6a7bb57a72ea4f0b8085f84aedaab1d537a5dc5488fd3cd5af0cd67"
+checksum = "e8445a2631507cec628a15fdd6154b54a3ab3f20ed4fe9d73a3b8b7a4e1ba03a"
+dependencies = [
+ "const_format",
+ "derive_builder",
+ "getset",
+ "regex",
+ "serde",
+ "serde_json",
+ "strum",
+ "strum_macros",
+ "thiserror 2.0.17",
+]
+
+[[package]]
+name = "ocidir"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "784ff94e3f5a9b89659b8a4442104df6b5e7974c9b355c4f4ae6e9794af1ad2b"
 dependencies = [
  "camino",
  "canon-json",
- "cap-std-ext",
+ "cap-std-ext 5.0.0",
  "chrono",
  "flate2",
  "hex",
- "oci-spec",
+ "oci-spec 0.8.4",
  "openssl",
  "serde",
  "serde_json",
@@ -1914,7 +2021,7 @@ dependencies = [
  "bootc-internal-utils",
  "camino",
  "canon-json",
- "cap-std-ext",
+ "cap-std-ext 5.0.0",
  "chrono",
  "clap",
  "clap_mangen",
@@ -2657,7 +2764,7 @@ dependencies = [
  "cfg-expr",
  "heck",
  "pkg-config",
- "toml",
+ "toml 0.9.10+spec-1.1.0",
  "version-compare",
 ]
 
@@ -2665,7 +2772,7 @@ dependencies = [
 name = "system-reinstall-bootc"
 version = "0.1.9"
 dependencies = [
- "anstream",
+ "anstream 1.0.0",
  "anyhow",
  "bootc-internal-utils",
  "bootc-mount",
@@ -2723,12 +2830,12 @@ dependencies = [
  "anyhow",
  "bootc-kernel-cmdline",
  "camino",
- "cap-std-ext",
+ "cap-std-ext 5.0.0",
  "clap",
  "fn-error-context",
  "indoc",
  "libtest-mimic",
- "oci-spec",
+ "oci-spec 0.9.0",
  "rexpect",
  "rustix",
  "scopeguard",
@@ -2854,7 +2961,22 @@ dependencies = [
  "indexmap",
  "serde_core",
  "serde_spanned",
- "toml_datetime",
+ "toml_datetime 0.7.5+spec-1.1.0",
+ "toml_parser",
+ "toml_writer",
+ "winnow",
+]
+
+[[package]]
+name = "toml"
+version = "1.0.3+spec-1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c7614eaf19ad818347db24addfa201729cf2a9b6fdfd9eb0ab870fcacc606c0c"
+dependencies = [
+ "indexmap",
+ "serde_core",
+ "serde_spanned",
+ "toml_datetime 1.0.0+spec-1.1.0",
  "toml_parser",
  "toml_writer",
  "winnow",
@@ -2870,22 +2992,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "toml_datetime"
+version = "1.0.0+spec-1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32c2555c699578a4f59f0cc68e5116c8d7cabbd45e1409b989d4be085b53f13e"
+dependencies = [
+ "serde_core",
+]
+
+[[package]]
 name = "toml_edit"
 version = "0.23.10+spec-1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "84c8b9f757e028cee9fa244aea147aab2a9ec09d5325a9b01e0a49730c2b5269"
 dependencies = [
  "indexmap",
- "toml_datetime",
+ "toml_datetime 0.7.5+spec-1.1.0",
  "toml_parser",
  "winnow",
 ]
 
 [[package]]
 name = "toml_parser"
-version = "1.0.6+spec-1.1.0"
+version = "1.0.9+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a3198b4b0a8e11f09dd03e133c0280504d0801269e9afa46362ffde1cbeebf44"
+checksum = "702d4415e08923e7e1ef96cd5727c0dfed80b4d2fa25db9647fe5eb6f7c5a4c4"
 dependencies = [
  "winnow",
 ]
@@ -3583,7 +3714,7 @@ checksum = "32ac00cd3f8ec9c1d33fb3e7958a82df6989c42d747bd326c822b1d625283547"
 name = "xtask"
 version = "0.1.0"
 dependencies = [
- "anstream",
+ "anstream 1.0.0",
  "anyhow",
  "camino",
  "cargo_metadata",
@@ -3599,7 +3730,7 @@ dependencies = [
  "serde_yaml",
  "tar",
  "tempfile",
- "toml",
+ "toml 1.0.3+spec-1.1.0",
  "xshell",
 ]
 
