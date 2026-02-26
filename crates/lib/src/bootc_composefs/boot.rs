@@ -105,10 +105,8 @@ use crate::{
 };
 use crate::{
     bootc_composefs::state::{get_booted_bls, write_composefs_state},
-    bootloader::esp_in,
-};
-use crate::{
-    bootc_composefs::status::get_container_manifest_and_config, bootc_kargs::compute_new_kargs,
+    bootc_composefs::status::get_container_manifest_and_config,
+    bootc_kargs::compute_new_kargs,
 };
 use crate::{bootc_composefs::status::get_sorted_grub_uki_boot_entries, install::PostFetchState};
 use crate::{
@@ -528,11 +526,25 @@ pub(crate) fn setup_composefs_bls_boot(
             cmdline_options.extend(&Cmdline::from(&composefs_cmdline));
 
             // Locate ESP partition device
-            let esp_part = esp_in(&root_setup.device_info)?;
+            let esp_root = root_setup.open_target_root()?;
+            let esp_device = if root_setup.require_esp_mount {
+                crate::bootloader::find_esp_mount(&esp_root)?.device
+            } else {
+                match crate::bootloader::find_esp_mount(&esp_root) {
+                    Ok(esp) => esp.device,
+                    Err(e) => {
+                        tracing::debug!(
+                            "ESP mount check failed in permissive mode: {e}; falling back to partition table scan"
+                        );
+                        let esp = crate::bootloader::esp_in(&root_setup.device_info)?;
+                        esp.node.clone()
+                    }
+                }
+            };
 
             (
                 root_setup.physical_root_path.clone(),
-                esp_part.node.clone(),
+                esp_device,
                 cmdline_options,
                 fs,
                 postfetch.detected_bootloader.clone(),
@@ -1087,11 +1099,26 @@ pub(crate) fn setup_composefs_uki_boot(
         BootSetupType::Setup((root_setup, state, postfetch, ..)) => {
             state.require_no_kargs_for_uki()?;
 
-            let esp_part = esp_in(&root_setup.device_info)?;
+            let esp_root = root_setup.open_target_root()?;
+
+            let esp_device = if root_setup.require_esp_mount {
+                crate::bootloader::find_esp_mount(&esp_root)?.device
+            } else {
+                match crate::bootloader::find_esp_mount(&esp_root) {
+                    Ok(esp) => esp.device,
+                    Err(e) => {
+                        tracing::debug!(
+                            "ESP mount check failed in permissive mode: {e}; falling back to partition table scan"
+                        );
+                        let esp = crate::bootloader::esp_in(&root_setup.device_info)?;
+                        esp.node.clone()
+                    }
+                }
+            };
 
             (
                 root_setup.physical_root_path.clone(),
-                esp_part.node.clone(),
+                esp_device,
                 postfetch.detected_bootloader.clone(),
                 state.composefs_options.allow_missing_verity,
                 state.composefs_options.uki_addon.as_ref(),
@@ -1260,23 +1287,29 @@ pub(crate) async fn setup_composefs_boot(
         .or(root_setup.rootfs_uuid.as_deref())
         .ok_or_else(|| anyhow!("No uuid for boot/root"))?;
 
+    let target_root = root_setup.open_target_root()?;
+
     if cfg!(target_arch = "s390x") {
         // TODO: Integrate s390x support into install_via_bootupd
         crate::bootloader::install_via_zipl(&root_setup.device_info, boot_uuid)?;
     } else if postfetch.detected_bootloader == Bootloader::Grub {
         crate::bootloader::install_via_bootupd(
             &root_setup.device_info,
+            &target_root,
             &root_setup.physical_root_path,
             &state.config_opts,
             None,
+            root_setup.require_esp_mount,
         )?;
     } else {
         crate::bootloader::install_systemd_boot(
+            &target_root,
             &root_setup.device_info,
             &root_setup.physical_root_path,
             &state.config_opts,
             None,
             get_secureboot_keys(&mounted_fs, BOOTC_AUTOENROLL_PATH)?,
+            root_setup.require_esp_mount,
         )?;
     }
 
@@ -1435,5 +1468,12 @@ mod tests {
             rhel > fedora,
             "RHEL should sort before Fedora in descending order"
         );
+    }
+
+    #[test]
+    fn test_efi_uuid_source_formatting() {
+        let source = get_efi_uuid_source();
+        assert!(source.contains("${config_directory}/"));
+        assert!(source.contains(EFI_UUID_FILE));
     }
 }

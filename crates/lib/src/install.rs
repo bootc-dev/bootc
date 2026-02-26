@@ -1285,6 +1285,7 @@ pub(crate) struct RootSetup {
     skip_finalize: bool,
     boot: Option<MountSpec>,
     pub(crate) kargs: CmdlineOwned,
+    pub(crate) require_esp_mount: bool,
 }
 
 fn require_boot_uuid(spec: &MountSpec) -> Result<&str> {
@@ -1293,6 +1294,17 @@ fn require_boot_uuid(spec: &MountSpec) -> Result<&str> {
 }
 
 impl RootSetup {
+    pub(crate) fn open_target_root(&self) -> Result<Dir> {
+        if let Some(target_root) = self.target_root_path.as_ref() {
+            Dir::open_ambient_dir(target_root, cap_std::ambient_authority())
+                .context("Opening target root path")
+        } else {
+            self.physical_root
+                .try_clone()
+                .context("Cloning target root handle")
+        }
+    }
+
     /// Get the UUID= mount specifier for the /boot filesystem; if there isn't one, the root UUID will
     /// be returned.
     pub(crate) fn get_boot_uuid(&self) -> Result<Option<&str>> {
@@ -1816,6 +1828,13 @@ async fn install_with_sysroot(
         .context("Opening deployment dir")?;
     let postfetch = PostFetchState::new(state, &deployment_dir)?;
 
+    let target_root_path = rootfs
+        .target_root_path
+        .clone()
+        .unwrap_or(rootfs.physical_root_path.clone());
+    let target_root = Dir::open_ambient_dir(&target_root_path, cap_std::ambient_authority())
+        .with_context(|| format!("Opening target root directory {target_root_path}"))?;
+
     if cfg!(target_arch = "s390x") {
         // TODO: Integrate s390x support into install_via_bootupd
         crate::bootloader::install_via_zipl(&rootfs.device_info, boot_uuid)?;
@@ -1824,12 +1843,11 @@ async fn install_with_sysroot(
             Bootloader::Grub => {
                 crate::bootloader::install_via_bootupd(
                     &rootfs.device_info,
-                    &rootfs
-                        .target_root_path
-                        .clone()
-                        .unwrap_or(rootfs.physical_root_path.clone()),
+                    &target_root,
+                    &target_root_path,
                     &state.config_opts,
                     Some(&deployment_path.as_str()),
+                    rootfs.require_esp_mount,
                 )?;
             }
             Bootloader::Systemd => {
@@ -2230,26 +2248,35 @@ fn remove_all_except_loader_dirs(bootdir: &Dir, is_ostree: bool) -> Result<()> {
 }
 
 #[context("Removing boot directory content")]
-fn clean_boot_directories(rootfs: &Dir, rootfs_path: &Utf8Path, is_ostree: bool) -> Result<()> {
+fn clean_boot_directories(rootfs: &Dir, is_ostree: bool, strict_esp: bool) -> Result<()> {
     let bootdir =
         crate::utils::open_dir_remount_rw(rootfs, BOOT.into()).context("Opening /boot")?;
 
-    if ARCH_USES_EFI {
-        // On booted FCOS, esp is not mounted by default
-        // Mount ESP part at /boot/efi before clean
-        crate::bootloader::mount_esp_part(&rootfs, &rootfs_path, is_ostree)?;
-    }
+    let esp = if ARCH_USES_EFI {
+        if strict_esp {
+            Some(crate::bootloader::find_esp_mount(rootfs)?)
+        } else {
+            crate::bootloader::find_esp_mount(rootfs).ok()
+        }
+    } else {
+        None
+    };
 
-    // This should not remove /boot/efi note.
+    // This should not remove the ESP if it is a mount point.
     remove_all_except_loader_dirs(&bootdir, is_ostree).context("Emptying /boot")?;
 
+    // If we have an ESP that is NOT /boot, we empty it.
+    // If it is /boot, we already did a selective empty above.
     // TODO: we should also support not wiping the ESP.
-    if ARCH_USES_EFI {
-        if let Some(efidir) = bootdir
-            .open_dir_optional(crate::bootloader::EFI_DIR)
-            .context("Opening /boot/efi")?
-        {
-            remove_all_in_dir_no_xdev(&efidir, false).context("Emptying EFI system partition")?;
+    if let Some(esp) = esp {
+        if esp.path != BOOT {
+            if let Some(efidir) = rootfs
+                .open_dir_optional(&esp.path)
+                .with_context(|| format!("Opening ESP at {}", esp.path))?
+            {
+                remove_all_in_dir_no_xdev(&efidir, false)
+                    .context("Emptying EFI system partition")?;
+            }
         }
     }
 
@@ -2456,7 +2483,7 @@ pub(crate) async fn install_to_filesystem(
                 .await??;
         }
         Some(ReplaceMode::Alongside) => {
-            clean_boot_directories(&target_rootfs_fd, &target_root_path, is_already_ostree)?
+            clean_boot_directories(&target_rootfs_fd, is_already_ostree, !targeting_host_root)?
         }
         None => require_empty_rootdir(&rootfs_fd)?,
     }
@@ -2615,6 +2642,7 @@ pub(crate) async fn install_to_filesystem(
         boot,
         kargs,
         skip_finalize,
+        require_esp_mount: !targeting_host_root,
     };
 
     install_to_filesystem_impl(&state, &mut rootfs, cleanup).await?;
