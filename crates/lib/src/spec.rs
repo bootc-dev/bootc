@@ -8,7 +8,7 @@ use anyhow::Result;
 use ostree_ext::container::Transport;
 use ostree_ext::oci_spec::distribution::Reference;
 use ostree_ext::oci_spec::image::Digest;
-use ostree_ext::{container::OstreeImageReference, oci_spec};
+use ostree_ext::{container::OstreeImageReference, ostree::DeploymentUnlockedState, oci_spec};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -274,6 +274,72 @@ pub enum HostType {
     BootcHost,
 }
 
+/// Details of an overlay filesystem: read-only or read/write, persistent or transient.
+#[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct FilesystemOverlay {
+    /// Whether the overlay is read-only or read/write
+    pub access_mode: FilesystemOverlayAccessMode,
+    /// Whether the overlay will persist across reboots
+    pub persistence: FilesystemOverlayPersistence,
+}
+
+/// The permissions mode of a /usr overlay
+#[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum FilesystemOverlayAccessMode {
+    /// The overlay is mounted read-only
+    ReadOnly,
+    /// The overlay is mounted read/write
+    ReadWrite,
+}
+
+impl Display for FilesystemOverlayAccessMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FilesystemOverlayAccessMode::ReadOnly => write!(f, "read-only"),
+            FilesystemOverlayAccessMode::ReadWrite => write!(f, "read/write"),
+        }
+    }
+}
+
+/// The persistence mode of a /usr overlay
+#[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum FilesystemOverlayPersistence {
+    /// Changes are temporary and will be lost on reboot
+    Transient,
+    /// Changes persist across reboots
+    Persistent,
+}
+
+impl Display for FilesystemOverlayPersistence {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FilesystemOverlayPersistence::Transient => write!(f, "transient"),
+            FilesystemOverlayPersistence::Persistent => write!(f, "persistent"),
+        }
+    }
+}
+
+pub(crate) fn deployment_unlocked_state_to_usr_overlay(state: DeploymentUnlockedState) -> Option<FilesystemOverlay> {
+    use FilesystemOverlayPersistence::*;
+    use FilesystemOverlayAccessMode::*;
+    match state {
+        DeploymentUnlockedState::None => None,
+        DeploymentUnlockedState::Development => Some(FilesystemOverlay { access_mode: ReadWrite, persistence: Transient }),
+        DeploymentUnlockedState::Hotfix => Some(FilesystemOverlay { access_mode: ReadWrite, persistence: Persistent }),
+        DeploymentUnlockedState::Transient => Some(FilesystemOverlay { access_mode: ReadOnly, persistence: Transient }),
+        _ => None,
+    }
+}
+
+impl Display for FilesystemOverlay {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}, {}", self.persistence, self.access_mode)
+    }
+}
+
 /// The status of the host system
 #[derive(Debug, Clone, Serialize, Default, Deserialize, PartialEq, Eq, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -295,6 +361,9 @@ pub struct HostStatus {
     /// The detected type of system
     #[serde(rename = "type")]
     pub ty: Option<HostType>,
+
+    /// The state of the overlay mounted on /usr
+    pub usr_overlay: Option<FilesystemOverlay>,
 }
 
 pub(crate) struct DeploymentEntry<'a> {
