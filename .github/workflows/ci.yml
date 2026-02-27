@@ -180,6 +180,7 @@ jobs:
             filesystem: xfs
           - seal_state: "unsealed"
             filesystem: ext4
+            boot_type: uki # we still want to test ext4 unsealed bls
           - bootloader: grub
             boot_type: "uki"
 

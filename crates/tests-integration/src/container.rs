@@ -50,9 +50,12 @@ pub(crate) fn test_bootc_container_inspect() -> Result<()> {
         .expect("kernel.unified should be present")
         .as_bool()
         .expect("kernel.unified should be a boolean");
+
+    let is_uki = std::env::var("BOOTC_boot_type").is_ok_and(|var| var == "uki");
+
     if let Some(variant) = std::env::var("BOOTC_variant").ok() {
-        match variant.as_str() {
-            v @ "ostree" | v @ "composefs" => {
+        match (variant.as_str(), is_uki) {
+            (v @ "ostree", _) | (v @ "composefs", false) => {
                 assert!(!unified, "Expected unified=false for variant {v}");
                 // For traditional kernels, version should look like a uname (contains digits)
                 assert!(
@@ -60,7 +63,7 @@ pub(crate) fn test_bootc_container_inspect() -> Result<()> {
                     "version should contain version numbers for traditional kernel: {version}"
                 );
             }
-            "composefs-sealeduki-sdboot" => {
+            ("composefs", true) => {
                 assert!(unified, "Expected unified=true for UKI variant");
                 // For UKI, version is the filename without .efi extension (should not end with .efi)
                 assert!(
@@ -70,7 +73,7 @@ pub(crate) fn test_bootc_container_inspect() -> Result<()> {
                 // Version should be non-empty after stripping extension
                 assert!(!version.is_empty(), "version should not be empty for UKI");
             }
-            o => eprintln!("notice: Unhandled variant for kernel check: {o}"),
+            o => eprintln!("notice: Unhandled variant for kernel check: {o:?}"),
         }
     }
 
@@ -155,17 +158,19 @@ fn test_system_reinstall_help() -> Result<()> {
 /// Verify that the values of `variant` and `base` from Justfile actually applied
 /// to this container image.
 fn test_variant_base_crosscheck() -> Result<()> {
+    let is_uki = std::env::var("BOOTC_boot_type").is_ok_and(|var| var == "uki");
+
     if let Some(variant) = std::env::var("BOOTC_variant").ok() {
         // TODO add this to `bootc status` or so?
         let boot_efi = Utf8Path::new("/boot/EFI");
-        match variant.as_str() {
-            "composefs" | "ostree" => {
+        match (variant.as_str(), is_uki) {
+            ("composefs", false) | ("ostree", _) => {
                 assert!(!boot_efi.try_exists()?);
             }
-            "composefs-sealeduki-sdboot" => {
+            ("composefs", true) => {
                 assert!(boot_efi.try_exists()?);
             }
-            o => panic!("Unhandled variant: {o}"),
+            o => panic!("Unhandled variant: {o:?}"),
         }
     }
     if let Some(base) = std::env::var("BOOTC_base").ok() {
