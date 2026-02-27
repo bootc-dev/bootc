@@ -114,7 +114,7 @@ test-tmt *ARGS: build
 [group('core')]
 test-container: build build-units
     podman run --rm --read-only localhost/bootc-units /usr/bin/bootc-units
-    podman run --rm --env=BOOTC_variant={{variant}} --env=BOOTC_base={{base}} {{base_img}} bootc-integration-tests container
+    podman run --rm --env=BOOTC_variant={{variant}} --env=BOOTC_base={{base}} --env=BOOTC_boot_type={{boot_type}} {{base_img}} bootc-integration-tests container
 
 [group('core')]
 test-composefs bootloader filesystem boot_type seal_state:
