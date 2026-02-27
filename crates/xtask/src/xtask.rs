@@ -96,6 +96,44 @@ impl Display for Bootloader {
     }
 }
 
+/// The boot type for composefs backend
+#[derive(Debug, Default, Clone, ValueEnum, PartialEq, Eq)]
+pub enum BootType {
+    /// Type1 (BLS) boot
+    #[default]
+    Bls,
+    /// UKI boot
+    Uki,
+}
+
+impl Display for BootType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BootType::Bls => f.write_str("bls"),
+            BootType::Uki => f.write_str("uki"),
+        }
+    }
+}
+
+/// Whether the image is sealed or not
+#[derive(Debug, Default, Clone, ValueEnum, PartialEq, Eq)]
+pub enum SealState {
+    /// The image is sealed
+    Sealed,
+    /// The image is unsealed
+    #[default]
+    Unsealed,
+}
+
+impl Display for SealState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SealState::Sealed => f.write_str("sealed"),
+            SealState::Unsealed => f.write_str("unsealed"),
+        }
+    }
+}
+
 /// Arguments for run-tmt command
 #[derive(Debug, Args)]
 pub(crate) struct RunTmtArgs {
@@ -130,6 +168,14 @@ pub(crate) struct RunTmtArgs {
 
     #[arg(long, requires = "composefs_backend")]
     pub(crate) filesystem: Option<String>,
+
+    /// Required to switch between secure/insecure firmware options
+    #[arg(long, requires = "composefs_backend")]
+    pub(crate) seal_state: Option<SealState>,
+
+    // Required to send kargs to only bls installs
+    #[arg(long, default_value_t, requires = "composefs_backend")]
+    pub(crate) boot_type: BootType,
 }
 
 /// Arguments for tmt-provision command
