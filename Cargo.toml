@@ -49,9 +49,10 @@ clap_mangen = { version = "0.2.20" }
 #   composefs-boot = { path = "/home/user/src/composefs-rs/crates/composefs-boot" }
 #   composefs-oci = { path = "/home/user/src/composefs-rs/crates/composefs-oci" }
 # The Justfile will auto-detect these and bind-mount them into container builds.
-composefs = { git = "https://github.com/containers/composefs-rs", rev = "0c6134653d66ac42c43bac4e1298bfb626aeba87", package = "composefs", features = ["rhel9"] }
-composefs-boot = { git = "https://github.com/containers/composefs-rs", rev = "0c6134653d66ac42c43bac4e1298bfb626aeba87", package = "composefs-boot" }
-composefs-oci = { git = "https://github.com/containers/composefs-rs", rev = "0c6134653d66ac42c43bac4e1298bfb626aeba87", package = "composefs-oci" }
+composefs = { git = "https://github.com/composefs/composefs-rs", rev = "b928c6bd6c051e111d3efc3d25cdaf9159182ed0", package = "composefs", features = ["rhel9"] }
+cfsctl = { git = "https://github.com/composefs/composefs-rs", rev = "b928c6bd6c051e111d3efc3d25cdaf9159182ed0", package = "cfsctl", features = ["rhel9"] }
+composefs-boot = { git = "https://github.com/composefs/composefs-rs", rev = "b928c6bd6c051e111d3efc3d25cdaf9159182ed0", package = "composefs-boot" }
+composefs-oci = { git = "https://github.com/composefs/composefs-rs", rev = "b928c6bd6c051e111d3efc3d25cdaf9159182ed0", package = "composefs-oci" }
 fn-error-context = "0.2.1"
 hex = "0.4.3"
 indicatif = "0.18.0"
