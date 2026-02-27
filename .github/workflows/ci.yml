@@ -127,7 +127,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        test_os: [fedora-43, fedora-44, centos-9, centos-10]
+        test_os: [fedora-43, fedora-44, fedora-45, centos-9, centos-10]
 
     runs-on: ubuntu-24.04
 
@@ -159,8 +159,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # No fedora-44 due to https://bugzilla.redhat.com/show_bug.cgi?id=2429501
-        test_os: [fedora-43, centos-9, centos-10]
+        test_os: [fedora-43, fedora-44, centos-9, centos-10]
         variant: [ostree, composefs-sealeduki-sdboot, composefs-sdboot, composefs-grub]
         filesystem: ["ext4", "xfs"]
         exclude:

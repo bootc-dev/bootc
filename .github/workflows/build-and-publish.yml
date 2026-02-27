@@ -18,7 +18,7 @@ jobs:
   publish-images:
     strategy:
       matrix:
-        test_os: [fedora-43, fedora-44, centos-9, centos-10]
+        test_os: [fedora-43, fedora-44, fedora-45, centos-9, centos-10]
         variant: [ostree, composefs-sealeduki-sdboot]
         exclude:
           # centos-9 UKI is experimental/broken (https://github.com/bootc-dev/bootc/issues/1812)
