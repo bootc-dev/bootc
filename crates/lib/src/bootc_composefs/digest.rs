@@ -11,6 +11,7 @@ use cap_std_ext::cap_std::fs::Dir;
 use composefs::dumpfile;
 use composefs::fsverity::FsVerityHashValue;
 use composefs_boot::BootOps as _;
+use fn_error_context::context;
 use tempfile::TempDir;
 
 use crate::store::ComposefsRepository;
@@ -49,6 +50,7 @@ pub(crate) fn new_temp_composefs_repo() -> Result<(TempDir, Arc<ComposefsReposit
 /// * The path is "/" (cannot operate on active root filesystem)
 /// * The filesystem cannot be read
 /// * The transform or digest computation fails
+#[context("Computing composefs digest")]
 pub(crate) fn compute_composefs_digest(
     path: &Utf8Path,
     write_dumpfile_to: Option<&Utf8Path>,
