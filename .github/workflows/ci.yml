@@ -161,22 +161,34 @@ jobs:
       matrix:
         # No fedora-44 due to https://bugzilla.redhat.com/show_bug.cgi?id=2429501
         test_os: [fedora-43, centos-9, centos-10]
-        variant: [ostree, composefs-sealeduki-sdboot, composefs-sdboot, composefs-grub]
+        variant: [ostree, composefs]
         filesystem: ["ext4", "xfs"]
+        bootloader: ["grub", "systemd"]
+        boot_type: ["bls", "uki"]
+        seal_state: ["sealed", "unsealed"]
+
         exclude:
-          # centos-9 UKI is experimental/broken (https://github.com/bootc-dev/bootc/issues/1812)
-          - test_os: centos-9
-            variant: composefs-sealeduki-sdboot
           # centos-9 fails with EUCLEAN (https://github.com/bootc-dev/bootc/issues/1812)
           # See: https://github.com/bootc-dev/bcvk/pull/204
           - test_os: centos-9
-            variant: composefs-sdboot
-          - test_os: centos-9
-            variant: composefs-grub
+            variant: composefs
+          - seal_state: "sealed"
+            boot_type: bls
+          - seal_state: "sealed"
+            bootloader: grub
+          - seal_state: "sealed"
+            filesystem: xfs
+          - bootloader: grub
+            boot_type: "uki"
+
           # We only test filesystems for composefs to test if composefs backend will work on fs
           # without fsverity
           - variant: ostree
             filesystem: ext4
+          - variant: ostree
+            boot_type: uki
+          - variant: ostree
+            bootloader: systemd
 
     runs-on: ubuntu-24.04
 
@@ -194,35 +206,13 @@ jobs:
           BASE=$(just pullspec-for-os base ${{ matrix.test_os }})
           echo "BOOTC_base=${BASE}" >> $GITHUB_ENV
           echo "RUST_BACKTRACE=full" >> $GITHUB_ENV
-          echo "RUST_LOG=trace" >> $GITHUB_ENV
+          echo "RUST_LOG=debug" >> $GITHUB_ENV
+
+          echo "BOOTC_variant=${{ matrix.variant }}" >> $GITHUB_ENV
           echo "BOOTC_filesystem=${{ matrix.filesystem }}" >> $GITHUB_ENV
-
-          case "${{ matrix.variant }}" in
-            composefs-grub)
-              echo "BOOTC_variant=composefs" >> $GITHUB_ENV
-              echo "BOOTC_bootloader=grub" >> $GITHUB_ENV
-            ;;
-
-            composefs-sdboot)
-              echo "BOOTC_variant=composefs" >> $GITHUB_ENV
-              echo "BOOTC_bootloader=systemd" >> $GITHUB_ENV
-            ;;
-
-            composefs-sealeduki-sdboot)
-              echo "BOOTC_variant=${{ matrix.variant }}" >> $GITHUB_ENV
-              echo "BOOTC_bootloader=systemd" >> $GITHUB_ENV
-            ;;
-
-            ostree)
-              echo "BOOTC_variant=${{ matrix.variant }}" >> $GITHUB_ENV
-              echo "BOOTC_bootloader=grub" >> $GITHUB_ENV
-            ;;
-          esac
-
-          if [ "${{ matrix.variant }}" = "composefs-sealeduki-sdboot" ]; then
-            BUILDROOTBASE=$(just pullspec-for-os buildroot-base ${{ matrix.test_os }})
-            echo "BOOTC_buildroot_base=${BUILDROOTBASE}" >> $GITHUB_ENV
-          fi
+          echo "BOOTC_bootloader=${{ matrix.bootloader }}" >> $GITHUB_ENV
+          echo "BOOTC_boot_type=${{ matrix.boot_type }}" >> $GITHUB_ENV
+          echo "BOOTC_seal_state=${{ matrix.seal_state }}" >> $GITHUB_ENV
 
       - name: Download package artifacts
         uses: actions/download-artifact@v7
@@ -241,14 +231,14 @@ jobs:
       - name: Unit and container integration tests
         run: just test-container
 
-      - name: Validate composefs digest (sealed UKI only)
-        if: matrix.variant == 'composefs-sealeduki-sdboot'
+      - name: Validate composefs digest (UKI only)
+        if: matrix.boot_type == 'uki'
         run: just validate-composefs-digest
 
       - name: Run TMT integration tests
         run: |
-          if [[ "${{ matrix.variant }}" = composefs* ]]; then
-            just "test-${{ matrix.variant }}" "${{ matrix.filesystem }}"
+          if [[ "${{ matrix.variant }}" = composefs ]]; then
+            just test-composefs "${{ matrix.bootloader }}"  "${{ matrix.filesystem }}" "${{ matrix.boot_type }}" "${{ matrix.seal_state }}"
           else
             just test-tmt integration
           fi
@@ -259,7 +249,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: tmt-log-PR-${{ github.event.number }}-${{ matrix.test_os }}-${{ matrix.variant }}-${{ matrix.filesystem }}-${{ env.ARCH }}
+          name: tmt-log-PR-${{ github.event.number }}-${{ matrix.test_os }}-${{ matrix.variant }}-${{ matrix.boot_type }}-${{ matrix.filesystem }}-${{ matrix.seal_state }}-${{ env.ARCH }}
           path: /var/tmp/tmt
 
   # Test bootc install on Fedora CoreOS (separate job to avoid disk space issues

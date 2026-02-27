@@ -13,6 +13,13 @@ secrets=$1
 shift
 allow_missing_verity=$1
 shift
+seal_state=$1
+shift
+
+if [[ $seal_state == "sealed" && $allow_missing_verity == "true" ]]; then
+    echo "Cannot have missing verity with sealed UKI" >&2
+    exit 1
+fi
 
 # Find the kernel version (needed for output filename)
 kver=$(bootc container inspect --rootfs "${target}" --json | jq -r '.kernel.version')
@@ -28,10 +35,12 @@ ukifyargs=(--measure
            --json pretty
            --output "${output}/${kver}.efi")
 
-# Signing options, we use sbsign by default
-ukifyargs+=(--signtool sbsign
-            --secureboot-private-key "${secrets}/secureboot_key"
-            --secureboot-certificate "${secrets}/secureboot_cert")
+if [[ $seal_state == "sealed" ]]; then
+    # Signing options, we use sbsign by default
+    ukifyargs+=(--signtool sbsign
+                --secureboot-private-key "${secrets}/secureboot_key"
+                --secureboot-certificate "${secrets}/secureboot_cert")
+fi
 
 # Baseline container ukify options
 containerukifyargs=(--rootfs "${target}")
