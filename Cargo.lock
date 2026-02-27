@@ -201,7 +201,7 @@ dependencies = [
  "bootc-internal-utils",
  "bootc-mount",
  "camino",
- "cap-std-ext",
+ "cap-std-ext 5.0.0",
  "fn-error-context",
  "indoc",
  "libc",

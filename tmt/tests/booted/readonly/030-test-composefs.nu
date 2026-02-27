@@ -39,8 +39,12 @@ if $is_composefs {
     # When not on composefs, run the full test including initialization
     bootc internals test-composefs
     bootc internals cfs --help
-    bootc internals cfs oci pull docker://busybox busybox
-    test -L /sysroot/composefs/streams/refs/busybox
+
+    # We use a separate `/sysroot` as we need rw access to the repo which
+    # we can't get from `bootc internals cfs ...`
+    mkdir /var/tmp/sysroot/composefs
+    bootc internals cfs --insecure --repo /var/tmp/sysroot/composefs oci pull docker://busybox busybox
+    test -L /var/tmp/sysroot/composefs/streams/refs/oci/busybox
 }
 
 tap ok
