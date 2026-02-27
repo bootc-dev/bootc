@@ -106,3 +106,13 @@
   summary: Test bootc rollback functionality through image switch and rollback cycle
   duration: 30m
   test: nu booted/test-rollback.nu
+
+/test-37-install-no-boot-dir:
+  summary: Test bootc install to-filesystem without /boot directory
+  duration: 30m
+  test: nu booted/test-install-no-boot-dir.nu
+
+/test-38-install-bootloader-none:
+  summary: Test bootc install with --bootloader=none
+  duration: 30m
+  test: nu booted/test-install-bootloader-none.nu
