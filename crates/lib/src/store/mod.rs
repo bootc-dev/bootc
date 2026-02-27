@@ -30,6 +30,7 @@ use cap_std_ext::cap_std::fs::{
 use cap_std_ext::dirext::CapStdExtDirExt;
 use fn_error_context::context;
 
+use ocidir::cap_std::ambient_authority;
 use ostree_ext::container_utils::ostree_booted;
 use ostree_ext::prelude::FileExt;
 use ostree_ext::sysroot::SysrootLock;
@@ -418,20 +419,35 @@ impl Storage {
     ///
     /// This lazily opens the composefs repository, creating the directory if needed
     /// and bootstrapping verity settings from the ostree configuration.
-    pub(crate) fn get_ensure_composefs(&self) -> Result<Arc<ComposefsRepository>> {
+    pub(crate) fn get_ensure_composefs(
+        &self,
+        opt_path: Option<Utf8PathBuf>,
+    ) -> Result<Arc<ComposefsRepository>> {
         if let Some(composefs) = self.composefs.get() {
             return Ok(Arc::clone(composefs));
         }
 
-        ensure_composefs_dir(&self.physical_root)?;
+        let cfs_root = match opt_path {
+            Some(path) => {
+                let dir = Dir::open_ambient_dir(&path, ambient_authority())
+                    .with_context(|| format!("Opening {path:?}"))?;
+
+                ensure_composefs_dir(&dir)?;
+
+                dir
+            }
+            None => {
+                ensure_composefs_dir(&self.physical_root)?;
+                self.physical_root.try_clone()?
+            }
+        };
 
         // Bootstrap verity off of the ostree state. In practice this means disabled by
         // default right now.
         let ostree = self.get_ostree()?;
         let ostree_repo = &ostree.repo();
         let ostree_verity = ostree_ext::fsverity::is_verity_enabled(ostree_repo)?;
-        let mut composefs =
-            ComposefsRepository::open_path(self.physical_root.open_dir(COMPOSEFS)?, ".")?;
+        let mut composefs = ComposefsRepository::open_path(cfs_root.open_dir(COMPOSEFS)?, ".")?;
         if !ostree_verity.enabled {
             tracing::debug!("Setting insecure mode for composefs repo");
             composefs.set_insecure(true);

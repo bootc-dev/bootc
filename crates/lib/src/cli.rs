@@ -602,7 +602,12 @@ pub(crate) enum InternalsOpts {
         args: Vec<OsString>,
     },
     /// Ensure that a composefs repository is initialized
-    TestComposefs,
+    TestComposefs {
+        /// The path where to initialize composefs repository
+        /// Will use `/sysroot` if not provided
+        #[clap(long)]
+        path: Option<Utf8PathBuf>,
+    },
     /// Loopback device cleanup helper (internal use only)
     LoopbackCleanupHelper {
         /// Device path to clean up
@@ -1745,10 +1750,10 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
                 )
                 .await
             }
-            InternalsOpts::TestComposefs => {
+            InternalsOpts::TestComposefs { path } => {
                 // This is a stub to be replaced
                 let storage = get_storage().await?;
-                let cfs = storage.get_ensure_composefs()?;
+                let cfs = storage.get_ensure_composefs(path)?;
                 let testdata = b"some test data";
                 let testdata_digest = hex::encode(openssl::sha::sha256(testdata));
                 let mut w = SplitStreamWriter::new(&cfs, 0);
