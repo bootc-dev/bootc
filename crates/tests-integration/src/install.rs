@@ -173,3 +173,77 @@ pub(crate) fn run_alongside(image: &str, mut testargs: libtest_mimic::Arguments)
 
     libtest_mimic::run(&testargs, tests.into()).exit()
 }
+
+#[context("Flat install tests")]
+pub(crate) fn run_flat(image: &str, mut testargs: libtest_mimic::Arguments) -> Result<()> {
+    testargs.test_threads = Some(1);
+    let image: &'static str = String::from(image).leak();
+
+    let tests = [Trial::test("flat install to-filesystem", move || {
+        let sh = &xshell::Shell::new()?;
+        // Create a sparse file and format it as ext4
+        let size = 5 * 1000 * 1000 * 1000u64;
+        let mut tmpdisk = tempfile::NamedTempFile::new_in("/var/tmp")?;
+        tmpdisk.as_file_mut().set_len(size)?;
+        let tmpdisk = tmpdisk.into_temp_path();
+        let tmpdisk_str = tmpdisk.to_str().unwrap();
+
+        // Set up loop device and format
+        let loopdev = cmd!(sh, "sudo losetup --find --show {tmpdisk_str}")
+            .read()?
+            .trim()
+            .to_string();
+        cmd!(sh, "sudo mkfs.ext4 -L root {loopdev}").run()?;
+
+        // Mount the target
+        let tmpdir = tempfile::TempDir::new_in("/var/tmp")?;
+        let target = tmpdir.path().to_str().unwrap();
+        cmd!(sh, "sudo mount {loopdev} {target}").run()?;
+
+        // Run flat install (skip bootloader for CI) and capture result for cleanup
+        let r = (|| -> Result<()> {
+            cmd!(sh, "sudo {BASE_ARGS...} -v {target}:/target {image} bootc install to-filesystem --bootloader=none --flat /target").run()?;
+
+            // Verify flat install marker
+            assert!(
+                std::path::Path::new(target).join("etc/.bootc-flat").exists(),
+                "Missing flat install marker"
+            );
+
+            // Verify no ostree directory was created
+            assert!(
+                !std::path::Path::new(target).join("ostree").exists(),
+                "ostree directory should not exist in flat install"
+            );
+
+            // Verify boot entries exist
+            let boot_entries = std::path::Path::new(target).join("boot/loader/entries");
+            let has_entry = boot_entries.exists()
+                && std::fs::read_dir(&boot_entries)?.any(|e| {
+                    e.ok()
+                        .map(|e| e.file_name().to_string_lossy().contains("flat-"))
+                        .unwrap_or(false)
+                });
+            assert!(has_entry, "No flat BLS entry found in boot/loader/entries");
+
+            // Verify vmlinuz was copied to /boot
+            let has_vmlinuz =
+                std::fs::read_dir(std::path::Path::new(target).join("boot"))?.any(|e| {
+                    e.ok()
+                        .map(|e| e.file_name().to_string_lossy().starts_with("vmlinuz-"))
+                        .unwrap_or(false)
+                });
+            assert!(has_vmlinuz, "No vmlinuz-* found in /boot");
+
+            Ok(())
+        })();
+
+        // Clean up regardless of result
+        let _ = cmd!(sh, "sudo umount --lazy {target}").run();
+        let _ = cmd!(sh, "sudo losetup --detach {loopdev}").run();
+
+        Ok(r?)
+    })];
+
+    libtest_mimic::run(&testargs, tests.into()).exit()
+}

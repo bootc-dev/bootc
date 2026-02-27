@@ -2074,23 +2074,30 @@ async fn flat_install(state: &State, rootfs: &RootSetup) -> Result<()> {
     create_flat_bls_entry(rootfs, &kernel_version, &vmlinuz_boot_path, &initramfs_boot_path)?;
 
     // Step 6: Install bootloader
-    if cfg!(target_arch = "s390x") {
-        let boot_uuid = rootfs
-            .get_boot_uuid()?
-            .or(rootfs.rootfs_uuid.as_deref())
-            .ok_or_else(|| anyhow!("No uuid for boot/root"))?;
-        crate::bootloader::install_via_zipl(&rootfs.device_info, boot_uuid)?;
-    } else {
-        let target_root = rootfs
-            .target_root_path
-            .as_ref()
-            .unwrap_or(&rootfs.physical_root_path);
-        crate::bootloader::install_via_bootupd(
-            &rootfs.device_info,
-            target_root,
-            &state.config_opts,
-            None, // No deployment path for flat installs
-        )?;
+    match state.config_opts.bootloader.as_ref() {
+        Some(crate::spec::Bootloader::None) => {
+            tracing::debug!("Skipping bootloader installation (bootloader=none)");
+        }
+        _ => {
+            if cfg!(target_arch = "s390x") {
+                let boot_uuid = rootfs
+                    .get_boot_uuid()?
+                    .or(rootfs.rootfs_uuid.as_deref())
+                    .ok_or_else(|| anyhow!("No uuid for boot/root"))?;
+                crate::bootloader::install_via_zipl(&rootfs.device_info, boot_uuid)?;
+            } else {
+                let target_root = rootfs
+                    .target_root_path
+                    .as_ref()
+                    .unwrap_or(&rootfs.physical_root_path);
+                crate::bootloader::install_via_bootupd(
+                    &rootfs.device_info,
+                    target_root,
+                    &state.config_opts,
+                    None, // No deployment path for flat installs
+                )?;
+            }
+        }
     }
 
     // Step 7: Write flat install marker
