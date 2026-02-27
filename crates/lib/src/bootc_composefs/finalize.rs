@@ -52,17 +52,35 @@ pub(crate) async fn composefs_backend_finalize(
     storage: &Storage,
     booted_cfs: &BootedComposefs,
 ) -> Result<()> {
+    const COMPOSEFS_FINALIZE_JOURNAL_ID: &str = "0e9d8c7b6a5f4e3d2c1b0a9f8e7d6c5b4";
+
+    tracing::info!(
+        message_id = COMPOSEFS_FINALIZE_JOURNAL_ID,
+        bootc.operation = "finalize",
+        bootc.current_deployment = booted_cfs.cmdline.digest,
+        "Starting composefs staged deployment finalization"
+    );
+
     let host = get_composefs_status(storage, booted_cfs).await?;
 
     let booted_composefs = host.require_composefs_booted()?;
 
     let Some(staged_depl) = host.status.staged.as_ref() else {
-        tracing::debug!("No staged deployment found");
+        tracing::info!(
+            message_id = COMPOSEFS_FINALIZE_JOURNAL_ID,
+            bootc.operation = "finalize",
+            "No staged deployment found"
+        );
         return Ok(());
     };
 
     if staged_depl.download_only {
-        tracing::debug!("Staged deployment is marked download only. Won't finalize");
+        tracing::info!(
+            message_id = COMPOSEFS_FINALIZE_JOURNAL_ID,
+            bootc.operation = "finalize",
+            bootc.download_only = "true",
+            "Staged deployment is marked download only. Won't finalize"
+        );
         return Ok(());
     }
 

@@ -18,8 +18,8 @@ pub(crate) async fn switch_composefs(
     booted_cfs: &BootedComposefs,
 ) -> Result<()> {
     let target = imgref_for_switch(&opts)?;
-    // TODO: Handle in-place
 
+    // TODO: Handle in-place
     let host = get_composefs_status(storage, booted_cfs)
         .await
         .context("Getting composefs deployment status")?;
@@ -38,6 +38,16 @@ pub(crate) async fn switch_composefs(
     let Some(target_imgref) = new_spec.image else {
         anyhow::bail!("Target image is undefined")
     };
+
+    const COMPOSEFS_SWITCH_JOURNAL_ID: &str = "7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d1";
+
+    tracing::info!(
+        message_id = COMPOSEFS_SWITCH_JOURNAL_ID,
+        bootc.operation = "switch",
+        bootc.target_image = target_imgref.to_string(),
+        bootc.apply_mode = opts.apply,
+        "Starting composefs switch operation",
+    );
 
     let repo = &*booted_cfs.repo;
     let (image, img_config) = is_image_pulled(repo, &target_imgref).await?;

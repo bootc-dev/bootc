@@ -18,11 +18,15 @@ base_img := "localhost/bootc"
 # Synthetic upgrade image for testing
 upgrade_img := base_img + "-upgrade"
 
-# Build variant: ostree (default) or composefs-sealeduki-sdboot (sealed UKI)
+# Build variant: ostree (default) or composefs
 variant := env("BOOTC_variant", "ostree")
 bootloader := env("BOOTC_bootloader", "grub")
 # Only used for composefs tests
 filesystem := env("BOOTC_filesystem", "ext4")
+# Only used for composefs tests
+boot_type := env("BOOTC_boot_type", "bls")
+# Only used for composefs tests
+seal_state := env("BOOTC_seal_state", "unsealed")
 # Base container image to build from
 base := env("BOOTC_base", "quay.io/centos-bootc/centos-bootc:stream10")
 # Buildroot base image
@@ -45,6 +49,8 @@ base_buildargs := generic_buildargs + " " + _extra_src_args \
                   + " --build-arg=base=" + base \
                   + " --build-arg=variant=" + variant \
                   + " --build-arg=bootloader=" + bootloader \
+                  + " --build-arg=boot_type=" + boot_type \
+                  + " --build-arg=seal_state=" + seal_state \
                   + " --build-arg=filesystem=" + filesystem # required for bootc container ukify to allow missing fsverity
 buildargs := base_buildargs \
              + " --cap-add=all --security-opt=label=type:container_runtime_t --device /dev/fuse" \
@@ -75,15 +81,15 @@ list-variants:
         Standard bootc image using ostree backend.
         This is the traditional, production-ready configuration.
 
-    composefs-sealeduki-sdboot
-        Sealed composefs image with:
-        - Unified Kernel Image (UKI) containing kernel + initramfs + cmdline
-        - Secure Boot signing (using keys in target/test-secureboot/)
-        - systemd-boot bootloader
-        - composefs digest embedded in kernel cmdline for verified boot
+    composefs (bootloader, filesystem, boot_type, seal_state)
+        Build Composefs image with:
+        - The specified bootloader (grub/systemd)
+        - The specified filesystem (ext4,btrfs,xfs)
+        - The specified boot type (BLS/UKI)
+        - The specified seal state (sealed/unsealed) determining whether we sign the UKI and
+          use secure boot or not
 
-        Use `just build-sealed` as a shortcut, or:
-        just variant=composefs-sealeduki-sdboot build
+    Use `just build-sealed` as shortcut to build a sealed composefs image with systemd-boot as the bootloader
 
     Current Configuration
     =====================
@@ -96,7 +102,7 @@ list-variants:
 # Build a sealed composefs image (alias for variant=composefs-sealeduki-sdboot)
 [group('core')]
 build-sealed:
-    @just --justfile {{justfile()}} variant=composefs-sealeduki-sdboot build
+    @just --justfile {{justfile()}} variant=composefs bootloader=systemd boot_type=uki seal_state=sealed build
 
 # Run tmt integration tests in VMs (e.g. `just test-tmt readonly`)
 [group('core')]
@@ -108,30 +114,31 @@ test-tmt *ARGS: build
 [group('core')]
 test-container: build build-units
     podman run --rm --read-only localhost/bootc-units /usr/bin/bootc-units
-    podman run --rm --env=BOOTC_variant={{variant}} --env=BOOTC_base={{base}} {{base_img}} bootc-integration-tests container
-
-# Build and test sealed composefs images
-[group('core')]
-test-composefs-sealeduki-sdboot filesystem:
-    just variant=composefs-sealeduki-sdboot filesystem={{filesystem}} test-tmt readonly local-upgrade-reboot
+    podman run --rm --env=BOOTC_variant={{variant}} --env=BOOTC_base={{base}} --env=BOOTC_boot_type={{boot_type}} {{base_img}} bootc-integration-tests container
 
 [group('core')]
-test-composefs bootloader filesystem:
-    just variant=composefs bootloader={{bootloader}} filesystem={{filesystem}} \
-        test-tmt --composefs-backend \
-            --bootloader {{bootloader}} \
-            --filesystem {{filesystem}} \
-            integration
+test-composefs bootloader filesystem boot_type seal_state:
+    @if [ "{{seal_state}}" = "sealed" ] && [ "{{filesystem}}" = "xfs" ]; then \
+        echo "Invalid combination: sealed requires filesystem that supports fs-verity (ext4, btrfs)"; \
+        exit 1; \
+    fi
 
-# Build and test composefs images booted using Type1 boot entries and systemd-boot as the bootloader
-[group('core')]
-test-composefs-sdboot filesystem:
-    just test-composefs systemd {{filesystem}}
+    @if [ "{{seal_state}}" = "sealed" ] && [ "{{boot_type}}" != "uki" ]; then \
+        echo "Invalid combination: sealed requires boot_type=uki"; \
+        exit 1; \
+    fi
 
-# Build and test composefs images booted using Type1 boot entries and grub as the bootloader
-[group('core')]
-test-composefs-grub filesystem:
-    just test-composefs grub {{filesystem}}
+    just variant=composefs \
+        bootloader={{bootloader}} \
+        filesystem={{filesystem}} \
+        boot_type={{boot_type}} \
+        seal_state={{seal_state}} \
+            test-tmt-nobuild --composefs-backend \
+                --bootloader={{bootloader}} \
+                --filesystem={{filesystem}} \
+                --seal-state={{seal_state}} \
+                --boot-type={{boot_type}} \
+                $(if [ "{{boot_type}}" = "uki" ]; then echo "readonly"; else echo "integration"; fi)
 
 # Run cargo fmt and clippy checks in container
 [group('core')]

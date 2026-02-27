@@ -187,6 +187,7 @@ use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "install-to-disk")]
 use self::baseline::InstallBlockDeviceOpts;
+use crate::bootc_composefs::status::ComposefsCmdline;
 use crate::bootc_composefs::{boot::setup_composefs_boot, repo::initialize_composefs_repository};
 use crate::boundimage::{BoundImage, ResolvedBoundImage};
 use crate::containerenv::ContainerExecutionInfo;
@@ -1679,10 +1680,12 @@ async fn prepare_install(
     // NOTE: This isn't really 100% accurate 100% of the time as the cmdline can be in an addon
     match kernel {
         Some(k) => match k.k_type {
-            crate::kernel::KernelType::Uki {
-                allow_missing_fsverity,
-                ..
-            } => {
+            crate::kernel::KernelType::Uki { cmdline, .. } => {
+                let allow_missing_fsverity = cmdline.is_some_and(|cmd| {
+                    ComposefsCmdline::search_in_cmdline(&cmd)
+                        .is_some_and(|cfs_cmdline| cfs_cmdline.allow_missing_fsverity)
+                });
+
                 if !allow_missing_fsverity {
                     anyhow::ensure!(
                         root_filesystem.supports_fsverity(),
@@ -1703,16 +1706,13 @@ async fn prepare_install(
     // If `--allow-missing-verity` is already passed via CLI, don't modify
     if composefs_options.composefs_backend && !composefs_options.allow_missing_verity && !is_uki {
         composefs_options.allow_missing_verity = !root_filesystem.supports_fsverity();
-
-        tracing::debug!(
-            "Missing fsverity {}",
-            if composefs_options.allow_missing_verity {
-                "allowed"
-            } else {
-                "not allowed"
-            }
-        );
     }
+
+    tracing::info!(
+        allow_missing_fsverity = composefs_options.allow_missing_verity,
+        uki = is_uki,
+        "ComposeFS install prep",
+    );
 
     if let Some(crate::spec::Bootloader::None) = config_opts.bootloader {
         if cfg!(target_arch = "s390x") {

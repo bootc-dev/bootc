@@ -315,6 +315,17 @@ pub(crate) async fn delete_composefs_deployment(
     storage: &Storage,
     booted_cfs: &BootedComposefs,
 ) -> Result<()> {
+    const COMPOSEFS_DELETE_JOURNAL_ID: &str = "2a1f0e9d8c7b6a5f4e3d2c1b0a9f8e7d6";
+
+    tracing::info!(
+        message_id = COMPOSEFS_DELETE_JOURNAL_ID,
+        bootc.operation = "delete",
+        bootc.current_deployment = booted_cfs.cmdline.digest,
+        bootc.target_deployment = deployment_id,
+        "Starting composefs deployment deletion for {}",
+        deployment_id
+    );
+
     let host = get_composefs_status(storage, booted_cfs).await?;
 
     let booted = host.require_composefs_booted()?;
