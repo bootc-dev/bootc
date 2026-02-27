@@ -177,6 +177,8 @@ RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp
 FROM tools as sealed-uki
 ARG variant
 ARG filesystem
+ARG seal_state
+ARG boot_type
 # Install our bootc package (only needed for the compute-composefs-digest command)
 RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
     --mount=type=bind,from=packages,src=/,target=/run/packages \
@@ -194,20 +196,21 @@ if [[ $filesystem == "xfs" ]]; then
     allow_missing_verity=true
 fi
 
-if test "${variant}" = "composefs-sealeduki-sdboot"; then
-  /run/packaging/seal-uki /run/target /out /run/secrets $allow_missing_verity
+if test "${boot_type}" = "uki"; then
+  /run/packaging/seal-uki /run/target /out /run/secrets $allow_missing_verity $seal_state
 fi
 EORUN
 
 # And now the final image
 FROM base-penultimate
 ARG variant
+ARG boot_type
 # Copy the sealed UKI and finalize the image (remove raw kernel, create symlinks)
 RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
     --mount=type=bind,from=packaging,src=/,target=/run/packaging \
     --mount=type=bind,from=sealed-uki,src=/,target=/run/sealed-uki <<EORUN
 set -xeuo pipefail
-if test "${variant}" = "composefs-sealeduki-sdboot"; then
+if test "${boot_type}" = "uki"; then
   /run/packaging/finalize-uki /run/sealed-uki/out
 fi
 EORUN
