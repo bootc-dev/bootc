@@ -4,6 +4,7 @@
 
 use std::collections::HashSet;
 use std::io::{BufRead, Write};
+use std::os::fd::AsFd;
 use std::process::Command;
 
 use anyhow::{Context, Result, anyhow};
@@ -361,6 +362,55 @@ pub(crate) async fn prune_container_store(sysroot: &Storage) -> Result<()> {
     Ok(())
 }
 
+/// Core disk space check: verify that `bytes_to_fetch` fits within available space,
+/// leaving at least `min_free` bytes reserved.
+fn check_disk_space_inner(
+    fd: impl AsFd,
+    bytes_to_fetch: u64,
+    min_free: u64,
+    imgref: &ImageReference,
+) -> Result<()> {
+    let stat = rustix::fs::fstatvfs(fd)?;
+    let bytes_avail = stat.f_bsize.checked_mul(stat.f_bavail).unwrap_or(u64::MAX);
+    let usable = bytes_avail.saturating_sub(min_free);
+    tracing::trace!("bytes_avail: {bytes_avail} min_free: {min_free} usable: {usable}");
+
+    if bytes_to_fetch > usable {
+        anyhow::bail!(
+            "Insufficient free space for {image} (available: {available} required: {required})",
+            available = ostree_ext::glib::format_size(usable),
+            required = ostree_ext::glib::format_size(bytes_to_fetch),
+            image = imgref.image,
+        );
+    }
+    Ok(())
+}
+
+/// Verify there is sufficient disk space to pull an image into the ostree repo.
+/// Respects the repository's configured min-free-space threshold.
+pub(crate) fn check_disk_space_ostree(
+    repo: &ostree::Repo,
+    image_meta: &PreparedImportMeta,
+    imgref: &ImageReference,
+) -> Result<()> {
+    let min_free = repo.min_free_space_bytes().unwrap_or(0);
+    check_disk_space_inner(
+        repo.dfd_borrow(),
+        image_meta.bytes_to_fetch,
+        min_free,
+        imgref,
+    )
+}
+
+/// Verify there is sufficient disk space to pull an image into the composefs store.
+pub(crate) fn check_disk_space_composefs(
+    cfs: &crate::store::ComposefsRepository,
+    image_meta: &PreparedImportMeta,
+    imgref: &ImageReference,
+) -> Result<()> {
+    check_disk_space_inner(cfs.objects_dir()?, image_meta.bytes_to_fetch, 0, imgref)
+}
+
 pub(crate) struct PreparedImportMeta {
     pub imp: ImageImporter,
     pub prep: Box<PreparedImport>,
@@ -550,6 +600,11 @@ pub(crate) async fn pull_unified(
             Ok(existing)
         }
         PreparedPullResult::Ready(prepared_image_meta) => {
+            check_disk_space_composefs(
+                store.get_ensure_composefs()?.as_ref(),
+                &prepared_image_meta,
+                imgref,
+            )?;
             // To avoid duplicate success logs, pass a containers-storage imgref to the importer
             let cs_imgref = ImageReference {
                 transport: "containers-storage".to_string(),
@@ -658,6 +713,8 @@ pub(crate) async fn pull(
             Ok(existing)
         }
         PreparedPullResult::Ready(prepared_image_meta) => {
+            // Check disk space before attempting to pull
+            check_disk_space_ostree(repo, &prepared_image_meta, imgref)?;
             // Log that we're pulling a new image
             const PULLING_NEW_IMAGE_ID: &str = "6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0";
             tracing::info!(
@@ -1366,6 +1423,26 @@ UUID=6907-17CA          /boot/efi               vfat    umask=0077,shortname=win
         tempdir.atomic_write("etc/fstab", default)?;
         fixup_etc_fstab(&tempdir).unwrap();
         assert_eq!(tempdir.read_to_string("etc/fstab")?, modified);
+        Ok(())
+    }
+    #[test]
+    fn test_check_disk_space_inner() -> Result<()> {
+        let td = cap_std_ext::cap_tempfile::TempDir::new(cap_std::ambient_authority())?;
+        let imgref = ImageReference {
+            image: "quay.io/exampleos/exampleos:latest".into(),
+            transport: "registry".into(),
+            signature: None,
+        };
+
+        // 0 bytes needed always passes
+        check_disk_space_inner(&*td, 0, 0, &imgref)?;
+
+        // u64::MAX bytes needed always fails
+        assert!(check_disk_space_inner(&*td, u64::MAX, 0, &imgref).is_err());
+
+        // With min_free consuming all usable space, even a tiny fetch fails
+        assert!(check_disk_space_inner(&*td, 1, u64::MAX, &imgref).is_err());
+
         Ok(())
     }
 }

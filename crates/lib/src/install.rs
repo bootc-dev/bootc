@@ -190,9 +190,7 @@ use self::baseline::InstallBlockDeviceOpts;
 use crate::bootc_composefs::{boot::setup_composefs_boot, repo::initialize_composefs_repository};
 use crate::boundimage::{BoundImage, ResolvedBoundImage};
 use crate::containerenv::ContainerExecutionInfo;
-use crate::deploy::{
-    MergeState, PreparedImportMeta, PreparedPullResult, prepare_for_pull, pull_from_prepared,
-};
+use crate::deploy::{MergeState, PreparedPullResult, prepare_for_pull, pull_from_prepared};
 use crate::install::config::Filesystem as FilesystemEnum;
 use crate::lsm;
 use crate::progress_jsonl::ProgressWriter;
@@ -1012,27 +1010,6 @@ async fn initialize_ostree_root(state: &State, root_setup: &RootSetup) -> Result
     Ok((storage, has_ostree))
 }
 
-fn check_disk_space(
-    repo_fd: impl AsFd,
-    image_meta: &PreparedImportMeta,
-    imgref: &ImageReference,
-) -> Result<()> {
-    let stat = rustix::fs::fstatvfs(repo_fd)?;
-    let bytes_avail: u64 = stat.f_bsize * stat.f_bavail;
-    tracing::trace!("bytes_avail: {bytes_avail}");
-
-    if image_meta.bytes_to_fetch > bytes_avail {
-        anyhow::bail!(
-            "Insufficient free space for {image} (available: {bytes_avail} required: {bytes_to_fetch})",
-            bytes_avail = ostree_ext::glib::format_size(bytes_avail),
-            bytes_to_fetch = ostree_ext::glib::format_size(image_meta.bytes_to_fetch),
-            image = imgref.image,
-        );
-    }
-
-    Ok(())
-}
-
 #[context("Creating ostree deployment")]
 async fn install_container(
     state: &State,
@@ -1100,7 +1077,7 @@ async fn install_container(
     let pulled_image = match prepared {
         PreparedPullResult::AlreadyPresent(existing) => existing,
         PreparedPullResult::Ready(image_meta) => {
-            check_disk_space(root_setup.physical_root.as_fd(), &image_meta, &spec_imgref)?;
+            crate::deploy::check_disk_space_ostree(repo, &image_meta, &spec_imgref)?;
             pull_from_prepared(&spec_imgref, false, ProgressWriter::default(), *image_meta).await?
         }
     };
