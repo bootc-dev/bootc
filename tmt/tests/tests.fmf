@@ -102,6 +102,11 @@
   duration: 10m
   test: python3 booted/test-user-agent.py
 
+/test-35-upgrade-preflight-disk-check:
+  summary: Verify pre-flight disk space check rejects images with inflated layer sizes
+  duration: 20m
+  test: nu booted/test-upgrade-preflight-disk-check.nu
+
 /test-36-rollback:
   summary: Test bootc rollback functionality through image switch and rollback cycle
   duration: 30m
