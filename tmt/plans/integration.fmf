@@ -188,4 +188,18 @@ execute:
     how: fmf
     test:
       - /tmt/tests/tests/test-36-rollback
+
+/plan-37-install-no-boot-dir:
+  summary: Test bootc install to-filesystem without /boot directory
+  discover:
+    how: fmf
+    test:
+      - /tmt/tests/tests/test-37-install-no-boot-dir
+
+/plan-38-install-bootloader-none:
+  summary: Test bootc install with --bootloader=none
+  discover:
+    how: fmf
+    test:
+      - /tmt/tests/tests/test-38-install-bootloader-none
 # END GENERATED PLANS
