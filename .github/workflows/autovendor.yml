@@ -18,7 +18,7 @@ jobs:
         run: cargo install cargo-vendor-filterer
       - name: Run
         run: mkdir -p target && cd crates/cli && cargo vendor-filterer --format=tar.zstd --prefix=vendor/ ../../target/vendor.tar.zst
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v7
         with:
           name: vendor.tar.zst
           path: target/vendor.tar.zst
