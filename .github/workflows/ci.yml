@@ -145,7 +145,7 @@ jobs:
         run: just check-buildsys
 
       - name: Upload package artifacts
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: packages-${{ matrix.test_os }}
           path: target/packages/*.rpm
@@ -225,7 +225,7 @@ jobs:
           fi
 
       - name: Download package artifacts
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: packages-${{ matrix.test_os }}
           path: target/packages/
@@ -257,7 +257,7 @@ jobs:
 
       - name: Archive TMT logs
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: tmt-log-PR-${{ github.event.number }}-${{ matrix.test_os }}-${{ matrix.variant }}-${{ matrix.filesystem }}-${{ env.ARCH }}
           path: /var/tmp/tmt
@@ -285,7 +285,7 @@ jobs:
           echo "BOOTC_variant=ostree" >> $GITHUB_ENV
 
       - name: Download package artifacts
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: packages-fedora-43
           path: target/packages/
@@ -299,7 +299,7 @@ jobs:
 
       - name: Archive TMT logs
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: tmt-log-PR-${{ github.event.number }}-fedora-43-coreos-${{ env.ARCH }}
           path: /var/tmp/tmt
