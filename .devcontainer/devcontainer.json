@@ -13,13 +13,16 @@
   },
   "features": {},
   "runArgs": [
-    // Minimal security options for nested podman (avoids --privileged):
-    // - label=disable: Required for mounting /proc in nested user namespace
-    // - unmask=/proc/*: Allows access to /proc paths needed for nested containers
+    // In general we hope that the outer environment has set up
+    // a user namespace to keep this secure.
+    "--cap-add=all",
+    // Required for mounting /proc in nested user namespace
     "--security-opt", "label=disable",
+    // Allows access to /proc paths needed for nested containers
     "--security-opt", "unmask=/proc/*",
     // Device access for nested containers and VMs
     "--device", "/dev/net/tun",
+    // I always want KVM
     "--device", "/dev/kvm"
   ],
   "postCreateCommand": {
