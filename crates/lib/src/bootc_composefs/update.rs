@@ -11,6 +11,7 @@ use ostree_ext::container::ManifestDiff;
 use crate::{
     bootc_composefs::{
         boot::{BootSetupType, BootType, setup_composefs_bls_boot, setup_composefs_uki_boot},
+        gc::composefs_gc,
         repo::{get_imgref, pull_composefs_repo},
         service::start_finalize_stated_svc,
         soft_reboot::prepare_soft_reboot_composefs,
@@ -301,6 +302,10 @@ pub(crate) async fn do_upgrade(
         booted_cfs.cmdline.allow_missing_fsverity,
     )
     .await?;
+
+    // We take into account the staged bootloader entries so this won't remove
+    // the currently staged entry
+    composefs_gc(storage, booted_cfs, false).await?;
 
     apply_upgrade(storage, booted_cfs, &id.to_hex(), opts).await
 }

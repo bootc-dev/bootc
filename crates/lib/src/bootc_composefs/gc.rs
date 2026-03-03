@@ -13,7 +13,7 @@ use rustix::fs::readlink;
 
 use crate::{
     bootc_composefs::{
-        boot::{BootType, BOOTC_UKI_DIR, VMLINUZ},
+        boot::{BOOTC_UKI_DIR, BootType, VMLINUZ},
         delete::{delete_image, delete_staged, delete_state_dir},
         status::{get_composefs_status, get_imginfo, list_bootloader_entries},
     },

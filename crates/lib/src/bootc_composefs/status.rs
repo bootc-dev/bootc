@@ -16,6 +16,7 @@ use crate::{
     },
     composefs_consts::{
         COMPOSEFS_CMDLINE, ORIGIN_KEY_BOOT_DIGEST, TYPE1_ENT_PATH, TYPE1_ENT_PATH_STAGED, USER_CFG,
+        USER_CFG_STAGED,
     },
     install::EFI_LOADER_INFO,
     parsers::{
@@ -145,14 +146,45 @@ pub(crate) fn composefs_booted() -> Result<Option<&'static ComposefsCmdline>> {
     Ok(r.as_ref())
 }
 
-// Need str to store lifetime
+/// Get the staged grub UKI menuentries
+pub(crate) fn get_sorted_grub_uki_boot_entries_staged<'a>(
+    boot_dir: &Dir,
+    str: &'a mut String,
+) -> Result<Vec<MenuEntry<'a>>> {
+    get_sorted_grub_uki_boot_entries_helper(boot_dir, str, true)
+}
+
+/// Get the grub UKI menuentries
 pub(crate) fn get_sorted_grub_uki_boot_entries<'a>(
     boot_dir: &Dir,
     str: &'a mut String,
 ) -> Result<Vec<MenuEntry<'a>>> {
-    let mut file = boot_dir
-        .open(format!("grub2/{USER_CFG}"))
-        .with_context(|| format!("Opening {USER_CFG}"))?;
+    get_sorted_grub_uki_boot_entries_helper(boot_dir, str, false)
+}
+
+// Need str to store lifetime
+fn get_sorted_grub_uki_boot_entries_helper<'a>(
+    boot_dir: &Dir,
+    str: &'a mut String,
+    staged: bool,
+) -> Result<Vec<MenuEntry<'a>>> {
+    let file = if staged {
+        boot_dir
+            // As the staged entry might not exist
+            .open_optional(format!("grub2/{USER_CFG_STAGED}"))
+            .with_context(|| format!("Opening {USER_CFG_STAGED}"))?
+    } else {
+        let f = boot_dir
+            .open(format!("grub2/{USER_CFG}"))
+            .with_context(|| format!("Opening {USER_CFG}"))?;
+
+        Some(f)
+    };
+
+    let Some(mut file) = file else {
+        return Ok(Vec::new());
+    };
+
     file.read_to_string(str)?;
     parse_grub_menuentry_file(str)
 }
@@ -258,8 +290,13 @@ pub(crate) fn list_bootloader_entries(storage: &Storage) -> Result<Vec<String>> 
                 let mut s = String::new();
                 let boot_entries = get_sorted_grub_uki_boot_entries(boot_dir, &mut s)?;
 
+                let mut staged = String::new();
+                let boot_entries_staged =
+                    get_sorted_grub_uki_boot_entries_staged(boot_dir, &mut staged)?;
+
                 boot_entries
                     .into_iter()
+                    .chain(boot_entries_staged)
                     .map(|entry| entry.get_verity())
                     .collect::<Result<Vec<_>, _>>()?
             } else {
@@ -269,7 +306,7 @@ pub(crate) fn list_bootloader_entries(storage: &Storage) -> Result<Vec<String>> 
 
         Bootloader::Systemd => list_type1_entries(boot_dir)?,
 
-        Bootloader::None => unreachable!("Checked at install time")
+        Bootloader::None => unreachable!("Checked at install time"),
     };
 
     Ok(entries)
