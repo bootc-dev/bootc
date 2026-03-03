@@ -173,6 +173,10 @@ use cap_std_ext::cap_tempfile::TempDir;
 use cap_std_ext::cmdext::CapStdExtCommandExt;
 use cap_std_ext::prelude::CapStdExtDirExt;
 use clap::ValueEnum;
+use composefs::fs::write_to_path;
+use composefs_boot::bootloader::{BootEntry, get_boot_resources};
+use composefs_boot::selabel;
+use composefs_oci::image::create_filesystem as create_composefs_filesystem;
 use fn_error_context::context;
 use ostree::gio;
 use ostree_ext::ostree;
@@ -235,6 +239,9 @@ const DEFAULT_REPO_CONFIG: &[(&str, &str)] = &[
 
 /// Kernel argument used to specify we want the rootfs mounted read-write by default
 pub(crate) const RW_KARG: &str = "rw";
+
+/// Marker file written to the target root to indicate a flat (non-ostree) install was performed.
+pub(crate) const FLAT_INSTALL_MARKER: &str = "etc/.bootc-flat";
 
 #[derive(clap::Args, Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct InstallTargetOpts {
@@ -486,6 +493,15 @@ pub(crate) struct InstallTargetFilesystemOpts {
     /// is then the responsibility of the invoking code to perform those operations.
     #[clap(long)]
     pub(crate) skip_finalize: bool,
+
+    /// Install in "flat" mode: the container rootfs is written to the target filesystem
+    /// as a regular writable directory tree (no composefs overlay at boot time). This is
+    /// experimental. Post-install, bootc day-2 operations (upgrade, rollback, etc.) are
+    /// unavailable on the installed system. A composefs repository is created at
+    /// `/sysroot/composefs` as an intermediate step; it can be removed post-install or
+    /// retained to enable future conversion to immutable mode.
+    #[clap(long)]
+    pub(crate) flat: bool,
 }
 
 #[derive(Debug, Clone, clap::Parser, PartialEq, Eq)]
@@ -1263,6 +1279,8 @@ pub(crate) struct RootSetup {
     skip_finalize: bool,
     boot: Option<MountSpec>,
     pub(crate) kargs: CmdlineOwned,
+    /// If true, perform a flat installation (no ostree/composefs)
+    pub(crate) flat: bool,
 }
 
 fn require_boot_uuid(spec: &MountSpec) -> Result<&str> {
@@ -1793,29 +1811,30 @@ async fn install_with_sysroot(
         .context("Opening deployment dir")?;
     let postfetch = PostFetchState::new(state, &deployment_dir)?;
 
+    // Install bootloader, handling architecture-specific requirements
+    let target_root = rootfs
+        .target_root_path
+        .as_ref()
+        .unwrap_or(&rootfs.physical_root_path);
+
     if cfg!(target_arch = "s390x") {
         // TODO: Integrate s390x support into install_via_bootupd
-        crate::bootloader::install_via_zipl(&rootfs.device_info, boot_uuid)?;
+        install_bootloader_via_zipl(&rootfs.device_info, boot_uuid)?;
     } else {
-        match postfetch.detected_bootloader {
-            Bootloader::Grub => {
-                crate::bootloader::install_via_bootupd(
-                    &rootfs.device_info,
-                    &rootfs
-                        .target_root_path
-                        .clone()
-                        .unwrap_or(rootfs.physical_root_path.clone()),
-                    &state.config_opts,
-                    Some(&deployment_path.as_str()),
-                )?;
-            }
-            Bootloader::Systemd => {
-                anyhow::bail!("bootupd is required for ostree-based installs");
-            }
-            Bootloader::None => {
-                tracing::debug!("Skip bootloader installation due set to None");
-            }
-        }
+        // For ostree installs, use the detected bootloader; otherwise use configured bootloader
+        let bootloader = match postfetch.detected_bootloader {
+            Bootloader::Grub => Some(Bootloader::Grub),
+            Bootloader::Systemd => anyhow::bail!("bootupd is required for ostree-based installs"),
+            Bootloader::None => Some(Bootloader::None),
+        };
+        install_bootloader(
+            &rootfs.device_info,
+            Some(boot_uuid),
+            target_root,
+            &state.config_opts,
+            Some(&deployment_path.as_str()),
+            bootloader.as_ref(),
+        )?;
     }
     tracing::debug!("Installed bootloader");
 
@@ -1834,6 +1853,90 @@ async fn install_with_sysroot(
             crate::boundimage::pull_images_impl(c_storage, bound_images)
                 .await
                 .context("pulling bound images")?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Install the bootloader using bootupd.
+///
+/// This is a helper to reduce duplication between ostree and flat installs.
+///
+/// # Arguments
+/// * `device_info` - Device information for the target
+/// * `target_root` - Path to the target root filesystem
+/// * `config_opts` - Configuration options
+/// * `deployment_path` - Optional deployment path for ostree-based installs
+#[context("Installing bootloader via bootupd")]
+fn install_bootloader_via_bootupd(
+    device_info: &bootc_blockdev::Device,
+    target_root: &Utf8PathBuf,
+    config_opts: &InstallConfigOpts,
+    deployment_path: Option<&str>,
+) -> Result<()> {
+    crate::bootloader::install_via_bootupd(device_info, target_root, config_opts, deployment_path)
+}
+
+/// Install the bootloader using zipl (s390x architecture).
+///
+/// # Arguments
+/// * `device_info` - Device information for the target
+/// * `boot_uuid` - Boot UUID (required for zipl)
+#[context("Installing bootloader via zipl")]
+fn install_bootloader_via_zipl(
+    device_info: &bootc_blockdev::Device,
+    boot_uuid: &str,
+) -> Result<()> {
+    crate::bootloader::install_via_zipl(device_info, boot_uuid)
+}
+
+/// Install the bootloader, handling both s390x (zipl) and other architectures (bootupd).
+///
+/// This helper consolidates the bootloader installation logic to reduce duplication
+/// between ostree and flat installs.
+///
+/// # Arguments
+/// * `device_info` - Device information for the target
+/// * `boot_uuid` - Boot UUID (required for zipl on s390x)
+/// * `target_root` - Path to the target root filesystem
+/// * `config_opts` - Configuration options
+/// * `deployment_path` - Optional deployment path for ostree-based installs
+/// * `bootloader_override` - Optional bootloader override (None uses default behavior)
+#[context("Installing bootloader")]
+fn install_bootloader(
+    device_info: &bootc_blockdev::Device,
+    boot_uuid: Option<&str>,
+    target_root: &Utf8PathBuf,
+    config_opts: &InstallConfigOpts,
+    deployment_path: Option<&str>,
+    bootloader_override: Option<&Bootloader>,
+) -> Result<()> {
+    let default_bootloader = Bootloader::default();
+    let bootloader = bootloader_override.unwrap_or(
+        &config_opts
+            .bootloader
+            .as_ref()
+            .unwrap_or(&default_bootloader),
+    );
+
+    match bootloader {
+        Bootloader::None => {
+            tracing::debug!("Skipping bootloader installation (bootloader=none)");
+        }
+        _ => {
+            if cfg!(target_arch = "s390x") {
+                let boot_uuid =
+                    boot_uuid.ok_or_else(|| anyhow!("Boot UUID required for zipl on s390x"))?;
+                install_bootloader_via_zipl(device_info, boot_uuid)?;
+            } else {
+                install_bootloader_via_bootupd(
+                    device_info,
+                    target_root,
+                    config_opts,
+                    deployment_path,
+                )?;
+            }
         }
     }
 
@@ -1874,6 +1977,215 @@ impl BoundImages {
 
         Ok(bound_images)
     }
+}
+
+/// Write a BLS entry for a flat (non-ostree) installation.
+#[context("Creating flat BLS entry")]
+fn create_flat_bls_entry(
+    rootfs: &RootSetup,
+    kargs: CmdlineOwned,
+    kernel_version: &str,
+    vmlinuz_boot_path: &Utf8PathBuf,
+    initramfs_boot_path: &Utf8PathBuf,
+) -> Result<()> {
+    use crate::parsers::bls_config::{BLSConfig, BLSConfigType};
+
+    let mut cfg = BLSConfig::default();
+    cfg.with_title(format!("Linux {kernel_version}"))
+        .with_version(kernel_version.to_string())
+        .with_cfg(BLSConfigType::NonEFI {
+            linux: vmlinuz_boot_path.clone(),
+            initrd: vec![initramfs_boot_path.clone()],
+            options: Some(kargs),
+        });
+
+    let entry_path = format!("boot/loader/entries/flat-{kernel_version}.conf");
+    rootfs
+        .physical_root
+        .create_dir_all("boot/loader/entries")
+        .context("Creating boot/loader/entries")?;
+
+    let content = format!("{cfg}");
+    rootfs
+        .physical_root
+        .atomic_write(&entry_path, content.as_bytes())
+        .with_context(|| format!("Writing BLS entry {entry_path}"))?;
+
+    tracing::debug!("Wrote BLS entry: {entry_path}");
+    Ok(())
+}
+
+/// Copy a RegularFile from a composefs repository to a destination path using streaming.
+///
+/// This function handles both inline files (small files stored in the metadata)
+/// and external files (stored in the object store), using streaming I/O to avoid
+/// loading large files entirely into memory.
+///
+/// # Arguments
+/// * `file` - The RegularFile to copy
+/// * `repo` - The composefs repository
+/// * `dest_dir` - Destination directory
+/// * `dest_path` - Destination path relative to dest_dir
+#[context("Copying regular file to {dest_path}")]
+fn copy_regular_file<ObjectID: FsVerityHashValue>(
+    file: &composefs::tree::RegularFile<ObjectID>,
+    repo: &composefs::repository::Repository<ObjectID>,
+    dest_dir: &Dir,
+    dest_path: &str,
+) -> Result<()> {
+    use composefs::tree::RegularFile;
+
+    match file {
+        RegularFile::Inline(data) => {
+            // For inline files (small), just write directly
+            dest_dir
+                .atomic_write(dest_path, data.as_ref())
+                .context("Writing inline file")?;
+        }
+        RegularFile::External(id, _size) => {
+            // For external files, stream from the object store
+            let mut reader = std::fs::File::from(repo.open_object(id)?);
+            dest_dir
+                .atomic_replace_with(dest_path, |writer| -> Result<(), std::io::Error> {
+                    std::io::copy(&mut reader, writer)?;
+                    Ok(())
+                })
+                .context("Streaming external file")?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Perform a flat (non-ostree) installation.
+///
+/// The approach here is to:
+/// 1. Pull the image into a composefs repository at `composefs/` on the target.
+///    This reuses composefs-rs's SELinux labeling support and kernel installation flow.
+///    The composefs repo is preserved at `/sysroot/composefs`; users who want to convert
+///    to immutable composefs mode later can do so, and anyone who doesn't want the extra
+///    metadata can simply `rm -rf /sysroot/composefs`.
+/// 2. Check out the filesystem from the composefs repo to the target using `write_to_path`,
+///    which supports reflink copies on filesystems that enable it (btrfs, XFS).
+/// 3. Write the kernel and initramfs to `/boot/` from the composefs repo objects.
+/// 4. Create a standard BLS entry pointing at `root=UUID=...` (not a composefs overlay).
+#[context("Performing flat install")]
+async fn flat_install(state: &State, rootfs: &RootSetup) -> Result<()> {
+    println!("Installing in flat mode (experimental)");
+
+    // Step 1: Pull the image into the composefs repository on the target.
+    // allow_missing_fsverity=true because we don't use fsverity at boot time in flat mode.
+    let (image_id, _verity) = initialize_composefs_repository(state, rootfs, true).await?;
+
+    // Step 2: Build the filesystem tree from the pulled image.
+    // Set insecure=true to match the allow_missing_fsverity used during pull above;
+    // flat mode targets (e.g. ext4) typically don't support fs-verity.
+    let mut repo = crate::bootc_composefs::repo::open_composefs_repo(&rootfs.physical_root)?;
+    repo.set_insecure(true);
+    let mut fs = create_composefs_filesystem(&repo, &image_id, None)?;
+
+    // Step 3: Apply SELinux labels from the image's file_contexts.
+    // Returns true if a policy was found and labels applied, false if no policy was found.
+    selabel::selabel(&mut fs, &repo).context("Applying SELinux labels")?;
+
+    // Step 4: Extract kernel/initramfs boot entries from the composefs tree.
+    let boot_entries = get_boot_resources(&fs, &repo)?;
+    let vmlinuz_entry = boot_entries
+        .into_iter()
+        .find_map(|e| match e {
+            BootEntry::UsrLibModulesVmLinuz(v) => Some(v),
+            _ => None,
+        })
+        .ok_or_else(|| anyhow!("No vmlinuz kernel found in flat install image"))?;
+    let kernel_version = vmlinuz_entry.kver.as_ref().to_owned();
+
+    // Step 5: Check out the filesystem to the target directory.
+    // On reflink-capable filesystems (btrfs, XFS) this efficiently shares blocks
+    // with the composefs object store.
+    // Note: write_to_path is synchronous; bootc uses a single-threaded tokio runtime
+    // so we call it directly rather than via block_in_place (which requires multi-threaded).
+    let target_std = rootfs.physical_root_path.as_std_path().to_owned();
+    write_to_path(&repo, &fs.root, &target_std)
+        .context("Checking out container rootfs to target")?;
+
+    // Step 6: Write vmlinuz and initramfs to /boot/ on the target.
+    let vmlinuz_dest = format!("boot/vmlinuz-{kernel_version}");
+    rootfs
+        .physical_root
+        .create_dir_all("boot")
+        .context("Creating boot directory")?;
+
+    // Copy vmlinuz using streaming to avoid loading entire file into memory
+    copy_regular_file(
+        &vmlinuz_entry.vmlinuz,
+        &repo,
+        &rootfs.physical_root,
+        &vmlinuz_dest,
+    )
+    .with_context(|| format!("Writing {vmlinuz_dest}"))?;
+
+    let initramfs_boot_path = Utf8PathBuf::from(format!("/boot/initramfs-{kernel_version}.img"));
+    if let Some(initramfs) = &vmlinuz_entry.initramfs {
+        let initramfs_dest = format!("boot/initramfs-{kernel_version}.img");
+        // Copy initramfs using streaming to avoid loading entire file into memory
+        copy_regular_file(initramfs, &repo, &rootfs.physical_root, &initramfs_dest)
+            .with_context(|| format!("Writing {initramfs_dest}"))?;
+    } else {
+        crate::utils::medium_visibility_warning(
+            "No initramfs found in image; boot may require manual initramfs generation",
+        );
+    }
+
+    // Step 7: Create BLS entry.
+    // Assemble kargs: root/boot filesystem kargs, install config kargs,
+    // kargs.d from the container image, then CLI kargs.
+    // This mirrors the kargs assembly in ostree_install (keep in sync).
+    let mut kargs = rootfs.kargs.clone();
+    if let Some(install_config_kargs) = state.install_config.as_ref().and_then(|c| c.kargs.as_ref())
+    {
+        for karg in install_config_kargs {
+            kargs.extend(&Cmdline::from(karg.as_str()));
+        }
+    }
+    let kargsd =
+        crate::bootc_kargs::get_kargs_in_root(&rootfs.physical_root, std::env::consts::ARCH)?;
+    kargs.extend(&kargsd);
+    if let Some(cli_kargs) = state.config_opts.karg.as_ref() {
+        for karg in cli_kargs {
+            kargs.extend(karg);
+        }
+    }
+    let vmlinuz_boot_path = Utf8PathBuf::from(format!("/boot/vmlinuz-{kernel_version}"));
+    create_flat_bls_entry(
+        rootfs,
+        kargs,
+        &kernel_version,
+        &vmlinuz_boot_path,
+        &initramfs_boot_path,
+    )?;
+
+    // Step 8: Install bootloader.
+    let boot_uuid = rootfs.get_boot_uuid()?.or(rootfs.rootfs_uuid.as_deref());
+    let target_root = rootfs
+        .target_root_path
+        .as_ref()
+        .unwrap_or(&rootfs.physical_root_path);
+    install_bootloader(
+        &rootfs.device_info,
+        boot_uuid,
+        target_root,
+        &state.config_opts,
+        None, // deployment_path (not used for flat installs)
+        state.config_opts.bootloader.as_ref(),
+    )?;
+
+    // Step 9: Write flat install marker.
+    rootfs
+        .physical_root
+        .atomic_write(FLAT_INSTALL_MARKER, b"")
+        .context("Writing flat install marker")?;
+
+    Ok(())
 }
 
 async fn ostree_install(state: &State, rootfs: &RootSetup, cleanup: Cleanup) -> Result<()> {
@@ -1948,7 +2260,9 @@ async fn install_to_filesystem_impl(
         }
     }
 
-    if state.composefs_options.composefs_backend {
+    if rootfs.flat {
+        flat_install(state, rootfs).await?;
+    } else if state.composefs_options.composefs_backend {
         // Load a fd for the mounted target physical root
 
         let (id, verity) = initialize_composefs_repository(
@@ -2585,6 +2899,7 @@ pub(crate) async fn install_to_filesystem(
         boot,
         kargs,
         skip_finalize,
+        flat: fsopts.flat,
     };
 
     install_to_filesystem_impl(&state, &mut rootfs, cleanup).await?;
@@ -2635,6 +2950,7 @@ pub(crate) async fn install_to_existing_root(opts: InstallToExistingRootOpts) ->
             replace: opts.replace,
             skip_finalize: true,
             acknowledge_destructive: opts.acknowledge_destructive,
+            flat: false,
         },
         source_opts: opts.source_opts,
         target_opts: opts.target_opts,
@@ -3024,6 +3340,62 @@ UUID=boot-uuid /boot ext4 defaults 0 0
             td.write("var/lib/containers/storage/overlay/file.txt", b"data")?;
             assert!(require_dir_contains_only_mounts(&td, "var").is_err());
         }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_create_flat_bls_entry() -> Result<()> {
+        let td = cap_std_ext::cap_tempfile::TempDir::new(cap_std::ambient_authority())?;
+        td.create_dir_all("boot")?;
+
+        let rootfs = RootSetup {
+            #[cfg(feature = "install-to-disk")]
+            luks_device: None,
+            device_info: bootc_blockdev::Device {
+                name: "vda".to_string(),
+                serial: None,
+                model: None,
+                partlabel: None,
+                parttype: None,
+                partuuid: None,
+                partn: None,
+                children: None,
+                size: 0,
+                maj_min: None,
+                start: None,
+                label: None,
+                fstype: None,
+                uuid: None,
+                path: None,
+                pttype: None,
+            },
+            physical_root_path: Utf8PathBuf::from("/test"),
+            physical_root: td.try_clone()?,
+            target_root_path: None,
+            rootfs_uuid: None,
+            skip_finalize: false,
+            boot: None,
+            kargs: CmdlineOwned::from("root=UUID=abc123 rw"),
+            flat: true,
+        };
+
+        let kernel_version = "6.12.0-100.fc41.x86_64";
+        let vmlinuz = Utf8PathBuf::from(format!("/boot/vmlinuz-{kernel_version}"));
+        let initramfs = Utf8PathBuf::from(format!("/boot/initramfs-{kernel_version}.img"));
+
+        let kargs = CmdlineOwned::from("root=UUID=abc123 rw");
+        create_flat_bls_entry(&rootfs, kargs, kernel_version, &vmlinuz, &initramfs)?;
+
+        // Read back the BLS entry and verify its contents
+        let entry_path = format!("boot/loader/entries/flat-{kernel_version}.conf");
+        let content = String::from_utf8(td.read(&entry_path)?)?;
+
+        assert!(content.contains(&format!("title Linux {kernel_version}")));
+        assert!(content.contains(&format!("version {kernel_version}")));
+        assert!(content.contains(&format!("linux /boot/vmlinuz-{kernel_version}")));
+        assert!(content.contains(&format!("initrd /boot/initramfs-{kernel_version}.img")));
+        assert!(content.contains("options root=UUID=abc123 rw"));
 
         Ok(())
     }

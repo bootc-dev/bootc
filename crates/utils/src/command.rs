@@ -1,5 +1,8 @@
 //! Helpers intended for [`std::process::Command`] and related structures.
 
+// Allow unsafe code for prctl FFI declaration
+#![allow(unsafe_code)]
+
 use std::{
     fmt::Write,
     io::{Read, Seek},
@@ -8,6 +11,14 @@ use std::{
 };
 
 use anyhow::{Context, Result};
+
+// prctl constants and extern declaration for parent death signal
+// PR_SET_PDEATHSIG = 1
+const PR_SET_PDEATHSIG: libc::c_int = 1;
+
+unsafe extern "C" {
+    fn prctl(option: libc::c_int, arg2: libc::c_ulong) -> libc::c_int;
+}
 
 /// Helpers intended for [`std::process::Command`].
 pub trait CommandRunExt {
@@ -150,10 +161,13 @@ impl CommandRunExt for Command {
         // SAFETY: This API is safe to call in a forked child.
         unsafe {
             self.pre_exec(|| {
-                rustix::process::set_parent_process_death_signal(Some(
-                    rustix::process::Signal::TERM,
-                ))
-                .map_err(Into::into)
+                // Use prctl directly via libc since rustix removed this API
+                // SIGTERM = 15
+                let ret = prctl(PR_SET_PDEATHSIG, libc::SIGTERM as libc::c_ulong);
+                if ret != 0 {
+                    return Err(std::io::Error::last_os_error().into());
+                }
+                Ok(())
             })
         }
     }

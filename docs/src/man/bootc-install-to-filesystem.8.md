@@ -49,6 +49,10 @@ is currently expected to be empty by default.
 
     The default mode is to "finalize" the target filesystem by invoking `fstrim` and similar operations, and finally mounting it readonly.  This option skips those operations.  It is then the responsibility of the invoking code to perform those operations
 
+**--flat**
+
+    Install in "flat" mode: the container rootfs is written to the target filesystem as a regular writable directory tree (no composefs overlay at boot time). This is experimental. Post-install, bootc day-2 operations (upgrade, rollback, etc.) are unavailable on the installed system. A composefs repository is created at /sysroot/composefs as an intermediate step; it can be removed post-install or retained to enable future conversion to immutable mode
+
 **--source-imgref**=*SOURCE_IMGREF*
 
     Install the system from an explicitly given source

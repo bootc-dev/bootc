@@ -1,3 +1,8 @@
+//! Temporary mount management utilities.
+//!
+//! This module provides the [`TempMount`] type for creating temporary mounts
+//! that are automatically unmounted when dropped.
+
 use std::os::fd::AsFd;
 
 use anyhow::{Context, Result};
@@ -7,8 +12,11 @@ use cap_std_ext::cap_std::{ambient_authority, fs::Dir};
 use fn_error_context::context;
 use rustix::mount::{MountFlags, MoveMountFlags, UnmountFlags, move_mount, unmount};
 
+/// A temporary mount that is automatically unmounted when dropped.
 pub struct TempMount {
+    /// The temporary directory used as the mount point.
     pub dir: tempfile::TempDir,
+    /// The directory file descriptor for the mount.
     pub fd: Dir,
 }
 

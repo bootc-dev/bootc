@@ -17,7 +17,7 @@ anyhow = { workspace = true }
 camino = { workspace = true, features = ["serde1"] }
 fn-error-context = { workspace = true }
 libc = { workspace = true }
-rustix = { workspace = true }
+rustix = { workspace = true, features = ["thread", "net", "fs", "process", "mount"] }
 serde = { workspace = true, features = ["derive"] }
 tracing = { workspace = true }
 tempfile = { workspace = true }
@@ -25,6 +25,3 @@ cap-std-ext = { workspace = true }
 
 [dev-dependencies]
 indoc = { workspace = true }
-
-[lib]
-path = "src/mount.rs"
