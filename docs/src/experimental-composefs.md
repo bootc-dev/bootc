@@ -45,6 +45,22 @@ Sealed images also require:
 - Secure Boot support in the target system firmware
 - A filesystem with fsverity support (e.g., ext4, btrfs) for the root partition
 
+#### Using without Secure Boot
+
+You can use a sealed UKI without Secure Boot enabled. The composefs and mounting
+code is fully orthogonal to Secure Boot - the fsverity digest of the root filesystem
+and all of its contents will still be validated at runtime, which does provide
+an increased level of integrity.
+
+However: nothing validates that root digest itself, meaning any locally running
+code can replace the UKI (e.g. after a container breakout) and fully control
+the next boot.
+
+It is intentional to support booting with Secure Boot disabled, because a
+valid use case is to temporarily disable it in order to test a change locally
+on e.g. one machine, then re-enable it later. However at the current time it
+is not yet streamlined to regenerate the UKI locally.
+
 ### Build Pattern: Compute Digest and Generate UKI in One Stage
 
 The key to building sealed images is using a multi-stage Dockerfile where a separate stage mounts the target rootfs, computes its composefs digest, and generates the signed UKI in one step:
