@@ -39,15 +39,6 @@ let install_cmd = if (tap is_composefs) {
     $"($base_args) --filesystem xfs ./disk.img"
 }
 
-systemd-run -p MountFlags=slave -qdPG -- /bin/sh -c $"
-set -xeuo pipefail
-bootc usr-overlay
-if test -d /sysroot/ostree; then mount --bind /usr/share/empty /sysroot/ostree; fi
-# Note we do keep the other bootupd state
-rm -vrf /usr/lib/bootupd/updates
-# Another bootc install bug, we should not look at this in outside-of-container flows
-rm -vrf /usr/lib/bootc/bound-images.d
-($install_cmd)
-"
+tap run_install $install_cmd
 
 tap ok

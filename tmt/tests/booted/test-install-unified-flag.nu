@@ -26,19 +26,7 @@ def main [] {
     # Disable SELinux enforcement for the install (same as test-install-outside-container)
     setenforce 0
 
-    # Perform the install with unified storage flag
-    # We use systemd-run to handle mount namespace issues
-    systemd-run -p MountFlags=slave -qdPG -- /bin/sh -c $"
-set -xeuo pipefail
-bootc usr-overlay
-if test -d /sysroot/ostree; then mount --bind /usr/share/empty /sysroot/ostree; fi
-# Note we do keep the other bootupd state
-rm -vrf /usr/lib/bootupd/updates
-# Another bootc install bug, we should not look at this in outside-of-container flows
-rm -vrf /usr/lib/bootc/bound-images.d
-# Install with unified storage flag to loopback disk
-bootc install to-disk --disable-selinux --via-loopback --filesystem xfs --experimental-unified-storage --source-imgref ($target_image) ./disk.img
-"
+    tap run_install $"bootc install to-disk --disable-selinux --via-loopback --filesystem xfs --experimental-unified-storage --source-imgref ($target_image) ./disk.img"
 
     # Cleanup
     rm -f disk.img
