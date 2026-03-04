@@ -46,6 +46,7 @@ use crate::bootc_composefs::{
 use crate::deploy::{MergeState, RequiredHostSpec};
 use crate::podstorage::set_additional_image_store;
 use crate::progress_jsonl::{ProgressWriter, RawProgressFd};
+use crate::spec::FilesystemOverlayAccessMode;
 use crate::spec::Host;
 use crate::spec::ImageReference;
 use crate::status::get_host;
@@ -259,6 +260,14 @@ pub(crate) struct StatusOpts {
     /// Include additional fields in human readable format.
     #[clap(long, short = 'v')]
     pub(crate) verbose: bool,
+}
+
+/// Add a transient overlayfs on /usr
+#[derive(Debug, Parser, PartialEq, Eq)]
+pub(crate) struct UsrOverlayOpts {
+    /// Mount the overlayfs as read-only.
+    #[clap(long)]
+    pub(crate) read_only: bool,
 }
 
 #[derive(Debug, clap::Subcommand, PartialEq, Eq)]
@@ -745,7 +754,7 @@ pub(crate) enum Opt {
     ///
     /// Allows temporary package installation that will be discarded on reboot.
     #[clap(alias = "usroverlay")]
-    UsrOverlay,
+    UsrOverlay(UsrOverlayOpts),
     /// Install the running container to a target.
     ///
     /// Takes a container image and installs it to disk in a bootable format.
@@ -1402,13 +1411,16 @@ async fn edit(opts: EditOpts) -> Result<()> {
 }
 
 /// Implementation of `bootc usroverlay`
-async fn usroverlay() -> Result<()> {
+async fn usroverlay(access_mode: FilesystemOverlayAccessMode) -> Result<()> {
     // This is just a pass-through today.  At some point we may make this a libostree API
     // or even oxidize it.
-    Err(Command::new("ostree")
-        .args(["admin", "unlock"])
-        .exec()
-        .into())
+    let args = match access_mode {
+        // In this context, "--transient" means "read-only overlay"
+        FilesystemOverlayAccessMode::ReadOnly => ["admin", "unlock", "--transient"].as_slice(),
+
+        FilesystemOverlayAccessMode::ReadWrite => ["admin", "unlock"].as_slice(),
+    };
+    Err(Command::new("ostree").args(args).exec().into())
 }
 
 /// Perform process global initialization. This should be called as early as possible
@@ -1519,12 +1531,17 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
             Ok(())
         }
         Opt::Edit(opts) => edit(opts).await,
-        Opt::UsrOverlay => {
+        Opt::UsrOverlay(opts) => {
             use crate::store::Environment;
             let env = Environment::detect()?;
+            let access_mode = if opts.read_only {
+                FilesystemOverlayAccessMode::ReadOnly
+            } else {
+                FilesystemOverlayAccessMode::ReadWrite
+            };
             match env {
-                Environment::OstreeBooted => usroverlay().await,
-                Environment::ComposefsBooted(_) => composefs_usr_overlay(),
+                Environment::OstreeBooted => usroverlay(access_mode).await,
+                Environment::ComposefsBooted(_) => composefs_usr_overlay(access_mode),
                 _ => anyhow::bail!("usroverlay only applies on booted hosts"),
             }
         }
