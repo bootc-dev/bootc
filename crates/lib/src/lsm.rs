@@ -387,14 +387,21 @@ pub(crate) fn relabel_recurse(
     relabel_recurse_inner(root, &mut path, as_path.as_mut(), policy)
 }
 
-/// A wrapper for creating a directory, also optionally setting a SELinux label.
-/// The provided `skip` parameter is a device/inode that we will ignore (and not traverse).
+/// Recursively ensure all files under a directory have SELinux labels.
+/// Uses the `walk` API with `noxdev` and `skip_mountpoints` to avoid crossing
+/// mount point boundaries
+/// (e.g. into sysfs, procfs, etc.).
+/// The provided `skip` parameter is a device/inode pair that we will ignore
+/// (and not traverse into).
 pub(crate) fn ensure_dir_labeled_recurse(
     root: &Dir,
     path: &mut Utf8PathBuf,
     policy: &ostree::SePolicy,
     skip: Option<(libc::dev_t, libc::ino64_t)>,
 ) -> Result<()> {
+    use cap_std_ext::dirext::WalkConfiguration;
+    use std::ops::ControlFlow;
+
     // Juggle the cap-std requirement for relative paths vs the libselinux
     // requirement for absolute paths by special casing the empty string "" as "."
     // just for the initial directory enumeration.
@@ -406,6 +413,7 @@ pub(crate) fn ensure_dir_labeled_recurse(
 
     let mut n = 0u64;
 
+    // Label the starting directory itself; the walk API only visits children.
     let metadata = root.symlink_metadata(path_for_read)?;
     match ensure_labeled(root, path, &metadata, policy)? {
         SELinuxLabelState::Unlabeled => {
@@ -414,35 +422,52 @@ pub(crate) fn ensure_dir_labeled_recurse(
         SELinuxLabelState::Unsupported => return Ok(()),
         SELinuxLabelState::Labeled => {}
     }
+    let config = WalkConfiguration::default()
+        .noxdev()
+        .skip_mountpoints()
+        .path_base(path_for_read.as_std_path());
 
-    for ent in root.read_dir(path_for_read)? {
-        let ent = ent?;
-        let metadata = ent.metadata()?;
-        if let Some((skip_dev, skip_ino)) = skip.as_ref().copied() {
-            if (metadata.dev(), metadata.ino()) == (skip_dev, skip_ino) {
-                tracing::debug!("Skipping dev={skip_dev} inode={skip_ino}");
-                continue;
+    root.open_dir(path_for_read)?
+        .walk::<_, anyhow::Error>(&config, |component| {
+            let metadata = component.entry.metadata()?;
+
+            // Check if this entry should be skipped
+            if let Some((skip_dev, skip_ino)) = skip {
+                if (metadata.dev(), metadata.ino()) == (skip_dev, skip_ino) {
+                    tracing::debug!("Skipping dev={skip_dev} inode={skip_ino}");
+                    // For directories, Break skips traversal into the directory
+                    // but continues with the next sibling. For non-directories,
+                    // Break would skip all remaining siblings, so use Continue
+                    // to skip only this entry.
+                    if component.file_type.is_dir() {
+                        return Ok(ControlFlow::Break(()));
+                    } else {
+                        return Ok(ControlFlow::Continue(()));
+                    }
+                }
             }
-        }
-        let name = ent.file_name();
-        let name = name
-            .to_str()
-            .ok_or_else(|| anyhow::anyhow!("Invalid non-UTF-8 filename: {name:?}"))?;
-        path.push(name);
 
-        if metadata.is_dir() {
-            ensure_dir_labeled_recurse(root, path, policy, skip)?;
-        } else {
+            let path = Utf8Path::from_path(component.path)
+                .ok_or_else(|| anyhow::anyhow!("Invalid non-UTF-8 path: {:?}", component.path))?;
+
             match ensure_labeled(root, path, &metadata, policy)? {
                 SELinuxLabelState::Unlabeled => {
                     n += 1;
                 }
-                SELinuxLabelState::Unsupported => break,
+                // We check for Unsupported on the starting directory above,
+                // and the walk uses noxdev + skip_mountpoints to stay on
+                // the same filesystem, so hitting Unsupported here is
+                // unexpected.
+                SELinuxLabelState::Unsupported => {
+                    anyhow::bail!(
+                        "Unexpected SELinuxLabelState::Unsupported during walk at {path}"
+                    );
+                }
                 SELinuxLabelState::Labeled => {}
             }
-        }
-        path.pop();
-    }
+
+            Ok(ControlFlow::Continue(()))
+        })?;
 
     if n > 0 {
         tracing::debug!("Relabeled {n} objects in {path}");

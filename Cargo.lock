@@ -201,7 +201,7 @@ dependencies = [
  "bootc-internal-utils",
  "bootc-mount",
  "camino",
- "cap-std-ext 5.0.0",
+ "cap-std-ext 5.1.1",
  "fn-error-context",
  "indoc",
  "libc",
@@ -219,7 +219,7 @@ version = "0.1.0"
 dependencies = [
  "anstream 1.0.0",
  "anyhow",
- "cap-std-ext 5.0.0",
+ "cap-std-ext 5.1.1",
  "chrono",
  "owo-colors",
  "rustix",
@@ -261,7 +261,7 @@ dependencies = [
  "bootc-tmpfiles",
  "camino",
  "canon-json",
- "cap-std-ext 5.0.0",
+ "cap-std-ext 5.1.1",
  "cfg-if",
  "cfsctl",
  "chrono",
@@ -315,7 +315,7 @@ dependencies = [
  "anyhow",
  "bootc-internal-utils",
  "camino",
- "cap-std-ext 5.0.0",
+ "cap-std-ext 5.1.1",
  "fn-error-context",
  "indoc",
  "libc",
@@ -332,7 +332,7 @@ dependencies = [
  "anyhow",
  "bootc-internal-utils",
  "camino",
- "cap-std-ext 5.0.0",
+ "cap-std-ext 5.1.1",
  "fn-error-context",
  "hex",
  "indoc",
@@ -350,7 +350,7 @@ dependencies = [
  "anyhow",
  "bootc-internal-utils",
  "camino",
- "cap-std-ext 5.0.0",
+ "cap-std-ext 5.1.1",
  "fn-error-context",
  "indoc",
  "rustix",
@@ -485,9 +485,9 @@ dependencies = [
 
 [[package]]
 name = "cap-std-ext"
-version = "5.0.0"
+version = "5.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d201b8b353bc963f2e8c374be7866dba47082ff041fb0db2d7543f2b9c8367ce"
+checksum = "56f9d7cf114dea582f663f03f4c563d0fc5ca2c8fa4c496eb538d8f01981ea51"
 dependencies = [
  "cap-primitives 4.0.2",
  "cap-tempfile 4.0.2",
@@ -1145,7 +1145,7 @@ version = "0.1.0"
 dependencies = [
  "anstream 1.0.0",
  "anyhow",
- "cap-std-ext 5.0.0",
+ "cap-std-ext 5.1.1",
  "composefs",
  "fn-error-context",
  "hex",
@@ -1977,7 +1977,7 @@ checksum = "784ff94e3f5a9b89659b8a4442104df6b5e7974c9b355c4f4ae6e9794af1ad2b"
 dependencies = [
  "camino",
  "canon-json",
- "cap-std-ext 5.0.0",
+ "cap-std-ext 5.1.1",
  "chrono",
  "flate2",
  "hex",
@@ -2077,7 +2077,7 @@ dependencies = [
  "bootc-internal-utils",
  "camino",
  "canon-json",
- "cap-std-ext 5.0.0",
+ "cap-std-ext 5.1.1",
  "chrono",
  "clap",
  "clap_mangen",
@@ -2896,7 +2896,7 @@ dependencies = [
  "anyhow",
  "bootc-kernel-cmdline",
  "camino",
- "cap-std-ext 5.0.0",
+ "cap-std-ext 5.1.1",
  "clap",
  "fn-error-context",
  "indoc",
