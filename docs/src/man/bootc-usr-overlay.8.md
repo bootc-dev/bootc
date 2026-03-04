@@ -1,7 +1,7 @@
 # NAME
 
-bootc-usr-overlay - Adds a transient writable overlayfs on `/usr` that
-will be discarded on reboot
+bootc-usr-overlay - Adds a transient overlayfs on `/usr` that will be discarded
+on reboot
 
 # SYNOPSIS
 
@@ -9,8 +9,8 @@ will be discarded on reboot
 
 # DESCRIPTION
 
-Adds a transient writable overlayfs on `/usr` that will be discarded
-on reboot.
+Adds a transient overlayfs on `/usr` that will be discarded on reboot. The
+overlayfs is read/write by default.
 
 ## USE CASES
 
