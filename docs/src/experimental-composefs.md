@@ -142,18 +142,27 @@ The composefs backend is experimental; on-disk formats are subject to change.
 
 ### Deployment blockers
 
-- [Garbage collection](https://github.com/containers/composefs-rs/pull/200): Old deployments are not cleaned up
+- [Garbage collection](https://github.com/bootc-dev/bootc/pull/2040): In progress
 - [SELinux enforcement](https://github.com/bootc-dev/bootc/issues/1826): Currently requires `enforcing=0`
-- [OCI registry install](https://github.com/bootc-dev/bootc/issues/1703): Installing from registry can fail due to config mismatch
+- Extended install APIs: Ability to cleanly implement anaconda %post and osbuild post mutations and general post-install pre-reboot; right now some tools just mount the deployment directory (note this one also relates to [APIs in general](https://github.com/bootc-dev/bootc/issues/522))
+- [OCI registry install](https://github.com/bootc-dev/bootc/issues/1703): Installing from registry can fail due to config mismatch (suggestion: just clean reject v2s2)
+- [composefs-rs repository finalization](https://github.com/bootc-dev/bootc/issues/1320)
 
 ### Important
 
+- Extended test suite: Right now we're not covering upgrades well, need to build upgrade image in sealed cases
+- Full workflow test - add composefs into https://gitlab.com/fedora/bootc/tests/bootc-workflow-test for example
+  - Workflow upgrades especially "from old systems"
+- [Unified storage](https://github.com/bootc-dev/bootc/issues/20): Not strictly a blocker but a really nice to have
 - [Sealed image build UX](https://github.com/bootc-dev/bootc/issues/1498): Streamlined tooling for building sealed images
-- **kargs.d**: Custom kernel arguments from `/usr/lib/bootc/kargs.d` not yet included in sealed UKIs
+- In place transitions: 
+  - First: support [factory reset](https://github.com/bootc-dev/bootc/issues/404) from ostree to composefs
+  - Next: Support copying /etc and /var
+- A lot more practical level docs for using this 
 
-### Long-term
+### Minor
 
-- [Unified storage](https://github.com/bootc-dev/bootc/issues/20)
+- Remove `/usr/lib/bootc/kargs.d` as part of UKI creation (also `bootc container inspect` should show UKI kargs)
 
 ## Additional Resources
 
