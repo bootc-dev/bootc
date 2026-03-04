@@ -540,6 +540,14 @@ fn write_row_name(mut out: impl Write, s: &str, prefix_len: usize) -> Result<()>
     Ok(())
 }
 
+/// Format a timestamp for human display, without nanoseconds.
+///
+/// Nanoseconds are irrelevant noise for container build timestamps;
+/// this produces the same format as RFC3339 but truncated to seconds.
+fn format_timestamp(t: &chrono::DateTime<chrono::Utc>) -> impl std::fmt::Display {
+    t.format("%Y-%m-%dT%H:%M:%SZ")
+}
+
 /// Helper function to render verbose ostree information
 fn render_verbose_ostree_info(
     mut out: impl Write,
@@ -636,13 +644,7 @@ fn human_render_slot(
         writeln!(out, "{}", composefs.verity)?;
     }
 
-    // Format the timestamp without nanoseconds since those are just irrelevant noise for human
-    // consumption - that time scale should basically never matter for container builds.
-    let timestamp = image
-        .timestamp
-        .as_ref()
-        // This format is the same as RFC3339, just without nanos.
-        .map(|t| t.to_utc().format("%Y-%m-%dT%H:%M:%SZ"));
+    let timestamp = image.timestamp.as_ref().map(format_timestamp);
     // If we have a version, combine with timestamp
     if let Some(version) = image.version.as_deref() {
         write_row_name(&mut out, "Version", prefix_len)?;
@@ -938,6 +940,42 @@ pub(crate) fn container_inspect(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_format_timestamp() {
+        use chrono::TimeZone;
+        let cases = [
+            // Standard case
+            (
+                chrono::Utc.with_ymd_and_hms(2024, 8, 7, 12, 0, 0).unwrap(),
+                "2024-08-07T12:00:00Z",
+            ),
+            // Midnight
+            (
+                chrono::Utc.with_ymd_and_hms(2023, 1, 1, 0, 0, 0).unwrap(),
+                "2023-01-01T00:00:00Z",
+            ),
+            // End of day
+            (
+                chrono::Utc
+                    .with_ymd_and_hms(2025, 12, 31, 23, 59, 59)
+                    .unwrap(),
+                "2025-12-31T23:59:59Z",
+            ),
+            // Subsecond precision should be dropped
+            (
+                chrono::Utc
+                    .with_ymd_and_hms(2024, 6, 15, 10, 30, 45)
+                    .unwrap()
+                    + chrono::Duration::nanoseconds(123_456_789),
+                "2024-06-15T10:30:45Z",
+            ),
+        ];
+        for (input, expected) in cases {
+            let result = format_timestamp(&input).to_string();
+            assert_eq!(result, expected, "Failed for input {input:?}");
+        }
+    }
 
     fn human_status_from_spec_fixture(spec_fixture: &str) -> Result<String> {
         let host: Host = serde_yaml::from_str(spec_fixture).unwrap();
