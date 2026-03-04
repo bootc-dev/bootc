@@ -246,7 +246,6 @@ pub(crate) async fn do_upgrade(
     booted_cfs: &BootedComposefs,
     host: &Host,
     imgref: &ImageReference,
-    img_manifest_config: &ImgConfigManifest,
     opts: &DoUpgradeOpts,
 ) -> Result<()> {
     start_finalize_stated_svc()?;
@@ -256,7 +255,7 @@ pub(crate) async fn do_upgrade(
         entries,
         id,
         fs,
-        manifest_digest: _,
+        manifest_digest,
     } = pull_composefs_repo(
         &imgref.transport,
         &imgref.image,
@@ -303,7 +302,7 @@ pub(crate) async fn do_upgrade(
         }),
         boot_type,
         boot_digest,
-        img_manifest_config,
+        &manifest_digest,
         booted_cfs.cmdline.allow_missing_fsverity,
     )
     .await?;
@@ -435,15 +434,8 @@ pub(crate) async fn upgrade_composefs(
                 }
 
                 UpdateAction::Proceed => {
-                    return do_upgrade(
-                        storage,
-                        composefs,
-                        &host,
-                        booted_imgref,
-                        &img_config,
-                        &do_upgrade_opts,
-                    )
-                    .await;
+                    return do_upgrade(storage, composefs, &host, booted_imgref, &do_upgrade_opts)
+                        .await;
                 }
 
                 UpdateAction::UpdateOrigin => {
@@ -471,15 +463,8 @@ pub(crate) async fn upgrade_composefs(
             }
 
             UpdateAction::Proceed => {
-                return do_upgrade(
-                    storage,
-                    composefs,
-                    &host,
-                    booted_imgref,
-                    &img_config,
-                    &do_upgrade_opts,
-                )
-                .await;
+                return do_upgrade(storage, composefs, &host, booted_imgref, &do_upgrade_opts)
+                    .await;
             }
 
             UpdateAction::UpdateOrigin => {
@@ -489,22 +474,13 @@ pub(crate) async fn upgrade_composefs(
     }
 
     if opts.check {
-        let current_manifest =
-            get_imginfo(storage, &*composefs.cmdline.digest, Some(booted_imgref)).await?;
+        let current_manifest = get_imginfo(storage, &*composefs.cmdline.digest)?;
         let diff = ManifestDiff::new(&current_manifest.manifest, &img_config.manifest);
         diff.print();
         return Ok(());
     }
 
-    do_upgrade(
-        storage,
-        composefs,
-        &host,
-        booted_imgref,
-        &img_config,
-        &do_upgrade_opts,
-    )
-    .await?;
+    do_upgrade(storage, composefs, &host, booted_imgref, &do_upgrade_opts).await?;
 
     Ok(())
 }

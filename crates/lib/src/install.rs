@@ -1960,7 +1960,7 @@ async fn install_to_filesystem_impl(
         setup_composefs_boot(
             rootfs,
             state,
-            &pull_result.config_digest,
+            &pull_result,
             state.composefs_options.allow_missing_verity,
         )
         .await?;

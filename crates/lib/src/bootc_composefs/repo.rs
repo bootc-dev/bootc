@@ -96,7 +96,6 @@ pub(crate) fn get_imgref(transport: &str, image: &str) -> String {
 
 /// Result of pulling a composefs repository, including the OCI manifest digest
 /// needed to reconstruct image metadata from the local composefs repo.
-#[allow(dead_code)]
 pub(crate) struct PullRepoResult {
     pub(crate) repo: crate::store::ComposefsRepository,
     pub(crate) entries: Vec<ComposefsBootEntry<Sha512HashValue>>,
