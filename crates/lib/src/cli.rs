@@ -269,7 +269,9 @@ pub(crate) struct StatusOpts {
 /// Add a transient overlayfs on /usr
 #[derive(Debug, Parser, PartialEq, Eq)]
 pub(crate) struct UsrOverlayOpts {
-    /// Mount the overlayfs as read-only.
+    /// Mount the overlayfs as read-only. A read-only overlayfs is useful since it may be remounted
+    /// as read/write in a private mount namespace and written to while the mount point remains
+    /// read-only to the rest of the system.
     #[clap(long)]
     pub(crate) read_only: bool,
 }
@@ -758,7 +760,7 @@ pub(crate) enum Opt {
     ///
     /// Shows bootc system state. Outputs YAML by default, human-readable if terminal detected.
     Status(StatusOpts),
-    /// Add a transient writable overlayfs on `/usr`.
+    /// Add a transient overlayfs on `/usr`.
     ///
     /// Allows temporary package installation that will be discarded on reboot.
     #[clap(alias = "usroverlay")]
