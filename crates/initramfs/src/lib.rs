@@ -219,6 +219,7 @@ fn overlay_state(
     state: impl AsFd,
     source: &str,
     mode: Option<rustix::fs::Mode>,
+    mount_attr_flags: Option<MountAttrFlags>,
 ) -> Result<()> {
     let upper = ensure_dir(state.as_fd(), "upper", mode)?;
     let work = ensure_dir(state.as_fd(), "work", mode)?;
@@ -232,7 +233,7 @@ fn overlay_state(
     let fs = fsmount(
         overlayfs.as_fd(),
         FsMountFlags::FSMOUNT_CLOEXEC,
-        MountAttrFlags::empty(),
+        mount_attr_flags.unwrap_or(MountAttrFlags::empty()),
     )?;
 
     mount_at_wrapper(fs, base, ".").context("Moving mount")
@@ -240,8 +241,18 @@ fn overlay_state(
 
 /// Mounts a transient overlayfs with passed in fd as the lowerdir
 #[context("Mounting transient overlayfs")]
-pub fn overlay_transient(base: impl AsFd, mode: Option<rustix::fs::Mode>) -> Result<()> {
-    overlay_state(base, prepare_mount(mount_tmpfs()?)?, "transient", mode)
+pub fn overlay_transient(
+    base: impl AsFd,
+    mode: Option<rustix::fs::Mode>,
+    mount_attr_flags: Option<MountAttrFlags>,
+) -> Result<()> {
+    overlay_state(
+        base,
+        prepare_mount(mount_tmpfs()?)?,
+        "transient",
+        mode,
+        mount_attr_flags,
+    )
 }
 
 #[context("Opening rootfs")]
@@ -309,8 +320,9 @@ pub fn mount_subdir(
             open_dir(&state, subdir)?,
             "overlay",
             None,
+            None,
         ),
-        MountType::Transient => overlay_transient(open_dir(&new_root, subdir)?, None),
+        MountType::Transient => overlay_transient(open_dir(&new_root, subdir)?, None, None),
     }
 }
 
@@ -373,7 +385,7 @@ pub fn setup_root(args: Args) -> Result<()> {
     }
 
     if config.root.transient {
-        overlay_transient(&new_root, None)?;
+        overlay_transient(&new_root, None, None)?;
     }
 
     match composefs::mount::mount_at(&sysroot_clone, &new_root, "sysroot") {
