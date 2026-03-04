@@ -8,33 +8,46 @@ use std assert
 use tap.nu
 use bootc_testlib.nu
 
+def usr_is_writable []: nothing -> bool {
+    (do -i { /bin/test -w /usr } | complete | get exit_code) == 0
+}
+
 # Status should initially report no overlay in JSON
-let status_json_before = bootc status --json | from json
-assert ($status_json_before.status.usrOverlay? == null)
+let status_before = bootc status --json | from json
+assert ($status_before.status.usrOverlay? == null)
 
 # We should start out in a non-writable state on each boot
-let is_writable = (do -i { /bin/test -w /usr } | complete | get exit_code) == 0
-assert (not $is_writable)
+assert (not (usr_is_writable))
 
 def initial_run [] {
     bootc usroverlay
-    let is_writable = (do -i { /bin/test -w /usr } | complete | get exit_code) == 0
-    assert ($is_writable)
+    assert (usr_is_writable)
 
     # After `usroverlay`, status JSON should report a transient read/write overlay
-    let status_json_after = bootc status --json | from json
-    let overlay = $status_json_after.status.usrOverlay
+    let status_after = bootc status --json | from json
+    let overlay = $status_after.status.usrOverlay
     assert ($overlay.accessMode == "readWrite")
     assert ($overlay.persistence == "transient")
 
     bootc_testlib reboot
 }
 
-# The second boot; verify we're in the derived image
 def second_boot [] {
-    # After reboot, usr overlay should be gone
+    # After reboot, /usr overlay should be gone
     let status_after_reboot = bootc status --json | from json
     assert ($status_after_reboot.status.usrOverlay? == null)
+    # And /usr should not be writable
+    assert (not (usr_is_writable))
+
+    # Mount a read-only /usr overlay
+    bootc usroverlay --read-only
+    assert (not (usr_is_writable))
+
+    # After `usroverlay --read-only`, status should report a transient read-only overlay
+    let status_after_readonly = bootc status --json | from json
+    let overlay = $status_after_readonly.status.usrOverlay
+    assert ($overlay.accessMode == "readOnly")
+    assert ($overlay.persistence == "transient")
 }
 
 def main [] {
