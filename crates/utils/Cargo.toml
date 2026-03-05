@@ -12,6 +12,7 @@ anstream = { workspace = true }
 anyhow = { workspace = true }
 cap-std-ext = {workspace = true, features = ["fs_utf8"] }
 chrono = { workspace = true, features = ["std"] }
+libc = { workspace = true }
 owo-colors = { workspace = true }
 rustix = { workspace = true }
 serde = { workspace = true, features = ["derive"] }

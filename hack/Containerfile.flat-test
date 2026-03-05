@@ -1,0 +1,20 @@
+# Build a test image with --flat support layered on fedora-bootc:43
+# Stage 1: build bootc binary on Fedora 43 (matching target libraries)
+FROM quay.io/fedora/fedora-bootc:43 AS builder
+
+RUN dnf -y install cargo rust gcc openssl-devel pkg-config perl \
+    ostree-devel glib2-devel libzstd-devel make skopeo \
+    && dnf clean all
+
+COPY . /src
+WORKDIR /src
+
+# Build only the bootc binary (release mode for speed)
+RUN --mount=type=cache,target=/root/.cargo/registry \
+    cargo build -p bootc --release && \
+    cp target/release/bootc /usr/local/bin/bootc-flat
+
+# Stage 2: final image is fedora-bootc:43 with our bootc
+FROM quay.io/fedora/fedora-bootc:43
+
+COPY --from=builder /usr/local/bin/bootc-flat /usr/bin/bootc

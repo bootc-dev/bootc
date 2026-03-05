@@ -730,7 +730,7 @@ pub(crate) fn setup_composefs_bls_boot(
     let (config_path, booted_bls) = if is_upgrade {
         let boot_dir = Dir::open_ambient_dir(&entry_paths.config_path, ambient_authority())?;
 
-        let mut booted_bls = get_booted_bls(&boot_dir)?;
+        let mut booted_bls: BLSConfig = get_booted_bls(&boot_dir)?;
         booted_bls.sort_key = Some(secondary_sort_key(&os_id));
 
         let staged_path = loader_path.join(STAGED_BOOT_LOADER_ENTRIES);

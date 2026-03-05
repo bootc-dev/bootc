@@ -26,6 +26,12 @@ pub(crate) enum Opt {
         #[clap(flatten)]
         testargs: libtest_mimic::Arguments,
     },
+    InstallFlat {
+        /// Source container image reference
+        image: String,
+        #[clap(flatten)]
+        testargs: libtest_mimic::Arguments,
+    },
     HostPrivileged {
         image: String,
         #[clap(flatten)]
@@ -54,6 +60,7 @@ fn main() {
     let r = match opt {
         Opt::SystemReinstall { image, testargs } => system_reinstall::run(&image, testargs),
         Opt::InstallAlongside { image, testargs } => install::run_alongside(&image, testargs),
+        Opt::InstallFlat { image, testargs } => install::run_flat(&image, testargs),
         Opt::HostPrivileged { image, testargs } => hostpriv::run_hostpriv(&image, testargs),
         Opt::Container { testargs } => container::run(testargs),
         Opt::RunVM(opts) => runvm::run(opts),

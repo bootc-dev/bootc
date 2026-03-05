@@ -23,8 +23,6 @@ use rustix::{
 };
 use serde::Deserialize;
 
-pub mod tempmount;
-
 /// Well known identifier for pid 1
 pub const PID1: Pid = const {
     match Pid::from_raw(1) {
