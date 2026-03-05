@@ -31,7 +31,13 @@ Almost always, a system process will hold a reference to the open mount
 point. You can however invoke `umount -l /usr` to perform a "lazy
 unmount".
 
+# OPTIONS
+
 <!-- BEGIN GENERATED OPTIONS -->
+**--read-only**
+
+    Mount the overlayfs as read-only. A read-only overlayfs is useful since it may be remounted as read/write in a private mount namespace and written to while the mount point remains read-only to the rest of the system
+
 <!-- END GENERATED OPTIONS -->
 
 # VERSION

@@ -182,8 +182,15 @@ execute:
     test:
       - /tmt/tests/tests/test-34-user-agent
 
+/plan-35-upgrade-preflight-disk-check:
+  summary: Verify pre-flight disk space check rejects images with inflated layer sizes
+  discover:
+    how: fmf
+    test:
+      - /tmt/tests/tests/test-35-upgrade-preflight-disk-check
+
 /plan-36-rollback:
-  summary: Test bootc rollback functionality through image switch and rollback cycle
+  summary: Test bootc rollback functionality
   discover:
     how: fmf
     test:
