@@ -204,6 +204,14 @@ execute:
     test:
       - /tmt/tests/tests/test-37-install-no-boot-dir
 
+/plan-37-upgrade-check-status:
+  summary: Verify upgrade --check populates cached update in status
+  discover:
+    how: fmf
+    test:
+      - /tmt/tests/tests/test-37-upgrade-check-status
+  extra-fixme_skip_if_composefs: true
+
 /plan-38-install-bootloader-none:
   summary: Test bootc install with --bootloader=none
   discover:
