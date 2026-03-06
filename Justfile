@@ -141,7 +141,7 @@ test-composefs bootloader filesystem boot_type seal_state *ARGS:
                 --seal-state={{seal_state}} \
                 --boot-type={{boot_type}} \
                 {{ARGS}} \
-                $(if [ "{{boot_type}}" = "uki" ]; then echo "readonly composefs-upgrade"; else echo "integration"; fi)
+                $(if [ "{{boot_type}}" = "uki" ]; then echo "readonly image-upgrade-reboot"; else echo "integration"; fi)
 
 # Run upgrade test: boot VM from published base image (with tmt deps added),
 # upgrade to locally-built image, reboot, then run readonly tests to verify.
