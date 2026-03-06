@@ -141,7 +141,7 @@ test-composefs bootloader filesystem boot_type seal_state *ARGS:
                 --seal-state={{seal_state}} \
                 --boot-type={{boot_type}} \
                 {{ARGS}} \
-                $(if [ "{{boot_type}}" = "uki" ]; then echo "readonly"; else echo "integration"; fi)
+                $(if [ "{{boot_type}}" = "uki" ]; then echo "readonly composefs-upgrade"; else echo "integration"; fi)
 
 # Run upgrade test: boot VM from published base image (with tmt deps added),
 # upgrade to locally-built image, reboot, then run readonly tests to verify.
@@ -362,7 +362,24 @@ _keygen:
     ./hack/generate-secureboot-keys
 
 _build-upgrade-image:
-    cat tmt/tests/Dockerfile.upgrade | podman build -t {{upgrade_img}} --from={{base_img}} -
+    #!/bin/bash
+    set -xeuo pipefail
+    # Secrets are always available (test-tmt depends on build which runs _keygen).
+    # Extra capabilities are only needed for UKI builds (composefs + fuse).
+    extra_args=()
+    if [ "{{boot_type}}" = "uki" ]; then
+        extra_args+=(--cap-add=all --security-opt=label=type:container_runtime_t --device /dev/fuse)
+    fi
+    podman build \
+        --build-arg "boot_type={{boot_type}}" \
+        --build-arg "seal_state={{seal_state}}" \
+        --build-arg "filesystem={{filesystem}}" \
+        --secret=id=secureboot_key,src=target/test-secureboot/db.key \
+        --secret=id=secureboot_cert,src=target/test-secureboot/db.crt \
+        "${extra_args[@]}" \
+        -t {{upgrade_img}} \
+        -f tmt/tests/Dockerfile.upgrade \
+        .
 
 # Build the upgrade source image: base image + tmt dependencies (rsync, nu, cloud-init)
 _build-upgrade-source-image:
