@@ -1967,6 +1967,19 @@ async fn install_to_filesystem_impl(
             state.composefs_options.allow_missing_verity,
         )
         .await?;
+
+        // Label composefs objects as /usr so they get usr_t rather than
+        // default_t (which has no policy match).
+        if let Some(policy) = state.load_policy()? {
+            tracing::info!("Labeling composefs objects as /usr");
+            crate::lsm::relabel_recurse(
+                &rootfs.physical_root,
+                "composefs",
+                Some("/usr".into()),
+                &policy,
+            )
+            .context("SELinux labeling of composefs objects")?;
+        }
     } else {
         ostree_install(state, rootfs, cleanup).await?;
     }
