@@ -67,6 +67,9 @@ LABEL bootc.testimage="1"
 # Otherwise standard metadata
 LABEL containers.bootc 1
 LABEL ostree.bootable 1
+# Version from git, passed via Justfile; ensures `bootc status` shows a version
+ARG image_version="devel"
+LABEL org.opencontainers.image.version="${image_version}"
 # https://pagure.io/fedora-kiwi-descriptions/pull-request/52
 ENV container=oci
 # Optional labels that only apply when running this image as a container. These keep the default entry point running under systemd.

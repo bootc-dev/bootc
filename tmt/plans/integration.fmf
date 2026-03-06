@@ -182,8 +182,16 @@ execute:
     test:
       - /tmt/tests/tests/test-34-user-agent
 
+/plan-35-upgrade-preflight-disk-check:
+  summary: Verify pre-flight disk space check rejects images with inflated layer sizes
+  discover:
+    how: fmf
+    test:
+      - /tmt/tests/tests/test-35-upgrade-preflight-disk-check
+  extra-fixme_skip_if_composefs: true
+
 /plan-36-rollback:
-  summary: Test bootc rollback functionality through image switch and rollback cycle
+  summary: Test bootc rollback functionality
   discover:
     how: fmf
     test:
@@ -195,6 +203,14 @@ execute:
     how: fmf
     test:
       - /tmt/tests/tests/test-37-install-no-boot-dir
+
+/plan-37-upgrade-check-status:
+  summary: Verify upgrade --check populates cached update in status
+  discover:
+    how: fmf
+    test:
+      - /tmt/tests/tests/test-37-upgrade-check-status
+  extra-fixme_skip_if_composefs: true
 
 /plan-38-install-bootloader-none:
   summary: Test bootc install with --bootloader=none

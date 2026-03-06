@@ -540,6 +540,14 @@ fn write_row_name(mut out: impl Write, s: &str, prefix_len: usize) -> Result<()>
     Ok(())
 }
 
+/// Format a timestamp for human display, without nanoseconds.
+///
+/// Nanoseconds are irrelevant noise for container build timestamps;
+/// this produces the same format as RFC3339 but truncated to seconds.
+fn format_timestamp(t: &chrono::DateTime<chrono::Utc>) -> impl std::fmt::Display {
+    t.format("%Y-%m-%dT%H:%M:%SZ")
+}
+
 /// Helper function to render verbose ostree information
 fn render_verbose_ostree_info(
     mut out: impl Write,
@@ -598,6 +606,39 @@ fn write_download_only(
     Ok(())
 }
 
+/// Render cached update information, showing what update is available.
+///
+/// This is populated by a previous `bootc upgrade --check` that found
+/// a newer image in the registry. We only display it when the cached
+/// digest differs from the currently deployed image.
+fn render_cached_update(
+    mut out: impl Write,
+    cached: &crate::spec::ImageStatus,
+    current: &crate::spec::ImageStatus,
+    prefix_len: usize,
+) -> Result<()> {
+    if cached.image_digest == current.image_digest {
+        return Ok(());
+    }
+
+    if let Some(version) = cached.version.as_deref() {
+        write_row_name(&mut out, "UpdateVersion", prefix_len)?;
+        let timestamp_str = cached
+            .timestamp
+            .as_ref()
+            .map(|t| format!(" ({})", format_timestamp(t)))
+            .unwrap_or_default();
+        writeln!(out, "{version}{timestamp_str}")?;
+    } else {
+        write_row_name(&mut out, "Update", prefix_len)?;
+        writeln!(out, "Available")?;
+    }
+    write_row_name(&mut out, "UpdateDigest", prefix_len)?;
+    writeln!(out, "{}", cached.image_digest)?;
+
+    Ok(())
+}
+
 /// Write the data for a container image based status.
 fn human_render_slot(
     mut out: impl Write,
@@ -636,13 +677,7 @@ fn human_render_slot(
         writeln!(out, "{}", composefs.verity)?;
     }
 
-    // Format the timestamp without nanoseconds since those are just irrelevant noise for human
-    // consumption - that time scale should basically never matter for container builds.
-    let timestamp = image
-        .timestamp
-        .as_ref()
-        // This format is the same as RFC3339, just without nanos.
-        .map(|t| t.to_utc().format("%Y-%m-%dT%H:%M:%SZ"));
+    let timestamp = image.timestamp.as_ref().map(format_timestamp);
     // If we have a version, combine with timestamp
     if let Some(version) = image.version.as_deref() {
         write_row_name(&mut out, "Version", prefix_len)?;
@@ -660,6 +695,11 @@ fn human_render_slot(
     if entry.pinned {
         write_row_name(&mut out, "Pinned", prefix_len)?;
         writeln!(out, "yes")?;
+    }
+
+    // Show cached update information when available (from a previous `bootc upgrade --check`)
+    if let Some(cached) = &entry.cached_update {
+        render_cached_update(&mut out, cached, image, prefix_len)?;
     }
 
     // Show /usr overlay status
@@ -939,6 +979,42 @@ pub(crate) fn container_inspect(
 mod tests {
     use super::*;
 
+    #[test]
+    fn test_format_timestamp() {
+        use chrono::TimeZone;
+        let cases = [
+            // Standard case
+            (
+                chrono::Utc.with_ymd_and_hms(2024, 8, 7, 12, 0, 0).unwrap(),
+                "2024-08-07T12:00:00Z",
+            ),
+            // Midnight
+            (
+                chrono::Utc.with_ymd_and_hms(2023, 1, 1, 0, 0, 0).unwrap(),
+                "2023-01-01T00:00:00Z",
+            ),
+            // End of day
+            (
+                chrono::Utc
+                    .with_ymd_and_hms(2025, 12, 31, 23, 59, 59)
+                    .unwrap(),
+                "2025-12-31T23:59:59Z",
+            ),
+            // Subsecond precision should be dropped
+            (
+                chrono::Utc
+                    .with_ymd_and_hms(2024, 6, 15, 10, 30, 45)
+                    .unwrap()
+                    + chrono::Duration::nanoseconds(123_456_789),
+                "2024-06-15T10:30:45Z",
+            ),
+        ];
+        for (input, expected) in cases {
+            let result = format_timestamp(&input).to_string();
+            assert_eq!(result, expected, "Failed for input {input:?}");
+        }
+    }
+
     fn human_status_from_spec_fixture(spec_fixture: &str) -> Result<String> {
         let host: Host = serde_yaml::from_str(spec_fixture).unwrap();
         let mut w = Vec::new();
@@ -1208,6 +1284,58 @@ mod tests {
                   Digest: sha256:736b359467c9437c1ac915acaae952aad854e07eb4a16a94999a48af08c83c34 (arm64)
                  Version: nightly (2023-09-30T19:22:16Z)
             /usr overlay: transient, read/write
+        "};
+        similar_asserts::assert_eq!(w, expected);
+    }
+
+    #[test]
+    fn test_human_readable_booted_with_cached_update() {
+        // When a cached update is present (from a previous `bootc upgrade --check`),
+        // the human-readable output should show the available update info.
+        let w =
+            human_status_from_spec_fixture(include_str!("fixtures/spec-booted-with-update.yaml"))
+                .expect("No spec found");
+        let expected = indoc::indoc! { r"
+          ● Booted image: quay.io/centos-bootc/centos-bootc:stream9
+                  Digest: sha256:47e5ed613a970b6574bfa954ab25bb6e85656552899aa518b5961d9645102b38 (arm64)
+                 Version: stream9.20240807.0 (2024-08-07T12:00:00Z)
+           UpdateVersion: stream9.20240901.0 (2024-09-01T12:00:00Z)
+            UpdateDigest: sha256:a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0
+        "};
+        similar_asserts::assert_eq!(w, expected);
+    }
+
+    #[test]
+    fn test_human_readable_cached_update_same_digest_hidden() {
+        // When the cached update has the same digest as the current image,
+        // no update line should be shown.
+        let w = human_status_from_spec_fixture(include_str!(
+            "fixtures/spec-booted-update-same-digest.yaml"
+        ))
+        .expect("No spec found");
+        assert!(
+            !w.contains("UpdateVersion:"),
+            "Should not show update version when digest matches current"
+        );
+        assert!(
+            !w.contains("UpdateDigest:"),
+            "Should not show update digest when digest matches current"
+        );
+    }
+
+    #[test]
+    fn test_human_readable_cached_update_no_version() {
+        // When the cached update has no version label, show "Available" as fallback.
+        let w = human_status_from_spec_fixture(include_str!(
+            "fixtures/spec-booted-with-update-no-version.yaml"
+        ))
+        .expect("No spec found");
+        let expected = indoc::indoc! { r"
+          ● Booted image: quay.io/centos-bootc/centos-bootc:stream9
+                  Digest: sha256:47e5ed613a970b6574bfa954ab25bb6e85656552899aa518b5961d9645102b38 (arm64)
+                 Version: stream9.20240807.0
+                  Update: Available
+            UpdateDigest: sha256:b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1
         "};
         similar_asserts::assert_eq!(w, expected);
     }

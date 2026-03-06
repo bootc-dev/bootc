@@ -27,6 +27,10 @@ Any additional arguments after `--` are passed through to ukify unchanged.
 
     Default: /
 
+**--allow-missing-verity**
+
+    Make fs-verity validation optional in case the filesystem doesn't support it
+
 <!-- END GENERATED OPTIONS -->
 
 # EXAMPLES
