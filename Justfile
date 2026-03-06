@@ -67,7 +67,8 @@ build: package _keygen && _pull-lbi-images
     set -xeuo pipefail
     test -d target/packages
     pkg_path=$(realpath target/packages)
-    podman build {{_nocache_arg}} --build-context "packages=${pkg_path}" -t {{base_img}} {{buildargs}} .
+    eval $(just _git-build-vars)
+    podman build {{_nocache_arg}} --build-arg=image_version=${VERSION} --build-context "packages=${pkg_path}" -t {{base_img}} {{buildargs}} .
 
 # Show available build variants and current configuration
 [group('core')]
