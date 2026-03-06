@@ -104,11 +104,11 @@
 
 /test-35-upgrade-preflight-disk-check:
   summary: Verify pre-flight disk space check rejects images with inflated layer sizes
-  duration: 20m
+  duration: 10m
   test: nu booted/test-upgrade-preflight-disk-check.nu
 
 /test-36-rollback:
-  summary: Test bootc rollback functionality through image switch and rollback cycle
+  summary: Test bootc rollback functionality
   duration: 30m
   test: nu booted/test-rollback.nu
 
@@ -121,3 +121,8 @@
   summary: Test bootc install with --bootloader=none
   duration: 30m
   test: nu booted/test-install-bootloader-none.nu
+
+/test-39-composefs-upgrade:
+  summary: Test composefs upgrade with pre-built (optionally sealed) image
+  duration: 30m
+  test: nu booted/test-composefs-upgrade.nu
