@@ -1984,6 +1984,18 @@ async fn install_to_filesystem_impl(
         ostree_install(state, rootfs, cleanup).await?;
     }
 
+    // As the very last step before filesystem finalization, do a full SELinux
+    // relabel of the physical root filesystem.  Any files that are already
+    // labeled (e.g. ostree deployment contents, composefs objects) are skipped.
+    if let Some(policy) = state.load_policy()? {
+        tracing::info!("Performing final SELinux relabeling of physical root");
+        let mut path = Utf8PathBuf::from("");
+        crate::lsm::ensure_dir_labeled_recurse(&rootfs.physical_root, &mut path, &policy, None)
+            .context("Final SELinux relabeling of physical root")?;
+    } else {
+        tracing::debug!("Skipping final SELinux relabel (SELinux is disabled)");
+    }
+
     // Finalize mounted filesystems
     if !rootfs.skip_finalize {
         let bootfs = rootfs.boot.as_ref().map(|_| ("boot", "boot"));
