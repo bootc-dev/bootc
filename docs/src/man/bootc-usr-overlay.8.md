@@ -1,7 +1,7 @@
 # NAME
 
-bootc-usr-overlay - Adds a transient writable overlayfs on `/usr` that
-will be discarded on reboot
+bootc-usr-overlay - Adds a transient overlayfs on `/usr` that will be discarded
+on reboot
 
 # SYNOPSIS
 
@@ -9,8 +9,8 @@ will be discarded on reboot
 
 # DESCRIPTION
 
-Adds a transient writable overlayfs on `/usr` that will be discarded
-on reboot.
+Adds a transient overlayfs on `/usr` that will be discarded on reboot. The
+overlayfs is read/write by default.
 
 ## USE CASES
 
@@ -31,7 +31,13 @@ Almost always, a system process will hold a reference to the open mount
 point. You can however invoke `umount -l /usr` to perform a "lazy
 unmount".
 
+# OPTIONS
+
 <!-- BEGIN GENERATED OPTIONS -->
+**--read-only**
+
+    Mount the overlayfs as read-only. A read-only overlayfs is useful since it may be remounted as read/write in a private mount namespace and written to while the mount point remains read-only to the rest of the system
+
 <!-- END GENERATED OPTIONS -->
 
 # VERSION

@@ -20,6 +20,7 @@ use ostree_ext::container::deploy::ORIGIN_CONTAINER;
 use rustix::{
     fd::AsFd,
     fs::{Mode, OFlags, StatVfsMountFlags, open},
+    mount::MountAttrFlags,
     path::Arg,
 };
 
@@ -329,7 +330,7 @@ pub(crate) async fn write_composefs_state(
     Ok(())
 }
 
-pub(crate) fn composefs_usr_overlay() -> Result<()> {
+pub(crate) fn composefs_usr_overlay(access_mode: FilesystemOverlayAccessMode) -> Result<()> {
     let status = get_composefs_usr_overlay_status()?;
     if status.is_some() {
         println!("An overlayfs is already mounted on /usr");
@@ -342,9 +343,14 @@ pub(crate) fn composefs_usr_overlay() -> Result<()> {
     let usr_metadata = usr.metadata(".").context("Getting /usr metadata")?;
     let usr_mode = Mode::from_raw_mode(usr_metadata.permissions().mode());
 
-    overlay_transient(usr, Some(usr_mode))?;
+    let mount_attr_flags = match access_mode {
+        FilesystemOverlayAccessMode::ReadOnly => Some(MountAttrFlags::MOUNT_ATTR_RDONLY),
+        FilesystemOverlayAccessMode::ReadWrite => None,
+    };
 
-    println!("A writeable overlayfs is now mounted on /usr");
+    overlay_transient(usr, Some(usr_mode), mount_attr_flags)?;
+
+    println!("A {} overlayfs is now mounted on /usr", access_mode);
     println!("All changes there will be discarded on reboot.");
 
     Ok(())
