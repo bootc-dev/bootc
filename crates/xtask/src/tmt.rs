@@ -31,10 +31,8 @@ const ENV_BOOTC_UPGRADE_IMAGE: &str = "BOOTC_upgrade_image";
 // Distro identifiers
 const DISTRO_CENTOS_9: &str = "centos-9";
 
-const COMPOSEFS_KERNEL_ARGS: [&str; 1] = ["--karg=enforcing=0"];
-
 // Import the argument types from xtask.rs
-use crate::{BootType, Bootloader, RunTmtArgs, SealState, TmtProvisionArgs};
+use crate::{Bootloader, RunTmtArgs, SealState, TmtProvisionArgs};
 
 /// Generate a random alphanumeric suffix for VM names
 fn generate_random_suffix() -> String {
@@ -488,11 +486,6 @@ pub(crate) fn run_tmt(sh: &Shell, args: &RunTmtArgs) -> Result<()> {
                 let filesystem = args.filesystem.as_deref().unwrap_or("ext4");
                 opts.push(format!("--filesystem={}", filesystem));
                 opts.push("--composefs-backend".into());
-
-                // UKI install fails with extra args
-                if args.boot_type == BootType::Bls {
-                    opts.extend(COMPOSEFS_KERNEL_ARGS.map(|x| x.into()));
-                }
             }
 
             if let Some(b) = &args.bootloader {

@@ -159,7 +159,6 @@ The composefs backend is experimental; on-disk formats are subject to change.
 ### Deployment blockers
 
 - [Garbage collection](https://github.com/bootc-dev/bootc/pull/2040): In progress
-- [SELinux enforcement](https://github.com/bootc-dev/bootc/issues/1826): Currently requires `enforcing=0`
 - Extended install APIs: Ability to cleanly implement anaconda %post and osbuild post mutations and general post-install pre-reboot; right now some tools just mount the deployment directory (note this one also relates to [APIs in general](https://github.com/bootc-dev/bootc/issues/522))
 - [OCI registry install](https://github.com/bootc-dev/bootc/issues/1703): Installing from registry can fail due to config mismatch (suggestion: just clean reject v2s2)
 - [composefs-rs repository finalization](https://github.com/bootc-dev/bootc/issues/1320)

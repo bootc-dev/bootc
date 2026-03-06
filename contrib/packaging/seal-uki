@@ -45,10 +45,6 @@ fi
 # Baseline container ukify options
 containerukifyargs=(--rootfs "${target}")
 
-# WORKAROUND: SELinux must be permissive for sealed UKI boot
-# See https://github.com/bootc-dev/bootc/issues/1826
-containerukifyargs+=(--karg enforcing=0)
-
 missing_verity=()
 
 if [[ $allow_missing_verity == "true" ]]; then
