@@ -30,7 +30,8 @@
         "rollback": null,
         "rollbackQueued": false,
         "staged": null,
-        "type": null
+        "type": null,
+        "usrOverlay": null
       }
     }
   },
@@ -220,6 +221,54 @@
         }
       ]
     },
+    "FilesystemOverlay": {
+      "description": "Details of an overlay filesystem: read-only or read/write, persistent or transient.",
+      "type": "object",
+      "properties": {
+        "accessMode": {
+          "description": "Whether the overlay is read-only or read/write",
+          "$ref": "#/$defs/FilesystemOverlayAccessMode"
+        },
+        "persistence": {
+          "description": "Whether the overlay will persist across reboots",
+          "$ref": "#/$defs/FilesystemOverlayPersistence"
+        }
+      },
+      "required": [
+        "accessMode",
+        "persistence"
+      ]
+    },
+    "FilesystemOverlayAccessMode": {
+      "description": "The permissions mode of a /usr overlay",
+      "oneOf": [
+        {
+          "description": "The overlay is mounted read-only",
+          "type": "string",
+          "const": "readOnly"
+        },
+        {
+          "description": "The overlay is mounted read/write",
+          "type": "string",
+          "const": "readWrite"
+        }
+      ]
+    },
+    "FilesystemOverlayPersistence": {
+      "description": "The persistence mode of a /usr overlay",
+      "oneOf": [
+        {
+          "description": "Changes are temporary and will be lost on reboot",
+          "type": "string",
+          "const": "transient"
+        },
+        {
+          "description": "Changes persist across reboots",
+          "type": "string",
+          "const": "persistent"
+        }
+      ]
+    },
     "HostSpec": {
       "description": "The host specification",
       "type": "object",
@@ -296,6 +345,17 @@
           "anyOf": [
             {
               "$ref": "#/$defs/HostType"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "usrOverlay": {
+          "description": "The state of the overlay mounted on /usr",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FilesystemOverlay"
             },
             {
               "type": "null"
