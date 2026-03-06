@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 /// composefs= parameter in kernel cmdline
 pub const COMPOSEFS_CMDLINE: &str = "composefs";
 
@@ -38,3 +36,6 @@ pub(crate) const TYPE1_ENT_PATH: &str = "loader/entries";
 pub(crate) const TYPE1_ENT_PATH_STAGED: &str = "loader/entries.staged";
 
 pub(crate) const BOOTC_FINALIZE_STAGED_SERVICE: &str = "bootc-finalize-staged.service";
+
+/// The prefix for the directories containing kernel + initrd
+pub(crate) const TYPE1_BOOT_DIR_PREFIX: &str = "bootc_composefs-";

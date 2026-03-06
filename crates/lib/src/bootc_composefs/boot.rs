@@ -91,7 +91,6 @@ use rustix::{mount::MountFlags, path::Arg};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::bootc_composefs::state::{get_booted_bls, write_composefs_state};
 use crate::parsers::bls_config::{BLSConfig, BLSConfigType};
 use crate::task::Task;
 use crate::{
@@ -101,6 +100,10 @@ use crate::{
 use crate::{
     bootc_composefs::repo::open_composefs_repo,
     store::{ComposefsFilesystem, Storage},
+};
+use crate::{
+    bootc_composefs::state::{get_booted_bls, write_composefs_state},
+    composefs_consts::TYPE1_BOOT_DIR_PREFIX,
 };
 use crate::{
     bootc_composefs::status::get_container_manifest_and_config, bootc_kargs::compute_new_kargs,
@@ -270,6 +273,11 @@ pub(crate) fn secondary_sort_key(os_id: &str) -> String {
     format!("bootc-{os_id}-{SORTKEY_PRIORITY_SECONDARY}")
 }
 
+/// Returns the name of the directory where we store Type1 boot entries
+pub(crate) fn get_type1_dir_name(depl_verity: &String) -> String {
+    format!("{TYPE1_BOOT_DIR_PREFIX}{depl_verity}")
+}
+
 /// Compute SHA256Sum of VMlinuz + Initrd
 ///
 /// # Arguments
@@ -381,10 +389,10 @@ fn write_bls_boot_entries_to_disk(
     entry: &UsrLibModulesVmlinuz<Sha512HashValue>,
     repo: &crate::store::ComposefsRepository,
 ) -> Result<()> {
-    let id_hex = deployment_id.to_hex();
+    let dir_name = get_type1_dir_name(&deployment_id.to_hex());
 
-    // Write the initrd and vmlinuz at /boot/<id>/
-    let path = boot_dir.join(&id_hex);
+    // Write the initrd and vmlinuz at /boot/composefs-<id>/
+    let path = boot_dir.join(&dir_name);
     create_dir_all(&path)?;
 
     let entries_dir = Dir::open_ambient_dir(&path, ambient_authority())
@@ -496,6 +504,7 @@ pub(crate) fn setup_composefs_bls_boot(
 
             cmdline_options.extend(&root_setup.kargs);
 
+            // TODO(Johan-Liebert1): Use ComposefsCmdline
             let composefs_cmdline = if state.composefs_options.allow_missing_verity {
                 format!("{COMPOSEFS_CMDLINE}=?{id_hex}")
             } else {
@@ -648,13 +657,18 @@ pub(crate) fn setup_composefs_bls_boot(
 
             let mut bls_config = BLSConfig::default();
 
+            let entries_dir = get_type1_dir_name(&id_hex);
+
             bls_config
                 .with_title(title)
                 .with_version(version)
                 .with_sort_key(sort_key)
                 .with_cfg(BLSConfigType::NonEFI {
-                    linux: entry_paths.abs_entries_path.join(&id_hex).join(VMLINUZ),
-                    initrd: vec![entry_paths.abs_entries_path.join(&id_hex).join(INITRD)],
+                    linux: entry_paths
+                        .abs_entries_path
+                        .join(&entries_dir)
+                        .join(VMLINUZ),
+                    initrd: vec![entry_paths.abs_entries_path.join(&entries_dir).join(INITRD)],
                     options: Some(cmdline_refs),
                 });
 
@@ -679,7 +693,16 @@ pub(crate) fn setup_composefs_bls_boot(
                         // We shouldn't error here as all our file names are UTF-8 compatible
                         let ent_name = ent.file_name()?;
 
-                        if shared_entries.contains(&ent_name) {
+                        let Some(entry_verity_part) = ent_name.strip_prefix(TYPE1_BOOT_DIR_PREFIX)
+                        else {
+                            // Not our directory
+                            continue;
+                        };
+
+                        if shared_entries
+                            .iter()
+                            .any(|shared_ent| shared_ent == entry_verity_part)
+                        {
                             shared_entry = Some(ent_name);
                             break;
                         }

@@ -793,8 +793,6 @@ pub(crate) enum Opt {
     #[clap(hide = true)]
     DeleteDeployment {
         depl_id: String,
-        #[clap(long)]
-        dry_run: bool,
     },
 }
 
@@ -1917,7 +1915,25 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
                     }
 
                     BootedStorageKind::Composefs(booted_cfs) => {
-                        composefs_gc(storage, &booted_cfs, dry_run).await
+                        let gc_result = composefs_gc(storage, &booted_cfs, dry_run).await?;
+
+                        if dry_run {
+                            println!("Dry run (no files deleted)");
+                        }
+
+                        println!(
+                            "Objects: {} removed ({} bytes)",
+                            gc_result.objects_removed, gc_result.objects_bytes
+                        );
+
+                        if gc_result.images_pruned > 0 || gc_result.streams_pruned > 0 {
+                            println!(
+                                "Pruned symlinks: {} images, {} streams",
+                                gc_result.images_pruned, gc_result.streams_pruned
+                            );
+                        }
+
+                        Ok(())
                     }
                 }
             }
@@ -1955,14 +1971,14 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
             }
         }
 
-        Opt::DeleteDeployment { depl_id, dry_run } => {
+        Opt::DeleteDeployment { depl_id } => {
             let storage = &get_storage().await?;
             match storage.kind()? {
                 BootedStorageKind::Ostree(_) => {
                     anyhow::bail!("DeleteDeployment is only supported for composefs backend")
                 }
                 BootedStorageKind::Composefs(booted_cfs) => {
-                    delete_composefs_deployment(&depl_id, storage, &booted_cfs, dry_run).await
+                    delete_composefs_deployment(&depl_id, storage, &booted_cfs).await
                 }
             }
         }
