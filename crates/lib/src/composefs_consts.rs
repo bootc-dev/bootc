@@ -22,6 +22,11 @@ pub(crate) const ORIGIN_KEY_BOOT_TYPE: &str = "boot_type";
 /// Key to store the SHA256 sum of vmlinuz + initrd for a deployment
 pub(crate) const ORIGIN_KEY_BOOT_DIGEST: &str = "digest";
 
+/// Section in .origin file to store OCI image metadata
+pub(crate) const ORIGIN_KEY_IMAGE: &str = "image";
+/// Key to store the OCI manifest digest (e.g. "sha256:abc...")
+pub(crate) const ORIGIN_KEY_MANIFEST_DIGEST: &str = "manifest_digest";
+
 /// Filename for `loader/entries`
 pub(crate) const BOOT_LOADER_ENTRIES: &str = "entries";
 /// Filename for staged boot loader entries

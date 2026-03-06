@@ -92,18 +92,13 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::bootc_composefs::state::{get_booted_bls, write_composefs_state};
+use crate::bootc_kargs::compute_new_kargs;
+use crate::composefs_consts::{TYPE1_ENT_PATH, TYPE1_ENT_PATH_STAGED};
 use crate::parsers::bls_config::{BLSConfig, BLSConfigType};
 use crate::task::Task;
 use crate::{
-    bootc_composefs::repo::get_imgref,
-    composefs_consts::{TYPE1_ENT_PATH, TYPE1_ENT_PATH_STAGED},
-};
-use crate::{
     bootc_composefs::repo::open_composefs_repo,
     store::{ComposefsFilesystem, Storage},
-};
-use crate::{
-    bootc_composefs::status::get_container_manifest_and_config, bootc_kargs::compute_new_kargs,
 };
 use crate::{bootc_composefs::status::get_sorted_grub_uki_boot_entries, install::PostFetchState};
 use crate::{
@@ -1223,7 +1218,7 @@ fn get_secureboot_keys(fs: &Dir, p: &str) -> Result<Option<SecurebootKeys>> {
 pub(crate) async fn setup_composefs_boot(
     root_setup: &RootSetup,
     state: &State,
-    image_id: &str,
+    pull_result: &composefs_oci::PullResult<Sha512HashValue>,
     allow_missing_fsverity: bool,
 ) -> Result<()> {
     const COMPOSEFS_BOOT_SETUP_JOURNAL_ID: &str = "1f0e9d8c7b6a5f4e3d2c1b0a9f8e7d6c5";
@@ -1231,7 +1226,7 @@ pub(crate) async fn setup_composefs_boot(
     tracing::info!(
         message_id = COMPOSEFS_BOOT_SETUP_JOURNAL_ID,
         bootc.operation = "boot_setup",
-        bootc.image_id = image_id,
+        bootc.config_digest = pull_result.config_digest,
         bootc.allow_missing_fsverity = allow_missing_fsverity,
         "Setting up composefs boot",
     );
@@ -1239,7 +1234,7 @@ pub(crate) async fn setup_composefs_boot(
     let mut repo = open_composefs_repo(&root_setup.physical_root)?;
     repo.set_insecure(allow_missing_fsverity);
 
-    let mut fs = create_composefs_filesystem(&repo, image_id, None)?;
+    let mut fs = create_composefs_filesystem(&repo, &pull_result.config_digest, None)?;
     let entries = fs.transform_for_boot(&repo)?;
     let id = fs.commit_image(&repo, None)?;
     let mounted_fs = Dir::reopen_dir(
@@ -1307,11 +1302,7 @@ pub(crate) async fn setup_composefs_boot(
         None,
         boot_type,
         boot_digest,
-        &get_container_manifest_and_config(&get_imgref(
-            &state.source.imageref.transport.to_string(),
-            &state.source.imageref.name,
-        ))
-        .await?,
+        &pull_result.manifest_digest,
         allow_missing_fsverity,
     )
     .await?;
