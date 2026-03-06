@@ -221,7 +221,6 @@ pub(crate) async fn delete_composefs_deployment(
     deployment_id: &str,
     storage: &Storage,
     booted_cfs: &BootedComposefs,
-    dry_run: bool,
 ) -> Result<()> {
     const COMPOSEFS_DELETE_JOURNAL_ID: &str = "2a1f0e9d8c7b6a5f4e3d2c1b0a9f8e7d6";
 
@@ -276,7 +275,7 @@ pub(crate) async fn delete_composefs_deployment(
 
     delete_depl_boot_entries(&depl_to_del, &storage, deleting_staged)?;
 
-    composefs_gc(storage, booted_cfs, dry_run).await?;
+    composefs_gc(storage, booted_cfs, true).await?;
 
     Ok(())
 }

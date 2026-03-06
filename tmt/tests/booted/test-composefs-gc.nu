@@ -10,6 +10,8 @@ use tap.nu
 let st = bootc status --json | from json
 let booted = $st.status.booted.image
 
+let dir_prefix = "bootc_composefs-"
+
 if not (tap is_composefs) or ($st.status.booted.composefs.bootType | str downcase) == "uki" {
     exit 0
 }
@@ -111,15 +113,17 @@ def third_boot [] {
         "/sysroot/boot"
     }
 
-    assert ($"($boot_dir)/($booted_verity)" | path exists)
+    print $"bootdir ($boot_dir)"
+
+    assert ($"($boot_dir)/($dir_prefix)($booted_verity)" | path exists)
 
     # This is for the rollback, but since the rollback and the very
     # first boot have the same kernel + initrd pair, and this rollback
     # was deployed after the first boot, we will still be using the very
     # first verity for the boot binary name
-    assert ($"($boot_dir)/(cat /var/first-verity)" | path exists)
+    assert ($"($boot_dir)/($dir_prefix)(cat /var/first-verity)" | path exists)
 
-    echo $"($boot_dir)/($booted_verity)" | save /var/to-be-deleted-kernel
+    echo $"($boot_dir)/($dir_prefix)(cat /var/first-verity)" | save /var/to-be-deleted-kernel
 
     # Now we create a new image derived from the current kernel + initrd
     # Switching to this and rebooting should remove the old kernel + initrd
@@ -135,6 +139,14 @@ def third_boot [] {
 }
 
 def fourth_boot [] {
+    let bootloader = (bootc status --json | from json).status.booted.composefs.bootloader
+
+    if ($bootloader | str downcase) == "systemd" {
+        # TODO: Some concrete API for this would be great
+        mkdir /var/tmp/efi
+        mount /dev/vda2 /var/tmp/efi
+    }
+
     assert equal $booted.image.image "localhost/bootc-final"
     assert (not ((cat /var/to-be-deleted-kernel | path exists)))
 
