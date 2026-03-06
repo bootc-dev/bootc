@@ -4,6 +4,7 @@ use camino::Utf8PathBuf;
 use cap_std_ext::cap_std::{self, fs::Dir};
 use clap::Parser;
 
+mod anaconda;
 mod container;
 mod hostpriv;
 mod install;
@@ -47,6 +48,8 @@ pub(crate) enum Opt {
         #[clap(long)]
         warn: bool,
     },
+    /// Test bootc installation via Anaconda with a local container image
+    AnacondaTest(anaconda::AnacondaTestArgs),
 }
 
 fn main() {
@@ -61,6 +64,7 @@ fn main() {
             let root = &Dir::open_ambient_dir(&rootfs, cap_std::ambient_authority()).unwrap();
             selinux::verify_selinux_recurse(root, warn)
         }
+        Opt::AnacondaTest(args) => anaconda::run_anaconda_test(&args),
     };
     if let Err(e) = r {
         eprintln!("error: {e:?}");

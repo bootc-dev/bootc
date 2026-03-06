@@ -304,10 +304,45 @@ jobs:
           name: tmt-log-PR-${{ github.event.number }}-fedora-43-coreos-${{ env.ARCH }}
           path: /var/tmp/tmt
 
+  # Test the container export -> Anaconda liveimg install path.
+  # Builds localhost/bootc, exports as tarball, installs via Anaconda in QEMU,
+  # and verifies the resulting disk boots.
+  test-container-export:
+    needs: package
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v6
+      - name: Bootc Ubuntu Setup
+        uses: bootc-dev/actions/bootc-ubuntu-setup@main
+        with:
+          libvirt: true
+
+      - name: Setup env
+        run: |
+          echo "BOOTC_base=quay.io/centos-bootc/centos-bootc:stream10" >> $GITHUB_ENV
+
+      - name: Download package artifacts
+        uses: actions/download-artifact@v7
+        with:
+          name: packages-centos-10
+          path: target/packages/
+
+      - name: Build and run container export test
+        run: |
+          BOOTC_SKIP_PACKAGE=1 just test-container-export
+
+      - name: Archive test logs
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: container-export-test-${{ env.ARCH }}
+          path: target/anaconda-test/*.log
+
   # Sentinel job for required checks - configure this job name in repository settings
   required-checks:
     if: always()
-    needs: [cargo-deny, validate, package, test-integration, test-coreos]
+    needs: [cargo-deny, validate, package, test-integration, test-coreos, test-container-export]
     runs-on: ubuntu-latest
     steps:
       - run: exit 1
@@ -316,4 +351,5 @@ jobs:
           needs.validate.result != 'success' ||
           needs.package.result != 'success' ||
           needs.test-integration.result != 'success' ||
-          needs.test-coreos.result != 'success'
+          needs.test-coreos.result != 'success' ||
+          needs.test-container-export.result != 'success'
