@@ -182,8 +182,15 @@ execute:
     test:
       - /tmt/tests/tests/test-34-user-agent
 
+/plan-35-upgrade-preflight-disk-check:
+  summary: Verify pre-flight disk space check rejects images with inflated layer sizes
+  discover:
+    how: fmf
+    test:
+      - /tmt/tests/tests/test-35-upgrade-preflight-disk-check
+
 /plan-36-rollback:
-  summary: Test bootc rollback functionality through image switch and rollback cycle
+  summary: Test bootc rollback functionality
   discover:
     how: fmf
     test:
@@ -202,4 +209,12 @@ execute:
     how: fmf
     test:
       - /tmt/tests/tests/test-38-install-bootloader-none
+
+/plan-39-composefs-upgrade:
+  summary: Test composefs upgrade with pre-built (optionally sealed) image
+  discover:
+    how: fmf
+    test:
+      - /tmt/tests/tests/test-39-composefs-upgrade
+  extra-try_bind_storage: true
 # END GENERATED PLANS
