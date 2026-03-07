@@ -3,10 +3,13 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 
-use ostree_ext::composefs::fsverity::{FsVerityHashValue, Sha512HashValue};
-use ostree_ext::composefs_boot::{BootOps, bootloader::BootEntry as ComposefsBootEntry};
-use ostree_ext::composefs_oci::{
-    image::create_filesystem as create_composefs_filesystem, pull as composefs_oci_pull,
+use cfsctl::composefs;
+use cfsctl::composefs_boot;
+use cfsctl::composefs_oci;
+use composefs::fsverity::{FsVerityHashValue, Sha512HashValue};
+use composefs_boot::{BootOps, bootloader::BootEntry as ComposefsBootEntry};
+use composefs_oci::{
+    PullResult, image::create_filesystem as create_composefs_filesystem, pull as composefs_oci_pull,
 };
 
 use ostree_ext::container::ImageReference as OstreeExtImgRef;
@@ -24,7 +27,7 @@ pub(crate) async fn initialize_composefs_repository(
     state: &State,
     root_setup: &RootSetup,
     allow_missing_fsverity: bool,
-) -> Result<(String, impl FsVerityHashValue)> {
+) -> Result<PullResult<Sha512HashValue>> {
     const COMPOSEFS_REPO_INIT_JOURNAL_ID: &str = "5d4c3b2a1f0e9d8c7b6a5f4e3d2c1b0a9";
 
     let rootfs_dir = &root_setup.physical_root;
@@ -117,14 +120,14 @@ pub(crate) async fn pull_composefs_repo(
 
     tracing::debug!("Image to pull {final_imgref}");
 
-    let (id, verity) = composefs_oci_pull(&Arc::new(repo), &final_imgref, None, None)
+    let pull_result = composefs_oci_pull(&Arc::new(repo), &final_imgref, None, None)
         .await
         .context("Pulling composefs repo")?;
 
     tracing::info!(
         message_id = COMPOSEFS_PULL_JOURNAL_ID,
-        id = id,
-        verity = verity.to_hex(),
+        id = pull_result.config_digest,
+        verity = pull_result.config_verity.to_hex(),
         "Pulled image into repository"
     );
 
@@ -132,7 +135,7 @@ pub(crate) async fn pull_composefs_repo(
     repo.set_insecure(allow_missing_fsverity);
 
     let mut fs: crate::store::ComposefsFilesystem =
-        create_composefs_filesystem(&repo, &id, None)
+        create_composefs_filesystem(&repo, &pull_result.config_digest, None)
             .context("Failed to create composefs filesystem")?;
 
     let entries = fs.transform_for_boot(&repo)?;

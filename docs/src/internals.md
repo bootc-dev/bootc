@@ -117,6 +117,4 @@ The following rustdoc documentation is generated from the source code with
 
 These crates are pulled from git and are not published to crates.io (so not on docs.rs).
 
-- [composefs](internals/composefs/index.html) - Core composefs library
-- [composefs-boot](internals/composefs_boot/index.html) - Boot support for composefs
-- [composefs-oci](internals/composefs_oci/index.html) - OCI integration for composefs
+- [cfsctl](internals/cfsctl/index.html) - composefs-rs entrypoint crate (re-exports composefs, composefs-boot, composefs-oci)

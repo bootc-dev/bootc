@@ -11,6 +11,7 @@ use bootc_kernel_cmdline::utf8::Cmdline;
 use camino::Utf8PathBuf;
 use cap_std_ext::cap_std::fs::Dir;
 use cap_std_ext::dirext::CapStdExtDirExt;
+use cfsctl::composefs_boot;
 use serde::Serialize;
 
 use crate::bootc_composefs::boot::EFI_LINUX;

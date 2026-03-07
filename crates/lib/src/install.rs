@@ -201,6 +201,7 @@ use crate::task::Task;
 use crate::utils::sigpolicy_from_opt;
 use bootc_kernel_cmdline::{INITRD_ARG_PREFIX, ROOTFLAGS, bytes, utf8};
 use bootc_mount::Filesystem;
+use cfsctl::composefs;
 use composefs::fsverity::FsVerityHashValue;
 
 /// The toplevel boot directory
@@ -1952,18 +1953,22 @@ async fn install_to_filesystem_impl(
     if state.composefs_options.composefs_backend {
         // Load a fd for the mounted target physical root
 
-        let (id, verity) = initialize_composefs_repository(
+        let pull_result = initialize_composefs_repository(
             state,
             rootfs,
             state.composefs_options.allow_missing_verity,
         )
         .await?;
-        tracing::info!("id: {id}, verity: {}", verity.to_hex());
+        tracing::info!(
+            "id: {}, verity: {}",
+            pull_result.config_digest,
+            pull_result.config_verity.to_hex()
+        );
 
         setup_composefs_boot(
             rootfs,
             state,
-            &id,
+            &pull_result.config_digest,
             state.composefs_options.allow_missing_verity,
         )
         .await?;

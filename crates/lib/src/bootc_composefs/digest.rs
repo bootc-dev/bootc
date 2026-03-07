@@ -8,6 +8,8 @@ use anyhow::{Context, Result};
 use camino::Utf8Path;
 use cap_std_ext::cap_std;
 use cap_std_ext::cap_std::fs::Dir;
+use cfsctl::composefs;
+use cfsctl::composefs_boot;
 use composefs::dumpfile;
 use composefs::fsverity::FsVerityHashValue;
 use composefs_boot::BootOps as _;

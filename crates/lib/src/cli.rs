@@ -12,19 +12,22 @@ use anyhow::{Context, Result, anyhow, ensure};
 use camino::{Utf8Path, Utf8PathBuf};
 use cap_std_ext::cap_std;
 use cap_std_ext::cap_std::fs::Dir;
+use cfsctl::composefs;
+use cfsctl::composefs_boot;
+use cfsctl::composefs_oci;
 use clap::CommandFactory;
 use clap::Parser;
 use clap::ValueEnum;
 use composefs::dumpfile;
+use composefs::fsverity;
+use composefs::fsverity::FsVerityHashValue;
+use composefs::splitstream::SplitStreamWriter;
 use composefs_boot::BootOps as _;
 use etc_merge::{compute_diff, print_diff};
 use fn_error_context::context;
 use indoc::indoc;
 use ostree::gio;
 use ostree_container::store::PrepareResult;
-use ostree_ext::composefs::fsverity;
-use ostree_ext::composefs::fsverity::FsVerityHashValue;
-use ostree_ext::composefs::splitstream::SplitStreamWriter;
 use ostree_ext::container as ostree_container;
 
 use ostree_ext::keyfileext::KeyFileExt;
@@ -1611,12 +1614,15 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
                 };
 
                 let imgref = format!("containers-storage:{image}");
-                let (imgid, verity) = composefs_oci::pull(&repo, &imgref, None, Some(proxycfg))
+                let pull_result = composefs_oci::pull(&repo, &imgref, None, Some(proxycfg))
                     .await
                     .context("Pulling image")?;
-                let imgid = hex::encode(imgid);
-                let mut fs = composefs_oci::image::create_filesystem(&repo, &imgid, Some(&verity))
-                    .context("Populating fs")?;
+                let mut fs = composefs_oci::image::create_filesystem(
+                    &repo,
+                    &pull_result.config_digest,
+                    Some(&pull_result.config_verity),
+                )
+                .context("Populating fs")?;
                 fs.transform_for_boot(&repo).context("Preparing for boot")?;
                 let id = fs.compute_image_id();
                 println!("{}", id.to_hex());

@@ -24,9 +24,9 @@
 // Re-export our dependencies.  See https://gtk-rs.org/blog/2021/06/22/new-release.html
 // "Dependencies are re-exported".  Users will need e.g. `gio::File`, so this avoids
 // them needing to update matching versions.
-pub use composefs;
-pub use composefs_boot;
-pub use composefs_oci;
+pub use cfsctl::composefs;
+pub use cfsctl::composefs_boot;
+pub use cfsctl::composefs_oci;
 pub use containers_image_proxy;
 pub use containers_image_proxy::oci_spec;
 pub use ostree;

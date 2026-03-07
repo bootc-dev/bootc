@@ -16,10 +16,11 @@ use camino::Utf8PathBuf;
 use cap_std::fs::{Dir, MetadataExt as _};
 use cap_std_ext::cap_std;
 use cap_std_ext::dirext::CapStdExtDirExt;
+use cfsctl::composefs;
 use fn_error_context::context;
 use linkme::distributed_slice;
+use ostree_ext::ostree;
 use ostree_ext::ostree_prepareroot::Tristate;
-use ostree_ext::{composefs, ostree};
 
 use crate::store::Storage;
 

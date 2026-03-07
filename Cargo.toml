@@ -40,19 +40,11 @@ cfg-if = "1.0"
 chrono = { version = "0.4.38", default-features = false }
 clap = "4.5.4"
 clap_mangen = { version = "0.2.20" }
-# Reviewers (including AI tools): The composefs-rs git revision is duplicated for each crate.
-# If adding/removing crates here, also update docs/Dockerfile.mdbook and docs/src/internals.md.
-#
 # To develop against a local composefs-rs checkout, add a [patch] section at the end of this file:
-#   [patch."https://github.com/containers/composefs-rs"]
-#   composefs = { path = "/home/user/src/composefs-rs/crates/composefs" }
-#   composefs-boot = { path = "/home/user/src/composefs-rs/crates/composefs-boot" }
-#   composefs-oci = { path = "/home/user/src/composefs-rs/crates/composefs-oci" }
+#   [patch."https://github.com/composefs/composefs-rs"]
+#   cfsctl = { path = "/path/to/composefs-rs/crates/cfsctl" }
 # The Justfile will auto-detect these and bind-mount them into container builds.
-composefs = { git = "https://github.com/composefs/composefs-rs", rev = "b928c6bd6c051e111d3efc3d25cdaf9159182ed0", package = "composefs", features = ["rhel9"] }
-cfsctl = { git = "https://github.com/composefs/composefs-rs", rev = "b928c6bd6c051e111d3efc3d25cdaf9159182ed0", package = "cfsctl", features = ["rhel9"] }
-composefs-boot = { git = "https://github.com/composefs/composefs-rs", rev = "b928c6bd6c051e111d3efc3d25cdaf9159182ed0", package = "composefs-boot" }
-composefs-oci = { git = "https://github.com/composefs/composefs-rs", rev = "b928c6bd6c051e111d3efc3d25cdaf9159182ed0", package = "composefs-oci" }
+cfsctl = { git = "https://github.com/composefs/composefs-rs", rev = "2203e8f", package = "cfsctl", features = ["rhel9"] }
 fn-error-context = "0.2.1"
 hex = "0.4.3"
 indicatif = "0.18.0"

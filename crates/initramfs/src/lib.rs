@@ -21,6 +21,8 @@ use rustix::{
 };
 use serde::Deserialize;
 
+use cfsctl::composefs;
+use cfsctl::composefs_boot;
 use composefs::{
     fsverity::{FsVerityHashValue, Sha512HashValue},
     mount::FsHandle,

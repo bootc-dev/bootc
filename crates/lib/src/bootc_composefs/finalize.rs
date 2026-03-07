@@ -11,6 +11,7 @@ use bootc_initramfs_setup::mount_composefs_image;
 use bootc_mount::tempmount::TempMount;
 use cap_std_ext::cap_std::{ambient_authority, fs::Dir};
 use cap_std_ext::dirext::CapStdExtDirExt;
+use cfsctl::composefs;
 use composefs::generic_tree::{Directory, Stat};
 use etc_merge::{compute_diff, merge, print_diff, traverse_etc};
 use rustix::fs::{fsync, renameat};

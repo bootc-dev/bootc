@@ -74,19 +74,21 @@ use cap_std_ext::{
     cap_std::{ambient_authority, fs::Dir},
     dirext::CapStdExtDirExt,
 };
+use cfsctl::composefs;
+use cfsctl::composefs_boot;
+use cfsctl::composefs_oci;
 use clap::ValueEnum;
 use composefs::fs::read_file;
+use composefs::fsverity::{FsVerityHashValue, Sha512HashValue};
 use composefs::tree::RegularFile;
 use composefs_boot::BootOps;
-use composefs_boot::bootloader::{EFI_ADDON_DIR_EXT, EFI_ADDON_FILE_EXT, EFI_EXT, PEType};
-use fn_error_context::context;
-use ostree_ext::composefs::fsverity::{FsVerityHashValue, Sha512HashValue};
-use ostree_ext::composefs_boot::bootloader::UsrLibModulesVmlinuz;
-use ostree_ext::composefs_boot::{
-    bootloader::BootEntry as ComposefsBootEntry, cmdline::get_cmdline_composefs,
-    os_release::OsReleaseInfo, uki,
+use composefs_boot::bootloader::{
+    BootEntry as ComposefsBootEntry, EFI_ADDON_DIR_EXT, EFI_ADDON_FILE_EXT, EFI_EXT, PEType,
+    UsrLibModulesVmlinuz,
 };
-use ostree_ext::composefs_oci::image::create_filesystem as create_composefs_filesystem;
+use composefs_boot::{cmdline::get_cmdline_composefs, os_release::OsReleaseInfo, uki};
+use composefs_oci::image::create_filesystem as create_composefs_filesystem;
+use fn_error_context::context;
 use rustix::{mount::MountFlags, path::Arg};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -333,10 +335,10 @@ fn compute_boot_digest(
 /// * repo - The composefs repository
 #[context("Computing boot digest")]
 pub(crate) fn compute_boot_digest_uki(uki: &[u8]) -> Result<String> {
-    let vmlinuz = composefs_boot::uki::get_section(uki, ".linux")
-        .ok_or_else(|| anyhow::anyhow!(".linux not present"))??;
+    let vmlinuz =
+        uki::get_section(uki, ".linux").ok_or_else(|| anyhow::anyhow!(".linux not present"))??;
 
-    let initramfs = composefs_boot::uki::get_section(uki, ".initrd")
+    let initramfs = uki::get_section(uki, ".initrd")
         .ok_or_else(|| anyhow::anyhow!(".initrd not present"))??;
 
     let mut hasher = openssl::hash::Hasher::new(openssl::hash::MessageDigest::sha256())

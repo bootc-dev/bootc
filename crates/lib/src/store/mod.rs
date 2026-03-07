@@ -36,6 +36,9 @@ use ostree_ext::sysroot::SysrootLock;
 use ostree_ext::{gio, ostree};
 use rustix::fs::Mode;
 
+use cfsctl::composefs;
+use composefs::fsverity::Sha512HashValue;
+
 use crate::bootc_composefs::boot::{EFI_LINUX, mount_esp};
 use crate::bootc_composefs::status::{ComposefsCmdline, composefs_booted, get_bootloader};
 use crate::lsm;
@@ -44,9 +47,9 @@ use crate::spec::{Bootloader, ImageStatus};
 use crate::utils::{deployment_fd, open_dir_remount_rw};
 
 /// See <https://github.com/containers/composefs-rs/issues/159>
-pub type ComposefsRepository =
-    composefs::repository::Repository<composefs::fsverity::Sha512HashValue>;
-pub type ComposefsFilesystem = composefs::tree::FileSystem<composefs::fsverity::Sha512HashValue>;
+pub type ComposefsRepository = composefs::repository::Repository<Sha512HashValue>;
+/// A composefs filesystem type alias
+pub type ComposefsFilesystem = composefs::tree::FileSystem<Sha512HashValue>;
 
 /// Path to the physical root
 pub const SYSROOT: &str = "sysroot";

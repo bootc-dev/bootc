@@ -17,6 +17,7 @@ use anyhow::Context;
 use cap_std_ext::cap_std;
 use cap_std_ext::cap_std::fs::{Dir as CapStdDir, MetadataExt, Permissions, PermissionsExt};
 use cap_std_ext::dirext::CapStdExtDirExt;
+use cfsctl::composefs;
 use composefs::fsverity::{FsVerityHashValue, Sha256HashValue, Sha512HashValue};
 use composefs::generic_tree::{Directory, Inode, Leaf, LeafContent, Stat};
 use composefs::tree::ImageError;

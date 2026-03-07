@@ -2,6 +2,8 @@ use std::{fs::File, os::fd::AsRawFd};
 
 use anyhow::{Context, Result};
 use cap_std_ext::cap_std::{ambient_authority, fs::Dir};
+use cfsctl::composefs;
+use cfsctl::composefs_oci;
 use composefs::splitstream::SplitStreamData;
 use composefs_oci::open_config;
 use ocidir::{OciDir, oci_spec::image::Platform};

@@ -8,7 +8,7 @@ use std::str::FromStr;
 use anyhow::{Context, Result};
 use cap_std::fs::Dir;
 use cap_std_ext::cap_std;
-use composefs::fsverity as composefs_fsverity;
+use cfsctl::composefs::fsverity as composefs_fsverity;
 use composefs_fsverity::Sha256HashValue;
 use ostree::gio;
 
@@ -63,7 +63,7 @@ fn enable_fsverity_in_objdir(d: &Dir) -> anyhow::Result<()> {
         };
         let f = d.open(&name)?;
         let enabled =
-            composefs::fsverity::measure_verity_opt::<Sha256HashValue>(f.as_fd())?.is_some();
+            composefs_fsverity::measure_verity_opt::<Sha256HashValue>(f.as_fd())?.is_some();
         if !enabled {
             // NOTE: We're not using the _with_copy API here because for us it'd require
             // copying all the metadata too which is mildly tedious.

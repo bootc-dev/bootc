@@ -12,7 +12,7 @@ rustix = { workspace = true }
 openssl = { workspace = true }
 hex = { workspace = true }
 tracing = { workspace = true }
-composefs = { workspace = true }
+cfsctl = { workspace = true }
 fn-error-context = { workspace = true }
 owo-colors = { workspace = true }
 anstream = { workspace = true }

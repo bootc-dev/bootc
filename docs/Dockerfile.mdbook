@@ -23,7 +23,7 @@ set -xeuo pipefail
 # Build rustdoc for internal crates
 cargo doc --workspace --no-deps --document-private-items
 # Also build docs for key external git dependencies (not on docs.rs)
-cargo doc --no-deps --document-private-items -p composefs -p composefs-boot -p composefs-oci
+cargo doc --no-deps --document-private-items -p cfsctl
 # Build mdbook
 cd docs
 mdbook-mermaid install .

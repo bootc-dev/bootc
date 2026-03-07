@@ -6,6 +6,8 @@
 
 use anyhow::{Context, Result};
 use cap_std_ext::{cap_std::fs::Dir, dirext::CapStdExtDirExt};
+use cfsctl::composefs;
+use cfsctl::composefs_boot;
 use composefs::repository::GcResult;
 use composefs_boot::bootloader::EFI_EXT;
 

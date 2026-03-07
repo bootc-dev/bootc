@@ -7,6 +7,7 @@ use crate::{
 };
 use anyhow::Result;
 use bootc_kernel_cmdline::utf8::Cmdline;
+use cfsctl::composefs_boot;
 use fn_error_context::context;
 
 fn get_uki(storage: &Storage, deployment_verity: &str) -> Result<Vec<u8>> {

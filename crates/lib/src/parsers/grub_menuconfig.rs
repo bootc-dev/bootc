@@ -6,6 +6,7 @@ use std::fmt::Display;
 
 use anyhow::Result;
 use camino::Utf8PathBuf;
+use cfsctl::composefs_boot;
 use composefs_boot::bootloader::EFI_EXT;
 use nom::{
     Err, IResult, Parser,

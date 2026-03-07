@@ -19,9 +19,7 @@ cap-std-ext = { workspace = true, features = ["fs_utf8"] }
 chrono = { workspace = true }
 clap = { workspace = true, features = ["derive","cargo"] }
 clap_mangen = { workspace = true, optional = true }
-composefs = { workspace = true }
-composefs-boot = { workspace = true }
-composefs-oci = { workspace = true }
+cfsctl = { workspace = true }
 fn-error-context = { workspace = true }
 hex = { workspace = true }
 indicatif = { workspace = true }
