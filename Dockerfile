@@ -216,9 +216,4 @@ fi
 EORUN
 # And finally, test our linting
 # lint: allow non-tmpfs - we want to detect leaked files in /run and /tmp
-RUN --network=none <<EORUN
-set -xeuo pipefail
-# workaround for https://github.com/containers/buildah/pull/6233
-rm -vrf /run/systemd
-bootc container lint --fatal-warnings
-EORUN
+RUN --network=none bootc container lint --fatal-warnings

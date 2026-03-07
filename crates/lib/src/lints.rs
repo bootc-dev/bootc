@@ -800,6 +800,14 @@ fn check_boot(root: &Dir, config: &LintExecutionConfig) -> LintResult {
 /// These are tmpfs at runtime and any content is build-time artifacts.
 const RUNTIME_ONLY_DIRS: &[&str] = &["run", "tmp"];
 
+/// Files injected by container runtimes (podman/buildah) that should be
+/// ignored when linting. Podman bind-mounts stub-resolv.conf for DNS
+/// resolution, creating parent directories as a side effect.
+/// As of only recently, buildah will clean this up.
+/// See <https://github.com/containers/buildah/pull/6233>
+/// See <https://github.com/bootc-dev/bootc/issues/2050>
+const CONTAINER_RUNTIME_FILES: &[&str] = &["/run/systemd/resolve/stub-resolv.conf"];
+
 #[distributed_slice(LINTS)]
 static LINT_RUNTIME_ONLY_DIRS: Lint = Lint::new_warning(
     "nonempty-run-tmp",
@@ -816,7 +824,11 @@ fn check_runtime_only_dirs(root: &Dir, config: &LintExecutionConfig) -> LintResu
     let mut found_content = BTreeSet::new();
 
     for dirname in RUNTIME_ONLY_DIRS {
-        let Some(d) = root.open_dir_optional(dirname)? else {
+        // Use open_dir_noxdev so that if the directory is a mount point
+        // (e.g. the user passed --mount=type=tmpfs,target=/run) we skip
+        // it — content on a different filesystem is ephemeral and won't
+        // end up in the image.
+        let Some(d) = root.open_dir_noxdev(dirname)? else {
             continue;
         };
 
@@ -837,6 +849,11 @@ fn check_runtime_only_dirs(root: &Dir, config: &LintExecutionConfig) -> LintResu
         )?;
     }
 
+    // Remove known container-runtime injected paths under /run
+    // (e.g. stub-resolv.conf and its parent directories if they have
+    // no other children).
+    prune_known_run_paths(&mut found_content);
+
     if found_content.is_empty() {
         return lint_ok();
     }
@@ -844,6 +861,38 @@ fn check_runtime_only_dirs(root: &Dir, config: &LintExecutionConfig) -> LintResu
     let header = "Found content in runtime-only directories (/run, /tmp)";
     let items = found_content.iter().map(PathQuotedDisplay::new);
     format_lint_err_from_items(config, header, items)
+}
+
+/// Remove known container-runtime injected paths from `/run`.
+///
+/// Podman/buildah inject files like `/run/systemd/resolve/stub-resolv.conf`
+/// for DNS resolution, creating the parent directory tree as a side effect.
+/// The file itself is usually already filtered out (it's a bind mount detected
+/// by `is_mountpoint()`), but the parent directories `/run/systemd` and
+/// `/run/systemd/resolve` remain.
+///
+/// Remove the known file if present, then walk up removing each parent
+/// under `/run` that has no remaining children in the set.
+fn prune_known_run_paths(paths: &mut BTreeSet<Utf8PathBuf>) {
+    let run_prefix = Utf8Path::new("/run");
+    for known in CONTAINER_RUNTIME_FILES {
+        let known = Utf8Path::new(known);
+        paths.remove(known);
+        // Walk up the parent directories, removing each one only if
+        // nothing else in the set is underneath it.
+        let mut dir = known.parent();
+        while let Some(d) = dir {
+            if !d.starts_with(run_prefix) || d == run_prefix {
+                break;
+            }
+            let has_other_children = paths.iter().any(|p| p != d && p.starts_with(d));
+            if has_other_children {
+                break;
+            }
+            paths.remove(d);
+            dir = d.parent();
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1067,27 +1116,74 @@ mod tests {
         let root = &fixture()?;
         let config = &LintExecutionConfig::default();
 
-        // Empty directories should pass
         root.create_dir_all("run")?;
         root.create_dir_all("tmp")?;
+
+        // Simulate the exact scenario from https://github.com/bootc-dev/bootc/issues/2050:
+        // podman creates /run/systemd/resolve/stub-resolv.conf as a bind mount
+        // for DNS, leaving the directory tree behind. When /run/systemd/resolve
+        // only contains the known runtime file (or is empty because the file is
+        // a mount point that was filtered), the whole tree should be pruned.
+        root.create_dir_all("run/systemd/resolve")?;
         check_runtime_only_dirs(root, config).unwrap().unwrap();
 
-        // Content in /run should fail
-        root.create_dir("run/some-mount-stub")?;
+        // Same but with the stub-resolv.conf file actually present
+        root.write("run/systemd/resolve/stub-resolv.conf", "data")?;
+        check_runtime_only_dirs(root, config).unwrap().unwrap();
+        root.remove_file("run/systemd/resolve/stub-resolv.conf")?;
+
+        // If there's *other* content under /run/systemd, we should still warn
+        // about it (the pruning only removes dirs that are solely parents of
+        // known runtime files).
+        root.write("run/systemd/resolve/something-else", "data")?;
         let Err(e) = check_runtime_only_dirs(root, config).unwrap() else {
-            unreachable!()
+            unreachable!("expected warning for unknown file under /run/systemd")
         };
-        assert!(e.to_string().contains("/run/some-mount-stub"));
-        root.remove_dir("run/some-mount-stub")?;
-        check_runtime_only_dirs(root, config).unwrap().unwrap();
+        let msg = e.to_string();
+        assert!(
+            msg.contains("/run/systemd/resolve/something-else"),
+            "should warn about the unknown file: {msg}"
+        );
+        // The parent dirs should still appear since they have real children
+        assert!(
+            msg.contains("/run/systemd"),
+            "parent dirs with real children should appear: {msg}"
+        );
+        root.remove_file("run/systemd/resolve/something-else")?;
 
-        // Content in /tmp should fail
+        // Unknown directories should still warn
+        root.create_dir("run/dnf")?;
+        let Err(e) = check_runtime_only_dirs(root, config).unwrap() else {
+            unreachable!("expected warning for /run/dnf")
+        };
+        let msg = e.to_string();
+        assert!(
+            msg.contains("/run/dnf"),
+            "should warn about /run/dnf: {msg}"
+        );
+        assert!(
+            !msg.contains("/run/systemd"),
+            "should not mention /run/systemd: {msg}"
+        );
+        root.remove_dir("run/dnf")?;
+
+        // Files in /run should warn
+        root.write("run/leaked-file", "data")?;
+        let Err(e) = check_runtime_only_dirs(root, config).unwrap() else {
+            unreachable!("expected warning for /run/leaked-file")
+        };
+        assert!(e.to_string().contains("/run/leaked-file"));
+        root.remove_file("run/leaked-file")?;
+
+        // Files in /tmp should warn
         root.write("tmp/build-artifact", "some data")?;
         let Err(e) = check_runtime_only_dirs(root, config).unwrap() else {
-            unreachable!()
+            unreachable!("expected warning for /tmp/build-artifact")
         };
         assert!(e.to_string().contains("/tmp/build-artifact"));
         root.remove_file("tmp/build-artifact")?;
+
+        // Clean state should pass
         check_runtime_only_dirs(root, config).unwrap().unwrap();
 
         Ok(())
