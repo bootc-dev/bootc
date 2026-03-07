@@ -369,6 +369,13 @@ impl Storage {
             .ok_or_else(|| anyhow::anyhow!("Boot dir not found"))
     }
 
+    /// Returns the mounted `esp` if it exists
+    pub(crate) fn require_esp(&self) -> Result<&TempMount> {
+        self.esp
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("ESP not found"))
+    }
+
     /// Access the underlying ostree repository
     pub(crate) fn get_ostree(&self) -> Result<&SysrootLock> {
         self.ostree

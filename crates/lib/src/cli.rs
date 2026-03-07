@@ -34,6 +34,7 @@ use schemars::schema_for;
 use serde::{Deserialize, Serialize};
 
 use crate::bootc_composefs::delete::delete_composefs_deployment;
+use crate::bootc_composefs::gc::composefs_gc;
 use crate::bootc_composefs::soft_reboot::{prepare_soft_reboot_composefs, reset_soft_reboot};
 use crate::bootc_composefs::{
     digest::{compute_composefs_digest, new_temp_composefs_repo},
@@ -651,6 +652,10 @@ pub(crate) enum InternalsOpts {
         reboot: bool,
         #[clap(long, conflicts_with = "reboot")]
         reset: bool,
+    },
+    ComposefsGC {
+        #[clap(long)]
+        dry_run: bool,
     },
 }
 
@@ -1898,6 +1903,37 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
                             reboot,
                         )
                         .await
+                    }
+                }
+            }
+            InternalsOpts::ComposefsGC { dry_run } => {
+                let storage = &get_storage().await?;
+
+                match storage.kind()? {
+                    BootedStorageKind::Ostree(..) => {
+                        anyhow::bail!("composefs-gc only works for composefs backend");
+                    }
+
+                    BootedStorageKind::Composefs(booted_cfs) => {
+                        let gc_result = composefs_gc(storage, &booted_cfs, dry_run).await?;
+
+                        if dry_run {
+                            println!("Dry run (no files deleted)");
+                        }
+
+                        println!(
+                            "Objects: {} removed ({} bytes)",
+                            gc_result.objects_removed, gc_result.objects_bytes
+                        );
+
+                        if gc_result.images_pruned > 0 || gc_result.streams_pruned > 0 {
+                            println!(
+                                "Pruned symlinks: {} images, {} streams",
+                                gc_result.images_pruned, gc_result.streams_pruned
+                            );
+                        }
+
+                        Ok(())
                     }
                 }
             }

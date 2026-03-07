@@ -28,14 +28,7 @@ pub async fn export_repo_to_image(
 
     let mut depl_verity = None;
 
-    for depl in host
-        .status
-        .booted
-        .iter()
-        .chain(host.status.staged.iter())
-        .chain(host.status.rollback.iter())
-        .chain(host.status.other_deployments.iter())
-    {
+    for depl in host.list_deployments() {
         let img = &depl.image.as_ref().unwrap().image;
 
         // Not checking transport here as we'll be pulling from the repo anyway

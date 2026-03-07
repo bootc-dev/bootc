@@ -117,7 +117,7 @@ test-container: build build-units
     podman run --rm --env=BOOTC_variant={{variant}} --env=BOOTC_base={{base}} --env=BOOTC_boot_type={{boot_type}} {{base_img}} bootc-integration-tests container
 
 [group('core')]
-test-composefs bootloader filesystem boot_type seal_state:
+test-composefs bootloader filesystem boot_type seal_state *ARGS:
     @if [ "{{seal_state}}" = "sealed" ] && [ "{{filesystem}}" = "xfs" ]; then \
         echo "Invalid combination: sealed requires filesystem that supports fs-verity (ext4, btrfs)"; \
         exit 1; \
@@ -138,6 +138,7 @@ test-composefs bootloader filesystem boot_type seal_state:
                 --filesystem={{filesystem}} \
                 --seal-state={{seal_state}} \
                 --boot-type={{boot_type}} \
+                {{ARGS}} \
                 $(if [ "{{boot_type}}" = "uki" ]; then echo "readonly"; else echo "integration"; fi)
 
 # Run cargo fmt and clippy checks in container
