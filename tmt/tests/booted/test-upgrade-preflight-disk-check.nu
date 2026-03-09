@@ -23,10 +23,17 @@ def main [] {
     # parse ImageConfiguration).  The layer blob need not exist because
     # the disk-space check fires before any layer is fetched.
 
+    # Map the system architecture to OCI image spec naming
+    let oci_arch = match (uname | get machine) {
+        "x86_64" => "amd64",
+        "aarch64" => "arm64",
+        $other => $other,  # s390x, ppc64le, etc. match as-is
+    }
+
     # Minimal OCI image config (empty rootfs, no layers referenced inside config)
     # The config must include a bootable label ("containers.bootc" or "ostree.bootable")
     # so that bootc's require_bootable() check in prepare() passes.
-    let config_content = '{"architecture":"amd64","os":"linux","config":{"Labels":{"containers.bootc":"1"}},"rootfs":{"type":"layers","diff_ids":[]},"history":[{"created_by":"fake layer"}]}'
+    let config_content = $'{"architecture":"($oci_arch)","os":"linux","config":{"Labels":{"containers.bootc":"1"}},"rootfs":{"type":"layers","diff_ids":[]},"history":[{"created_by":"fake layer"}]}'
     let config_digest = $config_content | hash sha256
     let config_size = ($config_content | str length)
 
