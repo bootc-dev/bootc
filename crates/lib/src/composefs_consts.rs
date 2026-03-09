@@ -39,3 +39,6 @@ pub(crate) const BOOTC_FINALIZE_STAGED_SERVICE: &str = "bootc-finalize-staged.se
 
 /// The prefix for the directories containing kernel + initrd
 pub(crate) const TYPE1_BOOT_DIR_PREFIX: &str = "bootc_composefs-";
+
+/// The prefix for names of UKI and UKI Addons
+pub(crate) const UKI_NAME_PREFIX: &str = TYPE1_BOOT_DIR_PREFIX;

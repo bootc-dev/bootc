@@ -1,6 +1,6 @@
 use crate::{
     bootc_composefs::{
-        boot::{BOOTC_UKI_DIR, compute_boot_digest_uki},
+        boot::{BOOTC_UKI_DIR, compute_boot_digest_uki, get_uki_name},
         state::update_boot_digest_in_origin,
     },
     store::Storage,
@@ -12,7 +12,7 @@ use fn_error_context::context;
 fn get_uki(storage: &Storage, deployment_verity: &str) -> Result<Vec<u8>> {
     let uki_dir = storage.require_esp()?.fd.open_dir(BOOTC_UKI_DIR)?;
 
-    let req_fname = format!("{deployment_verity}.efi");
+    let req_fname = get_uki_name(deployment_verity);
 
     for entry in uki_dir.entries_utf8()? {
         let pe = entry?;

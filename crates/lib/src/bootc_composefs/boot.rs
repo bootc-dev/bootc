@@ -91,7 +91,6 @@ use rustix::{mount::MountFlags, path::Arg};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::parsers::bls_config::{BLSConfig, BLSConfigType};
 use crate::task::Task;
 use crate::{
     bootc_composefs::repo::get_imgref,
@@ -109,6 +108,10 @@ use crate::{
     bootc_composefs::status::get_container_manifest_and_config, bootc_kargs::compute_new_kargs,
 };
 use crate::{bootc_composefs::status::get_sorted_grub_uki_boot_entries, install::PostFetchState};
+use crate::{
+    composefs_consts::UKI_NAME_PREFIX,
+    parsers::bls_config::{BLSConfig, BLSConfigType},
+};
 use crate::{
     composefs_consts::{
         BOOT_LOADER_ENTRIES, COMPOSEFS_CMDLINE, ORIGIN_KEY_BOOT, ORIGIN_KEY_BOOT_DIGEST,
@@ -274,8 +277,24 @@ pub(crate) fn secondary_sort_key(os_id: &str) -> String {
 }
 
 /// Returns the name of the directory where we store Type1 boot entries
-pub(crate) fn get_type1_dir_name(depl_verity: &String) -> String {
+pub(crate) fn get_type1_dir_name(depl_verity: &str) -> String {
     format!("{TYPE1_BOOT_DIR_PREFIX}{depl_verity}")
+}
+
+/// Returns the name of a UKI given verity digest
+pub(crate) fn get_uki_name(depl_verity: &str) -> String {
+    format!("{UKI_NAME_PREFIX}{depl_verity}{EFI_EXT}")
+}
+
+/// Returns the name of a UKI Addon directory given verity digest
+pub(crate) fn get_uki_addon_dir_name(depl_verity: &str) -> String {
+    format!("{UKI_NAME_PREFIX}{depl_verity}{EFI_ADDON_DIR_EXT}")
+}
+
+#[allow(dead_code)]
+/// Returns the name of a UKI Addon given verity digest
+pub(crate) fn get_uki_addon_file_name(depl_verity: &str) -> String {
+    format!("{UKI_NAME_PREFIX}{depl_verity}{EFI_ADDON_FILE_EXT}")
 }
 
 /// Compute SHA256Sum of VMlinuz + Initrd
@@ -873,7 +892,7 @@ fn write_pe_to_esp(
         Some(parent) => {
             let renamed_path = match parent.as_str().ends_with(EFI_ADDON_DIR_EXT) {
                 true => {
-                    let dir_name = format!("{}{}", uki_id.to_hex(), EFI_ADDON_DIR_EXT);
+                    let dir_name = get_uki_addon_dir_name(&uki_id.to_hex());
 
                     parent
                         .parent()
@@ -897,7 +916,7 @@ fn write_pe_to_esp(
         .with_context(|| format!("Opening {final_pe_path:?}"))?;
 
     let pe_name = match pe_type {
-        PEType::Uki => &format!("{}{}", uki_id.to_hex(), EFI_EXT),
+        PEType::Uki => &get_uki_name(&uki_id.to_hex()),
         PEType::UkiAddon => file_path
             .components()
             .last()
@@ -1017,7 +1036,7 @@ fn write_systemd_uki_config(
     bls_conf
         .with_title(boot_label.boot_label)
         .with_cfg(BLSConfigType::EFI {
-            efi: format!("/{BOOTC_UKI_DIR}/{}{}", id.to_hex(), EFI_EXT).into(),
+            efi: format!("/{BOOTC_UKI_DIR}/{}", get_uki_name(&id.to_hex())).into(),
         })
         .with_sort_key(primary_sort_key.clone())
         .with_version(boot_label.version.unwrap_or_else(|| id.to_hex()));

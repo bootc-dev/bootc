@@ -14,7 +14,7 @@ use std::fmt::Display;
 use uapi_version::Version;
 
 use crate::bootc_composefs::status::ComposefsCmdline;
-use crate::composefs_consts::COMPOSEFS_CMDLINE;
+use crate::composefs_consts::{COMPOSEFS_CMDLINE, UKI_NAME_PREFIX};
 
 #[derive(Debug, PartialEq, Eq, Default)]
 pub enum BLSConfigType {
@@ -174,14 +174,20 @@ impl BLSConfig {
 
     pub(crate) fn get_verity(&self) -> Result<String> {
         match &self.cfg_type {
-            BLSConfigType::EFI { efi } => Ok(efi
-                .components()
-                .last()
-                .ok_or(anyhow::anyhow!("Empty efi field"))?
-                .to_string()
-                .strip_suffix(EFI_EXT)
-                .ok_or(anyhow::anyhow!("efi doesn't end with .efi"))?
-                .to_string()),
+            BLSConfigType::EFI { efi } => {
+                let name = efi
+                    .components()
+                    .last()
+                    .ok_or(anyhow::anyhow!("Empty efi field"))?
+                    .to_string()
+                    .strip_prefix(UKI_NAME_PREFIX)
+                    .ok_or_else(|| anyhow::anyhow!("efi does not start with custom prefix"))?
+                    .strip_suffix(EFI_EXT)
+                    .ok_or_else(|| anyhow::anyhow!("efi doesn't end with .efi"))?
+                    .to_string();
+
+                Ok(name)
+            }
 
             BLSConfigType::NonEFI { options, .. } => {
                 let options = options.as_ref().ok_or(anyhow::anyhow!("No options"))?;

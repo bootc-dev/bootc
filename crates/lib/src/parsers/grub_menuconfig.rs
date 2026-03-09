@@ -15,7 +15,10 @@ use nom::{
     sequence::delimited,
 };
 
-use crate::bootc_composefs::boot::BOOTC_UKI_DIR;
+use crate::{
+    bootc_composefs::boot::{BOOTC_UKI_DIR, get_uki_name},
+    composefs_consts::UKI_NAME_PREFIX,
+};
 
 /// Body content of a GRUB menuentry containing parsed commands.
 #[derive(Debug, PartialEq, Eq)]
@@ -91,13 +94,12 @@ impl<'a> Display for MenuEntry<'a> {
 }
 
 impl<'a> MenuEntry<'a> {
-    #[allow(dead_code)]
     pub(crate) fn new(boot_label: &str, uki_id: &str) -> Self {
         Self {
             title: format!("{boot_label}: ({uki_id})"),
             body: MenuentryBody {
                 insmod: vec!["fat", "chain"],
-                chainloader: format!("/{BOOTC_UKI_DIR}/{uki_id}.efi"),
+                chainloader: format!("/{BOOTC_UKI_DIR}/{}", get_uki_name(uki_id)),
                 search: "--no-floppy --set=root --fs-uuid \"${EFI_PART_UUID}\"",
                 version: 0,
                 extra: vec![],
@@ -108,14 +110,18 @@ impl<'a> MenuEntry<'a> {
     pub(crate) fn get_verity(&self) -> Result<String> {
         let to_path = Utf8PathBuf::from(self.body.chainloader.clone());
 
-        Ok(to_path
+        let name = to_path
             .components()
             .last()
             .ok_or(anyhow::anyhow!("Empty efi field"))?
             .to_string()
+            .strip_prefix(UKI_NAME_PREFIX)
+            .ok_or_else(|| anyhow::anyhow!("efi does not start with custom prefix"))?
             .strip_suffix(EFI_EXT)
-            .ok_or(anyhow::anyhow!("efi doesn't end with .efi"))?
-            .to_string())
+            .ok_or_else(|| anyhow::anyhow!("efi doesn't end with .efi"))?
+            .to_string();
+
+        Ok(name)
     }
 }
 

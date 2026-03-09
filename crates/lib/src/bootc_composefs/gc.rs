@@ -7,15 +7,15 @@
 use anyhow::{Context, Result};
 use cap_std_ext::{cap_std::fs::Dir, dirext::CapStdExtDirExt};
 use composefs::repository::GcResult;
-use composefs_boot::bootloader::{EFI_ADDON_DIR_EXT, EFI_EXT};
+use composefs_boot::bootloader::EFI_EXT;
 
 use crate::{
     bootc_composefs::{
-        boot::{BOOTC_UKI_DIR, BootType, get_type1_dir_name},
+        boot::{BOOTC_UKI_DIR, BootType, get_type1_dir_name, get_uki_addon_dir_name, get_uki_name},
         delete::{delete_image, delete_staged, delete_state_dir},
         status::{get_composefs_status, get_imginfo, list_bootloader_entries},
     },
-    composefs_consts::{STATE_DIR_RELATIVE, TYPE1_BOOT_DIR_PREFIX},
+    composefs_consts::{STATE_DIR_RELATIVE, TYPE1_BOOT_DIR_PREFIX, UKI_NAME_PREFIX},
     store::{BootedComposefs, Storage},
 };
 
@@ -89,8 +89,12 @@ fn collect_uki_binaries(boot_dir: &Dir, boot_binaries: &mut Vec<BootBinary>) -> 
         let entry = entry?;
         let name = entry.file_name()?;
 
+        let Some(verity) = name.strip_prefix(UKI_NAME_PREFIX) else {
+            continue;
+        };
+
         if name.ends_with(EFI_EXT) {
-            boot_binaries.push((BootType::Uki, name));
+            boot_binaries.push((BootType::Uki, verity.into()));
         }
     }
 
@@ -151,7 +155,7 @@ fn delete_uki(storage: &Storage, uki_id: &str, dry_run: bool) -> Result<()> {
         let entry_name = entry.file_name()?;
 
         // The actual UKI PE binary
-        if entry_name == format!("{}{}", uki_id, EFI_EXT) {
+        if entry_name == get_uki_name(uki_id) {
             tracing::debug!("Deleting UKI: {}", entry_name);
 
             if dry_run {
@@ -159,7 +163,7 @@ fn delete_uki(storage: &Storage, uki_id: &str, dry_run: bool) -> Result<()> {
             }
 
             entry.remove_file().context("Deleting UKI")?;
-        } else if entry_name == format!("{}{}", uki_id, EFI_ADDON_DIR_EXT) {
+        } else if entry_name == get_uki_addon_dir_name(uki_id) {
             // Addons dir
             tracing::debug!("Deleting UKI addons directory: {}", entry_name);
 
