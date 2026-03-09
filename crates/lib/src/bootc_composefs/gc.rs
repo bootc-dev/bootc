@@ -10,9 +10,8 @@ use composefs::repository::GcResult;
 use composefs_boot::bootloader::{EFI_ADDON_DIR_EXT, EFI_EXT};
 
 use crate::{
-    bootc_composefs::boot::get_type1_dir_name,
     bootc_composefs::{
-        boot::{BOOTC_UKI_DIR, BootType},
+        boot::{BOOTC_UKI_DIR, BootType, get_type1_dir_name},
         delete::{delete_image, delete_staged, delete_state_dir},
         status::{get_composefs_status, get_imginfo, list_bootloader_entries},
     },
@@ -66,7 +65,7 @@ type BootBinary = (BootType, String);
 #[fn_error_context::context("Collecting boot binaries")]
 fn collect_boot_binaries(storage: &Storage) -> Result<Vec<BootBinary>> {
     let mut boot_binaries = Vec::new();
-    let boot_dir = storage.require_boot_dir()?;
+    let boot_dir = storage.bls_boot_binaries_dir()?;
     let esp = storage.require_esp()?;
 
     // Scan for UKI binaries in EFI/Linux/bootc
@@ -125,13 +124,13 @@ fn collect_type1_boot_binaries(boot_dir: &Dir, boot_binaries: &mut Vec<BootBinar
 
 #[fn_error_context::context("Deleting kernel and initrd")]
 fn delete_kernel_initrd(storage: &Storage, dir_to_delete: &str, dry_run: bool) -> Result<()> {
-    let boot_dir = storage.require_boot_dir()?;
-
     tracing::debug!("Deleting Type1 entry {dir_to_delete}");
 
     if dry_run {
         return Ok(());
     }
+
+    let boot_dir = storage.bls_boot_binaries_dir()?;
 
     boot_dir
         .remove_dir_all(dir_to_delete)
@@ -217,6 +216,7 @@ pub(crate) async fn composefs_gc(
     let boot_binaries = collect_boot_binaries(storage)?;
 
     tracing::debug!("bootloader_entries: {bootloader_entries:?}");
+    tracing::debug!("boot_binaries: {boot_binaries:?}");
 
     // Bootloader entry is deleted, but the binary (UKI/kernel+initrd) still exists
     let unreferenced_boot_binaries = boot_binaries

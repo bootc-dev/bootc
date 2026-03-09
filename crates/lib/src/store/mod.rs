@@ -36,7 +36,7 @@ use ostree_ext::sysroot::SysrootLock;
 use ostree_ext::{gio, ostree};
 use rustix::fs::Mode;
 
-use crate::bootc_composefs::boot::mount_esp;
+use crate::bootc_composefs::boot::{EFI_LINUX, mount_esp};
 use crate::bootc_composefs::status::{ComposefsCmdline, composefs_booted, get_bootloader};
 use crate::lsm;
 use crate::podstorage::CStorage;
@@ -374,6 +374,28 @@ impl Storage {
         self.esp
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("ESP not found"))
+    }
+
+    /// Returns the Directory where the Type1 boot binaries are stored
+    /// `/sysroot/boot` for Grub, and ESP/EFI/Linux for systemd-boot
+    pub(crate) fn bls_boot_binaries_dir(&self) -> Result<Dir> {
+        let boot_dir = self.require_boot_dir()?;
+
+        // boot dir in case of systemd-boot points to the ESP, but we store
+        // the actual binaries inside ESP/EFI/Linux
+        let boot_dir = match get_bootloader()? {
+            Bootloader::Grub => boot_dir.try_clone()?,
+            Bootloader::Systemd => {
+                let boot_dir = boot_dir
+                    .open_dir(EFI_LINUX)
+                    .with_context(|| format!("Opening {EFI_LINUX}"))?;
+
+                boot_dir
+            }
+            Bootloader::None => anyhow::bail!("Unknown bootloader"),
+        };
+
+        Ok(boot_dir)
     }
 
     /// Access the underlying ostree repository
