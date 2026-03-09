@@ -125,7 +125,7 @@ is currently expected to be empty by default.
 
     Default: false
 
-**--insecure**
+**--allow-missing-verity**
 
     Make fs-verity validation optional in case the filesystem doesn't support it
 
