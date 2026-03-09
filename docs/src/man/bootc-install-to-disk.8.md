@@ -165,7 +165,7 @@ its DPS type GUID, without requiring an explicit `root=` kernel argument.
 
     Default: false
 
-**--insecure**
+**--allow-missing-verity**
 
     Make fs-verity validation optional in case the filesystem doesn't support it
 

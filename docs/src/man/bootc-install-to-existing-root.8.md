@@ -225,7 +225,7 @@ of migrating the fstab entries. See the "Injecting kernel arguments" section abo
 
     Default: false
 
-**--insecure**
+**--allow-missing-verity**
 
     Make fs-verity validation optional in case the filesystem doesn't support it
 
