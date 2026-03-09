@@ -11,6 +11,7 @@ use bootc_kernel_cmdline::utf8::Cmdline;
 use camino::Utf8PathBuf;
 use cap_std_ext::cap_std::fs::Dir;
 use cap_std_ext::dirext::CapStdExtDirExt;
+use fn_error_context::context;
 use serde::Serialize;
 
 use crate::bootc_composefs::boot::EFI_LINUX;
@@ -69,6 +70,7 @@ impl From<KernelInternal> for Kernel {
 /// layout with `/usr/lib/modules/<version>/vmlinuz`.
 ///
 /// Returns `None` if no kernel is found.
+#[context("Finding kernel")]
 pub(crate) fn find_kernel(root: &Dir) -> Result<Option<KernelInternal>> {
     // First, try to find a UKI
     if let Some(uki_path) = find_uki_path(root)? {
