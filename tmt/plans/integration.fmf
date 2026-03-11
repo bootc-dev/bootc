@@ -239,4 +239,15 @@ execute:
     test:
       - /tmt/tests/tests/test-40-install-karg-delete
   extra-fixme_skip_if_composefs: true
+
+/plan-41-multi-device-esp:
+  summary: Test multi-device ESP detection for to-existing-root
+  provision+:
+    hardware:
+      boot:
+        method: uefi
+  discover:
+    how: fmf
+    test:
+      - /tmt/tests/test-41-multi-device-esp
 # END GENERATED PLANS

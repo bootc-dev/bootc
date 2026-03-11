@@ -59,8 +59,8 @@ impl<'a> BwrapCmd<'a> {
         self
     }
 
-    /// Run the specified command inside the container.
-    pub fn run<S: AsRef<OsStr>>(self, args: impl IntoIterator<Item = S>) -> Result<()> {
+    /// Build the bwrap `Command` with all bind mounts, env vars, and args.
+    fn build_command<S: AsRef<OsStr>>(&self, args: impl IntoIterator<Item = S>) -> Command {
         let mut cmd = Command::new("bwrap");
 
         // Bind the root filesystem
@@ -92,6 +92,21 @@ impl<'a> BwrapCmd<'a> {
         cmd.arg("--");
         cmd.args(args);
 
-        cmd.log_debug().run_inherited_with_cmd_context()
+        cmd
+    }
+
+    /// Run the specified command inside the container.
+    pub fn run<S: AsRef<OsStr>>(self, args: impl IntoIterator<Item = S>) -> Result<()> {
+        self.build_command(args)
+            .log_debug()
+            .run_inherited_with_cmd_context()
+    }
+
+    /// Run the specified command inside the container and capture stdout as a string.
+    pub fn run_get_string<S: AsRef<OsStr>>(
+        self,
+        args: impl IntoIterator<Item = S>,
+    ) -> Result<String> {
+        self.build_command(args).log_debug().run_get_string()
     }
 }
