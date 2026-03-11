@@ -17,6 +17,8 @@
 base_img := "localhost/bootc"
 # Synthetic upgrade image for testing
 upgrade_img := base_img + "-upgrade"
+# Base image with tmt dependencies added, used as the boot source for upgrade tests
+upgrade_source_img := base_img + "-upgrade-source"
 
 # Build variant: ostree (default) or composefs
 variant := env("BOOTC_variant", "ostree")
@@ -140,6 +142,14 @@ test-composefs bootloader filesystem boot_type seal_state *ARGS:
                 --boot-type={{boot_type}} \
                 {{ARGS}} \
                 $(if [ "{{boot_type}}" = "uki" ]; then echo "readonly"; else echo "integration"; fi)
+
+# Run upgrade test: boot VM from published base image (with tmt deps added),
+# upgrade to locally-built image, reboot, then run readonly tests to verify.
+# The --upgrade-image flag triggers --bind-storage-ro in bcvk, making the
+# locally-built image available inside the VM via containers-storage transport.
+[group('core')]
+test-upgrade *ARGS: build _build-upgrade-source-image
+    cargo xtask run-tmt --env=BOOTC_variant={{variant}} --env=BOOTC_test_upgrade_image={{base_img}} --upgrade-image={{base_img}} {{upgrade_source_img}} {{ARGS}} readonly
 
 # Run cargo fmt and clippy checks in container
 [group('core')]
@@ -338,6 +348,10 @@ _keygen:
 
 _build-upgrade-image:
     cat tmt/tests/Dockerfile.upgrade | podman build -t {{upgrade_img}} --from={{base_img}} -
+
+# Build the upgrade source image: base image + tmt dependencies (rsync, nu, cloud-init)
+_build-upgrade-source-image:
+    podman build --build-arg=base={{base}} -t {{upgrade_source_img}} -f tmt/tests/Dockerfile.upgrade-source .
 
 # Copy an image from user podman storage to root's podman storage
 # This allows building as regular user then running privileged tests
