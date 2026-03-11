@@ -23,7 +23,13 @@ const BOOTUPD_UPDATES: &str = "usr/lib/bootupd/updates";
 // from: https://github.com/systemd/systemd/blob/26b2085d54ebbfca8637362eafcb4a8e3faf832f/man/systemd-boot.xml#L392
 const SYSTEMD_KEY_DIR: &str = "loader/keys";
 
-/// Mount ESP part at /boot/efi
+/// Mount the first ESP found among backing devices at /boot/efi.
+///
+/// This is used by the install-alongside path to clean stale bootloader
+/// files before reinstallation.  On multi-device setups only the first
+/// ESP is mounted and cleaned; stale files on additional ESPs are left
+/// in place (bootupd will overwrite them during installation).
+// TODO: clean all ESPs on multi-device setups
 pub(crate) fn mount_esp_part(root: &Dir, root_path: &Utf8Path, is_ostree: bool) -> Result<()> {
     let efi_path = Utf8Path::new("boot").join(crate::bootloader::EFI_DIR);
     let Some(esp_fd) = root
@@ -45,11 +51,14 @@ pub(crate) fn mount_esp_part(root: &Dir, root_path: &Utf8Path, is_ostree: bool) 
         root
     };
 
-    let dev = bootc_blockdev::list_dev_by_dir(physical_root)?.require_single_root()?;
-    if let Some(esp_dev) = dev.find_partition_of_type(bootc_blockdev::ESP) {
-        let esp_path = esp_dev.path();
-        bootc_mount::mount(&esp_path, &root_path.join(&efi_path))?;
-        tracing::debug!("Mounted {esp_path} at /boot/efi");
+    let roots = bootc_blockdev::list_dev_by_dir(physical_root)?.find_all_roots()?;
+    for dev in &roots {
+        if let Some(esp_dev) = dev.find_partition_of_type(bootc_blockdev::ESP) {
+            let esp_path = esp_dev.path();
+            bootc_mount::mount(&esp_path, &root_path.join(&efi_path))?;
+            tracing::debug!("Mounted {esp_path} at /boot/efi");
+            return Ok(());
+        }
     }
     Ok(())
 }
@@ -67,6 +76,48 @@ pub(crate) fn supports_bootupd(root: &Dir) -> Result<bool> {
     Ok(r)
 }
 
+/// Check whether the target bootupd supports `--filesystem`.
+///
+/// Runs `bootupctl backend install --help` and looks for `--filesystem` in the
+/// output. When `deployment_path` is set the command runs inside a bwrap
+/// container so we probe the binary from the target image.
+fn bootupd_supports_filesystem(rootfs: &Utf8Path, deployment_path: Option<&str>) -> Result<bool> {
+    let help_args = ["bootupctl", "backend", "install", "--help"];
+    let output = if let Some(deploy) = deployment_path {
+        let target_root = rootfs.join(deploy);
+        BwrapCmd::new(&target_root)
+            .setenv(
+                "PATH",
+                "/bin:/usr/bin:/sbin:/usr/sbin:/usr/local/bin:/usr/local/sbin",
+            )
+            .run_get_string(help_args)?
+    } else {
+        Command::new("bootupctl")
+            .args(&help_args[1..])
+            .log_debug()
+            .run_get_string()?
+    };
+
+    let use_filesystem = output.contains("--filesystem");
+
+    if use_filesystem {
+        tracing::debug!("bootupd supports --filesystem");
+    } else {
+        tracing::debug!("bootupd does not support --filesystem, falling back to --device");
+    }
+
+    Ok(use_filesystem)
+}
+
+/// Install the bootloader via bootupd.
+///
+/// When the target bootupd supports `--filesystem` we pass it pointing at a
+/// block-backed mount so that bootupd can resolve the backing device(s) itself
+/// via `lsblk`.  In the bwrap path we bind-mount the physical root at
+/// `/sysroot` to give `lsblk` a real block-backed path.
+///
+/// For older bootupd versions that lack `--filesystem` we fall back to the
+/// legacy `--device <device_path> <rootfs>` invocation.
 #[context("Installing bootloader")]
 pub(crate) fn install_via_bootupd(
     device: &bootc_blockdev::Device,
@@ -91,8 +142,6 @@ pub(crate) fn install_via_bootupd(
 
     println!("Installing bootloader via bootupd");
 
-    let device_path = device.path();
-
     // Build the bootupctl arguments
     let mut bootupd_args: Vec<&str> = vec!["backend", "install"];
     if configopts.bootupd_skip_boot_uuid {
@@ -107,7 +156,29 @@ pub(crate) fn install_via_bootupd(
     if let Some(ref opts) = bootupd_opts {
         bootupd_args.extend(opts.iter().copied());
     }
-    bootupd_args.extend(["--device", &device_path, rootfs_mount]);
+
+    // When the target bootupd lacks --filesystem support, fall back to the
+    // legacy --device flag.  For --device we need the whole-disk device path
+    // (e.g. /dev/vda), not a partition (e.g. /dev/vda3), so resolve the
+    // parent via require_single_root().  (Older bootupd doesn't support
+    // multiple backing devices anyway.)
+    // Computed before building bootupd_args so the String lives long enough.
+    let root_device_path = if bootupd_supports_filesystem(rootfs, deployment_path)
+        .context("Probing bootupd --filesystem support")?
+    {
+        None
+    } else {
+        Some(device.require_single_root()?.path())
+    };
+    if let Some(ref dev) = root_device_path {
+        tracing::debug!("bootupd does not support --filesystem, falling back to --device {dev}");
+        bootupd_args.extend(["--device", dev]);
+        bootupd_args.push(rootfs_mount);
+    } else {
+        tracing::debug!("bootupd supports --filesystem");
+        bootupd_args.extend(["--filesystem", rootfs_mount]);
+        bootupd_args.push(rootfs_mount);
+    }
 
     // Run inside a bwrap container. It takes care of mounting and creating
     // the necessary API filesystems in the target deployment and acts as
@@ -115,6 +186,7 @@ pub(crate) fn install_via_bootupd(
     if let Some(deploy) = deployment_path {
         let target_root = rootfs.join(deploy);
         let boot_path = rootfs.join("boot");
+        let rootfs_path = rootfs.to_path_buf();
 
         tracing::debug!("Running bootupctl via bwrap in {}", target_root);
 
@@ -122,10 +194,16 @@ pub(crate) fn install_via_bootupd(
         let mut bwrap_args = vec!["bootupctl"];
         bwrap_args.extend(bootupd_args);
 
-        let cmd = BwrapCmd::new(&target_root)
+        let mut cmd = BwrapCmd::new(&target_root)
             // Bind mount /boot from the physical target root so bootupctl can find
             // the boot partition and install the bootloader there
             .bind(&boot_path, &"/boot");
+
+        // Only bind mount the physical root at /sysroot when using --filesystem;
+        // bootupd needs it to resolve backing block devices via lsblk.
+        if root_device_path.is_none() {
+            cmd = cmd.bind(&rootfs_path, &"/sysroot");
+        }
 
         // The $PATH in the bwrap env is not complete enough for some images
         // so we inject a reasonnable default.
@@ -145,6 +223,11 @@ pub(crate) fn install_via_bootupd(
     }
 }
 
+/// Install systemd-boot to the first ESP found among backing devices.
+///
+/// On multi-device setups only the first ESP is installed to; additional
+/// ESPs on other backing devices are left untouched.
+// TODO: install to all ESPs on multi-device setups
 #[context("Installing bootloader")]
 pub(crate) fn install_systemd_boot(
     device: &bootc_blockdev::Device,
@@ -153,8 +236,10 @@ pub(crate) fn install_systemd_boot(
     _deployment_path: Option<&str>,
     autoenroll: Option<SecurebootKeys>,
 ) -> Result<()> {
-    let esp_part = device
-        .find_partition_of_type(discoverable_partition_specification::ESP)
+    let roots = device.find_all_roots()?;
+    let esp_part = roots
+        .iter()
+        .find_map(|root| root.find_partition_of_type(discoverable_partition_specification::ESP))
         .ok_or_else(|| anyhow::anyhow!("ESP partition not found"))?;
 
     let esp_mount = mount_esp(&esp_part.path()).context("Mounting ESP")?;
