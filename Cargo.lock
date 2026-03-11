@@ -246,7 +246,7 @@ dependencies = [
 
 [[package]]
 name = "bootc-lib"
-version = "1.14.0"
+version = "1.14.1"
 dependencies = [
  "anstream 1.0.0",
  "anstyle",
