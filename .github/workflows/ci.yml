@@ -262,6 +262,50 @@ jobs:
             ${{ env.ARCH }}"
           path: /var/tmp/tmt
 
+  # Test the upgrade path: boot from published base image, upgrade to locally-built image,
+  # then run readonly tests to verify the upgrade worked.
+  # Excluded: centos-9 (lacks systemd.extra-unit.* support needed for --bind-storage-ro)
+  test-upgrade:
+    needs: package
+    strategy:
+      fail-fast: false
+      matrix:
+        test_os: [fedora-43, centos-10]
+
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v6
+      - name: Bootc Ubuntu Setup
+        uses: bootc-dev/actions/bootc-ubuntu-setup@main
+        with:
+          libvirt: true
+      - name: Install tmt
+        run: pip install --user "tmt[provision-virtual]"
+
+      - name: Setup env
+        run: |
+          BASE=$(just pullspec-for-os base ${{ matrix.test_os }})
+          echo "BOOTC_base=${BASE}" >> $GITHUB_ENV
+          echo "BOOTC_SKIP_PACKAGE=1" >> $GITHUB_ENV
+          echo "RUST_BACKTRACE=full" >> $GITHUB_ENV
+
+      - name: Download package artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: packages-${{ matrix.test_os }}
+          path: target/packages/
+
+      - name: Run upgrade test
+        run: just test-upgrade
+
+      - name: Archive TMT logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: "tmt-log-PR-${{ github.event.number }}-${{ matrix.test_os }}-upgrade-${{ env.ARCH }}"
+          path: /var/tmp/tmt
+
   # Test bootc install on Fedora CoreOS (separate job to avoid disk space issues
   # when run in the same job as test-integration).
   # Uses fedora-43 as it's the current stable Fedora release matching CoreOS.
@@ -342,7 +386,7 @@ jobs:
   # Sentinel job for required checks - configure this job name in repository settings
   required-checks:
     if: always()
-    needs: [cargo-deny, validate, package, test-integration, test-coreos, test-container-export]
+    needs: [cargo-deny, validate, package, test-integration, test-upgrade, test-coreos, test-container-export]
     runs-on: ubuntu-latest
     steps:
       - run: exit 1
@@ -351,5 +395,6 @@ jobs:
           needs.validate.result != 'success' ||
           needs.package.result != 'success' ||
           needs.test-integration.result != 'success' ||
+          needs.test-upgrade.result != 'success' ||
           needs.test-coreos.result != 'success' ||
           needs.test-container-export.result != 'success'

@@ -1,0 +1,18 @@
+# Build an image suitable for upgrade testing: takes the published base image
+# and adds the minimal dependencies needed by tmt (rsync, nu, etc.)
+# so we can boot it in a VM, then upgrade into the locally-built image.
+#
+# Note: we do NOT pass `cloudinit` to provision-derived.sh because bcvk
+# handles SSH key injection itself; cloud-init interferes with that.
+ARG base
+FROM ${base}
+COPY hack/provision-derived.sh hack/packages.txt /run/provision/
+RUN --mount=type=tmpfs,target=/tmp <<EORUN
+set -xeuo pipefail
+cd /run/provision
+# Install nu and tmt dependencies using the same script as the main build,
+# but with SKIP_CONFIGS=1 since we don't need LBIs or test kargs in the
+# upgrade source image (those come from the image we upgrade into).
+SKIP_CONFIGS=1 ./provision-derived.sh
+rm -rf /run/provision
+EORUN
