@@ -136,6 +136,9 @@ if test -z "${SKIP_CONFIGS:-}"; then
   install -D -t /usr/lib/bootc/kargs.d test-kargs/*
   # Also copy in some default install configs we use for testing
   install -D -t /usr/lib/bootc/install/ install-test-configs/*
+
+  # Install os-image-map.json for tests that need to select OS-matched images
+  install -D -m 0644 os-image-map.json /usr/share/bootc/os-image-map.json
 else
   echo "SKIP_CONFIGS is set, skipping LBIs, test kargs, and install configs"
 fi
