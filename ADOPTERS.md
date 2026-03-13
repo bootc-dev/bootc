@@ -12,7 +12,7 @@ Vendor | HeliumOS | 2024 | https://www.heliumos.org/ | An atomic desktop operati
 Vendor | AlmaLinux (Atomic SIG) | 2025 | [atomic-desktop](https://github.com/AlmaLinux/atomic-desktop), [atomic-workstation](https://github.com/AlmaLinux/atomic-workstation) | Atomic AlmaLinux desktop respins
 Vendor | Caligra | 2025 | [workbench](https://caligra.com/workbench/) | An OS designed to accelerate knowledge work
 Vendor | CIQ | 2026 | https://ciq.com | Rocky Linux from CIQ (RLC) - Image Based Linux - Standard and Cloud variants
-Vendor | Universal Blue (Aurora/Bazzite/Bluefin) | 2024 | https://universal-blue.org/ | Image Based Linux
+Vendor | Universal Blue (Aurora/Bazzite/Bluefin) | 2024 | https://universal-blue.org/ |  The reliability of a Chromebook, but with the flexibility and power of a traditional Linux desktop
 
 # bootc Adopters (indirect, via ostree)
 
@@ -30,7 +30,6 @@ is to be the successor to ostree, and it is our aim to seamlessly carry forward 
 | Vendor | Apertis | 2020 | [link](https://apertis.org) | Collaborative OS platform for products
 | Vendor | Fedora Project | 2021 | [link](https://fedoraproject.org/atomic-desktops/) | An atomic desktop operating system aimed at good support for container-focused workflows
 | Vendor | Playtron GameOS | 2022 | [link](https://www.playtron.one/) | A video game console OS that has integration with the top PC game stores |
-| Vendor | Universal Blue   | 2022 | [link](https://universal-blue.org/) | The reliability of a Chromebook, but with the flexibility and power of a traditional Linux desktop
 | Vendor | Fyra Labs | 2024 | [link](https://fyralabs.com) | Bootc powers an experimental variant of Ultramarine Linux
 
 ### Adopter Types
