@@ -122,6 +122,11 @@
   duration: 30m
   test: nu booted/test-install-no-boot-dir.nu
 
+/test-37-upgrade-check-status:
+  summary: Verify upgrade --check populates cached update in status
+  duration: 30m
+  test: nu booted/test-upgrade-check-status.nu
+
 /test-38-install-bootloader-none:
   summary: Test bootc install with --bootloader=none
   duration: 30m
