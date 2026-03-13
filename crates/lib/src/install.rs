@@ -1935,6 +1935,7 @@ async fn install_to_filesystem_impl(
     // Drop exclusive ownership since we're done with mutation
     let rootfs = &*rootfs;
 
+    //TODO: loop over all parents devices?
     match rootfs.device_info.pttype.as_deref() {
         Some("dos") => crate::utils::medium_visibility_warning(
             "Installing to `dos` format partitions is not recommended",
@@ -2545,9 +2546,8 @@ pub(crate) async fn install_to_filesystem(
     // Find the real underlying backing device for the root.  This is currently just required
     // for GRUB (BIOS) and in the future zipl (I think).
     let device_info = {
-        let dev =
-            bootc_blockdev::list_dev(Utf8Path::new(&inspect.source))?.require_single_root()?;
-        tracing::debug!("Backing device: {}", dev.path());
+        let dev = bootc_blockdev::list_dev(Utf8Path::new(&inspect.source))?;
+        tracing::debug!("Target filesystem backing device: {}", dev.path());
         dev
     };
 

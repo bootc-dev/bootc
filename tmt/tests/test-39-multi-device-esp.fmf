@@ -1,0 +1,7 @@
+summary: Test multi-device ESP detection for to-existing-root
+test: nu booted/test-multi-device-esp.nu
+duration: 60m
+require:
+  - lvm2
+  - dosfstools
+  - e2fsprogs

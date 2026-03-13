@@ -67,9 +67,15 @@ pub(crate) fn supports_bootupd(root: &Dir) -> Result<bool> {
     Ok(r)
 }
 
+/// Install the bootloader via bootupd.
+///
+/// We pass `--filesystem` pointing at a block-backed mount so that bootupd
+/// can resolve the backing device(s) itself via `lsblk`.  In the bwrap path
+/// we bind-mount the physical root at `/sysroot` to give `lsblk` a real
+/// block-backed path; in the non-bwrap path the rootfs mount works directly.
 #[context("Installing bootloader")]
 pub(crate) fn install_via_bootupd(
-    device: &bootc_blockdev::Device,
+    _device: &bootc_blockdev::Device,
     rootfs: &Utf8Path,
     configopts: &crate::install::InstallConfigOpts,
     deployment_path: Option<&str>,
@@ -91,8 +97,6 @@ pub(crate) fn install_via_bootupd(
 
     println!("Installing bootloader via bootupd");
 
-    let device_path = device.path();
-
     // Build the bootupctl arguments
     let mut bootupd_args: Vec<&str> = vec!["backend", "install"];
     if configopts.bootupd_skip_boot_uuid {
@@ -107,7 +111,9 @@ pub(crate) fn install_via_bootupd(
     if let Some(ref opts) = bootupd_opts {
         bootupd_args.extend(opts.iter().copied());
     }
-    bootupd_args.extend(["--device", &device_path, rootfs_mount]);
+
+    bootupd_args.extend(["--filesystem", rootfs_mount]);
+    bootupd_args.push(rootfs_mount);
 
     // Run inside a bwrap container. It takes care of mounting and creating
     // the necessary API filesystems in the target deployment and acts as
@@ -115,6 +121,7 @@ pub(crate) fn install_via_bootupd(
     if let Some(deploy) = deployment_path {
         let target_root = rootfs.join(deploy);
         let boot_path = rootfs.join("boot");
+        let rootfs_path = rootfs.to_path_buf();
 
         tracing::debug!("Running bootupctl via bwrap in {}", target_root);
 
@@ -125,7 +132,10 @@ pub(crate) fn install_via_bootupd(
         let cmd = BwrapCmd::new(&target_root)
             // Bind mount /boot from the physical target root so bootupctl can find
             // the boot partition and install the bootloader there
-            .bind(&boot_path, &"/boot");
+            .bind(&boot_path, &"/boot")
+            // Bind mount the physical root at /sysroot so bootupd can resolve
+            // backing block devices via lsblk for --filesystem
+            .bind(&rootfs_path, &"/sysroot");
 
         // The $PATH in the bwrap env is not complete enough for some images
         // so we inject a reasonnable default.

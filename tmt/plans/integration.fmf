@@ -217,4 +217,11 @@ execute:
     how: fmf
     test:
       - /tmt/tests/tests/test-38-install-bootloader-none
+
+/plan-39-multi-device-esp:
+  summary: Test multi-device ESP detection for to-existing-root
+  discover:
+    how: fmf
+    test:
+      - /tmt/tests/test-32-multi-device-esp
 # END GENERATED PLANS
