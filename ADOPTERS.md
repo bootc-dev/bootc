@@ -12,6 +12,7 @@ Vendor | HeliumOS | 2024 | https://www.heliumos.org/ | An atomic desktop operati
 Vendor | AlmaLinux (Atomic SIG) | 2025 | [atomic-desktop](https://github.com/AlmaLinux/atomic-desktop), [atomic-workstation](https://github.com/AlmaLinux/atomic-workstation) | Atomic AlmaLinux desktop respins
 Vendor | Caligra | 2025 | [workbench](https://caligra.com/workbench/) | An OS designed to accelerate knowledge work
 Vendor | CIQ | 2026 | https://ciq.com | Rocky Linux from CIQ (RLC) - Image Based Linux - Standard and Cloud variants
+Vendor | Universal Blue (Aurora/Bazzite/Bluefin) | 2024 | https://universal-blue.org/ | Image Based Linux
 
 # bootc Adopters (indirect, via ostree)
 
