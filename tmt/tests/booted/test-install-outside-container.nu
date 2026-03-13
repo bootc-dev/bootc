@@ -6,11 +6,9 @@
 use std assert
 use tap.nu
 
-# In this test we install a generic image mainly because it keeps
-# this test in theory independent of starting from a bootc host,
-# but also because it's useful to test "skew" between the bootc binary
-# doing the install and the target image.
-let target_image = "docker://quay.io/centos-bootc/centos-bootc:stream9"
+# Use an OS-matched target image to avoid version mismatches
+# (e.g., XFS features created by newer mkfs.xfs not recognized by older grub2)
+let target_image = (tap get_target_image)
 
 # setup filesystem
 mkdir /var/mnt

@@ -12,9 +12,9 @@
 use std assert
 use tap.nu
 
-# Use a generic target image to test skew between the bootc binary doing
-# the install and the target image
-let target_image = "docker://quay.io/centos-bootc/centos-bootc:stream9"
+# Use an OS-matched target image to avoid version mismatches
+# (e.g., XFS features created by newer mkfs.xfs not recognized by older grub2)
+let target_image = (tap get_target_image)
 
 def main [] {
     tap begin "install with experimental unified storage flag"
