@@ -234,11 +234,15 @@ async fn handle_layer_progress_print(mut config: LayerProgressConfig) -> Progres
                             bytes_total: layer_size,
                         };
                     } else {
-                        byte_bar.set_position(layer_size);
+                        // Use the bar's length (actual blob size) rather than
+                        // the manifest descriptor size for completion accounting.
+                        let actual_size = byte_bar.length().unwrap_or(layer_size);
+                        byte_bar.set_position(actual_size);
                         layers_bar.inc(1);
-                        total_read = total_read.saturating_add(layer_size);
+                        total_read = total_read.saturating_add(actual_size);
                         // Emit an event where bytes == total to signal completion.
-                        subtask.bytes = layer_size;
+                        subtask.bytes_total = actual_size;
+                        subtask.bytes = actual_size;
                         subtasks.push(subtask.clone());
                         config.prog.send(Event::ProgressBytes {
                             task: "pulling".into(),
@@ -268,7 +272,12 @@ async fn handle_layer_progress_print(mut config: LayerProgressConfig) -> Progres
                     bytes.as_ref().cloned()
                 };
                 if let Some(bytes) = bytes {
+                    // Update the bar length from the actual blob size, which
+                    // may differ from the manifest descriptor size (e.g.
+                    // containers-storage stores layers uncompressed).
+                    byte_bar.set_length(bytes.total);
                     byte_bar.set_position(bytes.fetched);
+                    subtask.bytes_total = bytes.total;
                     subtask.bytes = byte_bar.position();
                     config.prog.send_lossy(Event::ProgressBytes {
                         task: "pulling".into(),
