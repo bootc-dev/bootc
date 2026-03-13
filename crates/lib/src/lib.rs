@@ -59,7 +59,7 @@
 //! # Related Crates
 //!
 //! - [`ostree-ext`](../ostree_ext/index.html) - OCI/ostree bridging
-//! - [`bootc-mount`](../bootc_mount/index.html) - Mount utilities
+//! - [`bootc-internal-mount`](../bootc_mount/index.html) - Mount utilities
 //! - [`bootc-kernel-cmdline`](../bootc_kernel_cmdline/index.html) - Cmdline parsing
 //! - [`etc-merge`](../etc_merge/index.html) - `/etc` three-way merge
 

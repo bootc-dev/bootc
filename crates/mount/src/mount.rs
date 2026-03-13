@@ -23,6 +23,7 @@ use rustix::{
 };
 use serde::Deserialize;
 
+/// Temporary mount management with automatic cleanup.
 pub mod tempmount;
 
 /// Well known identifier for pid 1
@@ -33,26 +34,37 @@ pub const PID1: Pid = const {
     }
 };
 
+/// Deserialized information about a mounted filesystem from `findmnt`.
 #[derive(Deserialize, Debug)]
 #[serde(rename_all = "kebab-case")]
 #[allow(dead_code)]
 pub struct Filesystem {
     // Note if you add an entry to this list, you need to change the --output invocation below too
+    /// The source device or path.
     pub source: String,
+    /// The mount target path.
     pub target: String,
+    /// Major:minor device numbers.
     #[serde(rename = "maj:min")]
     pub maj_min: String,
+    /// The filesystem type (e.g. ext4, xfs).
     pub fstype: String,
+    /// Mount options.
     pub options: String,
+    /// The filesystem UUID, if available.
     pub uuid: Option<String>,
+    /// Child filesystems, if any.
     pub children: Option<Vec<Filesystem>>,
 }
 
+/// Deserialized output of `findmnt --json`.
 #[derive(Deserialize, Debug, Default)]
 pub struct Findmnt {
+    /// The list of mounted filesystems.
     pub filesystems: Vec<Filesystem>,
 }
 
+/// Run `findmnt` with JSON output and parse the result.
 pub fn run_findmnt(args: &[&str], cwd: Option<&Dir>, path: Option<&str>) -> Result<Findmnt> {
     let mut cmd = Command::new("findmnt");
     if let Some(cwd) = cwd {
@@ -99,8 +111,8 @@ pub fn inspect_filesystem_by_uuid(uuid: &str) -> Result<Filesystem> {
     findmnt_filesystem(&["--source"], None, &(format!("UUID={uuid}")))
 }
 
-// Check if a specified device contains an already mounted filesystem
-// in the root mount namespace
+/// Check if a specified device contains an already mounted filesystem
+/// in the root mount namespace.
 pub fn is_mounted_in_pid1_mountns(path: &str) -> Result<bool> {
     let o = run_findmnt(&["-N"], None, Some("1"))?;
 
@@ -109,7 +121,7 @@ pub fn is_mounted_in_pid1_mountns(path: &str) -> Result<bool> {
     Ok(mounted)
 }
 
-// Recursively check a given filesystem to see if it contains an already mounted source
+/// Recursively check a given filesystem to see if it contains an already mounted source.
 pub fn is_source_mounted(path: &str, mounted_fs: &Filesystem) -> bool {
     if mounted_fs.source.contains(path) {
         return true;
@@ -281,8 +293,8 @@ pub fn bind_mount_from_pidns(
     Ok(())
 }
 
-// If the target path is not already mirrored from the host (e.g. via -v /dev:/dev)
-// then recursively mount it.
+/// If the target path is not already mirrored from the host (e.g. via `-v /dev:/dev`)
+/// then recursively mount it.
 pub fn ensure_mirrored_host_mount(path: impl AsRef<Utf8Path>) -> Result<()> {
     let path = path.as_ref();
     // If we didn't have this in our filesystem already (e.g. for /var/lib/containers)

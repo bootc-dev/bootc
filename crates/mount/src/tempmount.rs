@@ -7,8 +7,12 @@ use cap_std_ext::cap_std::{ambient_authority, fs::Dir};
 use fn_error_context::context;
 use rustix::mount::{MountFlags, MoveMountFlags, UnmountFlags, move_mount, unmount};
 
+/// RAII wrapper for a temporary mount that is automatically unmounted on drop.
+#[derive(Debug)]
 pub struct TempMount {
+    /// The backing temporary directory.
     pub dir: tempfile::TempDir,
+    /// An open handle to the mounted directory.
     pub fd: Dir,
 }
 

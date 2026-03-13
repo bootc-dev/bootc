@@ -238,8 +238,8 @@ name = "bootc-internal-blockdev"
 version = "0.2.0"
 dependencies = [
  "anyhow",
+ "bootc-internal-mount",
  "bootc-internal-utils",
- "bootc-mount",
  "camino",
  "cap-std-ext 5.1.1",
  "fn-error-context",
@@ -250,6 +250,23 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "bootc-internal-mount"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bootc-internal-utils",
+ "camino",
+ "cap-std-ext 5.1.1",
+ "fn-error-context",
+ "indoc",
+ "libc",
+ "rustix",
+ "serde",
+ "tempfile",
  "tracing",
 ]
 
@@ -294,9 +311,9 @@ dependencies = [
  "anyhow",
  "bootc-initramfs-setup",
  "bootc-internal-blockdev",
+ "bootc-internal-mount",
  "bootc-internal-utils",
  "bootc-kernel-cmdline",
- "bootc-mount",
  "bootc-sysusers",
  "bootc-tmpfiles",
  "camino",
@@ -343,23 +360,6 @@ dependencies = [
  "unicode-width",
  "uuid",
  "xshell",
-]
-
-[[package]]
-name = "bootc-mount"
-version = "0.0.0"
-dependencies = [
- "anyhow",
- "bootc-internal-utils",
- "camino",
- "cap-std-ext 5.1.1",
- "fn-error-context",
- "indoc",
- "libc",
- "rustix",
- "serde",
- "tempfile",
- "tracing",
 ]
 
 [[package]]
@@ -2935,8 +2935,8 @@ version = "0.1.9"
 dependencies = [
  "anstream 1.0.0",
  "anyhow",
+ "bootc-internal-mount",
  "bootc-internal-utils",
- "bootc-mount",
  "clap",
  "crossterm",
  "dialoguer",

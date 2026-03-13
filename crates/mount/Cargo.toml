@@ -1,12 +1,10 @@
 [package]
-description = "Internal mount code"
-# Should never be published to crates.io
-publish = false
+description = "Internal implementation component of bootc; do not use"
 edition = "2024"
 license = "MIT OR Apache-2.0"
-name = "bootc-mount"
+name = "bootc-internal-mount"
 repository = "https://github.com/bootc-dev/bootc"
-version = "0.0.0"
+version = "0.1.0"
 
 [dependencies]
 # Internal crates
@@ -28,3 +26,6 @@ indoc = { workspace = true }
 
 [lib]
 path = "src/mount.rs"
+
+[lints]
+workspace = true
