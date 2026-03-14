@@ -1210,7 +1210,12 @@ async fn install_container(
         osconfig::inject_root_ssh_authorized_keys(&root, sepolicy, contents)?;
     }
 
-    let aleph = InstallAleph::new(&src_imageref, &imgstate, &state.selinux_state)?;
+    let aleph = InstallAleph::new(
+        &src_imageref,
+        &state.target_imgref,
+        &imgstate,
+        &state.selinux_state,
+    )?;
     Ok((deployment, aleph))
 }
 

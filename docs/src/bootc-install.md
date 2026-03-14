@@ -535,6 +535,8 @@ After installation, bootc writes a JSON file at the root of the physical
 filesystem (`.bootc-aleph.json`) containing installation provenance information:
 
 - The source image reference and digest
+- The target image reference (if provided)
+- The OCI image labels from the installed image
 - Installation timestamp
 - bootc version
 - Kernel version
