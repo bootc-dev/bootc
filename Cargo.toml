@@ -114,3 +114,6 @@ todo = "deny"
 needless_borrow = "allow"
 needless_borrows_for_generic_args = "allow"
 
+[patch."https://github.com/composefs/composefs-rs"]
+cfsctl = { path = "/workspaces/composefs-rs/crates/cfsctl" }
+

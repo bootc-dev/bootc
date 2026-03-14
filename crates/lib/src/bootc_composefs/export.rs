@@ -55,8 +55,9 @@ pub async fn export_repo_to_image(
     let oci_dir = OciDir::ensure(tmpdir.try_clone()?).context("Opening OCI")?;
 
     // Use composefs_oci::open_config to get the config and layer map
-    let (config, layer_map) =
-        open_config(&*booted_cfs.repo, &config_digest, None).context("Opening config")?;
+    let open = open_config(&*booted_cfs.repo, &config_digest, None).context("Opening config")?;
+    let config = open.config;
+    let layer_map = open.layer_refs;
 
     // We can't guarantee that we'll get the same tar stream as the container image
     // So we create new config and manifest

@@ -621,7 +621,6 @@ checksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
 [[package]]
 name = "cfsctl"
 version = "0.3.0"
-source = "git+https://github.com/composefs/composefs-rs?rev=2203e8f#2203e8f331cc41afafa0f81e9a2df7d681e9f631"
 dependencies = [
  "anyhow",
  "clap",
@@ -775,7 +774,6 @@ checksum = "55b672471b4e9f9e95499ea597ff64941a309b2cdbffcc46f2cc5e2d971fd335"
 [[package]]
 name = "composefs"
 version = "0.3.0"
-source = "git+https://github.com/composefs/composefs-rs?rev=2203e8f#2203e8f331cc41afafa0f81e9a2df7d681e9f631"
 dependencies = [
  "anyhow",
  "composefs-ioctls",
@@ -797,7 +795,6 @@ dependencies = [
 [[package]]
 name = "composefs-boot"
 version = "0.3.0"
-source = "git+https://github.com/composefs/composefs-rs?rev=2203e8f#2203e8f331cc41afafa0f81e9a2df7d681e9f631"
 dependencies = [
  "anyhow",
  "composefs",
@@ -811,7 +808,6 @@ dependencies = [
 [[package]]
 name = "composefs-ioctls"
 version = "0.3.0"
-source = "git+https://github.com/composefs/composefs-rs?rev=2203e8f#2203e8f331cc41afafa0f81e9a2df7d681e9f631"
 dependencies = [
  "rustix",
  "thiserror 2.0.17",
@@ -820,12 +816,12 @@ dependencies = [
 [[package]]
 name = "composefs-oci"
 version = "0.3.0"
-source = "git+https://github.com/composefs/composefs-rs?rev=2203e8f#2203e8f331cc41afafa0f81e9a2df7d681e9f631"
 dependencies = [
  "anyhow",
  "async-compression",
  "bytes",
  "composefs",
+ "composefs-boot",
  "containers-image-proxy",
  "fn-error-context",
  "hex",
@@ -835,7 +831,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
- "tar",
+ "tar-core",
  "tokio",
  "tokio-util",
 ]
@@ -2963,6 +2959,16 @@ dependencies = [
  "filetime",
  "libc",
  "xattr",
+]
+
+[[package]]
+name = "tar-core"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a870b96d9b5bd13e81517d63a18da0f0c33de072eeb5a293a2e40f3830befa0e"
+dependencies = [
+ "thiserror 2.0.17",
+ "zerocopy",
 ]
 
 [[package]]
