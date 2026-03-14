@@ -11,7 +11,7 @@ use crate::{
         boot::BootType,
         repo::get_imgref,
         selinux::are_selinux_policies_compatible,
-        state::get_composefs_usr_overlay_status,
+        state::{get_composefs_usr_overlay_status, read_origin},
         utils::{compute_store_boot_digest_for_uki, get_uki_cmdline},
     },
     composefs_consts::{
@@ -699,11 +699,6 @@ async fn composefs_deployment_status_from(
     // This is our source of truth
     let bootloader_entry_verity = list_bootloader_entries(storage)?;
 
-    let state_dir = storage
-        .physical_root
-        .open_dir(STATE_DIR_RELATIVE)
-        .with_context(|| format!("Opening {STATE_DIR_RELATIVE}"))?;
-
     let host_spec = HostSpec {
         image: None,
         boot_order: BootOrder::Default,
@@ -732,15 +727,8 @@ async fn composefs_deployment_status_from(
     let mut extra_deployment_boot_entries: Vec<BootEntry> = Vec::new();
 
     for verity_digest in bootloader_entry_verity {
-        // read the origin file
-        let config = state_dir
-            .open_dir(&verity_digest)
-            .with_context(|| format!("Failed to open {verity_digest}"))?
-            .read_to_string(format!("{verity_digest}.origin"))
-            .with_context(|| format!("Reading file {verity_digest}.origin"))?;
-
-        let ini = tini::Ini::from_string(&config)
-            .with_context(|| format!("Failed to parse file {verity_digest}.origin as ini"))?;
+        let ini = read_origin(&storage.physical_root, &verity_digest)?
+            .ok_or_else(|| anyhow::anyhow!("No origin file for deployment {verity_digest}"))?;
 
         let mut boot_entry =
             boot_entry_from_composefs_deployment(storage, ini, &verity_digest).await?;

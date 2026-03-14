@@ -44,6 +44,27 @@ use crate::{
     utils::path_relative_to,
 };
 
+/// Read and parse the `.origin` INI file for a deployment.
+///
+/// Returns `None` if the state directory or origin file doesn't exist
+/// (e.g. the deployment was partially deleted).
+#[context("Reading origin for deployment {deployment_id}")]
+pub(crate) fn read_origin(sysroot: &Dir, deployment_id: &str) -> Result<Option<tini::Ini>> {
+    let depl_state_path = std::path::PathBuf::from(STATE_DIR_RELATIVE).join(deployment_id);
+
+    let Some(state_dir) = sysroot.open_dir_optional(&depl_state_path)? else {
+        return Ok(None);
+    };
+
+    let origin_filename = format!("{deployment_id}.origin");
+    let Some(origin_contents) = state_dir.read_to_string_optional(&origin_filename)? else {
+        return Ok(None);
+    };
+
+    let ini = tini::Ini::from_string(&origin_contents).context("Failed to parse origin file")?;
+    Ok(Some(ini))
+}
+
 pub(crate) fn get_booted_bls(boot_dir: &Dir) -> Result<BLSConfig> {
     let cmdline = Cmdline::from_proc()?;
     let booted = cmdline

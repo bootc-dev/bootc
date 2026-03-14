@@ -114,3 +114,6 @@ todo = "deny"
 needless_borrow = "allow"
 needless_borrows_for_generic_args = "allow"
 
+[patch."https://github.com/composefs/composefs-rs"]
+cfsctl = { git = "https://github.com/cgwalters/composefs-rs", rev = "d62471bc89d4852f2aab91c7948466e3a3942021" }
+
