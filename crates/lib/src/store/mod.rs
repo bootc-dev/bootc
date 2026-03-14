@@ -48,8 +48,6 @@ use crate::utils::{deployment_fd, open_dir_remount_rw};
 
 /// See <https://github.com/containers/composefs-rs/issues/159>
 pub type ComposefsRepository = composefs::repository::Repository<Sha512HashValue>;
-/// A composefs filesystem type alias
-pub type ComposefsFilesystem = composefs::tree::FileSystem<Sha512HashValue>;
 
 /// Path to the physical root
 pub const SYSROOT: &str = "sysroot";

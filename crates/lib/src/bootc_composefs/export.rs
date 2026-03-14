@@ -43,7 +43,7 @@ pub async fn export_repo_to_image(
 
     let depl_verity = depl_verity.ok_or_else(|| anyhow::anyhow!("Image {source} not found"))?;
 
-    let imginfo = get_imginfo(storage, &depl_verity, None).await?;
+    let imginfo = get_imginfo(storage, &depl_verity)?;
 
     // We want the digest in the form of "sha256:abc123"
     let config_digest = format!("{}", imginfo.manifest.config().digest());

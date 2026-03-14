@@ -202,7 +202,6 @@ use crate::utils::sigpolicy_from_opt;
 use bootc_kernel_cmdline::{INITRD_ARG_PREFIX, ROOTFLAGS, bytes, utf8};
 use bootc_mount::Filesystem;
 
-
 /// The toplevel boot directory
 pub(crate) const BOOT: &str = "boot";
 /// Directory for transient runtime state
@@ -1959,11 +1958,10 @@ async fn install_to_filesystem_impl(
         )
         .await?;
 
-
         setup_composefs_boot(
             rootfs,
             state,
-            &pull_result.config_digest,
+            &pull_result,
             state.composefs_options.allow_missing_verity,
         )
         .await?;

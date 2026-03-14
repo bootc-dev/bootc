@@ -3,20 +3,21 @@ use std::{collections::HashSet, io::Read, sync::OnceLock};
 use anyhow::{Context, Result};
 use bootc_kernel_cmdline::utf8::Cmdline;
 use bootc_mount::inspect_filesystem;
+use cfsctl::composefs::fsverity::Sha512HashValue;
+use cfsctl::composefs_oci::OciImage;
 use fn_error_context::context;
 use serde::{Deserialize, Serialize};
 
 use crate::{
     bootc_composefs::{
         boot::BootType,
-        repo::get_imgref,
         selinux::are_selinux_policies_compatible,
         state::{get_composefs_usr_overlay_status, read_origin},
         utils::{compute_store_boot_digest_for_uki, get_uki_cmdline},
     },
     composefs_consts::{
-        COMPOSEFS_CMDLINE, ORIGIN_KEY_BOOT_DIGEST, TYPE1_ENT_PATH, TYPE1_ENT_PATH_STAGED, USER_CFG,
-        USER_CFG_STAGED,
+        COMPOSEFS_CMDLINE, ORIGIN_KEY_BOOT_DIGEST, ORIGIN_KEY_IMAGE, ORIGIN_KEY_MANIFEST_DIGEST,
+        TYPE1_ENT_PATH, TYPE1_ENT_PATH_STAGED, USER_CFG, USER_CFG_STAGED,
     },
     install::EFI_LOADER_INFO,
     parsers::{
@@ -358,57 +359,63 @@ pub(crate) fn get_bootloader() -> Result<Bootloader> {
     }
 }
 
-/// Reads the .imginfo file for the provided deployment
-#[context("Reading imginfo")]
-pub(crate) async fn get_imginfo(
-    storage: &Storage,
-    deployment_id: &str,
-    imgref: Option<&ImageReference>,
-) -> Result<ImgConfigManifest> {
-    let imginfo_fname = format!("{deployment_id}.imginfo");
+/// Retrieves the OCI manifest and config for a deployment from the composefs repository.
+///
+/// The manifest digest is read from the deployment's `.origin` file,
+/// then `OciImage::open()` retrieves manifest+config from the composefs repo
+/// where composefs-rs stores them as splitstreams during pull.
+///
+/// Falls back to reading legacy `.imginfo` files for backwards compatibility
+/// with deployments created before the manifest digest was stored in `.origin`.
+#[context("Reading image info for deployment {deployment_id}")]
+pub(crate) fn get_imginfo(storage: &Storage, deployment_id: &str) -> Result<ImgConfigManifest> {
+    let ini = read_origin(&storage.physical_root, deployment_id)?
+        .ok_or_else(|| anyhow::anyhow!("No origin file for deployment {deployment_id}"))?;
 
+    // Try to read the manifest digest from the origin file (new path)
+    if let Some(manifest_digest) = ini.get::<String>(ORIGIN_KEY_IMAGE, ORIGIN_KEY_MANIFEST_DIGEST) {
+        let repo = storage.get_ensure_composefs()?;
+        let oci_image = OciImage::<Sha512HashValue>::open(&repo, &manifest_digest, None)
+            .with_context(|| format!("Opening OCI image for manifest {manifest_digest}"))?;
+
+        let manifest = oci_image.manifest().clone();
+        let config = oci_image
+            .config()
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("OCI image has no config (artifact?)"))?;
+
+        return Ok(ImgConfigManifest { config, manifest });
+    }
+
+    // Fallback: read legacy .imginfo file for deployments created before
+    // the manifest digest was stored in .origin
     let depl_state_path = std::path::PathBuf::from(STATE_DIR_RELATIVE).join(deployment_id);
-    let path = depl_state_path.join(imginfo_fname);
+    let imginfo_fname = format!("{deployment_id}.imginfo");
+    let path = depl_state_path.join(&imginfo_fname);
 
     let mut img_conf = storage
         .physical_root
         .open_optional(&path)
-        .context("Failed to open file")?;
+        .with_context(|| format!("Opening legacy {imginfo_fname}"))?;
 
     let Some(img_conf) = &mut img_conf else {
-        let imgref = imgref.ok_or_else(|| anyhow::anyhow!("No imgref or imginfo file found"))?;
-
-        let container_details =
-            get_container_manifest_and_config(&get_imgref(&imgref.transport, &imgref.image))
-                .await?;
-
-        let state_dir = storage.physical_root.open_dir(depl_state_path)?;
-
-        state_dir
-            .atomic_write(
-                format!("{}.imginfo", deployment_id),
-                serde_json::to_vec(&container_details)?,
-            )
-            .context("Failed to write to .imginfo file")?;
-
-        let state_dir = state_dir.reopen_as_ownedfd()?;
-
-        rustix::fs::fsync(state_dir).context("fsync")?;
-
-        return Ok(container_details);
+        anyhow::bail!(
+            "No manifest_digest in origin and no legacy .imginfo file \
+             for deployment {deployment_id}"
+        );
     };
 
     let mut buffer = String::new();
     img_conf.read_to_string(&mut buffer)?;
 
     let img_conf = serde_json::from_str::<ImgConfigManifest>(&buffer)
-        .context("Failed to parse file as JSON")?;
+        .context("Failed to parse .imginfo file as JSON")?;
 
     Ok(img_conf)
 }
 
 #[context("Getting composefs deployment metadata")]
-async fn boot_entry_from_composefs_deployment(
+fn boot_entry_from_composefs_deployment(
     storage: &Storage,
     origin: tini::Ini,
     verity: &str,
@@ -418,7 +425,7 @@ async fn boot_entry_from_composefs_deployment(
             let ostree_img_ref = OstreeImageReference::from_str(&img_name_from_config)?;
             let img_ref = ImageReference::from(ostree_img_ref);
 
-            let img_conf = get_imginfo(storage, &verity, Some(&img_ref)).await?;
+            let img_conf = get_imginfo(storage, &verity)?;
 
             let image_digest = img_conf.manifest.config().digest().to_string();
             let architecture = img_conf.config.architecture().to_string();
@@ -699,6 +706,11 @@ async fn composefs_deployment_status_from(
     // This is our source of truth
     let bootloader_entry_verity = list_bootloader_entries(storage)?;
 
+    let state_dir = storage
+        .physical_root
+        .open_dir(STATE_DIR_RELATIVE)
+        .with_context(|| format!("Opening {STATE_DIR_RELATIVE}"))?;
+
     let host_spec = HostSpec {
         image: None,
         boot_order: BootOrder::Default,
@@ -727,11 +739,17 @@ async fn composefs_deployment_status_from(
     let mut extra_deployment_boot_entries: Vec<BootEntry> = Vec::new();
 
     for verity_digest in bootloader_entry_verity {
-        let ini = read_origin(&storage.physical_root, &verity_digest)?
-            .ok_or_else(|| anyhow::anyhow!("No origin file for deployment {verity_digest}"))?;
+        // read the origin file
+        let config = state_dir
+            .open_dir(&verity_digest)
+            .with_context(|| format!("Failed to open {verity_digest}"))?
+            .read_to_string(format!("{verity_digest}.origin"))
+            .with_context(|| format!("Reading file {verity_digest}.origin"))?;
 
-        let mut boot_entry =
-            boot_entry_from_composefs_deployment(storage, ini, &verity_digest).await?;
+        let ini = tini::Ini::from_string(&config)
+            .with_context(|| format!("Failed to parse file {verity_digest}.origin as ini"))?;
+
+        let mut boot_entry = boot_entry_from_composefs_deployment(storage, ini, &verity_digest)?;
 
         // SAFETY: boot_entry.composefs will always be present
         let boot_type_from_origin = boot_entry.composefs.as_ref().unwrap().boot_type;

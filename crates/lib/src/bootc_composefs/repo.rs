@@ -7,17 +7,27 @@ use cfsctl::composefs;
 use cfsctl::composefs_boot;
 use cfsctl::composefs_oci;
 use composefs::fsverity::{FsVerityHashValue, Sha512HashValue};
-use composefs_boot::{BootOps, bootloader::BootEntry as ComposefsBootEntry};
+use composefs_boot::bootloader::{BootEntry as ComposefsBootEntry, get_boot_resources};
 use composefs_oci::{
     image::create_filesystem as create_composefs_filesystem,
-    pull_image as composefs_oci_pull_image, skopeo::PullResult,
+    pull_image as composefs_oci_pull_image, skopeo::PullResult, tag_image,
 };
 
 use ostree_ext::container::ImageReference as OstreeExtImgRef;
 
 use cap_std_ext::cap_std::{ambient_authority, fs::Dir};
 
+use crate::composefs_consts::BOOTC_TAG_PREFIX;
 use crate::install::{RootSetup, State};
+
+/// Create a composefs OCI tag name for the given manifest digest.
+///
+/// Returns a tag like `localhost/bootc-sha256:abc...` which acts as a GC root
+/// in the composefs repository, keeping the manifest, config, and all layer
+/// splitstreams alive.
+pub(crate) fn bootc_tag_for_manifest(manifest_digest: &str) -> String {
+    format!("{BOOTC_TAG_PREFIX}{manifest_digest}")
+}
 
 pub(crate) fn open_composefs_repo(rootfs_dir: &Dir) -> Result<crate::store::ComposefsRepository> {
     crate::store::ComposefsRepository::open_path(rootfs_dir, "composefs")
@@ -56,14 +66,16 @@ pub(crate) async fn initialize_composefs_repository(
         transport,
     } = &state.source.imageref;
 
-    // transport's display is already of type "<transport_type>:"
-    let (pull_result, _stats) = composefs_oci_pull_image(
-        &Arc::new(repo),
-        &format!("{transport}{image_name}"),
-        None,
-        None,
-    )
-    .await?;
+    // Pull without a reference tag; we tag explicitly afterward so we
+    // control the tag name format.
+    let repo = Arc::new(repo);
+    let (pull_result, _stats) =
+        composefs_oci_pull_image(&repo, &format!("{transport}{image_name}"), None, None).await?;
+
+    // Tag the manifest as a bootc-owned GC root.
+    let tag = bootc_tag_for_manifest(&pull_result.manifest_digest);
+    tag_image(&*repo, &pull_result.manifest_digest, &tag)
+        .context("Tagging pulled image as bootc GC root")?;
 
     tracing::info!(
         message_id = COMPOSEFS_REPO_INIT_JOURNAL_ID,
@@ -72,6 +84,7 @@ pub(crate) async fn initialize_composefs_repository(
         bootc.manifest_verity = pull_result.manifest_verity.to_hex(),
         bootc.config_digest = pull_result.config_digest,
         bootc.config_verity = pull_result.config_verity.to_hex(),
+        bootc.tag = tag,
         "Pulled image into composefs repository",
     );
 
@@ -100,12 +113,10 @@ pub(crate) fn get_imgref(transport: &str, image: &str) -> String {
 
 /// Result of pulling a composefs repository, including the OCI manifest digest
 /// needed to reconstruct image metadata from the local composefs repo.
-#[allow(dead_code)]
 pub(crate) struct PullRepoResult {
     pub(crate) repo: crate::store::ComposefsRepository,
     pub(crate) entries: Vec<ComposefsBootEntry<Sha512HashValue>>,
     pub(crate) id: Sha512HashValue,
-    pub(crate) fs: crate::store::ComposefsFilesystem,
     /// The OCI manifest content digest (e.g. "sha256:abc...")
     pub(crate) manifest_digest: String,
 }
@@ -140,10 +151,15 @@ pub(crate) async fn pull_composefs_repo(
 
     tracing::debug!("Image to pull {final_imgref}");
 
-    let (pull_result, _stats) =
-        composefs_oci_pull_image(&Arc::new(repo), &final_imgref, None, None)
-            .await
-            .context("Pulling composefs repo")?;
+    let repo = Arc::new(repo);
+    let (pull_result, _stats) = composefs_oci_pull_image(&repo, &final_imgref, None, None)
+        .await
+        .context("Pulling composefs repo")?;
+
+    // Tag the manifest as a bootc-owned GC root.
+    let tag = bootc_tag_for_manifest(&pull_result.manifest_digest);
+    tag_image(&*repo, &pull_result.manifest_digest, &tag)
+        .context("Tagging pulled image as bootc GC root")?;
 
     tracing::info!(
         message_id = COMPOSEFS_PULL_JOURNAL_ID,
@@ -152,24 +168,30 @@ pub(crate) async fn pull_composefs_repo(
         bootc.manifest_verity = pull_result.manifest_verity.to_hex(),
         bootc.config_digest = pull_result.config_digest,
         bootc.config_verity = pull_result.config_verity.to_hex(),
+        bootc.tag = tag,
         "Pulled image into composefs repository",
     );
 
-    let mut repo = open_composefs_repo(&rootfs_dir)?;
+    // Generate the bootable EROFS image (idempotent).
+    let id = composefs_oci::generate_boot_image(&repo, &pull_result.manifest_digest)
+        .context("Generating bootable EROFS image")?;
+
+    // Get boot entries from the OCI filesystem (untransformed).
+    let fs = create_composefs_filesystem(&*repo, &pull_result.config_digest, None)
+        .context("Creating composefs filesystem for boot entry discovery")?;
+    let entries =
+        get_boot_resources(&fs, &*repo).context("Extracting boot entries from OCI image")?;
+
+    // Unwrap the Arc to get the owned repo back.
+    let mut repo = Arc::try_unwrap(repo).map_err(|_| {
+        anyhow::anyhow!("BUG: Arc<Repository> still has other references after pull completed")
+    })?;
     repo.set_insecure(allow_missing_fsverity);
-
-    let mut fs: crate::store::ComposefsFilesystem =
-        create_composefs_filesystem(&repo, &pull_result.config_digest, None)
-            .context("Failed to create composefs filesystem")?;
-
-    let entries = fs.transform_for_boot(&repo)?;
-    let id = fs.commit_image(&repo, None)?;
 
     Ok(PullRepoResult {
         repo,
         entries,
         id,
-        fs,
         manifest_digest: pull_result.manifest_digest,
     })
 }
@@ -215,5 +237,13 @@ mod tests {
             get_imgref("docker-daemon", IMAGE_NAME),
             format!("docker-daemon:{IMAGE_NAME}")
         );
+    }
+
+    #[test]
+    fn test_bootc_tag_for_manifest() {
+        let digest = "sha256:abc123def456";
+        let tag = bootc_tag_for_manifest(digest);
+        assert_eq!(tag, "localhost/bootc-sha256:abc123def456");
+        assert!(tag.starts_with(BOOTC_TAG_PREFIX));
     }
 }
