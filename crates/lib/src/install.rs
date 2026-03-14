@@ -201,8 +201,7 @@ use crate::task::Task;
 use crate::utils::sigpolicy_from_opt;
 use bootc_kernel_cmdline::{INITRD_ARG_PREFIX, ROOTFLAGS, bytes, utf8};
 use bootc_mount::Filesystem;
-use cfsctl::composefs;
-use composefs::fsverity::FsVerityHashValue;
+
 
 /// The toplevel boot directory
 pub(crate) const BOOT: &str = "boot";
@@ -1959,11 +1958,7 @@ async fn install_to_filesystem_impl(
             state.composefs_options.allow_missing_verity,
         )
         .await?;
-        tracing::info!(
-            "id: {}, verity: {}",
-            pull_result.config_digest,
-            pull_result.config_verity.to_hex()
-        );
+
 
         setup_composefs_boot(
             rootfs,

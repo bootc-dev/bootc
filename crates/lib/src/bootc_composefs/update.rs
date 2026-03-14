@@ -255,7 +255,13 @@ pub(crate) async fn do_upgrade(
 ) -> Result<()> {
     start_finalize_stated_svc()?;
 
-    let (repo, entries, id, fs) = pull_composefs_repo(
+    let crate::bootc_composefs::repo::PullRepoResult {
+        repo,
+        entries,
+        id,
+        fs,
+        manifest_digest: _,
+    } = pull_composefs_repo(
         &imgref.transport,
         &imgref.image,
         booted_cfs.cmdline.allow_missing_fsverity,

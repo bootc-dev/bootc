@@ -9,7 +9,8 @@ use cfsctl::composefs_oci;
 use composefs::fsverity::{FsVerityHashValue, Sha512HashValue};
 use composefs_boot::{BootOps, bootloader::BootEntry as ComposefsBootEntry};
 use composefs_oci::{
-    PullResult, image::create_filesystem as create_composefs_filesystem, pull as composefs_oci_pull,
+    image::create_filesystem as create_composefs_filesystem,
+    pull_image as composefs_oci_pull_image, skopeo::PullResult,
 };
 
 use ostree_ext::container::ImageReference as OstreeExtImgRef;
@@ -56,13 +57,25 @@ pub(crate) async fn initialize_composefs_repository(
     } = &state.source.imageref;
 
     // transport's display is already of type "<transport_type>:"
-    composefs_oci_pull(
+    let (pull_result, _stats) = composefs_oci_pull_image(
         &Arc::new(repo),
         &format!("{transport}{image_name}"),
         None,
         None,
     )
-    .await
+    .await?;
+
+    tracing::info!(
+        message_id = COMPOSEFS_REPO_INIT_JOURNAL_ID,
+        bootc.operation = "repository_init",
+        bootc.manifest_digest = pull_result.manifest_digest,
+        bootc.manifest_verity = pull_result.manifest_verity.to_hex(),
+        bootc.config_digest = pull_result.config_digest,
+        bootc.config_verity = pull_result.config_verity.to_hex(),
+        "Pulled image into composefs repository",
+    );
+
+    Ok(pull_result)
 }
 
 /// skopeo (in composefs-rs) doesn't understand "registry:"
@@ -85,6 +98,18 @@ pub(crate) fn get_imgref(transport: &str, image: &str) -> String {
     }
 }
 
+/// Result of pulling a composefs repository, including the OCI manifest digest
+/// needed to reconstruct image metadata from the local composefs repo.
+#[allow(dead_code)]
+pub(crate) struct PullRepoResult {
+    pub(crate) repo: crate::store::ComposefsRepository,
+    pub(crate) entries: Vec<ComposefsBootEntry<Sha512HashValue>>,
+    pub(crate) id: Sha512HashValue,
+    pub(crate) fs: crate::store::ComposefsFilesystem,
+    /// The OCI manifest content digest (e.g. "sha256:abc...")
+    pub(crate) manifest_digest: String,
+}
+
 /// Pulls the `image` from `transport` into a composefs repository at /sysroot
 /// Checks for boot entries in the image and returns them
 #[context("Pulling composefs repository")]
@@ -92,12 +117,7 @@ pub(crate) async fn pull_composefs_repo(
     transport: &String,
     image: &String,
     allow_missing_fsverity: bool,
-) -> Result<(
-    crate::store::ComposefsRepository,
-    Vec<ComposefsBootEntry<Sha512HashValue>>,
-    Sha512HashValue,
-    crate::store::ComposefsFilesystem,
-)> {
+) -> Result<PullRepoResult> {
     const COMPOSEFS_PULL_JOURNAL_ID: &str = "4c3b2a1f0e9d8c7b6a5f4e3d2c1b0a9f8";
 
     tracing::info!(
@@ -120,15 +140,19 @@ pub(crate) async fn pull_composefs_repo(
 
     tracing::debug!("Image to pull {final_imgref}");
 
-    let pull_result = composefs_oci_pull(&Arc::new(repo), &final_imgref, None, None)
-        .await
-        .context("Pulling composefs repo")?;
+    let (pull_result, _stats) =
+        composefs_oci_pull_image(&Arc::new(repo), &final_imgref, None, None)
+            .await
+            .context("Pulling composefs repo")?;
 
     tracing::info!(
         message_id = COMPOSEFS_PULL_JOURNAL_ID,
-        id = pull_result.config_digest,
-        verity = pull_result.config_verity.to_hex(),
-        "Pulled image into repository"
+        bootc.operation = "pull",
+        bootc.manifest_digest = pull_result.manifest_digest,
+        bootc.manifest_verity = pull_result.manifest_verity.to_hex(),
+        bootc.config_digest = pull_result.config_digest,
+        bootc.config_verity = pull_result.config_verity.to_hex(),
+        "Pulled image into composefs repository",
     );
 
     let mut repo = open_composefs_repo(&rootfs_dir)?;
@@ -141,7 +165,13 @@ pub(crate) async fn pull_composefs_repo(
     let entries = fs.transform_for_boot(&repo)?;
     let id = fs.commit_image(&repo, None)?;
 
-    Ok((repo, entries, id, fs))
+    Ok(PullRepoResult {
+        repo,
+        entries,
+        id,
+        fs,
+        manifest_digest: pull_result.manifest_digest,
+    })
 }
 
 #[cfg(test)]
