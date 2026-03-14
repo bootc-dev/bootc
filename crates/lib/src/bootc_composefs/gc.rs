@@ -8,6 +8,7 @@ use anyhow::{Context, Result};
 use cap_std_ext::{cap_std::fs::Dir, dirext::CapStdExtDirExt};
 use cfsctl::composefs;
 use cfsctl::composefs_boot;
+use cfsctl::composefs_oci;
 use composefs::repository::GcResult;
 use composefs_boot::bootloader::EFI_EXT;
 
@@ -15,9 +16,14 @@ use crate::{
     bootc_composefs::{
         boot::{BOOTC_UKI_DIR, BootType, get_type1_dir_name, get_uki_addon_dir_name, get_uki_name},
         delete::{delete_image, delete_staged, delete_state_dir},
-        status::{get_composefs_status, get_imginfo, list_bootloader_entries},
+        repo::bootc_tag_for_manifest,
+        state::read_origin,
+        status::{get_composefs_status, list_bootloader_entries},
     },
-    composefs_consts::{STATE_DIR_RELATIVE, TYPE1_BOOT_DIR_PREFIX, UKI_NAME_PREFIX},
+    composefs_consts::{
+        BOOTC_TAG_PREFIX, ORIGIN_KEY_IMAGE, ORIGIN_KEY_MANIFEST_DIGEST, STATE_DIR_RELATIVE,
+        TYPE1_BOOT_DIR_PREFIX, UKI_NAME_PREFIX,
+    },
     store::{BootedComposefs, Storage},
 };
 
@@ -302,22 +308,77 @@ pub(crate) async fn composefs_gc(
         delete_state_dir(&sysroot, verity, dry_run)?;
     }
 
-    // Now we GC the unrefenced objects in composefs repo
-    let mut additional_roots = vec![];
+    // Collect the set of manifest digests referenced by live deployments,
+    // and track EROFS image verities as fallback additional_roots for
+    // deployments that predate the manifest→image link.
+    let mut live_manifest_digests = Vec::new();
+    let mut additional_roots = Vec::new();
 
     for deployment in host.list_deployments() {
         let verity = &deployment.require_composefs()?.verity;
 
-        // These need to be GC'd
+        // Skip deployments that are already being GC'd.
         if img_bootloader_diff.contains(&verity) || state_img_diff.contains(&verity) {
             continue;
         }
 
-        let image = get_imginfo(storage, verity, None).await?;
-        let stream = format!("oci-config-{}", image.manifest.config().digest());
-
+        // Keep the EROFS image as an additional root until all deployments
+        // have manifest→image refs. Once a deployment is pulled with the
+        // new code, its EROFS image is reachable from the manifest and
+        // this entry becomes redundant (but harmless).
         additional_roots.push(verity.clone());
-        additional_roots.push(stream);
+
+        if let Some(ini) = read_origin(sysroot, verity)? {
+            if let Some(manifest_digest) =
+                ini.get::<String>(ORIGIN_KEY_IMAGE, ORIGIN_KEY_MANIFEST_DIGEST)
+            {
+                live_manifest_digests.push(manifest_digest);
+            } else {
+                tracing::warn!(
+                    "Deployment {verity} has no manifest_digest in origin; \
+                     OCI manifest/config metadata is unprotected from GC"
+                );
+            }
+        }
+    }
+
+    // Migration: ensure every live deployment has a bootc-owned tag.
+    // Deployments from before the tag-based GC won't have tags yet;
+    // create them now so their OCI metadata survives this GC cycle.
+    let existing_tags = composefs_oci::list_refs(&*booted_cfs.repo)
+        .context("Listing OCI tags in composefs repo")?;
+
+    for manifest_digest in &live_manifest_digests {
+        let expected_tag = bootc_tag_for_manifest(manifest_digest);
+        let has_tag = existing_tags
+            .iter()
+            .any(|(tag_name, _)| tag_name == &expected_tag);
+        if !has_tag {
+            tracing::info!("Creating missing bootc tag for live deployment: {expected_tag}");
+            if !dry_run {
+                composefs_oci::tag_image(&*booted_cfs.repo, manifest_digest, &expected_tag)
+                    .with_context(|| format!("Creating migration tag {expected_tag}"))?;
+            }
+        }
+    }
+
+    // Re-read tags after potential migration.
+    let all_tags = composefs_oci::list_refs(&*booted_cfs.repo)
+        .context("Listing OCI tags in composefs repo")?;
+
+    for (tag_name, manifest_digest) in &all_tags {
+        if !tag_name.starts_with(BOOTC_TAG_PREFIX) {
+            // Not a bootc-owned tag; leave it alone (could be an app image).
+            continue;
+        }
+
+        if !live_manifest_digests.iter().any(|d| d == manifest_digest) {
+            tracing::debug!("Removing unreferenced bootc tag: {tag_name}");
+            if !dry_run {
+                composefs_oci::untag_image(&*booted_cfs.repo, tag_name)
+                    .with_context(|| format!("Removing tag {tag_name}"))?;
+            }
+        }
     }
 
     let additional_roots = additional_roots
@@ -325,7 +386,11 @@ pub(crate) async fn composefs_gc(
         .map(|x| x.as_str())
         .collect::<Vec<_>>();
 
-    // Run garbage collection on objects after deleting images
+    // Run garbage collection. Tags root the OCI metadata chain
+    // (manifest → config → layers). The additional_roots protect EROFS
+    // images for deployments that predate the manifest→image link;
+    // once all deployments have been pulled with the new code, these
+    // become redundant.
     let gc_result = if dry_run {
         booted_cfs.repo.gc_dry_run(&additional_roots)?
     } else {
