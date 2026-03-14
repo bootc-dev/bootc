@@ -235,6 +235,14 @@ impl CStorage {
         )
         .context("labeling storage root")?;
 
+        // fsync so relabel writes are durable before creating the stamp file
+        rustix::fs::fsync(
+            self.storage_root
+                .reopen_as_ownedfd()
+                .context("Reopening as owned fd")?,
+        )
+        .context("fsync")?;
+
         self.storage_root.create(LABELED)?;
 
         // Label the stamp file itself to match the storage directory context
@@ -246,6 +254,14 @@ impl CStorage {
             sepolicy,
         )
         .context("labeling stamp file")?;
+
+        // fsync to persist the stamp file entry
+        rustix::fs::fsync(
+            self.storage_root
+                .reopen_as_ownedfd()
+                .context("Reopening as owned fd")?,
+        )
+        .context("fsync")?;
 
         Ok(())
     }
