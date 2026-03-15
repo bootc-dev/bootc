@@ -323,7 +323,7 @@ jobs:
           echo "BOOTC_base=quay.io/centos-bootc/centos-bootc:stream10" >> $GITHUB_ENV
 
       - name: Download package artifacts
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: packages-centos-10
           path: target/packages/
@@ -334,7 +334,7 @@ jobs:
 
       - name: Archive test logs
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: container-export-test-${{ env.ARCH }}
           path: target/anaconda-test/*.log
