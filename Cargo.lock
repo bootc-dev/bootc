@@ -170,7 +170,7 @@ checksum = "9d297deb1925b89f2ccc13d7635fa0714f12c87adce1c75356b39ca9b7178567"
 [[package]]
 name = "bcvk-qemu"
 version = "0.1.0"
-source = "git+https://github.com/bootc-dev/bcvk?rev=d4be4933e09796f355076ad6daa60d570e64cec8#d4be4933e09796f355076ad6daa60d570e64cec8"
+source = "git+https://github.com/bootc-dev/bcvk?rev=3b4dc84453d7ebac9e544d15931f0a9cd3d26215#3b4dc84453d7ebac9e544d15931f0a9cd3d26215"
 dependencies = [
  "camino",
  "cap-std-ext 5.1.1",
@@ -3010,7 +3010,7 @@ dependencies = [
  "indoc",
  "libtest-mimic",
  "oci-spec 0.9.0",
- "rand 0.9.2",
+ "rand 0.10.0",
  "rexpect",
  "rustix",
  "scopeguard",
