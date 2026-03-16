@@ -48,13 +48,23 @@ pub(crate) fn copy_entry(
     };
     let mut header = entry.header().clone();
     if let Some(headers) = entry.pax_extensions()? {
-        let extensions = headers
+        // Filter out `path` and `linkpath` from PAX extensions. The tar crate
+        // will regenerate them from the (possibly remapped) path we pass to
+        // append_data/append_link. Keeping the originals would override our
+        // remap (e.g. /etc -> /usr/etc) since PAX headers take precedence
+        // over basic tar header fields per POSIX.
+        let extensions: Vec<_> = headers
             .map(|ext| {
                 let ext = ext?;
                 Ok((ext.key()?, ext.value_bytes()))
             })
-            .collect::<Result<Vec<_>>>()?;
-        dest.append_pax_extensions(extensions.as_slice().iter().copied())?;
+            .collect::<Result<Vec<_>>>()?
+            .into_iter()
+            .filter(|(key, _)| *key != "path" && *key != "linkpath")
+            .collect();
+        if !extensions.is_empty() {
+            dest.append_pax_extensions(extensions.iter().copied())?;
+        }
     }
 
     // Need to use the entry.link_name() not the header.link_name()
