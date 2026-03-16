@@ -630,4 +630,73 @@ mod tests {
         assert!(!destdir.join("blah").exists());
         Ok(())
     }
+
+    /// Regression test: PAX `path` headers (used for non-ASCII filenames)
+    /// must not bypass the /etc -> /usr/etc remap, since PAX takes
+    /// precedence over basic tar headers per POSIX.
+    #[tokio::test]
+    async fn tar_filter_pax_etc_remap() -> Result<()> {
+        let tempd = tempfile::tempdir()?;
+        let src_tar_path = tempd.path().join("src.tar");
+        let pax_path = "etc/ssl/certs/Főtanúsítvány.pem";
+
+        // Build a tar with an explicit PAX `path` under etc/, matching how
+        // Docker/BuildKit produces layers for non-ASCII filenames.
+        {
+            let mut builder = tar::Builder::new(std::fs::File::create(&src_tar_path)?);
+            let data = b"cert";
+            let mut header = tar::Header::new_gnu();
+            header.set_size(data.len() as u64);
+            header.set_mode(0o644);
+            header.set_entry_type(tar::EntryType::Regular);
+            header.set_cksum();
+            builder.append_pax_extensions([("path", pax_path.as_bytes())].into_iter())?;
+            builder.append_data(&mut header, pax_path, &data[..])?;
+            builder.into_inner()?;
+        }
+
+        let mut dest = Vec::new();
+        let src = tokio::io::BufReader::new(tokio::fs::File::open(&src_tar_path).await?);
+        let cap_tmpdir = Dir::open_ambient_dir(&tempd, cap_std::ambient_authority())?;
+        filter_tar_async(
+            src,
+            oci_image::MediaType::ImageLayer,
+            &mut dest,
+            &Default::default(),
+            cap_tmpdir,
+        )
+        .await?;
+
+        // Check the raw PAX headers in the output. We cannot use unpack()
+        // because the Rust tar crate resolves PAX-vs-GNU conflicts
+        // differently than libarchive/ostree (which gives PAX precedence).
+        let mut found_remapped = false;
+        let mut archive = tar::Archive::new(Cursor::new(dest.as_slice()));
+        for entry in archive.entries()? {
+            let mut entry = entry?;
+            let entry_path = entry.path()?;
+            let entry_path = entry_path.to_string_lossy();
+            let entry_path = entry_path.trim_start_matches("./");
+            if entry_path == format!("usr/{pax_path}") {
+                found_remapped = true;
+            }
+            if let Some(pax) = entry.pax_extensions()? {
+                for ext in pax.flatten() {
+                    if let Ok("path" | "linkpath") = ext.key() {
+                        let value = String::from_utf8_lossy(ext.value_bytes());
+                        let clean = value.trim_start_matches("./").trim_end_matches('\0');
+                        assert!(
+                            !clean.starts_with("etc/") && clean != "etc",
+                            "PAX header still contains unremapped /etc path: {value}"
+                        );
+                    }
+                }
+            }
+        }
+        assert!(
+            found_remapped,
+            "Expected remapped file at usr/{pax_path} not found in output"
+        );
+        Ok(())
+    }
 }
