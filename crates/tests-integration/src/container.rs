@@ -191,7 +191,7 @@ fn test_variant_base_crosscheck() -> Result<()> {
 /// Verify exported tar has correct size/mode/content vs source.
 /// Checks all critical paths (kernel, boot) plus ~10% random sample.
 pub(crate) fn test_container_export_tar() -> Result<()> {
-    use rand::{Rng, SeedableRng};
+    use rand::{RngExt, SeedableRng};
     use std::io::Read;
     use std::os::unix::fs::MetadataExt;
 
