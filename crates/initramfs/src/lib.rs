@@ -1,7 +1,7 @@
 //! Mount helpers for bootc-initramfs
 
 use std::{
-    ffi::OsString,
+    ffi::{CString, OsString},
     fmt::Debug,
     io::ErrorKind,
     os::fd::{AsFd, AsRawFd, OwnedFd},
@@ -9,6 +9,8 @@ use std::{
 };
 
 use anyhow::{Context, Result};
+use cap_std_ext::cap_std::fs::Dir;
+use cap_std_ext::dirext::CapStdExtDirExt;
 use clap::Parser;
 use rustix::{
     fs::{CWD, Mode, OFlags, major, minor, mkdirat, openat, stat, symlink},
@@ -19,6 +21,7 @@ use rustix::{
     },
     path,
 };
+
 use serde::Deserialize;
 
 use cfsctl::composefs;
@@ -202,9 +205,21 @@ fn bind_mount(fd: impl AsFd, path: &str) -> Result<OwnedFd> {
     Ok(res?)
 }
 
-#[context("Mounting tmpfs")]
-fn mount_tmpfs() -> Result<OwnedFd> {
+/// Mount a tmpfs, inheriting the SELinux label from the base filesystem
+/// if provided. See <https://github.com/containers/bootc/issues/1992>.
+#[context("Mounting tmpfs for overlay")]
+fn mount_tmpfs_for_overlay(base: Option<impl AsFd>) -> Result<OwnedFd> {
     let tmpfs = FsHandle::open("tmpfs")?;
+
+    if let Some(base_fd) = base {
+        let base_dir = Dir::reopen_dir(&base_fd.as_fd())?;
+        if let Some(label) = base_dir.getxattr(".", "security.selinux")? {
+            if let Ok(cstr) = CString::new(label) {
+                fsconfig_set_string(tmpfs.as_fd(), "rootcontext", &cstr)?;
+            }
+        }
+    }
+
     fsconfig_create(tmpfs.as_fd())?;
     Ok(fsmount(
         tmpfs.as_fd(),
@@ -239,16 +254,20 @@ fn overlay_state(
     mount_at_wrapper(fs, base, ".").context("Moving mount")
 }
 
-/// Mounts a transient overlayfs with passed in fd as the lowerdir
+/// Mounts a transient overlayfs with passed in fd as the lowerdir.
+///
+/// The tmpfs used for the overlay upper layer inherits the SELinux label
+/// from the base filesystem to prevent label mismatches (see #1992).
 #[context("Mounting transient overlayfs")]
 pub fn overlay_transient(
     base: impl AsFd,
     mode: Option<rustix::fs::Mode>,
     mount_attr_flags: Option<MountAttrFlags>,
 ) -> Result<()> {
+    let tmpfs = mount_tmpfs_for_overlay(Some(&base))?;
     overlay_state(
         base,
-        prepare_mount(mount_tmpfs()?)?,
+        prepare_mount(tmpfs)?,
         "transient",
         mode,
         mount_attr_flags,

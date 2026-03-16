@@ -7,6 +7,7 @@ publish = false
 
 [dependencies]
 anyhow.workspace = true
+cap-std-ext.workspace = true
 clap = { workspace = true, features = ["std", "help", "usage", "derive"] }
 libc.workspace = true
 rustix.workspace = true
