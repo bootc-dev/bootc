@@ -53,17 +53,16 @@ pub(crate) fn copy_entry(
         // append_data/append_link. Keeping the originals would override our
         // remap (e.g. /etc -> /usr/etc) since PAX headers take precedence
         // over basic tar header fields per POSIX.
-        let extensions: Vec<_> = headers
-            .map(|ext| {
-                let ext = ext?;
-                Ok((ext.key()?, ext.value_bytes()))
-            })
-            .collect::<Result<Vec<_>>>()?
-            .into_iter()
-            .filter(|(key, _)| *key != "path" && *key != "linkpath")
-            .collect();
-        if !extensions.is_empty() {
-            dest.append_pax_extensions(extensions.iter().copied())?;
+        let mut extensions_to_keep = Vec::new();
+        for ext_res in headers {
+            let ext = ext_res?;
+            let key = ext.key()?;
+            if key != "path" && key != "linkpath" {
+                extensions_to_keep.push((key, ext.value_bytes()));
+            }
+        }
+        if !extensions_to_keep.is_empty() {
+            dest.append_pax_extensions(extensions_to_keep)?;
         }
     }
 
@@ -681,7 +680,8 @@ mod tests {
                 found_remapped = true;
             }
             if let Some(pax) = entry.pax_extensions()? {
-                for ext in pax.flatten() {
+                for ext_res in pax {
+                    let ext = ext_res?;
                     if let Ok("path" | "linkpath") = ext.key() {
                         let value = String::from_utf8_lossy(ext.value_bytes());
                         let clean = value.trim_start_matches("./").trim_end_matches('\0');
