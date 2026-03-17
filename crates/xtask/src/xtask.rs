@@ -21,6 +21,8 @@ mod man;
 mod tmt;
 
 const NAME: &str = "bootc";
+/// File used to identify the bootc source tree toplevel.
+const TOPLEVEL_MARKER: &str = "ADOPTERS.md";
 const TAR_REPRODUCIBLE_OPTS: &[&str] = &[
     "--sort=name",
     "--owner=0",
@@ -201,9 +203,20 @@ fn main() {
     }
 }
 
+/// Check if we're in a bootc source tree by looking for [`TOPLEVEL_MARKER`].
+fn in_bootc_source_tree() -> Result<bool> {
+    Utf8Path::new(TOPLEVEL_MARKER)
+        .try_exists()
+        .context("Checking for toplevel")
+}
+
 fn try_main() -> Result<()> {
-    // Ensure our working directory is the toplevel (if we're in a git repo)
-    {
+    // Ensure our working directory is the bootc source toplevel.
+    // First check if we're already there (e.g. when invoked from extracted
+    // tarball during RPM build). Only try git if we're not already in the
+    // right place - this avoids issues when building inside a different
+    // git repository.
+    if !in_bootc_source_tree()? {
         if let Ok(toplevel_path) = Command::new("git")
             .args(["rev-parse", "--show-toplevel"])
             .output()
@@ -213,12 +226,9 @@ fn try_main() -> Result<()> {
                 std::env::set_current_dir(path.trim()).context("Changing to toplevel")?;
             }
         }
-        // Otherwise verify we're in the toplevel
-        if !Utf8Path::new("ADOPTERS.md")
-            .try_exists()
-            .context("Checking for toplevel")?
-        {
-            anyhow::bail!("Not in toplevel")
+        // Verify we're now in the toplevel
+        if !in_bootc_source_tree()? {
+            anyhow::bail!("Not in toplevel (no {TOPLEVEL_MARKER} found)")
         }
     }
 
