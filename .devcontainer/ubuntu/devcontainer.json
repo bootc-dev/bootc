@@ -1,0 +1,30 @@
+{
+  "name": "bootc-devenv-ubuntu",
+  "image": "ghcr.io/bootc-dev/devenv-ubuntu",
+  "customizations": {
+    "vscode": {
+      // Arbitrary, but most of our code is in one of these two
+      "extensions": [
+        "rust-lang.rust-analyzer",
+        "golang.Go"
+      ]
+    },
+    "devaipod": {
+      // When running under devaipod, use minimal capabilities
+      // (SYS_ADMIN, NET_ADMIN, etc.) instead of full --privileged.
+      "nestedContainers": true
+    }
+  },
+  "features": {},
+  // Use privileged mode for broad compatibility (Codespaces, Docker,
+  // stock devcontainer CLI). devaipod overrides this with tighter
+  // security via the nestedContainers customization above.
+  "privileged": true,
+  "postCreateCommand": {
+    // Our init script
+    "devenv-init": "sudo /usr/local/bin/devenv-init.sh"
+  },
+  "remoteEnv": {
+    "PATH": "${containerEnv:PATH}:/usr/local/cargo/bin"
+  }
+}
