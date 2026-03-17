@@ -1295,7 +1295,8 @@ r usr/bin/bash bash-v0
     store::remove_images(fixture.destrepo(), [&derived_imgref.imgref]).unwrap();
     assert_eq!(store::list_images(fixture.destrepo()).unwrap().len(), 0);
     let n_removed = store::gc_image_layers(fixture.destrepo())?;
-    assert_eq!(n_removed, (LAYERS_V0_LEN + 1) as u32);
+    // Each layer has both a diff_id ref and a digest ref
+    assert_eq!(n_removed, ((LAYERS_V0_LEN + 1) * 2) as u32);
 
     // Repo should be clean now
     assert_eq!(store::count_layer_references(fixture.destrepo())?, 0);
@@ -1816,6 +1817,39 @@ async fn test_container_write_derive() -> Result<()> {
     assert_eq!(images.len(), 1);
     assert_eq!(images[0], derived_ref.imgref.to_string());
 
+    // Verify both diff_id and digest refs were created for each layer
+    let copied_state =
+        store::query_image(&destrepo2, &derived_ref.imgref)?.expect("copied image should exist");
+    for (layer, diff_id) in copied_state
+        .manifest
+        .layers()
+        .iter()
+        .zip(copied_state.configuration.rootfs().diff_ids())
+    {
+        let diff_id_ref =
+            ostree_ext::refescape::prefix_escape_for_ref("ostree/container/blob", diff_id)?;
+        let digest_ref = ostree_ext::refescape::prefix_escape_for_ref(
+            "ostree/container/blob",
+            layer.digest().as_ref(),
+        )?;
+        let diff_id_commit = destrepo2.resolve_rev(&diff_id_ref, false)?;
+        let digest_commit = destrepo2.resolve_rev(&digest_ref, false)?;
+        assert!(
+            diff_id_commit.is_some(),
+            "diff_id ref should exist: {}",
+            diff_id_ref
+        );
+        assert!(
+            digest_commit.is_some(),
+            "digest ref should exist: {}",
+            digest_ref
+        );
+        assert_eq!(
+            diff_id_commit, digest_commit,
+            "diff_id and digest refs should point to same commit"
+        );
+    }
+
     // And test copy_as
     let target_name = "quay.io/exampleos/centos:stream9";
     let registry_ref = ImageReference {
@@ -2233,4 +2267,170 @@ fn test_manifest_diff() {
         d.removed[3].digest().to_string(),
         "sha256:76b83eea62b7b93200a056b5e0201ef486c67f1eeebcf2c7678ced4d614cece2"
     );
+}
+
+#[tokio::test]
+async fn test_diff_id_refs_populated() -> Result<()> {
+    if !check_skopeo() {
+        return Ok(());
+    }
+    let fixture = Fixture::new_v1()?;
+    let (src_imgref, _) = fixture.export_container().await?;
+    let imgref = OstreeImageReference {
+        sigverify: SignatureSource::ContainerPolicyAllowInsecure,
+        imgref: src_imgref,
+    };
+
+    let mut imp =
+        store::ImageImporter::new(fixture.destrepo(), &imgref, Default::default()).await?;
+    let prep = match imp.prepare().await? {
+        store::PrepareResult::AlreadyPresent(_) => panic!("should not be already imported"),
+        store::PrepareResult::Ready(r) => r,
+    };
+
+    // Verify both refs are populated in ManifestLayerState
+    for layer in prep
+        .ostree_commit_layer
+        .iter()
+        .chain(prep.ostree_layers.iter())
+        .chain(prep.layers.iter())
+    {
+        assert!(!layer.ostree_ref.is_empty(), "diff_id ref should be set");
+        assert!(
+            !layer.ostree_ref_compat.is_empty(),
+            "digest ref should be set"
+        );
+        assert_ne!(
+            layer.ostree_ref, layer.ostree_ref_compat,
+            "refs should be different"
+        );
+        assert!(
+            layer.ostree_ref.contains("ostree/container/blob"),
+            "diff_id ref should be in blob namespace"
+        );
+        assert!(
+            layer.ostree_ref_compat.contains("ostree/container/blob"),
+            "digest ref should be in blob namespace"
+        );
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_diff_id_compat_fallback() -> Result<()> {
+    if !check_skopeo() {
+        return Ok(());
+    }
+    let fixture = Fixture::new_v1()?;
+    let (src_imgref, _) = fixture.export_container().await?;
+    let imgref = OstreeImageReference {
+        sigverify: SignatureSource::ContainerPolicyAllowInsecure,
+        imgref: src_imgref.clone(),
+    };
+
+    // First import
+    let mut imp =
+        store::ImageImporter::new(fixture.destrepo(), &imgref, Default::default()).await?;
+    let prep = match imp.prepare().await? {
+        store::PrepareResult::AlreadyPresent(_) => panic!("should not be already imported"),
+        store::PrepareResult::Ready(r) => r,
+    };
+
+    let test_layer = prep
+        .ostree_commit_layer
+        .as_ref()
+        .expect("should have commit layer");
+    let diff_id_ref = test_layer.ostree_ref.clone();
+    let digest_ref = test_layer.ostree_ref_compat.clone();
+    assert!(test_layer.commit.is_none(), "layer should not exist yet");
+
+    imp.import(prep).await?;
+
+    // Re-import and ensure layers are reused
+
+    let repo = fixture.destrepo();
+    let commit = repo
+        .resolve_rev(&digest_ref, true)?
+        .expect("digest ref should exist");
+
+    // Delete the diff_id ref to simulate an old bootc installation
+    // that only created digest-based refs
+    repo.set_ref_immediate(None, &diff_id_ref, None, gio::Cancellable::NONE)?;
+    assert!(
+        repo.resolve_rev(&diff_id_ref, true)?.is_none(),
+        "diff_id ref should be deleted"
+    );
+
+    // Delete image-level refs to force layer-by-layer checking
+    let refs = repo.list_refs_ext(
+        Some("ostree/container/image"),
+        ostree::RepoListRefsExtFlags::empty(),
+        gio::Cancellable::NONE,
+    )?;
+    for (refname, _) in refs.iter() {
+        repo.set_ref_immediate(None, &refname, None, gio::Cancellable::NONE)?;
+    }
+
+    // Prepare again - layer should still be found via digest ref fallback
+    let mut imp2 =
+        store::ImageImporter::new(fixture.destrepo(), &imgref, Default::default()).await?;
+    let prep2 = match imp2.prepare().await? {
+        store::PrepareResult::AlreadyPresent(_) => {
+            panic!("should not be already present after deleting image refs");
+        }
+        store::PrepareResult::Ready(r) => r,
+    };
+
+    let test_layer2 = prep2
+        .ostree_commit_layer
+        .as_ref()
+        .expect("should have commit layer");
+    assert!(
+        test_layer2.commit.is_some(),
+        "layer should be found via digest ref fallback"
+    );
+    assert_eq!(
+        test_layer2.commit.as_ref().unwrap(),
+        &commit.to_string(),
+        "should find same commit"
+    );
+
+    // Delete the compat ref as well to verify the layer is not found
+    repo.set_ref_immediate(None, &digest_ref, None, gio::Cancellable::NONE)?;
+    assert!(
+        repo.resolve_rev(&digest_ref, true)?.is_none(),
+        "digest ref should be deleted"
+    );
+
+    // Delete image-level refs again
+    let refs = repo.list_refs_ext(
+        Some("ostree/container/image"),
+        ostree::RepoListRefsExtFlags::empty(),
+        gio::Cancellable::NONE,
+    )?;
+    for (refname, _) in refs.iter() {
+        repo.set_ref_immediate(None, &refname, None, gio::Cancellable::NONE)?;
+    }
+
+    // Prepare again - layer should NOT be found now
+    let mut imp3 =
+        store::ImageImporter::new(fixture.destrepo(), &imgref, Default::default()).await?;
+    let prep3 = match imp3.prepare().await? {
+        store::PrepareResult::AlreadyPresent(_) => {
+            panic!("should not be already present after deleting both refs");
+        }
+        store::PrepareResult::Ready(r) => r,
+    };
+
+    let test_layer3 = prep3
+        .ostree_commit_layer
+        .as_ref()
+        .expect("should have commit layer");
+    assert!(
+        test_layer3.commit.is_none(),
+        "layer should not be found after deleting both refs"
+    );
+
+    Ok(())
 }

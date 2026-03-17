@@ -45,8 +45,9 @@ $ ostree refs ostree/container
 
 ### Layers
 
-The `ostree/container/blob` namespace tracks storage of a container layer
-identified by its blob ID (sha256 digest).
+The `ostree/container/blob` namespace tracks storage of a container layer.
+Each layer has two refs: one by diff_id (uncompressed digest) for deduplication,
+and one by blob digest (compressed) for backward compatibility.
 
 ### Images
 

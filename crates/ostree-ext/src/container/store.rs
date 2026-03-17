@@ -15,7 +15,7 @@
 //!
 //! Layers and images are stored using these ref prefixes (defined as constants in this module):
 //!
-//! - `ostree/container/blob`: Individual OCI layers stored as commits
+//! - `ostree/container/blob`: Individual OCI layers stored as commits (both by layer id and by diff id)
 //! - `ostree/container/image`: Merge commits for complete images
 //! - [`BASE_IMAGE_PREFIX`] (`ostree/container/baseimage`): Protected base images (public)
 //!
@@ -82,7 +82,7 @@
 //!
 //! Unreferenced layers are automatically pruned after imports via [`gc_image_layers`]:
 //!
-//! 1. Collect all layer digests referenced by stored images and deployments
+//! 1. Collect all layer digests (both blob digests and diff_ids) referenced by stored images and deployments
 //! 2. List all layer refs under `ostree/container/blob/`
 //! 3. Remove refs for layers not in the referenced set
 //!
@@ -196,9 +196,27 @@ fn ref_for_layer(l: &oci_image::Descriptor) -> Result<String> {
     ref_for_blob_digest(&l.digest().as_ref())
 }
 
+/// Convert e.g. sha256:12345... (diff_id) into `/ostree/container/blob/sha256_2B12345...`.
+fn ref_for_diff_id(diff_id: &str) -> Result<String> {
+    ref_for_blob_digest(diff_id)
+}
+
 /// Convert e.g. sha256:12345... into `/ostree/container/blob/sha256_2B12345...`.
 fn ref_for_image(l: &ImageReference) -> Result<String> {
     refescape::prefix_escape_for_ref(IMAGE_PREFIX, &l.to_string())
+}
+
+/// Resolve a layer commit by trying diff_id ref first, then digest ref as fallback.
+fn resolve_layer_commit(
+    repo: &ostree::Repo,
+    diff_id_ref: &str,
+    digest_ref: &str,
+) -> Result<Option<String>> {
+    if let Some(c) = repo.resolve_rev(diff_id_ref, true)? {
+        Ok(Some(c.to_string()))
+    } else {
+        Ok(repo.resolve_rev(digest_ref, true)?.map(|s| s.to_string()))
+    }
 }
 
 /// Sent across a channel to track start and end of a container fetch.
@@ -327,8 +345,11 @@ pub struct ManifestLayerState {
     /// The underlying layer descriptor.
     pub layer: oci_image::Descriptor,
     // TODO semver: Make this readonly via an accessor
-    /// The ostree ref name for this layer.
+    /// The ostree ref name for this layer (by diff_id).
     pub ostree_ref: String,
+    // TODO semver: Make this readonly via an accessor
+    /// The ostree ref name by digest (for backwards compatibility).
+    pub ostree_ref_compat: String,
     // TODO semver: Make this readonly via an accessor
     /// The ostree commit that caches this layer, if present.
     pub commit: Option<String>,
@@ -440,13 +461,29 @@ impl PreparedImport {
 // Given a manifest, compute its ostree ref name and cached ostree commit
 pub(crate) fn query_layer(
     repo: &ostree::Repo,
-    layer: oci_image::Descriptor,
+    layer: &oci_image::Descriptor,
+    manifest: &oci_image::ImageManifest,
+    config: &oci_image::ImageConfiguration,
 ) -> Result<ManifestLayerState> {
-    let ostree_ref = ref_for_layer(&layer)?;
-    let commit = repo.resolve_rev(&ostree_ref, true)?.map(|s| s.to_string());
+    let idx = manifest
+        .layers()
+        .iter()
+        .position(|l| l.digest() == layer.digest())
+        .ok_or_else(|| anyhow!("Layer {} not found in manifest", layer.digest()))?;
+    let diff_id = config
+        .rootfs()
+        .diff_ids()
+        .get(idx)
+        .ok_or_else(|| anyhow!("No diff_id found for layer index {}", idx))?;
+
+    let diff_id_ref = ref_for_diff_id(diff_id)?;
+    let digest_ref = ref_for_layer(layer)?;
+    let commit = resolve_layer_commit(repo, &diff_id_ref, &digest_ref)?;
+
     Ok(ManifestLayerState {
-        layer,
-        ostree_ref,
+        layer: layer.clone(),
+        ostree_ref: diff_id_ref,
+        ostree_ref_compat: digest_ref,
         commit,
     })
 }
@@ -779,7 +816,7 @@ impl ImageImporter {
         let (commit_layer, component_layers, remaining_layers) =
             parse_manifest_layout(&manifest, &config)?;
 
-        let query = |l: &Descriptor| query_layer(&self.repo, l.clone());
+        let query = |l: &Descriptor| query_layer(&self.repo, l, &manifest, &config);
         let commit_layer = commit_layer.map(query).transpose()?;
         let component_layers = component_layers
             .into_iter()
@@ -956,6 +993,7 @@ impl ImageImporter {
             .await?;
             let repo = self.repo.clone();
             let target_ref = layer.ostree_ref.clone();
+            let target_compat_ref = layer.ostree_ref_compat.clone();
             let import_task =
                 crate::tokio_util::spawn_blocking_cancellable_flatten(move |cancellable| {
                     let txn = repo.auto_transaction(Some(cancellable))?;
@@ -968,6 +1006,8 @@ impl ImageImporter {
                         let commit = importer.finish_import_object_set()?;
                         repo.transaction_set_ref(None, &target_ref, Some(commit.as_str()));
                         tracing::debug!("Wrote {} => {}", target_ref, commit);
+                        repo.transaction_set_ref(None, &target_compat_ref, Some(commit.as_str()));
+                        tracing::debug!("Wrote (compat) {} => {}", target_compat_ref, commit);
                         Some(commit)
                     } else {
                         None
@@ -1003,6 +1043,7 @@ impl ImageImporter {
             .await?;
             let repo = self.repo.clone();
             let target_ref = commit_layer.ostree_ref.clone();
+            let target_compat_ref = commit_layer.ostree_ref_compat.clone();
             let import_task =
                 crate::tokio_util::spawn_blocking_cancellable_flatten(move |cancellable| {
                     let txn = repo.auto_transaction(Some(cancellable))?;
@@ -1015,6 +1056,8 @@ impl ImageImporter {
                     if write_refs {
                         repo.transaction_set_ref(None, &target_ref, Some(commit.as_str()));
                         tracing::debug!("Wrote {} => {}", target_ref, commit);
+                        repo.transaction_set_ref(None, &target_compat_ref, Some(commit.as_str()));
+                        tracing::debug!("Wrote (compat) {} => {}", target_compat_ref, commit);
                     }
                     repo.mark_commit_partial(&commit, false)?;
                     txn.commit(Some(cancellable))?;
@@ -1269,6 +1312,13 @@ impl ImageImporter {
                     .await
                     .with_context(|| format!("Parsing layer blob {}", layer.layer.digest()))?;
                 tracing::debug!("Imported layer: {}", r.commit.as_str());
+                self.repo.set_ref_immediate(
+                    None,
+                    &layer.ostree_ref_compat,
+                    Some(&r.commit),
+                    gio::Cancellable::NONE,
+                )?;
+                tracing::debug!("Wrote (compat) {} => {}", layer.ostree_ref_compat, r.commit);
                 layer_commits.push(r.commit);
                 let filtered_owned = HashMap::from_iter(r.filtered.clone());
                 if let Some((filtered, n_rest)) = bootc_utils::collect_until(
@@ -1486,10 +1536,12 @@ pub fn query_image_commit(repo: &ostree::Repo, commit: &str) -> Result<Box<Layer
     let commit_meta = &ostree::glib::VariantDict::new(Some(commit_meta));
     let (manifest, manifest_digest) = manifest_data_from_commitmeta(commit_meta)?;
     let configuration = image_config_from_commitmeta(commit_meta)?;
-    let mut layers = manifest.layers().iter().cloned();
     // We require a base layer.
-    let base_layer = layers.next().ok_or_else(|| anyhow!("No layers found"))?;
-    let base_layer = query_layer(repo, base_layer)?;
+    let base_layer = manifest
+        .layers()
+        .first()
+        .ok_or_else(|| anyhow!("No layers found"))?;
+    let base_layer = query_layer(repo, base_layer, &manifest, &configuration)?;
     let ostree_ref = base_layer.ostree_ref.as_str();
     let base_commit = base_layer
         .commit
@@ -1520,12 +1572,17 @@ pub fn query_image_commit(repo: &ostree::Repo, commit: &str) -> Result<Box<Layer
     Ok(state)
 }
 
-fn manifest_for_image(repo: &ostree::Repo, imgref: &ImageReference) -> Result<ImageManifest> {
+fn manifest_for_image(
+    repo: &ostree::Repo,
+    imgref: &ImageReference,
+) -> Result<(ImageManifest, ImageConfiguration)> {
     let ostree_ref = ref_for_image(imgref)?;
     let rev = repo.require_rev(&ostree_ref)?;
     let (commit_obj, _) = repo.load_commit(rev.as_str())?;
     let commit_meta = &glib::VariantDict::new(Some(&commit_obj.child_value(0)));
-    Ok(manifest_data_from_commitmeta(commit_meta)?.0)
+    let manifest = manifest_data_from_commitmeta(commit_meta)?.0;
+    let config = image_config_from_commitmeta(commit_meta)?;
+    Ok((manifest, config))
 }
 
 /// Copy a downloaded image from one repository to another, while also
@@ -1539,23 +1596,31 @@ pub async fn copy(
 ) -> Result<()> {
     let src_ostree_ref = ref_for_image(src_imgref)?;
     let src_commit = src_repo.require_rev(&src_ostree_ref)?;
-    let manifest = manifest_for_image(src_repo, src_imgref)?;
-    // Create a task to copy each layer, plus the final ref
-    let layer_refs = manifest
-        .layers()
-        .iter()
-        .map(ref_for_layer)
-        .chain(std::iter::once(Ok(src_commit.to_string())));
-    for ostree_ref in layer_refs {
-        let ostree_ref = ostree_ref?;
+    let (manifest, config) = manifest_for_image(src_repo, src_imgref)?;
+
+    let mut commits_to_copy = Vec::new();
+    for (layer, diff_id) in manifest.layers().iter().zip(config.rootfs().diff_ids()) {
+        let diff_id_ref = ref_for_diff_id(diff_id)?;
+        let digest_ref = ref_for_layer(layer)?;
+        let commit = resolve_layer_commit(src_repo, &diff_id_ref, &digest_ref)?
+            .ok_or_else(|| anyhow!("Layer not found: {}", layer.digest()))?;
+
+        commits_to_copy.push((commit, diff_id_ref, Some(digest_ref)));
+    }
+
+    let dest_ostree_ref = ref_for_image(dest_imgref)?;
+    commits_to_copy.push((src_commit.to_string(), dest_ostree_ref, None));
+
+    for (commit, _, _) in commits_to_copy.iter() {
         let src_repo = src_repo.clone();
         let dest_repo = dest_repo.clone();
+        let commit = commit.clone();
         crate::tokio_util::spawn_blocking_cancellable_flatten(move |cancellable| -> Result<_> {
             let cancellable = Some(cancellable);
             let srcfd = &format!("file:///proc/self/fd/{}", src_repo.dfd());
             let flags = ostree::RepoPullFlags::MIRROR;
             let opts = glib::VariantDict::new(None);
-            let refs = [ostree_ref.as_str()];
+            let refs = [commit.as_str()];
             // Some older archives may have bindings, we don't need to verify them.
             opts.insert("disable-verify-bindings", true);
             opts.insert("refs", &refs[..]);
@@ -1567,13 +1632,17 @@ pub async fn copy(
         .await?;
     }
 
-    let dest_ostree_ref = ref_for_image(dest_imgref)?;
-    dest_repo.set_ref_immediate(
-        None,
-        &dest_ostree_ref,
-        Some(&src_commit),
-        gio::Cancellable::NONE,
-    )?;
+    for (commit, main_ref, optional_ref) in commits_to_copy {
+        dest_repo.set_ref_immediate(None, &main_ref, Some(&commit), gio::Cancellable::NONE)?;
+        if let Some(optional_ref) = optional_ref {
+            dest_repo.set_ref_immediate(
+                None,
+                &optional_ref,
+                Some(&commit),
+                gio::Cancellable::NONE,
+            )?;
+        }
+    }
 
     Ok(())
 }
@@ -1784,7 +1853,7 @@ pub async fn export(
 fn list_container_deployment_manifests(
     repo: &ostree::Repo,
     cancellable: Option<&gio::Cancellable>,
-) -> Result<Vec<ImageManifest>> {
+) -> Result<Vec<(ImageManifest, ImageConfiguration)>> {
     // Gather all refs which start with ostree/0/ or ostree/1/ or rpmostree/base/
     // and create a set of the commits which they reference.
     let commits = OSTREE_BASE_DEPLOYMENT_REFS
@@ -1816,7 +1885,8 @@ fn list_container_deployment_manifests(
         {
             tracing::trace!("Commit {commit} is a container image");
             let manifest = manifest_data_from_commitmeta(commit_meta)?.0;
-            r.push(manifest);
+            let config = image_config_from_commitmeta(commit_meta)?;
+            r.push((manifest, config));
         }
     }
     Ok(r)
@@ -1838,6 +1908,7 @@ fn gc_image_layers_impl(
 ) -> Result<u32> {
     let all_images = list_images(repo)?;
     let deployment_commits = list_container_deployment_manifests(repo, cancellable)?;
+
     let all_manifests = all_images
         .into_iter()
         .map(|img| {
@@ -1845,11 +1916,15 @@ fn gc_image_layers_impl(
         })
         .chain(deployment_commits.into_iter().map(Ok))
         .collect::<Result<Vec<_>>>()?;
+
     tracing::debug!("Images found: {}", all_manifests.len());
     let mut referenced_layers = BTreeSet::new();
-    for m in all_manifests.iter() {
+    for (m, c) in all_manifests.iter() {
         for layer in m.layers() {
             referenced_layers.insert(layer.digest().to_string());
+        }
+        for diff_id in c.rootfs().diff_ids() {
+            referenced_layers.insert(diff_id.to_string());
         }
     }
     tracing::debug!("Referenced layers: {}", referenced_layers.len());
@@ -2095,7 +2170,7 @@ pub(crate) fn verify_container_image(
 
     let mut comparison_state = CompareState::default();
 
-    let query = |l: &Descriptor| query_layer(repo, l.clone());
+    let query = |l: &Descriptor| query_layer(repo, l, &state.manifest, &state.configuration);
 
     let base_tree = repo
         .read_commit(&state.base_commit, cancellable)?
@@ -2197,6 +2272,21 @@ mod tests {
         assert_eq!(
             ref_for_layer(&d).unwrap(),
             "ostree/container/blob/sha256_3A_2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae"
+        );
+    }
+
+    #[test]
+    fn test_ref_for_diff_id() {
+        let diff_id = "sha256:2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae";
+        assert_eq!(
+            ref_for_diff_id(diff_id).unwrap(),
+            "ostree/container/blob/sha256_3A_2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae"
+        );
+
+        let diff_id2 = "sha256:abcd1234567890abcdef1234567890abcdef1234567890abcdef1234567890ab";
+        assert_eq!(
+            ref_for_diff_id(diff_id2).unwrap(),
+            "ostree/container/blob/sha256_3A_abcd1234567890abcdef1234567890abcdef1234567890abcdef1234567890ab"
         );
     }
 
