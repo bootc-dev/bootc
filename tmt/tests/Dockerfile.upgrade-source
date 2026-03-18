@@ -6,7 +6,8 @@
 # handles SSH key injection itself; cloud-init interferes with that.
 ARG base
 FROM ${base}
-COPY hack/provision-derived.sh hack/packages.txt /run/provision/
+COPY hack/provision-derived.sh hack/packages.txt contrib/packaging/configure-rootfs /run/provision/
+ARG variant=ostree
 RUN --mount=type=tmpfs,target=/tmp <<EORUN
 set -xeuo pipefail
 cd /run/provision
@@ -14,5 +15,18 @@ cd /run/provision
 # but with SKIP_CONFIGS=1 since we don't need LBIs or test kargs in the
 # upgrade source image (those come from the image we upgrade into).
 SKIP_CONFIGS=1 ./provision-derived.sh
+# Ensure a root filesystem type is configured so `bootc install to-disk`
+# works for base images that don't ship a default (e.g. Fedora).
+# For the ostree variant, configure-rootfs will default to xfs.
+./configure-rootfs "${variant}"
+# For composefs, rebuild the initramfs to include the bootc dracut module.
+# The module's check() returns 255 so it's never auto-included, but it's
+# required for composefs root setup during boot.
+if [[ "${variant}" == composefs* ]]; then
+    mkdir -p /etc/dracut.conf.d
+    echo 'add_dracutmodules+=" bootc "' > /etc/dracut.conf.d/50-bootc-composefs.conf
+    kver=$(cd /usr/lib/modules && echo *)
+    dracut --force --kver "$kver" "/usr/lib/modules/$kver/initramfs.img"
+fi
 rm -rf /run/provision
 EORUN

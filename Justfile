@@ -149,7 +149,22 @@ test-composefs bootloader filesystem boot_type seal_state *ARGS:
 # locally-built image available inside the VM via containers-storage transport.
 [group('core')]
 test-upgrade *ARGS: build _build-upgrade-source-image
-    cargo xtask run-tmt --env=BOOTC_variant={{variant}} --env=BOOTC_test_upgrade_image={{base_img}} --upgrade-image={{base_img}} {{upgrade_source_img}} {{ARGS}} readonly
+    #!/bin/bash
+    set -xeuo pipefail
+    composefs_args=()
+    if [[ "{{variant}}" = composefs ]]; then
+        composefs_args=(--composefs-backend \
+            --bootloader={{bootloader}} \
+            --filesystem={{filesystem}} \
+            --seal-state={{seal_state}} \
+            --boot-type={{boot_type}} \
+            --karg=enforcing=0)
+    fi
+    cargo xtask run-tmt --env=BOOTC_variant={{variant}} \
+        --env=BOOTC_test_upgrade_image={{base_img}} \
+        --upgrade-image={{base_img}} \
+        "${composefs_args[@]}" \
+        {{upgrade_source_img}} {{ARGS}} readonly
 
 # Run cargo fmt and clippy checks in container
 [group('core')]
@@ -351,7 +366,7 @@ _build-upgrade-image:
 
 # Build the upgrade source image: base image + tmt dependencies (rsync, nu, cloud-init)
 _build-upgrade-source-image:
-    podman build --build-arg=base={{base}} -t {{upgrade_source_img}} -f tmt/tests/Dockerfile.upgrade-source .
+    podman build --build-arg=base={{base}} --build-arg=variant={{variant}} -t {{upgrade_source_img}} -f tmt/tests/Dockerfile.upgrade-source .
 
 # Copy an image from user podman storage to root's podman storage
 # This allows building as regular user then running privileged tests

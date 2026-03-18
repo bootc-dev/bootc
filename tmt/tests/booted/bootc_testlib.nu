@@ -50,6 +50,12 @@ export def maybe_upgrade [] {
             if not (have_hostexports) {
                 error make { msg: "BOOTC_test_upgrade_image is set but host exports (--bind-storage-ro) are not available" }
             }
+            # Save the pre-upgrade bootc version so post-upgrade tests
+            # can detect known incompatibilities with older versions.
+            let pre_ver = (bootc --version | parse "bootc {v}" | get 0.v)
+            $pre_ver | save /var/bootc-pre-upgrade-version
+            print $"Pre-upgrade bootc version: ($pre_ver)"
+
             print $"Upgrade image specified: ($upgrade_image)"
             print "Performing upgrade switch..."
             bootc switch --transport containers-storage $upgrade_image

@@ -271,6 +271,7 @@ jobs:
       fail-fast: false
       matrix:
         test_os: [fedora-43, centos-10]
+        variant: [ostree, composefs]
 
     runs-on: ubuntu-24.04
 
@@ -287,6 +288,7 @@ jobs:
         run: |
           BASE=$(just pullspec-for-os base ${{ matrix.test_os }})
           echo "BOOTC_base=${BASE}" >> $GITHUB_ENV
+          echo "BOOTC_variant=${{ matrix.variant }}" >> $GITHUB_ENV
           echo "BOOTC_SKIP_PACKAGE=1" >> $GITHUB_ENV
           echo "RUST_BACKTRACE=full" >> $GITHUB_ENV
 
@@ -303,7 +305,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: "tmt-log-PR-${{ github.event.number }}-${{ matrix.test_os }}-upgrade-${{ env.ARCH }}"
+          name: "tmt-log-PR-${{ github.event.number }}-${{ matrix.test_os }}-${{ matrix.variant }}-upgrade-${{ env.ARCH }}"
           path: /var/tmp/tmt
 
   # Test bootc install on Fedora CoreOS (separate job to avoid disk space issues

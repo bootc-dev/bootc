@@ -492,6 +492,10 @@ pub(crate) fn run_tmt(sh: &Shell, args: &RunTmtArgs) -> Result<()> {
                 opts.push(format!("--bootloader={b}"));
             }
 
+            for k in &args.karg {
+                opts.push(format!("--karg={k}"));
+            }
+
             opts
         };
 
