@@ -2,6 +2,12 @@
 provision:
   how: virtual
   image: $@{test_disk_image}
+# bootc probes for SELinux mac_admin/install_t capability by attempting
+# chcon with an intentionally invalid label (see lsm.rs test_install_t).
+# This generates expected AVC denials that rhel-ci's injected AVC check
+# would otherwise flag as test failures.
+environment:
+    AVC_ERROR: +no_avc_check
 prepare:
   # Install image mode system on package mode system
   # Do not run on image mode VM running on Github CI and Locally
