@@ -2234,3 +2234,134 @@ fn test_manifest_diff() {
         "sha256:76b83eea62b7b93200a056b5e0201ef486c67f1eeebcf2c7678ced4d614cece2"
     );
 }
+
+/// Test that importing an image reuses layers from a previously imported image
+/// when the layers have the same diff_id (uncompressed content digest) but
+/// different blob digests due to different compression (gzip vs zstd).
+///
+/// This directly exercises the `build_diffid_to_digest_map` / `query_layer`
+/// machinery added for <https://github.com/bootc-dev/bootc/issues/2078>.
+#[tokio::test]
+async fn test_diff_id_reuse_across_compression() -> Result<()> {
+    if !check_skopeo() {
+        return Ok(());
+    }
+
+    let fixture = Fixture::new_v1()?;
+    let baseimg = &fixture.export_container().await?.0;
+    let basepath = &match baseimg.transport {
+        Transport::OciDir => fixture.path.join(baseimg.name.as_str()),
+        _ => unreachable!(),
+    };
+    let baseimg_str = format!("oci:{basepath}");
+
+    // --- Import the original (gzip) image ---
+    let gzip_ref = OstreeImageReference {
+        sigverify: SignatureSource::ContainerPolicyAllowInsecure,
+        imgref: baseimg.clone(),
+    };
+    let mut imp =
+        store::ImageImporter::new(fixture.destrepo(), &gzip_ref, Default::default()).await?;
+    imp.require_bootable();
+    let prep = match imp.prepare().await? {
+        store::PrepareResult::AlreadyPresent(_) => panic!("should not be already present"),
+        store::PrepareResult::Ready(r) => r,
+    };
+    // All layers should need fetching the first time.
+    let to_fetch: Vec<_> = prep.layers_to_fetch().collect::<Result<Vec<_>>>()?;
+    assert!(
+        !to_fetch.is_empty(),
+        "First import should have layers to fetch"
+    );
+    let _first_import = imp.import(prep).await?;
+
+    // --- Re-compress the image to zstd using skopeo ---
+    let zstd_image_path = &fixture.path.join("recompressed-zstd.oci");
+    let st = tokio::process::Command::new("skopeo")
+        .args([
+            "copy",
+            "--dest-compress-format=zstd",
+            baseimg_str.as_str(),
+            &format!("oci:{zstd_image_path}"),
+        ])
+        .status()
+        .await?;
+    assert!(st.success(), "skopeo copy to zstd failed");
+
+    // Sanity: verify that blob digests differ but diff_ids match.
+    {
+        let gzip_oci = ocidir::OciDir::open(Dir::open_ambient_dir(
+            basepath,
+            cap_std::ambient_authority(),
+        )?)?;
+        let zstd_oci = ocidir::OciDir::open(Dir::open_ambient_dir(
+            zstd_image_path,
+            cap_std::ambient_authority(),
+        )?)?;
+        let gzip_idx = gzip_oci.read_index()?;
+        let zstd_idx = zstd_oci.read_index()?;
+        let gzip_manifest: oci_image::ImageManifest =
+            gzip_oci.read_json_blob(gzip_idx.manifests().first().unwrap())?;
+        let zstd_manifest: oci_image::ImageManifest =
+            zstd_oci.read_json_blob(zstd_idx.manifests().first().unwrap())?;
+
+        // At least one layer should have a different blob digest after recompression.
+        let gzip_digests: Vec<_> = gzip_manifest
+            .layers()
+            .iter()
+            .map(|l| l.digest().to_string())
+            .collect();
+        let zstd_digests: Vec<_> = zstd_manifest
+            .layers()
+            .iter()
+            .map(|l| l.digest().to_string())
+            .collect();
+        assert_ne!(
+            gzip_digests, zstd_digests,
+            "Blob digests should differ after recompression"
+        );
+
+        // But diff_ids (uncompressed content) must be identical.
+        let gzip_config: oci_image::ImageConfiguration =
+            gzip_oci.read_json_blob(gzip_manifest.config())?;
+        let zstd_config: oci_image::ImageConfiguration =
+            zstd_oci.read_json_blob(zstd_manifest.config())?;
+        assert_eq!(
+            gzip_config.rootfs().diff_ids(),
+            zstd_config.rootfs().diff_ids(),
+            "diff_ids should be identical across compression formats"
+        );
+    }
+
+    // --- Import the zstd-recompressed image ---
+    let zstd_ref = OstreeImageReference {
+        sigverify: SignatureSource::ContainerPolicyAllowInsecure,
+        imgref: ImageReference {
+            transport: Transport::OciDir,
+            name: zstd_image_path.to_string(),
+        },
+    };
+    let mut imp2 =
+        store::ImageImporter::new(fixture.destrepo(), &zstd_ref, Default::default()).await?;
+    imp2.require_bootable();
+    let prep2 = match imp2.prepare().await? {
+        store::PrepareResult::AlreadyPresent(_) => panic!("should not be already present"),
+        store::PrepareResult::Ready(r) => r,
+    };
+
+    // The key assertion: all layers should already have commits because the
+    // diff_id matches the already-imported gzip layers.
+    let to_fetch2: Vec<_> = prep2.layers_to_fetch().collect::<Result<Vec<_>>>()?;
+    assert!(
+        to_fetch2.is_empty(),
+        "Second import (zstd) should reuse all layers via diff_id; layers still to fetch: {:?}",
+        to_fetch2
+            .iter()
+            .map(|(l, _)| l.layer.digest().to_string())
+            .collect::<Vec<_>>()
+    );
+
+    let _second_import = imp2.import(prep2).await?;
+
+    Ok(())
+}

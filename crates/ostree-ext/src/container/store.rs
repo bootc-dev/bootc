@@ -307,6 +307,8 @@ pub struct ImageImporter {
     offline: bool,
     /// If true, we have ostree v2024.3 or newer.
     ostree_v2024_3: bool,
+    /// Mapping from diff_id to blob digest for layer deduplication
+    diffid_to_digest: HashMap<String, String>,
 
     layer_progress: Option<Sender<ImportProgress>>,
     layer_byte_progress: Option<tokio::sync::watch::Sender<Option<LayerProgress>>>,
@@ -641,6 +643,9 @@ impl ImageImporter {
         );
 
         let repo = repo.clone();
+
+        let diffid_to_digest = Self::build_diffid_to_digest_map(&repo)?;
+
         Ok(ImageImporter {
             repo,
             proxy,
@@ -651,6 +656,7 @@ impl ImageImporter {
             require_bootable: false,
             offline: false,
             imgref: imgref.clone(),
+            diffid_to_digest,
             layer_progress: None,
             layer_byte_progress: None,
         })
@@ -749,6 +755,111 @@ impl ImageImporter {
         .await
     }
 
+    /// Build a mapping from diff_id to blob_digest by enumerating all stored images.
+    /// This allows us to reuse layers with the same content even if they have different blob digests.
+    fn build_diffid_to_digest_map(repo: &ostree::Repo) -> Result<HashMap<String, String>> {
+        let mut map = HashMap::new();
+        let all_images = list_images(repo)?;
+
+        for imgref_str in all_images {
+            let imgref = match ImageReference::try_from(imgref_str.as_str()) {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::warn!("Failed to parse image reference {}: {}", imgref_str, e);
+                    continue;
+                }
+            };
+
+            let state = match query_image(repo, &imgref)? {
+                Some(s) => s,
+                None => continue,
+            };
+
+            // Map each layer's diff_id to its blob digest
+            for (layer_desc, diff_id) in state
+                .manifest
+                .layers()
+                .iter()
+                .zip(state.configuration.rootfs().diff_ids())
+            {
+                let diff_id_str = diff_id.to_string();
+                // Only store first found
+                map.entry(diff_id_str)
+                    .or_insert_with(|| layer_desc.digest().to_string());
+            }
+        }
+
+        Ok(map)
+    }
+
+    fn find_digest_by_diffid(
+        &self,
+        manifest: &oci_image::ImageManifest,
+        config: &oci_image::ImageConfiguration,
+        layer: &oci_image::Descriptor,
+    ) -> Option<&String> {
+        let idx = manifest
+            .layers()
+            .iter()
+            .position(|l| l.digest() == layer.digest())?;
+        let layer_diffid = config.rootfs().diff_ids().get(idx)?;
+        self.diffid_to_digest.get(layer_diffid.as_str())
+    }
+
+    /// Try to resolve a layer commit by looking up its diff_id in already-imported images.
+    fn resolve_commit_by_diffid(
+        &self,
+        manifest: &oci_image::ImageManifest,
+        config: &oci_image::ImageConfiguration,
+        layer: &oci_image::Descriptor,
+    ) -> Result<Option<String>> {
+        let Some(existing_digest) = self.find_digest_by_diffid(manifest, config, layer) else {
+            return Ok(None);
+        };
+        let existing_ref = ref_for_blob_digest(existing_digest)?;
+        Ok(self
+            .repo
+            .resolve_rev(&existing_ref, true)?
+            .map(|s| s.to_string()))
+    }
+
+    /// Query a layer by digest, falling back to diff_id lookup if the direct
+    /// ref is not found.
+    fn query_layer(
+        &self,
+        manifest: &oci_image::ImageManifest,
+        config: &oci_image::ImageConfiguration,
+        layer: &oci_image::Descriptor,
+    ) -> Result<ManifestLayerState> {
+        let ostree_ref = ref_for_layer(layer)?;
+        let commit = self
+            .repo
+            .resolve_rev(&ostree_ref, true)?
+            .map(|s| s.to_string());
+        // If no direct ref match, try to find a layer with the same diff_id
+        // but a different blob digest (e.g. due to recompression).
+        let commit = match commit {
+            Some(c) => Some(c),
+            None => self.resolve_commit_by_diffid(manifest, config, layer)?,
+        };
+
+        Ok(ManifestLayerState {
+            layer: layer.clone(),
+            ostree_ref,
+            commit,
+        })
+    }
+
+    /// Ensure a ref exists for a layer, creating it if needed.
+    fn ensure_ref_for_layer(repo: &ostree::Repo, ostree_ref: &str, commit: &str) -> Result<()> {
+        let ref_exists = repo.resolve_rev(ostree_ref, true)?.is_some();
+        if !ref_exists {
+            tracing::debug!("Creating ref {} for reused commit {}", ostree_ref, commit);
+            repo.set_ref_immediate(None, ostree_ref, Some(commit), gio::Cancellable::NONE)?;
+        }
+        Ok(())
+    }
+
     /// Given existing metadata (manifest, config, previous image statE) generate a PreparedImport structure
     /// which e.g. includes a diff of the layers.
     fn create_prepared_import(
@@ -779,15 +890,18 @@ impl ImageImporter {
         let (commit_layer, component_layers, remaining_layers) =
             parse_manifest_layout(&manifest, &config)?;
 
-        let query = |l: &Descriptor| query_layer(&self.repo, l.clone());
-        let commit_layer = commit_layer.map(query).transpose()?;
+        let commit_layer = commit_layer
+            .map(|layer| self.query_layer(&manifest, &config, layer))
+            .transpose()?;
+
         let component_layers = component_layers
             .into_iter()
-            .map(query)
+            .map(|l| self.query_layer(&manifest, &config, l))
             .collect::<Result<Vec<_>>>()?;
+
         let remaining_layers = remaining_layers
             .into_iter()
-            .map(query)
+            .map(|l| self.query_layer(&manifest, &config, l))
             .collect::<Result<Vec<_>>>()?;
 
         let previous_manifest_digest = previous_state.as_ref().map(|s| s.manifest_digest.clone());
@@ -937,7 +1051,10 @@ impl ImageImporter {
         };
         let des_layers = self.proxy.get_layer_info(&import.proxy_img).await?;
         for layer in import.ostree_layers.iter_mut() {
-            if layer.commit.is_some() {
+            if let Some(commit) = layer.commit.as_ref() {
+                if write_refs {
+                    Self::ensure_ref_for_layer(&self.repo, &layer.ostree_ref, commit)?;
+                }
                 continue;
             }
             if let Some(p) = self.layer_progress.as_ref() {
@@ -984,7 +1101,11 @@ impl ImageImporter {
                     .await?;
             }
         }
-        if commit_layer.commit.is_none() {
+        if let Some(commit) = commit_layer.commit.as_ref() {
+            if write_refs {
+                Self::ensure_ref_for_layer(&self.repo, &commit_layer.ostree_ref, commit)?;
+            }
+        } else {
             if let Some(p) = self.layer_progress.as_ref() {
                 p.send(ImportProgress::OstreeChunkStarted(
                     commit_layer.layer.clone(),
@@ -1031,7 +1152,7 @@ impl ImageImporter {
                 ))
                 .await?;
             }
-        };
+        }
         Ok(())
     }
 
@@ -1234,6 +1355,8 @@ impl ImageImporter {
         for layer in import.layers {
             if let Some(c) = layer.commit {
                 tracing::debug!("Reusing fetched commit {}", c);
+                Self::ensure_ref_for_layer(&self.repo, &layer.ostree_ref, &c)?;
+
                 layer_commits.push(c.to_string());
             } else {
                 if let Some(p) = self.layer_progress.as_ref() {
