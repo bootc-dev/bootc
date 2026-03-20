@@ -2,8 +2,6 @@
 # tmt:
 #   summary: Verify pre-flight disk space check rejects images with inflated layer sizes
 #   duration: 10m
-# extra:
-#   fixme_skip_if_composefs: true
 #
 # This test does NOT require a reboot.
 # It constructs a minimal fake OCI image directory that claims to have an

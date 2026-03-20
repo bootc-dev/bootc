@@ -255,6 +255,13 @@ pub(crate) async fn do_upgrade(
 ) -> Result<()> {
     start_finalize_stated_svc()?;
 
+    // Pre-flight disk space check before pulling any data.
+    crate::deploy::check_disk_space_composefs(
+        &booted_cfs.repo,
+        &img_manifest_config.manifest,
+        imgref,
+    )?;
+
     let (repo, entries, id, fs) = pull_composefs_repo(
         &imgref.transport,
         &imgref.image,

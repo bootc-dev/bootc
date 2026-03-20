@@ -188,7 +188,11 @@ use serde::{Deserialize, Serialize};
 #[cfg(feature = "install-to-disk")]
 use self::baseline::InstallBlockDeviceOpts;
 use crate::bootc_composefs::status::ComposefsCmdline;
-use crate::bootc_composefs::{boot::setup_composefs_boot, repo::initialize_composefs_repository};
+use crate::bootc_composefs::{
+    boot::setup_composefs_boot,
+    repo::{get_imgref, initialize_composefs_repository, open_composefs_repo},
+    status::get_container_manifest_and_config,
+};
 use crate::boundimage::{BoundImage, ResolvedBoundImage};
 use crate::containerenv::ContainerExecutionInfo;
 use crate::deploy::{MergeState, PreparedPullResult, prepare_for_pull, pull_from_prepared};
@@ -1951,8 +1955,23 @@ async fn install_to_filesystem_impl(
     }
 
     if state.composefs_options.composefs_backend {
-        // Load a fd for the mounted target physical root
-
+        // Pre-flight disk space check for native composefs install path.
+        {
+            let imgref = &state.source.imageref;
+            let imgref_repr = get_imgref(&imgref.transport.to_string(), &imgref.name);
+            let img_manifest_config = get_container_manifest_and_config(&imgref_repr).await?;
+            crate::store::ensure_composefs_dir(&rootfs.physical_root)?;
+            let cfs_repo = open_composefs_repo(&rootfs.physical_root)?;
+            crate::deploy::check_disk_space_composefs(
+                &cfs_repo,
+                &img_manifest_config.manifest,
+                &crate::spec::ImageReference {
+                    image: imgref.name.clone(),
+                    transport: imgref.transport.to_string(),
+                    signature: None,
+                },
+            )?;
+        }
         let pull_result = initialize_composefs_repository(
             state,
             rootfs,

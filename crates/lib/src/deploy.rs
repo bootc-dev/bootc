@@ -411,13 +411,29 @@ pub(crate) fn check_disk_space_ostree(
     )
 }
 
-/// Verify there is sufficient disk space to pull an image into the composefs store.
-pub(crate) fn check_disk_space_composefs(
+/// Verify there is sufficient disk space to pull an image into the composefs store
+/// via the ostree unified-storage path (uses `PreparedImportMeta`).
+pub(crate) fn check_disk_space_unified(
     cfs: &crate::store::ComposefsRepository,
     image_meta: &PreparedImportMeta,
     imgref: &ImageReference,
 ) -> Result<()> {
     check_disk_space_inner(cfs.objects_dir()?, image_meta.bytes_to_fetch, 0, imgref)
+}
+
+/// Verify there is sufficient disk space to pull an image into the composefs store
+/// for the native composefs backend (uses a raw `ImageManifest`).
+pub(crate) fn check_disk_space_composefs(
+    cfs: &crate::store::ComposefsRepository,
+    manifest: &ostree_ext::oci_spec::image::ImageManifest,
+    imgref: &ImageReference,
+) -> Result<()> {
+    let bytes_to_fetch: u64 = manifest
+        .layers()
+        .iter()
+        .map(|l: &ostree_ext::oci_spec::image::Descriptor| l.size())
+        .sum();
+    check_disk_space_inner(cfs.objects_dir()?, bytes_to_fetch, 0, imgref)
 }
 
 pub(crate) struct PreparedImportMeta {
@@ -609,7 +625,7 @@ pub(crate) async fn pull_unified(
             Ok(existing)
         }
         PreparedPullResult::Ready(prepared_image_meta) => {
-            check_disk_space_composefs(
+            check_disk_space_unified(
                 store.get_ensure_composefs()?.as_ref(),
                 &prepared_image_meta,
                 imgref,

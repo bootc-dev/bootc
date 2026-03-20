@@ -201,7 +201,6 @@ execute:
     how: fmf
     test:
       - /tmt/tests/tests/test-35-upgrade-preflight-disk-check
-  extra-fixme_skip_if_composefs: true
 
 /plan-36-rollback:
   summary: Test bootc rollback functionality
