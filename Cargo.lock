@@ -170,7 +170,7 @@ checksum = "9d297deb1925b89f2ccc13d7635fa0714f12c87adce1c75356b39ca9b7178567"
 [[package]]
 name = "bcvk-qemu"
 version = "0.1.0"
-source = "git+https://github.com/bootc-dev/bcvk?rev=3b4dc84453d7ebac9e544d15931f0a9cd3d26215#3b4dc84453d7ebac9e544d15931f0a9cd3d26215"
+source = "git+https://github.com/bootc-dev/bcvk?rev=5c42e91250ab87502b7beeb2c7ea94a54ee8f5d9#5c42e91250ab87502b7beeb2c7ea94a54ee8f5d9"
 dependencies = [
  "camino",
  "cap-std-ext 5.1.1",
@@ -224,6 +224,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bootc-kernel-cmdline",
+ "cap-std-ext 5.1.1",
  "cfsctl",
  "clap",
  "fn-error-context",
@@ -1785,9 +1786,9 @@ checksum = "09edd9e8b54e49e587e4f6295a7d29c3ea94d469cb40ab8ca70b288248a81db2"
 
 [[package]]
 name = "libc"
-version = "0.2.180"
+version = "0.2.183"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bcc35a38544a891a5f7c865aca548a982ccb3b8650a5b06d0fd33a10283c56fc"
+checksum = "b5b646652bf6661599e1da8901b3b9522896f01e736bad5f723fe7a3a27f899d"
 
 [[package]]
 name = "liboverdrop"
@@ -1984,9 +1985,9 @@ dependencies = [
 
 [[package]]
 name = "nix"
-version = "0.30.1"
+version = "0.31.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "74523f3a35e05aba87a1d978330aef40f67b0304ac79c1c00b294c9830543db6"
+checksum = "5d6d0705320c1e6ba1d912b5e37cf18071b6c2e9b7fa8215a1e8a7651966f5d3"
 dependencies = [
  "bitflags 2.10.0",
  "cfg-if",
@@ -2552,12 +2553,12 @@ checksum = "7a2d987857b319362043e95f5353c0535c1f58eec5336fdfcf626430af7def58"
 
 [[package]]
 name = "rexpect"
-version = "0.6.2"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2c1bcd4ac488e9d2d726d147031cceff5cff6425011ff1914049739770fa4726"
+checksum = "e459b12e442eb95f78b7e69bb2c3a64fc96f24d90dbc47fb028d94ffb26ce1e8"
 dependencies = [
  "comma",
- "nix 0.30.1",
+ "nix 0.31.2",
  "regex",
  "tempfile",
  "thiserror 2.0.17",
