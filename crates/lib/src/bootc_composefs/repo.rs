@@ -55,12 +55,15 @@ pub(crate) async fn initialize_composefs_repository(
         transport,
     } = &state.source.imageref;
 
+    let mut config = crate::deploy::new_proxy_config();
+    ostree_ext::container::merge_default_container_proxy_opts(&mut config)?;
+
     // transport's display is already of type "<transport_type>:"
     composefs_oci_pull(
         &Arc::new(repo),
         &format!("{transport}{image_name}"),
         None,
-        None,
+        Some(config),
     )
     .await
 }
@@ -120,7 +123,10 @@ pub(crate) async fn pull_composefs_repo(
 
     tracing::debug!("Image to pull {final_imgref}");
 
-    let pull_result = composefs_oci_pull(&Arc::new(repo), &final_imgref, None, None)
+    let mut config = crate::deploy::new_proxy_config();
+    ostree_ext::container::merge_default_container_proxy_opts(&mut config)?;
+
+    let pull_result = composefs_oci_pull(&Arc::new(repo), &final_imgref, None, Some(config))
         .await
         .context("Pulling composefs repo")?;
 

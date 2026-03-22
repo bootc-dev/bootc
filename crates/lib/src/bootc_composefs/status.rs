@@ -317,7 +317,8 @@ pub(crate) fn list_bootloader_entries(storage: &Storage) -> Result<Vec<String>> 
 pub(crate) async fn get_container_manifest_and_config(
     imgref: &String,
 ) -> Result<ImgConfigManifest> {
-    let config = crate::deploy::new_proxy_config();
+    let mut config = crate::deploy::new_proxy_config();
+    ostree_ext::container::merge_default_container_proxy_opts(&mut config)?;
     let proxy = containers_image_proxy::ImageProxy::new_with_config(config).await?;
 
     let img = proxy
