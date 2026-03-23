@@ -224,6 +224,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bootc-kernel-cmdline",
+ "cap-std-ext 5.1.1",
  "cfsctl",
  "clap",
  "fn-error-context",

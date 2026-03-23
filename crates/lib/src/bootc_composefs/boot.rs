@@ -550,7 +550,7 @@ pub(crate) fn setup_composefs_bls_boot(
             let bootloader = host.require_composefs_booted()?.bootloader.clone();
 
             let boot_dir = storage.require_boot_dir()?;
-            let current_cfg = get_booted_bls(&boot_dir)?;
+            let current_cfg = get_booted_bls(&boot_dir, booted_cfs)?;
 
             let mut cmdline = match current_cfg.cfg_type {
                 BLSConfigType::NonEFI { options, .. } => {
@@ -775,7 +775,12 @@ pub(crate) fn setup_composefs_bls_boot(
     let (config_path, booted_bls) = if is_upgrade {
         let boot_dir = Dir::open_ambient_dir(&entry_paths.config_path, ambient_authority())?;
 
-        let mut booted_bls = get_booted_bls(&boot_dir)?;
+        let BootSetupType::Upgrade((_, booted_cfs, ..)) = setup_type else {
+            // This is just for sanity
+            unreachable!("enum mismatch");
+        };
+
+        let mut booted_bls = get_booted_bls(&boot_dir, booted_cfs)?;
         booted_bls.sort_key = Some(secondary_sort_key(&os_id));
 
         let staged_path = loader_path.join(STAGED_BOOT_LOADER_ENTRIES);
@@ -1052,12 +1057,12 @@ fn write_systemd_uki_config(
             (esp_dir.open_dir(TYPE1_ENT_PATH)?, None)
         }
 
-        BootSetupType::Upgrade(_) => {
+        BootSetupType::Upgrade((_, booted_cfs, ..)) => {
             esp_dir
                 .create_dir_all(TYPE1_ENT_PATH_STAGED)
                 .with_context(|| format!("Creating {TYPE1_ENT_PATH_STAGED}"))?;
 
-            let mut booted_bls = get_booted_bls(&esp_dir)?;
+            let mut booted_bls = get_booted_bls(&esp_dir, booted_cfs)?;
             booted_bls.sort_key = Some(secondary_sort_key(os_id));
 
             (esp_dir.open_dir(TYPE1_ENT_PATH_STAGED)?, Some(booted_bls))

@@ -28,15 +28,14 @@ use rustix::{
 use crate::bootc_composefs::boot::BootType;
 use crate::bootc_composefs::repo::get_imgref;
 use crate::bootc_composefs::status::{
-    ImgConfigManifest, StagedDeployment, get_sorted_type1_boot_entries,
+    ComposefsCmdline, ImgConfigManifest, StagedDeployment, get_sorted_type1_boot_entries,
 };
 use crate::parsers::bls_config::BLSConfigType;
 use crate::store::{BootedComposefs, Storage};
 use crate::{
     composefs_consts::{
-        COMPOSEFS_CMDLINE, COMPOSEFS_STAGED_DEPLOYMENT_FNAME, COMPOSEFS_TRANSIENT_STATE_DIR,
-        ORIGIN_KEY_BOOT, ORIGIN_KEY_BOOT_DIGEST, ORIGIN_KEY_BOOT_TYPE, SHARED_VAR_PATH,
-        STATE_DIR_RELATIVE,
+        COMPOSEFS_STAGED_DEPLOYMENT_FNAME, COMPOSEFS_TRANSIENT_STATE_DIR, ORIGIN_KEY_BOOT,
+        ORIGIN_KEY_BOOT_DIGEST, ORIGIN_KEY_BOOT_TYPE, SHARED_VAR_PATH, STATE_DIR_RELATIVE,
     },
     parsers::bls_config::BLSConfig,
     spec::ImageReference,
@@ -44,22 +43,13 @@ use crate::{
     utils::path_relative_to,
 };
 
-pub(crate) fn get_booted_bls(boot_dir: &Dir) -> Result<BLSConfig> {
-    let cmdline = Cmdline::from_proc()?;
-    let booted = cmdline
-        .find(COMPOSEFS_CMDLINE)
-        .ok_or_else(|| anyhow::anyhow!("Failed to find composefs parameter in kernel cmdline"))?;
-
+pub(crate) fn get_booted_bls(boot_dir: &Dir, booted_cfs: &BootedComposefs) -> Result<BLSConfig> {
     let sorted_entries = get_sorted_type1_boot_entries(boot_dir, true)?;
 
     for entry in sorted_entries {
         match &entry.cfg_type {
             BLSConfigType::EFI { efi } => {
-                let composefs_param_value = booted.value().ok_or_else(|| {
-                    anyhow::anyhow!("Failed to get composefs kernel cmdline value")
-                })?;
-
-                if efi.as_str().contains(composefs_param_value) {
+                if efi.as_str().contains(&*booted_cfs.cmdline.digest) {
                     return Ok(entry);
                 }
             }
@@ -69,9 +59,10 @@ pub(crate) fn get_booted_bls(boot_dir: &Dir) -> Result<BLSConfig> {
                     anyhow::bail!("options not found in bls config")
                 };
 
-                let opts = Cmdline::from(opts);
+                let cfs_cmdline = ComposefsCmdline::find_in_cmdline(&Cmdline::from(opts))
+                    .ok_or_else(|| anyhow::anyhow!("composefs param not found in cmdline"))?;
 
-                if opts.iter().any(|v| v == booted) {
+                if cfs_cmdline.digest == booted_cfs.cmdline.digest {
                     return Ok(entry);
                 }
             }

@@ -191,19 +191,10 @@ impl BLSConfig {
             }
 
             BLSConfigType::NonEFI { options, .. } => {
-                let options = options.as_ref().ok_or(anyhow::anyhow!("No options"))?;
+                let options = options.as_ref().ok_or_else(|| anyhow::anyhow!("No options"))?;
 
-                let cmdline = Cmdline::from(&options);
-
-                let kv = cmdline
-                    .find(COMPOSEFS_CMDLINE)
+                let cfs_cmdline = ComposefsCmdline::find_in_cmdline(&Cmdline::from(&options))
                     .ok_or_else(|| anyhow::anyhow!("No composefs= param"))?;
-
-                let value = kv
-                    .value()
-                    .ok_or_else(|| anyhow::anyhow!("Empty composefs= param"))?;
-
-                let cfs_cmdline = ComposefsCmdline::new(value);
 
                 // TODO(Johan-Liebert1): We lose the info here that this is insecure
                 Ok(cfs_cmdline.digest.to_string().clone())
