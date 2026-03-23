@@ -80,6 +80,13 @@ impl ComposefsCmdline {
         }
     }
 
+    pub(crate) fn build(digest: &str, allow_missing_fsverity: bool) -> Self {
+        ComposefsCmdline {
+            allow_missing_fsverity,
+            digest: digest.into(),
+        }
+    }
+
     /// Search for the `composefs=` parameter in the passed in kernel command line
     pub(crate) fn find_in_cmdline(cmdline: &Cmdline) -> Option<Self> {
         match cmdline.find(COMPOSEFS_CMDLINE) {

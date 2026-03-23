@@ -15,7 +15,7 @@ use std::fmt::Display;
 use uapi_version::Version;
 
 use crate::bootc_composefs::status::ComposefsCmdline;
-use crate::composefs_consts::{COMPOSEFS_CMDLINE, UKI_NAME_PREFIX};
+use crate::composefs_consts::UKI_NAME_PREFIX;
 
 #[derive(Debug, PartialEq, Eq, Default)]
 pub enum BLSConfigType {
@@ -191,13 +191,14 @@ impl BLSConfig {
             }
 
             BLSConfigType::NonEFI { options, .. } => {
-                let options = options.as_ref().ok_or_else(|| anyhow::anyhow!("No options"))?;
+                let options = options
+                    .as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("No options"))?;
 
                 let cfs_cmdline = ComposefsCmdline::find_in_cmdline(&Cmdline::from(&options))
                     .ok_or_else(|| anyhow::anyhow!("No composefs= param"))?;
 
-                // TODO(Johan-Liebert1): We lose the info here that this is insecure
-                Ok(cfs_cmdline.digest.to_string().clone())
+                Ok(cfs_cmdline.digest.to_string())
             }
 
             BLSConfigType::Unknown => anyhow::bail!("Unknown config type"),

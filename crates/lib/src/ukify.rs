@@ -14,7 +14,7 @@ use cap_std_ext::cap_std::fs::Dir;
 use fn_error_context::context;
 
 use crate::bootc_composefs::digest::compute_composefs_digest;
-use crate::composefs_consts::COMPOSEFS_CMDLINE;
+use crate::bootc_composefs::status::ComposefsCmdline;
 
 /// Build a UKI from the given rootfs.
 ///
@@ -84,12 +84,9 @@ pub(crate) fn build_ukify(
     let mut cmdline = crate::bootc_kargs::get_kargs_in_root(&root, std::env::consts::ARCH)?;
 
     // Add the composefs digest
-    let composefs_param = if allow_missing_fsverity {
-        format!("{COMPOSEFS_CMDLINE}=?{composefs_digest}")
-    } else {
-        format!("{COMPOSEFS_CMDLINE}={composefs_digest}")
-    };
-    cmdline.extend(&Cmdline::from(composefs_param));
+    cmdline.extend(&Cmdline::from(
+        ComposefsCmdline::build(&composefs_digest, allow_missing_fsverity).to_string(),
+    ));
 
     // Add any extra kargs provided via --karg
     for karg in extra_kargs {

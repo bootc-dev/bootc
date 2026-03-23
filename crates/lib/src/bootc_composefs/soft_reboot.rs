@@ -1,7 +1,9 @@
 use crate::{
-    bootc_composefs::{service::start_finalize_stated_svc, status::get_composefs_status},
+    bootc_composefs::{
+        service::start_finalize_stated_svc,
+        status::{ComposefsCmdline, get_composefs_status},
+    },
     cli::SoftRebootMode,
-    composefs_consts::COMPOSEFS_CMDLINE,
     store::{BootedComposefs, Storage},
 };
 use anyhow::{Context, Result};
@@ -106,18 +108,14 @@ pub(crate) async fn prepare_soft_reboot_composefs(
 
     create_dir_all(NEXTROOT).context("Creating nextroot")?;
 
-    let cmdline = if booted_cfs.cmdline.allow_missing_fsverity {
-        Cmdline::from(format!("{COMPOSEFS_CMDLINE}=?{deployment_id}"))
-    } else {
-        Cmdline::from(format!("{COMPOSEFS_CMDLINE}={deployment_id}"))
-    };
+    let cmdline = ComposefsCmdline::build(deployment_id, booted_cfs.cmdline.allow_missing_fsverity);
 
     let args = bootc_initramfs_setup::Args {
         cmd: vec![],
         sysroot: PathBuf::from("/sysroot"),
         config: Default::default(),
         root_fs: None,
-        cmdline: Some(cmdline),
+        cmdline: Some(Cmdline::from(cmdline.to_string())),
         target: Some(NEXTROOT.into()),
     };
 

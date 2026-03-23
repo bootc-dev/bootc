@@ -93,7 +93,6 @@ use rustix::{mount::MountFlags, path::Arg};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::task::Task;
 use crate::{
     bootc_composefs::repo::get_imgref,
     composefs_consts::{TYPE1_ENT_PATH, TYPE1_ENT_PATH_STAGED},
@@ -106,6 +105,7 @@ use crate::{
     bootc_composefs::state::{get_booted_bls, write_composefs_state},
     composefs_consts::TYPE1_BOOT_DIR_PREFIX,
 };
+use crate::{bootc_composefs::status::ComposefsCmdline, task::Task};
 use crate::{
     bootc_composefs::status::get_container_manifest_and_config, bootc_kargs::compute_new_kargs,
 };
@@ -116,8 +116,8 @@ use crate::{
 };
 use crate::{
     composefs_consts::{
-        BOOT_LOADER_ENTRIES, COMPOSEFS_CMDLINE, ORIGIN_KEY_BOOT, ORIGIN_KEY_BOOT_DIGEST,
-        STAGED_BOOT_LOADER_ENTRIES, STATE_DIR_ABS, USER_CFG, USER_CFG_STAGED,
+        BOOT_LOADER_ENTRIES, ORIGIN_KEY_BOOT, ORIGIN_KEY_BOOT_DIGEST, STAGED_BOOT_LOADER_ENTRIES,
+        STATE_DIR_ABS, USER_CFG, USER_CFG_STAGED,
     },
     spec::{Bootloader, Host},
 };
@@ -525,14 +525,9 @@ pub(crate) fn setup_composefs_bls_boot(
 
             cmdline_options.extend(&root_setup.kargs);
 
-            // TODO(Johan-Liebert1): Use ComposefsCmdline
-            let composefs_cmdline = if state.composefs_options.allow_missing_verity {
-                format!("{COMPOSEFS_CMDLINE}=?{id_hex}")
-            } else {
-                format!("{COMPOSEFS_CMDLINE}={id_hex}")
-            };
-
-            cmdline_options.extend(&Cmdline::from(&composefs_cmdline));
+            let composefs_cmdline =
+                ComposefsCmdline::build(&id_hex, state.composefs_options.allow_missing_verity);
+            cmdline_options.extend(&Cmdline::from(&composefs_cmdline.to_string()));
 
             // Locate ESP partition device
             let esp_part = root_setup.device_info.find_partition_of_esp()?;
@@ -564,14 +559,12 @@ pub(crate) fn setup_composefs_bls_boot(
             };
 
             // Copy all cmdline args, replacing only `composefs=`
-            let param = if booted_cfs.cmdline.allow_missing_fsverity {
-                format!("{COMPOSEFS_CMDLINE}=?{id_hex}")
-            } else {
-                format!("{COMPOSEFS_CMDLINE}={id_hex}")
-            };
+            let cfs_cmdline =
+                ComposefsCmdline::build(&id_hex, booted_cfs.cmdline.allow_missing_fsverity)
+                    .to_string();
 
-            let param =
-                Parameter::parse(&param).context("Failed to create 'composefs=' parameter")?;
+            let param = Parameter::parse(&cfs_cmdline)
+                .context("Failed to create 'composefs=' parameter")?;
             cmdline.add_or_modify(&param);
 
             // Locate ESP partition device
