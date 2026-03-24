@@ -102,6 +102,8 @@ pub(crate) async fn new_importer(
     let config = new_proxy_config();
     let mut imp = ostree_container::store::ImageImporter::new(repo, imgref, config).await?;
     imp.require_bootable();
+    // We do our own GC/prune in deploy::prune(), so skip the importer's internal one.
+    imp.disable_gc();
     Ok(imp)
 }
 
@@ -113,6 +115,8 @@ pub(crate) async fn new_importer_with_config(
 ) -> Result<ostree_container::store::ImageImporter> {
     let mut imp = ostree_container::store::ImageImporter::new(repo, imgref, config).await?;
     imp.require_bootable();
+    // We do our own GC/prune in deploy::prune(), so skip the importer's internal one.
+    imp.disable_gc();
     Ok(imp)
 }
 
