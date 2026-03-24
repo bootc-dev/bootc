@@ -292,6 +292,12 @@ impl CachedImageUpdate {
     }
 }
 
+/// A layer in the ostree repo, identified by its ref and commit checksum.
+struct LayerRef {
+    ostree_ref: String,
+    commit: String,
+}
+
 /// Context for importing a container image.
 #[derive(Debug)]
 pub struct ImageImporter {
@@ -1200,7 +1206,7 @@ impl ImageImporter {
     fn write_merge_commit_impl(
         repo: &ostree::Repo,
         base_commit: Option<&str>,
-        layer_commits: &[String],
+        layer_commits: &[LayerRef],
         have_derived_layers: bool,
         metadata: glib::Variant,
         timestamp: u64,
@@ -1246,13 +1252,14 @@ impl ImageImporter {
 
         // Layer all subsequent commits
         checkout_opts.process_whiteouts = true;
-        for commit in layer_commits {
+        for lc in layer_commits {
+            let commit = &lc.commit;
             tracing::debug!("Unpacking {commit}");
             repo.checkout_at(
                 Some(&checkout_opts),
                 (*td).as_raw_fd(),
                 rootpath,
-                &commit,
+                commit,
                 cancellable,
             )
             .with_context(|| format!("Checking out layer {commit}"))?;
@@ -1265,13 +1272,22 @@ impl ImageImporter {
         modifier.set_devino_cache(&devino);
         // If we have derived layers, then we need to handle the case where
         // the derived layers include custom policy. Just relabel everything
-        // in this case.
+        // in this case. Note "derived layers" also include the case where the
+        // image has no OSTree repo at all.
+        //
+        // Track whether we need to relabel layer commits afterwards. Which is
+        // only relevant if they're derived layers.
+        let should_relabel;
         if have_derived_layers {
             let sepolicy = ostree::SePolicy::new_at(root_dir.as_raw_fd(), cancellable)?;
-            tracing::debug!("labeling from merged tree");
-            modifier.set_sepolicy(Some(&sepolicy));
+            should_relabel = sepolicy.name().map_or(false, |s| !s.is_empty());
+            if should_relabel {
+                tracing::debug!("labeling from merged tree");
+                modifier.set_sepolicy(Some(&sepolicy));
+            }
         } else if let Some(base) = base_commit.as_ref() {
             tracing::debug!("labeling from base tree");
+            should_relabel = false;
             // TODO: We can likely drop this; we know all labels should be pre-computed.
             modifier.set_sepolicy_from_commit(repo, &base, cancellable)?;
         } else {
@@ -1311,17 +1327,117 @@ impl ImageImporter {
         if !no_imgref {
             repo.transaction_set_ref(None, ostree_ref, Some(merged_commit.as_str()));
         }
+
+        // Relabel layer commits with the SELinux policy from the merged tree.
+        // Since the merge commit already wrote correctly-labeled objects, most
+        // writes here are no-ops (objects already exist in the repo).  This
+        // ensures layer and merge commits share the same objects, avoiding
+        // duplicate storage.
+        let n_relabeled_layers = if should_relabel {
+            let n =
+                Self::relabel_layers(repo, layer_commits, &modifier, checkout_mode, cancellable)?;
+            tracing::debug!("relabeled {n} layer commits");
+            n
+        } else {
+            0
+        };
+
         txn.commit(cancellable)?;
 
         if !disable_gc {
             let n: u32 = gc_image_layers_impl(repo, cancellable)?;
             tracing::debug!("pruned {n} layers");
+            // Prune orphaned objects from the old (pre-relabel) layer commits.
+            if n_relabeled_layers > 0 {
+                let (_, n_pruned, _) =
+                    repo.prune(ostree::RepoPruneFlags::REFS_ONLY, 0, cancellable)?;
+                tracing::debug!("pruned {n_pruned} orphaned objects after relabeling");
+            }
         }
 
         // Here we re-query state just to run through the same code path,
         // though it'd be cheaper to synthesize it from the data we already have.
         let state = query_image_commit(repo, &merged_commit)?;
         Ok(state)
+    }
+
+    /// Relabel layer commits with the given commit modifier (which carries
+    /// an SELinux policy).  Each layer is checked out, recommitted with the
+    /// policy applied, and its ref is updated to point at the new commit.
+    /// Returns the number of layers that were actually relabeled (i.e. whose
+    /// commit changed).
+    fn relabel_layers(
+        repo: &ostree::Repo,
+        layer_commits: &[LayerRef],
+        modifier: &ostree::RepoCommitModifier,
+        checkout_mode: ostree::RepoCheckoutMode,
+        cancellable: Option<&gio::Cancellable>,
+    ) -> Result<u32> {
+        use rustix::fd::AsRawFd;
+
+        let repodir = Dir::reopen_dir(&repo.dfd_borrow())?;
+        let repo_tmp = repodir.open_dir("tmp")?;
+        let rootpath = "root";
+        let mut n_relabeled = 0u32;
+        let checkout_opts = ostree::RepoCheckoutAtOptions {
+            mode: checkout_mode,
+            no_copy_fallback: true,
+            force_copy_zerosized: true,
+            ..Default::default()
+        };
+
+        for lc in layer_commits {
+            let (layer_ref, old_commit) = (&lc.ostree_ref, &lc.commit);
+            let td = cap_std_ext::cap_tempfile::TempDir::new_in(&repo_tmp)?;
+            repo.checkout_at(
+                Some(&checkout_opts),
+                (*td).as_raw_fd(),
+                rootpath,
+                old_commit,
+                cancellable,
+            )
+            .with_context(|| format!("Checking out layer {old_commit} for relabeling"))?;
+
+            let mt = ostree::MutableTree::new();
+            repo.write_dfd_to_mtree(
+                (*td).as_raw_fd(),
+                rootpath,
+                &mt,
+                Some(modifier),
+                cancellable,
+            )
+            .with_context(|| format!("Writing relabeled layer {old_commit} to mtree"))?;
+
+            let root = repo
+                .write_mtree(&mt, cancellable)
+                .context("Writing mtree")?;
+            let root = root.downcast::<ostree::RepoFile>().unwrap();
+
+            // Preserve the original commit's metadata and timestamp
+            let (commit_v, _) = repo.load_commit(old_commit)?;
+            let old_metadata = commit_v.child_value(0);
+            let old_timestamp = ostree::commit_get_timestamp(&commit_v);
+
+            let new_commit = repo
+                .write_commit_with_time(
+                    None,
+                    None,
+                    None,
+                    Some(&old_metadata),
+                    &root,
+                    old_timestamp,
+                    cancellable,
+                )
+                .with_context(|| format!("Writing relabeled commit for layer {layer_ref}"))?;
+
+            if new_commit != *old_commit {
+                repo.transaction_set_ref(None, layer_ref, Some(new_commit.as_str()));
+                n_relabeled += 1;
+                tracing::debug!("Relabeled layer {layer_ref}: {old_commit} -> {new_commit}");
+            }
+        }
+
+        Ok(n_relabeled)
     }
 
     /// Import a layered container image.
@@ -1358,7 +1474,7 @@ impl ImageImporter {
 
         let ostree_ref = ref_for_image(&target_imgref.imgref)?;
 
-        let mut layer_commits = Vec::new();
+        let mut layer_commits: Vec<LayerRef> = Vec::new();
         let mut layer_filtered_content: Option<MetaFilteredData> = None;
         let have_derived_layers = !import.layers.is_empty();
         tracing::debug!("Processing layers: {}", import.layers.len());
@@ -1367,7 +1483,10 @@ impl ImageImporter {
                 tracing::debug!("Reusing fetched commit {}", c);
                 Self::ensure_ref_for_layer(&self.repo, &layer.ostree_ref, &c)?;
 
-                layer_commits.push(c.to_string());
+                layer_commits.push(LayerRef {
+                    ostree_ref: layer.ostree_ref.clone(),
+                    commit: c.to_string(),
+                });
             } else {
                 if let Some(p) = self.layer_progress.as_ref() {
                     p.send(ImportProgress::DerivedLayerStarted(layer.layer.clone()))
@@ -1403,7 +1522,10 @@ impl ImageImporter {
                     .await
                     .with_context(|| format!("Parsing layer blob {}", layer.layer.digest()))?;
                 tracing::debug!("Imported layer: {}", r.commit.as_str());
-                layer_commits.push(r.commit);
+                layer_commits.push(LayerRef {
+                    ostree_ref: layer.ostree_ref.clone(),
+                    commit: r.commit,
+                });
                 let filtered_owned = HashMap::from_iter(r.filtered.clone());
                 if let Some((filtered, n_rest)) = bootc_utils::collect_until(
                     r.filtered.iter(),

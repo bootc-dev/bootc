@@ -135,6 +135,78 @@ echo "ok deploy derived container from local dir"
 ostree container image remove --repo "${repo}" "${derived_img_dir}"
 rm -rf /var/tmp/derived.dir
 
+# Test: non-ostree container import with SELinux relabeling
+# Converts the FCOS image to a plain (non-ostree) image using chunkah,
+# then deploys it and verifies the relabeling optimization ran.
+# See https://github.com/bootc-dev/bootc/issues/1637
+
+# Clean state
+ostree --repo="${repo}" refs ostree/container/image --delete
+ostree container image prune-images --full --sysroot="${sysroot}"
+
+# Convert FCOS to non-ostree image using chunkah
+# --prune /sysroot/  strips the ostree deployment data
+# --label KEY-       removes ostree-specific labels
+# See also https://github.com/coreos/chunkah?tab=readme-ov-file#compatibility-with-bootable-bootc-images
+nonostree_archive=/var/tmp/nonostree.ociarchive
+chunkah_config="$(podman inspect ${image})"
+systemd-run -dP --wait podman run --rm \
+    --mount=type=image,src=${image},dst=/chunkah \
+    -v /var/tmp:/output:z \
+    -e CHUNKAH_CONFIG_STR="${chunkah_config}" \
+    quay.io/coreos/chunkah build \
+    --prune /sysroot/ \
+    --label ostree.commit- \
+    --label ostree.final-diffid- \
+    -o /output/nonostree.ociarchive
+
+# Deploy the non-ostree image with debug logging to capture relabeling messages
+RUST_LOG=ostree_ext=debug ostree container image deploy \
+    --sysroot "${sysroot}" \
+    --stateroot "${stateroot}" \
+    --imgref ostree-unverified-image:oci-archive:${nonostree_archive} 2>deploy-nonostree.txt
+
+# Verify relabeling occurred (N > 0 layers were relabeled)
+if ! grep -qE 'relabeled [1-9][0-9]* layer commits' deploy-nonostree.txt; then
+    echo "Relabeling did not occur or relabeled 0 layers" 1>&2
+    cat deploy-nonostree.txt
+    exit 1
+fi
+
+# Verify orphaned pre-relabel objects were pruned
+if ! grep -qE 'pruned [1-9][0-9]* orphaned objects after relabeling' deploy-nonostree.txt; then
+    echo "Post-relabel prune did not remove any objects" 1>&2
+    cat deploy-nonostree.txt
+    exit 1
+fi
+
+# Verify that layer and merge commit share the same file objects after relabeling.
+# Find the layer containing the bootc binary via chunkah's manifest annotation.
+ostree container image metadata --repo "${repo}" oci-archive:${nonostree_archive} > nonostree-manifest.json
+layer_digest=$(jq -r '.layers[] | select(.annotations["org.chunkah.component"] | test("rpm/bootc")) | .digest' nonostree-manifest.json | head -1)
+layer_ref="ostree/container/blob/$(echo ${layer_digest} | sed 's/:/_3A_/')"
+
+# Get the checksum of /usr/bin/bootc from the layer commit
+layer_bootc_csum=$(ostree --repo="${repo}" ls -RC "${layer_ref}" /usr/bin/bootc | awk '{print $5}')
+
+# Get the checksum of /usr/bin/bootc from the merge commit
+img_ref=$(ostree --repo="${repo}" refs ostree/container/image | head -1)
+merge_bootc_csum=$(ostree --repo="${repo}" ls -RC "ostree/container/image/${img_ref}" /usr/bin/bootc | awk '{print $5}')
+
+# Sanity check: ostree checksums are 64 hex chars
+test ${#layer_bootc_csum} = 64
+
+# If relabeling worked, both should have the same SELinux-labeled objects
+test "${layer_bootc_csum}" = "${merge_bootc_csum}"
+echo "ok layer and merge commit share objects after relabeling"
+
+# Cleanup
+ostree admin --sysroot="${sysroot}" undeploy 0
+ostree container image prune-images --full --sysroot="${sysroot}"
+rm -f ${nonostree_archive}
+
+echo "ok non-ostree container import with SELinux relabeling"
+
 # Verify policy
 
 mkdir -p /etc/pki/containers
