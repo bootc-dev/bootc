@@ -301,6 +301,8 @@ pub struct ImageImporter {
     target_imgref: Option<OstreeImageReference>,
     no_imgref: bool,  // If true, do not write final image ref
     disable_gc: bool, // If true, don't prune unused image layers
+    /// Optional commit to use as SELinux policy source for non-ostree container layers.
+    sepolicy_commit: Option<String>,
     /// If true, require the image has the bootable flag
     require_bootable: bool,
     /// Do not attempt to contact the network
@@ -653,6 +655,7 @@ impl ImageImporter {
             no_imgref: false,
             ostree_v2024_3: ostree::check_version(2024, 3),
             disable_gc: false,
+            sepolicy_commit: None,
             require_bootable: false,
             offline: false,
             imgref: imgref.clone(),
@@ -692,6 +695,13 @@ impl ImageImporter {
     /// Do not prune image layers.
     pub fn disable_gc(&mut self) {
         self.disable_gc = true;
+    }
+
+    /// Set the commit to use as SELinux policy source when importing
+    /// non-ostree container layers. Has no effect on ostree-native
+    /// containers (which have their own base commit).
+    pub fn set_sepolicy_commit(&mut self, commit: String) {
+        self.sepolicy_commit = Some(commit);
     }
 
     /// Determine if there is a new manifest, and if so return its digest.
@@ -1373,10 +1383,11 @@ impl ImageImporter {
                     self.imgref.imgref.transport,
                 )
                 .await?;
-                // An important aspect of this is that we SELinux label the derived layers using
-                // the base policy.
+                // SELinux label derived layers using the base policy.  For non-ostree
+                // containers (base_commit is None), fall back to the caller-provided
+                // sepolicy_commit (typically the booted deployment's commit).
                 let opts = crate::tar::WriteTarOptions {
-                    base: base_commit.clone(),
+                    base: base_commit.clone().or(self.sepolicy_commit.clone()),
                     selinux: true,
                     allow_nonusr: root_is_transient,
                     retain_var: self.ostree_v2024_3,

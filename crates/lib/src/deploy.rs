@@ -98,12 +98,16 @@ impl ImageState {
 pub(crate) async fn new_importer(
     repo: &ostree::Repo,
     imgref: &ostree_container::OstreeImageReference,
+    booted_deployment: Option<&ostree::Deployment>,
 ) -> Result<ostree_container::store::ImageImporter> {
     let config = new_proxy_config();
     let mut imp = ostree_container::store::ImageImporter::new(repo, imgref, config).await?;
     imp.require_bootable();
     // We do our own GC/prune in deploy::prune(), so skip the importer's internal one.
     imp.disable_gc();
+    if let Some(deployment) = booted_deployment {
+        imp.set_sepolicy_commit(deployment.csum().to_string());
+    }
     Ok(imp)
 }
 
@@ -112,11 +116,15 @@ pub(crate) async fn new_importer_with_config(
     repo: &ostree::Repo,
     imgref: &ostree_container::OstreeImageReference,
     config: ostree_ext::containers_image_proxy::ImageProxyConfig,
+    booted_deployment: Option<&ostree::Deployment>,
 ) -> Result<ostree_container::store::ImageImporter> {
     let mut imp = ostree_container::store::ImageImporter::new(repo, imgref, config).await?;
     imp.require_bootable();
     // We do our own GC/prune in deploy::prune(), so skip the importer's internal one.
     imp.disable_gc();
+    if let Some(deployment) = booted_deployment {
+        imp.set_sepolicy_commit(deployment.csum().to_string());
+    }
     Ok(imp)
 }
 
@@ -443,11 +451,12 @@ pub(crate) async fn prepare_for_pull(
     repo: &ostree::Repo,
     imgref: &ImageReference,
     target_imgref: Option<&OstreeImageReference>,
+    booted_deployment: Option<&ostree::Deployment>,
 ) -> Result<PreparedPullResult> {
     let imgref_canonicalized = imgref.clone().canonicalize()?;
     tracing::debug!("Canonicalized image reference: {imgref_canonicalized:#}");
     let ostree_imgref = &OstreeImageReference::from(imgref_canonicalized);
-    let mut imp = new_importer(repo, ostree_imgref).await?;
+    let mut imp = new_importer(repo, ostree_imgref, booted_deployment).await?;
     if let Some(target) = target_imgref {
         imp.set_target(target);
     }
@@ -501,6 +510,7 @@ pub(crate) async fn prepare_for_pull_unified(
     imgref: &ImageReference,
     target_imgref: Option<&OstreeImageReference>,
     store: &Storage,
+    booted_deployment: Option<&ostree::Deployment>,
 ) -> Result<PreparedPullResult> {
     // Get or initialize the bootc container storage (same as used for LBIs)
     let imgstore = store.get_ensure_imgstore()?;
@@ -546,7 +556,7 @@ pub(crate) async fn prepare_for_pull_unified(
     config.skopeo_cmd = Some(cmd);
 
     // Use the preparation flow with the custom config
-    let mut imp = new_importer_with_config(repo, &ostree_imgref, config).await?;
+    let mut imp = new_importer_with_config(repo, &ostree_imgref, config, booted_deployment).await?;
     if let Some(target) = target_imgref {
         imp.set_target(target);
     }
@@ -597,8 +607,9 @@ pub(crate) async fn pull_unified(
     quiet: bool,
     prog: ProgressWriter,
     store: &Storage,
+    booted_deployment: Option<&ostree::Deployment>,
 ) -> Result<Box<ImageState>> {
-    match prepare_for_pull_unified(repo, imgref, target_imgref, store).await? {
+    match prepare_for_pull_unified(repo, imgref, target_imgref, store, booted_deployment).await? {
         PreparedPullResult::AlreadyPresent(existing) => {
             // Log that the image was already present (Debug level since it's not actionable)
             const IMAGE_ALREADY_PRESENT_ID: &str = "5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9";
@@ -710,8 +721,9 @@ pub(crate) async fn pull(
     target_imgref: Option<&OstreeImageReference>,
     quiet: bool,
     prog: ProgressWriter,
+    booted_deployment: Option<&ostree::Deployment>,
 ) -> Result<Box<ImageState>> {
-    match prepare_for_pull(repo, imgref, target_imgref).await? {
+    match prepare_for_pull(repo, imgref, target_imgref, booted_deployment).await? {
         PreparedPullResult::AlreadyPresent(existing) => {
             // Log that the image was already present (Debug level since it's not actionable)
             const IMAGE_ALREADY_PRESENT_ID: &str = "5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9";
