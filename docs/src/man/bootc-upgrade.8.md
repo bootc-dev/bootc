@@ -69,6 +69,10 @@ Soft reboot allows faster system restart by avoiding full hardware reboot when p
 
     Apply a staged deployment that was previously downloaded with --download-only
 
+**--tag**=*TAG*
+
+    Upgrade to a different tag of the currently booted image
+
 <!-- END GENERATED OPTIONS -->
 
 # EXAMPLES
@@ -84,6 +88,18 @@ Upgrade and immediately apply the changes:
 Upgrade with soft reboot if possible:
 
     bootc upgrade --apply --soft-reboot=auto
+
+Upgrade to a different tag:
+
+    bootc upgrade --tag v1.2
+
+Check if a specific tag has updates before applying:
+
+    bootc upgrade --tag prod --check
+
+Upgrade to a tag and immediately apply:
+
+    bootc upgrade --tag v2.0 --apply
 
 # SEE ALSO
 
