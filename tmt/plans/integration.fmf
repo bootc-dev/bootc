@@ -230,4 +230,11 @@ execute:
     how: fmf
     test:
       - /tmt/tests/tests/test-38-install-bootloader-none
+
+/plan-39-upgrade-tag:
+  summary: Test bootc upgrade --tag functionality with containers-storage
+  discover:
+    how: fmf
+    test:
+      - /tmt/tests/tests/test-39-upgrade-tag
 # END GENERATED PLANS

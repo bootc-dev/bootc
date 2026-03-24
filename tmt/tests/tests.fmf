@@ -131,3 +131,8 @@
   summary: Test bootc install with --bootloader=none
   duration: 30m
   test: nu booted/test-install-bootloader-none.nu
+
+/test-39-upgrade-tag:
+  summary: Test bootc upgrade --tag functionality with containers-storage
+  duration: 30m
+  test: nu booted/test-upgrade-tag.nu

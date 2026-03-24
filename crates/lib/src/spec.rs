@@ -151,6 +151,42 @@ impl ImageReference {
             Ok(format!("{}:{}", self.transport, self.image))
         }
     }
+
+    /// Derive a new image reference by replacing the tag.
+    ///
+    /// For transports with parseable image references (registry, containers-storage),
+    /// uses the OCI Reference API to properly handle tag replacement.
+    /// For other transports (oci, etc.), falls back to string manipulation.
+    pub fn with_tag(&self, new_tag: &str) -> Result<Self> {
+        // Try to parse as an OCI Reference (works for registry and containers-storage)
+        let new_image = if let Ok(reference) = self.image.parse::<Reference>() {
+            // Use the proper OCI API to replace the tag
+            let new_ref = Reference::with_tag(
+                reference.registry().to_string(),
+                reference.repository().to_string(),
+                new_tag.to_string(),
+            );
+            new_ref.to_string()
+        } else {
+            // For other transports like oci: with filesystem paths,
+            // strip any digest first, then replace tag via string manipulation
+            let image_without_digest = self.image.split('@').next().unwrap_or(&self.image);
+
+            // Split on last ':' to separate image:tag
+            let image_part = image_without_digest
+                .rsplit_once(':')
+                .map(|(base, _tag)| base)
+                .unwrap_or(image_without_digest);
+
+            format!("{}:{}", image_part, new_tag)
+        };
+
+        Ok(ImageReference {
+            image: new_image,
+            transport: self.transport.clone(),
+            signature: self.signature.clone(),
+        })
+    }
 }
 
 /// The status of the booted image

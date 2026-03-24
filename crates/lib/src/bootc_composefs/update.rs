@@ -341,6 +341,18 @@ pub(crate) async fn upgrade_composefs(
         .await
         .context("Getting composefs deployment status")?;
 
+    let current_image = host.spec.image.as_ref();
+
+    // Handle --tag: derive target from current image + new tag
+    let derived_image = if let Some(ref tag) = opts.tag {
+        let image = current_image.ok_or_else(|| {
+            anyhow::anyhow!("--tag requires a booted image with a specified source")
+        })?;
+        Some(image.with_tag(tag)?)
+    } else {
+        None
+    };
+
     let do_upgrade_opts = DoUpgradeOpts {
         soft_reboot: opts.soft_reboot,
         apply: opts.apply,
@@ -391,11 +403,8 @@ pub(crate) async fn upgrade_composefs(
         .await;
     }
 
-    let mut booted_imgref = host
-        .spec
-        .image
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("No image source specified"))?;
+    let imgref = derived_image.as_ref().or(current_image);
+    let mut booted_imgref = imgref.ok_or_else(|| anyhow::anyhow!("No image source specified"))?;
 
     let repo = &*composefs.repo;
 
