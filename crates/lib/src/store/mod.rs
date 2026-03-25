@@ -198,10 +198,18 @@ impl BootedStorage {
                 }
                 let composefs = Arc::new(composefs);
 
-                //TODO: this assumes a single ESP on the root device
-                let root_dev =
-                    bootc_blockdev::list_dev_by_dir(&physical_root)?.require_single_root()?;
-                let esp_dev = root_dev.find_partition_of_esp()?;
+                // Locate ESP by walking up to the root disk(s)
+                let root_dev = bootc_blockdev::list_dev_by_dir(&physical_root)?;
+                let esp_dev = root_dev
+                    .find_colocated_esps()?
+                    .and_then(|mut v| {
+                        if v.is_empty() {
+                            None
+                        } else {
+                            Some(v.remove(0))
+                        }
+                    })
+                    .ok_or_else(|| anyhow::anyhow!("ESP partition not found"))?;
                 let esp_mount = mount_esp(&esp_dev.path())?;
 
                 let boot_dir = match get_bootloader()? {
