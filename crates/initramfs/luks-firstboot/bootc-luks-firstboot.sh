@@ -38,10 +38,11 @@ die() {
 }
 
 parse_cmdline() {
-    local cmdline
-    cmdline=$(< /proc/cmdline)
+    local arg
+    local -a cmdline_args
+    read -r -a cmdline_args < /proc/cmdline
 
-    for arg in $cmdline; do
+    for arg in "${cmdline_args[@]}"; do
         case "$arg" in
             rd.bootc.luks.encrypt=*)
                 ENCRYPT_KARG="${arg#rd.bootc.luks.encrypt=}"
@@ -57,22 +58,6 @@ parse_cmdline() {
     done
 }
 
-should_encrypt() {
-    [ -n "$ENCRYPT_KARG" ] || return 1
-
-    if [ -z "$ROOT_DEV" ]; then
-        die "rd.bootc.luks.encrypt set but no root= device found"
-    fi
-
-    # Already encrypted? Skip. This makes the script idempotent and
-    # handles the case where encryption succeeded but BLS update failed.
-    if cryptsetup isLuks "$ROOT_DEV" 2>/dev/null; then
-        log "Root device $ROOT_DEV is already LUKS. Skipping encryption."
-        return 1
-    fi
-
-    return 0
-}
 
 encrypt_root() {
     log "Encrypting root device $ROOT_DEV (method: $ENCRYPT_KARG)"
@@ -176,12 +161,24 @@ configure_system() {
 # Main
 parse_cmdline
 
-if ! should_encrypt; then
-    log "No encryption requested or already encrypted. Exiting."
+if [ -z "$ENCRYPT_KARG" ]; then
+    log "No encryption requested. Exiting."
     exit 0
 fi
 
-encrypt_root
+if [ -z "$ROOT_DEV" ]; then
+    die "rd.bootc.luks.encrypt set but no root= device found"
+fi
+
+if ! cryptsetup isLuks "$ROOT_DEV" 2>/dev/null; then
+    encrypt_root
+else
+    log "Root device $ROOT_DEV is already LUKS. Skipping encryption."
+fi
+
+# Always run configure_system when the karg is present. This handles
+# the case where a previous boot encrypted the device but was
+# interrupted before BLS entries were updated.
 configure_system
 
 log "First-boot encryption complete."
