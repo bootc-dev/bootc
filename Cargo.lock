@@ -2942,6 +2942,7 @@ dependencies = [
  "crossterm",
  "dialoguer",
  "fn-error-context",
+ "indicatif 0.18.3",
  "indoc",
  "log",
  "openssh-keys",
