@@ -705,7 +705,14 @@ pub(crate) fn setup_composefs_bls_boot(
                     options: Some(cmdline_refs),
                 });
 
-            match find_vmlinuz_initrd_duplicates(&boot_digest)? {
+            // Only check for shared boot binaries during upgrades. During a
+            // fresh install the target has no existing entries, and the host's
+            // /sysroot/state/deploy would incorrectly match.
+            match if is_upgrade {
+                find_vmlinuz_initrd_duplicates(&boot_digest)?
+            } else {
+                None
+            } {
                 Some(shared_entries) => {
                     // Multiple deployments could be using the same kernel + initrd, but there
                     // would be only one available
