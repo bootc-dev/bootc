@@ -135,7 +135,7 @@ fn compute_merged_options(
     target_source: &str,
     new_options: Option<&str>,
 ) -> Result<CmdlineOwned> {
-    let mut result = Cmdline::from(current_options.to_owned());
+    let mut result = CmdlineOwned::from(current_options.to_owned());
 
     // Remove old options from the target source (if it was previously tracked)
     if let Some(old_source_opts) = source_options.get(target_source) {
