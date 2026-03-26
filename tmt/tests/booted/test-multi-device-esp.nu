@@ -420,6 +420,16 @@ def test_no_esp_failure [] {
 }
 
 def main [] {
+    # This test requires a UEFI-booted host because it creates ESP partitions
+    # and expects bootupd to install a UEFI bootloader.  On BIOS systems,
+    # bootupd would try to install GRUB for i386-pc which needs a BIOS Boot
+    # Partition instead of an ESP.
+    if not ("/sys/firmware/efi" | path exists) {
+        print "SKIP: multi-device ESP test requires UEFI boot"
+        tap ok
+        return
+    }
+
     # This test exercises bootupd-based bootloader installation which only
     # supports GRUB today.  Skip when the image uses systemd-boot.
     if (tap is_composefs) {
