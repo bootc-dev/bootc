@@ -3,7 +3,7 @@ use std::process::Command;
 
 use anyhow::{Context, Result, anyhow, bail};
 use bootc_utils::{BwrapCmd, CommandRunExt};
-use camino::Utf8Path;
+use camino::{Utf8Path, Utf8PathBuf};
 use cap_std_ext::cap_std::fs::Dir;
 use cap_std_ext::dirext::CapStdExtDirExt;
 use fn_error_context::context;
@@ -193,6 +193,116 @@ pub(crate) fn install_systemd_boot(
         }
     }
 
+    Ok(())
+}
+
+/// Copy BLS entries, kernel, and initrd from ostree's /boot to the FAT32 ESP.
+///
+/// ostree manages BLS entries on an ext4 /boot partition using hardlinks and
+/// symlinks for atomic deployment swaps. systemd-boot is a UEFI application
+/// that can only read FAT32, so it cannot read /boot directly. This function
+/// bridges the gap by copying the boot artifacts to the ESP after ostree has
+/// written them.
+///
+/// With `sysroot.bootprefix=false`, ostree writes BLS paths relative to /boot
+/// (e.g. `/ostree/default-.../vmlinuz`). These paths are correct for both the
+/// ext4 /boot partition and the ESP copy, since systemd-boot resolves them
+/// relative to the partition root.
+#[context("Syncing boot entries to ESP")]
+pub(crate) fn sync_boot_to_esp(
+    device: &bootc_blockdev::Device,
+    boot_path: &Utf8Path,
+) -> Result<()> {
+    let esp_part = device
+        .find_partition_of_type(discoverable_partition_specification::ESP)
+        .ok_or_else(|| anyhow!("ESP partition not found"))?;
+
+    let esp_mount = mount_esp(&esp_part.path()).context("Mounting ESP")?;
+    let esp_dir = Utf8Path::from_path(esp_mount.dir.path())
+        .ok_or_else(|| anyhow!("Failed to convert ESP mount path to UTF-8"))?;
+
+    // ostree writes BLS entries under /boot/loader/entries/ (with bootprefix=false)
+    // or /boot/loader.1/entries/ (the versioned symlink target). We check both.
+    let loader_entries = boot_path.join("loader/entries");
+    let loader1_entries = boot_path.join("loader.1/entries");
+    let source_entries = if loader_entries.exists() {
+        &loader_entries
+    } else if loader1_entries.exists() {
+        &loader1_entries
+    } else {
+        anyhow::bail!(
+            "No BLS entries found at {} or {}",
+            loader_entries,
+            loader1_entries
+        );
+    };
+
+    // Create loader/entries/ on the ESP
+    let esp_loader_entries = esp_dir.join("loader/entries");
+    std::fs::create_dir_all(&esp_loader_entries).context("Creating loader/entries on ESP")?;
+
+    // Process each BLS entry
+    for entry in
+        std::fs::read_dir(source_entries).with_context(|| format!("Reading {source_entries}"))?
+    {
+        let entry = entry?;
+        let name = entry.file_name();
+        let name_str = name.to_str().ok_or_else(|| anyhow!("non-UTF8 filename"))?;
+        if !name_str.ends_with(".conf") {
+            continue;
+        }
+
+        // Copy the .conf file to ESP
+        let src_conf =
+            Utf8PathBuf::try_from(entry.path()).map_err(|e| anyhow!("non-UTF8 path: {e}"))?;
+        let dst_conf = esp_loader_entries.join(name_str);
+        std::fs::copy(&src_conf, &dst_conf)
+            .with_context(|| format!("Copying {src_conf} to {dst_conf}"))?;
+        tracing::debug!("Copied BLS entry: {name_str}");
+
+        // Parse the .conf to find kernel and initrd paths
+        let conf_content =
+            std::fs::read_to_string(&src_conf).with_context(|| format!("Reading {src_conf}"))?;
+
+        for line in conf_content.lines() {
+            let (key, val) = match line.split_once(char::is_whitespace) {
+                Some((k @ ("linux" | "initrd"), v)) => (k, v.trim()),
+                _ => continue,
+            };
+
+            // Paths in BLS entries are relative to the partition root,
+            // with a leading /. Strip the leading / for filesystem copy.
+            let rel_path = val.trim_start_matches('/');
+            let src_file = boot_path.join(rel_path);
+            let dst_file = esp_dir.join(rel_path);
+
+            if !src_file.exists() {
+                anyhow::bail!(
+                    "BLS entry references {key}={val} but {} does not exist",
+                    src_file
+                );
+            }
+
+            // Create parent directories on ESP
+            if let Some(parent) = dst_file.parent() {
+                std::fs::create_dir_all(parent)
+                    .with_context(|| format!("Creating {parent} on ESP"))?;
+            }
+
+            std::fs::copy(&src_file, &dst_file)
+                .with_context(|| format!("Copying {src_file} to {dst_file}"))?;
+            tracing::debug!("Copied {key}: {rel_path}");
+        }
+    }
+
+    // Also copy the loader.conf if it exists on /boot
+    let loader_conf = boot_path.join("loader/loader.conf");
+    if loader_conf.exists() {
+        let dst_loader_conf = esp_dir.join("loader/loader.conf");
+        std::fs::copy(&loader_conf, &dst_loader_conf).context("Copying loader.conf to ESP")?;
+    }
+
+    println!("Synced BLS entries and kernel artifacts from /boot to ESP");
     Ok(())
 }
 
