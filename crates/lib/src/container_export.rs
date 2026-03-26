@@ -134,17 +134,12 @@ fn export_filesystem_walk<W: Write>(
     root_dir: &cap_std_ext::cap_std::fs::Dir,
     sepolicy: Option<&ostree::SePolicy>,
 ) -> Result<()> {
-    use cap_std_ext::cap_primitives::fs::MetadataExt;
     use std::path::Path;
 
-    // Get the device number of the root directory - we should never see a different device
-    // since we use noxdev() which prevents crossing mount points
-    let root_meta = root_dir.dir_metadata()?;
-    let expected_dev = root_meta.dev();
-
-    // Track hardlinks: maps inode -> first path seen
-    // We only track inode since all files must be on the same device
-    let mut hardlinks: HashMap<u64, std::path::PathBuf> = HashMap::new();
+    // Track hardlinks: maps (dev, inode) -> first path seen.
+    // We key on (dev, ino) because overlay filesystems may present
+    // different device numbers for directories vs regular files.
+    let mut hardlinks: HashMap<(u64, u64), std::path::PathBuf> = HashMap::new();
 
     // The target mount shouldn't have submounts, but just in case we use noxdev
     let walk_config = WalkConfiguration::default()
@@ -192,7 +187,6 @@ fn export_filesystem_walk<W: Write>(
                 path,
                 relative_path,
                 sepolicy,
-                expected_dev,
                 &mut hardlinks,
             )
             .map_err(std::io::Error::other)?;
@@ -250,8 +244,7 @@ fn add_file_to_tar_from_walk<W: Write>(
     absolute_path: &std::path::Path,
     relative_path: &std::path::Path,
     sepolicy: Option<&ostree::SePolicy>,
-    expected_dev: u64,
-    hardlinks: &mut HashMap<u64, std::path::PathBuf>,
+    hardlinks: &mut HashMap<(u64, u64), std::path::PathBuf>,
 ) -> Result<()> {
     use cap_std_ext::cap_primitives::fs::{MetadataExt, PermissionsExt};
     use std::path::Path;
@@ -259,25 +252,13 @@ fn add_file_to_tar_from_walk<W: Write>(
     let filename_path = Path::new(filename);
     let metadata = dir.metadata(filename_path)?;
 
-    // Skip files on different devices (e.g., bind mounts in containers like /etc/hosts).
-    // The noxdev() option prevents descending into directories on different devices,
-    // but individual files can still be bind-mounted from other filesystems.
-    let dev = metadata.dev();
-    if dev != expected_dev {
-        tracing::debug!(
-            "Skipping file on different device: {} (expected dev {}, found {})",
-            relative_path.display(),
-            expected_dev,
-            dev
-        );
-        return Ok(());
-    }
-
-    // Check for hardlinks: if nlink > 1, this file may have other links
+    // Check for hardlinks: if nlink > 1, this file may have other links.
+    // We key on (dev, ino) because overlay filesystems may present
+    // different device numbers for directories vs regular files.
     let nlink = metadata.nlink();
     if nlink > 1 {
-        let ino = metadata.ino();
-        if let Some(first_path) = hardlinks.get(&ino) {
+        let key = (metadata.dev(), metadata.ino());
+        if let Some(first_path) = hardlinks.get(&key) {
             // This is a hardlink to a file we've already written
             let mut header = tar_header_from_meta(tar::EntryType::Link, 0, &metadata);
 
@@ -293,7 +274,7 @@ fn add_file_to_tar_from_walk<W: Write>(
             return Ok(());
         } else {
             // First time seeing this inode, record it
-            hardlinks.insert(ino, relative_path.to_path_buf());
+            hardlinks.insert(key, relative_path.to_path_buf());
         }
     }
 
