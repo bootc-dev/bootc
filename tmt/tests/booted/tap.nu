@@ -55,12 +55,21 @@ export def get_target_image [] {
 
 # Run a bootc install command in an isolated mount namespace.
 # This handles the common setup needed for install tests run outside a container.
+# For ostree: masks off bootupd updates and /sysroot/ostree to reproduce
+# https://github.com/bootc-dev/bootc/issues/1778
+# For composefs: only removes bound images (bootupd metadata and boot
+# binaries under /sysroot/ostree are needed for installation).
 export def run_install [cmd: string] {
+    let is_cfs = (is_composefs)
+    let mask_cmds = if $is_cfs {
+        "true"
+    } else {
+        "if test -d /sysroot/ostree; then mount --bind /usr/share/empty /sysroot/ostree; fi\nrm -vrf /usr/lib/bootupd/updates"
+    }
     systemd-run -p MountFlags=slave -qdPG -- /bin/sh -c $"
 set -xeuo pipefail
 bootc usr-overlay
-if test -d /sysroot/ostree; then mount --bind /usr/share/empty /sysroot/ostree; fi
-rm -vrf /usr/lib/bootupd/updates
+($mask_cmds)
 rm -vrf /usr/lib/bootc/bound-images.d
 ($cmd)
 "
