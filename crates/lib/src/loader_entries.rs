@@ -135,12 +135,12 @@ fn compute_merged_options(
     target_source: &str,
     new_options: Option<&str>,
 ) -> Result<CmdlineOwned> {
-    let mut merged = Cmdline::from(current_options);
+    let mut result = Cmdline::from(current_options);
 
     // Remove old options from the target source (if it was previously tracked)
     if let Some(old_source_opts) = source_options.get(target_source) {
         for param in old_source_opts.iter() {
-            merged.remove_exact(&param);
+            result.remove_exact(&param);
         }
     }
 
@@ -149,12 +149,12 @@ fn compute_merged_options(
         if !new_opts.is_empty() {
             let new_cmdline = Cmdline::from(new_opts);
             for param in new_cmdline.iter() {
-                merged.add(&param);
+                result.add(&param);
             }
         }
     }
 
-    Ok(merged)
+    Ok(result)
 }
 
 #[cfg(test)]
@@ -263,7 +263,9 @@ mod tests {
     #[test]
     fn test_set_options_for_source_in_entry() {
         let td = tempfile::tempdir().unwrap();
-        let entry_path = Utf8Path::from_path(td.path()).unwrap().join("test.conf");
+        let entry_path = Utf8Path::from_path(td.path())
+            .expect("temp path should be valid UTF-8")
+            .join("test.conf");
 
         let initial_content = "\
 title Test OS
