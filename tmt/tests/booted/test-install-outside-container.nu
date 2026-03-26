@@ -6,9 +6,10 @@
 use std assert
 use tap.nu
 
-# Use an OS-matched target image to avoid version mismatches
-# (e.g., XFS features created by newer mkfs.xfs not recognized by older grub2)
-let target_image = (tap get_target_image)
+# Use the locally-built image which has updated bootupd with compatible
+# EFI update metadata, matching the pattern used by test-32/37/38.
+bootc image copy-to-storage
+let target_image = "containers-storage:localhost/bootc"
 
 # setup filesystem
 mkdir /var/mnt
