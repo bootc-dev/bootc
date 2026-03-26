@@ -7,9 +7,12 @@ use std assert
 use tap.nu
 
 # Use the locally-built image which has updated bootupd with compatible
-# EFI update metadata, matching the pattern used by test-32/37/38.
+# EFI update metadata. Export to OCI layout on a writable path since
+# containers-storage: transport can't work when the root fs is read-only
+# (composefs), and install-outside-container tests run directly on the host.
 bootc image copy-to-storage
-let target_image = "containers-storage:localhost/bootc"
+skopeo copy containers-storage:localhost/bootc oci:/var/tmp/bootc-oci
+let target_image = "oci:/var/tmp/bootc-oci"
 
 # setup filesystem
 mkdir /var/mnt
@@ -22,9 +25,6 @@ let result = bootc install to-filesystem /var/mnt e>| find "--source-imgref must
 assert not equal $result null
 umount /var/mnt
 
-# Mask off the bootupd state to reproduce https://github.com/bootc-dev/bootc/issues/1778
-# Also it turns out that installation outside of containers dies due to `error: Multiple commit objects found`
-# so we mask off /sysroot/ostree
 # And using systemd-run here breaks our install_t so we disable SELinux enforcement
 setenforce 0
 
