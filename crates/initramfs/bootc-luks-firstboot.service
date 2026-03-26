@@ -1,0 +1,34 @@
+[Unit]
+Description=bootc first-boot LUKS encryption
+Documentation=man:bootc(1)
+DefaultDependencies=no
+ConditionKernelCommandLine=rd.bootc.luks.encrypt
+ConditionPathExists=/etc/initrd-release
+
+# Run before the root filesystem is mounted. We need the root block device
+# to be available but not yet mounted, so we can encrypt it in-place.
+# After encryption, cryptsetup reencrypt auto-opens the device as
+# /dev/mapper/cr_root, and udev creates the by-uuid symlink so that the
+# root=UUID= karg resolves to the encrypted device.
+Before=sysroot.mount
+Before=initrd-root-fs.target
+
+# We need block devices to be available and udev to have settled
+After=systemd-udev-settle.service
+After=dracut-initqueue.service
+Wants=systemd-udev-settle.service
+
+# If we fail, drop to emergency shell -- do not leave the system
+# with a half-encrypted root partition
+OnFailure=emergency.target
+OnFailureJobMode=isolate
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/bootc/bootc-luks-firstboot.sh
+StandardInput=null
+StandardOutput=journal+console
+StandardError=journal+console
+RemainAfterExit=yes
+# Encryption of a large root partition can take several minutes
+TimeoutStartSec=900

@@ -84,6 +84,7 @@ install: completion
 	fi
 	install -D -m 0644 -t $(DESTDIR)/usr/lib/systemd/system crates/initramfs/*.service
 	install -D -m 0755 target/release/bootc-initramfs-setup $(DESTDIR)/usr/lib/bootc/initramfs-setup
+	install -D -m 0755 -t $(DESTDIR)/usr/lib/bootc crates/initramfs/luks-firstboot/bootc-luks-firstboot.sh
 	install -D -m 0755 -t $(DESTDIR)/usr/lib/dracut/modules.d/51bootc crates/initramfs/dracut/module-setup.sh
 
 # Run this to also take over the functionality of `ostree container` for example.

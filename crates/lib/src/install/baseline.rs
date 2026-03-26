@@ -8,7 +8,6 @@
 use std::borrow::Cow;
 use std::fmt::Display;
 use std::fmt::Write as _;
-use std::io::Write;
 use std::process::Command;
 use std::process::Stdio;
 
@@ -108,6 +107,23 @@ fn mkfs<'a>(
     wipe: bool,
     opts: impl IntoIterator<Item = &'a str>,
 ) -> Result<uuid::Uuid> {
+    mkfs_with_reserve(dev, fs, label, wipe, opts, 0)
+}
+
+/// Create a filesystem, optionally reserving trailing space on the device.
+///
+/// When `reserve_mib` is non-zero, the filesystem is created smaller than the
+/// partition by that amount. This is used to reserve space for a LUKS header
+/// that will be inserted on first boot via `cryptsetup reencrypt --encrypt`.
+#[cfg(feature = "install-to-disk")]
+fn mkfs_with_reserve<'a>(
+    dev: &str,
+    fs: Filesystem,
+    label: &str,
+    wipe: bool,
+    opts: impl IntoIterator<Item = &'a str>,
+    reserve_mib: u32,
+) -> Result<uuid::Uuid> {
     let devinfo = bootc_blockdev::list_dev(dev.into())?;
     let size = ostree_ext::glib::format_size(devinfo.size);
 
@@ -125,8 +141,20 @@ fn mkfs<'a>(
             }
             t.cmd.arg("-m");
             t.cmd.arg(format!("uuid={u}"));
+            if reserve_mib > 0 {
+                let fs_bytes = devinfo.size - u64::from(reserve_mib) * 1024 * 1024;
+                t.cmd.args(["-d", &format!("size={fs_bytes}")]);
+            }
         }
-        Filesystem::Btrfs | Filesystem::Ext4 => {
+        Filesystem::Btrfs => {
+            t.cmd.arg("-U");
+            t.cmd.arg(u.to_string());
+            if reserve_mib > 0 {
+                let fs_bytes = devinfo.size - u64::from(reserve_mib) * 1024 * 1024;
+                t.cmd.args(["-b", &fs_bytes.to_string()]);
+            }
+        }
+        Filesystem::Ext4 => {
             t.cmd.arg("-U");
             t.cmd.arg(u.to_string());
         }
@@ -135,6 +163,12 @@ fn mkfs<'a>(
     t.cmd.args(["-L", label]);
     t.cmd.args(opts);
     t.cmd.arg(dev);
+    // For ext4 with reserved space, append the filesystem size in 1K blocks
+    // as a positional argument after the device path.
+    if reserve_mib > 0 && fs == Filesystem::Ext4 {
+        let fs_blocks_1k = (devinfo.size - u64::from(reserve_mib) * 1024 * 1024) / 1024;
+        t.cmd.arg(fs_blocks_1k.to_string());
+    }
     // All the mkfs commands are unnecessarily noisy by default
     t.cmd.stdout(Stdio::null());
     // But this one is notable so let's print the whole thing with verbose()
@@ -172,7 +206,6 @@ pub(crate) fn install_create_rootfs(
     opts: InstallBlockDeviceOpts,
 ) -> Result<RootSetup> {
     let install_config = state.install_config.as_ref();
-    let luks_name = "root";
     // Ensure we have a root filesystem upfront
     let root_filesystem = opts
         .filesystem
@@ -347,44 +380,20 @@ pub(crate) fn install_create_rootfs(
             root_device.parttype.as_deref().unwrap_or("<none>")
         );
     }
-    let (rootdev_path, root_blockdev_kargs) = match block_setup {
-        BlockSetup::Direct => (root_device.path(), None),
-        BlockSetup::Tpm2Luks => {
-            let uuid = uuid::Uuid::new_v4().to_string();
-            // This will be replaced via --wipe-slot=all when binding to tpm below
-            let dummy_passphrase = uuid::Uuid::new_v4().to_string();
-            let mut tmp_keyfile = tempfile::NamedTempFile::new()?;
-            tmp_keyfile.write_all(dummy_passphrase.as_bytes())?;
-            tmp_keyfile.flush()?;
-            let tmp_keyfile = tmp_keyfile.path();
-            let dummy_passphrase_input = Some(dummy_passphrase.as_bytes());
-
-            let root_devpath = root_device.path();
-
-            Task::new("Initializing LUKS for root", "cryptsetup")
-                .args(["luksFormat", "--uuid", uuid.as_str(), "--key-file"])
-                .args([tmp_keyfile])
-                .arg(&root_devpath)
-                .run()?;
-            // The --wipe-slot=all removes our temporary passphrase, and binds to the local TPM device.
-            // We also use .verbose() here as the details are important/notable.
-            Task::new("Enrolling root device with TPM", "systemd-cryptenroll")
-                .args(["--wipe-slot=all", "--tpm2-device=auto", "--unlock-key-file"])
-                .args([tmp_keyfile])
-                .arg(&root_devpath)
-                .verbose()
-                .run_with_stdin_buf(dummy_passphrase_input)?;
-            Task::new("Opening root LUKS device", "cryptsetup")
-                .args(["luksOpen", &root_devpath, luks_name])
-                .run()?;
-            let rootdev = format!("/dev/mapper/{luks_name}");
-            let kargs = vec![
-                format!("luks.uuid={uuid}"),
-                format!("luks.options=tpm2-device=auto,headless=true"),
-            ];
-            (rootdev, Some(kargs))
-        }
+    // For tpm2-luks, we reserve space for a LUKS header but do not perform
+    // any encryption during install. Encryption is deferred to first boot,
+    // where it runs on real hardware with access to the actual TPM device
+    // and correct firmware state (PCRs, shim version). This avoids both the
+    // IPC namespace deadlock (#2089) and the shim/PCR mismatch (#421).
+    let luks_reserve_mib: u32 = match block_setup {
+        BlockSetup::Direct => 0,
+        BlockSetup::Tpm2Luks => 32,
     };
+    let root_blockdev_kargs = match block_setup {
+        BlockSetup::Direct => None,
+        BlockSetup::Tpm2Luks => Some(vec!["rd.bootc.luks.encrypt=tpm2".to_string()]),
+    };
+    let rootdev_path = root_device.path();
 
     // Initialize the /boot filesystem
     let bootdev = if let Some(bootpn) = boot_partno {
@@ -407,13 +416,15 @@ pub(crate) fn install_create_rootfs(
         _ => [].as_slice(),
     };
 
-    // Initialize rootfs
-    let root_uuid = mkfs(
+    // Initialize rootfs. When encrypting on first boot, reserve trailing space
+    // for the LUKS header that cryptsetup reencrypt --encrypt will insert.
+    let root_uuid = mkfs_with_reserve(
         &rootdev_path,
         root_filesystem,
         "root",
         opts.wipe,
         mkfs_options.iter().copied(),
+        luks_reserve_mib,
     )?;
     let rootarg = format!("root=UUID={root_uuid}");
     let bootsrc = boot_uuid.as_ref().map(|uuid| format!("UUID={uuid}"));
@@ -474,10 +485,9 @@ pub(crate) fn install_create_rootfs(
         std::fs::create_dir(&efifs_path).context("Creating efi dir")?;
     }
 
-    let luks_device = match block_setup {
-        BlockSetup::Direct => None,
-        BlockSetup::Tpm2Luks => Some(luks_name.to_string()),
-    };
+    // With first-boot LUKS, no dm-crypt device is opened during install,
+    // so there is nothing to close. The root partition is written unencrypted.
+    let luks_device = None;
     Ok(RootSetup {
         luks_device,
         device_info: device,
