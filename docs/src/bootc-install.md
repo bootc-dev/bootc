@@ -60,7 +60,7 @@ to an existing system and install your container image. Failure to run
 Here's an example of using `bootc install` (root/elevated permission required):
 
 ```bash
-podman run --rm --privileged --pid=host -v /var/lib/containers:/var/lib/containers -v /dev:/dev --security-opt label=type:unconfined_t <image> bootc install to-disk /path/to/disk
+podman run --rm --privileged --pid=host --ipc=host -v /var/lib/containers:/var/lib/containers -v /dev:/dev --security-opt label=type:unconfined_t <image> bootc install to-disk /path/to/disk
 ```
 
 Note that while `--privileged` is used, this command will not perform any
@@ -68,7 +68,7 @@ destructive action on the host system.  Among other things, `--privileged`
 makes sure that all host devices are mounted into container. `/path/to/disk` is
 the host's block device where `<image>` will be installed on.
 
-The `--pid=host --security-opt label=type:unconfined_t` today
+The `--pid=host --ipc=host --security-opt label=type:unconfined_t` today
 make it more convenient for bootc to perform some privileged
 operations; in the future these requirements may be dropped.
 
@@ -191,7 +191,7 @@ process, you can create a raw disk image that you can boot via virtualization. R
 
 ```bash
 truncate -s 10G myimage.raw
-podman run --rm --privileged --pid=host --security-opt label=type:unconfined_t -v /dev:/dev -v /var/lib/containers:/var/lib/containers -v .:/output <yourimage> bootc install to-disk --generic-image --via-loopback /output/myimage.raw
+podman run --rm --privileged --pid=host --ipc=host --security-opt label=type:unconfined_t -v /dev:/dev -v /var/lib/containers:/var/lib/containers -v .:/output <yourimage> bootc install to-disk --generic-image --via-loopback /output/myimage.raw
 ```
 
 Notice that we use `--generic-image` for this use case.

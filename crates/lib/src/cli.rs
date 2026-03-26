@@ -5,6 +5,7 @@
 use std::ffi::{CString, OsStr, OsString};
 use std::fs::File;
 use std::io::{BufWriter, Seek};
+use std::os::fd::AsFd;
 use std::os::unix::process::CommandExt;
 use std::process::Command;
 
@@ -1514,6 +1515,23 @@ async fn usroverlay(access_mode: FilesystemOverlayAccessMode) -> Result<()> {
 /// in the standard `main` function.
 #[allow(unsafe_code)]
 pub fn global_init() -> Result<()> {
+    // Join the host IPC namespace if we're in an isolated one. Inside a
+    // container with a separate IPC namespace (the podman/docker default),
+    // udevd on the host cannot see the container's semaphores, causing
+    // cryptsetup operations to deadlock on semop(). The primary fix is to
+    // run the install container with --ipc=host; this is defense-in-depth
+    // for cases where the caller forgets that flag.
+    let ns_pid1 = std::fs::read_link("/proc/1/ns/ipc").context("reading /proc/1/ns/ipc")?;
+    let ns_self = std::fs::read_link("/proc/self/ns/ipc").context("reading /proc/self/ns/ipc")?;
+    if ns_pid1 != ns_self {
+        let pid1ipcns = std::fs::File::open("/proc/1/ns/ipc").context("open pid1 ipcns")?;
+        rustix::thread::move_into_link_name_space(
+            pid1ipcns.as_fd(),
+            Some(rustix::thread::LinkNameSpaceType::InterProcessCommunication),
+        )
+        .context("setns(ipc)")?;
+        tracing::debug!("Joined pid1 IPC namespace");
+    }
     // In some cases we re-exec with a temporary binary,
     // so ensure that the syslog identifier is set.
     ostree::glib::set_prgname(bootc_utils::NAME.into());
