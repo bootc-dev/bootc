@@ -1493,6 +1493,15 @@ pub fn global_init() -> Result<()> {
             std::env::set_var("HOME", "/root");
         }
     }
+    // Disable libdevmapper's udev synchronization. Inside a container with an
+    // isolated IPC namespace (the podman/docker default), udevd on the host
+    // cannot see the container's semaphores, causing cryptsetup luksOpen and
+    // luksClose to deadlock on semop(). This is a defense-in-depth measure;
+    // the primary fix is to run the install container with --ipc=host.
+    // SAFETY: Called early in main() before any threads are spawned.
+    unsafe {
+        std::env::set_var("DM_DISABLE_UDEV", "1");
+    }
     Ok(())
 }
 
