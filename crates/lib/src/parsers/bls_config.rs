@@ -10,12 +10,20 @@ use camino::Utf8PathBuf;
 use cfsctl::composefs_boot;
 use composefs_boot::bootloader::EFI_EXT;
 use core::fmt;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt::Display;
 use uapi_version::Version;
 
 use crate::bootc_composefs::status::ComposefsCmdline;
 use crate::composefs_consts::UKI_NAME_PREFIX;
+
+/// The prefix used for magic comments that track kernel argument sources.
+/// These comments allow tracking which kernel arguments belong to which source
+/// (e.g., TuneD, bootc kargs.d, admin), enabling safe merging of disparate
+/// options sources into the single BLS entry `options` field.
+///
+/// See <https://github.com/ostreedev/ostree/pull/3570>
+pub(crate) const OPTIONS_SOURCE_COMMENT_PREFIX: &str = "# x-ostree-options-source-";
 
 #[derive(Debug, PartialEq, Eq, Default)]
 pub enum BLSConfigType {
@@ -60,6 +68,13 @@ pub(crate) struct BLSConfig {
 
     /// Any extra fields not defined in the spec.
     pub(crate) extra: HashMap<String, String>,
+
+    /// Kernel argument sources tracked via magic comments.
+    ///
+    /// Maps source name to the kernel arguments owned by that source.
+    /// These are serialized as `# x-ostree-options-source-<name> <args>`
+    /// comments in BLS config files.
+    pub(crate) source_options: BTreeMap<String, CmdlineOwned>,
 }
 
 impl PartialOrd for BLSConfig {
@@ -116,6 +131,11 @@ impl Display for BLSConfig {
                 writeln!(f, "linux {}", linux)?;
                 for initrd in initrd.iter() {
                     writeln!(f, "initrd {}", initrd)?;
+                }
+
+                // Write source tracking comments before the options line
+                for (source, args) in &self.source_options {
+                    writeln!(f, "{OPTIONS_SOURCE_COMMENT_PREFIX}{source} {args}")?;
                 }
 
                 if let Some(options) = options.as_deref() {
@@ -233,10 +253,38 @@ pub(crate) fn parse_bls_config(input: &str) -> Result<BLSConfig> {
     let mut machine_id = None;
     let mut sort_key = None;
     let mut extra = HashMap::new();
+    let mut source_options = BTreeMap::new();
 
     for line in input.lines() {
         let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
+        if line.is_empty() {
+            continue;
+        }
+
+        // Parse magic source-tracking comments
+        if let Some(rest) = line.strip_prefix(OPTIONS_SOURCE_COMMENT_PREFIX) {
+            if let Some((source_name, args)) = rest.split_once(' ') {
+                let source_name = source_name.trim();
+                let args = args.trim();
+                if !source_name.is_empty() {
+                    source_options.insert(
+                        source_name.to_string(),
+                        CmdlineOwned::from(args.to_string()),
+                    );
+                }
+            } else {
+                // Source with no options (e.g., to disable/clear a source)
+                let source_name = rest.trim();
+                if !source_name.is_empty() {
+                    source_options
+                        .insert(source_name.to_string(), CmdlineOwned::from(String::new()));
+                }
+            }
+            continue;
+        }
+
+        // Skip regular comments
+        if line.starts_with('#') {
             continue;
         }
 
@@ -282,6 +330,7 @@ pub(crate) fn parse_bls_config(input: &str) -> Result<BLSConfig> {
         machine_id,
         sort_key,
         extra,
+        source_options,
     })
 }
 

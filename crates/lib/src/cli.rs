@@ -714,6 +714,56 @@ pub(crate) enum StateOpts {
     WipeOstree,
 }
 
+/// Options for the `set-options-for-source` subcommand.
+#[derive(Debug, Parser, PartialEq, Eq)]
+pub(crate) struct SetOptionsForSourceOpts {
+    /// The name of the source that owns these kernel arguments.
+    ///
+    /// Must contain only alphanumeric characters, hyphens, or underscores.
+    /// Examples: "tuned", "admin", "bootc-kargs-d"
+    #[clap(long)]
+    pub(crate) source: String,
+
+    /// The kernel arguments to set for this source.
+    ///
+    /// If not provided, the source is removed and its options are
+    /// dropped from the merged `options` line.
+    #[clap(long)]
+    pub(crate) options: Option<String>,
+
+    /// Path to the system root. Defaults to "/".
+    #[clap(long, default_value = "/")]
+    pub(crate) root: String,
+}
+
+/// Operations on Boot Loader Specification (BLS) entries.
+///
+/// These commands support managing kernel arguments from multiple independent
+/// sources (e.g., TuneD, admin, bootc kargs.d) by tracking argument ownership
+/// via magic comments in BLS config files.
+///
+/// See <https://github.com/ostreedev/ostree/pull/3570>
+#[derive(Debug, clap::Subcommand, PartialEq, Eq)]
+pub(crate) enum LoaderEntriesOpts {
+    /// Set or update the kernel arguments owned by a specific source.
+    ///
+    /// Each source's arguments are tracked via `# x-ostree-options-source-<name>`
+    /// comments in BLS config files. The `options` line is recomputed as the
+    /// merge of all tracked sources plus any untracked (pre-existing) options.
+    ///
+    /// ## Examples
+    ///
+    /// Add TuneD kernel arguments:
+    ///   bootc loader-entries set-options-for-source --source tuned --options "isolcpus=1-3 nohz_full=1-3"
+    ///
+    /// Update TuneD kernel arguments:
+    ///   bootc loader-entries set-options-for-source --source tuned --options "isolcpus=0-7"
+    ///
+    /// Remove TuneD kernel arguments:
+    ///   bootc loader-entries set-options-for-source --source tuned
+    SetOptionsForSource(SetOptionsForSourceOpts),
+}
+
 impl InternalsOpts {
     /// The name of the binary we inject into /usr/lib/systemd/system-generators
     const GENERATOR_BIN: &'static str = "bootc-systemd-generator";
@@ -813,6 +863,11 @@ pub(crate) enum Opt {
     /// Stability: This interface may change in the future.
     #[clap(subcommand, hide = true)]
     Image(ImageOpts),
+    /// Operations on Boot Loader Specification (BLS) entries.
+    ///
+    /// Manage kernel arguments from multiple independent sources.
+    #[clap(subcommand)]
+    LoaderEntries(LoaderEntriesOpts),
     /// Execute the given command in the host mount namespace
     #[clap(hide = true)]
     ExecInHostMountNamespace {
@@ -1805,6 +1860,16 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
         Opt::ExecInHostMountNamespace { args } => {
             crate::install::exec_in_host_mountns(args.as_slice())
         }
+        Opt::LoaderEntries(opts) => match opts {
+            LoaderEntriesOpts::SetOptionsForSource(opts) => {
+                crate::loader_entries::set_options_for_source(
+                    &opts.root,
+                    &opts.source,
+                    opts.options.as_deref(),
+                )?;
+                Ok(())
+            }
+        },
         Opt::Status(opts) => super::status::status(opts).await,
         Opt::Internals(opts) => match opts {
             InternalsOpts::SystemdGenerator {
