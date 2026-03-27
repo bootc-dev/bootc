@@ -8,7 +8,7 @@ use std::process::Command;
 use which::which;
 
 #[context("bootc_has_clean")]
-fn bootc_has_clean(image: &str) -> Result<bool> {
+pub(crate) fn bootc_has_clean(image: &str) -> Result<bool> {
     let output = Command::new("podman")
         .args([
             "run",
@@ -25,7 +25,11 @@ fn bootc_has_clean(image: &str) -> Result<bool> {
 }
 
 #[context("reinstall_command")]
-pub(crate) fn reinstall_command(opts: &ReinstallOpts, ssh_key_file: &str) -> Result<Command> {
+pub(crate) fn reinstall_command(
+    opts: &ReinstallOpts,
+    ssh_key_file: &str,
+    has_clean: bool,
+) -> Result<Command> {
     let mut podman_command_and_args = [
         // We use podman to run the bootc container. This might change in the future to remove the
         // podman dependency.
@@ -80,7 +84,7 @@ pub(crate) fn reinstall_command(opts: &ReinstallOpts, ssh_key_file: &str) -> Res
     // bootc system for the first time.
     // This only happens if the bootc version in the image >= 1.1.8 (this is when the cleanup
     // feature was introduced)
-    if bootc_has_clean(&opts.image)? {
+    if has_clean {
         bootc_command_and_args.push("--cleanup".to_string());
     }
 

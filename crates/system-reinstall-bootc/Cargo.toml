@@ -32,6 +32,9 @@ tempfile = { workspace = true }
 tracing = { workspace = true }
 uzers = { workspace = true }
 
+# Workspace dependencies (additional)
+indicatif = { workspace = true }
+
 # Crate-specific dependencies
 crossterm = "0.29.0"
 dialoguer = "0.12.0"

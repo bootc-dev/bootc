@@ -5,6 +5,7 @@ use bootc_utils::CommandRunExt;
 use clap::Parser;
 use fn_error_context::context;
 use rustix::process::getuid;
+use std::time::Duration;
 
 mod btrfs;
 mod config;
@@ -54,10 +55,23 @@ fn run() -> Result<()> {
 
     podman::ensure_podman_installed()?;
 
-    //pull image early so it can be inspected, e.g. to check for cloud-init
+    // Pull phase: explicitly pull the image before any other operations that use it.
+    // This ensures no implicit pulls happen in later steps (e.g. capability check).
     podman::pull_if_not_present(&opts.image)?;
 
     println!();
+
+    // Capability check phase: run after the image is guaranteed to be present locally.
+    let spinner = indicatif::ProgressBar::new_spinner();
+    spinner.set_style(
+        indicatif::ProgressStyle::default_spinner()
+            .template("{spinner} {msg}")
+            .expect("Failed to parse spinner template"),
+    );
+    spinner.set_message("Checking image capabilities...");
+    spinner.enable_steady_tick(Duration::from_millis(150));
+    let has_clean = podman::bootc_has_clean(&opts.image)?;
+    spinner.finish_and_clear();
 
     let ssh_key_file = tempfile::NamedTempFile::new()?;
     let ssh_key_file_path = ssh_key_file
@@ -71,7 +85,8 @@ fn run() -> Result<()> {
 
     prompt::mount_warning()?;
 
-    let mut reinstall_podman_command = podman::reinstall_command(&opts, ssh_key_file_path)?;
+    let mut reinstall_podman_command =
+        podman::reinstall_command(&opts, ssh_key_file_path, has_clean)?;
 
     println!();
     println!("Going to run command:");
@@ -84,6 +99,9 @@ fn run() -> Result<()> {
     );
 
     prompt::temporary_developer_protection_prompt()?;
+
+    println!("Starting bootc installation. This may take several minutes...");
+    println!();
 
     reinstall_podman_command
         .run_inherited_with_cmd_context()
