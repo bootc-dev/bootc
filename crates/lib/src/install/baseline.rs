@@ -298,7 +298,17 @@ pub(crate) fn install_create_rootfs(
     // Initialize the /boot filesystem.  Note that in the future, we may match
     // what systemd/uapi-group encourages and make /boot be FAT32 as well, as
     // it would aid systemd-boot.
-    let boot_partno = if block_setup.requires_bootpart() {
+    // For systemd-boot with the ostree backend (non-composefs), we always need
+    // a /boot partition: ostree manages BLS entries, kernel, and initrd on /boot
+    // using hardlinks and symlinks that require a POSIX filesystem (ext4/XFS).
+    // systemd-boot reads from the FAT32 ESP, so we copy BLS entries and kernel
+    // artifacts from /boot to the ESP after each deploy.
+    let needs_bootpart = block_setup.requires_bootpart()
+        || (matches!(
+            state.config_opts.bootloader,
+            Some(crate::spec::Bootloader::Systemd)
+        ) && !state.composefs_options.composefs_backend);
+    let boot_partno = if needs_bootpart {
         partno += 1;
         writeln!(
             &mut partitioning_buf,
@@ -386,7 +396,19 @@ pub(crate) fn install_create_rootfs(
         }
     };
 
-    // Initialize the /boot filesystem
+    // Initialize the /boot filesystem.
+    // When using systemd-boot with the ostree backend, use ext4 for /boot
+    // regardless of the root filesystem choice. ostree needs a POSIX filesystem
+    // for hardlinks/symlinks, and ext4 is the most widely compatible choice.
+    let boot_filesystem = if matches!(
+        state.config_opts.bootloader,
+        Some(crate::spec::Bootloader::Systemd)
+    ) && !state.composefs_options.composefs_backend
+    {
+        Filesystem::Ext4
+    } else {
+        root_filesystem
+    };
     let bootdev = if let Some(bootpn) = boot_partno {
         Some(device.find_device_by_partno(bootpn)?)
     } else {
@@ -394,7 +416,7 @@ pub(crate) fn install_create_rootfs(
     };
     let boot_uuid = if let Some(bootdev) = bootdev {
         Some(
-            mkfs(&bootdev.path(), root_filesystem, "boot", opts.wipe, [])
+            mkfs(&bootdev.path(), boot_filesystem, "boot", opts.wipe, [])
                 .context("Initializing /boot")?,
         )
     } else {

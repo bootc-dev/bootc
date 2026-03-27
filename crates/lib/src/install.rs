@@ -951,6 +951,30 @@ async fn initialize_ostree_root(state: &State, root_setup: &RootSetup) -> Result
             .run_capture_stderr()?;
     }
 
+    // When using systemd-boot with the ostree backend, BLS entry paths must
+    // be relative to the /boot partition root (e.g. /ostree/default-.../vmlinuz)
+    // rather than prefixed with /boot (e.g. /boot/ostree/default-.../vmlinuz).
+    // The /boot prefix is designed for grub reading from the root filesystem;
+    // systemd-boot reads from the ESP where we copy these entries, so paths
+    // must be relative to the partition root.
+    if matches!(
+        state.config_opts.bootloader,
+        Some(crate::spec::Bootloader::Systemd)
+    ) && !state.composefs_options.composefs_backend
+    {
+        Command::new("ostree")
+            .args([
+                "config",
+                "--repo",
+                "ostree/repo",
+                "set",
+                "sysroot.bootprefix",
+                "false",
+            ])
+            .cwd_dir(rootfs_dir.try_clone()?)
+            .run_capture_stderr()?;
+    }
+
     let sysroot = {
         let path = format!(
             "/proc/{}/fd/{}",
@@ -1822,7 +1846,21 @@ async fn install_with_sysroot(
                 )?;
             }
             Bootloader::Systemd => {
-                anyhow::bail!("bootupd is required for ostree-based installs");
+                crate::bootloader::install_systemd_boot(
+                    &rootfs.device_info,
+                    rootfs
+                        .target_root_path
+                        .as_deref()
+                        .unwrap_or(&rootfs.physical_root_path),
+                    &state.config_opts,
+                    Some(&deployment_path.as_str()),
+                    None,
+                )?;
+                // For the ostree backend, BLS entries and kernel/initrd live
+                // on the ext4 /boot partition which systemd-boot cannot read.
+                // Copy them to the FAT32 ESP where systemd-boot will find them.
+                let boot_path = rootfs.physical_root_path.join("boot");
+                crate::bootloader::sync_boot_to_esp(&rootfs.device_info, &boot_path)?;
             }
             Bootloader::None => {
                 tracing::debug!("Skip bootloader installation due set to None");
