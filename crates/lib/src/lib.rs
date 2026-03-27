@@ -73,6 +73,7 @@ mod container_export;
 mod containerenv;
 pub(crate) mod deploy;
 mod discoverable_partition_specification;
+pub(crate) mod finalize_rootfs;
 pub(crate) mod fsck;
 pub(crate) mod generator;
 mod glyph;

@@ -463,6 +463,35 @@ pub(crate) enum ContainerOpts {
         /// Path to the container filesystem root
         target: Utf8PathBuf,
     },
+    /// Transform a dnf --installroot rootfs into a bootc-compatible layout.
+    ///
+    /// Applies the filesystem transforms needed to make a plain rootfs
+    /// deployable by bootc: toplevel symlinks, /var->tmpfiles.d conversion,
+    /// rpmdb relocation, config injection (prepare-root.conf, dracut.conf.d,
+    /// kernel install.conf, etc.).
+    ///
+    /// After running this, run dracut and systemctl preset-all in a chroot,
+    /// then use post-chroot-cleanup to finalize.
+    FinalizeRootfs {
+        /// Path to the rootfs directory (from dnf --installroot)
+        rootfs: Utf8PathBuf,
+
+        /// Check mode: report what would change without modifying
+        #[clap(long)]
+        check: bool,
+    },
+    /// Clean up artifacts left by chroot operations after finalize-rootfs.
+    ///
+    /// Run this AFTER dracut, systemctl preset-all, and bootupd metadata
+    /// generation, and BEFORE building the OCI image.
+    PostChrootCleanup {
+        /// Path to the rootfs directory
+        rootfs: Utf8PathBuf,
+
+        /// Check mode: report what would change without modifying
+        #[clap(long)]
+        check: bool,
+    },
 }
 
 #[derive(Debug, Clone, ValueEnum, PartialEq, Eq)]
@@ -1753,6 +1782,12 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
                     disable_selinux,
                 )
                 .await
+            }
+            ContainerOpts::FinalizeRootfs { rootfs, check } => {
+                crate::finalize_rootfs::finalize_rootfs(&rootfs, check)
+            }
+            ContainerOpts::PostChrootCleanup { rootfs, check } => {
+                crate::finalize_rootfs::post_chroot_cleanup(&rootfs, check)
             }
         },
         Opt::Completion { shell } => {
