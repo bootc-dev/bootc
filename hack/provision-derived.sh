@@ -69,6 +69,44 @@ resize_rootfs: false
 CLOUDEOF
 fi
 
+# Temporary: update bootupd from @CoreOS/continuous copr until
+# base images include a version supporting --filesystem
+. /usr/lib/os-release
+case $ID in
+    fedora) copr_distro="fedora" ;;
+    *) copr_distro="centos-stream" ;;
+esac
+# Update bootc from rhcontainerbot copr; the new bootupd
+# requires a newer bootc than what ships in some base images.
+cat >/etc/yum.repos.d/rhcontainerbot-bootc.repo <<REPOEOF
+[copr:copr.fedorainfracloud.org:rhcontainerbot:bootc]
+name=Copr repo for bootc owned by rhcontainerbot
+baseurl=https://download.copr.fedorainfracloud.org/results/rhcontainerbot/bootc/${copr_distro}-\$releasever-\$basearch/
+type=rpm-md
+skip_if_unavailable=True
+gpgcheck=1
+gpgkey=https://download.copr.fedorainfracloud.org/results/rhcontainerbot/bootc/pubkey.gpg
+repo_gpgcheck=0
+enabled=1
+enabled_metadata=1
+REPOEOF
+dnf -y update bootc
+rm -f /etc/yum.repos.d/rhcontainerbot-bootc.repo
+cat >/etc/yum.repos.d/coreos-continuous.repo <<REPOEOF
+[copr:copr.fedorainfracloud.org:group_CoreOS:continuous]
+name=Copr repo for continuous owned by @CoreOS
+baseurl=https://download.copr.fedorainfracloud.org/results/@CoreOS/continuous/${copr_distro}-\$releasever-\$basearch/
+type=rpm-md
+skip_if_unavailable=True
+gpgcheck=1
+gpgkey=https://download.copr.fedorainfracloud.org/results/@CoreOS/continuous/pubkey.gpg
+repo_gpgcheck=0
+enabled=1
+enabled_metadata=1
+REPOEOF
+dnf -y install bootupd-0.2.32.41.gb788553
+rm -f /etc/yum.repos.d/coreos-continuous.repo
+
 dnf clean all
 # Stock extra cleaning of logs and caches in general (mostly dnf)
 rm /var/log/* /var/cache /var/lib/{dnf,rpm-state,rhsm} -rf

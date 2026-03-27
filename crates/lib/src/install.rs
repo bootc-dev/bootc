@@ -2570,9 +2570,8 @@ pub(crate) async fn install_to_filesystem(
     // Find the real underlying backing device for the root.  This is currently just required
     // for GRUB (BIOS) and in the future zipl (I think).
     let device_info = {
-        let dev =
-            bootc_blockdev::list_dev(Utf8Path::new(&inspect.source))?.require_single_root()?;
-        tracing::debug!("Backing device: {}", dev.path());
+        let dev = bootc_blockdev::list_dev(Utf8Path::new(&inspect.source))?;
+        tracing::debug!("Target filesystem backing device: {}", dev.path());
         dev
     };
 
