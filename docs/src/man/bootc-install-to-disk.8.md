@@ -119,6 +119,10 @@ its DPS type GUID, without requiring an explicit `root=` kernel argument.
 
     Add a kernel argument.  This option can be provided multiple times
 
+**--karg-delete**=*KARG_DELETE*
+
+    Remove a kernel argument.  This option can be provided multiple times
+
 **--root-ssh-authorized-keys**=*ROOT_SSH_AUTHORIZED_KEYS*
 
     The path to an `authorized_keys` that will be injected into the `root` account

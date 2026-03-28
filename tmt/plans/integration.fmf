@@ -237,4 +237,11 @@ execute:
     how: fmf
     test:
       - /tmt/tests/tests/test-39-upgrade-tag
+
+/plan-40-install-karg-delete:
+  summary: Test bootc install --karg-delete
+  discover:
+    how: fmf
+    test:
+      - /tmt/tests/tests/test-40-install-karg-delete
 # END GENERATED PLANS
