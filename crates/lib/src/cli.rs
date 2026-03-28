@@ -123,6 +123,13 @@ pub(crate) struct UpgradeOpts {
     #[clap(long, conflicts_with_all = ["check", "download_only"])]
     pub(crate) from_downloaded: bool,
 
+    /// Upgrade to a different tag of the currently booted image.
+    ///
+    /// This derives the target image by replacing the tag portion of the current
+    /// booted image reference.
+    #[clap(long)]
+    pub(crate) tag: Option<String>,
+
     #[clap(flatten)]
     pub(crate) progress: ProgressOptions,
 }
@@ -1047,7 +1054,19 @@ async fn upgrade(
     let repo = &booted_ostree.repo();
 
     let host = crate::status::get_status(booted_ostree)?.1;
-    let imgref = host.spec.image.as_ref();
+    let current_image = host.spec.image.as_ref();
+
+    // Handle --tag: derive target from current image + new tag
+    let derived_image = if let Some(ref tag) = opts.tag {
+        let image = current_image.ok_or_else(|| {
+            anyhow::anyhow!("--tag requires a booted image with a specified source")
+        })?;
+        Some(image.with_tag(tag)?)
+    } else {
+        None
+    };
+
+    let imgref = derived_image.as_ref().or(current_image);
     let prog: ProgressWriter = opts.progress.try_into()?;
 
     // If there's no specified image, let's be nice and check if the booted system is using rpm-ostree
@@ -1063,7 +1082,9 @@ async fn upgrade(
         }
     }
 
-    let spec = RequiredHostSpec::from_spec(&host.spec)?;
+    let imgref = imgref.ok_or_else(|| anyhow::anyhow!("No image source specified"))?;
+    // Use the derived image reference (if --tag was specified) instead of the spec's image
+    let spec = RequiredHostSpec { image: imgref };
     let booted_image = host
         .status
         .booted
@@ -1071,7 +1092,6 @@ async fn upgrade(
         .map(|b| b.query_image(repo))
         .transpose()?
         .flatten();
-    let imgref = imgref.ok_or_else(|| anyhow::anyhow!("No image source specified"))?;
     // Find the currently queued digest, if any before we pull
     let staged = host.status.staged.as_ref();
     let staged_image = staged.as_ref().and_then(|s| s.image.as_ref());
@@ -1099,16 +1119,17 @@ async fn upgrade(
     }
 
     if opts.check {
-        let imgref = imgref.clone().into();
+        let ostree_imgref = imgref.clone().into();
         let mut imp =
-            crate::deploy::new_importer(repo, &imgref, Some(&booted_ostree.deployment)).await?;
+            crate::deploy::new_importer(repo, &ostree_imgref, Some(&booted_ostree.deployment))
+                .await?;
         match imp.prepare().await? {
             PrepareResult::AlreadyPresent(_) => {
-                println!("No changes in: {imgref:#}");
+                println!("No changes in: {ostree_imgref:#}");
             }
             PrepareResult::Ready(r) => {
                 crate::deploy::check_bootc_label(&r.config);
-                println!("Update available for: {imgref:#}");
+                println!("Update available for: {ostree_imgref:#}");
                 if let Some(version) = r.version() {
                     println!("  Version: {version}");
                 }
@@ -1236,7 +1257,6 @@ async fn upgrade(
 
     Ok(())
 }
-
 pub(crate) fn imgref_for_switch(opts: &SwitchOpts) -> Result<ImageReference> {
     let transport = ostree_container::Transport::try_from(opts.transport.as_str())?;
     let imgref = ostree_container::ImageReference {
@@ -2243,6 +2263,82 @@ mod tests {
             "pull",
         ]));
         assert_eq!(args.as_slice(), ["container", "image", "pull"]);
+    }
+
+    #[test]
+    fn test_parse_upgrade_options() {
+        // Test upgrade with --tag
+        let o = Opt::try_parse_from(["bootc", "upgrade", "--tag", "v1.1"]).unwrap();
+        match o {
+            Opt::Upgrade(opts) => {
+                assert_eq!(opts.tag, Some("v1.1".to_string()));
+            }
+            _ => panic!("Expected Upgrade variant"),
+        }
+
+        // Test that --tag works with --check (should compose naturally)
+        let o = Opt::try_parse_from(["bootc", "upgrade", "--tag", "v1.1", "--check"]).unwrap();
+        match o {
+            Opt::Upgrade(opts) => {
+                assert_eq!(opts.tag, Some("v1.1".to_string()));
+                assert!(opts.check);
+            }
+            _ => panic!("Expected Upgrade variant"),
+        }
+    }
+
+    #[test]
+    fn test_image_reference_with_tag() {
+        // Test basic tag replacement for registry transport
+        let current = ImageReference {
+            image: "quay.io/example/myapp:v1.0".to_string(),
+            transport: "registry".to_string(),
+            signature: None,
+        };
+        let result = current.with_tag("v1.1").unwrap();
+        assert_eq!(result.image, "quay.io/example/myapp:v1.1");
+        assert_eq!(result.transport, "registry");
+
+        // Test tag replacement with digest (digest should be stripped for registry)
+        let current_with_digest = ImageReference {
+            image: "quay.io/example/myapp:v1.0@sha256:abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890".to_string(),
+            transport: "registry".to_string(),
+            signature: None,
+        };
+        let result = current_with_digest.with_tag("v2.0").unwrap();
+        assert_eq!(result.image, "quay.io/example/myapp:v2.0");
+
+        // Test that non-registry transport works (containers-storage)
+        let containers_storage = ImageReference {
+            image: "localhost/myapp:v1.0".to_string(),
+            transport: "containers-storage".to_string(),
+            signature: None,
+        };
+        let result = containers_storage.with_tag("v1.1").unwrap();
+        assert_eq!(result.image, "localhost/myapp:v1.1");
+        assert_eq!(result.transport, "containers-storage");
+
+        // Test digest stripping for non-registry transport
+        let containers_storage_with_digest = ImageReference {
+            image:
+                "localhost/myapp:v1.0@sha256:abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+                    .to_string(),
+            transport: "containers-storage".to_string(),
+            signature: None,
+        };
+        let result = containers_storage_with_digest.with_tag("v2.0").unwrap();
+        assert_eq!(result.image, "localhost/myapp:v2.0");
+        assert_eq!(result.transport, "containers-storage");
+
+        // Test image without tag (edge case)
+        let no_tag = ImageReference {
+            image: "localhost/myapp".to_string(),
+            transport: "containers-storage".to_string(),
+            signature: None,
+        };
+        let result = no_tag.with_tag("v1.0").unwrap();
+        assert_eq!(result.image, "localhost/myapp:v1.0");
+        assert_eq!(result.transport, "containers-storage");
     }
 
     #[test]
