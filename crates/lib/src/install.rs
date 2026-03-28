@@ -345,6 +345,12 @@ pub(crate) struct InstallConfigOpts {
     #[clap(long)]
     pub(crate) karg: Option<Vec<CmdlineOwned>>,
 
+    /// Remove a kernel argument.  This option can be provided multiple times.
+    ///
+    /// Example: --karg-delete=nosmt --karg=console=ttyS0,115200n8
+    #[clap(long)]
+    pub(crate) karg_delete: Option<Vec<String>>,
+
     /// The path to an `authorized_keys` that will be injected into the `root` account.
     ///
     /// The implementation of this uses systemd `tmpfiles.d`, writing to a file named
@@ -1124,6 +1130,10 @@ async fn install_container(
 
     // Keep this in sync with install/completion.rs for the Anaconda fixups
     let install_config_kargs = state.install_config.as_ref().and_then(|c| c.kargs.as_ref());
+    let install_config_karg_deletes = state
+        .install_config
+        .as_ref()
+        .and_then(|c| c.karg_deletes.as_ref());
 
     // Final kargs, in order:
     // - root filesystem kargs
@@ -1131,6 +1141,7 @@ async fn install_container(
     // - kargs.d from container image
     // - args specified on the CLI
     let mut kargs = Cmdline::new();
+    let mut karg_deletes = Vec::<&str>::new();
 
     kargs.extend(&root_setup.kargs);
 
@@ -1141,6 +1152,19 @@ async fn install_container(
     }
 
     kargs.extend(&kargsd);
+
+    // delete kargs before processing cli kargs, so cli kargs can override all other configs
+    if let Some(install_config_karg_deletes) = install_config_karg_deletes {
+        for karg_delete in install_config_karg_deletes {
+            karg_deletes.push(karg_delete);
+        }
+    }
+    if let Some(deletes) = state.config_opts.karg_delete.as_ref() {
+        for karg_delete in deletes {
+            karg_deletes.push(karg_delete);
+        }
+    }
+    delete_kargs(&mut kargs, &karg_deletes);
 
     if let Some(cli_kargs) = state.config_opts.karg.as_ref() {
         for karg in cli_kargs {
@@ -1222,6 +1246,18 @@ async fn install_container(
         &state.selinux_state,
     )?;
     Ok((deployment, aleph))
+}
+
+pub(crate) fn delete_kargs(existing: &mut Cmdline, deletes: &Vec<&str>) {
+    for delete in deletes {
+        if let Some(param) = utf8::Parameter::parse(&delete) {
+            if param.value().is_some() {
+                existing.remove_exact(&param);
+            } else {
+                existing.remove(&param.key());
+            }
+        }
+    }
 }
 
 /// Run a command in the host mount namespace
@@ -3082,6 +3118,23 @@ UUID=boot-uuid /boot ext4 defaults 0 0
             td.write("var/lib/containers/storage/overlay/file.txt", b"data")?;
             assert!(require_dir_contains_only_mounts(&td, "var").is_err());
         }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_delete_kargs() -> Result<()> {
+        let mut cmdline = Cmdline::from("console=tty0 quiet debug nosmt foo=bar foo=baz bar=baz");
+
+        let deletions = vec!["foo=bar", "bar", "debug"];
+
+        delete_kargs(&mut cmdline, &deletions);
+
+        let result = cmdline.to_string();
+        assert!(!result.contains("foo=bar"));
+        assert!(!result.contains("bar"));
+        assert!(!result.contains("debug"));
+        assert!(result.contains("foo=baz"));
 
         Ok(())
     }
