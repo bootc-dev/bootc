@@ -13,6 +13,9 @@ let target_image = (tap get_target_image)
 mkdir /var/mnt
 truncate -s 10G disk.img
 mkfs.ext4 disk.img
+if (tap is_composefs) {
+  tune2fs -O verity disk.img
+}
 mount -o loop disk.img /var/mnt
 
 # Mask off the bootupd state to reproduce https://github.com/bootc-dev/bootc/issues/1778
