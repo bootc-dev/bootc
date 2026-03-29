@@ -39,7 +39,7 @@ cap-std-ext = "5.1.1"
 cfg-if = "1.0"
 chrono = { version = "0.4.38", default-features = false }
 clap = "4.5.4"
-clap_mangen = { version = "0.2.20" }
+clap_mangen = { version = "0.3.0" }
 # To develop against a local composefs-rs checkout, add a [patch] section at the end of this file:
 #   [patch."https://github.com/composefs/composefs-rs"]
 #   cfsctl = { path = "/path/to/composefs-rs/crates/cfsctl" }
