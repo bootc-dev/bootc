@@ -131,3 +131,8 @@
   summary: Test bootc install with --bootloader=none
   duration: 30m
   test: nu booted/test-install-bootloader-none.nu
+
+/test-39-install-karg-delete:
+  summary: Test bootc install --karg-delete
+  duration: 30m
+  test: nu booted/test-install-karg-delete.nu

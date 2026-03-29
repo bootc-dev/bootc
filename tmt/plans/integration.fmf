@@ -230,4 +230,11 @@ execute:
     how: fmf
     test:
       - /tmt/tests/tests/test-38-install-bootloader-none
+
+/plan-39-install-karg-delete:
+  summary: Test bootc install --karg-delete
+  discover:
+    how: fmf
+    test:
+      - /tmt/tests/tests/test-39-install-karg-delete
 # END GENERATED PLANS

@@ -104,6 +104,9 @@ pub(crate) struct InstallConfiguration {
     /// Kernel arguments, applied at installation time
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) kargs: Option<Vec<String>>,
+    /// Deleting Kernel arguments, applied at installation time
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) karg_deletes: Option<Vec<String>>,
     /// Supported architectures for this configuration
     pub(crate) match_architectures: Option<Vec<String>>,
     /// Ostree repository configuration
@@ -208,6 +211,11 @@ impl Mergeable for InstallConfiguration {
                     .get_or_insert_with(Default::default)
                     .extend(other_kargs)
             }
+            if let Some(other_karg_deletes) = other.karg_deletes {
+                self.karg_deletes
+                    .get_or_insert_with(Default::default)
+                    .extend(other_karg_deletes)
+            }
         }
     }
 }
@@ -242,6 +250,7 @@ impl InstallConfiguration {
     // Remove all configuration which is handled by `install to-filesystem`.
     pub(crate) fn filter_to_external(&mut self) {
         self.kargs.take();
+        self.karg_deletes.take();
     }
 
     #[cfg(feature = "install-to-disk")]
@@ -346,6 +355,7 @@ root-fs-type = "xfs"
             r##"[install]
 root-fs-type = "ext4"
 kargs = ["console=ttyS0", "foo=bar"]
+karg-deletes = ["debug", "bar=baz"]
 "##,
         )
         .unwrap();
@@ -355,6 +365,12 @@ kargs = ["console=ttyS0", "foo=bar"]
             install: Some(InstallConfiguration {
                 kargs: Some(
                     ["console=tty0", "nosmt"]
+                        .into_iter()
+                        .map(ToOwned::to_owned)
+                        .collect(),
+                ),
+                karg_deletes: Some(
+                    ["baz", "bar=baz"]
                         .into_iter()
                         .map(ToOwned::to_owned)
                         .collect(),
@@ -372,7 +388,16 @@ kargs = ["console=ttyS0", "foo=bar"]
                     .map(ToOwned::to_owned)
                     .collect()
             )
-        )
+        );
+        assert_eq!(
+            install.karg_deletes,
+            Some(
+                ["debug", "bar=baz", "baz", "bar=baz"]
+                    .into_iter()
+                    .map(ToOwned::to_owned)
+                    .collect()
+            )
+        );
     }
 
     #[test]

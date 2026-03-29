@@ -169,6 +169,26 @@ pub(crate) fn run_alongside(image: &str, mut testargs: libtest_mimic::Arguments)
             generic_post_install_verification()?;
             Ok(())
         }),
+        Trial::test("install with --karg-delete", move || {
+            let sh = &xshell::Shell::new()?;
+            reset_root(sh, image)?;
+            cmd!(sh, "sudo {BASE_ARGS...} {target_args...} {image} bootc install to-filesystem --acknowledge-destructive --karg-delete=localtestkarg --replace=alongside /target").run()?;
+            cmd!(
+                sh,
+                "sudo {BASE_ARGS...} {target_args...} {image} bootc install finalize /target"
+            )
+            .run()?;
+            let entries = cmd!(
+                sh,
+                "sudo /bin/sh -c 'grep localtestkarg /boot/loader/entries/*.conf'"
+            )
+            .ignore_status()
+            .read()?;
+
+            assert!(entries.is_empty());
+
+            Ok(())
+        }),
     ];
 
     libtest_mimic::run(&testargs, tests.into()).exit()
