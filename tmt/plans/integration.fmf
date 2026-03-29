@@ -8,7 +8,7 @@ prepare:
   # Run on package mode VM running on Packit and Gating
   # order 9x means run it at the last job of prepare
   - how: install
-    order: 97
+    order: 96
     package:
       - podman
       - skopeo
@@ -25,10 +25,16 @@ prepare:
       - e2fsprogs
     when: running_env != image_mode
   - how: shell
-    order: 98
+    order: 97
     script:
       - mkdir -p bootc && cp /var/share/test-artifacts/*.src.rpm bootc
       - cd bootc && rpm2cpio *.src.rpm | cpio -idmv && rm -f *-vendor.tar.zstd && zstd -d *.tar.zstd && tar -xvf *.tar -C . --strip-components=1 && ls -al
+      - pwd && ls -al && cd bootc/hack && ./provision-packit.sh
+    when: running_env != image_mode
+  - how: shell
+    order: 98
+    script:
+      - echo 'BOOTC_IMAGE=localhost/bootc' | tee -a /usr/lib/os-release
       - pwd && ls -al && cd bootc/hack && ./provision-packit.sh
     when: running_env != image_mode
   # tmt-reboot and reboot do not work in this case
