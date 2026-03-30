@@ -41,15 +41,25 @@ use `install to-filesystem` if you need precise control over the partition layou
 
 ### Root filesystem discovery
 
-Note that by default when used with "type 1" bootloader setups (i.e. non-UKI)
-a kernel argument `root=UUID=<uuid of filesystem>` is injected by default.
-This provides compatibility with existing initramfs implementations.
+The root partition can be discovered at boot time in two ways:
 
-When used with the composefs backend and UKIs, it's recommended that
-a bootloader implementing the DPS specification is used and that the root
-partition is auto-discovered. In this configuration, `systemd-gpt-auto-generator`
-in the initramfs will automatically find and mount the root partition based on
-its DPS type GUID, without requiring an explicit `root=` kernel argument.
+- **UUID mode** (default): A kernel argument `root=UUID=<uuid>` is
+  injected, providing broad compatibility with all initramfs
+  implementations and bootloaders.
+
+- **DPS auto-discovery**: The `root=` kernel argument is omitted
+  entirely.  `systemd-gpt-auto-generator` in the initramfs discovers
+  the root partition by its DPS type GUID.  This enables transparent
+  block-layer changes (such as adding LUKS encryption) without
+  updating kernel arguments.  DPS auto-discovery requires the
+  bootloader to implement the Boot Loader Interface (BLI).
+  systemd-boot always supports this; GRUB supports it only with
+  newer builds that include the `bli` module.
+
+When using systemd-boot, DPS auto-discovery is enabled by default.
+For GRUB, container base images that ship a BLI-capable build should
+set `discoverable-partitions = true` in their install configuration
+(see **bootc-install-config**(5)).
 
 # OPTIONS
 
