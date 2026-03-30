@@ -23,16 +23,41 @@ use clap::ValueEnum;
 use fn_error_context::context;
 use serde::{Deserialize, Serialize};
 
+use super::config::Filesystem;
 use super::MountSpec;
-use super::RUN_BOOTC;
-use super::RW_KARG;
 use super::RootSetup;
 use super::State;
-use super::config::Filesystem;
+use super::RUN_BOOTC;
+use super::RW_KARG;
 use crate::task::Task;
 use bootc_kernel_cmdline::utf8::Cmdline;
 #[cfg(feature = "install-to-disk")]
 use bootc_mount::is_mounted_in_pid1_mountns;
+
+/// Check whether DPS auto-discovery is enabled.  When `true`,
+/// `root=UUID=` is omitted and `systemd-gpt-auto-generator` discovers
+/// the root partition via its DPS type GUID instead.
+///
+/// Defaults to `true` for systemd-boot (which always implements BLI).
+/// For GRUB the default is `false` because we cannot know at install
+/// time whether the GRUB build includes the `bli` module — the module
+/// is baked into the signed EFI binary with no external manifest.
+/// Distros shipping a BLI-capable GRUB should set
+/// `discoverable-partitions = true` in their install config.
+#[cfg(feature = "install-to-disk")]
+fn use_discoverable_partitions(state: &State) -> bool {
+    // Explicit config takes priority
+    if let Some(ref config) = state.install_config {
+        if let Some(v) = config.discoverable_partitions {
+            return v;
+        }
+    }
+    // systemd-boot always supports BLI
+    matches!(
+        state.config_opts.bootloader,
+        Some(crate::spec::Bootloader::Systemd)
+    )
+}
 
 // This ensures we end up under 512 to be small-sized.
 pub(crate) const BOOTPN_SIZE_MB: u32 = 510;
@@ -415,7 +440,6 @@ pub(crate) fn install_create_rootfs(
         opts.wipe,
         mkfs_options.iter().copied(),
     )?;
-    let rootarg = format!("root=UUID={root_uuid}");
     let bootsrc = boot_uuid.as_ref().map(|uuid| format!("UUID={uuid}"));
     let bootarg = bootsrc.as_deref().map(|bootsrc| format!("boot={bootsrc}"));
     let boot = bootsrc.map(|bootsrc| MountSpec {
@@ -434,8 +458,16 @@ pub(crate) fn install_create_rootfs(
         }
     }
 
-    // Add root= and rw argument
-    kargs.extend(&Cmdline::from(format!("{rootarg} {RW_KARG}")));
+    // When discoverable-partitions is enabled, omit root= so that
+    // systemd-gpt-auto-generator discovers root by its DPS type GUID.
+    if use_discoverable_partitions(state) {
+        println!("Root discovery: DPS auto-discovery (discoverable-partitions = true)");
+        kargs.extend(&Cmdline::from(RW_KARG));
+    } else {
+        let rootarg = format!("root=UUID={root_uuid}");
+        println!("Root discovery: {rootarg}");
+        kargs.extend(&Cmdline::from(format!("{rootarg} {RW_KARG}")));
+    }
 
     // Add boot= argument if present
     if let Some(bootarg) = bootarg {
