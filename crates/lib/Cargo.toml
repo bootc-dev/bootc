@@ -6,7 +6,7 @@ name = "bootc-lib"
 repository = "https://github.com/bootc-dev/bootc"
 # The intention is we'll follow semver here, even though this
 # project isn't actually published as a crate.
-version = "1.14.1"
+version = "1.15.0"
 # In general we try to keep this pinned to what's in the latest RHEL9.
 rust-version = "1.85.0"
 
@@ -14,12 +14,12 @@ include = ["/src", "LICENSE-APACHE", "LICENSE-MIT"]
 
 [dependencies]
 # Internal crates
-bootc-blockdev = { package = "bootc-internal-blockdev", path = "../blockdev", version = "0.2.0" }
+bootc-blockdev = { package = "bootc-internal-blockdev", path = "../blockdev", version = "1.15.0" }
 bootc-kernel-cmdline = { path = "../kernel_cmdline", version = "0.0.0" }
-bootc-mount = { package = "bootc-internal-mount", path = "../mount", version = "0.1.0" }
+bootc-mount = { package = "bootc-internal-mount", path = "../mount", version = "1.15.0" }
 bootc-sysusers = { path = "../sysusers" }
 bootc-tmpfiles = { path = "../tmpfiles" }
-bootc-utils = { package = "bootc-internal-utils", path = "../utils", version = "0.1.0" }
+bootc-utils = { package = "bootc-internal-utils", path = "../utils", version = "1.15.0" }
 ostree-ext = { path = "../ostree-ext", features = ["bootc"] }
 etc-merge = { path = "../etc-merge" }
 bootc-initramfs-setup = { path = "../initramfs" }
