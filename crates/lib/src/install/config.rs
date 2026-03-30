@@ -119,6 +119,13 @@ pub(crate) struct InstallConfiguration {
     pub(crate) bootupd: Option<Bootupd>,
     /// Bootloader to use (grub, systemd, none)
     pub(crate) bootloader: Option<Bootloader>,
+    /// Use the Discoverable Partitions Specification for root partition
+    /// discovery.  When true, the `root=` kernel argument is omitted
+    /// and `systemd-gpt-auto-generator` discovers root via its DPS
+    /// type GUID.  Requires the bootloader to implement the Boot Loader
+    /// Interface (systemd-boot always does, GRUB needs the `bli` module).
+    /// Defaults to false for broad compatibility.
+    pub(crate) discoverable_partitions: Option<bool>,
 }
 
 fn merge_basic<T>(s: &mut Option<T>, o: Option<T>, _env: &EnvProperties) {
@@ -203,6 +210,11 @@ impl Mergeable for InstallConfiguration {
             merge_basic(&mut self.boot_mount_spec, other.boot_mount_spec, env);
             self.bootupd.merge(other.bootupd, env);
             merge_basic(&mut self.bootloader, other.bootloader, env);
+            merge_basic(
+                &mut self.discoverable_partitions,
+                other.discoverable_partitions,
+                env,
+            );
             if let Some(other_kargs) = other.kargs {
                 self.kargs
                     .get_or_insert_with(Default::default)
@@ -875,4 +887,31 @@ bootloader = "grub"
     // Merge should overwrite systemd with none
     install.merge(other, &env);
     assert_eq!(install.bootloader, Some(Bootloader::None));
+}
+
+#[test]
+fn test_parse_discoverable_partitions() {
+    let c: InstallConfigurationToplevel = toml::from_str(
+        r##"[install]
+discoverable-partitions = true
+"##,
+    )
+    .unwrap();
+    assert_eq!(c.install.unwrap().discoverable_partitions, Some(true));
+
+    let c: InstallConfigurationToplevel = toml::from_str(
+        r##"[install]
+discoverable-partitions = false
+"##,
+    )
+    .unwrap();
+    assert_eq!(c.install.unwrap().discoverable_partitions, Some(false));
+
+    let c: InstallConfigurationToplevel = toml::from_str(
+        r##"[install]
+root-fs-type = "xfs"
+"##,
+    )
+    .unwrap();
+    assert_eq!(c.install.unwrap().discoverable_partitions, None);
 }

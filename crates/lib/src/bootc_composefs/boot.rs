@@ -67,7 +67,7 @@ use std::io::Write;
 use std::path::Path;
 
 use anyhow::{Context, Result, anyhow, bail};
-use bootc_kernel_cmdline::utf8::{Cmdline, Parameter, ParameterKey};
+use bootc_kernel_cmdline::utf8::{Cmdline, Parameter};
 use bootc_mount::tempmount::TempMount;
 use camino::{Utf8Path, Utf8PathBuf};
 use cap_std_ext::{
@@ -581,12 +581,6 @@ pub(crate) fn setup_composefs_bls_boot(
             )
         }
     };
-
-    // Remove "root=" from kernel cmdline as systemd-auto-gpt-generator should use DPS
-    // UUID
-    if bootloader == Bootloader::Systemd {
-        cmdline_refs.remove(&ParameterKey::from("root"));
-    }
 
     let is_upgrade = matches!(setup_type, BootSetupType::Upgrade(..));
 

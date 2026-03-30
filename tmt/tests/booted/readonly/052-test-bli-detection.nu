@@ -1,0 +1,30 @@
+use std assert
+use tap.nu
+
+tap begin "DPS root discovery when partition-uuids is false"
+
+# Parse os-release
+let os = open /usr/lib/os-release
+    | lines
+    | filter {|l| $l != "" and not ($l | str starts-with "#") }
+    | parse "{key}={value}"
+    | reduce -f {} {|it, acc| $acc | upsert $it.key ($it.value | str trim -c '"') }
+
+let os_id = ($os.ID? | default "unknown")
+let version_id = ($os.VERSION_ID? | default "0" | into int)
+
+# We inject this in our builds, but hopefully C10S gets this too at some point
+if not ($os_id == "fedora" and $version_id >= 43) {
+    print $"# skip: only applies to Fedora 43+ \(found ($os_id) ($version_id)\)"
+    tap ok
+    exit 0
+}
+
+print $"Running on ($os_id) ($version_id), checking DPS root discovery"
+
+let cmdline = (open /proc/cmdline)
+let has_root_karg = ($cmdline | str contains "root=")
+
+assert (not $has_root_karg) "Fedora 43+ should use DPS auto-discovery (no root= in cmdline)"
+
+tap ok
