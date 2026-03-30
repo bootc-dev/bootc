@@ -27,7 +27,7 @@ setenforce 0
 mkdir /etc/bootc/install
 { install: { kargs: ["foo=bar"] } } | to toml | save /etc/bootc/install/99-test.toml
 
-let base_args = $"bootc install to-filesystem --disable-selinux --source-imgref ($target_image) --karg-delete localtestkarg --karg-delete foo"
+let base_args = $"bootc install to-filesystem --disable-selinux --bootloader none --source-imgref ($target_image) --karg-delete localtestkarg --karg-delete foo"
 let install_cmd = if (tap is_composefs) {
     $"($base_args) --composefs-backend /var/mnt"
 } else {
