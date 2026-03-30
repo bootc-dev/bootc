@@ -29,11 +29,9 @@ mkdir /etc/bootc/install
 
 let base_args = $"bootc install to-filesystem --disable-selinux --source-imgref ($target_image) --karg-delete localtestkarg --karg-delete foo"
 let install_cmd = if (tap is_composefs) {
-    let st = bootc status --json | from json
-    let bootloader = ($st.status.booted.composefs.bootloader | str downcase)
-    $"($base_args) --composefs-backend --bootloader=($bootloader) /var/mnt"
+    $"($base_args) --composefs-backend /var/mnt"
 } else {
-    $"($base_args) --bootloader none /var/mnt"
+    $"($base_args) /var/mnt"
 }
 
 tap run_install $install_cmd
