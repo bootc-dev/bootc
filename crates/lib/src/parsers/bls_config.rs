@@ -211,7 +211,6 @@ impl BLSConfig {
     ///
     /// The names are stripped of our custom prefix and suffixes, so this returns the
     /// verity digest part of the name
-    #[allow(dead_code)]
     pub(crate) fn boot_artifact_name(&self) -> Result<&str> {
         match &self.cfg_type {
             BLSConfigType::EFI { efi } => {

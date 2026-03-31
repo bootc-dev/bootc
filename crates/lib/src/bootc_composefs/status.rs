@@ -121,6 +121,26 @@ pub(crate) struct StagedDeployment {
     pub(crate) finalization_locked: bool,
 }
 
+#[derive(Debug, PartialEq)]
+pub(crate) struct BootloaderEntry {
+    /// The fsverity digest associated with the bootloader entry
+    /// This is the value of composefs= param
+    pub(crate) fsverity: String,
+    /// The name of the (UKI/Kernel+Initrd directory) related to the entry
+    ///
+    /// For UKI, this is the name of the UKI stripped of our custom
+    /// prefix and .efi suffix
+    ///
+    /// For Type1 entries, this is the name to the directory containing
+    /// Kernel+Initrd, stripped of our custom prefix
+    ///
+    /// Since this is stripped of all our custom prefixes + file extensions
+    /// this is basically the verity digest part of the name
+    ///
+    /// We mainly need this in order to GC shared Type1 entries
+    pub(crate) boot_artifact_name: String,
+}
+
 /// Detect if we have `composefs=<digest>` in `/proc/cmdline`
 pub(crate) fn composefs_booted() -> Result<Option<&'static ComposefsCmdline>> {
     static CACHED_DIGEST_VALUE: OnceLock<Option<ComposefsCmdline>> = OnceLock::new();
@@ -263,7 +283,7 @@ fn get_sorted_type1_boot_entries_helper(
     Ok(all_configs)
 }
 
-fn list_type1_entries(boot_dir: &Dir) -> Result<Vec<String>> {
+fn list_type1_entries(boot_dir: &Dir) -> Result<Vec<BootloaderEntry>> {
     // Type1 Entry
     let boot_entries = get_sorted_type1_boot_entries(boot_dir, true)?;
 
@@ -274,7 +294,12 @@ fn list_type1_entries(boot_dir: &Dir) -> Result<Vec<String>> {
     boot_entries
         .into_iter()
         .chain(staged_boot_entries)
-        .map(|entry| entry.get_verity())
+        .map(|entry| {
+            Ok(BootloaderEntry {
+                fsverity: entry.get_verity()?,
+                boot_artifact_name: entry.boot_artifact_name()?.to_string(),
+            })
+        })
         .collect::<Result<Vec<_>, _>>()
 }
 
@@ -283,7 +308,7 @@ fn list_type1_entries(boot_dir: &Dir) -> Result<Vec<String>> {
 /// # Returns
 /// The fsverity of EROFS images corresponding to boot entries
 #[fn_error_context::context("Listing bootloader entries")]
-pub(crate) fn list_bootloader_entries(storage: &Storage) -> Result<Vec<String>> {
+pub(crate) fn list_bootloader_entries(storage: &Storage) -> Result<Vec<BootloaderEntry>> {
     let bootloader = get_bootloader()?;
     let boot_dir = storage.require_boot_dir()?;
 
@@ -304,8 +329,13 @@ pub(crate) fn list_bootloader_entries(storage: &Storage) -> Result<Vec<String>> 
                 boot_entries
                     .into_iter()
                     .chain(boot_entries_staged)
-                    .map(|entry| entry.get_verity())
-                    .collect::<Result<Vec<_>, _>>()?
+                    .map(|entry| {
+                        Ok(BootloaderEntry {
+                            fsverity: entry.get_verity()?,
+                            boot_artifact_name: entry.boot_artifact_name()?,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, anyhow::Error>>()?
             } else {
                 list_type1_entries(boot_dir)?
             }
@@ -739,7 +769,11 @@ async fn composefs_deployment_status_from(
     // Rollback deployment is in here, but may also contain stale deployment entries
     let mut extra_deployment_boot_entries: Vec<BootEntry> = Vec::new();
 
-    for verity_digest in bootloader_entry_verity {
+    for BootloaderEntry {
+        fsverity: verity_digest,
+        ..
+    } in bootloader_entry_verity
+    {
         // read the origin file
         let config = state_dir
             .open_dir(&verity_digest)
@@ -877,6 +911,7 @@ async fn composefs_deployment_status_from(
                 .map(|menu| menu.get_verity()),
         )
         .collect::<Result<HashSet<_>>>()?;
+
     let rollback_candidates: Vec<_> = extra_deployment_boot_entries
         .into_iter()
         .filter(|entry| {

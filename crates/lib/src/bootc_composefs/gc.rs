@@ -91,11 +91,11 @@ fn collect_uki_binaries(boot_dir: &Dir, boot_binaries: &mut Vec<BootBinary>) -> 
         let entry = entry?;
         let name = entry.file_name()?;
 
-        let Some(verity) = name.strip_prefix(UKI_NAME_PREFIX) else {
+        let Some(efi_name_no_prefix) = name.strip_prefix(UKI_NAME_PREFIX) else {
             continue;
         };
 
-        if name.ends_with(EFI_EXT) {
+        if let Some(verity) = efi_name_no_prefix.strip_suffix(EFI_EXT) {
             boot_binaries.push((BootType::Uki, verity.into()));
         }
     }
@@ -235,7 +235,11 @@ pub(crate) async fn composefs_gc(
             // filter the ones that are not referenced by any bootloader entry
             !bootloader_entries
                 .iter()
-                .any(|boot_entry| bin_path.1 == *boot_entry)
+                // We compare the name of directory containing the binary instead of comparing the
+                // fsverity digest. This is because a shared entry might differing directory
+                // name and fsverity digest in the cmdline. And since we want to GC the actual
+                // binaries, we compare with the directory name
+                .any(|boot_entry| boot_entry.boot_artifact_name == bin_path.1)
         })
         .collect::<Vec<_>>();
 
@@ -263,11 +267,28 @@ pub(crate) async fn composefs_gc(
 
     // Collect the deployments that have an image but no bootloader entry
     // and vice versa
-    let img_bootloader_diff = images
+    //
+    // Images without corresponding bootloader entries
+    let orphaned_images: Vec<&String> = images
         .iter()
-        .filter(|i| !bootloader_entries.contains(i))
-        .chain(bootloader_entries.iter().filter(|b| !images.contains(b)))
-        .collect::<Vec<_>>();
+        .filter(|image| {
+            !bootloader_entries
+                .iter()
+                .any(|entry| &entry.fsverity == *image)
+        })
+        .collect();
+
+    // Bootloader entries without corresponding images
+    let orphaned_bootloader_entries: Vec<&String> = bootloader_entries
+        .iter()
+        .map(|entry| &entry.fsverity)
+        .filter(|verity| !images.contains(verity))
+        .collect();
+
+    let img_bootloader_diff: Vec<&String> = orphaned_images
+        .into_iter()
+        .chain(orphaned_bootloader_entries)
+        .collect();
 
     tracing::debug!("img_bootloader_diff: {img_bootloader_diff:#?}");
 
