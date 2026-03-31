@@ -285,7 +285,7 @@ fn get_sorted_type1_boot_entries_helper(
     Ok(all_configs)
 }
 
-fn list_type1_entries(boot_dir: &Dir) -> Result<Vec<BootloaderEntry>> {
+pub(crate) fn list_type1_entries(boot_dir: &Dir) -> Result<Vec<BootloaderEntry>> {
     // Type1 Entry
     let boot_entries = get_sorted_type1_boot_entries(boot_dir, true)?;
 
@@ -1129,5 +1129,60 @@ mod tests {
         let cmdline = Cmdline::from(format!("composefs_backup={} root=UUID=abc123", DIGEST));
         let result = ComposefsCmdline::find_in_cmdline(&cmdline);
         assert!(result.is_none());
+    }
+
+    use crate::testutils::fake_digest_version;
+
+    /// Test that staged entries are also collected by list_type1_entries.
+    /// This is important for GC to not delete staged deployments' boot binaries.
+    #[test]
+    fn test_list_type1_entries_includes_staged() -> Result<()> {
+        let tempdir = cap_std_ext::cap_tempfile::tempdir(cap_std::ambient_authority())?;
+
+        let digest_active = fake_digest_version(0);
+        let digest_staged = fake_digest_version(1);
+
+        let active_entry = format!(
+            r#"
+            title Active Deployment
+            version 2
+            sort-key 1
+            linux /boot/bootc_composefs-{digest_active}/vmlinuz
+            initrd /boot/bootc_composefs-{digest_active}/initramfs.img
+            options root=UUID=abc123 rw composefs={digest_active}
+        "#
+        );
+
+        let staged_entry = format!(
+            r#"
+            title Staged Deployment
+            version 3
+            sort-key 0
+            linux /boot/bootc_composefs-{digest_staged}/vmlinuz
+            initrd /boot/bootc_composefs-{digest_staged}/initramfs.img
+            options root=UUID=abc123 rw composefs={digest_staged}
+        "#
+        );
+
+        tempdir.create_dir_all("loader/entries")?;
+        tempdir.create_dir_all("loader/entries.staged")?;
+        tempdir.atomic_write("loader/entries/active.conf", active_entry)?;
+        tempdir.atomic_write("loader/entries.staged/staged.conf", staged_entry)?;
+
+        let result = list_type1_entries(&tempdir)?;
+        assert_eq!(result.len(), 2);
+
+        let verity_set: std::collections::HashSet<&str> =
+            result.iter().map(|e| e.fsverity.as_str()).collect();
+        assert!(
+            verity_set.contains(digest_active.as_str()),
+            "Should contain active entry"
+        );
+        assert!(
+            verity_set.contains(digest_staged.as_str()),
+            "Should contain staged entry"
+        );
+
+        Ok(())
     }
 }
