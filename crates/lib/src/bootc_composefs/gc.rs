@@ -15,7 +15,7 @@ use crate::{
     bootc_composefs::{
         boot::{BOOTC_UKI_DIR, BootType, get_type1_dir_name, get_uki_addon_dir_name, get_uki_name},
         delete::{delete_image, delete_staged, delete_state_dir},
-        status::{get_composefs_status, get_imginfo, list_bootloader_entries},
+        status::{BootloaderEntry, get_composefs_status, get_imginfo, list_bootloader_entries},
     },
     composefs_consts::{STATE_DIR_RELATIVE, TYPE1_BOOT_DIR_PREFIX, UKI_NAME_PREFIX},
     store::{BootedComposefs, Storage},
@@ -182,6 +182,26 @@ fn delete_uki(storage: &Storage, uki_id: &str, dry_run: bool) -> Result<()> {
     Ok(())
 }
 
+/// Find boot binaries on disk that are not referenced by any bootloader entry.
+///
+/// We compare against `boot_artifact_name` (the directory/file name on disk)
+/// rather than `fsverity` (the composefs= cmdline digest), because a shared
+/// entry's directory name may belong to a different deployment than the one
+/// whose composefs digest is in the BLS options line.
+fn unreferenced_boot_binaries<'a>(
+    boot_binaries: &'a [BootBinary],
+    bootloader_entries: &[BootloaderEntry],
+) -> Vec<&'a BootBinary> {
+    boot_binaries
+        .iter()
+        .filter(|bin| {
+            !bootloader_entries
+                .iter()
+                .any(|entry| entry.boot_artifact_name == bin.1)
+        })
+        .collect()
+}
+
 /// 1. List all bootloader entries
 /// 2. List all EROFS images
 /// 3. List all state directories
@@ -224,24 +244,8 @@ pub(crate) async fn composefs_gc(
     tracing::debug!("bootloader_entries: {bootloader_entries:?}");
     tracing::debug!("boot_binaries: {boot_binaries:?}");
 
-    // Bootloader entry is deleted, but the binary (UKI/kernel+initrd) still exists
-    let unreferenced_boot_binaries = boot_binaries
-        .iter()
-        .filter(|bin_path| {
-            // We reuse kernel + initrd if they're the same for two deployments
-            // We don't want to delete the (being deleted) deployment's kernel + initrd
-            // if it's in use by any other deployment
-            //
-            // filter the ones that are not referenced by any bootloader entry
-            !bootloader_entries
-                .iter()
-                // We compare the name of directory containing the binary instead of comparing the
-                // fsverity digest. This is because a shared entry might differing directory
-                // name and fsverity digest in the cmdline. And since we want to GC the actual
-                // binaries, we compare with the directory name
-                .any(|boot_entry| boot_entry.boot_artifact_name == bin_path.1)
-        })
-        .collect::<Vec<_>>();
+    let unreferenced_boot_binaries =
+        unreferenced_boot_binaries(&boot_binaries, &bootloader_entries);
 
     tracing::debug!("unreferenced_boot_binaries: {unreferenced_boot_binaries:?}");
 
@@ -354,4 +358,491 @@ pub(crate) async fn composefs_gc(
     };
 
     Ok(gc_result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bootc_composefs::status::list_type1_entries;
+    use crate::testutils::{ChangeType, TestRoot};
+
+    /// Reproduce the shared-entry GC bug from issue #2102.
+    ///
+    /// Scenario with both shared and non-shared kernels:
+    ///
+    /// 1. Install deployment A (kernel K1, boot dir "A")
+    /// 2. Upgrade to B, same kernel → shares A's boot dir
+    /// 3. Upgrade to C, new kernel K2 → gets its own boot dir "C"
+    /// 4. Upgrade to D, same kernel as C → shares C's boot dir
+    ///
+    /// After GC of A (the creator of boot dir used by B):
+    /// - A's boot dir must still exist (B references it)
+    /// - C's boot dir must still exist (D references it)
+    ///
+    /// The old code compared `fsverity` instead of `boot_artifact_name`,
+    /// which would incorrectly mark A's boot dir as unreferenced once A's
+    /// BLS entry is gone — even though B still points its linux/initrd
+    /// paths at A's directory.
+    #[test]
+    fn test_gc_shared_boot_binaries_not_deleted() -> anyhow::Result<()> {
+        let mut root = TestRoot::new()?;
+        let digest_a = root.current().verity.clone();
+
+        // B shares A's kernel (userspace-only change)
+        root.upgrade(1, ChangeType::Userspace)?;
+
+        // C gets a new kernel
+        root.upgrade(2, ChangeType::Kernel)?;
+        let digest_c = root.current().verity.clone();
+
+        // D shares C's kernel (userspace-only change)
+        root.upgrade(3, ChangeType::Userspace)?;
+        let digest_d = root.current().verity.clone();
+
+        // Now GC deployment A — the one that *created* the shared boot dir
+        root.gc_deployment(&digest_a)?;
+
+        // At this point only C (secondary) and D (primary) have BLS entries.
+        // But A's boot binary directory is still on disk because B used to
+        // share it and we haven't cleaned up boot binaries yet — that's
+        // what the GC filter decides.
+        let boot_dir = root.boot_dir()?;
+
+        // Collect what's on disk: two boot dirs (A's and C's)
+        let mut on_disk = Vec::new();
+        collect_type1_boot_binaries(&boot_dir, &mut on_disk)?;
+        assert_eq!(
+            on_disk.len(),
+            2,
+            "should have A's and C's boot dirs on disk"
+        );
+
+        // Collect what the BLS entries reference
+        let bls_entries = list_type1_entries(&boot_dir)?;
+        assert_eq!(bls_entries.len(), 2, "D (primary) + C (secondary)");
+
+        // The fix: unreferenced_boot_binaries uses boot_artifact_name.
+        // D's boot_artifact_name points to C's dir, C's points to itself.
+        // A's boot dir is NOT referenced by any current BLS entry's
+        // boot_artifact_name (B was the one referencing it, and B is no
+        // longer in the BLS entries either).
+        let unreferenced = unreferenced_boot_binaries(&on_disk, &bls_entries);
+
+        // A's boot dir IS unreferenced (only B used it, and B isn't in BLS anymore)
+        assert_eq!(unreferenced.len(), 1);
+        assert_eq!(unreferenced[0].1, digest_a);
+
+        // C's boot dir is still referenced (by both C and D via boot_artifact_name)
+        assert!(
+            !unreferenced.iter().any(|b| b.1 == digest_c),
+            "C's boot dir must not be unreferenced"
+        );
+
+        // Now the more dangerous scenario: GC C, the creator of the boot
+        // dir that D shares. After this, remaining deployments are [B, D].
+        // B still shares A's boot dir, D still shares C's boot dir.
+        root.gc_deployment(&digest_c)?;
+
+        let mut on_disk_2 = Vec::new();
+        collect_type1_boot_binaries(&root.boot_dir()?, &mut on_disk_2)?;
+        // A's dir + C's dir still on disk (boot binary cleanup hasn't run)
+        assert_eq!(on_disk_2.len(), 2);
+
+        let bls_entries_2 = list_type1_entries(&root.boot_dir()?)?;
+        // D (primary) + B (secondary)
+        assert_eq!(bls_entries_2.len(), 2);
+
+        let entry_d = bls_entries_2
+            .iter()
+            .find(|e| e.fsverity == digest_d)
+            .unwrap();
+        assert_eq!(
+            entry_d.boot_artifact_name, digest_c,
+            "D shares C's boot dir"
+        );
+
+        let unreferenced_2 = unreferenced_boot_binaries(&on_disk_2, &bls_entries_2);
+
+        // Both boot dirs are still referenced:
+        // - A's dir via B's boot_artifact_name
+        // - C's dir via D's boot_artifact_name
+        assert!(
+            unreferenced_2.is_empty(),
+            "no boot dirs should be unreferenced when both are shared"
+        );
+
+        // Prove the old buggy logic would fail: if we compared fsverity
+        // instead of boot_artifact_name, BOTH dirs would be wrongly
+        // unreferenced. Neither A nor C has a BLS entry with matching
+        // fsverity — only B (verity=B) and D (verity=D) exist, but their
+        // boot dirs are named after A and C respectively.
+        let buggy_unreferenced: Vec<_> = on_disk_2
+            .iter()
+            .filter(|bin| !bls_entries_2.iter().any(|e| e.fsverity == bin.1))
+            .collect();
+        assert_eq!(
+            buggy_unreferenced.len(),
+            2,
+            "old fsverity-based logic would incorrectly GC both boot dirs"
+        );
+
+        Ok(())
+    }
+
+    /// Verify that list_type1_entries correctly parses legacy (unprefixed) BLS
+    /// entries. This is the code path that composefs_gc actually uses to find
+    /// bootloader entries, so it's critical that it handles both layouts.
+    #[test]
+    fn test_list_type1_entries_handles_legacy_bls() -> anyhow::Result<()> {
+        let mut root = TestRoot::new_legacy()?;
+        let digest_a = root.current().verity.clone();
+
+        root.upgrade(1, ChangeType::Userspace)?;
+        let digest_b = root.current().verity.clone();
+
+        let boot_dir = root.boot_dir()?;
+        let bls_entries = list_type1_entries(&boot_dir)?;
+
+        assert_eq!(bls_entries.len(), 2, "Should find both BLS entries");
+
+        // boot_artifact_name should return the raw digest (no prefix)
+        // because the legacy entries don't have the prefix
+        for entry in &bls_entries {
+            assert_eq!(
+                entry.boot_artifact_name, digest_a,
+                "Both entries should reference A's boot dir (shared kernel)"
+            );
+        }
+
+        // fsverity should differ between the two entries
+        let verity_set: std::collections::HashSet<&str> =
+            bls_entries.iter().map(|e| e.fsverity.as_str()).collect();
+        assert!(verity_set.contains(digest_a.as_str()));
+        assert!(verity_set.contains(digest_b.as_str()));
+
+        Ok(())
+    }
+
+    /// Legacy (unprefixed) boot dirs are invisible to collect_type1_boot_binaries,
+    /// which only looks for the `bootc_composefs-` prefix. This test verifies
+    /// that the GC scanner does not see unprefixed directories.
+    ///
+    /// This is the problem that PR #2128 solves by migrating legacy entries
+    /// to the prefixed format before any GC or status operations run.
+    #[test]
+    fn test_legacy_boot_dirs_invisible_to_gc_scanner() -> anyhow::Result<()> {
+        let root = TestRoot::new_legacy()?;
+
+        // The legacy layout creates a boot dir without the prefix
+        let boot_dir = root.boot_dir()?;
+        let mut on_disk = Vec::new();
+        collect_type1_boot_binaries(&boot_dir, &mut on_disk)?;
+
+        // collect_type1_boot_binaries requires the prefix — legacy dirs
+        // are invisible to it
+        assert!(
+            on_disk.is_empty(),
+            "Legacy (unprefixed) boot dirs should not be found by collect_type1_boot_binaries"
+        );
+
+        Ok(())
+    }
+
+    /// After migration from legacy to prefixed layout, GC should work
+    /// correctly — the boot binary directories become visible and
+    /// the BLS entries reference them properly.
+    #[test]
+    fn test_gc_works_after_legacy_migration() -> anyhow::Result<()> {
+        let mut root = TestRoot::new_legacy()?;
+        let digest_a = root.current().verity.clone();
+
+        // B shares A's kernel (userspace-only change)
+        root.upgrade(1, ChangeType::Userspace)?;
+
+        // C gets a new kernel
+        root.upgrade(2, ChangeType::Kernel)?;
+
+        // Simulate the migration that PR #2128 performs
+        root.migrate_to_prefixed()?;
+
+        // Now GC should see both boot dirs
+        let boot_dir = root.boot_dir()?;
+        let mut on_disk = Vec::new();
+        collect_type1_boot_binaries(&boot_dir, &mut on_disk)?;
+        assert_eq!(on_disk.len(), 2, "Should see A's and C's boot dirs");
+
+        // BLS entries should correctly reference boot artifact names
+        let bls_entries = list_type1_entries(&boot_dir)?;
+        assert_eq!(bls_entries.len(), 2);
+
+        // No boot dirs should be unreferenced (all are in use)
+        let unreferenced = unreferenced_boot_binaries(&on_disk, &bls_entries);
+        assert!(
+            unreferenced.is_empty(),
+            "All boot dirs should be referenced after migration"
+        );
+
+        // GC deployment A (the one that created the shared boot dir)
+        root.gc_deployment(&digest_a)?;
+
+        let boot_dir = root.boot_dir()?;
+        let bls_entries = list_type1_entries(&boot_dir)?;
+        assert_eq!(bls_entries.len(), 2, "B (secondary) + C (primary)");
+
+        let mut on_disk = Vec::new();
+        collect_type1_boot_binaries(&boot_dir, &mut on_disk)?;
+        assert_eq!(on_disk.len(), 2, "Both boot dirs still on disk");
+
+        let unreferenced = unreferenced_boot_binaries(&on_disk, &bls_entries);
+        // A's boot dir is still referenced by B
+        assert!(
+            unreferenced.is_empty(),
+            "A's boot dir should still be referenced by B after migration"
+        );
+
+        Ok(())
+    }
+
+    /// Test the full upgrade cycle with shared kernels after migration:
+    /// install (legacy) → migrate → upgrade → GC.
+    ///
+    /// This verifies that GC correctly handles a system that was originally
+    /// installed with old bootc, migrated, and then upgraded with new bootc.
+    #[test]
+    fn test_gc_post_migration_upgrade_cycle() -> anyhow::Result<()> {
+        let mut root = TestRoot::new_legacy()?;
+        let digest_a = root.current().verity.clone();
+
+        // B shares A's kernel (still legacy)
+        root.upgrade(1, ChangeType::Userspace)?;
+
+        // Simulate migration
+        root.migrate_to_prefixed()?;
+
+        // Now upgrade with new bootc (creates prefixed entries)
+        root.upgrade(2, ChangeType::Kernel)?;
+        let digest_c = root.current().verity.clone();
+
+        // D shares C's kernel
+        root.upgrade(3, ChangeType::Userspace)?;
+        let digest_d = root.current().verity.clone();
+
+        // GC all old deployments, keeping only C and D
+        root.gc_deployment(&digest_a)?;
+
+        let boot_dir = root.boot_dir()?;
+        let mut on_disk = Vec::new();
+        collect_type1_boot_binaries(&boot_dir, &mut on_disk)?;
+
+        let bls_entries = list_type1_entries(&boot_dir)?;
+        assert_eq!(bls_entries.len(), 2, "D (primary) + C (secondary)");
+
+        let unreferenced = unreferenced_boot_binaries(&on_disk, &bls_entries);
+        // A's boot dir is unreferenced (B is gone, only C and D remain)
+        assert_eq!(
+            unreferenced.len(),
+            1,
+            "A's boot dir should be unreferenced after GC of A and B is evicted"
+        );
+        assert_eq!(unreferenced[0].1, digest_a);
+
+        // C's boot dir must still be referenced by D
+        assert!(
+            !unreferenced.iter().any(|b| b.1 == digest_c),
+            "C's boot dir must still be referenced by D"
+        );
+
+        // Verify D shares C's boot dir
+        let entry_d = bls_entries
+            .iter()
+            .find(|e| e.fsverity == digest_d)
+            .expect("D should have a BLS entry");
+        assert_eq!(
+            entry_d.boot_artifact_name, digest_c,
+            "D should share C's boot dir"
+        );
+
+        Ok(())
+    }
+
+    /// Test deep transitive sharing: A → B → C → D all share A's boot dir
+    /// via successive userspace-only upgrades. When we GC A (the creator
+    /// of the boot dir), the dir must be kept because the remaining
+    /// deployments still reference it.
+    ///
+    /// This tests that boot_dir_verity propagates correctly through
+    /// a chain of userspace-only upgrades and that the GC filter handles
+    /// the case where no remaining deployment's fsverity matches the
+    /// boot directory name.
+    #[test]
+    fn test_gc_deep_transitive_sharing_chain() -> anyhow::Result<()> {
+        let mut root = TestRoot::new()?;
+        let digest_a = root.current().verity.clone();
+
+        // B, C, D all share A's kernel via userspace-only upgrades
+        root.upgrade(1, ChangeType::Userspace)?;
+        root.upgrade(2, ChangeType::Userspace)?;
+        root.upgrade(3, ChangeType::Userspace)?;
+        let digest_d = root.current().verity.clone();
+
+        // Only one boot dir on disk (all share A's)
+        let boot_dir = root.boot_dir()?;
+        let mut on_disk = Vec::new();
+        collect_type1_boot_binaries(&boot_dir, &mut on_disk)?;
+        assert_eq!(on_disk.len(), 1, "All deployments share one boot dir");
+        assert_eq!(on_disk[0].1, digest_a, "The boot dir belongs to A");
+
+        // BLS entries: D (primary) + C (secondary), both referencing A's dir
+        let bls_entries = list_type1_entries(&boot_dir)?;
+        assert_eq!(bls_entries.len(), 2);
+        for entry in &bls_entries {
+            assert_eq!(
+                entry.boot_artifact_name, digest_a,
+                "All entries reference A's boot dir"
+            );
+        }
+
+        // GC deployment A (the creator of the shared boot dir)
+        root.gc_deployment(&digest_a)?;
+
+        let boot_dir = root.boot_dir()?;
+        let bls_entries = list_type1_entries(&boot_dir)?;
+        // D (primary) + C (secondary) — A was already evicted from BLS
+        assert_eq!(bls_entries.len(), 2);
+
+        let mut on_disk = Vec::new();
+        collect_type1_boot_binaries(&boot_dir, &mut on_disk)?;
+
+        let unreferenced = unreferenced_boot_binaries(&on_disk, &bls_entries);
+        assert!(
+            unreferenced.is_empty(),
+            "A's boot dir must stay — C and D still reference it"
+        );
+
+        // Now also GC B and C, leaving only D
+        let digest_b = crate::testutils::fake_digest_version(1);
+        let digest_c = crate::testutils::fake_digest_version(2);
+        root.gc_deployment(&digest_b)?;
+        root.gc_deployment(&digest_c)?;
+
+        // D is the only deployment left
+        let boot_dir = root.boot_dir()?;
+        let bls_entries = list_type1_entries(&boot_dir)?;
+        assert_eq!(bls_entries.len(), 1, "Only D remains");
+        assert_eq!(bls_entries[0].fsverity, digest_d);
+        assert_eq!(
+            bls_entries[0].boot_artifact_name, digest_a,
+            "D still references A's boot dir"
+        );
+
+        let mut on_disk = Vec::new();
+        collect_type1_boot_binaries(&boot_dir, &mut on_disk)?;
+        let unreferenced = unreferenced_boot_binaries(&on_disk, &bls_entries);
+        assert!(
+            unreferenced.is_empty(),
+            "A's boot dir must survive — D is the last deployment and still uses it"
+        );
+
+        Ok(())
+    }
+
+    /// Verify that boot_artifact_info().1 (has_prefix) is the correct
+    /// signal for identifying entries that need migration, and that the
+    /// GC filter works correctly at each stage of the migration pipeline.
+    ///
+    /// This exercises the API that stage_bls_entry_changes() in PR #2128
+    /// uses to decide which entries to migrate.
+    #[test]
+    fn test_boot_artifact_info_drives_migration_decisions() -> anyhow::Result<()> {
+        use crate::bootc_composefs::status::get_sorted_type1_boot_entries;
+
+        let mut root = TestRoot::new_legacy()?;
+        let digest_a = root.current().verity.clone();
+
+        root.upgrade(1, ChangeType::Userspace)?;
+        root.upgrade(2, ChangeType::Kernel)?;
+
+        // -- Pre-migration: all entries lack the prefix --
+        let boot_dir = root.boot_dir()?;
+        let raw_entries = get_sorted_type1_boot_entries(&boot_dir, true)?;
+        assert_eq!(raw_entries.len(), 2);
+
+        let needs_migration: Vec<_> = raw_entries
+            .iter()
+            .filter(|e| !e.boot_artifact_info().unwrap().1)
+            .collect();
+        assert_eq!(
+            needs_migration.len(),
+            2,
+            "All legacy entries should need migration (has_prefix=false)"
+        );
+
+        // GC scanner can't see the boot dirs (no prefix on disk)
+        let mut on_disk = Vec::new();
+        collect_type1_boot_binaries(&boot_dir, &mut on_disk)?;
+        assert!(on_disk.is_empty(), "Legacy dirs invisible before migration");
+
+        // -- Migrate --
+        root.migrate_to_prefixed()?;
+
+        // -- Post-migration: all entries have the prefix --
+        let boot_dir = root.boot_dir()?;
+        let raw_entries = get_sorted_type1_boot_entries(&boot_dir, true)?;
+        assert_eq!(raw_entries.len(), 2);
+
+        let needs_migration: Vec<_> = raw_entries
+            .iter()
+            .filter(|e| !e.boot_artifact_info().unwrap().1)
+            .collect();
+        assert!(
+            needs_migration.is_empty(),
+            "No entries should need migration after migrate_to_prefixed()"
+        );
+
+        // GC scanner can now see the boot dirs
+        let mut on_disk = Vec::new();
+        collect_type1_boot_binaries(&boot_dir, &mut on_disk)?;
+        assert_eq!(on_disk.len(), 2, "Both dirs visible after migration");
+
+        // GC filter correctly identifies all dirs as referenced
+        let bls_entries = list_type1_entries(&boot_dir)?;
+        let unreferenced = unreferenced_boot_binaries(&on_disk, &bls_entries);
+        assert!(
+            unreferenced.is_empty(),
+            "All dirs referenced after migration"
+        );
+
+        // -- Upgrade with new bootc (prefixed from creation) --
+        root.upgrade(3, ChangeType::Kernel)?;
+
+        let boot_dir = root.boot_dir()?;
+        let raw_entries = get_sorted_type1_boot_entries(&boot_dir, true)?;
+        // All entries (both migrated and new) should have the prefix
+        for entry in &raw_entries {
+            let (_, has_prefix) = entry.boot_artifact_info()?;
+            assert!(
+                has_prefix,
+                "All entries should have prefix after migration + upgrade"
+            );
+        }
+
+        // GC should now see 3 boot dirs: A's, C's (from upgrade 2), and
+        // the new one from upgrade 3
+        let mut on_disk = Vec::new();
+        collect_type1_boot_binaries(&boot_dir, &mut on_disk)?;
+        assert_eq!(on_disk.len(), 3, "Three boot dirs on disk");
+
+        // Only 2 BLS entries (primary + secondary), so one dir is unreferenced
+        let bls_entries = list_type1_entries(&boot_dir)?;
+        assert_eq!(bls_entries.len(), 2);
+        let unreferenced = unreferenced_boot_binaries(&on_disk, &bls_entries);
+        assert_eq!(
+            unreferenced.len(),
+            1,
+            "A's boot dir should be unreferenced (B evicted from BLS)"
+        );
+        assert_eq!(unreferenced[0].1, digest_a);
+
+        Ok(())
+    }
 }

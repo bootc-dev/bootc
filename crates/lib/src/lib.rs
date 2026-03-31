@@ -96,6 +96,9 @@ mod task;
 mod ukify;
 mod utils;
 
+#[cfg(test)]
+pub(crate) mod testutils;
+
 #[cfg(feature = "docgen")]
 mod cli_json;
 
