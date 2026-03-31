@@ -583,7 +583,7 @@ mod test {
     fn test_menuentry_boot_artifact_name_success() {
         let body = MenuentryBody {
             insmod: vec!["fat", "chain"],
-            chainloader: "/EFI/bootc_composefs/bootc_composefs-abcd1234.efi".to_string(),
+            chainloader: "/EFI/Linux/bootc/bootc_composefs-abcd1234.efi".to_string(),
             search: "--no-floppy --set=root --fs-uuid test",
             version: 0,
             extra: vec![],
@@ -625,7 +625,7 @@ mod test {
     fn test_menuentry_boot_artifact_name_missing_suffix() {
         let body = MenuentryBody {
             insmod: vec!["fat", "chain"],
-            chainloader: "/EFI/bootc_composefs/bootc_composefs-abcd1234".to_string(),
+            chainloader: "/EFI/Linux/bootc/bootc_composefs-abcd1234".to_string(),
             search: "--no-floppy --set=root --fs-uuid test",
             version: 0,
             extra: vec![],
@@ -644,5 +644,107 @@ mod test {
                 .to_string()
                 .contains("missing expected suffix")
         );
+    }
+
+    #[test]
+    fn test_menuentry_boot_artifact_name_empty_chainloader() {
+        let body = MenuentryBody {
+            insmod: vec![],
+            chainloader: "".to_string(),
+            search: "",
+            version: 0,
+            extra: vec![],
+        };
+
+        let entry = MenuEntry {
+            title: "Empty".to_string(),
+            body,
+        };
+
+        let result = entry.boot_artifact_name();
+        assert!(result.is_err());
+    }
+
+    /// Test that boot_artifact_name and get_verity return the same value
+    /// for a standard UKI entry.
+    ///
+    /// Note: GRUB/UKI entries always have matching boot_artifact_name and
+    /// get_verity because both derive from the same chainloader path. The
+    /// shared-entry divergence (where boot_artifact_name != get_verity) only
+    /// applies to Type1 BLS entries, which have separate linux path and
+    /// composefs= cmdline parameter.
+    #[test]
+    fn test_menuentry_boot_artifact_name_matches_get_verity() {
+        let digest = "f7415d75017a12a387a39d2281e033a288fc15775108250ef70a01dcadb93346";
+
+        let body = MenuentryBody {
+            insmod: vec!["fat", "chain"],
+            chainloader: format!("/EFI/Linux/bootc/bootc_composefs-{digest}.efi"),
+            search: "--no-floppy --set=root --fs-uuid test",
+            version: 0,
+            extra: vec![],
+        };
+
+        let entry = MenuEntry {
+            title: "Test".to_string(),
+            body,
+        };
+
+        let artifact_name = entry.boot_artifact_name().unwrap();
+        let verity = entry.get_verity().unwrap();
+        assert_eq!(artifact_name, verity);
+        assert_eq!(artifact_name, digest);
+    }
+
+    /// Test boot_artifact_name with realistic full-length hex digest
+    #[test]
+    fn test_menuentry_boot_artifact_name_full_digest() {
+        let digest = "7e11ac46e3e022053e7226a20104ac656bf72d1a84e3a398b7cce70e9df188b6";
+
+        let body = MenuentryBody {
+            insmod: vec!["fat", "chain"],
+            chainloader: format!("/EFI/Linux/bootc/bootc_composefs-{digest}.efi"),
+            search: "--no-floppy --set=root --fs-uuid \"${EFI_PART_UUID}\"",
+            version: 0,
+            extra: vec![],
+        };
+
+        let entry = MenuEntry {
+            title: format!("Fedora Bootc UKI: ({digest})"),
+            body,
+        };
+
+        assert_eq!(entry.boot_artifact_name().unwrap(), digest);
+    }
+
+    /// Test boot_artifact_name via MenuEntry::new constructor
+    #[test]
+    fn test_menuentry_new_boot_artifact_name() {
+        let uki_id = "abc123def456";
+        let entry = MenuEntry::new("Fedora 42", uki_id);
+
+        assert_eq!(entry.boot_artifact_name().unwrap(), uki_id);
+        assert_eq!(entry.get_verity().unwrap(), uki_id);
+    }
+
+    /// Test boot_artifact_name from a parsed grub config
+    #[test]
+    fn test_menuentry_boot_artifact_name_from_parsed() {
+        let digest = "7e11ac46e3e022053e7226a20104ac656bf72d1a84e3a398b7cce70e9df188b6";
+        let menuentry = format!(
+            r#"
+            menuentry "Fedora 42: ({digest})" {{
+                insmod fat
+                insmod chain
+                search --no-floppy --set=root --fs-uuid "${{EFI_PART_UUID}}"
+                chainloader /EFI/Linux/bootc/bootc_composefs-{digest}.efi
+            }}
+        "#
+        );
+
+        let result = parse_grub_menuentry_file(&menuentry).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].boot_artifact_name().unwrap(), digest);
+        assert_eq!(result[0].get_verity().unwrap(), digest);
     }
 }
