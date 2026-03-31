@@ -53,9 +53,6 @@ def second_boot [] {
 
     let path = cat /var/large-file-marker-objpath
 
-    echo "\$path"
-    echo $path
-
     assert ($path | path exists)
 
     # Create another image with a different initrd so we can test kernel + initrd cleanup
@@ -107,13 +104,11 @@ def third_boot [] {
     let boot_dir = if ($bootloader | str downcase) == "systemd" {
         # TODO: Some concrete API for this would be great
         mkdir /var/tmp/efi
-        mount /dev/vda2 /var/tmp/efi
+        mount /dev/disk/by-partlabel/EFI-SYSTEM /var/tmp/efi
         "/var/tmp/efi/EFI/Linux"
     } else {
         "/sysroot/boot"
     }
-
-    print $"bootdir ($boot_dir)"
 
     assert ($"($boot_dir)/($dir_prefix)($booted_verity)" | path exists)
 
@@ -125,11 +120,27 @@ def third_boot [] {
 
     echo $"($boot_dir)/($dir_prefix)(cat /var/first-verity)" | save /var/to-be-deleted-kernel
 
+    # Switching and rebooting here won't delete the old kernel because we still
+    # have it as the rollback deployment
+    echo "
+        FROM localhost/bootc-derived-initrd
+        RUN echo 'another file' > /usr/share/another-one
+    " | podman build -t localhost/bootc-prefinal . -f -
+
+
+    bootc switch --transport containers-storage localhost/bootc-prefinal
+
+    tmt-reboot
+}
+
+def fourth_boot [] {
+    assert equal $booted.image.image "localhost/bootc-prefinal"
+
     # Now we create a new image derived from the current kernel + initrd
     # Switching to this and rebooting should remove the old kernel + initrd
     echo "
         FROM localhost/bootc-derived-initrd
-        RUN echo 'another file' > /usr/share/another-one
+        RUN echo 'another file 1' > /usr/share/another-one-1
     " | podman build -t localhost/bootc-final . -f -
 
 
@@ -138,19 +149,44 @@ def third_boot [] {
     tmt-reboot
 }
 
-def fourth_boot [] {
+def fifth_boot [] {
     let bootloader = (bootc status --json | from json).status.booted.composefs.bootloader
 
     if ($bootloader | str downcase) == "systemd" {
         # TODO: Some concrete API for this would be great
         mkdir /var/tmp/efi
-        mount /dev/vda2 /var/tmp/efi
+        mount /dev/disk/by-partlabel/EFI-SYSTEM /var/tmp/efi
     }
 
     assert equal $booted.image.image "localhost/bootc-final"
     assert (not ((cat /var/to-be-deleted-kernel | path exists)))
 
-    tap ok
+    # Now we want to test preservation of shared BLS binaries
+    # This takes at least 3 reboots
+    1..3 | each { |i|
+        echo $"
+            FROM localhost/bootc-derived-initrd
+            RUN echo '($i)' > /usr/share/($i)
+        " | podman build -t $"localhost/bootc-shared-($i)" . -f -
+    }
+
+    bootc switch --transport containers-storage localhost/bootc-shared-1
+
+    tmt-reboot
+}
+
+def sixth_boot [i: int] {
+    assert equal $booted.image.image $"localhost/bootc-shared-($i)"
+
+    # Just this being booted counts as success
+    if $i == 3 {
+        tap ok
+        return
+    }
+
+    bootc switch --transport containers-storage $"localhost/bootc-shared-($i + 1)"
+
+    tmt-reboot
 }
 
 def main [] {
@@ -159,6 +195,10 @@ def main [] {
         "1" => second_boot,
         "2" => third_boot,
         "3" => fourth_boot,
+        "4" => fifth_boot,
+        "5" => { sixth_boot 1 },
+        "6" => { sixth_boot 2 },
+        "7" => { sixth_boot 3 },
         $o => { error make { msg: $"Invalid TMT_REBOOT_COUNT ($o)" } },
     }
 }

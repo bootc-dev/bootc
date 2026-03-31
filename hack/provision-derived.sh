@@ -17,6 +17,9 @@ mkdir -p ~/.config/nushell
 echo '$env.config = { show_banner: false, }' > ~/.config/nushell/config.nu
 touch ~/.config/nushell/env.nu
 
+# We don't want openh264
+rm -f "/etc/yum.repos.d/fedora-cisco-openh264.repo"
+
 . /usr/lib/os-release
 case "${ID}-${VERSION_ID}" in
     "centos-9")
