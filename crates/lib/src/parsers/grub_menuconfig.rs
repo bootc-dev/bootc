@@ -114,7 +114,7 @@ impl<'a> MenuEntry<'a> {
         let name = to_path
             .components()
             .last()
-            .ok_or(anyhow::anyhow!("Empty efi field"))?
+            .ok_or_else(|| anyhow::anyhow!("Empty efi field"))?
             .to_string()
             .strip_prefix(UKI_NAME_PREFIX)
             .ok_or_else(|| anyhow::anyhow!("efi does not start with custom prefix"))?
@@ -123,6 +123,35 @@ impl<'a> MenuEntry<'a> {
             .to_string();
 
         Ok(name)
+    }
+
+    /// Returns name of UKI in case of EFI config
+    ///
+    /// The names are stripped of our custom prefix and suffixes, so this returns
+    /// the verity digest part of the name
+    pub(crate) fn boot_artifact_name(&self) -> Result<String> {
+        let chainloader_path = Utf8PathBuf::from(&self.body.chainloader);
+
+        let file_name = chainloader_path.file_name().ok_or_else(|| {
+            anyhow::anyhow!(
+                "Chainloader path missing file name: {}",
+                &self.body.chainloader
+            )
+        })?;
+
+        let without_suffix = file_name.strip_suffix(EFI_EXT).ok_or_else(|| {
+            anyhow::anyhow!(
+                "EFI file name missing expected suffix '{}': {}",
+                EFI_EXT,
+                file_name
+            )
+        })?;
+
+        // For backwards compatibility, we don't make this prefix mandatory
+        match without_suffix.strip_prefix(UKI_NAME_PREFIX) {
+            Some(no_prefix) => Ok(no_prefix.into()),
+            None => Ok(without_suffix.into()),
+        }
     }
 }
 
@@ -546,5 +575,72 @@ mod test {
         assert_eq!(result[1].title, "Second Entry");
         assert_eq!(result[1].body.chainloader, "/EFI/Linux/second.efi");
         assert_eq!(result[1].body.search, "--set=root --fs-uuid \"some-uuid\"");
+    }
+
+    #[test]
+    fn test_menuentry_boot_artifact_name_success() {
+        let body = MenuentryBody {
+            insmod: vec!["fat", "chain"],
+            chainloader: "/EFI/bootc_composefs/bootc_composefs-abcd1234.efi".to_string(),
+            search: "--no-floppy --set=root --fs-uuid test",
+            version: 0,
+            extra: vec![],
+        };
+
+        let entry = MenuEntry {
+            title: "Test Entry".to_string(),
+            body,
+        };
+
+        let artifact_name = entry
+            .boot_artifact_name()
+            .expect("Should extract artifact name");
+        assert_eq!(artifact_name, "abcd1234");
+    }
+
+    #[test]
+    fn test_menuentry_boot_artifact_name_missing_prefix() {
+        let body = MenuentryBody {
+            insmod: vec!["fat", "chain"],
+            chainloader: "/EFI/Linux/abcd1234.efi".to_string(),
+            search: "--no-floppy --set=root --fs-uuid test",
+            version: 0,
+            extra: vec![],
+        };
+
+        let entry = MenuEntry {
+            title: "Test Entry".to_string(),
+            body,
+        };
+
+        let artifact_name = entry
+            .boot_artifact_name()
+            .expect("Should extract artifact name");
+        assert_eq!(artifact_name, "abcd1234");
+    }
+
+    #[test]
+    fn test_menuentry_boot_artifact_name_missing_suffix() {
+        let body = MenuentryBody {
+            insmod: vec!["fat", "chain"],
+            chainloader: "/EFI/bootc_composefs/bootc_composefs-abcd1234".to_string(),
+            search: "--no-floppy --set=root --fs-uuid test",
+            version: 0,
+            extra: vec![],
+        };
+
+        let entry = MenuEntry {
+            title: "Test Entry".to_string(),
+            body,
+        };
+
+        let result = entry.boot_artifact_name();
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("missing expected suffix")
+        );
     }
 }

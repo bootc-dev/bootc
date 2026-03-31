@@ -2,8 +2,6 @@
 //!
 //! This module parses the config files for the spec.
 
-#![allow(dead_code)]
-
 use anyhow::{Result, anyhow};
 use bootc_kernel_cmdline::utf8::{Cmdline, CmdlineOwned};
 use camino::Utf8PathBuf;
@@ -15,7 +13,7 @@ use std::fmt::Display;
 use uapi_version::Version;
 
 use crate::bootc_composefs::status::ComposefsCmdline;
-use crate::composefs_consts::UKI_NAME_PREFIX;
+use crate::composefs_consts::{TYPE1_BOOT_DIR_PREFIX, UKI_NAME_PREFIX};
 
 #[derive(Debug, PartialEq, Eq, Default)]
 pub enum BLSConfigType {
@@ -173,6 +171,9 @@ impl BLSConfig {
         self
     }
 
+    /// Get the fs-verity digest from a BLS config
+    /// For EFI BLS entries, this returns the name of the UKI
+    /// For Non-EFI BLS entries, this returns the fs-verity digest in the "options" field
     pub(crate) fn get_verity(&self) -> Result<String> {
         match &self.cfg_type {
             BLSConfigType::EFI { efi } => {
@@ -202,6 +203,56 @@ impl BLSConfig {
             }
 
             BLSConfigType::Unknown => anyhow::bail!("Unknown config type"),
+        }
+    }
+
+    /// Returns name of UKI in case of EFI config
+    /// Returns name of the directory containing Kernel + Initrd in case of Non-EFI config
+    ///
+    /// The names are stripped of our custom prefix and suffixes, so this returns the
+    /// verity digest part of the name
+    #[allow(dead_code)]
+    pub(crate) fn boot_artifact_name(&self) -> Result<&str> {
+        match &self.cfg_type {
+            BLSConfigType::EFI { efi } => {
+                let file_name = efi
+                    .file_name()
+                    .ok_or_else(|| anyhow::anyhow!("EFI path missing file name: {}", efi))?;
+
+                let without_suffix = file_name.strip_suffix(EFI_EXT).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "EFI file name missing expected suffix '{}': {}",
+                        EFI_EXT,
+                        file_name
+                    )
+                })?;
+
+                // For backwards compatibility, we don't make this prefix mandatory
+                match without_suffix.strip_prefix(UKI_NAME_PREFIX) {
+                    Some(no_prefix) => Ok(no_prefix),
+                    None => Ok(without_suffix),
+                }
+            }
+
+            BLSConfigType::NonEFI { linux, .. } => {
+                let parent_dir = linux.parent().ok_or_else(|| {
+                    anyhow::anyhow!("Linux kernel path has no parent directory: {}", linux)
+                })?;
+
+                let dir_name = parent_dir.file_name().ok_or_else(|| {
+                    anyhow::anyhow!("Parent directory has no file name: {}", parent_dir)
+                })?;
+
+                // For backwards compatibility, we don't make this prefix mandatory
+                match dir_name.strip_prefix(TYPE1_BOOT_DIR_PREFIX) {
+                    Some(dir_name_no_prefix) => Ok(dir_name_no_prefix),
+                    None => Ok(dir_name),
+                }
+            }
+
+            BLSConfigType::Unknown => {
+                anyhow::bail!("Cannot extract boot artifact name from unknown config type")
+            }
         }
     }
 
@@ -584,5 +635,100 @@ mod tests {
         // config_final should be "less than" config_rc1.
         assert!(config_final < config_rc1);
         Ok(())
+    }
+
+    #[test]
+    fn test_boot_artifact_name_efi_success() -> Result<()> {
+        use camino::Utf8PathBuf;
+
+        let efi_path = Utf8PathBuf::from("bootc_composefs-abcd1234.efi");
+        let config = BLSConfig {
+            cfg_type: BLSConfigType::EFI { efi: efi_path },
+            version: "1".to_string(),
+            ..Default::default()
+        };
+
+        let artifact_name = config.boot_artifact_name()?;
+        assert_eq!(artifact_name, "abcd1234");
+        Ok(())
+    }
+
+    #[test]
+    fn test_boot_artifact_name_non_efi_success() -> Result<()> {
+        use camino::Utf8PathBuf;
+
+        let linux_path = Utf8PathBuf::from("/boot/bootc_composefs-xyz5678/vmlinuz");
+        let config = BLSConfig {
+            cfg_type: BLSConfigType::NonEFI {
+                linux: linux_path,
+                initrd: vec![],
+                options: None,
+            },
+            version: "1".to_string(),
+            ..Default::default()
+        };
+
+        let artifact_name = config.boot_artifact_name()?;
+        assert_eq!(artifact_name, "xyz5678");
+        Ok(())
+    }
+
+    #[test]
+    fn test_boot_artifact_name_efi_missing_prefix() {
+        use camino::Utf8PathBuf;
+
+        let efi_path = Utf8PathBuf::from("/EFI/Linux/abcd1234.efi");
+        let config = BLSConfig {
+            cfg_type: BLSConfigType::EFI { efi: efi_path },
+            version: "1".to_string(),
+            ..Default::default()
+        };
+
+        let artifact_name = config
+            .boot_artifact_name()
+            .expect("Should extract artifact name");
+        assert_eq!(artifact_name, "abcd1234");
+    }
+
+    #[test]
+    fn test_boot_artifact_name_efi_missing_suffix() {
+        use camino::Utf8PathBuf;
+
+        let efi_path = Utf8PathBuf::from("bootc_composefs-abcd1234");
+        let config = BLSConfig {
+            cfg_type: BLSConfigType::EFI { efi: efi_path },
+            version: "1".to_string(),
+            ..Default::default()
+        };
+
+        let result = config.boot_artifact_name();
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("missing expected suffix")
+        );
+    }
+
+    #[test]
+    fn test_boot_artifact_name_efi_no_filename() {
+        use camino::Utf8PathBuf;
+
+        let efi_path = Utf8PathBuf::from("/");
+        let config = BLSConfig {
+            cfg_type: BLSConfigType::EFI { efi: efi_path },
+            version: "1".to_string(),
+            ..Default::default()
+        };
+
+        let result = config.boot_artifact_name();
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("missing file name")
+        );
     }
 }
