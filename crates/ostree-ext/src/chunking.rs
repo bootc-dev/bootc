@@ -637,11 +637,6 @@ fn basic_packing_with_prior_build<'a>(
         .collect();
     let mut curr_build = curr_build?;
 
-    if (bin_size.get() as usize) < curr_build.len() {
-        tracing::debug!("bin_size = {bin_size} is too small to be compatible with the prior build");
-        return Ok(None);
-    }
-
     // View the packages as unordered sets for lookups and differencing
     let prev_pkgs_set: BTreeSet<String> = curr_build
         .iter()
@@ -667,6 +662,21 @@ fn basic_packing_with_prior_build<'a>(
     let removed: BTreeSet<&String> = prev_pkgs_set.difference(&curr_pkgs_set).collect();
     for bin in curr_build.iter_mut() {
         bin.retain(|pkg| !removed.contains(pkg));
+    }
+
+    // Exclusive-component bins are already carved out by process_mapping(), so
+    // keep only the bins that still carry regular components plus the reserved
+    // "new packages" bin at the end of the prior layout.
+    let last_idx = curr_build.len().saturating_sub(1);
+    curr_build = curr_build
+        .into_iter()
+        .enumerate()
+        .filter_map(|(idx, bin)| (!bin.is_empty() || idx == last_idx).then_some(bin))
+        .collect();
+
+    if (bin_size.get() as usize) < curr_build.len() {
+        tracing::debug!("bin_size = {bin_size} is too small to be compatible with the prior build");
+        return Ok(None);
     }
 
     // Handle updated packages
@@ -1073,6 +1083,57 @@ mod test {
         ];
 
         assert_eq!(structure_derived, v2_expected_structure);
+        Ok(())
+    }
+
+    #[test]
+    fn test_advanced_packing_with_prior_exclusive_components() -> Result<()> {
+        let contentmeta: Vec<ObjectSourceMetaSized> = [
+            (1, 100, 50000),
+            (2, 200, 40000),
+            (3, 300, 30000),
+            (4, 400, 20000),
+            (5, 500, 10000),
+            (6, 600, 5000),
+        ]
+        .iter()
+        .map(|&(id, freq, size)| ObjectSourceMetaSized {
+            meta: ObjectSourceMeta {
+                identifier: RcStr::from(format!("pkg{id}.0")),
+                name: RcStr::from(format!("pkg{id}")),
+                srcid: RcStr::from(format!("srcpkg{id}")),
+                change_time_offset: 0,
+                change_frequency: freq,
+            },
+            size,
+        })
+        .collect();
+
+        let regular_components = contentmeta[2..].to_vec();
+        let prior_structure = vec![
+            vec!["pkg1.0"],
+            vec!["pkg2.0"],
+            vec!["pkg3.0", "pkg4.0"],
+            vec!["pkg5.0", "pkg6.0"],
+            vec![],
+        ];
+        let prior_build = create_manifest(prior_structure);
+
+        let packing = basic_packing_with_prior_build(
+            &regular_components,
+            NonZeroU32::new(3).unwrap(),
+            &prior_build,
+        )?
+        .expect("prior layout should remain reusable after exclusive bins are removed");
+        let structure: Vec<Vec<&str>> = packing
+            .iter()
+            .map(|bin| bin.iter().map(|pkg| &*pkg.meta.identifier).collect())
+            .collect();
+
+        assert_eq!(
+            structure,
+            vec![vec!["pkg3.0", "pkg4.0"], vec!["pkg5.0", "pkg6.0"], vec![],]
+        );
         Ok(())
     }
 
