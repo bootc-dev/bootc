@@ -116,8 +116,7 @@ use crate::{
 };
 use crate::{
     composefs_consts::{
-        BOOT_LOADER_ENTRIES, ORIGIN_KEY_BOOT, ORIGIN_KEY_BOOT_DIGEST, STAGED_BOOT_LOADER_ENTRIES,
-        STATE_DIR_ABS, USER_CFG, USER_CFG_STAGED,
+        BOOT_LOADER_ENTRIES, STAGED_BOOT_LOADER_ENTRIES, USER_CFG, USER_CFG_STAGED,
     },
     spec::{Bootloader, Host},
 };
@@ -328,6 +327,27 @@ fn compute_boot_digest(
     Ok(hex::encode(digest))
 }
 
+#[context("Computing boot digest for Type1 entries")]
+fn compute_boot_digest_type1(dir: &Dir) -> Result<String> {
+    let mut vmlinuz = dir
+        .open(VMLINUZ)
+        .with_context(|| format!("Opening {VMLINUZ}"))?;
+
+    let mut initrd = dir
+        .open(INITRD)
+        .with_context(|| format!("Opening {INITRD}"))?;
+
+    let mut hasher = openssl::hash::Hasher::new(openssl::hash::MessageDigest::sha256())
+        .context("Creating hasher")?;
+
+    std::io::copy(&mut vmlinuz, &mut hasher)?;
+    std::io::copy(&mut initrd, &mut hasher)?;
+
+    let digest: &[u8] = &hasher.finish().context("Finishing digest")?;
+
+    Ok(hex::encode(digest))
+}
+
 /// Compute SHA256Sum of .linux + .initrd section of the UKI
 ///
 /// # Arguments
@@ -355,52 +375,35 @@ pub(crate) fn compute_boot_digest_uki(uki: &[u8]) -> Result<String> {
 /// Given the SHA256 sum of current VMlinuz + Initrd combo, find boot entry with the same SHA256Sum
 ///
 /// # Returns
-/// Returns the verity of all deployments that have a boot digest same as the one passed in
+/// Returns the directory name that has the same sha256 digest for vmlinuz + initrd as the one
+/// that's passed in
 #[context("Checking boot entry duplicates")]
-pub(crate) fn find_vmlinuz_initrd_duplicates(digest: &str) -> Result<Option<Vec<String>>> {
-    let deployments = Dir::open_ambient_dir(STATE_DIR_ABS, ambient_authority());
+pub(crate) fn find_vmlinuz_initrd_duplicate(
+    storage: &Storage,
+    digest: &str,
+) -> Result<Option<String>> {
+    let boot_dir = storage.bls_boot_binaries_dir()?;
 
-    let deployments = match deployments {
-        Ok(d) => d,
-        // The first ever deployment
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => anyhow::bail!(e),
-    };
+    for entry in boot_dir.entries_utf8()? {
+        let entry = entry?;
+        let dir_name = entry.file_name()?;
 
-    let mut symlink_to: Option<Vec<String>> = None;
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
 
-    for depl in deployments.entries()? {
-        let depl = depl?;
-
-        let depl_file_name = depl.file_name();
-        let depl_file_name = depl_file_name.as_str()?;
-
-        let config = depl
-            .open_dir()
-            .with_context(|| format!("Opening {depl_file_name}"))?
-            .read_to_string(format!("{depl_file_name}.origin"))
-            .context("Reading origin file")?;
-
-        let ini = tini::Ini::from_string(&config)
-            .with_context(|| format!("Failed to parse file {depl_file_name}.origin as ini"))?;
-
-        match ini.get::<String>(ORIGIN_KEY_BOOT, ORIGIN_KEY_BOOT_DIGEST) {
-            Some(hash) => {
-                if hash == digest {
-                    match symlink_to {
-                        Some(ref mut prev) => prev.push(depl_file_name.to_string()),
-                        None => symlink_to = Some(vec![depl_file_name.to_string()]),
-                    }
-                }
-            }
-
-            // No SHASum recorded in origin file
-            // `symlink_to` is already none, but being explicit here
-            None => symlink_to = None,
+        let Some(..) = dir_name.strip_prefix(TYPE1_BOOT_DIR_PREFIX) else {
+            continue;
         };
+
+        let entry_digest = compute_boot_digest_type1(&boot_dir.open_dir(&dir_name)?)?;
+
+        if entry_digest == digest {
+            return Ok(Some(dir_name));
+        }
     }
 
-    Ok(symlink_to)
+    Ok(None)
 }
 
 #[context("Writing BLS entries to disk")]
@@ -687,45 +690,20 @@ pub(crate) fn setup_composefs_bls_boot(
                     options: Some(cmdline_refs),
                 });
 
-            match find_vmlinuz_initrd_duplicates(&boot_digest)? {
-                Some(shared_entries) => {
+            let shared_entry = match setup_type {
+                BootSetupType::Setup(_) => None,
+                BootSetupType::Upgrade((storage, ..)) => {
+                    find_vmlinuz_initrd_duplicate(storage, &boot_digest)?
+                }
+            };
+
+            match shared_entry {
+                Some(shared_entry) => {
                     // Multiple deployments could be using the same kernel + initrd, but there
                     // would be only one available
                     //
                     // Symlinking directories themselves would be better, but vfat does not support
                     // symlinks
-
-                    let mut shared_entry: Option<String> = None;
-
-                    let entries =
-                        Dir::open_ambient_dir(entry_paths.entries_path, ambient_authority())
-                            .context("Opening entries path")?
-                            .entries_utf8()
-                            .context("Getting dir entries")?;
-
-                    for ent in entries {
-                        let ent = ent?;
-                        // We shouldn't error here as all our file names are UTF-8 compatible
-                        let ent_name = ent.file_name()?;
-
-                        let Some(entry_verity_part) = ent_name.strip_prefix(TYPE1_BOOT_DIR_PREFIX)
-                        else {
-                            // Not our directory
-                            continue;
-                        };
-
-                        if shared_entries
-                            .iter()
-                            .any(|shared_ent| shared_ent == entry_verity_part)
-                        {
-                            shared_entry = Some(ent_name);
-                            break;
-                        }
-                    }
-
-                    let shared_entry = shared_entry
-                        .ok_or_else(|| anyhow::anyhow!("Shared boot binaries not found"))?;
-
                     match bls_config.cfg_type {
                         BLSConfigType::NonEFI {
                             ref mut linux,
