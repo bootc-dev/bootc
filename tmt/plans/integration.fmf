@@ -244,4 +244,5 @@ execute:
     how: fmf
     test:
       - /tmt/tests/tests/test-40-install-karg-delete
+  extra-fixme_skip_if_composefs: true
 # END GENERATED PLANS

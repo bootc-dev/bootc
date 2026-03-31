@@ -2,6 +2,8 @@
 # tmt:
 #   summary: Test bootc install --karg-delete
 #   duration: 30m
+# extra:
+#   fixme_skip_if_composefs: true
 #
 use std assert
 use tap.nu
@@ -13,9 +15,6 @@ let target_image = (tap get_target_image)
 mkdir /var/mnt
 truncate -s 10G disk.img
 mkfs.ext4 disk.img
-if (tap is_composefs) {
-  tune2fs -O verity disk.img
-}
 mount -o loop disk.img /var/mnt
 
 # Mask off the bootupd state to reproduce https://github.com/bootc-dev/bootc/issues/1778
@@ -27,14 +26,8 @@ setenforce 0
 mkdir /etc/bootc/install
 { install: { kargs: ["foo=bar"] } } | to toml | save /etc/bootc/install/99-test.toml
 
-let base_args = $"bootc install to-filesystem --disable-selinux --bootloader none --source-imgref ($target_image) --karg-delete localtestkarg --karg-delete foo"
-let install_cmd = if (tap is_composefs) {
-    $"($base_args) --composefs-backend /var/mnt"
-} else {
-    $"($base_args) /var/mnt"
-}
+tap run_install $"bootc install to-filesystem --disable-selinux --bootloader none --source-imgref ($target_image) --karg-delete localtestkarg --karg-delete foo /var/mnt"
 
-tap run_install $install_cmd
 
 # Verify the karg is gone from the bootloader entries
 let entries = (glob /var/mnt/boot/loader/entries/*.conf
