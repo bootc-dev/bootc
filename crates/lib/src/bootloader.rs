@@ -1,7 +1,7 @@
 use std::fs::create_dir_all;
 use std::process::Command;
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use bootc_utils::{BwrapCmd, CommandRunExt};
 use camino::Utf8Path;
 use cap_std_ext::cap_std::fs::Dir;
@@ -10,8 +10,8 @@ use fn_error_context::context;
 
 use bootc_mount as mount;
 
-use crate::bootc_composefs::boot::{mount_esp, SecurebootKeys};
-use crate::{discoverable_partition_specification, utils};
+use crate::bootc_composefs::boot::{SecurebootKeys, mount_esp};
+use crate::utils;
 
 /// The name of the mountpoint for efi (as a subdirectory of /boot, or at the toplevel)
 pub(crate) const EFI_DIR: &str = "efi";
@@ -53,13 +53,17 @@ pub(crate) fn mount_esp_part(root: &Dir, root_path: &Utf8Path, is_ostree: bool) 
 
     let roots = bootc_blockdev::list_dev_by_dir(physical_root)?.find_all_roots()?;
     for dev in &roots {
-        if let Some(esp_dev) = dev.find_partition_of_type(bootc_blockdev::ESP) {
+        if let Some(esp_dev) = dev.find_partition_of_esp_optional()? {
             let esp_path = esp_dev.path();
             bootc_mount::mount(&esp_path, &root_path.join(&efi_path))?;
             tracing::debug!("Mounted {esp_path} at /boot/efi");
             return Ok(());
         }
     }
+    tracing::debug!(
+        "No ESP partition found among {} root device(s)",
+        roots.len()
+    );
     Ok(())
 }
 
@@ -228,10 +232,14 @@ pub(crate) fn install_systemd_boot(
     autoenroll: Option<SecurebootKeys>,
 ) -> Result<()> {
     let roots = device.find_all_roots()?;
-    let esp_part = roots
-        .iter()
-        .find_map(|root| root.find_partition_of_type(discoverable_partition_specification::ESP))
-        .ok_or_else(|| anyhow::anyhow!("ESP partition not found"))?;
+    let mut esp_part = None;
+    for root in &roots {
+        if let Some(esp) = root.find_partition_of_esp_optional()? {
+            esp_part = Some(esp);
+            break;
+        }
+    }
+    let esp_part = esp_part.ok_or_else(|| anyhow::anyhow!("ESP partition not found"))?;
 
     let esp_mount = mount_esp(&esp_part.path()).context("Mounting ESP")?;
     let esp_path = Utf8Path::from_path(esp_mount.dir.path())
