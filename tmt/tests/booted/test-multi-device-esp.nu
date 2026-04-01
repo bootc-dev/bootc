@@ -404,6 +404,9 @@ def test_no_esp_failure [] {
         } | complete)
 
         assert ($result.exit_code != 0) "Expected install to fail with no ESP partitions"
+        # Verify the failure is ESP-related, not an unrelated podman/runtime error
+        let combined = $"($result.stdout)\n($result.stderr)"
+        assert ($combined | str contains "ESP") $"Expected ESP-related error message, got: ($combined | str substring 0..200)"
         print $"Install failed as expected with exit code ($result.exit_code)"
     } catch {|e|
         cleanup $vg_name [$loop1, $loop2] $mountpoint
