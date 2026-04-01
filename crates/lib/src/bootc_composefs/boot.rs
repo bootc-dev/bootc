@@ -117,7 +117,7 @@ use crate::{
 use crate::{
     composefs_consts::{
         BOOT_LOADER_ENTRIES, ORIGIN_KEY_BOOT, ORIGIN_KEY_BOOT_DIGEST, STAGED_BOOT_LOADER_ENTRIES,
-        STATE_DIR_ABS, USER_CFG, USER_CFG_STAGED,
+        STATE_DIR_RELATIVE, USER_CFG, USER_CFG_STAGED,
     },
     spec::{Bootloader, Host},
 };
@@ -354,22 +354,21 @@ pub(crate) fn compute_boot_digest_uki(uki: &[u8]) -> Result<String> {
 
 /// Given the SHA256 sum of current VMlinuz + Initrd combo, find boot entry with the same SHA256Sum
 ///
+/// `deployments_dir` should be the composefs state/deploy directory opened
+/// relative to the target physical root. This avoids using ambient absolute
+/// paths, which would be wrong during install (where `/sysroot/state/deploy`
+/// belongs to the host, not the target).
+///
 /// # Returns
 /// Returns the verity of all deployments that have a boot digest same as the one passed in
 #[context("Checking boot entry duplicates")]
-pub(crate) fn find_vmlinuz_initrd_duplicates(digest: &str) -> Result<Option<Vec<String>>> {
-    let deployments = Dir::open_ambient_dir(STATE_DIR_ABS, ambient_authority());
-
-    let deployments = match deployments {
-        Ok(d) => d,
-        // The first ever deployment
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => anyhow::bail!(e),
-    };
-
+pub(crate) fn find_vmlinuz_initrd_duplicates(
+    deployments_dir: &Dir,
+    digest: &str,
+) -> Result<Option<Vec<String>>> {
     let mut symlink_to: Option<Vec<String>> = None;
 
-    for depl in deployments.entries()? {
+    for depl in deployments_dir.entries()? {
         let depl = depl?;
 
         let depl_file_name = depl.file_name();
@@ -518,6 +517,11 @@ pub(crate) fn setup_composefs_bls_boot(
 ) -> Result<String> {
     let id_hex = id.to_hex();
 
+    let physical_root = match &setup_type {
+        BootSetupType::Setup((root_setup, ..)) => &root_setup.physical_root,
+        BootSetupType::Upgrade((storage, ..)) => &storage.physical_root,
+    };
+
     let (root_path, esp_device, mut cmdline_refs, fs, bootloader) = match setup_type {
         BootSetupType::Setup((root_setup, state, postfetch, fs)) => {
             // root_setup.kargs has [root=UUID=<UUID>, "rw"]
@@ -573,7 +577,7 @@ pub(crate) fn setup_composefs_bls_boot(
             let esp_dev = root_dev.find_partition_of_esp()?;
 
             (
-                Utf8PathBuf::from("/sysroot"),
+                storage.physical_root_path.clone(),
                 esp_dev.path(),
                 cmdline,
                 fs,
@@ -687,7 +691,14 @@ pub(crate) fn setup_composefs_bls_boot(
                     options: Some(cmdline_refs),
                 });
 
-            match find_vmlinuz_initrd_duplicates(&boot_digest)? {
+            // Check for shared boot binaries with existing deployments.
+            // On fresh install the state dir won't exist yet, so this is
+            // naturally a no-op.
+            let shared_boot_binaries = match physical_root.open_dir_optional(STATE_DIR_RELATIVE)? {
+                Some(deploy_dir) => find_vmlinuz_initrd_duplicates(&deploy_dir, &boot_digest)?,
+                None => None,
+            };
+            match shared_boot_binaries {
                 Some(shared_entries) => {
                     // Multiple deployments could be using the same kernel + initrd, but there
                     // would be only one available
