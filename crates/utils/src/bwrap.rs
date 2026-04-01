@@ -59,6 +59,18 @@ impl<'a> BwrapCmd<'a> {
         self
     }
 
+    /// Set $PATH to a reasonable default for finding system binaries.
+    ///
+    /// The bwrap environment may not have a complete $PATH, causing
+    /// tools like bootupctl or sfdisk to not be found. This sets a
+    /// default that covers the standard binary directories.
+    pub fn set_default_path(self) -> Self {
+        self.setenv(
+            "PATH",
+            "/bin:/usr/bin:/sbin:/usr/sbin:/usr/local/bin:/usr/local/sbin",
+        )
+    }
+
     /// Build the bwrap `Command` with all bind mounts, env vars, and args.
     fn build_command<S: AsRef<OsStr>>(&self, args: impl IntoIterator<Item = S>) -> Command {
         let mut cmd = Command::new("bwrap");

@@ -1,7 +1,7 @@
 use std::fs::create_dir_all;
 use std::process::Command;
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{anyhow, bail, Context, Result};
 use bootc_utils::{BwrapCmd, CommandRunExt};
 use camino::Utf8Path;
 use cap_std_ext::cap_std::fs::Dir;
@@ -10,8 +10,8 @@ use fn_error_context::context;
 
 use bootc_mount as mount;
 
-use crate::bootc_composefs::boot::{SecurebootKeys, mount_esp};
-use crate::utils;
+use crate::bootc_composefs::boot::{mount_esp, SecurebootKeys};
+use crate::{discoverable_partition_specification, utils};
 
 /// The name of the mountpoint for efi (as a subdirectory of /boot, or at the toplevel)
 pub(crate) const EFI_DIR: &str = "efi";
@@ -86,10 +86,7 @@ fn bootupd_supports_filesystem(rootfs: &Utf8Path, deployment_path: Option<&str>)
     let output = if let Some(deploy) = deployment_path {
         let target_root = rootfs.join(deploy);
         BwrapCmd::new(&target_root)
-            .setenv(
-                "PATH",
-                "/bin:/usr/bin:/sbin:/usr/sbin:/usr/local/bin:/usr/local/sbin",
-            )
+            .set_default_path()
             .run_get_string(help_args)?
     } else {
         Command::new("bootupctl")
@@ -206,14 +203,8 @@ pub(crate) fn install_via_bootupd(
         }
 
         // The $PATH in the bwrap env is not complete enough for some images
-        // so we inject a reasonnable default.
-        // This is causing bootupctl and/or sfdisk binaries
-        // to be not found with fedora 43.
-        cmd.setenv(
-            "PATH",
-            "/bin:/usr/bin:/sbin:/usr/sbin:/usr/local/bin:/usr/local/sbin",
-        )
-        .run(bwrap_args)
+        // so we inject a reasonable default.
+        cmd.set_default_path().run(bwrap_args)
     } else {
         // Running directly without chroot
         Command::new("bootupctl")
