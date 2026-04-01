@@ -87,6 +87,7 @@ use composefs_boot::bootloader::{
     UsrLibModulesVmlinuz,
 };
 use composefs_boot::{cmdline::get_cmdline_composefs, os_release::OsReleaseInfo, uki};
+use composefs_oci::OciDigest;
 use composefs_oci::image::create_filesystem as create_composefs_filesystem;
 use fn_error_context::context;
 use rustix::{mount::MountFlags, path::Arg};
@@ -1257,7 +1258,7 @@ fn get_secureboot_keys(fs: &Dir, p: &str) -> Result<Option<SecurebootKeys>> {
 pub(crate) async fn setup_composefs_boot(
     root_setup: &RootSetup,
     state: &State,
-    image_id: &str,
+    config_digest: &OciDigest,
     allow_missing_fsverity: bool,
 ) -> Result<()> {
     const COMPOSEFS_BOOT_SETUP_JOURNAL_ID: &str = "1f0e9d8c7b6a5f4e3d2c1b0a9f8e7d6c5";
@@ -1265,15 +1266,17 @@ pub(crate) async fn setup_composefs_boot(
     tracing::info!(
         message_id = COMPOSEFS_BOOT_SETUP_JOURNAL_ID,
         bootc.operation = "boot_setup",
-        bootc.image_id = image_id,
+        bootc.config_digest = %config_digest,
         bootc.allow_missing_fsverity = allow_missing_fsverity,
         "Setting up composefs boot",
     );
 
     let mut repo = open_composefs_repo(&root_setup.physical_root)?;
-    repo.set_insecure(allow_missing_fsverity);
+    if allow_missing_fsverity {
+        repo.set_insecure();
+    }
 
-    let mut fs = create_composefs_filesystem(&repo, image_id, None)?;
+    let mut fs = create_composefs_filesystem(&repo, config_digest, None)?;
     let entries = fs.transform_for_boot(&repo)?;
     let id = fs.commit_image(&repo, None)?;
     let mounted_fs = Dir::reopen_dir(

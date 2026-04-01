@@ -194,7 +194,7 @@ impl BootedStorage {
                 let (physical_root, run) = get_physical_root_and_run()?;
                 let mut composefs = ComposefsRepository::open_path(&physical_root, COMPOSEFS)?;
                 if cmdline.allow_missing_fsverity {
-                    composefs.set_insecure(true);
+                    composefs.set_insecure();
                 }
                 let composefs = Arc::new(composefs);
 
@@ -471,11 +471,15 @@ impl Storage {
         let ostree = self.get_ostree()?;
         let ostree_repo = &ostree.repo();
         let ostree_verity = ostree_ext::fsverity::is_verity_enabled(ostree_repo)?;
-        let mut composefs =
-            ComposefsRepository::open_path(self.physical_root.open_dir(COMPOSEFS)?, ".")?;
+        let (mut composefs, _) = ComposefsRepository::init_path(
+            &self.physical_root,
+            COMPOSEFS,
+            composefs::fsverity::Algorithm::SHA512,
+            false,
+        )?;
         if !ostree_verity.enabled {
             tracing::debug!("Setting insecure mode for composefs repo");
-            composefs.set_insecure(true);
+            composefs.set_insecure();
         }
         let composefs = Arc::new(composefs);
         let r = Arc::clone(self.composefs.get_or_init(|| composefs));

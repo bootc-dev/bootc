@@ -6,6 +6,7 @@ use cfsctl::composefs_boot;
 use cfsctl::composefs_oci;
 use composefs::fsverity::{FsVerityHashValue, Sha512HashValue};
 use composefs_boot::BootOps;
+use composefs_oci::OciDigest;
 use composefs_oci::image::create_filesystem;
 use fn_error_context::context;
 use ocidir::cap_std::ambient_authority;
@@ -59,10 +60,10 @@ pub(crate) async fn is_image_pulled(
     let imgref_repr = get_imgref(&imgref.transport, &imgref.image);
     let img_config_manifest = get_container_manifest_and_config(&imgref_repr).await?;
 
-    let img_digest = img_config_manifest.manifest.config().digest().digest();
+    let config_digest = img_config_manifest.manifest.config().digest();
 
     // TODO: export config_identifier function from composefs-oci/src/lib.rs and use it here
-    let img_id = format!("oci-config-sha256:{img_digest}");
+    let img_id = format!("oci-config-{config_digest}");
 
     // NB: add deep checking?
     let container_pulled = repo.has_stream(&img_id).context("Checking stream")?;
@@ -132,13 +133,13 @@ pub(crate) fn validate_update(
     storage: &Storage,
     booted_cfs: &BootedComposefs,
     host: &Host,
-    img_digest: &str,
+    config_digest: &OciDigest,
     config_verity: &Sha512HashValue,
     is_switch: bool,
 ) -> Result<UpdateAction> {
     let repo = &*booted_cfs.repo;
 
-    let mut fs = create_filesystem(repo, img_digest, Some(config_verity))?;
+    let mut fs = create_filesystem(repo, config_digest, Some(config_verity))?;
     fs.transform_for_boot(&repo)?;
 
     let image_id = fs.compute_image_id();
@@ -409,7 +410,8 @@ pub(crate) async fn upgrade_composefs(
     let repo = &*composefs.repo;
 
     let (img_pulled, mut img_config) = is_image_pulled(&repo, booted_imgref).await?;
-    let booted_img_digest = img_config.manifest.config().digest().digest().to_owned();
+    let booted_config_digest = img_config.manifest.config().digest().clone();
+    let booted_img_digest = booted_config_digest.to_string();
 
     // Check if we already have this update staged
     // Or if we have another staged deployment with a different image
@@ -441,7 +443,7 @@ pub(crate) async fn upgrade_composefs(
                 storage,
                 composefs,
                 &host,
-                img_config.manifest.config().digest().digest(),
+                img_config.manifest.config().digest(),
                 &cfg_verity,
                 false,
             )?;
@@ -477,7 +479,7 @@ pub(crate) async fn upgrade_composefs(
             storage,
             composefs,
             &host,
-            &booted_img_digest,
+            &booted_config_digest,
             &cfg_verity,
             false,
         )?;

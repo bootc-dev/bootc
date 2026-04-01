@@ -23,6 +23,19 @@ pub(crate) fn open_composefs_repo(rootfs_dir: &Dir) -> Result<crate::store::Comp
         .context("Failed to open composefs repository")
 }
 
+/// Initialize (or idempotently re-open) a composefs repository.
+/// Used during install when the repo may not exist yet.
+pub(crate) fn init_composefs_repo(rootfs_dir: &Dir) -> Result<crate::store::ComposefsRepository> {
+    let (repo, _created) = crate::store::ComposefsRepository::init_path(
+        rootfs_dir,
+        "composefs",
+        composefs::fsverity::Algorithm::SHA512,
+        false,
+    )
+    .context("Failed to initialize composefs repository")?;
+    Ok(repo)
+}
+
 pub(crate) async fn initialize_composefs_repository(
     state: &State,
     root_setup: &RootSetup,
@@ -47,8 +60,10 @@ pub(crate) async fn initialize_composefs_repository(
 
     crate::store::ensure_composefs_dir(rootfs_dir)?;
 
-    let mut repo = open_composefs_repo(rootfs_dir)?;
-    repo.set_insecure(allow_missing_fsverity);
+    let mut repo = init_composefs_repo(rootfs_dir)?;
+    if allow_missing_fsverity {
+        repo.set_insecure();
+    }
 
     let OstreeExtImgRef {
         name: image_name,
@@ -117,7 +132,9 @@ pub(crate) async fn pull_composefs_repo(
     let rootfs_dir = Dir::open_ambient_dir("/sysroot", ambient_authority())?;
 
     let mut repo = open_composefs_repo(&rootfs_dir).context("Opening composefs repo")?;
-    repo.set_insecure(allow_missing_fsverity);
+    if allow_missing_fsverity {
+        repo.set_insecure();
+    }
 
     let final_imgref = get_imgref(transport, image);
 
@@ -132,13 +149,15 @@ pub(crate) async fn pull_composefs_repo(
 
     tracing::info!(
         message_id = COMPOSEFS_PULL_JOURNAL_ID,
-        id = pull_result.config_digest,
+        id = %pull_result.config_digest,
         verity = pull_result.config_verity.to_hex(),
         "Pulled image into repository"
     );
 
     let mut repo = open_composefs_repo(&rootfs_dir)?;
-    repo.set_insecure(allow_missing_fsverity);
+    if allow_missing_fsverity {
+        repo.set_insecure();
+    }
 
     let mut fs: crate::store::ComposefsFilesystem =
         create_composefs_filesystem(&repo, &pull_result.config_digest, None)

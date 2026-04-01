@@ -63,7 +63,7 @@ pub(crate) async fn switch_composefs(
             storage,
             booted_cfs,
             &host,
-            img_config.manifest.config().digest().digest(),
+            img_config.manifest.config().digest(),
             &cfg_verity,
             true,
         )?;

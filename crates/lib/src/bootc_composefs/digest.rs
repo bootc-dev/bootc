@@ -27,11 +27,15 @@ pub(crate) fn new_temp_composefs_repo() -> Result<(TempDir, Arc<ComposefsReposit
     let td_path = td_guard.path();
     let td_dir = Dir::open_ambient_dir(td_path, cap_std::ambient_authority())?;
 
-    td_dir.create_dir("repo")?;
-    let repo_dir = td_dir.open_dir("repo")?;
-    let mut repo = ComposefsRepository::open_path(&repo_dir, ".").context("Init cfs repo")?;
+    let (mut repo, _) = ComposefsRepository::init_path(
+        &td_dir,
+        "repo",
+        composefs::fsverity::Algorithm::SHA512,
+        false,
+    )
+    .context("Init cfs repo")?;
     // We don't need to hard require verity on the *host* system, we're just computing a checksum here
-    repo.set_insecure(true);
+    repo.set_insecure();
     Ok((td_guard, Arc::new(repo)))
 }
 
