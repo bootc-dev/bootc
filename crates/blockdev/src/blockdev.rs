@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::env;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -123,13 +124,24 @@ impl Device {
     /// Calls find_all_roots() to discover physical disks, then searches each for an ESP.
     /// Returns None if no ESPs are found.
     pub fn find_colocated_esps(&self) -> Result<Option<Vec<Device>>> {
-        let esps: Vec<_> = self
-            .find_all_roots()?
-            .iter()
-            .flat_map(|root| root.find_partition_of_esp().ok())
-            .cloned()
-            .collect();
+        let mut esps = Vec::new();
+        for root in &self.find_all_roots()? {
+            if let Some(esp) = root.find_partition_of_esp_optional()? {
+                esps.push(esp.clone());
+            }
+        }
         Ok((!esps.is_empty()).then_some(esps))
+    }
+
+    /// Find a single ESP partition among all root devices backing this device.
+    ///
+    /// Walks the parent chain to find all backing disks, then looks for ESP
+    /// partitions on each. Returns the first ESP found. This is the common
+    /// case for composefs/UKI boot paths where exactly one ESP is expected.
+    pub fn find_first_colocated_esp(&self) -> Result<Device> {
+        self.find_colocated_esps()?
+            .and_then(|mut v| Some(v.remove(0)))
+            .ok_or_else(|| anyhow!("No ESP partition found among backing devices"))
     }
 
     /// Find all BIOS boot partitions across all root devices backing this device.
@@ -159,32 +171,39 @@ impl Device {
     ///
     /// For GPT disks, this matches by the ESP partition type GUID.
     /// For MBR (dos) disks, this matches by the MBR partition type IDs (0x06 or 0xEF).
-    pub fn find_partition_of_esp(&self) -> Result<&Device> {
-        let children = self
-            .children
-            .as_ref()
-            .ok_or_else(|| anyhow!("Device has no children"))?;
+    ///
+    /// Returns `Ok(None)` when there are no children or no ESP partition
+    /// is present. Returns `Err` only for genuinely unexpected conditions
+    /// (e.g. an unsupported partition table type).
+    pub fn find_partition_of_esp_optional(&self) -> Result<Option<&Device>> {
+        let Some(children) = self.children.as_ref() else {
+            return Ok(None);
+        };
         match self.pttype.as_deref() {
-            Some("dos") => children
-                .iter()
-                .find(|child| {
-                    child
-                        .parttype
-                        .as_ref()
-                        .and_then(|pt| {
-                            let pt = pt.strip_prefix("0x").unwrap_or(pt);
-                            u8::from_str_radix(pt, 16).ok()
-                        })
-                        .is_some_and(|pt| ESP_ID_MBR.contains(&pt))
-                })
-                .ok_or_else(|| anyhow!("ESP not found in MBR partition table")),
+            Some("dos") => Ok(children.iter().find(|child| {
+                child
+                    .parttype
+                    .as_ref()
+                    .and_then(|pt| {
+                        let pt = pt.strip_prefix("0x").unwrap_or(pt);
+                        u8::from_str_radix(pt, 16).ok()
+                    })
+                    .is_some_and(|pt| ESP_ID_MBR.contains(&pt))
+            })),
             // When pttype is None (e.g. older lsblk or partition devices), default
             // to GPT UUID matching which will simply not match MBR hex types.
-            Some("gpt") | None => self
-                .find_partition_of_type(ESP)
-                .ok_or_else(|| anyhow!("ESP not found in GPT partition table")),
+            Some("gpt") | None => Ok(self.find_partition_of_type(ESP)),
             Some(other) => Err(anyhow!("Unsupported partition table type: {other}")),
         }
+    }
+
+    /// Find the EFI System Partition (ESP) among children, or error if absent.
+    ///
+    /// This is a convenience wrapper around [`Self::find_partition_of_esp_optional`]
+    /// for callers that require an ESP to be present.
+    pub fn find_partition_of_esp(&self) -> Result<&Device> {
+        self.find_partition_of_esp_optional()?
+            .ok_or_else(|| anyhow!("ESP partition not found on {}", self.path()))
     }
 
     /// Find a child partition by partition number (1-indexed).
@@ -308,6 +327,7 @@ impl Device {
         };
 
         let mut roots = Vec::new();
+        let mut seen = HashSet::new();
         let mut queue = parents;
         while let Some(mut device) = queue.pop() {
             match device.children.take() {
@@ -315,8 +335,13 @@ impl Device {
                     queue.extend(grandparents);
                 }
                 _ => {
-                    // Found a root; re-query to populate its actual children
-                    roots.push(list_dev(Utf8Path::new(&device.path()))?);
+                    // Deduplicate: in complex topologies (e.g. multipath)
+                    // multiple branches can converge on the same physical disk.
+                    let name = device.name.clone();
+                    if seen.insert(name) {
+                        // Found a new root; re-query to populate its actual children
+                        roots.push(list_dev(Utf8Path::new(&device.path()))?);
+                    }
                 }
             }
         }
