@@ -162,20 +162,6 @@ fn delete_depl_boot_entries(
     }
 }
 
-#[fn_error_context::context("Deleting image for deployment {}", deployment_id)]
-pub(crate) fn delete_image(sysroot: &Dir, deployment_id: &str, dry_run: bool) -> Result<()> {
-    let img_path = Path::new("composefs").join("images").join(deployment_id);
-    tracing::debug!("Deleting EROFS image: {:?}", img_path);
-
-    if dry_run {
-        return Ok(());
-    }
-
-    sysroot
-        .remove_file(&img_path)
-        .context("Deleting EROFS image")
-}
-
 #[fn_error_context::context("Deleting state directory for deployment {}", deployment_id)]
 pub(crate) fn delete_state_dir(sysroot: &Dir, deployment_id: &str, dry_run: bool) -> Result<()> {
     let state_dir = Path::new(STATE_DIR_RELATIVE).join(deployment_id);

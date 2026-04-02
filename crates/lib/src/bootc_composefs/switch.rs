@@ -75,15 +75,8 @@ pub(crate) async fn switch_composefs(
             }
 
             UpdateAction::Proceed => {
-                return do_upgrade(
-                    storage,
-                    booted_cfs,
-                    &host,
-                    &target_imgref,
-                    &img_config,
-                    &do_upgrade_opts,
-                )
-                .await;
+                return do_upgrade(storage, booted_cfs, &host, &target_imgref, &do_upgrade_opts)
+                    .await;
             }
 
             UpdateAction::UpdateOrigin => {
@@ -95,15 +88,7 @@ pub(crate) async fn switch_composefs(
         }
     }
 
-    do_upgrade(
-        storage,
-        booted_cfs,
-        &host,
-        &target_imgref,
-        &img_config,
-        &do_upgrade_opts,
-    )
-    .await?;
+    do_upgrade(storage, booted_cfs, &host, &target_imgref, &do_upgrade_opts).await?;
 
     Ok(())
 }

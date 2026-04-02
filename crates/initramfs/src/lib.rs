@@ -300,7 +300,9 @@ pub fn mount_composefs_image(
     allow_missing_fsverity: bool,
 ) -> Result<OwnedFd> {
     let mut repo = Repository::<Sha512HashValue>::open_path(sysroot, "composefs")?;
-    repo.set_insecure(allow_missing_fsverity);
+    if allow_missing_fsverity {
+        repo.set_insecure();
+    }
     let rootfs = repo
         .mount(name)
         .context("Failed to mount composefs image")?;

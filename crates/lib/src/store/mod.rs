@@ -48,8 +48,6 @@ use crate::utils::{deployment_fd, open_dir_remount_rw};
 
 /// See <https://github.com/containers/composefs-rs/issues/159>
 pub type ComposefsRepository = composefs::repository::Repository<Sha512HashValue>;
-/// A composefs filesystem type alias
-pub type ComposefsFilesystem = composefs::tree::FileSystem<Sha512HashValue>;
 
 /// Path to the physical root
 pub const SYSROOT: &str = "sysroot";
@@ -194,7 +192,7 @@ impl BootedStorage {
                 let (physical_root, run) = get_physical_root_and_run()?;
                 let mut composefs = ComposefsRepository::open_path(&physical_root, COMPOSEFS)?;
                 if cmdline.allow_missing_fsverity {
-                    composefs.set_insecure(true);
+                    composefs.set_insecure();
                 }
                 let composefs = Arc::new(composefs);
 
@@ -479,11 +477,15 @@ impl Storage {
         let ostree = self.get_ostree()?;
         let ostree_repo = &ostree.repo();
         let ostree_verity = ostree_ext::fsverity::is_verity_enabled(ostree_repo)?;
-        let mut composefs =
-            ComposefsRepository::open_path(self.physical_root.open_dir(COMPOSEFS)?, ".")?;
+        let (mut composefs, _created) = ComposefsRepository::init_path(
+            self.physical_root.open_dir(COMPOSEFS)?,
+            ".",
+            composefs::fsverity::Algorithm::SHA512,
+            ostree_verity.enabled,
+        )?;
         if !ostree_verity.enabled {
             tracing::debug!("Setting insecure mode for composefs repo");
-            composefs.set_insecure(true);
+            composefs.set_insecure();
         }
         let composefs = Arc::new(composefs);
         let r = Arc::clone(self.composefs.get_or_init(|| composefs));
