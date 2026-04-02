@@ -1531,16 +1531,23 @@ async fn usroverlay(access_mode: FilesystemOverlayAccessMode) -> Result<()> {
     Err(Command::new("ostree").args(args).exec().into())
 }
 
-/// Perform process global initialization. This should be called as early as possible
-/// in the standard `main` function.
-#[allow(unsafe_code)]
-pub fn global_init() -> Result<()> {
-    // Join the host IPC namespace if we're in an isolated one. Inside a
-    // container with a separate IPC namespace (the podman/docker default),
-    // udevd on the host cannot see the container's semaphores, causing
-    // cryptsetup operations to deadlock on semop(). The primary fix is to
-    // run the install container with --ipc=host; this is defense-in-depth
-    // for cases where the caller forgets that flag.
+/// Join the host IPC namespace if we're in an isolated one and have
+/// sufficient privileges. The default for `podman run` is a separate IPC
+/// namespace, which for e.g. `bootc install` can cause failures where tools
+/// like udev/cryptsetup expect semaphores to be in sync with the host.
+/// While we do want callers to pass `--ipc=host`, we don't want to force
+/// them to need to either.
+///
+/// Requires `CAP_SYS_ADMIN` (needed for `setns()`); silently skipped when
+/// running unprivileged (e.g. during RPM build for manpage generation).
+fn join_host_ipc_namespace() -> Result<()> {
+    let caps = rustix::thread::capabilities(None).context("capget")?;
+    if !caps
+        .effective
+        .contains(rustix::thread::CapabilitySet::SYS_ADMIN)
+    {
+        return Ok(());
+    }
     let ns_pid1 = std::fs::read_link("/proc/1/ns/ipc").context("reading /proc/1/ns/ipc")?;
     let ns_self = std::fs::read_link("/proc/self/ns/ipc").context("reading /proc/self/ns/ipc")?;
     if ns_pid1 != ns_self {
@@ -1552,6 +1559,14 @@ pub fn global_init() -> Result<()> {
         .context("setns(ipc)")?;
         tracing::debug!("Joined pid1 IPC namespace");
     }
+    Ok(())
+}
+
+/// Perform process global initialization. This should be called as early as possible
+/// in the standard `main` function.
+#[allow(unsafe_code)]
+pub fn global_init() -> Result<()> {
+    join_host_ipc_namespace()?;
     // In some cases we re-exec with a temporary binary,
     // so ensure that the syslog identifier is set.
     ostree::glib::set_prgname(bootc_utils::NAME.into());
