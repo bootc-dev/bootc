@@ -39,6 +39,11 @@ The `install` section supports these subfields:
    implement the Boot Loader Interface (BLI); systemd-boot always does, GRUB
    needs the `bli` module (available in newer builds).  Defaults to `true`
    when using systemd-boot, `false` otherwise.
+- `enforce-container-sigpolicy`: A boolean that controls whether to enforce that
+   `/etc/containers/policy.json` includes a default policy which requires signatures.
+   When `true`, image pulls will be rejected if the policy file specifies
+   `insecureAcceptAnything` as the default. Defaults to `false`.
+   This is equivalent to the `--enforce-container-sigpolicy` CLI flag.
 
 # filesystem
 
@@ -79,6 +84,7 @@ kargs = ["nosmt", "console=tty0"]
 stateroot = "myos"
 root-mount-spec = "LABEL=rootfs"
 boot-mount-spec = "UUID=abcd-1234"
+enforce-container-sigpolicy = true
 
 [install.ostree]
 bls-append-except-default = 'grub_users=""'

@@ -129,6 +129,9 @@ pub(crate) struct InstallConfiguration {
     /// Interface (systemd-boot always does, GRUB needs the `bli` module).
     /// Defaults to false for broad compatibility.
     pub(crate) discoverable_partitions: Option<bool>,
+    /// Enforce that the containers-storage stack has a non-default
+    /// (i.e. not `insecureAcceptAnything`) container image signature policy.
+    pub(crate) enforce_container_sigpolicy: Option<bool>,
 }
 
 fn merge_basic<T>(s: &mut Option<T>, o: Option<T>, _env: &EnvProperties) {
@@ -216,6 +219,11 @@ impl Mergeable for InstallConfiguration {
             merge_basic(
                 &mut self.discoverable_partitions,
                 other.discoverable_partitions,
+                env,
+            );
+            merge_basic(
+                &mut self.enforce_container_sigpolicy,
+                other.enforce_container_sigpolicy,
                 env,
             );
             if let Some(other_kargs) = other.kargs {
@@ -939,4 +947,47 @@ root-fs-type = "xfs"
     )
     .unwrap();
     assert_eq!(c.install.unwrap().discoverable_partitions, None);
+}
+
+#[test]
+fn test_parse_enforce_container_sigpolicy() {
+    let env = EnvProperties {
+        sys_arch: "x86_64".to_string(),
+    };
+
+    // Test parsing true and false
+    for (input, expected) in [("true", true), ("false", false)] {
+        let toml_str = format!(
+            r#"[install]
+enforce-container-sigpolicy = {input}
+"#
+        );
+        let c: InstallConfigurationToplevel = toml::from_str(&toml_str).unwrap();
+        assert_eq!(
+            c.install.unwrap().enforce_container_sigpolicy.unwrap(),
+            expected
+        );
+    }
+
+    // Default (not specified) is None
+    let c: InstallConfigurationToplevel = toml::from_str(
+        r#"[install]
+root-fs-type = "xfs"
+"#,
+    )
+    .unwrap();
+    assert!(c.install.unwrap().enforce_container_sigpolicy.is_none());
+
+    // Test merging: last write wins
+    let mut install: InstallConfiguration = toml::from_str(
+        r#"enforce-container-sigpolicy = false
+"#,
+    )
+    .unwrap();
+    let other = InstallConfiguration {
+        enforce_container_sigpolicy: Some(true),
+        ..Default::default()
+    };
+    install.merge(other, &env);
+    assert_eq!(install.enforce_container_sigpolicy.unwrap(), true);
 }
