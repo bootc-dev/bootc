@@ -8,35 +8,25 @@ use anyhow::{Context, Result};
 use cap_std_ext::{cap_std::fs::Dir, dirext::CapStdExtDirExt};
 use cfsctl::composefs;
 use cfsctl::composefs_boot;
+use cfsctl::composefs_oci;
+use composefs::fsverity::FsVerityHashValue;
 use composefs::repository::GcResult;
 use composefs_boot::bootloader::EFI_EXT;
 
 use crate::{
     bootc_composefs::{
         boot::{BOOTC_UKI_DIR, BootType, get_type1_dir_name, get_uki_addon_dir_name, get_uki_name},
-        delete::{delete_image, delete_staged, delete_state_dir},
-        status::{get_composefs_status, get_imginfo, list_bootloader_entries},
+        delete::{delete_staged, delete_state_dir},
+        repo::bootc_tag_for_manifest,
+        state::read_origin,
+        status::{get_composefs_status, list_bootloader_entries},
     },
-    composefs_consts::{STATE_DIR_RELATIVE, TYPE1_BOOT_DIR_PREFIX, UKI_NAME_PREFIX},
+    composefs_consts::{
+        BOOTC_TAG_PREFIX, ORIGIN_KEY_IMAGE, ORIGIN_KEY_MANIFEST_DIGEST, STATE_DIR_RELATIVE,
+        TYPE1_BOOT_DIR_PREFIX, UKI_NAME_PREFIX,
+    },
     store::{BootedComposefs, Storage},
 };
-
-#[fn_error_context::context("Listing EROFS images")]
-fn list_erofs_images(sysroot: &Dir) -> Result<Vec<String>> {
-    let images_dir = sysroot
-        .open_dir("composefs/images")
-        .context("Opening images dir")?;
-
-    let mut images = vec![];
-
-    for entry in images_dir.entries_utf8()? {
-        let entry = entry?;
-        let name = entry.file_name()?;
-        images.push(name);
-    }
-
-    Ok(images)
-}
 
 #[fn_error_context::context("Listing state directories")]
 fn list_state_dirs(sysroot: &Dir) -> Result<Vec<String>> {
@@ -263,82 +253,153 @@ pub(crate) async fn composefs_gc(
         }
     }
 
-    let images = list_erofs_images(&sysroot)?;
-
-    // Collect the deployments that have an image but no bootloader entry
-    // and vice versa
-    //
-    // Images without corresponding bootloader entries
-    let orphaned_images: Vec<&String> = images
-        .iter()
-        .filter(|image| {
-            !bootloader_entries
-                .iter()
-                .any(|entry| &entry.fsverity == *image)
-        })
-        .collect();
-
-    // Bootloader entries without corresponding images
-    let orphaned_bootloader_entries: Vec<&String> = bootloader_entries
-        .iter()
-        .map(|entry| &entry.fsverity)
-        .filter(|verity| !images.contains(verity))
-        .collect();
-
-    let img_bootloader_diff: Vec<&String> = orphaned_images
-        .into_iter()
-        .chain(orphaned_bootloader_entries)
-        .collect();
-
-    tracing::debug!("img_bootloader_diff: {img_bootloader_diff:#?}");
+    // Identify orphaned deployments: state dirs or bootloader entries
+    // that don't correspond to a live deployment. EROFS images in
+    // composefs/images/ are NOT managed here — repo.gc() handles those
+    // via the tag→manifest→config→image ref chain.
+    let state_dirs = list_state_dirs(&sysroot)?;
 
     let staged = &host.status.staged;
 
-    if img_bootloader_diff.contains(&&booted_cfs_status.verity) {
+    // State dirs without a bootloader entry are from interrupted deployments.
+    let orphaned_state_dirs: Vec<_> = state_dirs
+        .iter()
+        .filter(|s| !bootloader_entries.iter().any(|entry| &entry.fsverity == *s))
+        .collect();
+
+    // Bootloader entries without a state dir are from interrupted cleanups.
+    let orphaned_boot_entries: Vec<_> = bootloader_entries
+        .iter()
+        .map(|entry| &entry.fsverity)
+        .filter(|verity| !state_dirs.contains(verity))
+        .collect();
+
+    let all_orphans: Vec<_> = orphaned_state_dirs
+        .iter()
+        .chain(orphaned_boot_entries.iter())
+        .copied()
+        .collect();
+
+    if all_orphans.contains(&&booted_cfs_status.verity) {
         anyhow::bail!(
             "Inconsistent state. Booted entry '{}' found for cleanup",
             booted_cfs_status.verity
         )
     }
 
-    for verity in &img_bootloader_diff {
-        tracing::debug!("Cleaning up orphaned image: {verity}");
-
-        delete_staged(staged, &img_bootloader_diff, dry_run)?;
-        delete_image(&sysroot, verity, dry_run)?;
+    for verity in &orphaned_state_dirs {
+        tracing::debug!("Cleaning up orphaned state dir: {verity}");
+        delete_staged(staged, &all_orphans, dry_run)?;
         delete_state_dir(&sysroot, verity, dry_run)?;
     }
 
-    let state_dirs = list_state_dirs(&sysroot)?;
-
-    // Collect all the deployments that have no image but have a state dir
-    // This for the case where the gc was interrupted after deleting the image
-    let state_img_diff = state_dirs
-        .iter()
-        .filter(|s| !images.contains(s))
-        .collect::<Vec<_>>();
-
-    for verity in &state_img_diff {
-        delete_staged(staged, &state_img_diff, dry_run)?;
-        delete_state_dir(&sysroot, verity, dry_run)?;
+    for verity in &orphaned_boot_entries {
+        tracing::debug!("Cleaning up orphaned bootloader entry: {verity}");
+        delete_staged(staged, &all_orphans, dry_run)?;
     }
 
-    // Now we GC the unrefenced objects in composefs repo
-    let mut additional_roots = vec![];
+    // Collect the set of manifest digests referenced by live deployments,
+    // and track EROFS image verities as fallback additional_roots for
+    // deployments that predate the manifest→image link.
+    let mut live_manifest_digests: Vec<composefs_oci::OciDigest> = Vec::new();
+    let mut additional_roots = Vec::new();
+
+    // Read existing tags before the deployment loop so we can search
+    // them for deployments that lack manifest_digest in their origin.
+    let existing_tags = composefs_oci::list_refs(&*booted_cfs.repo)
+        .context("Listing OCI tags in composefs repo")?;
 
     for deployment in host.list_deployments() {
         let verity = &deployment.require_composefs()?.verity;
 
-        // These need to be GC'd
-        if img_bootloader_diff.contains(&verity) || state_img_diff.contains(&verity) {
+        // Skip deployments that are already being GC'd.
+        if all_orphans.contains(&verity) {
             continue;
         }
 
-        let image = get_imginfo(storage, verity, None).await?;
-        let stream = format!("oci-config-{}", image.manifest.config().digest());
-
+        // Keep the EROFS image as an additional root until all deployments
+        // have manifest→image refs. Once a deployment is pulled with the
+        // new code, its EROFS image is reachable from the manifest and
+        // this entry becomes redundant (but harmless).
         additional_roots.push(verity.clone());
-        additional_roots.push(stream);
+
+        if let Some(ini) = read_origin(sysroot, verity)? {
+            if let Some(manifest_digest_str) =
+                ini.get::<String>(ORIGIN_KEY_IMAGE, ORIGIN_KEY_MANIFEST_DIGEST)
+            {
+                let digest: composefs_oci::OciDigest = manifest_digest_str
+                    .parse()
+                    .with_context(|| format!("Parsing manifest digest {manifest_digest_str}"))?;
+                live_manifest_digests.push(digest);
+            } else {
+                // Pre-OCI-metadata deployment: search tagged manifests
+                // for one whose config links to this EROFS image.
+                let mut found_manifest = false;
+                for (_, ref_digest) in &existing_tags {
+                    if let Ok(img) = composefs_oci::oci_image::OciImage::open(
+                        &*booted_cfs.repo,
+                        ref_digest,
+                        None,
+                    ) {
+                        if let Some(img_ref) = img.image_ref() {
+                            if img_ref.to_hex() == *verity {
+                                tracing::info!(
+                                    "Deployment {verity} has no manifest_digest in origin; \
+                                     found matching manifest {ref_digest} via image_ref"
+                                );
+                                live_manifest_digests.push(ref_digest.clone());
+                                found_manifest = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+                if !found_manifest {
+                    tracing::warn!(
+                        "Deployment {verity} has no manifest_digest in origin \
+                         and no tagged manifest references it; \
+                         EROFS image is protected but OCI metadata may be collected"
+                    );
+                }
+            }
+        }
+    }
+
+    // Migration: ensure every live deployment has a bootc-owned tag.
+    // Deployments from before the tag-based GC won't have tags yet;
+    // create them now so their OCI metadata survives this GC cycle.
+
+    for manifest_digest in &live_manifest_digests {
+        let expected_tag = bootc_tag_for_manifest(&manifest_digest.to_string());
+        let has_tag = existing_tags
+            .iter()
+            .any(|(tag_name, _)| tag_name == &expected_tag);
+        if !has_tag {
+            tracing::info!("Creating missing bootc tag for live deployment: {expected_tag}");
+            if !dry_run {
+                composefs_oci::tag_image(&*booted_cfs.repo, manifest_digest, &expected_tag)
+                    .with_context(|| format!("Creating migration tag {expected_tag}"))?;
+            }
+        }
+    }
+
+    // Re-read tags after potential migration.
+    let all_tags = composefs_oci::list_refs(&*booted_cfs.repo)
+        .context("Listing OCI tags in composefs repo")?;
+
+    for (tag_name, manifest_digest) in &all_tags {
+        if !tag_name.starts_with(BOOTC_TAG_PREFIX) {
+            // Not a bootc-owned tag; leave it alone (could be an app image).
+            continue;
+        }
+
+        if !live_manifest_digests.iter().any(|d| d == manifest_digest) {
+            tracing::debug!("Removing unreferenced bootc tag: {tag_name}");
+            if !dry_run {
+                composefs_oci::untag_image(&*booted_cfs.repo, tag_name)
+                    .with_context(|| format!("Removing tag {tag_name}"))?;
+            }
+        }
     }
 
     let additional_roots = additional_roots
@@ -346,7 +407,11 @@ pub(crate) async fn composefs_gc(
         .map(|x| x.as_str())
         .collect::<Vec<_>>();
 
-    // Run garbage collection on objects after deleting images
+    // Run garbage collection. Tags root the OCI metadata chain
+    // (manifest → config → layers). The additional_roots protect EROFS
+    // images for deployments that predate the manifest→image link;
+    // once all deployments have been pulled with the new code, these
+    // become redundant.
     let gc_result = if dry_run {
         booted_cfs.repo.gc_dry_run(&additional_roots)?
     } else {

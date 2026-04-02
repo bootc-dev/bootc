@@ -22,7 +22,6 @@ use clap::ValueEnum;
 use composefs::dumpfile;
 use composefs::fsverity;
 use composefs::fsverity::FsVerityHashValue;
-use composefs::splitstream::SplitStreamWriter;
 use composefs_boot::BootOps as _;
 use etc_merge::{compute_diff, print_diff};
 use fn_error_context::context;
@@ -1731,7 +1730,7 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
                 path,
                 write_dumpfile_to,
             } => {
-                let digest = compute_composefs_digest(&path, write_dumpfile_to.as_deref())?;
+                let digest = compute_composefs_digest(&path, write_dumpfile_to.as_deref()).await?;
                 println!("{digest}");
                 Ok(())
             }
@@ -1766,9 +1765,17 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
                 };
 
                 let imgref = format!("containers-storage:{image}");
-                let pull_result = composefs_oci::pull(&repo, &imgref, None, Some(proxycfg))
-                    .await
-                    .context("Pulling image")?;
+                let pull_result = composefs_oci::pull(
+                    &repo,
+                    &imgref,
+                    None,
+                    composefs_oci::PullOptions {
+                        img_proxy_config: Some(proxycfg),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .context("Pulling image")?;
                 let mut fs = composefs_oci::image::create_filesystem(
                     &repo,
                     &pull_result.config_digest,
@@ -1793,7 +1800,7 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
                 kargs,
                 allow_missing_verity,
                 args,
-            } => crate::ukify::build_ukify(&rootfs, &kargs, &args, allow_missing_verity),
+            } => crate::ukify::build_ukify(&rootfs, &kargs, &args, allow_missing_verity).await,
             ContainerOpts::Export {
                 format,
                 target,
@@ -1933,14 +1940,14 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
                 let cfs = storage.get_ensure_composefs()?;
                 let testdata = b"some test data";
                 let testdata_digest = hex::encode(openssl::sha::sha256(testdata));
-                let mut w = SplitStreamWriter::new(&cfs, 0);
+                let mut w = cfs.create_stream(0)?;
                 w.write_inline(testdata);
                 let object = cfs
                     .write_stream(w, &testdata_digest, Some("testobject"))?
                     .to_hex();
                 assert_eq!(
                     object,
-                    "dc31ae5d2f637e98d2171821d60d2fcafb8084d6a4bb3bd9cdc7ad41decce6e48f85d5413d22371d36b223945042f53a2a6ab449b8e45d8896ba7d8694a16681"
+                    "84245c6936db9939dda9c1fbeafdcbd2b49f7605354c88d4f016c4d941551f45bad0fbcdbee12ba8adfe4fb63541de57ac02729edbacdb556325e342b89d340d"
                 );
                 Ok(())
             }

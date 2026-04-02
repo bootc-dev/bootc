@@ -35,6 +35,16 @@ if $is_composefs {
     # When already on composefs, we can only test read-only operations
     print "# TODO composefs: skipping pull test - cfs oci pull requires write access to sysroot"
     bootc internals cfs --help
+
+    # Verify that GC on a freshly booted system would not prune any
+    # images or streams.  This validates that our OCI tags and
+    # manifest→image refs correctly root the entire chain.
+    # Note: a small number of orphaned objects is expected (e.g. from
+    # manifest splitstream rewrites) and is harmless.
+    print "# Verifying composefs GC dry-run does not prune images or streams"
+    let gc_output = (bootc internals composefs-gc --dry-run)
+    print $gc_output
+    assert (not ($gc_output | str contains "Pruned symlinks")) "GC dry-run should not prune any images or streams on a freshly booted system"
 } else {
     # When not on composefs, run the full test including initialization
     bootc internals test-composefs
@@ -43,6 +53,7 @@ if $is_composefs {
     # We use a separate `/sysroot` as we need rw access to the repo which
     # we can't get from `bootc internals cfs ...`
     mkdir /var/tmp/sysroot/composefs
+    bootc internals cfs --insecure --repo /var/tmp/sysroot/composefs init
     bootc internals cfs --insecure --repo /var/tmp/sysroot/composefs oci pull docker://busybox busybox
     test -L /var/tmp/sysroot/composefs/streams/refs/oci/busybox
 }
