@@ -1119,6 +1119,11 @@ async fn upgrade(
         return Ok(());
     }
 
+    // Ensure the bootc storage directory is initialized; the --check path
+    // needs this for update_mtime() and the non-check path needs it for
+    // unified pull detection.
+    let use_unified = crate::deploy::image_exists_in_unified_storage(storage, imgref).await?;
+
     if opts.check {
         let ostree_imgref = imgref.clone().into();
         let mut imp =
@@ -1144,9 +1149,6 @@ async fn upgrade(
             }
         }
     } else {
-        // Auto-detect whether to use unified storage based on image presence in bootc storage
-        let use_unified = crate::deploy::image_exists_in_unified_storage(storage, imgref).await?;
-
         let fetched = if use_unified {
             crate::deploy::pull_unified(
                 repo,
