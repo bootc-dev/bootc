@@ -272,6 +272,13 @@ pub(crate) struct StatusOpts {
     /// Include additional fields in human readable format.
     #[clap(long, short = 'v')]
     pub(crate) verbose: bool,
+
+    /// Query a sysroot at an arbitrary path instead of the booted system.
+    ///
+    /// Useful for inspecting a freshly installed (not yet booted) system,
+    /// e.g. `bootc status --json --sysroot /mnt`.
+    #[clap(long)]
+    pub(crate) sysroot: Option<camino::Utf8PathBuf>,
 }
 
 /// Add a transient overlayfs on /usr
@@ -2228,7 +2235,8 @@ mod tests {
                 format: None,
                 format_version: None,
                 booted: false,
-                verbose: false
+                verbose: false,
+                sysroot: None,
             })
         ));
         assert!(matches!(

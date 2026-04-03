@@ -472,6 +472,51 @@ pub(crate) async fn get_host() -> Result<Host> {
     Ok(host)
 }
 
+/// Query the status of a sysroot at an arbitrary path.
+///
+/// This is designed for callers that have just completed an installation
+/// and want to discover the deployment state (image digest, stateroot,
+/// ostree metadata, etc.) without rebooting.  The returned [`Host`] uses
+/// the same schema as `bootc status --json`.
+///
+/// Since the target sysroot is not the running system, `booted` and
+/// `staged` will be `None`; all deployments appear in `otherDeployments`.
+#[context("Querying status for sysroot")]
+pub(crate) fn get_host_from_sysroot(sysroot_path: &camino::Utf8Path) -> Result<Host> {
+    let sysroot =
+        ostree::Sysroot::new(Some(&ostree::gio::File::for_path(sysroot_path)));
+    sysroot.load(ostree::gio::Cancellable::NONE)?;
+    let sysroot_lock = SysrootLock::from_assumed_locked(&sysroot);
+
+    let deployments = sysroot.deployments();
+    let all_deployments = deployments
+        .iter()
+        .map(|d| boot_entry_from_deployment(&sysroot_lock, d))
+        .collect::<Result<Vec<_>>>()
+        .context("Enumerating deployments")?;
+
+    let spec = all_deployments
+        .first()
+        .and_then(|entry| entry.image.as_ref())
+        .map(|img| HostSpec {
+            image: Some(img.image.clone()),
+            boot_order: BootOrder::Default,
+        })
+        .unwrap_or_default();
+
+    let mut host = Host::new(spec);
+    host.status = HostStatus {
+        staged: None,
+        booted: None,
+        rollback: None,
+        other_deployments: all_deployments,
+        rollback_queued: false,
+        ty: Some(HostType::BootcHost),
+        usr_overlay: None,
+    };
+    Ok(host)
+}
+
 /// Implementation of the `bootc status` CLI command.
 #[context("Status")]
 pub(crate) async fn status(opts: super::cli::StatusOpts) -> Result<()> {
@@ -480,7 +525,11 @@ pub(crate) async fn status(opts: super::cli::StatusOpts) -> Result<()> {
         0 | 1 => {}
         o => anyhow::bail!("Unsupported format version: {o}"),
     };
-    let mut host = get_host().await?;
+    let mut host = if let Some(ref sysroot_path) = opts.sysroot {
+        get_host_from_sysroot(sysroot_path)?
+    } else {
+        get_host().await?
+    };
 
     // We could support querying the staged or rollback deployments
     // here too, but it's not a common use case at the moment.
