@@ -143,3 +143,8 @@ check:
   summary: Test bootc upgrade --tag functionality with containers-storage
   duration: 30m
   test: nu booted/test-upgrade-tag.nu
+
+/test-40-loader-entries-source:
+  summary: Test bootc loader-entries set-options-for-source
+  duration: 30m
+  test: nu booted/test-loader-entries-source.nu

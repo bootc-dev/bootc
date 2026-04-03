@@ -82,6 +82,7 @@ pub(crate) mod journal;
 mod k8sapitypes;
 mod kernel;
 mod lints;
+mod loader_entries;
 mod lsm;
 pub(crate) mod metadata;
 mod parsers;

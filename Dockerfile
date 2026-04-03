@@ -15,6 +15,12 @@ COPY . /src
 FROM scratch as packaging
 COPY contrib/packaging /
 
+# Default empty stage for ostree override RPMs. When BOOTC_ostree_src is set,
+# the Justfile passes --build-context ostree-packages=<dir> which overrides
+# this stage with the actual RPMs. When not set, this empty stage ensures
+# the Dockerfile still builds without errors.
+FROM scratch as ostree-packages
+
 # This image installs build deps, pulls in our source code, and installs updated
 # bootc binaries in /out. The intention is that the target rootfs is extracted from /out
 # back into a final stage (without the build deps etc) below.
@@ -27,6 +33,17 @@ ARG initramfs=1
 RUN --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
     --mount=type=bind,from=packaging,src=/,target=/run/packaging \
     /run/packaging/install-buildroot
+# Install ostree override RPMs into the buildroot if provided via BOOTC_ostree_src.
+# This ensures bootc compiles and links against the patched ostree (ostree-devel,
+# ostree-libs, ostree). When the directory is empty, nothing is installed.
+RUN --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
+    --mount=type=bind,from=ostree-packages,src=/,target=/run/ostree-packages <<EORUN
+set -xeuo pipefail
+if ls /run/ostree-packages/*.rpm 2>/dev/null; then
+    echo "Installing ostree override into buildroot"
+    rpm -Uvh --oldpackage /run/ostree-packages/*.rpm
+fi
+EORUN
 # Now copy the rest of the source
 COPY --from=src /src /src
 WORKDIR /src
@@ -162,6 +179,16 @@ ARG rootfs=""
 RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
     --mount=type=bind,from=packaging,src=/,target=/run/packaging \
     /run/packaging/configure-rootfs "${variant}" "${rootfs}"
+# Install ostree override RPMs into the final image if provided via BOOTC_ostree_src.
+# Only ostree and ostree-libs are installed here (not ostree-devel).
+RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
+    --mount=type=bind,from=ostree-packages,src=/,target=/run/ostree-packages <<EORUN
+set -xeuo pipefail
+if ls /run/ostree-packages/ostree-2*.rpm /run/ostree-packages/ostree-libs-*.rpm 2>/dev/null; then
+    echo "Installing ostree override RPMs into final image"
+    rpm -Uvh --oldpackage /run/ostree-packages/ostree-2*.rpm /run/ostree-packages/ostree-libs-*.rpm
+fi
+EORUN
 # Override with our built package
 RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
     --mount=type=bind,from=packaging,src=/,target=/run/packaging \
