@@ -21,5 +21,16 @@ env DRACUT_NO_XATTR=1 dracut --add bootc -vf /usr/lib/modules/$kver/initramfs.im
 # tests to know we're doing upstream CI.
 touch /usr/lib/.bootc-dev-stamp
 
+# Fedora 43+ ships a GRUB with the BLI module, so enable DPS
+# auto-discovery for root.  This must run after our RPM is installed
+# since older bootc doesn't recognize the discoverable-partitions key.
+. /usr/lib/os-release
+if [ "${ID}" = "fedora" ] && [ "${VERSION_ID}" -ge 43 ] 2>/dev/null; then
+  cat > /usr/lib/bootc/install/20-discoverable-partitions.toml <<'EOF'
+[install]
+discoverable-partitions = true
+EOF
+fi
+
 # Workaround for https://github.com/bootc-dev/bootc/issues/1546
 rm -rf /root/buildinfo /var/roothome/buildinfo

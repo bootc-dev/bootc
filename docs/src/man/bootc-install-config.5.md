@@ -33,6 +33,12 @@ The `install` section supports these subfields:
 - `boot-mount-spec`: A string specifying the /boot filesystem mount specification.
    If not provided and /boot is a separate mount, its UUID will be used.
    An empty string signals to omit boot mount kargs entirely.
+- `discoverable-partitions`: Boolean.  When `true`, root discovery uses the
+   Discoverable Partitions Specification via `systemd-gpt-auto-generator` and
+   the `root=` kernel argument is omitted.  This requires the bootloader to
+   implement the Boot Loader Interface (BLI); systemd-boot always does, GRUB
+   needs the `bli` module (available in newer builds).  Defaults to `true`
+   when using systemd-boot, `false` otherwise.
 
 # filesystem
 
@@ -76,6 +82,13 @@ boot-mount-spec = "UUID=abcd-1234"
 
 [install.ostree]
 bls-append-except-default = 'grub_users=""'
+```
+
+Enable DPS auto-discovery for root (requires a BLI-capable bootloader):
+
+```toml
+[install]
+discoverable-partitions = true
 ```
 
 # SEE ALSO
