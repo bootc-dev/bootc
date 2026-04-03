@@ -715,6 +715,54 @@ pub(crate) enum InternalsOpts {
     },
 }
 
+/// Options for the `set-options-for-source` subcommand.
+#[derive(Debug, Parser, PartialEq, Eq)]
+pub(crate) struct SetOptionsForSourceOpts {
+    /// The name of the source that owns these kernel arguments.
+    ///
+    /// Must contain only alphanumeric characters, hyphens, or underscores.
+    /// Examples: "tuned", "admin", "bootc-kargs-d"
+    #[clap(long)]
+    pub(crate) source: String,
+
+    /// The kernel arguments to set for this source.
+    ///
+    /// If not provided, the source is removed and its options are
+    /// dropped from the merged `options` line.
+    #[clap(long)]
+    pub(crate) options: Option<String>,
+}
+
+/// Operations on Boot Loader Specification (BLS) entries.
+///
+/// These commands support managing kernel arguments from multiple independent
+/// sources (e.g., TuneD, admin, bootc kargs.d) by tracking argument ownership
+/// via `x-options-source-<name>` extension keys in BLS config files.
+///
+/// See <https://github.com/ostreedev/ostree/pull/3570>
+#[derive(Debug, clap::Subcommand, PartialEq, Eq)]
+pub(crate) enum LoaderEntriesOpts {
+    /// Set or update the kernel arguments owned by a specific source.
+    ///
+    /// Each source's arguments are tracked via `x-options-source-<name>`
+    /// keys in BLS config files. The `options` line is recomputed as the
+    /// merge of all tracked sources plus any untracked (pre-existing) options.
+    ///
+    /// This stages a new deployment with the updated kernel arguments.
+    ///
+    /// ## Examples
+    ///
+    /// Add TuneD kernel arguments:
+    /// bootc loader-entries set-options-for-source --source tuned --options "isolcpus=1-3 nohz_full=1-3"
+    ///
+    /// Update TuneD kernel arguments:
+    /// bootc loader-entries set-options-for-source --source tuned --options "isolcpus=0-7"
+    ///
+    /// Remove TuneD kernel arguments:
+    /// bootc loader-entries set-options-for-source --source tuned
+    SetOptionsForSource(SetOptionsForSourceOpts),
+}
+
 #[derive(Debug, clap::Subcommand, PartialEq, Eq)]
 pub(crate) enum StateOpts {
     /// Remove all ostree deployments from this system
@@ -820,6 +868,11 @@ pub(crate) enum Opt {
     /// Stability: This interface may change in the future.
     #[clap(subcommand, hide = true)]
     Image(ImageOpts),
+    /// Operations on Boot Loader Specification (BLS) entries.
+    ///
+    /// Manage kernel arguments from multiple independent sources.
+    #[clap(subcommand)]
+    LoaderEntries(LoaderEntriesOpts),
     /// Execute the given command in the host mount namespace
     #[clap(hide = true)]
     ExecInHostMountNamespace {
@@ -1862,6 +1915,19 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
             }
             InstallOpts::Finalize { root_path } => {
                 crate::install::install_finalize(&root_path).await
+            }
+        },
+        Opt::LoaderEntries(opts) => match opts {
+            LoaderEntriesOpts::SetOptionsForSource(opts) => {
+                prepare_for_write()?;
+                let storage = get_storage().await?;
+                let sysroot = storage.get_ostree()?;
+                crate::loader_entries::set_options_for_source_staged(
+                    sysroot,
+                    &opts.source,
+                    opts.options.as_deref(),
+                )?;
+                Ok(())
             }
         },
         Opt::ExecInHostMountNamespace { args } => {

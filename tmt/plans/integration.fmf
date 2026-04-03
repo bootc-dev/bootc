@@ -237,4 +237,11 @@ execute:
     how: fmf
     test:
       - /tmt/tests/tests/test-39-upgrade-tag
+
+/plan-40-loader-entries-source:
+  summary: Test bootc loader-entries set-options-for-source
+  discover:
+    how: fmf
+    test:
+      - /tmt/tests/tests/test-40-loader-entries-source
 # END GENERATED PLANS
