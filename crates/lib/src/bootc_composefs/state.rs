@@ -27,7 +27,7 @@ use rustix::{
 
 use crate::bootc_composefs::boot::BootType;
 use crate::bootc_composefs::status::{
-    ComposefsCmdline, StagedDeployment, get_sorted_type1_boot_entries,
+    ComposefsCmdline, StagedDeployment, get_bootloader, get_sorted_type1_boot_entries,
 };
 use crate::parsers::bls_config::{BLSConfigType, EFIKey};
 use crate::store::{BootedComposefs, Storage};
@@ -65,7 +65,7 @@ pub(crate) fn read_origin(sysroot: &Dir, deployment_id: &str) -> Result<Option<t
 }
 
 pub(crate) fn get_booted_bls(boot_dir: &Dir, booted_cfs: &BootedComposefs) -> Result<BLSConfig> {
-    let sorted_entries = get_sorted_type1_boot_entries(boot_dir, true)?;
+    let sorted_entries = get_sorted_type1_boot_entries(boot_dir, true, get_bootloader()?)?;
 
     for entry in sorted_entries {
         match &entry.cfg_type {

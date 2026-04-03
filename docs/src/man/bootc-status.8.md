@@ -57,6 +57,10 @@ However, if the `incompatible` flag is set on a deployment, then there are layer
 
     Include additional fields in human readable format
 
+**--sysroot**=*SYSROOT*
+
+    Query a sysroot at an arbitrary path instead of the booted system
+
 <!-- END GENERATED OPTIONS -->
 
 # EXAMPLES

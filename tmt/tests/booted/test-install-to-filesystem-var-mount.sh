@@ -221,5 +221,28 @@ else
     fi
 fi
 
+# `bootc status --sysroot` should be able to query the freshly installed
+# target directly, without rebooting into it.
+echo "Verifying 'bootc status --sysroot'..."
+sysroot_status=$(bootc status --json --sysroot /var/mnt/target)
+
+test "$(jq '.status.booted' <<< "$sysroot_status")" = "null"
+test "$(jq '.status.staged' <<< "$sysroot_status")" = "null"
+test "$(jq '.status.otherDeployments | length' <<< "$sysroot_status")" = "1"
+
+if [[ $is_composefs == "null" ]]; then
+    test -n "$(jq -r '.status.otherDeployments[0].ostree.checksum' <<< "$sysroot_status")"
+    test -n "$(jq -r '.status.otherDeployments[0].ostree.stateroot' <<< "$sysroot_status")"
+else
+    sysroot_boot_type=$(jq -r '.status.otherDeployments[0].composefs.bootType' <<< "$sysroot_status" | tr '[:upper:]' '[:lower:]')
+
+    test "$sysroot_boot_type" = "$boot_type"
+    test -n "$(jq -r '.status.otherDeployments[0].composefs.verity' <<< "$sysroot_status")"
+
+    # `grub-cc` and `systemd` share the same on-disk BLS-in-ESP layout, so
+    # the bootloader can't be reliably determined without booting; bootc
+    # leaves it unset (null) rather than guess.
+    test "$(jq '.status.otherDeployments[0].composefs.bootloader' <<< "$sysroot_status")" = "null"
+fi
 
 echo "Installation to-filesystem with separate /var mount succeeded!"

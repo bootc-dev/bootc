@@ -96,7 +96,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use bootc_mount::tempmount::TempMount;
-use camino::Utf8PathBuf;
+use camino::{Utf8Path, Utf8PathBuf};
 use cap_std_ext::cap_std;
 use cap_std_ext::cap_std::fs::{
     Dir, DirBuilder, DirBuilderExt as _, Permissions, PermissionsExt as _,
@@ -503,6 +503,47 @@ impl Storage {
             esp: None,
             ostree: ostree_cell,
             composefs: Default::default(),
+            imgstore: Default::default(),
+        })
+    }
+
+    /// Create a read-only storage accessor for a composefs-native sysroot
+    /// at an arbitrary path.
+    ///
+    /// This is the composefs counterpart to [`Self::new_ostree`]: it's used
+    /// for non-booted scenarios (e.g. `bootc status --sysroot` querying a
+    /// freshly installed target) rather than the running system. Unlike
+    /// [`BootedStorage::new`], it doesn't rely on `/proc/cmdline`, `/run`
+    /// transient state, or EFI variables -- the caller must have already
+    /// opened `physical_root` and determined `boot_dir` by inspecting the
+    /// target filesystem layout (see
+    /// `bootc_composefs::status::composefs_status_from_sysroot`).
+    ///
+    /// The composefs repository is opened read-only (with fs-verity
+    /// enforcement relaxed) since this is only used to read deployment
+    /// metadata, not to mount or verify a boot.
+    pub(crate) fn new_composefs_sysroot(
+        sysroot_path: &Utf8Path,
+        physical_root: Dir,
+        boot_dir: Dir,
+    ) -> Result<Self> {
+        let mut composefs = ComposefsRepository::open_path(&physical_root, COMPOSEFS)
+            .context("Opening composefs repository")?;
+        // We're reading metadata for a status query, not verifying a live
+        // boot, so we don't need (and can't obtain) runtime information
+        // about whether fs-verity was enforced for this deployment.
+        composefs.set_insecure();
+
+        let run = physical_root.try_clone()?;
+
+        Ok(Self {
+            physical_root,
+            physical_root_path: sysroot_path.to_owned(),
+            run,
+            boot_dir: Some(boot_dir),
+            esp: None,
+            ostree: Default::default(),
+            composefs: OnceCell::from(Arc::new(composefs)),
             imgstore: Default::default(),
         })
     }

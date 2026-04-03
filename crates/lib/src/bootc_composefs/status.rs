@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     bootc_composefs::{
-        boot::BootType,
+        boot::{BootType, EFI_LINUX},
         selinux::are_selinux_policies_compatible,
         state::{get_composefs_usr_overlay_status, read_origin},
         utils::{compute_store_boot_digest_for_uki, get_uki_cmdline},
@@ -34,6 +34,7 @@ use crate::{
 use std::str::FromStr;
 
 use bootc_utils::try_deserialize_timestamp;
+use camino::Utf8Path;
 use cap_std_ext::{cap_std::fs::Dir, dirext::CapStdExtDirExt};
 use ostree_container::OstreeImageReference;
 use ostree_ext::container::{self as ostree_container};
@@ -252,8 +253,8 @@ fn get_sorted_grub_uki_boot_entries_helper<'a>(
 pub(crate) fn get_sorted_type1_boot_entries(
     boot_dir: &Dir,
     ascending: bool,
+    bootloader: Bootloader,
 ) -> Result<Vec<BLSConfig>> {
-    let bootloader = get_bootloader()?;
     get_sorted_type1_boot_entries_helper(boot_dir, ascending, false, bootloader)
 }
 
@@ -262,8 +263,8 @@ pub(crate) fn get_sorted_type1_boot_entries(
 pub(crate) fn get_sorted_staged_type1_boot_entries(
     boot_dir: &Dir,
     ascending: bool,
+    bootloader: Bootloader,
 ) -> Result<Vec<BLSConfig>> {
-    let bootloader = get_bootloader()?;
     get_sorted_type1_boot_entries_helper(boot_dir, ascending, true, bootloader)
 }
 
@@ -347,13 +348,16 @@ fn get_sorted_type1_boot_entries_helper(
         .collect())
 }
 
-pub(crate) fn list_type1_entries(boot_dir: &Dir) -> Result<Vec<BootloaderEntry>> {
+pub(crate) fn list_type1_entries(
+    boot_dir: &Dir,
+    bootloader: Bootloader,
+) -> Result<Vec<BootloaderEntry>> {
     // Type1 Entry
-    let boot_entries = get_sorted_type1_boot_entries(boot_dir, true)?;
+    let boot_entries = get_sorted_type1_boot_entries(boot_dir, true, bootloader)?;
 
     // We wouldn't want to delete the staged deployment if the GC runs when a
     // deployment is staged
-    let staged_boot_entries = get_sorted_staged_type1_boot_entries(boot_dir, true)?;
+    let staged_boot_entries = get_sorted_staged_type1_boot_entries(boot_dir, true, bootloader)?;
 
     boot_entries
         .into_iter()
@@ -369,11 +373,19 @@ pub(crate) fn list_type1_entries(boot_dir: &Dir) -> Result<Vec<BootloaderEntry>>
 
 /// Get all Type1/Type2 bootloader entries
 ///
+/// The bootloader is passed in explicitly rather than read from a live EFI
+/// variable via [`get_bootloader`], so that this can be used both for the
+/// booted system (where the caller passes `get_bootloader()?`) and for an
+/// arbitrary non-booted sysroot (see [`composefs_status_from_sysroot`],
+/// which derives it from the target's on-disk layout instead).
+///
 /// # Returns
 /// The fsverity of EROFS images corresponding to boot entries
 #[fn_error_context::context("Listing bootloader entries")]
-pub(crate) fn list_bootloader_entries(storage: &Storage) -> Result<Vec<BootloaderEntry>> {
-    let bootloader = get_bootloader()?;
+pub(crate) fn list_bootloader_entries(
+    storage: &Storage,
+    bootloader: Bootloader,
+) -> Result<Vec<BootloaderEntry>> {
     let boot_dir = storage.require_boot_dir()?;
 
     let entries = match bootloader.kind()? {
@@ -401,11 +413,11 @@ pub(crate) fn list_bootloader_entries(storage: &Storage) -> Result<Vec<Bootloade
                     })
                     .collect::<Result<Vec<_>, anyhow::Error>>()?
             } else {
-                list_type1_entries(boot_dir)?
+                list_type1_entries(boot_dir, bootloader)?
             }
         }
 
-        BootloaderKind::BLSCompatible => list_type1_entries(boot_dir)?,
+        BootloaderKind::BLSCompatible => list_type1_entries(boot_dir, bootloader)?,
     };
 
     Ok(entries)
@@ -545,6 +557,7 @@ fn boot_entry_from_composefs_deployment(
     origin: tini::Ini,
     verity: &str,
     missing_verity_allowed: bool,
+    bootloader: Option<Bootloader>,
 ) -> Result<BootEntry> {
     let image = match origin.get::<String>("origin", ORIGIN_CONTAINER) {
         Some(img_name_from_config) => {
@@ -594,7 +607,7 @@ fn boot_entry_from_composefs_deployment(
         composefs: Some(crate::spec::BootEntryComposefs {
             verity: verity.into(),
             boot_type,
-            bootloader: get_bootloader()?,
+            bootloader,
             boot_digest,
             missing_verity_allowed,
         }),
@@ -614,6 +627,77 @@ pub(crate) async fn get_composefs_status(
     composefs_deployment_status_from(&storage, booted_cfs.cmdline).await
 }
 
+/// List boot entries for a composefs-native sysroot at an arbitrary path,
+/// without requiring the sysroot to be booted.
+///
+/// There's no notion of booted/staged/rollback here since none of that is
+/// meaningful before the target has ever been booted; all deployments
+/// found are simply returned as a flat list, mirroring how
+/// [`crate::status::get_host_from_sysroot`] handles the ostree case. We
+/// never report a `bootloader` for these entries (see
+/// [`boot_entry_from_composefs_deployment`]'s `None` argument below):
+/// `grub-cc` and `systemd` write an identical on-disk layout, so it can't
+/// be determined without booting, and unlike the booted case there's no
+/// menu order to get right, so we don't need to guess one either.
+pub(crate) fn composefs_status_from_sysroot(
+    sysroot_path: &Utf8Path,
+    sysroot_dir: Dir,
+) -> Result<Vec<BootEntry>> {
+    // `list_bootloader_entries` needs *a* `Bootloader` to pick which
+    // on-disk format to parse (classic grub.cfg vs BLS `.conf` files) and
+    // a sort order; `Grub` is accurate whenever `boot/grub2` exists, and
+    // otherwise `Systemd` is just a placeholder to select the BLS format
+    // (its sort order isn't used since we return an unordered list).
+    let (boot_dir, bootloader) = if sysroot_dir.exists("boot/grub2") {
+        (
+            sysroot_dir.open_dir("boot").context("Opening boot dir")?,
+            Bootloader::Grub,
+        )
+    } else if let Some(esp_dir) = sysroot_dir
+        .open_dir_optional("boot/efi")?
+        .filter(|d| d.exists(TYPE1_ENT_PATH) || d.exists(EFI_LINUX))
+    {
+        (esp_dir, Bootloader::Systemd)
+    } else {
+        anyhow::bail!(
+            "Could not find a supported bootloader layout under {sysroot_path}/boot \
+             (expected boot/grub2 or boot/efi/{TYPE1_ENT_PATH})"
+        );
+    };
+
+    let storage = Storage::new_composefs_sysroot(sysroot_path, sysroot_dir, boot_dir)?;
+    let bootloader_entries = list_bootloader_entries(&storage, bootloader)?;
+
+    bootloader_entries
+        .into_iter()
+        .filter_map(|entry| {
+            match read_origin(&storage.physical_root, &entry.fsverity) {
+                Ok(Some(ini)) => Some(
+                    boot_entry_from_composefs_deployment(
+                        &storage,
+                        ini,
+                        &entry.fsverity,
+                        // We have no `/proc/cmdline` to read for a sysroot that
+                        // hasn't been booted, so we can't tell whether missing
+                        // fs-verity was permitted for this deployment; assume
+                        // the (stricter) default of `false`.
+                        false,
+                        // See this function's doc comment: we don't know
+                        // (and can't vouch for) the real bootloader here.
+                        None,
+                    )
+                    .with_context(|| format!("Deployment {}", entry.fsverity)),
+                ),
+                Ok(None) => {
+                    tracing::warn!("No origin file for deployment {}", entry.fsverity);
+                    None
+                }
+                Err(e) => Some(Err(e)),
+            }
+        })
+        .collect()
+}
+
 /// Check whether any deployment is capable of being soft rebooted or not
 #[context("Checking soft reboot capability")]
 fn set_soft_reboot_capability(
@@ -629,8 +713,11 @@ fn set_soft_reboot_capability(
             let mut bls_entries =
                 bls_entries.ok_or_else(|| anyhow::anyhow!("BLS entries not provided"))?;
 
-            let staged_entries =
-                get_sorted_staged_type1_boot_entries(storage.require_boot_dir()?, false)?;
+            let staged_entries = get_sorted_staged_type1_boot_entries(
+                storage.require_boot_dir()?,
+                false,
+                booted.require_bootloader()?,
+            )?;
 
             // We will have a duplicate booted entry here, but that's fine as we only use this
             // vector to check for existence of an entry
@@ -828,9 +915,10 @@ async fn composefs_deployment_status_from(
     let booted_composefs_digest = &cmdline.digest;
 
     let boot_dir = storage.require_boot_dir()?;
+    let bootloader = get_bootloader()?;
 
     // This is our source of truth
-    let bootloader_entry_verity = list_bootloader_entries(storage)?;
+    let bootloader_entry_verity = list_bootloader_entries(storage, bootloader)?;
 
     let host_spec = HostSpec {
         image: None,
@@ -882,6 +970,7 @@ async fn composefs_deployment_status_from(
             ini,
             &verity_digest,
             cmdline.allow_missing_fsverity,
+            Some(bootloader),
         )?;
 
         // SAFETY: boot_entry.composefs will always be present
@@ -932,15 +1021,16 @@ async fn composefs_deployment_status_from(
     };
 
     let booted_cfs = host.require_composefs_booted()?;
+    let booted_bootloader = booted_cfs.require_bootloader()?;
 
     let mut grub_menu_string = String::new();
-    let (is_rollback_queued, sorted_bls_config, grub_menu_entries) = match booted_cfs
-        .bootloader
+    let (is_rollback_queued, sorted_bls_config, grub_menu_entries) = match booted_bootloader
         .kind()?
     {
         BootloaderKind::GRUBClassic => match boot_type {
             BootType::Bls => {
-                let bls_configs = get_sorted_type1_boot_entries(boot_dir, false)?;
+                let bls_configs =
+                    get_sorted_type1_boot_entries(boot_dir, false, booted_bootloader)?;
                 let bls_config = bls_configs
                     .first()
                     .ok_or_else(|| anyhow::anyhow!("First boot entry not found"))?;
@@ -980,7 +1070,7 @@ async fn composefs_deployment_status_from(
 
         // We will have BLS stuff and the UKI stuff in the same DIR
         BootloaderKind::BLSCompatible => {
-            let bls_configs = get_sorted_type1_boot_entries(boot_dir, true)?;
+            let bls_configs = get_sorted_type1_boot_entries(boot_dir, true, booted_bootloader)?;
             let bls_config = bls_configs
                 .first()
                 .ok_or(anyhow::anyhow!("First boot entry not found"))?;
@@ -1282,7 +1372,7 @@ mod tests {
         tempdir.atomic_write("loader/entries/active.conf", active_entry)?;
         tempdir.atomic_write("loader/entries.staged/staged.conf", staged_entry)?;
 
-        let result = list_type1_entries(&tempdir)?;
+        let result = list_type1_entries(&tempdir, Bootloader::Systemd)?;
         assert_eq!(result.len(), 2);
 
         let verity_set: std::collections::HashSet<&str> =

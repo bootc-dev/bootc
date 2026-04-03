@@ -130,7 +130,7 @@ fn rollback_grub_uki_entries(boot_dir: &Dir) -> Result<()> {
 #[context("Rolling back {bootloader} entries")]
 fn rollback_composefs_entries(host: &Host, boot_dir: &Dir, bootloader: Bootloader) -> Result<()> {
     // Get all boot entries sorted in descending order by sort-key
-    let mut all_configs = get_sorted_type1_boot_entries(&boot_dir, false)?;
+    let mut all_configs = get_sorted_type1_boot_entries(&boot_dir, false, bootloader)?;
 
     // TODO(Johan-Liebert): Currently assuming there are only two deployments
     assert!(all_configs.len() == 2);
@@ -252,10 +252,12 @@ pub(crate) async fn composefs_rollback(
 
     let boot_dir = storage.require_boot_dir()?;
 
-    match &rollback_entry.bootloader.kind()? {
+    let bootloader = rollback_entry.require_bootloader()?;
+
+    match bootloader.kind()? {
         BootloaderKind::GRUBClassic => match rollback_entry.boot_type {
             BootType::Bls => {
-                rollback_composefs_entries(&host, boot_dir, rollback_entry.bootloader.clone())?;
+                rollback_composefs_entries(&host, boot_dir, bootloader)?;
             }
             BootType::Uki => {
                 rollback_grub_uki_entries(boot_dir)?;
@@ -264,7 +266,7 @@ pub(crate) async fn composefs_rollback(
 
         BootloaderKind::BLSCompatible => {
             // We use BLS entries for systemd UKI as well
-            rollback_composefs_entries(&host, boot_dir, rollback_entry.bootloader.clone())?;
+            rollback_composefs_entries(&host, boot_dir, bootloader)?;
         }
     }
 

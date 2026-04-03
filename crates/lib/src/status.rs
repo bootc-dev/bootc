@@ -472,6 +472,77 @@ pub(crate) async fn get_host() -> Result<Host> {
     Ok(host)
 }
 
+/// Build a [`Host`] with no booted/staged/rollback deployment, just a flat
+/// list of `otherDeployments`. Used by [`get_host_from_sysroot`] for both
+/// the ostree and composefs cases, since neither has any notion of
+/// "booted" for a sysroot that (as far as we know) hasn't been booted yet.
+fn host_from_other_deployments(other_deployments: Vec<BootEntry>) -> Host {
+    let spec = other_deployments
+        .first()
+        .and_then(|entry| entry.image.as_ref())
+        .map(|img| HostSpec {
+            image: Some(img.image.clone()),
+            boot_order: BootOrder::Default,
+        })
+        .unwrap_or_default();
+
+    let mut host = Host::new(spec);
+    host.status = HostStatus {
+        staged: None,
+        booted: None,
+        rollback: None,
+        other_deployments,
+        rollback_queued: false,
+        ty: Some(HostType::BootcHost),
+        usr_overlay: None,
+    };
+    host
+}
+
+/// Query the status of a sysroot at an arbitrary path.
+///
+/// This is designed for callers that have just completed an installation
+/// and want to discover the deployment state (image digest, stateroot,
+/// ostree metadata, etc.) without rebooting.  The returned [`Host`] uses
+/// the same schema as `bootc status --json`.
+///
+/// Since the target sysroot is not the running system, `booted` and
+/// `staged` will be `None`; all deployments appear in `otherDeployments`.
+///
+/// The sysroot may be either ostree- or composefs-backed; we distinguish
+/// the two by checking for an `ostree/deploy` directory (populated by
+/// `bootc install` for the ostree storage backend) and otherwise assume
+/// composefs.
+#[context("Querying status for sysroot")]
+pub(crate) fn get_host_from_sysroot(sysroot_path: &camino::Utf8Path) -> Result<Host> {
+    let sysroot_dir = cap_std_ext::cap_std::fs::Dir::open_ambient_dir(
+        sysroot_path,
+        cap_std_ext::cap_std::ambient_authority(),
+    )
+    .with_context(|| format!("Opening sysroot at {sysroot_path}"))?;
+
+    if !sysroot_dir.exists("ostree/deploy") {
+        let other_deployments = crate::bootc_composefs::status::composefs_status_from_sysroot(
+            sysroot_path,
+            sysroot_dir,
+        )?;
+        return Ok(host_from_other_deployments(other_deployments));
+    }
+
+    let sysroot = ostree::Sysroot::new(Some(&ostree::gio::File::for_path(sysroot_path)));
+    sysroot.load(ostree::gio::Cancellable::NONE)?;
+    let sysroot_lock = SysrootLock::from_assumed_locked(&sysroot);
+
+    let deployments = sysroot.deployments();
+    let all_deployments = deployments
+        .iter()
+        .map(|d| boot_entry_from_deployment(&sysroot_lock, d))
+        .collect::<Result<Vec<_>>>()
+        .context("Enumerating deployments")?;
+
+    Ok(host_from_other_deployments(all_deployments))
+}
+
 /// Implementation of the `bootc status` CLI command.
 #[context("Status")]
 pub(crate) async fn status(opts: super::cli::StatusOpts) -> Result<()> {
@@ -480,7 +551,11 @@ pub(crate) async fn status(opts: super::cli::StatusOpts) -> Result<()> {
         0 | 1 => {}
         o => anyhow::bail!("Unsupported format version: {o}"),
     };
-    let mut host = get_host().await?;
+    let mut host = if let Some(ref sysroot_path) = opts.sysroot {
+        get_host_from_sysroot(sysroot_path)?
+    } else {
+        get_host().await?
+    };
 
     // We could support querying the staged or rollback deployments
     // here too, but it's not a common use case at the moment.

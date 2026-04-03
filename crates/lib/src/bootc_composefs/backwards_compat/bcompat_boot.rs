@@ -277,8 +277,9 @@ fn handle_bls_conf(
     cfs_cmdline: &ComposefsCmdline,
     boot_dir: &Dir,
     is_uki: bool,
+    bootloader: crate::spec::Bootloader,
 ) -> Result<()> {
-    let entries = get_sorted_type1_boot_entries(boot_dir, true)?;
+    let entries = get_sorted_type1_boot_entries(boot_dir, true, bootloader)?;
     let (rename_transaction, new_bls_entries) =
         stage_bls_entry_changes(storage, boot_dir, &entries, cfs_cmdline)?;
 
@@ -324,7 +325,7 @@ pub(crate) async fn prepend_custom_prefix(
 
     match get_boot_type(storage, cfs_cmdline)? {
         BootType::Bls => {
-            handle_bls_conf(storage, cfs_cmdline, boot_dir, false)?;
+            handle_bls_conf(storage, cfs_cmdline, boot_dir, false, bootloader)?;
         }
 
         BootType::Uki => match bootloader.kind()? {
@@ -389,7 +390,7 @@ pub(crate) async fn prepend_custom_prefix(
             }
 
             BootloaderKind::BLSCompatible => {
-                handle_bls_conf(storage, cfs_cmdline, boot_dir, true)?;
+                handle_bls_conf(storage, cfs_cmdline, boot_dir, true, bootloader)?;
             }
         },
     };

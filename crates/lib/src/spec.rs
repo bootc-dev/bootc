@@ -302,13 +302,31 @@ pub struct BootEntryComposefs {
     pub verity: String,
     /// Whether this deployment is to be booted via Type1 (vmlinuz + initrd) or Type2 (UKI) entry
     pub boot_type: BootType,
-    /// Whether we boot using systemd or grub
-    pub bootloader: Bootloader,
+    /// Whether we boot using systemd or grub.
+    ///
+    /// This is `None` when the deployment was discovered by querying a
+    /// non-booted sysroot (e.g. `bootc status --sysroot`): `grub-cc` and
+    /// `systemd` both use the same on-disk BLS layout, so they can't be
+    /// distinguished without booting the system (bootupd tracks this, but
+    /// that state isn't available offline).
+    pub bootloader: Option<Bootloader>,
     /// The sha256sum of vmlinuz + initrd
     /// Only `Some` for Type1 boot entries
     pub boot_digest: Option<String>,
     /// Whether fs-verity validation is optional
     pub missing_verity_allowed: bool,
+}
+
+impl BootEntryComposefs {
+    /// Get the bootloader, failing if it's unknown.
+    ///
+    /// This should always succeed for entries obtained from the booted
+    /// system; it's only ever `None` for entries discovered via
+    /// `bootc status --sysroot` on a composefs target.
+    pub(crate) fn require_bootloader(&self) -> Result<Bootloader> {
+        self.bootloader
+            .ok_or_else(|| anyhow::anyhow!("Bootloader is not known for this deployment"))
+    }
 }
 
 /// A bootable entry

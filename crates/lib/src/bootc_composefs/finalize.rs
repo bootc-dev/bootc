@@ -131,7 +131,7 @@ pub(crate) async fn composefs_backend_finalize(
 
     let boot_dir = storage.require_boot_dir()?;
 
-    match booted_composefs.bootloader.kind()? {
+    match booted_composefs.require_bootloader()?.kind()? {
         BootloaderKind::GRUBClassic => match staged_composefs.boot_type {
             BootType::Bls => {
                 let entries_dir = boot_dir.open_dir("loader")?;

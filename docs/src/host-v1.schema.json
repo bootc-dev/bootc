@@ -140,8 +140,15 @@
           "$ref": "#/$defs/BootType"
         },
         "bootloader": {
-          "description": "Whether we boot using systemd or grub",
-          "$ref": "#/$defs/Bootloader"
+          "description": "Whether we boot using systemd or grub.\n\nThis is `None` when the deployment was discovered by querying a\nnon-booted sysroot (e.g. `bootc status --sysroot`): `grub-cc` and\n`systemd` both use the same on-disk BLS layout, so they can't be\ndistinguished without booting the system (bootupd tracks this, but\nthat state isn't available offline).",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Bootloader"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "missingVerityAllowed": {
           "description": "Whether fs-verity validation is optional",
@@ -155,7 +162,6 @@
       "required": [
         "verity",
         "bootType",
-        "bootloader",
         "missingVerityAllowed"
       ]
     },

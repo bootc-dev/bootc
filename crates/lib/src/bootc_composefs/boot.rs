@@ -537,7 +537,7 @@ pub(crate) fn setup_composefs_bls_boot(
         }
 
         BootSetupType::Upgrade((storage, booted_cfs, host)) => {
-            let bootloader = host.require_composefs_booted()?.bootloader.clone();
+            let bootloader = host.require_composefs_booted()?.require_bootloader()?;
 
             let boot_dir = storage.require_boot_dir()?;
             let current_cfg = get_booted_bls(&boot_dir, booted_cfs)?;
@@ -1095,7 +1095,7 @@ pub(crate) fn setup_composefs_uki_boot(
 
         BootSetupType::Upgrade((storage, booted_cfs, host)) => {
             let sysroot = Utf8PathBuf::from("/sysroot"); // Still needed for root_path
-            let bootloader = host.require_composefs_booted()?.bootloader.clone();
+            let bootloader = host.require_composefs_booted()?.require_bootloader()?;
 
             // Locate ESP partition device by walking up to the root disk(s)
             let root_dev = bootc_blockdev::list_dev_by_dir(&storage.physical_root)?;

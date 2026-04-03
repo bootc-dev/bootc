@@ -148,7 +148,7 @@ fn delete_depl_boot_entries(
 ) -> Result<()> {
     let boot_dir = storage.require_boot_dir()?;
 
-    match deployment.deployment.bootloader.kind()? {
+    match deployment.deployment.require_bootloader()?.kind()? {
         BootloaderKind::GRUBClassic => match deployment.deployment.boot_type {
             BootType::Bls => delete_type1_conf_file(deployment, boot_dir, deleting_staged),
             BootType::Uki => {
