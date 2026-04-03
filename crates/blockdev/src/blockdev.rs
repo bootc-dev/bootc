@@ -172,6 +172,10 @@ impl Device {
     /// For GPT disks, this matches by the ESP partition type GUID.
     /// For MBR (dos) disks, this matches by the MBR partition type IDs (0x06 or 0xEF).
     ///
+    /// If no ESP is found among direct children, this recurses into children
+    /// that have their own partition table (e.g. firmware RAID arrays where the
+    /// hierarchy is disk → md array → partitions).
+    ///
     /// Returns `Ok(None)` when there are no children or no ESP partition
     /// is present. Returns `Err` only for genuinely unexpected conditions
     /// (e.g. an unsupported partition table type).
@@ -179,8 +183,8 @@ impl Device {
         let Some(children) = self.children.as_ref() else {
             return Ok(None);
         };
-        match self.pttype.as_deref() {
-            Some("dos") => Ok(children.iter().find(|child| {
+        let direct = match self.pttype.as_deref() {
+            Some("dos") => children.iter().find(|child| {
                 child
                     .parttype
                     .as_ref()
@@ -189,12 +193,25 @@ impl Device {
                         u8::from_str_radix(pt, 16).ok()
                     })
                     .is_some_and(|pt| ESP_ID_MBR.contains(&pt))
-            })),
+            }),
             // When pttype is None (e.g. older lsblk or partition devices), default
             // to GPT UUID matching which will simply not match MBR hex types.
-            Some("gpt") | None => Ok(self.find_partition_of_type(ESP)),
-            Some(other) => Err(anyhow!("Unsupported partition table type: {other}")),
+            Some("gpt") | None => self.find_partition_of_type(ESP),
+            Some(other) => return Err(anyhow!("Unsupported partition table type: {other}")),
+        };
+        if direct.is_some() {
+            return Ok(direct);
         }
+        // Recurse into children that carry their own partition table, such as
+        // firmware RAID arrays (disk → md array → partitions).
+        for child in children {
+            if child.pttype.is_some() {
+                if let Some(esp) = child.find_partition_of_esp_optional()? {
+                    return Ok(Some(esp));
+                }
+            }
+        }
+        Ok(None)
     }
 
     /// Find the EFI System Partition (ESP) among children, or error if absent.
@@ -706,6 +723,69 @@ mod test {
                     .collect(),
             ),
         }
+    }
+
+    #[test]
+    fn test_parse_lsblk_vroc() {
+        let fixture = include_str!("../tests/fixtures/lsblk-vroc.json");
+        let devs: DevicesOutput = serde_json::from_str(fixture).unwrap();
+        assert_eq!(devs.blockdevices.len(), 2);
+
+        // find_partition_of_esp recurses through the md126 RAID array to
+        // locate the ESP (md126p1) even though it is not a direct child of
+        // the NVMe disk.
+        for nvme in &devs.blockdevices {
+            let esp = nvme.find_partition_of_esp().unwrap();
+            assert_eq!(esp.name, "md126p1");
+            assert_eq!(esp.partn, Some(1));
+            assert_eq!(esp.parttype.as_deref().unwrap(), ESP);
+            assert_eq!(esp.fstype.as_deref().unwrap(), "vfat");
+        }
+    }
+
+    #[test]
+    fn test_parse_lsblk_swraid() {
+        let fixture = include_str!("../tests/fixtures/lsblk-swraid.json");
+        let devs: DevicesOutput = serde_json::from_str(fixture).unwrap();
+        assert_eq!(devs.blockdevices.len(), 2);
+
+        // In a software RAID (mdadm) setup each disk is individually
+        // partitioned with its own GPT table and ESP.  The root partition
+        // (sda3/sdb3) is a linux_raid_member assembled into md0.
+        // find_partition_of_esp should locate the ESP as a direct child of
+        // each disk — no recursion through an md array is needed here.
+        let sda = &devs.blockdevices[0];
+        let esp = sda.find_partition_of_esp().unwrap();
+        assert_eq!(esp.name, "sda1");
+        assert_eq!(esp.partn, Some(1));
+        assert_eq!(esp.parttype.as_deref().unwrap(), ESP);
+        assert_eq!(esp.fstype.as_deref().unwrap(), "vfat");
+
+        let sdb = &devs.blockdevices[1];
+        let esp = sdb.find_partition_of_esp().unwrap();
+        assert_eq!(esp.name, "sdb1");
+        assert_eq!(esp.partn, Some(1));
+        assert_eq!(esp.parttype.as_deref().unwrap(), ESP);
+        assert_eq!(esp.fstype.as_deref().unwrap(), "vfat");
+
+        // Verify the md0 RAID array is visible as a child of the root
+        // partition on each disk.
+        let sda3 = sda
+            .children
+            .as_ref()
+            .unwrap()
+            .iter()
+            .find(|c| c.name == "sda3")
+            .unwrap();
+        assert_eq!(sda3.fstype.as_deref().unwrap(), "linux_raid_member");
+        let md0 = sda3
+            .children
+            .as_ref()
+            .unwrap()
+            .iter()
+            .find(|c| c.name == "md0")
+            .unwrap();
+        assert_eq!(md0.fstype.as_deref().unwrap(), "ext4");
     }
 
     #[test]
