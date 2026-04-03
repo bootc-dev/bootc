@@ -353,7 +353,7 @@ pub(crate) struct InstallConfigOpts {
     /// is to allow mounting the whole `/root` home directory as a `tmpfs`, while still
     /// getting the SSH key replaced on boot.
     #[clap(long)]
-    root_ssh_authorized_keys: Option<Utf8PathBuf>,
+    pub(crate) root_ssh_authorized_keys: Option<Utf8PathBuf>,
 
     /// Perform configuration changes suitable for a "generic" disk image.
     /// At the moment:

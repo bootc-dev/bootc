@@ -333,7 +333,7 @@ pub(crate) fn test_compute_composefs_digest() -> Result<()> {
 /// Tests that should be run in a default container image.
 #[context("Container tests")]
 pub(crate) fn run(testargs: libtest_mimic::Arguments) -> Result<()> {
-    let tests = [
+    let mut tests: Vec<Trial> = vec![
         new_test("variant-base-crosscheck", test_variant_base_crosscheck),
         new_test("bootc upgrade", test_bootc_upgrade),
         new_test("install config", test_bootc_install_config),
@@ -344,6 +344,7 @@ pub(crate) fn run(testargs: libtest_mimic::Arguments) -> Result<()> {
         new_test("container export tar", test_container_export_tar),
         new_test("compute-composefs-digest", test_compute_composefs_digest),
     ];
+    tests.extend(crate::varlink::tests());
 
-    libtest_mimic::run(&testargs, tests.into()).exit()
+    libtest_mimic::run(&testargs, tests).exit()
 }

@@ -11,6 +11,7 @@ mod install;
 mod runvm;
 mod selinux;
 mod system_reinstall;
+mod varlink;
 
 #[derive(Debug, Parser)]
 #[clap(name = "bootc-integration-tests", version, rename_all = "kebab-case")]

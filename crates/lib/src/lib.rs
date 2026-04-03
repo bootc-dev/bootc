@@ -95,6 +95,7 @@ mod store;
 mod task;
 mod ukify;
 mod utils;
+pub(crate) mod varlink;
 
 #[cfg(feature = "docgen")]
 mod cli_json;

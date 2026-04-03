@@ -1605,6 +1605,11 @@ where
     I: IntoIterator,
     I::Item: Into<OsString> + Clone,
 {
+    // If we were socket-activated (e.g. via `varlinkctl exec:`), serve
+    // varlink and exit without parsing CLI arguments.
+    if crate::varlink::try_serve_varlink().await? {
+        return Ok(());
+    }
     run_from_opt(Opt::parse_including_static(args)).await
 }
 

@@ -40,6 +40,7 @@ rexpect = "0.7"
 scopeguard = "1.2.0"
 tar = "0.4"
 tokio = { workspace = true, features = ["rt", "macros"] }
+libc = { workspace = true }
 which = "7.0"
 zlink = { workspace = true }
 
