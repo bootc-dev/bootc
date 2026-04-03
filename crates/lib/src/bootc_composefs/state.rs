@@ -194,16 +194,14 @@ pub(crate) fn update_target_imgref_in_origin(
     booted_cfs: &BootedComposefs,
     imgref: &ImageReference,
 ) -> Result<()> {
+    let imgref = get_imgref(&imgref.transport, &imgref.image)?;
     add_update_in_origin(
         storage,
         booted_cfs.cmdline.digest.as_ref(),
         "origin",
         &[(
             ORIGIN_CONTAINER,
-            &format!(
-                "ostree-unverified-image:{}",
-                get_imgref(&imgref.transport, &imgref.image)
-            ),
+            &format!("ostree-unverified-image:{imgref}"),
         )],
     )
 }
@@ -288,7 +286,7 @@ pub(crate) async fn write_composefs_state(
         ..
     } = &target_imgref;
 
-    let imgref = get_imgref(&transport, &image_name);
+    let imgref = get_imgref(transport, image_name)?;
 
     let mut config = tini::Ini::new().section("origin").item(
         ORIGIN_CONTAINER,

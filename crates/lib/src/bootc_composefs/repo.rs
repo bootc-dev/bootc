@@ -9,16 +9,17 @@ use cfsctl::composefs_oci;
 use composefs::fsverity::{FsVerityHashValue, Sha512HashValue};
 use composefs_boot::bootloader::{BootEntry as ComposefsBootEntry, get_boot_resources};
 use composefs_oci::{
-    image::create_filesystem as create_composefs_filesystem,
-    pull_image as composefs_oci_pull_image, skopeo::PullResult, tag_image,
+    PullOptions, PullResult, image::create_filesystem as create_composefs_filesystem, tag_image,
 };
 
-use ostree_ext::container::ImageReference as OstreeExtImgRef;
+use ostree_ext::containers_image_proxy;
 
 use cap_std_ext::cap_std::{ambient_authority, fs::Dir};
 
 use crate::composefs_consts::BOOTC_TAG_PREFIX;
 use crate::install::{RootSetup, State};
+use crate::lsm;
+use crate::podstorage::CStorage;
 
 /// Create a composefs OCI tag name for the given manifest digest.
 ///
@@ -69,24 +70,30 @@ pub(crate) async fn initialize_composefs_repository(
         repo.set_insecure();
     }
 
-    let OstreeExtImgRef {
-        name: image_name,
-        transport,
-    } = &state.source.imageref;
+    let imgref = get_imgref(&transport.to_string(), image_name)?;
 
-    let mut config = crate::deploy::new_proxy_config();
-    ostree_ext::container::merge_default_container_proxy_opts(&mut config)?;
+    // On a composefs install, containers-storage lives physically under
+    // composefs/bootc/storage with a compatibility symlink at
+    // ostree/bootc -> ../composefs/bootc so the existing /usr/lib/bootc/storage
+    // symlink (and all runtime code using ostree/bootc/storage) keeps working.
+    crate::store::ensure_composefs_bootc_link(rootfs_dir)?;
 
-    // Pull without a reference tag; we tag explicitly afterward so we
-    // control the tag name format.
+    // Use the unified path: first into containers-storage on the target
+    // rootfs, then cstor zero-copy into composefs. This ensures the image
+    // is available for `podman run` from first boot.
+    let sepolicy = state.load_policy()?;
+    let run = Dir::open_ambient_dir("/run", ambient_authority())?;
+    let imgstore = CStorage::create(rootfs_dir, &run, sepolicy.as_ref())?;
+    let storage_path = root_setup.physical_root_path.join(CStorage::subpath());
+
     let repo = Arc::new(repo);
-    let (pull_result, _stats) = composefs_oci_pull_image(
-        &repo,
-        &format!("{transport}{image_name}"),
-        None,
-        Some(config),
-    )
-    .await?;
+    let pull_result =
+        pull_composefs_unified(&imgstore, storage_path.as_str(), &repo, &imgref).await?;
+
+    // SELinux-label the containers-storage now that all pulls are done.
+    imgstore
+        .ensure_labeled()
+        .context("SELinux labeling of containers-storage")?;
 
     // Tag the manifest as a bootc-owned GC root.
     let tag = bootc_tag_for_manifest(&pull_result.manifest_digest.to_string());
@@ -107,24 +114,26 @@ pub(crate) async fn initialize_composefs_repository(
     Ok(pull_result)
 }
 
-/// skopeo (in composefs-rs) doesn't understand "registry:"
-/// This function will convert it to "docker://" and return the image ref
+/// Convert a transport string and image name into a `containers_image_proxy::ImageReference`.
 ///
-/// Ex
-/// docker://quay.io/some-image
-/// containers-storage:some-image
-/// docker-daemon:some-image-id
-pub(crate) fn get_imgref(transport: &str, image: &str) -> String {
-    let img = image.strip_prefix(":").unwrap_or(&image);
-    let transport = transport.strip_suffix(":").unwrap_or(&transport);
-
-    if transport == "registry" || transport == "docker://" {
-        format!("docker://{img}")
-    } else if transport == "docker-daemon" {
-        format!("docker-daemon:{img}")
-    } else {
-        format!("{transport}:{img}")
-    }
+/// The `spec::ImageReference` stores transport as a string (e.g. "registry:",
+/// "containers-storage:"). This parses that into a proper typed reference
+/// that renders correctly for skopeo (e.g. "docker://quay.io/some-image").
+pub(crate) fn get_imgref(
+    transport: &str,
+    image: &str,
+) -> Result<containers_image_proxy::ImageReference> {
+    let img = image.strip_prefix(':').unwrap_or(image);
+    // Normalize: strip trailing separator if present, then parse
+    // via containers_image_proxy::Transport for proper typed handling.
+    let transport_str = transport.strip_suffix(':').unwrap_or(transport);
+    // Build a canonical imgref string so Transport::try_from can parse it.
+    let imgref_str = format!("{transport_str}:{img}");
+    let transport: containers_image_proxy::Transport = imgref_str
+        .as_str()
+        .try_into()
+        .with_context(|| format!("Parsing transport from '{imgref_str}'"))?;
+    Ok(containers_image_proxy::ImageReference::new(transport, img))
 }
 
 /// Result of pulling a composefs repository, including the OCI manifest digest
@@ -137,25 +146,89 @@ pub(crate) struct PullRepoResult {
     pub(crate) manifest_digest: String,
 }
 
-/// Pulls the `image` from `transport` into a composefs repository at /sysroot
-/// Checks for boot entries in the image and returns them
+/// Pull an image via unified storage: first into bootc-owned containers-storage,
+/// then from there into the composefs repository via cstor (zero-copy
+/// reflink/hardlink).
+///
+/// The caller provides:
+/// - `imgstore`: the bootc-owned `CStorage` instance (may be on an arbitrary
+///   mount point during install, or under `/sysroot` during upgrade)
+/// - `storage_path`: the absolute filesystem path to that containers-storage
+///   directory, so cstor and skopeo can find it (e.g.
+///   `/mnt/sysroot/ostree/bootc/storage` during install, or
+///   `/sysroot/ostree/bootc/storage` during upgrade)
+///
+/// This ensures the image is available in containers-storage for `podman run`
+/// while also populating the composefs repo for booting.
+async fn pull_composefs_unified(
+    imgstore: &CStorage,
+    storage_path: &str,
+    repo: &Arc<crate::store::ComposefsRepository>,
+    imgref: &containers_image_proxy::ImageReference,
+) -> Result<PullResult<Sha512HashValue>> {
+    let image = &imgref.name;
+
+    // Stage 1: get the image into bootc-owned containers-storage.
+    if imgref.transport == containers_image_proxy::Transport::ContainerStorage {
+        // The image is in the default containers-storage (/var/lib/containers/storage).
+        // Copy it into bootc-owned storage.
+        tracing::info!("Unified pull: copying {image} from host containers-storage");
+        imgstore
+            .pull_from_host_storage(image)
+            .await
+            .context("Copying image from host containers-storage into bootc storage")?;
+    } else {
+        // For registry (docker://), oci:, docker-daemon:, etc. — pull
+        // via the native podman API with streaming progress display.
+        let pull_ref = imgref.to_string();
+        tracing::info!("Unified pull: fetching {pull_ref} into containers-storage");
+        imgstore
+            .pull_with_progress(&pull_ref)
+            .await
+            .context("Pulling image into bootc containers-storage")?;
+    }
+
+    // Stage 2: import full OCI structure (layers + config + manifest) from
+    // containers-storage into composefs via cstor (zero-copy reflink/hardlink).
+    let cstor_imgref_str = format!("containers-storage:{image}");
+    tracing::info!("Unified pull: importing from {cstor_imgref_str} (zero-copy)");
+
+    let storage = std::path::Path::new(storage_path);
+    let pull_opts = PullOptions {
+        additional_image_stores: &[storage],
+        ..Default::default()
+    };
+    let pull_result = composefs_oci::pull(repo, &cstor_imgref_str, None, pull_opts)
+        .await
+        .context("Importing from containers-storage into composefs")?;
+
+    Ok(pull_result)
+}
+
+/// Pulls the `image` from `transport` into a composefs repository at /sysroot.
+///
+/// For registry transports, this uses the unified storage path: the image is
+/// first pulled into bootc-owned containers-storage (so it's available for
+/// `podman run`), then imported from there into the composefs repo.
+///
+/// Checks for boot entries in the image and returns them.
 #[context("Pulling composefs repository")]
 pub(crate) async fn pull_composefs_repo(
-    transport: &String,
-    image: &String,
+    transport: &str,
+    image: &str,
     allow_missing_fsverity: bool,
 ) -> Result<PullRepoResult> {
     const COMPOSEFS_PULL_JOURNAL_ID: &str = "4c3b2a1f0e9d8c7b6a5f4e3d2c1b0a9f8";
+
+    let imgref = get_imgref(transport, image)?;
 
     tracing::info!(
         message_id = COMPOSEFS_PULL_JOURNAL_ID,
         bootc.operation = "pull",
         bootc.source_image = image,
-        bootc.transport = transport,
+        bootc.transport = %imgref.transport,
         bootc.allow_missing_fsverity = allow_missing_fsverity,
-        "Pulling composefs image {}:{}",
-        transport,
-        image
+        "Pulling composefs image {imgref}",
     );
 
     let rootfs_dir = Dir::open_ambient_dir("/sysroot", ambient_authority())?;
@@ -165,17 +238,18 @@ pub(crate) async fn pull_composefs_repo(
         repo.set_insecure();
     }
 
-    let final_imgref = get_imgref(transport, image);
-
-    tracing::debug!("Image to pull {final_imgref}");
-
-    let mut config = crate::deploy::new_proxy_config();
-    ostree_ext::container::merge_default_container_proxy_opts(&mut config)?;
-
     let repo = Arc::new(repo);
-    let (pull_result, _stats) = composefs_oci_pull_image(&repo, &final_imgref, None, Some(config))
-        .await
-        .context("Pulling composefs repo")?;
+
+    // Create bootc-owned containers-storage on the rootfs.
+    // Load SELinux policy from the running system so newly pulled layers
+    // get the correct container_var_lib_t labels.
+    let root = Dir::open_ambient_dir("/", ambient_authority())?;
+    let sepolicy = lsm::new_sepolicy_at(&root)?;
+    let run = Dir::open_ambient_dir("/run", ambient_authority())?;
+    let imgstore = CStorage::create(&rootfs_dir, &run, sepolicy.as_ref())?;
+    let storage_path = format!("/sysroot/{}", CStorage::subpath());
+
+    let pull_result = pull_composefs_unified(&imgstore, &storage_path, &repo, &imgref).await?;
 
     // Tag the manifest as a bootc-owned GC root.
     let tag = bootc_tag_for_manifest(&pull_result.manifest_digest.to_string());
@@ -227,39 +301,41 @@ mod tests {
 
     #[test]
     fn test_get_imgref_registry_transport() {
-        assert_eq!(
-            get_imgref("registry:", IMAGE_NAME),
-            format!("docker://{IMAGE_NAME}")
-        );
+        let r = get_imgref("registry:", IMAGE_NAME).unwrap();
+        assert_eq!(r.transport, containers_image_proxy::Transport::Registry);
+        assert_eq!(r.name, IMAGE_NAME);
+        assert_eq!(r.to_string(), format!("docker://{IMAGE_NAME}"));
     }
 
     #[test]
     fn test_get_imgref_containers_storage() {
+        let r = get_imgref("containers-storage", IMAGE_NAME).unwrap();
         assert_eq!(
-            get_imgref("containers-storage", IMAGE_NAME),
-            format!("containers-storage:{IMAGE_NAME}")
+            r.transport,
+            containers_image_proxy::Transport::ContainerStorage
         );
+        assert_eq!(r.name, IMAGE_NAME);
 
+        let r = get_imgref("containers-storage:", IMAGE_NAME).unwrap();
         assert_eq!(
-            get_imgref("containers-storage:", IMAGE_NAME),
-            format!("containers-storage:{IMAGE_NAME}")
+            r.transport,
+            containers_image_proxy::Transport::ContainerStorage
         );
+        assert_eq!(r.name, IMAGE_NAME);
     }
 
     #[test]
     fn test_get_imgref_edge_cases() {
-        assert_eq!(
-            get_imgref("registry", IMAGE_NAME),
-            format!("docker://{IMAGE_NAME}")
-        );
+        let r = get_imgref("registry", IMAGE_NAME).unwrap();
+        assert_eq!(r.transport, containers_image_proxy::Transport::Registry);
+        assert_eq!(r.to_string(), format!("docker://{IMAGE_NAME}"));
     }
 
     #[test]
     fn test_get_imgref_docker_daemon_transport() {
-        assert_eq!(
-            get_imgref("docker-daemon", IMAGE_NAME),
-            format!("docker-daemon:{IMAGE_NAME}")
-        );
+        let r = get_imgref("docker-daemon", IMAGE_NAME).unwrap();
+        assert_eq!(r.transport, containers_image_proxy::Transport::DockerDaemon);
+        assert_eq!(r.name, IMAGE_NAME);
     }
 
     #[test]

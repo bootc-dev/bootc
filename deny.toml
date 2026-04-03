@@ -12,4 +12,4 @@ name = "ring"
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
-allow-git = ["https://github.com/composefs/composefs-rs", "https://github.com/bootc-dev/bcvk"]
+allow-git = ["https://github.com/composefs/composefs-rs", "https://github.com/cgwalters/composefs-rs", "https://github.com/bootc-dev/bcvk"]

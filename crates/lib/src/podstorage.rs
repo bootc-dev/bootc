@@ -3,8 +3,11 @@
 //! The backend for podman and other tools is known as `container-storage:`,
 //! with a canonical instance that lives in `/var/lib/containers`.
 //!
-//! This is a `containers-storage:` instance` which is owned by bootc and
-//! is stored at `/sysroot/ostree/bootc`.
+//! This is a `containers-storage:` instance which is owned by bootc.
+//! On ostree systems it lives at `/sysroot/ostree/bootc/storage`;
+//! on composefs systems the physical location is
+//! `/sysroot/composefs/bootc/storage` with a compatibility symlink
+//! at `ostree/bootc -> ../composefs/bootc`.
 //!
 //! At the current time, this is only used for Logically Bound Images.
 

@@ -22,6 +22,7 @@ use clap::ValueEnum;
 use composefs::dumpfile;
 use composefs::fsverity;
 use composefs::fsverity::FsVerityHashValue;
+
 use composefs_boot::BootOps as _;
 use etc_merge::{compute_diff, print_diff};
 use fn_error_context::context;
@@ -1765,17 +1766,15 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
                 };
 
                 let imgref = format!("containers-storage:{image}");
-                let pull_result = composefs_oci::pull(
-                    &repo,
-                    &imgref,
-                    None,
-                    composefs_oci::PullOptions {
-                        img_proxy_config: Some(proxycfg),
-                        ..Default::default()
-                    },
-                )
-                .await
-                .context("Pulling image")?;
+                let host_store = std::path::Path::new("/run/host-container-storage");
+                let opts = composefs_oci::PullOptions {
+                    img_proxy_config: Some(proxycfg),
+                    additional_image_stores: &[host_store],
+                    ..Default::default()
+                };
+                let pull_result = composefs_oci::pull(&repo, &imgref, None, opts)
+                    .await
+                    .context("Pulling image")?;
                 let mut fs = composefs_oci::image::create_filesystem(
                     &repo,
                     &pull_result.config_digest,

@@ -9,8 +9,10 @@
 //! # containers-storage:
 //!
 //! Later, bootc gained support for Logically Bound Images.
-//! This is a `containers-storage:` instance that lives
-//! in `/ostree/bootc/storage`
+//! On ostree systems this is a `containers-storage:` instance that
+//! lives in `/ostree/bootc/storage`.  On composefs systems the
+//! physical location is `/composefs/bootc/storage` with a compat
+//! symlink at `ostree/bootc -> ../composefs/bootc`.
 //!
 //! # composefs
 //!
@@ -79,8 +81,64 @@ pub(crate) fn ensure_composefs_dir(physical_root: &Dir) -> Result<()> {
 }
 
 /// The path to the bootc root directory, relative to the physical
-/// system root
+/// system root.  On ostree systems this is a real directory; on composefs
+/// systems it is a symlink to `../composefs/bootc` (see
+/// [`ensure_composefs_bootc_link`]).
 pub(crate) const BOOTC_ROOT: &str = "ostree/bootc";
+
+/// The "real" bootc root for composefs-native systems, relative to the
+/// physical system root.
+pub(crate) const COMPOSEFS_BOOTC_ROOT: &str = "composefs/bootc";
+
+/// On a composefs install the containers-storage lives under
+/// `composefs/bootc/storage`.  To keep the rest of the code (and the
+/// `/usr/lib/bootc/storage` symlink which points through `ostree/bootc`)
+/// working, we create:
+///
+///   `ostree/bootc -> ../composefs/bootc`
+///
+/// This function is idempotent.
+pub(crate) fn ensure_composefs_bootc_link(physical_root: &Dir) -> Result<()> {
+    // Ensure the real directory exists
+    physical_root
+        .create_dir_all(COMPOSEFS_BOOTC_ROOT)
+        .with_context(|| format!("Creating {COMPOSEFS_BOOTC_ROOT}"))?;
+
+    // Create the `ostree/` parent if needed (it won't exist on a pure
+    // composefs install that never touched ostree).
+    physical_root
+        .create_dir_all("ostree")
+        .context("Creating ostree directory")?;
+
+    // If ostree/bootc already exists as a real directory (e.g. from an
+    // older install or from the ostree path), leave it alone — this
+    // function is only for fresh composefs installs.
+    match physical_root.symlink_metadata(BOOTC_ROOT) {
+        Ok(meta) if meta.is_symlink() => {
+            // Already a symlink — nothing to do
+            return Ok(());
+        }
+        Ok(_meta) => {
+            // It's a real directory.  This shouldn't happen during a fresh
+            // composefs install, but if it does just leave it.
+            tracing::warn!(
+                "{BOOTC_ROOT} already exists as a directory, not replacing with symlink"
+            );
+            return Ok(());
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            // Good — doesn't exist yet, we'll create the symlink
+        }
+        Err(e) => return Err(e).context(format!("Querying {BOOTC_ROOT}")),
+    }
+
+    physical_root
+        .symlink_contents(format!("../{COMPOSEFS_BOOTC_ROOT}"), BOOTC_ROOT)
+        .with_context(|| format!("Creating {BOOTC_ROOT} -> ../{COMPOSEFS_BOOTC_ROOT} symlink"))?;
+
+    tracing::info!("Created {BOOTC_ROOT} -> ../{COMPOSEFS_BOOTC_ROOT}");
+    Ok(())
+}
 
 /// Storage accessor for a booted system.
 ///
@@ -492,11 +550,19 @@ impl Storage {
         Ok(r)
     }
 
-    /// Update the mtime on the storage root directory
+    /// Update the mtime on the storage root directory.
+    ///
+    /// This touches `ostree/bootc` (or its symlink target on composefs
+    /// systems) so that `bootc-status-updated.path` fires.
     #[context("Updating storage root mtime")]
     pub(crate) fn update_mtime(&self) -> Result<()> {
-        let ostree = self.get_ostree()?;
-        let sysroot_dir = crate::utils::sysroot_dir(ostree).context("Reopen sysroot directory")?;
+        // On composefs-only systems ostree is not initialized, so fall
+        // back to the physical root directly.
+        let sysroot_dir = if let Ok(ostree) = self.get_ostree() {
+            crate::utils::sysroot_dir(ostree).context("Reopen sysroot directory")?
+        } else {
+            self.physical_root.try_clone()?
+        };
 
         sysroot_dir
             .update_timestamps(std::path::Path::new(BOOTC_ROOT))

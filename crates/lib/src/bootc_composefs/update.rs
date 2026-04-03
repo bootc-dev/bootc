@@ -56,8 +56,8 @@ pub(crate) async fn is_image_pulled(
     repo: &ComposefsRepository,
     imgref: &ImageReference,
 ) -> Result<(Option<Sha512HashValue>, ImgConfigManifest)> {
-    let imgref_repr = get_imgref(&imgref.transport, &imgref.image);
-    let img_config_manifest = get_container_manifest_and_config(&imgref_repr).await?;
+    let imgref_repr = get_imgref(&imgref.transport, &imgref.image)?;
+    let img_config_manifest = get_container_manifest_and_config(&imgref_repr.to_string()).await?;
 
     let img_digest = img_config_manifest.manifest.config().digest().digest();
 
@@ -409,7 +409,7 @@ pub(crate) async fn upgrade_composefs(
     let repo = &*composefs.repo;
 
     let (img_pulled, mut img_config) = is_image_pulled(&repo, booted_imgref).await?;
-    let booted_img_digest = img_config.manifest.config().digest().digest().to_owned();
+    let booted_img_digest = img_config.manifest.config().digest().to_string();
 
     // Check if we already have this update staged
     // Or if we have another staged deployment with a different image
@@ -441,7 +441,7 @@ pub(crate) async fn upgrade_composefs(
                 storage,
                 composefs,
                 &host,
-                img_config.manifest.config().digest().digest(),
+                img_config.manifest.config().digest().as_ref(),
                 &cfg_verity,
                 false,
             )?;

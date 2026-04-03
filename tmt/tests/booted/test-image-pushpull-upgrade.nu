@@ -20,6 +20,7 @@ const quoted_karg = '"thisarg=quoted with spaces"'
 # This code runs on *each* boot.
 # Here we just capture information.
 bootc status
+bootc internals fsck
 let st = bootc status --json | from json
 let booted = $st.status.booted.image
 let is_composefs = (tap is_composefs)

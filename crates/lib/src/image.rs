@@ -56,16 +56,47 @@ struct ImageOutput {
 }
 
 #[context("Listing host images")]
-fn list_host_images(sysroot: &crate::store::Storage) -> Result<Vec<ImageOutput>> {
-    let ostree = sysroot.get_ostree()?;
-    let repo = ostree.repo();
-    let images = ostree_ext::container::store::list_images(&repo).context("Querying images")?;
+async fn list_host_images(sysroot: &crate::store::Storage) -> Result<Vec<ImageOutput>> {
+    if let Ok(ostree) = sysroot.get_ostree() {
+        let repo = ostree.repo();
+        let images = ostree_ext::container::store::list_images(&repo).context("Querying images")?;
+        Ok(images
+            .into_iter()
+            .map(|image| ImageOutput {
+                image,
+                image_type: ImageListTypeColumn::Host,
+            })
+            .collect())
+    } else {
+        // Composefs-only system: list images from bootc-owned containers-storage
+        list_host_images_composefs(sysroot).await
+    }
+}
 
+#[context("Listing host images from containers-storage")]
+async fn list_host_images_composefs(sysroot: &crate::store::Storage) -> Result<Vec<ImageOutput>> {
+    let sysroot_dir = &sysroot.physical_root;
+    let subpath = CStorage::subpath();
+    if !sysroot_dir.try_exists(&subpath).unwrap_or(false) {
+        return Ok(Vec::new());
+    }
+    let run = Dir::open_ambient_dir("/run", cap_std::ambient_authority())?;
+    let imgstore = CStorage::create(sysroot_dir, &run, None)?;
+    let images = imgstore
+        .list_images()
+        .await
+        .context("Listing containers-storage images")?;
     Ok(images
         .into_iter()
-        .map(|image| ImageOutput {
-            image,
-            image_type: ImageListTypeColumn::Host,
+        .flat_map(|entry| {
+            entry
+                .names
+                .unwrap_or_default()
+                .into_iter()
+                .map(|name| ImageOutput {
+                    image: name,
+                    image_type: ImageListTypeColumn::Host,
+                })
         })
         .collect())
 }
@@ -97,7 +128,8 @@ async fn list_images(list_type: ImageListType) -> Result<Vec<ImageOutput>> {
     Ok(match (list_type, sysroot) {
         // TODO: Should we list just logical images silently here, or error?
         (ImageListType::All, None) => list_logical_images(&rootfs)?,
-        (ImageListType::All, Some(sysroot)) => list_host_images(&sysroot)?
+        (ImageListType::All, Some(sysroot)) => list_host_images(&sysroot)
+            .await?
             .into_iter()
             .chain(list_logical_images(&rootfs)?)
             .collect(),
@@ -105,7 +137,7 @@ async fn list_images(list_type: ImageListType) -> Result<Vec<ImageOutput>> {
         (ImageListType::Host, None) => {
             bail!("Listing host images requires a booted bootc system")
         }
-        (ImageListType::Host, Some(sysroot)) => list_host_images(&sysroot)?,
+        (ImageListType::Host, Some(sysroot)) => list_host_images(&sysroot).await?,
     })
 }
 
@@ -228,6 +260,15 @@ pub(crate) async fn imgcmd_entrypoint(
 /// upgrade/switch can use the unified path automatically when the image is present.
 #[context("Setting unified storage for booted image")]
 pub(crate) async fn set_unified_entrypoint() -> Result<()> {
+    // Composefs always uses unified storage — there's nothing to do.
+    if matches!(
+        crate::store::Environment::detect()?,
+        crate::store::Environment::ComposefsBooted(_)
+    ) {
+        println!("Unified storage is the default on composefs; nothing to do.");
+        return Ok(());
+    }
+
     // Initialize floating c_storage early - needed for container operations
     crate::podstorage::ensure_floating_c_storage_initialized();
 
