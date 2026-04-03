@@ -14,7 +14,6 @@ use cfsctl::composefs_boot;
 use composefs::dumpfile;
 use composefs::fsverity::{Algorithm, FsVerityHashValue};
 use composefs_boot::BootOps as _;
-use rustix::fd::AsFd;
 use tempfile::TempDir;
 
 use crate::store::ComposefsRepository;
@@ -68,13 +67,19 @@ pub(crate) async fn compute_composefs_digest(
     let (_td_guard, repo) = new_temp_composefs_repo()?;
 
     // Read filesystem from path, transform for boot, compute digest
-    let cwd_owned: OwnedFd = rustix::fs::CWD.as_fd().try_clone_to_owned()?;
+    let dirfd: OwnedFd = rustix::fs::open(
+        path.as_std_path(),
+        rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::DIRECTORY | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::empty(),
+    )
+    .with_context(|| format!("Opening {path}"))?;
     let mut fs = composefs::fs::read_container_root(
-        cwd_owned,
-        path.as_std_path().to_path_buf(),
+        dirfd,
+        std::path::PathBuf::from("."),
         Some(repo.clone()),
     )
-    .await?;
+    .await
+    .context("Reading container root")?;
     fs.transform_for_boot(&repo).context("Preparing for boot")?;
     let id = fs.compute_image_id();
     let digest = id.to_hex();
@@ -122,7 +127,7 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_compute_composefs_digest() {
         // Create temp directory with test filesystem structure
         let td = tempfile::tempdir().unwrap();

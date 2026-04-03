@@ -15,7 +15,7 @@ use crate::{
     bootc_composefs::{
         boot::{BootSetupType, BootType, setup_composefs_bls_boot, setup_composefs_uki_boot},
         gc::composefs_gc,
-        repo::{get_imgref, pull_composefs_repo},
+        repo::pull_composefs_repo,
         service::start_finalize_stated_svc,
         soft_reboot::prepare_soft_reboot_composefs,
         state::write_composefs_state,
@@ -56,8 +56,8 @@ pub(crate) async fn is_image_pulled(
     repo: &ComposefsRepository,
     imgref: &ImageReference,
 ) -> Result<(Option<Sha512HashValue>, ImgConfigManifest)> {
-    let imgref_repr = get_imgref(&imgref.transport, &imgref.image);
-    let img_config_manifest = get_container_manifest_and_config(&imgref_repr).await?;
+    let imgref_repr = imgref.to_image_proxy_ref()?;
+    let img_config_manifest = get_container_manifest_and_config(&imgref_repr.to_string()).await?;
 
     let img_digest = img_config_manifest.manifest.config().digest().digest();
 
@@ -220,6 +220,8 @@ pub(crate) struct DoUpgradeOpts {
     pub(crate) apply: bool,
     pub(crate) soft_reboot: Option<SoftRebootMode>,
     pub(crate) download_only: bool,
+    /// Whether to use unified storage (containers-storage + composefs).
+    pub(crate) use_unified: bool,
 }
 
 async fn apply_upgrade(
@@ -254,7 +256,11 @@ pub(crate) async fn do_upgrade(
     host: &Host,
     imgref: &ImageReference,
     opts: &DoUpgradeOpts,
+    manifest: &ostree_ext::oci_spec::image::ImageManifest,
 ) -> Result<()> {
+    // Pre-flight disk space check before pulling.
+    crate::deploy::check_disk_space_composefs(&*booted_cfs.repo, manifest, imgref)?;
+
     start_finalize_stated_svc()?;
 
     let crate::bootc_composefs::repo::PullRepoResult {
@@ -263,9 +269,9 @@ pub(crate) async fn do_upgrade(
         id,
         manifest_digest,
     } = pull_composefs_repo(
-        &imgref.transport,
-        &imgref.image,
+        imgref,
         booted_cfs.cmdline.allow_missing_fsverity,
+        opts.use_unified,
     )
     .await?;
 
@@ -353,10 +359,11 @@ pub(crate) async fn upgrade_composefs(
         None
     };
 
-    let do_upgrade_opts = DoUpgradeOpts {
+    let mut do_upgrade_opts = DoUpgradeOpts {
         soft_reboot: opts.soft_reboot,
         apply: opts.apply,
         download_only: opts.download_only,
+        use_unified: false,
     };
 
     if opts.from_downloaded {
@@ -406,10 +413,16 @@ pub(crate) async fn upgrade_composefs(
     let imgref = derived_image.as_ref().or(current_image);
     let mut booted_imgref = imgref.ok_or_else(|| anyhow::anyhow!("No image source specified"))?;
 
+    // Auto-detect unified storage: if the image is already in bootc-owned
+    // containers-storage (e.g. from a previous `bootc image set-unified`),
+    // use the zero-copy path.
+    do_upgrade_opts.use_unified =
+        crate::deploy::image_exists_in_unified_storage(storage, booted_imgref).await?;
+
     let repo = &*composefs.repo;
 
     let (img_pulled, mut img_config) = is_image_pulled(&repo, booted_imgref).await?;
-    let booted_img_digest = img_config.manifest.config().digest().digest().to_owned();
+    let booted_img_digest = img_config.manifest.config().digest().to_string();
 
     // Check if we already have this update staged
     // Or if we have another staged deployment with a different image
@@ -441,7 +454,7 @@ pub(crate) async fn upgrade_composefs(
                 storage,
                 composefs,
                 &host,
-                img_config.manifest.config().digest().digest(),
+                img_config.manifest.config().digest().as_ref(),
                 &cfg_verity,
                 false,
             )?;
@@ -453,8 +466,15 @@ pub(crate) async fn upgrade_composefs(
                 }
 
                 UpdateAction::Proceed => {
-                    return do_upgrade(storage, composefs, &host, booted_imgref, &do_upgrade_opts)
-                        .await;
+                    return do_upgrade(
+                        storage,
+                        composefs,
+                        &host,
+                        booted_imgref,
+                        &do_upgrade_opts,
+                        &img_config.manifest,
+                    )
+                    .await;
                 }
 
                 UpdateAction::UpdateOrigin => {
@@ -482,8 +502,15 @@ pub(crate) async fn upgrade_composefs(
             }
 
             UpdateAction::Proceed => {
-                return do_upgrade(storage, composefs, &host, booted_imgref, &do_upgrade_opts)
-                    .await;
+                return do_upgrade(
+                    storage,
+                    composefs,
+                    &host,
+                    booted_imgref,
+                    &do_upgrade_opts,
+                    &img_config.manifest,
+                )
+                .await;
             }
 
             UpdateAction::UpdateOrigin => {
@@ -499,7 +526,15 @@ pub(crate) async fn upgrade_composefs(
         return Ok(());
     }
 
-    do_upgrade(storage, composefs, &host, booted_imgref, &do_upgrade_opts).await?;
+    do_upgrade(
+        storage,
+        composefs,
+        &host,
+        booted_imgref,
+        &do_upgrade_opts,
+        &img_config.manifest,
+    )
+    .await?;
 
     Ok(())
 }

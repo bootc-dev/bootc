@@ -213,6 +213,27 @@ More on prepare-root: <https://ostreedev.github.io/ostree/man/ostree-prepare-roo
 
 Note that regenerating the initramfs is required when changing this file.
 
+<!-- TODO: root.transient-ro is not yet handled by bootc's Rust code.
+     The upstream ostree C code (ostree-prepare-root) fully supports both
+     root.transient and root.transient-ro as separate keys, with mutual
+     exclusion and implicit root_transient=TRUE when transient-ro is set.
+     bootc's Rust side needs updates in three places:
+
+     1. crates/ostree-ext/src/ostree_prepareroot.rs — overlayfs_enabled_in_config()
+        only checks root.transient, not root.transient-ro. A config that sets only
+        transient-ro=true without composefs.enabled will produce a false-negative
+        in the baseimage-composefs lint.
+
+     2. crates/initramfs/src/lib.rs — RootConfig only has a `transient: bool` field.
+        It needs a `transient_ro: bool` field with #[serde(rename = "transient-ro")]
+        and the composefs-native boot path must handle it (read-only overlayfs upper).
+
+     3. crates/lib/src/lints.rs — no lint validates or warns about the transient-ro
+        key; the existing composefs/overlayfs lint should be extended.
+
+     Note: changing prepare-root.conf requires initramfs regeneration at container
+     build time, so the fix must also account for that in any lint messaging.
+-->
 ## Dynamic mountpoints with transient-ro
 
 The `transient-ro` option allows privileged users to create dynamic toplevel mountpoints

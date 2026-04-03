@@ -203,6 +203,37 @@ pub(crate) async fn composefs_gc(
         "Starting composefs garbage collection"
     );
 
+    // Upgrade any old-format OCI images (pre-EROFS-at-pull-time) before GC.
+    //
+    // Old bootc (pre composefs-rs 93634590c) used a seal-based flow that stored
+    // the composefs EROFS hash in an OCI config label but did NOT commit the EROFS
+    // image into the repository's images/ directory.  The GC's additional_roots
+    // mechanism protects deployments by looking up each deployment's EROFS verity
+    // in images/ and walking its object refs — but if no such image exists (old
+    // format), all the layer blob objects for that deployment appear unreferenced
+    // and are incorrectly collected.
+    //
+    // upgrade_repo() walks every tagged OCI image and generates EROFS for any
+    // that lack it, rewriting their config splitstreams.  After this step the
+    // additional_roots lookup succeeds and the rollback deployment's objects are
+    // protected.  This is a no-op for already-upgraded images (idempotent).
+    //
+    // Safety net: upgrade_repo() is also called in pull_composefs_repo() so
+    // that it runs at `bootc upgrade`/`bootc switch` time before any new
+    // deployment is staged.  Running it here too covers the case where GC is
+    // invoked directly (e.g. `bootc internals composefs-gc`) on a system that
+    // skipped the pull path.  upgrade_repo() is idempotent (fast-paths images
+    // that already have EROFS refs) and always runs even in dry-run mode since
+    // it is a format migration, not a deletion.
+    let upgrade_result = composefs_oci::upgrade_repo(&booted_cfs.repo)
+        .context("Upgrading old-format OCI images before GC")?;
+    if upgrade_result.upgraded > 0 {
+        tracing::info!(
+            "Upgraded {} old-format OCI image(s) to current format before GC",
+            upgrade_result.upgraded
+        );
+    }
+
     let host = get_composefs_status(storage, booted_cfs).await?;
     let booted_cfs_status = host.require_composefs_booted()?;
 
@@ -303,6 +334,8 @@ pub(crate) async fn composefs_gc(
     // deployments that predate the manifest→image link.
     let mut live_manifest_digests: Vec<composefs_oci::OciDigest> = Vec::new();
     let mut additional_roots = Vec::new();
+    // Container image names for containers-storage pruning.
+    let mut live_container_images: std::collections::HashSet<String> = Default::default();
 
     // Read existing tags before the deployment loop so we can search
     // them for deployments that lack manifest_digest in their origin.
@@ -324,6 +357,19 @@ pub(crate) async fn composefs_gc(
         additional_roots.push(verity.clone());
 
         if let Some(ini) = read_origin(sysroot, verity)? {
+            // Collect the container image name for containers-storage GC.
+            if let Some(container_ref) =
+                ini.get::<String>("origin", ostree_ext::container::deploy::ORIGIN_CONTAINER)
+            {
+                // Parse the ostree image reference to extract the bare image name
+                // (e.g. "quay.io/foo:tag" from "ostree-unverified-image:docker://quay.io/foo:tag")
+                let image_name = container_ref
+                    .parse::<ostree_ext::container::OstreeImageReference>()
+                    .map(|r| r.imgref.name)
+                    .unwrap_or_else(|_| container_ref.clone());
+                live_container_images.insert(image_name);
+            }
+
             if let Some(manifest_digest_str) =
                 ini.get::<String>(ORIGIN_KEY_IMAGE, ORIGIN_KEY_MANIFEST_DIGEST)
             {
@@ -406,6 +452,21 @@ pub(crate) async fn composefs_gc(
         .iter()
         .map(|x| x.as_str())
         .collect::<Vec<_>>();
+
+    // Prune containers-storage: remove images not backing any live deployment.
+    if !dry_run && !live_container_images.is_empty() {
+        let subpath = crate::podstorage::CStorage::subpath();
+        if sysroot.try_exists(&subpath).unwrap_or(false) {
+            let run = Dir::open_ambient_dir("/run", cap_std_ext::cap_std::ambient_authority())?;
+            let imgstore = crate::podstorage::CStorage::create(&sysroot, &run, None)?;
+            let roots: std::collections::HashSet<&str> =
+                live_container_images.iter().map(|s| s.as_str()).collect();
+            let pruned = imgstore.prune_except_roots(&roots).await?;
+            if !pruned.is_empty() {
+                tracing::info!("Pruned {} images from containers-storage", pruned.len());
+            }
+        }
+    }
 
     // Run garbage collection. Tags root the OCI metadata chain
     // (manifest → config → layers). The additional_roots protect EROFS

@@ -52,10 +52,19 @@ pub(crate) async fn switch_composefs(
     let repo = &*booted_cfs.repo;
     let (image, img_config) = is_image_pulled(repo, &target_imgref).await?;
 
+    // Use unified storage if explicitly requested, or auto-detect if the
+    // target image is already in bootc-owned containers-storage.
+    let use_unified = if opts.unified_storage_exp {
+        true
+    } else {
+        crate::deploy::image_exists_in_unified_storage(storage, &target_imgref).await?
+    };
+
     let do_upgrade_opts = DoUpgradeOpts {
         soft_reboot: opts.soft_reboot,
         apply: opts.apply,
         download_only: false,
+        use_unified,
     };
 
     if let Some(cfg_verity) = image {
@@ -63,7 +72,7 @@ pub(crate) async fn switch_composefs(
             storage,
             booted_cfs,
             &host,
-            img_config.manifest.config().digest().digest(),
+            img_config.manifest.config().digest().as_ref(),
             &cfg_verity,
             true,
         )?;
@@ -75,8 +84,15 @@ pub(crate) async fn switch_composefs(
             }
 
             UpdateAction::Proceed => {
-                return do_upgrade(storage, booted_cfs, &host, &target_imgref, &do_upgrade_opts)
-                    .await;
+                return do_upgrade(
+                    storage,
+                    booted_cfs,
+                    &host,
+                    &target_imgref,
+                    &do_upgrade_opts,
+                    &img_config.manifest,
+                )
+                .await;
             }
 
             UpdateAction::UpdateOrigin => {
@@ -88,7 +104,15 @@ pub(crate) async fn switch_composefs(
         }
     }
 
-    do_upgrade(storage, booted_cfs, &host, &target_imgref, &do_upgrade_opts).await?;
+    do_upgrade(
+        storage,
+        booted_cfs,
+        &host,
+        &target_imgref,
+        &do_upgrade_opts,
+        &img_config.manifest,
+    )
+    .await?;
 
     Ok(())
 }

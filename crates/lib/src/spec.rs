@@ -140,6 +140,17 @@ impl ImageReference {
             .map_err(|e| anyhow::anyhow!("Invalid transport '{}': {}", self.transport, e))
     }
 
+    /// Convert to a typed `containers_image_proxy::ImageReference`.
+    ///
+    /// This is the canonical way to get a properly typed image reference
+    /// from the spec's string-based representation.
+    pub fn to_image_proxy_ref(&self) -> Result<ostree_ext::containers_image_proxy::ImageReference> {
+        let s = format!("{}:{}", self.transport, self.image);
+        s.as_str()
+            .try_into()
+            .map_err(|e| anyhow::anyhow!("Parsing image reference '{}': {}", s, e))
+    }
+
     /// Convert to a container reference string suitable for use with container storage APIs.
     /// For registry transport, returns just the image name. For other transports, prepends the transport.
     pub fn to_transport_image(&self) -> Result<String> {
@@ -702,6 +713,55 @@ mod tests {
             );
             assert_eq!(canonicalized.transport, transport);
             assert_eq!(canonicalized.signature, None);
+        }
+    }
+
+    #[test]
+    fn test_to_image_proxy_ref() {
+        use ostree_ext::containers_image_proxy;
+
+        let cases = [
+            (
+                "registry",
+                "quay.io/example/image:latest",
+                containers_image_proxy::Transport::Registry,
+                "quay.io/example/image:latest",
+            ),
+            (
+                "containers-storage",
+                "localhost/bootc",
+                containers_image_proxy::Transport::ContainerStorage,
+                "localhost/bootc",
+            ),
+            (
+                "oci",
+                "/var/tmp/bootc-oci",
+                containers_image_proxy::Transport::OciDir,
+                "/var/tmp/bootc-oci",
+            ),
+            (
+                "docker-daemon",
+                "myimage:tag",
+                containers_image_proxy::Transport::DockerDaemon,
+                "myimage:tag",
+            ),
+        ];
+
+        for (transport, image, expected_transport, expected_name) in cases {
+            let imgref = ImageReference {
+                transport: transport.to_string(),
+                image: image.to_string(),
+                signature: None,
+            };
+            let proxy_ref = imgref.to_image_proxy_ref().unwrap();
+            assert_eq!(
+                proxy_ref.transport, expected_transport,
+                "transport mismatch for {transport}:{image}"
+            );
+            assert_eq!(
+                proxy_ref.name, expected_name,
+                "name mismatch for {transport}:{image}"
+            );
         }
     }
 

@@ -36,8 +36,10 @@ async fn image_exists_in_host_storage(image: &str) -> Result<bool> {
 }
 
 #[derive(Clone, Serialize, ValueEnum)]
+#[serde(rename_all = "lowercase")]
 enum ImageListTypeColumn {
     Host,
+    Unified,
     Logical,
 }
 
@@ -56,16 +58,48 @@ struct ImageOutput {
 }
 
 #[context("Listing host images")]
-fn list_host_images(sysroot: &crate::store::Storage) -> Result<Vec<ImageOutput>> {
-    let ostree = sysroot.get_ostree()?;
-    let repo = ostree.repo();
-    let images = ostree_ext::container::store::list_images(&repo).context("Querying images")?;
-
-    Ok(images
-        .into_iter()
-        .map(|image| ImageOutput {
+async fn list_host_images(sysroot: &crate::store::Storage) -> Result<Vec<ImageOutput>> {
+    let mut result = Vec::new();
+    if let Ok(ostree) = sysroot.get_ostree() {
+        let repo = ostree.repo();
+        let images = ostree_ext::container::store::list_images(&repo).context("Querying images")?;
+        result.extend(images.into_iter().map(|image| ImageOutput {
             image,
             image_type: ImageListTypeColumn::Host,
+        }));
+    }
+    // Always include images from bootc-owned containers-storage (unified).
+    // On composefs-only systems these are the host images; on ostree systems
+    // they supplement the ostree images when the user has opted into unified
+    // storage via `bootc image set-unified`.
+    result.extend(list_host_images_composefs(sysroot).await?);
+    Ok(result)
+}
+
+#[context("Listing host images from containers-storage")]
+async fn list_host_images_composefs(sysroot: &crate::store::Storage) -> Result<Vec<ImageOutput>> {
+    let sysroot_dir = &sysroot.physical_root;
+    let subpath = CStorage::subpath();
+    if !sysroot_dir.try_exists(&subpath).unwrap_or(false) {
+        return Ok(Vec::new());
+    }
+    let run = Dir::open_ambient_dir("/run", cap_std::ambient_authority())?;
+    let imgstore = CStorage::create(sysroot_dir, &run, None)?;
+    let images = imgstore
+        .list_images()
+        .await
+        .context("Listing containers-storage images")?;
+    Ok(images
+        .into_iter()
+        .flat_map(|entry| {
+            entry
+                .names
+                .unwrap_or_default()
+                .into_iter()
+                .map(|name| ImageOutput {
+                    image: name,
+                    image_type: ImageListTypeColumn::Unified,
+                })
         })
         .collect())
 }
@@ -97,7 +131,8 @@ async fn list_images(list_type: ImageListType) -> Result<Vec<ImageOutput>> {
     Ok(match (list_type, sysroot) {
         // TODO: Should we list just logical images silently here, or error?
         (ImageListType::All, None) => list_logical_images(&rootfs)?,
-        (ImageListType::All, Some(sysroot)) => list_host_images(&sysroot)?
+        (ImageListType::All, Some(sysroot)) => list_host_images(&sysroot)
+            .await?
             .into_iter()
             .chain(list_logical_images(&rootfs)?)
             .collect(),
@@ -105,7 +140,7 @@ async fn list_images(list_type: ImageListType) -> Result<Vec<ImageOutput>> {
         (ImageListType::Host, None) => {
             bail!("Listing host images requires a booted bootc system")
         }
-        (ImageListType::Host, Some(sysroot)) => list_host_images(&sysroot)?,
+        (ImageListType::Host, Some(sysroot)) => list_host_images(&sysroot).await?,
     })
 }
 
@@ -228,14 +263,108 @@ pub(crate) async fn imgcmd_entrypoint(
 /// upgrade/switch can use the unified path automatically when the image is present.
 #[context("Setting unified storage for booted image")]
 pub(crate) async fn set_unified_entrypoint() -> Result<()> {
+    let storage = crate::cli::get_storage().await?;
+
+    if let crate::store::BootedStorageKind::Composefs(booted_cfs) = storage.kind()? {
+        return set_unified_composefs(&storage, &booted_cfs).await;
+    }
+
     // Initialize floating c_storage early - needed for container operations
     crate::podstorage::ensure_floating_c_storage_initialized();
 
-    let sysroot = crate::cli::get_storage().await?;
-    set_unified(&sysroot).await
+    set_unified(&storage).await
 }
 
-/// Inner implementation of set_unified that accepts a storage reference.
+/// Composefs implementation of set_unified: pull the booted image into
+/// bootc-owned containers-storage so future upgrades use the unified
+/// (zero-copy) path automatically.
+#[context("Setting unified storage for composefs")]
+async fn set_unified_composefs(
+    storage: &crate::store::Storage,
+    booted_cfs: &crate::store::BootedComposefs,
+) -> Result<()> {
+    use crate::bootc_composefs::status::get_composefs_status;
+
+    const SET_UNIFIED_CFS_JOURNAL_ID: &str = "2b1c0d9e8f7a6b5c4d3e2f1a0b9c8d7e";
+
+    let host = get_composefs_status(storage, booted_cfs)
+        .await
+        .context("Getting composefs deployment status")?;
+
+    let imgref = host
+        .spec
+        .image
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("No image source specified for booted deployment"))?;
+
+    tracing::info!(
+        message_id = SET_UNIFIED_CFS_JOURNAL_ID,
+        bootc.image.reference = &imgref.image,
+        bootc.image.transport = &imgref.transport,
+        "Pulling booted image into bootc containers-storage for unified storage: {}",
+        imgref,
+    );
+
+    let imgstore = storage.get_ensure_imgstore()?;
+
+    // Check if the image is already in bootc storage
+    let img_transport = imgref.to_transport_image()?;
+    if imgstore.exists(&img_transport).await? {
+        println!("Image {} is already in bootc storage.", imgref.image);
+        tracing::info!(
+            message_id = SET_UNIFIED_CFS_JOURNAL_ID,
+            bootc.status = "already_unified",
+            "Image already present in bootc containers-storage",
+        );
+        return Ok(());
+    }
+
+    // Pull into bootc-owned containers-storage.
+    // If the image exists in the host's default containers-storage
+    // (/var/lib/containers), copy from there (avoids network).
+    // Otherwise, pull from the original transport.
+    let image_in_host = image_exists_in_host_storage(&imgref.image).await?;
+
+    if image_in_host {
+        tracing::info!(
+            "Image {} found in host containers-storage; copying to bootc storage",
+            &imgref.image
+        );
+        let image_name = imgref.image.clone();
+        let copy_msg = format!("Copying {} to bootc storage", &image_name);
+        async_task_with_spinner(&copy_msg, async move {
+            imgstore.pull_from_host_storage(&image_name).await
+        })
+        .await?;
+    } else {
+        let pull_ref = img_transport;
+        let pull_msg = format!("Pulling {} to bootc storage", &pull_ref);
+        async_task_with_spinner(&pull_msg, async move {
+            imgstore.pull_with_progress(&pull_ref).await
+        })
+        .await?;
+    }
+
+    // Verify
+    let imgstore = storage.get_ensure_imgstore()?;
+    let img_transport = imgref.to_transport_image()?;
+    if !imgstore.exists(&img_transport).await? {
+        anyhow::bail!(
+            "Image was pulled but not found in bootc storage: {}",
+            &imgref.image
+        );
+    }
+
+    tracing::info!(
+        message_id = SET_UNIFIED_CFS_JOURNAL_ID,
+        bootc.status = "set_unified_complete",
+        "Unified storage set. Future upgrade/switch will use zero-copy path automatically.",
+    );
+    println!("Unified storage enabled for {}.", imgref.image);
+    Ok(())
+}
+
+/// Inner implementation of set_unified for ostree that accepts a storage reference.
 #[context("Setting unified storage for booted image")]
 pub(crate) async fn set_unified(sysroot: &crate::store::Storage) -> Result<()> {
     let ostree = sysroot.get_ostree()?;

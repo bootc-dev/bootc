@@ -299,7 +299,10 @@ pub fn mount_composefs_image(
     name: &str,
     allow_missing_fsverity: bool,
 ) -> Result<OwnedFd> {
-    let mut repo = Repository::<Sha512HashValue>::open_path(sysroot, "composefs")?;
+    // Use open_upgrade to handle upgrades from older composefs-rs versions
+    // that lack meta.json: it infers the algorithm and verity mode from
+    // existing objects, writes meta.json, and opens normally.
+    let (mut repo, _upgraded) = Repository::<Sha512HashValue>::open_upgrade(sysroot, "composefs")?;
     if allow_missing_fsverity {
         repo.set_insecure();
     }

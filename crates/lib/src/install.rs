@@ -189,8 +189,7 @@ use serde::{Deserialize, Serialize};
 use self::baseline::InstallBlockDeviceOpts;
 use crate::bootc_composefs::status::ComposefsCmdline;
 use crate::bootc_composefs::{
-    boot::setup_composefs_boot,
-    repo::{get_imgref, initialize_composefs_repository},
+    boot::setup_composefs_boot, repo::initialize_composefs_repository,
     status::get_container_manifest_and_config,
 };
 use crate::boundimage::{BoundImage, ResolvedBoundImage};
@@ -2010,7 +2009,7 @@ async fn install_to_filesystem_impl(
         // Pre-flight disk space check for native composefs install path.
         {
             let imgref = &state.source.imageref;
-            let imgref_repr = get_imgref(&imgref.transport.to_string(), &imgref.name);
+            let imgref_repr = imgref.to_string();
             let img_manifest_config = get_container_manifest_and_config(&imgref_repr).await?;
             crate::store::ensure_composefs_dir(&rootfs.physical_root)?;
             // Use init_path since the repo may not exist yet during install
@@ -2034,6 +2033,7 @@ async fn install_to_filesystem_impl(
             state,
             rootfs,
             state.composefs_options.allow_missing_verity,
+            state.target_opts.unified_storage_exp,
         )
         .await?;
 

@@ -28,20 +28,20 @@ use std::os::fd::AsFd;
 
 /// A lint check has failed.
 #[derive(thiserror::Error, Debug)]
-struct FsckError(String);
+pub(crate) struct FsckError(String);
 
 /// The outer error is for unexpected fatal runtime problems; the
 /// inner error is for the check failing in an expected way.
-type FsckResult = anyhow::Result<std::result::Result<(), FsckError>>;
+pub(crate) type FsckResult = anyhow::Result<std::result::Result<(), FsckError>>;
 
 /// Everything is OK - we didn't encounter a runtime error, and
 /// the targeted check passed.
-fn fsck_ok() -> FsckResult {
+pub(crate) fn fsck_ok() -> FsckResult {
     Ok(Ok(()))
 }
 
 /// We successfully found a failure.
-fn fsck_err(msg: impl AsRef<str>) -> FsckResult {
+pub(crate) fn fsck_err(msg: impl AsRef<str>) -> FsckResult {
     Ok(Err(FsckError::new(msg)))
 }
 
@@ -57,10 +57,10 @@ impl FsckError {
     }
 }
 
-type FsckFn = fn(&Storage) -> FsckResult;
-type AsyncFsckFn = fn(&Storage) -> Pin<Box<dyn Future<Output = FsckResult> + '_>>;
+pub(crate) type FsckFn = fn(&Storage) -> FsckResult;
+pub(crate) type AsyncFsckFn = fn(&Storage) -> Pin<Box<dyn Future<Output = FsckResult> + '_>>;
 #[derive(Debug)]
-enum FsckFnImpl {
+pub(crate) enum FsckFnImpl {
     Sync(FsckFn),
     Async(AsyncFsckFn),
 }
@@ -78,7 +78,7 @@ impl From<AsyncFsckFn> for FsckFnImpl {
 }
 
 #[derive(Debug)]
-struct FsckCheck {
+pub(crate) struct FsckCheck {
     name: &'static str,
     ordering: u16,
     f: FsckFnImpl,
@@ -106,7 +106,10 @@ static CHECK_RESOLVCONF: FsckCheck =
 /// But at the current time fsck is an experimental feature that we should only be running
 /// in our CI.
 fn check_resolvconf(storage: &Storage) -> FsckResult {
-    let ostree = storage.get_ostree()?;
+    let ostree = match storage.get_ostree() {
+        Ok(o) => o,
+        Err(_) => return fsck_ok(), // Not an ostree system (e.g. composefs-only)
+    };
     // For now we only check the booted deployment.
     if ostree.booted_deployment().is_none() {
         return fsck_ok();
@@ -232,7 +235,10 @@ fn check_fsverity(storage: &Storage) -> Pin<Box<dyn Future<Output = FsckResult> 
 }
 
 async fn check_fsverity_inner(storage: &Storage) -> FsckResult {
-    let ostree = storage.get_ostree()?;
+    let ostree = match storage.get_ostree() {
+        Ok(o) => o,
+        Err(_) => return fsck_ok(), // Not an ostree system (e.g. composefs-only)
+    };
     let repo = &ostree.repo();
     let verity_state = ostree_ext::fsverity::is_verity_enabled(repo)?;
     tracing::debug!(

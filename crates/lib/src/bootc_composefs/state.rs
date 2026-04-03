@@ -26,7 +26,6 @@ use rustix::{
 };
 
 use crate::bootc_composefs::boot::BootType;
-use crate::bootc_composefs::repo::get_imgref;
 use crate::bootc_composefs::status::{
     ComposefsCmdline, StagedDeployment, get_sorted_type1_boot_entries,
 };
@@ -194,16 +193,14 @@ pub(crate) fn update_target_imgref_in_origin(
     booted_cfs: &BootedComposefs,
     imgref: &ImageReference,
 ) -> Result<()> {
+    let imgref = imgref.to_image_proxy_ref()?;
     add_update_in_origin(
         storage,
         booted_cfs.cmdline.digest.as_ref(),
         "origin",
         &[(
             ORIGIN_CONTAINER,
-            &format!(
-                "ostree-unverified-image:{}",
-                get_imgref(&imgref.transport, &imgref.image)
-            ),
+            &format!("ostree-unverified-image:{imgref}"),
         )],
     )
 }
@@ -282,13 +279,7 @@ pub(crate) async fn write_composefs_state(
         allow_missing_fsverity,
     )?;
 
-    let ImageReference {
-        image: image_name,
-        transport,
-        ..
-    } = &target_imgref;
-
-    let imgref = get_imgref(&transport, &image_name);
+    let imgref = target_imgref.to_image_proxy_ref()?;
 
     let mut config = tini::Ini::new().section("origin").item(
         ORIGIN_CONTAINER,

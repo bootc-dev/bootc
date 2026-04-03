@@ -44,6 +44,12 @@ def second_boot [] {
 
   # Verify bootc-owned store has the image
   bootc image cmd list
+
+  # Verify `bootc image list` reports the image with type "unified"
+  let images = bootc image list --format json | from json
+  let unified = $images | where image_type == "unified"
+  assert (($unified | length) > 0) "Expected at least one image with type 'unified' after set-unified"
+
   podman --storage-opt=additionalimagestore=/usr/lib/bootc/storage images
 
   let td = mktemp -d
