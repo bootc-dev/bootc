@@ -71,6 +71,7 @@ tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 tracing-journald = "0.3.1"
 uzers = "0.12"
 xshell = "0.2.6"
+zlink = "0.4"
 
 # See https://github.com/coreos/cargo-vendor-filterer
 [workspace.metadata.vendor-filter]
@@ -98,7 +99,9 @@ bins = ["skopeo", "podman", "ostree", "zstd", "setpriv", "systemctl", "chcon"]
 # Require an extra opt-in for unsafe
 unsafe_code = "deny"
 # Absolutely must handle errors
-unused_must_use = "forbid"
+# "deny" rather than "forbid" so that proc-macro expansions (e.g. zlink)
+# can locally #[allow(unused)] without conflicting.
+unused_must_use = "deny"
 missing_docs = "deny"
 missing_debug_implementations = "deny"
 # Feel free to comment this one out locally during development of a patch.
