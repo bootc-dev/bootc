@@ -532,6 +532,22 @@ pub(crate) fn setup_composefs_bls_boot(
                 ComposefsCmdline::build(&id_hex, state.composefs_options.allow_missing_verity);
             cmdline_options.extend(&Cmdline::from(&composefs_cmdline.to_string()));
 
+            // If there's a separate /boot partition, add a systemd.mount-extra
+            // karg so systemd mounts it after reboot. This avoids writing to
+            // /etc/fstab which conflicts with transient etc (see #1388).
+            if let Some(boot) = root_setup.boot_mount_spec() {
+                if !boot.source.is_empty() {
+                    let mount_extra = format!(
+                        "systemd.mount-extra={}:/boot:{}:{}",
+                        boot.source,
+                        boot.fstype,
+                        boot.options.as_deref().unwrap_or("defaults"),
+                    );
+                    cmdline_options.extend(&Cmdline::from(mount_extra.as_str()));
+                    tracing::debug!("Added /boot mount karg: {mount_extra}");
+                }
+            }
+
             // Locate ESP partition device
             let esp_part = root_setup.device_info.find_partition_of_esp()?;
 

@@ -1288,6 +1288,11 @@ impl RootSetup {
         self.boot.as_ref().map(require_boot_uuid).transpose()
     }
 
+    /// Get the boot mount spec, if a separate /boot partition exists.
+    pub(crate) fn boot_mount_spec(&self) -> Option<&MountSpec> {
+        self.boot.as_ref()
+    }
+
     // Drop any open file descriptors and return just the mount path and backing luks device, if any
     #[cfg(feature = "install-to-disk")]
     fn into_storage(self) -> (Utf8PathBuf, Option<String>) {
