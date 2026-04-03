@@ -38,6 +38,16 @@ buildroot_base := env("BOOTC_buildroot_base", "quay.io/centos/centos:stream10")
 extra_src := env("BOOTC_extra_src", "")
 # Set to "1" to disable auto-detection of local Rust dependencies
 no_auto_local_deps := env("BOOTC_no_auto_local_deps", "")
+# Optional: path to an ostree source tree to build and inject into the image.
+# When set, ostree is built from source inside a container matching the base
+# image distro, and the resulting RPMs override the stock ostree packages in
+# both the buildroot (so bootc links against the patched libostree) and the
+# final image. This pattern can be reused for other dependency overrides.
+# Example: BOOTC_ostree_src=/path/to/ostree just build
+ostree_src := env("BOOTC_ostree_src", "")
+# Version to assign to the override ostree RPMs. This should be set to the
+# next unreleased ostree version so the override is always newer than stock.
+ostree_version := env("BOOTC_ostree_version", "2026.1")
 
 # Internal variables
 nocache := env("BOOTC_nocache", "")
@@ -64,13 +74,14 @@ buildargs := base_buildargs \
 
 # Build container image from current sources (default target)
 [group('core')]
-build: package _keygen && _pull-lbi-images
+build: _build-ostree-rpms package _keygen && _pull-lbi-images
     #!/bin/bash
     set -xeuo pipefail
     test -d target/packages
     pkg_path=$(realpath target/packages)
+    ostree_pkg_path=$(realpath target/ostree-packages)
     eval $(just _git-build-vars)
-    podman build {{_nocache_arg}} --build-arg=image_version=${VERSION} --build-context "packages=${pkg_path}" -t {{base_img}} {{buildargs}} .
+    podman build {{_nocache_arg}} --build-arg=image_version=${VERSION} --build-context "packages=${pkg_path}" --build-context "ostree-packages=${ostree_pkg_path}" -t {{base_img}} {{buildargs}} .
 
 # Show available build variants and current configuration
 [group('core')]
@@ -321,7 +332,9 @@ package:
     if [[ -z "{{no_auto_local_deps}}" ]]; then
         local_deps_args=$(cargo xtask local-rust-deps)
     fi
-    podman build {{base_buildargs}} --build-arg=SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH} --build-arg=pkgversion=${VERSION} -t localhost/bootc-pkg --target=build $local_deps_args .
+    mkdir -p target/ostree-packages
+    ostree_pkg_path=$(realpath target/ostree-packages)
+    podman build {{base_buildargs}} --build-arg=SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH} --build-arg=pkgversion=${VERSION} --build-context "ostree-packages=${ostree_pkg_path}" -t localhost/bootc-pkg --target=build $local_deps_args .
     mkdir -p "${packages}"
     rm -vf "${packages}"/*.rpm
     podman run --rm localhost/bootc-pkg tar -C /out/ -cf - . | tar -C "${packages}"/ -xvf -
@@ -358,6 +371,28 @@ _git-build-vars:
     fi
     echo "SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}"
     echo "VERSION=${VERSION}"
+
+# Build ostree RPMs from source if BOOTC_ostree_src is set.
+# The RPMs are built inside a container matching the base image distro.
+# When BOOTC_ostree_src is not set, this creates an empty directory (no-op).
+_build-ostree-rpms:
+    #!/bin/bash
+    set -xeuo pipefail
+    mkdir -p target/ostree-packages
+    if [ -z "{{ostree_src}}" ]; then exit 0; fi
+    echo "Building ostree {{ostree_version}} from source: {{ostree_src}}"
+    rm -f target/ostree-packages/*.rpm
+    podman build \
+        --build-context ostree-src={{ostree_src}} \
+        --build-arg=base={{base}} \
+        --build-arg=ostree_version={{ostree_version}} \
+        -t localhost/ostree-build \
+        -f contrib/packaging/Dockerfile.ostree-override .
+    cid=$(podman create localhost/ostree-build)
+    podman cp "${cid}:/" target/ostree-packages/
+    podman rm "${cid}"
+    echo "ostree override RPMs:"
+    ls -la target/ostree-packages/
 
 _keygen:
     ./hack/generate-secureboot-keys

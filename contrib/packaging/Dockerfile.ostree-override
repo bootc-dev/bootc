@@ -1,0 +1,113 @@
+# Build ostree RPMs from source, matching the base image distro.
+#
+# This Dockerfile is used by the BOOTC_ostree_src mechanism in the Justfile
+# to build a patched ostree and inject it into the bootc test image. It builds
+# ostree RPMs inside a container matching the base image so the resulting RPMs
+# are compatible with the target distro.
+#
+# The ostree source is provided via the `ostree-src` build context.
+# The version is overridden to ensure the built RPMs are always newer than
+# the stock packages.
+#
+# Usage (via Justfile):
+#   BOOTC_ostree_src=/path/to/ostree just build
+#
+# Direct usage:
+#   podman build --build-context ostree-src=/path/to/ostree \
+#     --build-arg=base=quay.io/centos-bootc/centos-bootc:stream10 \
+#     --build-arg=ostree_version=2026.1 \
+#     -f contrib/packaging/Dockerfile.ostree-override .
+
+ARG base=quay.io/centos-bootc/centos-bootc:stream10
+
+FROM $base as ostree-build
+# Install ostree build dependencies
+RUN <<EORUN
+set -xeuo pipefail
+. /usr/lib/os-release
+case "${ID}${ID_LIKE:-}" in
+  *centos*|*rhel*)
+    dnf config-manager --set-enabled crb
+    ;;
+esac
+dnf -y builddep ostree
+dnf -y install git rpm-build autoconf automake libtool make xz
+EORUN
+
+# Copy ostree source from build context
+COPY --from=ostree-src / /ostree-src
+WORKDIR /ostree-src
+
+# Build ostree RPMs with the specified version
+ARG ostree_version=2026.1
+RUN <<EORUN
+set -xeuo pipefail
+git config --global --add safe.directory /ostree-src
+
+# Initialize submodules if needed
+if ! test -f libglnx/README.md || ! test -f bsdiff/README.md; then
+    git submodule update --init
+fi
+
+# Clean up any stale build artifacts from the source tree
+rm -rf ostree-distgit *.tar.xz *.src.rpm x86_64/ ostree.spec
+
+# Create source tarball with the target version as the directory prefix.
+# We can't use ci/make-git-snapshot.sh because it hardcodes the directory
+# name from git-describe, which won't match our overridden version.
+GITREV=$(git rev-parse HEAD)
+PKG_VER="libostree-${ostree_version}"
+git archive --format=tar --prefix="${PKG_VER}/" "${GITREV}" > "${PKG_VER}.tar.tmp"
+git submodule status | while read line; do
+    rev=$(echo ${line} | cut -f 1 -d ' ')
+    path=$(echo ${line} | cut -f 2 -d ' ')
+    (cd "${path}"; git archive --format=tar --prefix="${PKG_VER}/${path}/" "${rev}") > submodule.tar
+    tar -A -f "${PKG_VER}.tar.tmp" submodule.tar
+    rm submodule.tar
+done
+mv "${PKG_VER}.tar.tmp" "${PKG_VER}.tar"
+xz "${PKG_VER}.tar"
+
+# Get spec file: use local one if present, otherwise fetch from dist-git
+if ! test -f ostree.spec; then
+    rm -rf ostree-distgit
+    . /usr/lib/os-release
+    case "${ID}" in
+        centos|rhel)
+            git clone --depth=1 https://gitlab.com/redhat/centos-stream/rpms/ostree.git ostree-distgit || \
+            git clone --depth=1 https://src.fedoraproject.org/rpms/ostree ostree-distgit
+            ;;
+        *)
+            git clone --depth=1 https://src.fedoraproject.org/rpms/ostree ostree-distgit
+            ;;
+    esac
+    cp ostree-distgit/ostree.spec .
+fi
+
+# Set the target version and strip any distro patches
+sed -i -e '/^Patch/d' -e "s,^Version:.*,Version: ${ostree_version}," ostree.spec
+
+# Build SRPM
+ci/rpmbuild-cwd -bs ostree.spec
+
+# Install any missing build deps from the SRPM
+if test "$(id -u)" = 0; then
+    dnf builddep -y *.src.rpm
+fi
+
+# Build binary RPMs
+ci/rpmbuild-cwd --rebuild *.src.rpm
+
+# Collect the RPMs we need
+mkdir -p /out
+cp x86_64/ostree-${ostree_version}*.rpm \
+   x86_64/ostree-libs-${ostree_version}*.rpm \
+   x86_64/ostree-devel-${ostree_version}*.rpm \
+   /out/
+echo "Built ostree override RPMs:"
+ls -la /out/
+EORUN
+
+# Final stage: just the RPMs
+FROM scratch
+COPY --from=ostree-build /out/ /
