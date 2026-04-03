@@ -521,6 +521,8 @@ pub const fn this_arch_root() -> &'static str {
             ROOT_PPC64
         } else if #[cfg(all(target_arch = "powerpc64", target_endian = "little"))] {
             ROOT_PPC64_LE
+        } else if #[cfg(target_arch = "riscv64")] {
+            ROOT_RISCV64
         } else {
             compile_error!("Unsupported architecture")
         }
