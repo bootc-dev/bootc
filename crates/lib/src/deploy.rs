@@ -540,15 +540,12 @@ pub(crate) async fn prepare_for_pull_unified(
         &imgref.transport
     );
 
-    // Pull the image to bootc storage using the same method as LBIs
-    // Show a spinner since podman pull can take a while and doesn't output progress
-    let pull_msg = format!("Pulling {} to bootc storage", &image_ref_str);
-    async_task_with_spinner(&pull_msg, async move {
-        imgstore
-            .pull(&image_ref_str, crate::podstorage::PullMode::Always)
-            .await
-    })
-    .await?;
+    // Pull the image into bootc containers-storage with per-layer
+    // download progress via the podman native API.
+    imgstore
+        .pull_with_progress(&image_ref_str)
+        .await
+        .context("Pulling image into bootc containers-storage")?;
 
     // Now create a containers-storage reference to read from bootc storage
     tracing::info!("Unified pull: now importing from containers-storage transport");

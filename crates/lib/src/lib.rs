@@ -86,6 +86,7 @@ mod lsm;
 pub(crate) mod metadata;
 mod parsers;
 mod podman;
+pub(crate) mod podman_client;
 mod podstorage;
 mod progress_jsonl;
 mod reboot;

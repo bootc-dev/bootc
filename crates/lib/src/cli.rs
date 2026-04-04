@@ -492,10 +492,11 @@ pub(crate) enum ImageCmdOpts {
         #[clap(allow_hyphen_values = true)]
         args: Vec<OsString>,
     },
-    /// Wrapper for `podman image pull` in bootc storage.
+    /// Pull image(s) into bootc storage.
     Pull {
-        #[clap(allow_hyphen_values = true)]
-        args: Vec<OsString>,
+        /// Image references to pull (e.g. quay.io/myorg/myimage:latest)
+        #[clap(required = true)]
+        images: Vec<String>,
     },
     /// Wrapper for `podman image push` in bootc storage.
     Push {
@@ -1870,8 +1871,11 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
                     ImageCmdOpts::Build { args } => {
                         crate::image::imgcmd_entrypoint(imgstore, "build", &args).await
                     }
-                    ImageCmdOpts::Pull { args } => {
-                        crate::image::imgcmd_entrypoint(imgstore, "pull", &args).await
+                    ImageCmdOpts::Pull { images } => {
+                        for image in &images {
+                            imgstore.pull_with_progress(image).await?;
+                        }
+                        Ok(())
                     }
                     ImageCmdOpts::Push { args } => {
                         crate::image::imgcmd_entrypoint(imgstore, "push", &args).await

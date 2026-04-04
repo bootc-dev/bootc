@@ -417,26 +417,35 @@ impl Storage {
     }
 
     /// Access the image storage; will automatically initialize it if necessary.
+    ///
+    /// Works on both ostree and composefs-only systems.  On ostree the
+    /// SELinux policy is loaded from the booted deployment; on composefs
+    /// (where ostree isn't initialized) we fall back to the host root policy.
     pub(crate) fn get_ensure_imgstore(&self) -> Result<&CStorage> {
         if let Some(imgstore) = self.imgstore.get() {
             return Ok(imgstore);
         }
-        let ostree = self.get_ostree()?;
-        let sysroot_dir = crate::utils::sysroot_dir(ostree)?;
 
-        let sepolicy = if ostree.booted_deployment().is_none() {
-            // fallback to policy from container root
-            // this should only happen during cleanup of a broken install
-            tracing::trace!("falling back to container root's selinux policy");
-            let container_root = Dir::open_ambient_dir("/", cap_std::ambient_authority())?;
-            lsm::new_sepolicy_at(&container_root)?
+        let (sysroot_dir, sepolicy) = if let Ok(ostree) = self.get_ostree() {
+            let sysroot_dir = crate::utils::sysroot_dir(ostree)?;
+            let sepolicy = if ostree.booted_deployment().is_none() {
+                tracing::trace!("falling back to container root's selinux policy");
+                let container_root = Dir::open_ambient_dir("/", cap_std::ambient_authority())?;
+                lsm::new_sepolicy_at(&container_root)?
+            } else {
+                tracing::trace!("loading sepolicy from booted ostree deployment");
+                let dep = ostree.booted_deployment().unwrap();
+                let dep_fs = deployment_fd(ostree, &dep)?;
+                lsm::new_sepolicy_at(&dep_fs)?
+            };
+            (sysroot_dir, sepolicy)
         } else {
-            // load the sepolicy from the booted ostree deployment so the imgstorage can be
-            // properly labeled with /var/lib/container/storage labels
-            tracing::trace!("loading sepolicy from booted ostree deployment");
-            let dep = ostree.booted_deployment().unwrap();
-            let dep_fs = deployment_fd(ostree, &dep)?;
-            lsm::new_sepolicy_at(&dep_fs)?
+            // Composefs-only: ostree is not initialized. Use the physical
+            // root directly and load SELinux policy from the host root.
+            let sysroot_dir = self.physical_root.try_clone()?;
+            let root = Dir::open_ambient_dir("/", cap_std::ambient_authority())?;
+            let sepolicy = lsm::new_sepolicy_at(&root)?;
+            (sysroot_dir, sepolicy)
         };
 
         tracing::trace!("sepolicy in get_ensure_imgstore: {sepolicy:?}");
