@@ -37,11 +37,16 @@ clap_complete = "4"
 clap_mangen = { workspace = true, optional = true }
 cfsctl = { workspace = true }
 fn-error-context = { workspace = true }
+futures-util = { workspace = true }
 hex = { workspace = true }
+http-body-util = { workspace = true }
+hyper = { workspace = true }
+hyper-util = { workspace = true }
 indicatif = { workspace = true }
 indoc = { workspace = true }
 libc = { workspace = true }
 openssl = { workspace = true }
+percent-encoding = { workspace = true }
 regex = { workspace = true }
 rustix = { workspace = true }
 serde = { workspace = true, features = ["derive"] }

@@ -24,7 +24,7 @@ use cap_std_ext::dirext::CapStdExtDirExt;
 use cap_std_ext::{cap_std, cap_tempfile};
 use fn_error_context::context;
 use ostree_ext::ostree::{self};
-use std::os::fd::{AsFd, AsRawFd, OwnedFd};
+use std::os::fd::OwnedFd;
 use tokio::process::Command as AsyncCommand;
 
 // Pass only 100 args at a time just to avoid potentially overflowing argument
@@ -37,7 +37,7 @@ const SUBCMD_ARGV_CHUNKING: usize = 100;
 /// to how the untar process is forked in the child.
 pub(crate) const STORAGE_ALIAS_DIR: &str = "/run/bootc/storage";
 /// We pass this via /proc/self/fd to the child process.
-const STORAGE_RUN_FD: i32 = 3;
+pub(crate) const STORAGE_RUN_FD: i32 = 3;
 
 const LABELED: &str = ".bootc_labeled";
 
@@ -57,7 +57,6 @@ pub(crate) struct CStorage {
     sysroot: Dir,
     /// The location of container storage
     storage_root: Dir,
-    #[allow(dead_code)]
     /// Our runtime state
     run: Dir,
     /// The SELinux policy used for labeling the storage.
@@ -155,8 +154,7 @@ pub(crate) fn setup_auth(cmd: &mut Command, fds: &mut CmdFds, sysroot: &Dir) -> 
         .map_err(|e| e.into_error())?
         .into_std();
     let fd: Arc<OwnedFd> = std::sync::Arc::new(tempfile.into());
-    let target_fd = fd.as_fd().as_raw_fd();
-    fds.take_fd_n(fd, target_fd);
+    let target_fd = fds.take_fd(fd);
     cmd.env("REGISTRY_AUTH_FILE", format!("/proc/self/fd/{target_fd}"));
 
     Ok(())
@@ -465,6 +463,24 @@ impl CStorage {
         cmd.run().await?;
         temp_runroot.close()?;
         Ok(())
+    }
+
+    /// Pull an image with streaming progress display.
+    ///
+    /// Uses the podman native libpod HTTP API instead of shelling out,
+    /// enabling per-blob download progress. Registry auth is handled
+    /// via `REGISTRY_AUTH_FILE` on the podman service process.
+    ///
+    /// Always pulls (policy=always) so updated digests are fetched
+    /// even if an image with the same tag exists locally.
+    pub(crate) async fn pull_with_progress(&self, image: &str) -> Result<()> {
+        let client = crate::podman_client::PodmanClient::connect(
+            &self.sysroot,
+            &self.storage_root,
+            &self.run,
+        )
+        .await?;
+        client.pull_with_progress(image).await
     }
 
     pub(crate) fn subpath() -> Utf8PathBuf {

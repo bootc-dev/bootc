@@ -26,9 +26,8 @@ pub(crate) const IMAGE_DEFAULT: &str = "localhost/bootc";
 /// Check if an image exists in the default containers-storage (podman storage).
 ///
 /// TODO: Using exit codes to check image existence is not ideal. We should use
-/// the podman HTTP API via bollard (<https://lib.rs/crates/bollard>) or similar
-/// to properly communicate with podman and get structured responses. This would
-/// also enable proper progress monitoring during pull operations.
+/// the podman native libpod HTTP API to properly communicate with podman and
+/// get structured responses.
 async fn image_exists_in_host_storage(image: &str) -> Result<bool> {
     use tokio::process::Command as AsyncCommand;
     let mut cmd = AsyncCommand::new("podman");
