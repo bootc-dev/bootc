@@ -10,6 +10,8 @@
 #                            -> cargo xtask
 # --------------------------------------------------------------------
 
+mod bcvk 'bcvk.just'
+
 # Configuration variables (override via environment or command line)
 # Example: BOOTC_base=quay.io/fedora/fedora-bootc:42 just build
 
@@ -337,6 +339,16 @@ build-units:
     podman build {{base_buildargs}} --build-arg=SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH} --build-arg=pkgversion=${VERSION} --target units -t localhost/bootc-units .
 
 # ============================================================================
+# Development VM workflow (sysext-based)
+# ============================================================================
+
+# Build a systemd-sysext via the container build (binary only, for fast iteration)
+[group('dev')]
+sysext:
+    contrib/packaging/build-container-stage sysext target/sysext \
+        {{base_buildargs}} $(just _local-deps-args)
+
+# ============================================================================
 # Internal helpers (prefixed with _)
 # ============================================================================
 
@@ -358,6 +370,13 @@ _git-build-vars:
     fi
     echo "SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}"
     echo "VERSION=${VERSION}"
+
+_local-deps-args:
+    #!/bin/bash
+    set -euo pipefail
+    if [[ -z "{{no_auto_local_deps}}" ]]; then
+        cargo xtask local-rust-deps
+    fi
 
 _keygen:
     ./hack/generate-secureboot-keys

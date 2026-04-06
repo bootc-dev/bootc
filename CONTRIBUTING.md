@@ -104,6 +104,31 @@ For the local case, check out [cstor-dist](https://github.com/cgwalters/cstor-di
 Another alternative is mounting via virtiofs (see e.g. [this PR to bcvk](https://github.com/bootc-dev/bcvk/pull/16)).
 If you're using libvirt, see [this document](https://libvirt.org/kbase/virtiofs.html).
 
+#### Using sysext for fast iteration
+
+For the fastest development cycle when working on the bootc client
+(e.g. `bootc upgrade`, `bootc switch`), you can use the sysext-based
+workflow. This builds the bootc binary via a container, shares it into
+a persistent VM via virtiofs, and overlays it onto `/usr` using
+systemd-sysext (~30s rebuild cycle):
+
+```bash
+# Build sysext and launch a persistent dev VM
+just bcvk up
+
+# After editing code, rebuild and refresh the overlay (~30s)
+just bcvk sync
+
+# SSH into the VM — bootc is your dev build
+just bcvk ssh bootc status
+
+# When done
+just bcvk down
+```
+
+The sysext overlay means `bootc` on the VM's PATH is your dev build.
+Run `just bcvk` to list all available commands.
+
 #### Running bootc against a live environment
 
 If your development environment host is also a bootc system (e.g. a
