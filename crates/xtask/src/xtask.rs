@@ -166,7 +166,11 @@ impl Display for SealState {
     }
 }
 
-/// Arguments for run-tmt command
+/// Arguments for run-tmt command.
+///
+/// The composefs-related fields can be set via CLI flags or via the standard
+/// `BOOTC_*` environment variables used by the Justfile.  When `BOOTC_variant`
+/// is set to `composefs`, `--composefs-backend` is implied automatically.
 #[derive(Debug, Args)]
 pub(crate) struct RunTmtArgs {
     /// Image name (e.g., "localhost/bootc")
@@ -192,26 +196,40 @@ pub(crate) struct RunTmtArgs {
     #[arg(long)]
     pub(crate) preserve_vm: bool,
 
+    /// Use composefs backend.  Also implied when BOOTC_variant=composefs.
     #[arg(long)]
     pub(crate) composefs_backend: bool,
 
-    #[arg(long, requires = "composefs_backend")]
+    #[arg(long, env = "BOOTC_bootloader")]
     pub(crate) bootloader: Option<Bootloader>,
 
-    #[arg(long, requires = "composefs_backend")]
+    #[arg(long, env = "BOOTC_filesystem")]
     pub(crate) filesystem: Option<String>,
 
     /// Required to switch between secure/insecure firmware options
-    #[arg(long, requires = "composefs_backend")]
+    #[arg(long, env = "BOOTC_seal_state")]
     pub(crate) seal_state: Option<SealState>,
 
-    // Required to send kargs to only bls installs
-    #[arg(long, default_value_t, requires = "composefs_backend")]
+    /// Boot entry type (bls or uki)
+    #[arg(long, env = "BOOTC_boot_type", default_value_t)]
     pub(crate) boot_type: BootType,
 
     /// Additional kernel arguments to pass to bcvk
     #[arg(long)]
     pub(crate) karg: Vec<String>,
+}
+
+impl RunTmtArgs {
+    /// Derive composefs_backend from BOOTC_variant if not explicitly set.
+    pub(crate) fn resolve_composefs(&mut self) {
+        if !self.composefs_backend {
+            if let Ok(v) = std::env::var("BOOTC_variant") {
+                if v == "composefs" {
+                    self.composefs_backend = true;
+                }
+            }
+        }
+    }
 }
 
 /// Arguments for tmt-provision command
@@ -275,7 +293,10 @@ fn try_main() -> Result<()> {
         Commands::Package => package(&sh),
         Commands::PackageSrpm => package_srpm(&sh),
         Commands::Spec => spec(&sh),
-        Commands::RunTmt(args) => tmt::run_tmt(&sh, &args),
+        Commands::RunTmt(mut args) => {
+            args.resolve_composefs();
+            tmt::run_tmt(&sh, &args)
+        }
         Commands::TmtProvision(args) => tmt::tmt_provision(&sh, &args),
         Commands::CheckBuildsys => buildsys::check_buildsys(&sh, "Dockerfile".into()),
         Commands::ValidateComposefsDigest(args) => validate_composefs_digest(&sh, &args),
