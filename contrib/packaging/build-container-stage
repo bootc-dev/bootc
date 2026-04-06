@@ -1,0 +1,40 @@
+#!/bin/bash
+# Build a Dockerfile stage and extract /out to a versioned subdirectory.
+# Usage: build-container-stage <stage> <output-dir> [podman-build-args...]
+#
+# Each build creates a new timestamped directory inside <output-dir>
+# (e.g. output-dir/bootc-1234567890/) and prints the version name to
+# stdout on the last line.  A "current" symlink is updated to point at
+# the new version.  Old versions are pruned (keeping the 2 most recent)
+# so the previous version remains valid for any active overlay.
+set -euo pipefail
+
+stage="${1:?Usage: build-container-stage <stage> <output-dir> [podman-build-args...]}"
+output_dir="${2:?Usage: build-container-stage <stage> <output-dir> [podman-build-args...]}"
+shift 2
+
+image_tag="localhost/bootc-${stage}"
+
+podman build -t "${image_tag}" --target="${stage}" "$@" .
+
+mkdir -p "${output_dir}"
+
+# Extract into a versioned subdirectory, using the image build timestamp
+# so the version name reflects when the binary was actually built.
+version="bootc-$(podman inspect --format '{{.Created.Unix}}' "${image_tag}")"
+version_dir="${output_dir}/${version}"
+mkdir -p "${version_dir}"
+podman run --rm "${image_tag}" tar -C /out -cf - . | tar -C "${version_dir}" -xvf -
+chmod -R a+rX "${version_dir}"
+
+# Update the "current" symlink atomically
+ln -sfn "${version}" "${output_dir}/current.tmp"
+mv -Tf "${output_dir}/current.tmp" "${output_dir}/current"
+
+# Prune old versions, keeping the 2 most recent
+ls -1dt "${output_dir}"/bootc-[0-9]* 2>/dev/null | tail -n +3 | while read -r old; do
+    rm -rf "${old}"
+done
+
+# Print the version name so callers (xtask) can use it
+echo "sysext-version=${version}"

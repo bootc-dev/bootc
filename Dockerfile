@@ -99,6 +99,23 @@ ENV SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}
 # Build RPM directly from source, using cached target directory
 RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp --mount=type=cache,target=/src/target --mount=type=cache,target=/var/roothome RPM_VERSION="${pkgversion}" /src/contrib/packaging/build-rpm
 
+# Build a systemd-sysext containing just the bootc binary.
+# Skips RPM machinery entirely for fast incremental rebuilds.
+FROM buildroot as sysext
+RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
+    --mount=type=cache,target=/src/target --mount=type=cache,target=/var/roothome <<EORUN
+set -xeuo pipefail
+cargo build --bin bootc
+mkdir -p /out/bootc/usr/bin /out/bootc/usr/lib/extension-release.d
+cp target/debug/bootc /out/bootc/usr/bin/
+cat > /out/bootc/usr/lib/extension-release.d/extension-release.bootc <<EOF
+ID=_any
+EXTENSION_RELOAD_MANAGER=1
+EOF
+echo "Fast sysext created (binary only):"
+find /out/bootc -type f
+EORUN
+
 # This image signs systemd-boot using our key, and writes the resulting binary into /out
 FROM tools as sdboot-signed
 # The secureboot key and cert are passed via Justfile

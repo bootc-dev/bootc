@@ -18,6 +18,7 @@ use xshell::{Shell, cmd};
 
 mod buildsys;
 mod man;
+mod sysext;
 mod tmt;
 
 const NAME: &str = "bootc";
@@ -62,6 +63,34 @@ enum Commands {
     ValidateComposefsDigest(ValidateComposefsDigestArgs),
     /// Print podman bind mount arguments for local path dependencies
     LocalRustDeps(LocalRustDepsArgs),
+    /// Development VM management via bcvk + systemd-sysext
+    Bcvk {
+        #[command(subcommand)]
+        command: BcvkCommands,
+    },
+}
+
+/// Subcommands for development VM management
+#[derive(Debug, Subcommand)]
+enum BcvkCommands {
+    /// Launch or sync persistent development VM with sysext
+    Vm,
+    /// Sync sysext to running development VM
+    Sync,
+    /// Stop and remove development VM
+    Down,
+    /// SSH into development VM (interactive shell if no command given)
+    Ssh {
+        /// Command to run in the VM (omit for interactive shell)
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// Show development VM status
+    Status,
+    /// Watch development VM logs
+    Logs,
+    /// Clean all development resources
+    Clean,
 }
 
 /// Arguments for validate-composefs-digest command
@@ -250,6 +279,15 @@ fn try_main() -> Result<()> {
         Commands::CheckBuildsys => buildsys::check_buildsys(&sh, "Dockerfile".into()),
         Commands::ValidateComposefsDigest(args) => validate_composefs_digest(&sh, &args),
         Commands::LocalRustDeps(args) => local_rust_deps(&sh, &args),
+        Commands::Bcvk { command } => match command {
+            BcvkCommands::Vm => sysext::bcvk_vm(&sh),
+            BcvkCommands::Sync => sysext::bcvk_vm_sync(&sh),
+            BcvkCommands::Down => sysext::bcvk_vm_down(&sh),
+            BcvkCommands::Ssh { args } => sysext::bcvk_vm_ssh(&sh, &args),
+            BcvkCommands::Status => sysext::bcvk_vm_status(&sh),
+            BcvkCommands::Logs => sysext::bcvk_vm_logs(&sh),
+            BcvkCommands::Clean => sysext::bcvk_vm_clean(&sh),
+        },
     }
 }
 
