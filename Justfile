@@ -14,6 +14,18 @@ mod bcvk 'bcvk.just'
 
 # Configuration variables (override via environment or command line)
 # Example: BOOTC_base=quay.io/fedora/fedora-bootc:42 just build
+#
+# Composefs backend quick-start (use env vars so settings persist across targets):
+#   export BOOTC_variant=composefs
+#   export BOOTC_bootloader=systemd           # needed for UKI
+#   just build && just test-tmt readonly      # both use composefs+systemd
+#
+#   just build-sealed                         # shortcut: sealed UKI image
+#   just test-composefs systemd ext4 uki sealed
+#
+# Constraints:
+#   sealed  → requires boot_type=uki and filesystem with fsverity (ext4/btrfs)
+#   uki     → requires bootloader=systemd
 
 # Output image name
 base_img := "localhost/bootc"

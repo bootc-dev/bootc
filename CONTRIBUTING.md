@@ -140,25 +140,72 @@ then you can `cargo b --release` directly in a Fedora 42 container
 or even on your host system, and then directly run e.g. `./target/release/bootc upgrade`
 etc.
 
-### Testing with composefs (sealed images)
+### Building and testing with the composefs backend
 
-To build and test with the experimental composefs backend:
+bootc has two storage backends: `ostree` (default, production) and `composefs`
+(experimental). The composefs backend has several axes of configuration:
+
+| Variable | Values | Notes |
+|---|---|---|
+| `variant` | `ostree`, `composefs` | Storage backend |
+| `bootloader` | `grub`, `systemd` | systemd-boot required for UKI |
+| `boot_type` | `bls`, `uki` | UKI embeds the composefs digest |
+| `seal_state` | `unsealed`, `sealed` | Sealed signs the UKI for Secure Boot |
+| `filesystem` | `ext4`, `btrfs`, `xfs` | xfs lacks fsverity, incompatible with sealed |
+
+These are controlled via `BOOTC_`-prefixed environment variables.
+Using environment variables (rather than `just` command-line overrides)
+is recommended because they persist across commands in the same shell
+session — so `just build` followed by `just test-tmt` will use the
+same configuration:
 
 ```bash
-# Build a sealed image with auto-generated test Secure Boot keys
+# Set up a composefs development session
+export BOOTC_variant=composefs
+export BOOTC_bootloader=systemd
+# Now all just targets use these settings:
+just build
+just test-tmt readonly
+just test-container
+```
+
+The constraints are:
+
+- `sealed` requires `boot_type=uki` (the digest lives in the UKI cmdline)
+- `sealed` requires `filesystem` with fsverity support (`ext4` or `btrfs`)
+- `uki` requires `bootloader=systemd`
+
+Common workflows:
+
+```bash
+# Simplest composefs build (unsealed, grub, BLS, ext4)
+export BOOTC_variant=composefs
+just build
+
+# Composefs with systemd-boot
+export BOOTC_variant=composefs BOOTC_bootloader=systemd
+just build
+
+# Fully sealed image (systemd-boot + signed UKI + Secure Boot)
+# This is the most common composefs dev workflow:
 just build-sealed
 
-# Run composefs-specific tests
-just test-composefs
+# Run composefs integration tests (all four params are required)
+just test-composefs systemd ext4 bls unsealed
 
-# Validate that composefs digests match between build and install views
+# Run sealed UKI tests
+just test-composefs systemd ext4 uki sealed
+
+# Validate composefs digests match between build and install views
 # (useful for debugging mtime/metadata issues)
 just validate-composefs-digest
 ```
 
-The `build-sealed` target generates test Secure Boot keys in `target/test-secureboot/`
-and builds a complete sealed image with UKI. See [experimental-composefs.md](docs/src/experimental-composefs.md)
-for more information on sealed images.
+The `build-sealed` target generates test Secure Boot keys in
+`target/test-secureboot/` and builds a complete sealed image with all
+the sealed composefs settings. See
+[experimental-composefs.md](docs/src/experimental-composefs.md) for
+more information on sealed images.
 
 
 ### Debugging via lldb
