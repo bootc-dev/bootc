@@ -17,7 +17,7 @@ anyhow = { workspace = true }
 anstream = { workspace = true }
 camino = { workspace = true }
 chrono = { workspace = true, features = ["std"] }
-clap = { workspace = true, features = ["derive"] }
+clap = { workspace = true, features = ["derive", "env"] }
 fn-error-context = { workspace = true }
 owo-colors = { workspace = true }
 serde = { workspace = true, features = ["derive"] }

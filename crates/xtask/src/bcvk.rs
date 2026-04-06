@@ -65,16 +65,18 @@ impl BcvkInstallOpts {
     /// Return the install-related args for `bcvk libvirt run`.
     ///
     /// This covers `--composefs-backend`, `--filesystem`, `--bootloader`,
-    /// and `--karg` flags.
+    /// and `--karg` flags.  Note that `--bootloader` and `--filesystem`
+    /// are only valid when `--composefs-backend` is also set (bcvk
+    /// enforces this via a clap `requires` relationship).
     pub(crate) fn install_args(&self) -> Vec<String> {
         let mut args = Vec::new();
         if self.composefs_backend {
             args.push("--composefs-backend".into());
             let fs = self.filesystem.as_deref().unwrap_or("ext4");
             args.push(format!("--filesystem={fs}"));
-        }
-        if let Some(b) = &self.bootloader {
-            args.push(format!("--bootloader={b}"));
+            if let Some(b) = &self.bootloader {
+                args.push(format!("--bootloader={b}"));
+            }
         }
         for k in &self.kargs {
             args.push(format!("--karg={k}"));
