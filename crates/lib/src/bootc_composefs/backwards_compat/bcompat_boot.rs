@@ -7,7 +7,10 @@ use crate::{
             get_efi_uuid_source, get_uki_name, parse_os_release, type1_entry_conf_file_name,
         },
         rollback::{rename_exchange_bls_entries, rename_exchange_user_cfg},
-        status::{get_bootloader, get_sorted_grub_uki_boot_entries, get_sorted_type1_boot_entries},
+        status::{
+            ComposefsCmdline, get_bootloader, get_sorted_grub_uki_boot_entries,
+            get_sorted_type1_boot_entries,
+        },
     },
     composefs_consts::{
         ORIGIN_KEY_BOOT, ORIGIN_KEY_BOOT_TYPE, STATE_DIR_RELATIVE, TYPE1_BOOT_DIR_PREFIX,
@@ -15,7 +18,7 @@ use crate::{
     },
     parsers::bls_config::{BLSConfig, BLSConfigType},
     spec::Bootloader,
-    store::{BootedComposefs, Storage},
+    store::Storage,
 };
 use anyhow::{Context, Result};
 use camino::Utf8PathBuf;
@@ -159,7 +162,7 @@ fn stage_bls_entry_changes(
     storage: &Storage,
     boot_dir: &Dir,
     entries: &Vec<BLSConfig>,
-    booted_cfs: &BootedComposefs,
+    cfs_cmdline: &ComposefsCmdline,
 ) -> Result<(RenameTransaction, Vec<(String, BLSConfig)>)> {
     let mut rename_transaction = RenameTransaction::new();
 
@@ -186,7 +189,7 @@ fn stage_bls_entry_changes(
 
         let mut new_entry = entry.clone();
 
-        let conf_filename = if *booted_cfs.cmdline.digest == digest {
+        let conf_filename = if *cfs_cmdline.digest == digest {
             type1_entry_conf_file_name(os_id, new_entry.version(), FILENAME_PRIORITY_PRIMARY)
         } else {
             type1_entry_conf_file_name(os_id, new_entry.version(), FILENAME_PRIORITY_SECONDARY)
@@ -240,12 +243,12 @@ fn create_staged_bls_entries(boot_dir: &Dir, entries: &Vec<(String, BLSConfig)>)
     fsync(staged_entries.reopen_as_ownedfd()?).context("fsync")
 }
 
-fn get_boot_type(storage: &Storage, booted_cfs: &BootedComposefs) -> Result<BootType> {
+fn get_boot_type(storage: &Storage, cfs_cmdline: &ComposefsCmdline) -> Result<BootType> {
     let mut config = String::new();
 
     let origin_path = Utf8PathBuf::from(STATE_DIR_RELATIVE)
-        .join(&*booted_cfs.cmdline.digest)
-        .join(format!("{}.origin", booted_cfs.cmdline.digest));
+        .join(&*cfs_cmdline.digest)
+        .join(format!("{}.origin", cfs_cmdline.digest));
 
     storage
         .physical_root
@@ -267,13 +270,13 @@ fn get_boot_type(storage: &Storage, booted_cfs: &BootedComposefs) -> Result<Boot
 
 fn handle_bls_conf(
     storage: &Storage,
-    booted_cfs: &BootedComposefs,
+    cfs_cmdline: &ComposefsCmdline,
     boot_dir: &Dir,
     is_uki: bool,
 ) -> Result<()> {
     let entries = get_sorted_type1_boot_entries(boot_dir, true)?;
     let (rename_transaction, new_bls_entries) =
-        stage_bls_entry_changes(storage, boot_dir, &entries, booted_cfs)?;
+        stage_bls_entry_changes(storage, boot_dir, &entries, cfs_cmdline)?;
 
     if rename_transaction.operations.is_empty() {
         tracing::debug!("Nothing to do");
@@ -309,15 +312,15 @@ fn handle_bls_conf(
 #[context("Prepending custom prefix to EFI and BLS entries")]
 pub(crate) async fn prepend_custom_prefix(
     storage: &Storage,
-    booted_cfs: &BootedComposefs,
+    cfs_cmdline: &ComposefsCmdline,
 ) -> Result<()> {
     let boot_dir = storage.require_boot_dir()?;
 
     let bootloader = get_bootloader()?;
 
-    match get_boot_type(storage, booted_cfs)? {
+    match get_boot_type(storage, cfs_cmdline)? {
         BootType::Bls => {
-            handle_bls_conf(storage, booted_cfs, boot_dir, false)?;
+            handle_bls_conf(storage, cfs_cmdline, boot_dir, false)?;
         }
 
         BootType::Uki => match bootloader {
@@ -382,7 +385,7 @@ pub(crate) async fn prepend_custom_prefix(
             }
 
             Bootloader::Systemd => {
-                handle_bls_conf(storage, booted_cfs, boot_dir, true)?;
+                handle_bls_conf(storage, cfs_cmdline, boot_dir, true)?;
             }
 
             Bootloader::None => unreachable!("Checked at install time"),

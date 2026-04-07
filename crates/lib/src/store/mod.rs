@@ -39,6 +39,7 @@ use rustix::fs::Mode;
 use cfsctl::composefs;
 use composefs::fsverity::Sha512HashValue;
 
+use crate::bootc_composefs::backwards_compat::bcompat_boot::prepend_custom_prefix;
 use crate::bootc_composefs::boot::{EFI_LINUX, mount_esp};
 use crate::bootc_composefs::status::{ComposefsCmdline, composefs_booted, get_bootloader};
 use crate::lsm;
@@ -210,6 +211,10 @@ impl BootedStorage {
                     Bootloader::None => unreachable!("Checked at install time"),
                 };
 
+                let meta_json = physical_root
+                    .open_dir(COMPOSEFS)?
+                    .open_optional("meta.json")?;
+
                 let storage = Storage {
                     physical_root,
                     physical_root_path: Utf8PathBuf::from("/sysroot"),
@@ -217,9 +222,15 @@ impl BootedStorage {
                     boot_dir: Some(boot_dir),
                     esp: Some(esp_mount),
                     ostree: Default::default(),
-                    composefs: OnceCell::from(composefs),
+                    composefs: OnceCell::from(composefs.clone()),
                     imgstore: Default::default(),
                 };
+
+                if meta_json.is_none() {
+                    let cmdline = composefs_booted()?
+                        .ok_or_else(|| anyhow::anyhow!("Could not get booted composefs cmdline"))?;
+                    prepend_custom_prefix(&storage, &cmdline).await?;
+                }
 
                 Some(Self { storage })
             }
