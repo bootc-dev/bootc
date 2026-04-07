@@ -61,8 +61,8 @@
 //! 1. **Primary**: New/upgraded deployment (default boot target)
 //! 2. **Secondary**: Currently booted deployment (rollback option)
 
-use std::ffi::OsStr;
 use std::fs::create_dir_all;
+use std::io::Read;
 use std::io::Write;
 use std::path::Path;
 
@@ -451,41 +451,22 @@ fn write_bls_boot_entries_to_disk(
 }
 
 /// Parses /usr/lib/os-release and returns (id, title, version)
-fn parse_os_release(
-    fs: &crate::store::ComposefsFilesystem,
-    repo: &crate::store::ComposefsRepository,
-) -> Result<Option<(String, Option<String>, Option<String>)>> {
+/// Expects a referenece to the root of the filesystem, or the root
+/// of a mounted EROFS
+pub fn parse_os_release(root: &Dir) -> Result<Option<(String, Option<String>, Option<String>)>> {
     // Every update should have its own /usr/lib/os-release
-    let (dir, fname) = fs
-        .root
-        .split(OsStr::new("/usr/lib/os-release"))
-        .context("Getting /usr/lib/os-release")?;
+    let file = root
+        .open_optional("usr/lib/os-release")
+        .context("Opening usr/lib/os-release")?;
 
-    let os_release = dir
-        .get_file_opt(fname)
-        .context("Getting /usr/lib/os-release")?;
-
-    let Some(os_rel_file) = os_release else {
+    let Some(mut os_rel_file) = file else {
         return Ok(None);
     };
 
-    let file_contents = match read_file(os_rel_file, repo) {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::warn!("Could not read /usr/lib/os-release: {e:?}");
-            return Ok(None);
-        }
-    };
+    let mut file_contents = String::new();
+    os_rel_file.read_to_string(&mut file_contents)?;
 
-    let file_contents = match std::str::from_utf8(&file_contents) {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::warn!("/usr/lib/os-release did not have valid UTF-8: {e}");
-            return Ok(None);
-        }
-    };
-
-    let parsed = OsReleaseInfo::parse(file_contents);
+    let parsed = OsReleaseInfo::parse(&file_contents);
 
     let os_id = parsed
         .get_value(&["ID"])
@@ -521,7 +502,7 @@ pub(crate) fn setup_composefs_bls_boot(
 ) -> Result<String> {
     let id_hex = id.to_hex();
 
-    let (root_path, esp_device, mut cmdline_refs, fs, bootloader) = match setup_type {
+    let (root_path, esp_device, mut cmdline_refs, _, bootloader) = match setup_type {
         BootSetupType::Setup((root_setup, state, postfetch, fs)) => {
             // root_setup.kargs has [root=UUID=<UUID>, "rw"]
             let mut cmdline_options = Cmdline::new();
@@ -668,7 +649,7 @@ pub(crate) fn setup_composefs_bls_boot(
             let boot_digest = compute_boot_digest(usr_lib_modules_vmlinuz, &repo)
                 .context("Computing boot digest")?;
 
-            let osrel = parse_os_release(fs, &repo)?;
+            let osrel = parse_os_release(mounted_erofs)?;
 
             let (os_id, title, version, sort_key) = match osrel {
                 Some((id_str, title_opt, version_opt)) => (
