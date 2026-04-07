@@ -41,6 +41,7 @@ use rustix::fs::Mode;
 use cfsctl::composefs;
 use composefs::fsverity::Sha512HashValue;
 
+use crate::bootc_composefs::backwards_compat::bcompat_boot::prepend_custom_prefix;
 use crate::bootc_composefs::boot::{EFI_LINUX, mount_esp};
 use crate::bootc_composefs::status::{ComposefsCmdline, composefs_booted, get_bootloader};
 use crate::lsm;
@@ -273,9 +274,19 @@ impl BootedStorage {
                     boot_dir: Some(boot_dir),
                     esp: Some(esp_mount),
                     ostree: Default::default(),
-                    composefs: OnceCell::from(composefs),
+                    composefs: OnceCell::from(composefs.clone()),
                     imgstore: Default::default(),
                 };
+
+                // prepend_custom_prefix is idempotent: it checks has_prefix on each
+                // entry and skips any that already have it, so it's safe to call on
+                // every boot. This handles upgrades from older bootc versions that
+                // lacked the prefix — we can't use meta.json presence as a trigger
+                // because open_upgrade() in the initramfs writes meta.json before
+                // userspace ever runs.
+                let cmdline = composefs_booted()?
+                    .ok_or_else(|| anyhow::anyhow!("Could not get booted composefs cmdline"))?;
+                prepend_custom_prefix(&storage, &cmdline).await?;
 
                 Some(Self { storage })
             }
