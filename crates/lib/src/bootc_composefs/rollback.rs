@@ -25,22 +25,22 @@ use crate::{
 /// Atomically rename exchange grub user.cfg with the staged version
 /// Performed as the last step in rollback/update/switch operation
 #[context("Atomically exchanging user.cfg")]
-pub(crate) fn rename_exchange_user_cfg(entries_dir: &Dir) -> Result<()> {
+pub(crate) fn rename_exchange_user_cfg(grub2_dir: &Dir) -> Result<()> {
     tracing::debug!("Atomically exchanging {USER_CFG_STAGED} and {USER_CFG}");
     renameat_with(
-        &entries_dir,
+        &grub2_dir,
         USER_CFG_STAGED,
-        &entries_dir,
+        &grub2_dir,
         USER_CFG,
         RenameFlags::EXCHANGE,
     )
     .context("renameat")?;
 
     tracing::debug!("Removing {USER_CFG_STAGED}");
-    rustix::fs::unlinkat(&entries_dir, USER_CFG_STAGED, AtFlags::empty()).context("unlinkat")?;
+    rustix::fs::unlinkat(&grub2_dir, USER_CFG_STAGED, AtFlags::empty()).context("unlinkat")?;
 
     tracing::debug!("Syncing to disk");
-    let entries_dir = entries_dir
+    let entries_dir = grub2_dir
         .reopen_as_ownedfd()
         .context("Reopening entries dir as owned fd")?;
 
