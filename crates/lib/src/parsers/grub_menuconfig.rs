@@ -20,7 +20,7 @@ use crate::{
 };
 
 /// Body content of a GRUB menuentry containing parsed commands.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub(crate) struct MenuentryBody<'a> {
     /// Kernel modules to load
     pub(crate) insmod: Vec<&'a str>,
@@ -76,7 +76,7 @@ impl<'a> From<Vec<(&'a str, &'a str)>> for MenuentryBody<'a> {
 }
 
 /// A complete GRUB menuentry with title and body commands.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub(crate) struct MenuEntry<'a> {
     /// Display title (supports escaped quotes)
     pub(crate) title: String,
@@ -128,6 +128,10 @@ impl<'a> MenuEntry<'a> {
     /// The names are stripped of our custom prefix and suffixes, so this returns
     /// the verity digest part of the name
     pub(crate) fn boot_artifact_name(&self) -> Result<String> {
+        Ok(self.boot_artifact_info()?.0)
+    }
+
+    pub(crate) fn boot_artifact_info(&self) -> Result<(String, bool)> {
         let chainloader_path = Utf8PathBuf::from(&self.body.chainloader);
 
         let file_name = chainloader_path.file_name().ok_or_else(|| {
@@ -147,8 +151,8 @@ impl<'a> MenuEntry<'a> {
 
         // For backwards compatibility, we don't make this prefix mandatory
         match without_suffix.strip_prefix(UKI_NAME_PREFIX) {
-            Some(no_prefix) => Ok(no_prefix.into()),
-            None => Ok(without_suffix.into()),
+            Some(no_prefix) => Ok((no_prefix.into(), true)),
+            None => Ok((without_suffix.into(), false)),
         }
     }
 }
