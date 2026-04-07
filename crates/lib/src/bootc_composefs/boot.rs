@@ -62,6 +62,7 @@
 //! 2. **Secondary**: Currently booted deployment (rollback option)
 
 use std::fs::create_dir_all;
+use std::io::Read;
 use std::io::Write;
 use std::path::Path;
 use std::sync::Arc;
@@ -422,18 +423,20 @@ fn write_bls_boot_entries_to_disk(
 }
 
 /// Parses /usr/lib/os-release and returns (id, title, version)
-fn parse_os_release(mounted_fs: &Dir) -> Result<Option<(String, Option<String>, Option<String>)>> {
+/// Expects a reference to the root of the filesystem, or the root
+/// of a mounted EROFS
+pub fn parse_os_release(root: &Dir) -> Result<Option<(String, Option<String>, Option<String>)>> {
     // Every update should have its own /usr/lib/os-release
-    let file_contents = match mounted_fs.read_to_string("usr/lib/os-release") {
-        Ok(c) => c,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(None);
-        }
-        Err(e) => {
-            tracing::warn!("Could not read /usr/lib/os-release: {e:?}");
-            return Ok(None);
-        }
+    let file = root
+        .open_optional("usr/lib/os-release")
+        .context("Opening usr/lib/os-release")?;
+
+    let Some(mut os_rel_file) = file else {
+        return Ok(None);
     };
+
+    let mut file_contents = String::new();
+    os_rel_file.read_to_string(&mut file_contents)?;
 
     let parsed = OsReleaseInfo::parse(&file_contents);
 
@@ -551,13 +554,13 @@ pub(crate) fn setup_composefs_bls_boot(
     // Remove "root=" from kernel cmdline as systemd-auto-gpt-generator should use DPS
     // UUID
     if bootloader == Bootloader::Systemd {
-        cmdline_refs.remove(&ParameterKey::from("root"));
+        cmdline_refs.remove(&ParameterKey::from("root") as &ParameterKey);
     }
 
     let is_upgrade = matches!(setup_type, BootSetupType::Upgrade(..));
 
     let current_root = if is_upgrade {
-        Some(&Dir::open_ambient_dir("/", ambient_authority()).context("Opening root")?)
+        Some(&Dir::open_ambient_dir("/", ambient_authority()).context("Opening root")? as &Dir)
     } else {
         None
     };
@@ -1222,7 +1225,7 @@ pub(crate) async fn setup_composefs_boot(
     let id = composefs_oci::generate_boot_image(&repo, &pull_result.manifest_digest)
         .context("Generating bootable EROFS image")?;
 
-    // Get boot entries from the OCI filesystem (untransformed).
+    // Reconstruct the OCI filesystem to discover boot entries (kernel, initramfs, etc.).
     let fs = composefs_oci::image::create_filesystem(&*repo, &pull_result.config_digest, None)
         .context("Creating composefs filesystem for boot entry discovery")?;
     let entries =
