@@ -15,7 +15,7 @@ use uapi_version::Version;
 use crate::bootc_composefs::status::ComposefsCmdline;
 use crate::composefs_consts::{TYPE1_BOOT_DIR_PREFIX, UKI_NAME_PREFIX};
 
-#[derive(Debug, PartialEq, Eq, Default)]
+#[derive(Debug, PartialEq, Eq, Default, Clone)]
 pub enum BLSConfigType {
     EFI {
         /// The path to the EFI binary, usually a UKI
@@ -38,7 +38,7 @@ pub enum BLSConfigType {
 /// The boot loader should present the available boot menu entries to the user in a sorted list.
 /// The list should be sorted by the `sort-key` field, if it exists, otherwise by the `machine-id` field.
 /// If multiple entries have the same `sort-key` (or `machine-id`), they should be sorted by the `version` field in descending order.
-#[derive(Debug, Eq, PartialEq, Default)]
+#[derive(Debug, Eq, PartialEq, Default, Clone)]
 #[non_exhaustive]
 pub(crate) struct BLSConfig {
     /// The title of the boot entry, to be displayed in the boot menu.
@@ -212,6 +212,17 @@ impl BLSConfig {
     /// The names are stripped of our custom prefix and suffixes, so this returns the
     /// verity digest part of the name
     pub(crate) fn boot_artifact_name(&self) -> Result<&str> {
+        Ok(self.boot_artifact_info()?.0)
+    }
+
+    /// Returns name of UKI in case of EFI config
+    /// Returns name of the directory containing Kernel + Initrd in case of Non-EFI config
+    ///
+    /// The names are stripped of our custom prefix and suffixes, so this returns the
+    /// verity digest part of the name as the first value
+    ///
+    /// The second value is a boolean indicating whether it found our custom prefix or not
+    pub(crate) fn boot_artifact_info(&self) -> Result<(&str, bool)> {
         match &self.cfg_type {
             BLSConfigType::EFI { efi } => {
                 let file_name = efi
@@ -228,8 +239,8 @@ impl BLSConfig {
 
                 // For backwards compatibility, we don't make this prefix mandatory
                 match without_suffix.strip_prefix(UKI_NAME_PREFIX) {
-                    Some(no_prefix) => Ok(no_prefix),
-                    None => Ok(without_suffix),
+                    Some(no_prefix) => Ok((no_prefix, true)),
+                    None => Ok((without_suffix, false)),
                 }
             }
 
@@ -244,8 +255,8 @@ impl BLSConfig {
 
                 // For backwards compatibility, we don't make this prefix mandatory
                 match dir_name.strip_prefix(TYPE1_BOOT_DIR_PREFIX) {
-                    Some(dir_name_no_prefix) => Ok(dir_name_no_prefix),
-                    None => Ok(dir_name),
+                    Some(dir_name_no_prefix) => Ok((dir_name_no_prefix, true)),
+                    None => Ok((dir_name, false)),
                 }
             }
 
