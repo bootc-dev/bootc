@@ -32,7 +32,8 @@ const ENV_BOOTC_UPGRADE_IMAGE: &str = "BOOTC_upgrade_image";
 const DISTRO_CENTOS_9: &str = "centos-9";
 
 // Import the argument types from xtask.rs
-use crate::{Bootloader, RunTmtArgs, SealState, TmtProvisionArgs};
+use crate::bcvk::BcvkInstallOpts;
+use crate::{RunTmtArgs, SealState, TmtProvisionArgs};
 
 /// Generate a random alphanumeric suffix for VM names
 fn generate_random_suffix() -> String {
@@ -101,43 +102,6 @@ fn detect_distro_from_image(sh: &Shell, image: &str) -> Result<String> {
 fn is_sealed_image(sh: &Shell, image: &str) -> Result<bool> {
     let result = cmd!(sh, "podman run --rm {image} ls /boot").read()?;
     Ok(!result.is_empty())
-}
-
-/// Default path where secure boot keys are generated for testing
-const DEFAULT_SB_KEYS_DIR: &str = "target/test-secureboot";
-
-/// Build firmware arguments for bcvk based on whether the image is sealed
-/// and whether secure boot keys are available.
-///
-/// For sealed images, secure boot keys must be present or an error is returned.
-#[context("Building firmware arguments")]
-fn build_firmware_args(is_sealed: bool, bootloader: &Option<Bootloader>) -> Result<Vec<String>> {
-    let sb_keys_dir = Utf8Path::new(DEFAULT_SB_KEYS_DIR);
-
-    let r = if is_sealed {
-        if sb_keys_dir.try_exists()? {
-            let sb_keys_dir = sb_keys_dir.canonicalize_utf8()?;
-            println!(
-                "Sealed image detected, using secure boot with keys from: {}",
-                sb_keys_dir
-            );
-            vec![
-                "--firmware=uefi-secure".to_string(),
-                format!("--secure-boot-keys={}", sb_keys_dir),
-            ]
-        } else {
-            anyhow::bail!(
-                "Sealed image detected but no secure boot keys found at {}. \
-                 Run 'just generate-secureboot-keys' to generate them.",
-                sb_keys_dir
-            );
-        }
-    } else if matches!(bootloader, Some(Bootloader::Systemd)) {
-        vec!["--firmware=uefi-insecure".into()]
-    } else {
-        Vec::new()
-    };
-    Ok(r)
 }
 
 /// Detect VARIANT_ID from container image by reading os-release
@@ -342,12 +306,14 @@ pub(crate) fn run_tmt(sh: &Shell, args: &RunTmtArgs) -> Result<()> {
     println!("Detected distro: {}", distro);
     println!("Detected VARIANT_ID: {variant_id}");
 
-    let firmware_args = build_firmware_args(
-        args.seal_state
-            .as_ref()
-            .is_some_and(|v| *v == SealState::Sealed),
-        &args.bootloader,
-    )?;
+    let bcvk_opts = BcvkInstallOpts {
+        composefs_backend: args.composefs_backend,
+        bootloader: args.bootloader.clone(),
+        filesystem: args.filesystem.clone(),
+        seal_state: args.seal_state.clone(),
+        kargs: args.karg.clone(),
+    };
+    let firmware_args = bcvk_opts.firmware_args()?;
 
     // Create tmt-workdir and copy tmt bits to it
     // This works around https://github.com/teemtee/tmt/issues/4062
@@ -482,19 +448,7 @@ pub(crate) fn run_tmt(sh: &Shell, args: &RunTmtArgs) -> Result<()> {
                 }
             }
 
-            if args.composefs_backend {
-                let filesystem = args.filesystem.as_deref().unwrap_or("ext4");
-                opts.push(format!("--filesystem={}", filesystem));
-                opts.push("--composefs-backend".into());
-            }
-
-            if let Some(b) = &args.bootloader {
-                opts.push(format!("--bootloader={b}"));
-            }
-
-            for k in &args.karg {
-                opts.push(format!("--karg={k}"));
-            }
+            opts.extend(bcvk_opts.install_args());
 
             opts
         };
@@ -751,7 +705,15 @@ pub(crate) fn tmt_provision(sh: &Shell, args: &TmtProvisionArgs) -> Result<()> {
     println!("  VM name: {}\n", vm_name);
 
     // TODO: Send bootloader param here
-    let firmware_args = build_firmware_args(is_sealed_image(sh, image)?, &None)?;
+    let provision_opts = BcvkInstallOpts {
+        seal_state: if is_sealed_image(sh, image)? {
+            Some(SealState::Sealed)
+        } else {
+            None
+        },
+        ..Default::default()
+    };
+    let firmware_args = provision_opts.firmware_args()?;
 
     // Launch VM with bcvk
     // Use ds=iid-datasource-none to disable cloud-init for faster boot
