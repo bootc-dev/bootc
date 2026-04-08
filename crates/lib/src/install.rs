@@ -1536,7 +1536,7 @@ async fn verify_target_fetch(
 async fn prepare_install(
     mut config_opts: InstallConfigOpts,
     source_opts: InstallSourceOpts,
-    target_opts: InstallTargetOpts,
+    mut target_opts: InstallTargetOpts,
     mut composefs_options: InstallComposefsOpts,
     target_fs: Option<FilesystemEnum>,
 ) -> Result<Arc<State>> {
@@ -1583,6 +1583,33 @@ async fn prepare_install(
             (source, None)
         }
     };
+
+    // Load install configuration from TOML drop-in files early, so that
+    // config values are available when constructing the target image reference.
+    let install_config = config::load_config()?;
+    if let Some(ref config) = install_config {
+        tracing::debug!("Loaded install configuration");
+        // Merge config file values into config_opts (CLI takes precedence)
+        // Only apply config file value if CLI didn't explicitly set it
+        if !config_opts.bootupd_skip_boot_uuid {
+            config_opts.bootupd_skip_boot_uuid = config
+                .bootupd
+                .as_ref()
+                .and_then(|b| b.skip_boot_uuid)
+                .unwrap_or(false);
+        }
+
+        if config_opts.bootloader.is_none() {
+            config_opts.bootloader = config.bootloader.clone();
+        }
+
+        if !target_opts.enforce_container_sigpolicy {
+            target_opts.enforce_container_sigpolicy =
+                config.enforce_container_sigpolicy.unwrap_or(false);
+        }
+    } else {
+        tracing::debug!("No install configuration found");
+    }
 
     // Parse the target CLI image reference options and create the *target* image
     // reference, which defaults to pulling from a registry.
@@ -1669,26 +1696,6 @@ async fn prepare_install(
     println!("Installing image: {:#}", &target_imgref);
     if let Some(digest) = source.digest.as_deref() {
         println!("Digest: {digest}");
-    }
-
-    let install_config = config::load_config()?;
-    if let Some(ref config) = install_config {
-        tracing::debug!("Loaded install configuration");
-        // Merge config file values into config_opts (CLI takes precedence)
-        // Only apply config file value if CLI didn't explicitly set it
-        if !config_opts.bootupd_skip_boot_uuid {
-            config_opts.bootupd_skip_boot_uuid = config
-                .bootupd
-                .as_ref()
-                .and_then(|b| b.skip_boot_uuid)
-                .unwrap_or(false);
-        }
-
-        if config_opts.bootloader.is_none() {
-            config_opts.bootloader = config.bootloader.clone();
-        }
-    } else {
-        tracing::debug!("No install configuration found");
     }
 
     let root_filesystem = target_fs
