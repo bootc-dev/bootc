@@ -16,6 +16,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use fn_error_context::context;
 use xshell::{Shell, cmd};
 
+mod bcvk;
 mod buildsys;
 mod man;
 mod sysext;
