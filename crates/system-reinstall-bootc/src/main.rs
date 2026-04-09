@@ -48,13 +48,13 @@ impl ReinstallOptsArgs {
         let image = if let Some(image) = self.image {
             image
         } else {
-            os_release::get_bootc_image_from_file(ETC_OS_RELEASE)
-                .ok()
-                .flatten()
-                .or_else(|| {
-                    os_release::get_bootc_image_from_file(USR_LIB_OS_RELEASE)
+            [ETC_OS_RELEASE, USR_LIB_OS_RELEASE]
+                .iter()
+                .find_map(|path| {
+                    os_release::get_bootc_image_from_file(path)
                         .ok()
                         .flatten()
+                        .filter(|s| !s.is_empty())
                 })
                 .ok_or_else(|| {
                     anyhow::anyhow!(
@@ -72,6 +72,8 @@ impl ReinstallOptsArgs {
 
 #[context("run")]
 fn run() -> Result<()> {
+    let args = ReinstallOptsArgs::parse();
+
     // We historically supported an environment variable providing a config to override the image, so
     // keep supporting that. I'm considering deprecating that though.
     let opts = if let Some(config) = config::ReinstallConfig::load().context("loading config")? {
@@ -81,7 +83,7 @@ fn run() -> Result<()> {
         }
     } else {
         // Otherwise an image is specified via the CLI or fallback to the os-release
-        ReinstallOptsArgs::parse().build()?
+        args.build()?
     };
 
     bootc_utils::initialize_tracing();
@@ -117,7 +119,7 @@ fn run() -> Result<()> {
         let host_root_keys = std::path::Path::new("/root/.ssh/authorized_keys");
         if host_root_keys.exists() {
             println!("Detected cloud-init and host keys. Inheriting keys automatically.");
-            ssh_key_file_path = Some("/target/root/.ssh/authorized_keys".to_string());
+            ssh_key_file_path = Some(host_root_keys.to_string_lossy().into_owned());
         } else {
             println!("Detected cloud-init. Proceeding without host key inheritance.");
         }
