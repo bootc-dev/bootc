@@ -110,20 +110,36 @@ fn run() -> Result<()> {
     let has_clean = podman::bootc_has_clean(&opts.image)?;
     spinner.finish_and_clear();
 
-    let ssh_key_file = tempfile::NamedTempFile::new()?;
-    let ssh_key_file_path = ssh_key_file
-        .path()
-        .to_str()
-        .ok_or_else(|| anyhow::anyhow!("unable to create authorized_key temp file"))?;
+    let mut _ssh_key_tempfile = None;
+    let mut ssh_key_file_path = None;
 
-    tracing::trace!("ssh_key_file_path: {}", ssh_key_file_path);
+    if podman::image_has_cloud_init(&opts.image)? {
+        let host_root_keys = std::path::Path::new("/root/.ssh/authorized_keys");
+        if host_root_keys.exists() {
+            println!("Detected cloud-init and host keys. Inheriting keys automatically.");
+            ssh_key_file_path = Some("/target/root/.ssh/authorized_keys".to_string());
+        } else {
+            println!("Detected cloud-init. Proceeding without host key inheritance.");
+        }
+    } else {
+        let file = tempfile::NamedTempFile::new()?;
+        let file_path = file
+            .path()
+            .to_str()
+            .ok_or_else(|| anyhow::anyhow!("unable to create authorized_key temp file"))?;
 
-    prompt::get_ssh_keys(ssh_key_file_path)?;
+        tracing::trace!("ssh_key_file_path: {}", file_path);
+
+        prompt::get_ssh_keys(file_path)?;
+
+        ssh_key_file_path = Some(file_path.to_string());
+        _ssh_key_tempfile = Some(file);
+    }
 
     prompt::mount_warning()?;
 
     let mut reinstall_podman_command =
-        podman::reinstall_command(&opts, ssh_key_file_path, has_clean)?;
+        podman::reinstall_command(&opts, ssh_key_file_path.as_deref(), has_clean)?;
 
     println!();
     println!("Going to run command:");
