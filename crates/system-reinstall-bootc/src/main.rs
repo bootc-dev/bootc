@@ -10,11 +10,14 @@ use std::time::Duration;
 mod btrfs;
 mod config;
 mod lvm;
+mod os_release;
 mod podman;
 mod prompt;
 pub(crate) mod users;
 
 const ROOT_KEY_MOUNT_POINT: &str = "/bootc_authorized_ssh_keys/root";
+const ETC_OS_RELEASE: &str = "/etc/os-release";
+const USR_LIB_OS_RELEASE: &str = "/usr/lib/os-release";
 
 /// Reinstall the system using the provided bootc container.
 ///
@@ -24,17 +27,53 @@ const ROOT_KEY_MOUNT_POINT: &str = "/bootc_authorized_ssh_keys/root";
 /// If the environment variable BOOTC_REINSTALL_CONFIG is set, it must be a YAML
 /// file with a single member `bootc_image` that specifies the image to install.
 /// This will take precedence over the CLI.
-#[derive(clap::Parser)]
 pub(crate) struct ReinstallOpts {
     /// The bootc image to install
     pub(crate) image: String,
+    // Note if we ever add any other options here,
+    pub(crate) composefs_backend: bool,
+}
+
+#[derive(clap::Parser)]
+pub(crate) struct ReinstallOptsArgs {
+    /// The bootc image to install
+    pub(crate) image: Option<String>,
     // Note if we ever add any other options here,
     #[arg(long)]
     pub(crate) composefs_backend: bool,
 }
 
+impl ReinstallOptsArgs {
+    pub(crate) fn build(self) -> Result<ReinstallOpts> {
+        let image = if let Some(image) = self.image {
+            image
+        } else {
+            [ETC_OS_RELEASE, USR_LIB_OS_RELEASE]
+                .iter()
+                .find_map(|path| {
+                    os_release::get_bootc_image_from_file(path)
+                        .ok()
+                        .flatten()
+                        .filter(|s| !s.is_empty())
+                })
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "No image provided. Specify an image or set BOOTC_IMAGE in os-release."
+                    )
+                })?
+        };
+
+        Ok(ReinstallOpts {
+            image,
+            composefs_backend: self.composefs_backend,
+        })
+    }
+}
+
 #[context("run")]
 fn run() -> Result<()> {
+    let args = ReinstallOptsArgs::parse();
+
     // We historically supported an environment variable providing a config to override the image, so
     // keep supporting that. I'm considering deprecating that though.
     let opts = if let Some(config) = config::ReinstallConfig::load().context("loading config")? {
@@ -43,8 +82,8 @@ fn run() -> Result<()> {
             composefs_backend: config.composefs_backend,
         }
     } else {
-        // Otherwise an image is required.
-        ReinstallOpts::parse()
+        // Otherwise an image is specified via the CLI or fallback to the os-release
+        args.build()?
     };
 
     bootc_utils::initialize_tracing();
@@ -73,20 +112,36 @@ fn run() -> Result<()> {
     let has_clean = podman::bootc_has_clean(&opts.image)?;
     spinner.finish_and_clear();
 
-    let ssh_key_file = tempfile::NamedTempFile::new()?;
-    let ssh_key_file_path = ssh_key_file
-        .path()
-        .to_str()
-        .ok_or_else(|| anyhow::anyhow!("unable to create authorized_key temp file"))?;
+    let mut _ssh_key_tempfile = None;
+    let mut ssh_key_file_path = None;
 
-    tracing::trace!("ssh_key_file_path: {}", ssh_key_file_path);
+    if podman::image_has_cloud_init(&opts.image)? {
+        let host_root_keys = std::path::Path::new("/root/.ssh/authorized_keys");
+        if host_root_keys.exists() {
+            println!("Detected cloud-init and host keys. Inheriting keys automatically.");
+            ssh_key_file_path = Some(host_root_keys.to_string_lossy().into_owned());
+        } else {
+            println!("Detected cloud-init. Proceeding without host key inheritance.");
+        }
+    } else {
+        let file = tempfile::NamedTempFile::new()?;
+        let file_path = file
+            .path()
+            .to_str()
+            .ok_or_else(|| anyhow::anyhow!("unable to create authorized_key temp file"))?;
 
-    prompt::get_ssh_keys(ssh_key_file_path)?;
+        tracing::trace!("ssh_key_file_path: {}", file_path);
+
+        prompt::get_ssh_keys(file_path)?;
+
+        ssh_key_file_path = Some(file_path.to_string());
+        _ssh_key_tempfile = Some(file);
+    }
 
     prompt::mount_warning()?;
 
     let mut reinstall_podman_command =
-        podman::reinstall_command(&opts, ssh_key_file_path, has_clean)?;
+        podman::reinstall_command(&opts, ssh_key_file_path.as_deref(), has_clean)?;
 
     println!();
     println!("Going to run command:");
