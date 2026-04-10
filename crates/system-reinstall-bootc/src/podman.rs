@@ -1,7 +1,7 @@
-use crate::{prompt, ReinstallOpts};
+use crate::{ReinstallOpts, prompt};
 
 use super::ROOT_KEY_MOUNT_POINT;
-use anyhow::{ensure, Context, Result};
+use anyhow::{Context, Result, ensure};
 use bootc_utils::CommandRunExt;
 use fn_error_context::context;
 use std::process::Command;

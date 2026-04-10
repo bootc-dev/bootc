@@ -1,6 +1,6 @@
 //! The main entrypoint for the bootc system reinstallation CLI
 
-use anyhow::{ensure, Context, Result};
+use anyhow::{Context, Result, ensure};
 use bootc_utils::CommandRunExt;
 use clap::Parser;
 use fn_error_context::context;
