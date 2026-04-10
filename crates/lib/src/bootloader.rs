@@ -227,7 +227,7 @@ pub(crate) fn install_via_bootupd(
 pub(crate) fn install_systemd_boot(
     device: &bootc_blockdev::Device,
     _rootfs: &Utf8Path,
-    _configopts: &crate::install::InstallConfigOpts,
+    configopts: &crate::install::InstallConfigOpts,
     _deployment_path: Option<&str>,
     autoenroll: Option<SecurebootKeys>,
 ) -> Result<()> {
@@ -246,8 +246,15 @@ pub(crate) fn install_systemd_boot(
         .ok_or_else(|| anyhow::anyhow!("Failed to convert ESP mount path to UTF-8"))?;
 
     println!("Installing bootloader via systemd-boot");
+
+    let mut bootctl_args = vec!["install", "--esp-path", esp_path.as_str()];
+
+    if configopts.generic_image {
+        bootctl_args.extend(["--random-seed", "no"]);
+    }
+
     Command::new("bootctl")
-        .args(["install", "--esp-path", esp_path.as_str()])
+        .args(bootctl_args)
         .log_debug()
         .run_inherited_with_cmd_context()?;
 

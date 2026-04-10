@@ -48,7 +48,7 @@ case "${ID}-${VERSION_ID}" in
 esac
 
 # Extra packages we install
-grep -Ev -e '^#' packages.txt | xargs dnf -y install
+grep -Ev -e '^#' packages.txt | xargs dnf install --allowerasing -y
 
 # Cloud bits
 cat <<KARGEOF >> /usr/lib/bootc/kargs.d/20-console.toml
