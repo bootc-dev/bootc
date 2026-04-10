@@ -55,7 +55,7 @@ cat <<KARGEOF >> /usr/lib/bootc/kargs.d/20-console.toml
 kargs = ["console=ttyS0,115200n8"]
 KARGEOF
 if test $cloudinit = 1; then
-  dnf -y install cloud-init
+  dnf -y install --allowerasing cloud-init
   ln -s ../cloud-init.target /usr/lib/systemd/system/default.target.wants
   # Allow root SSH login for testing with bcvk/tmt
   mkdir -p /etc/cloud/cloud.cfg.d
