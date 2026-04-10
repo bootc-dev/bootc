@@ -9,8 +9,10 @@
 //! # containers-storage:
 //!
 //! Later, bootc gained support for Logically Bound Images.
-//! This is a `containers-storage:` instance that lives
-//! in `/ostree/bootc/storage`
+//! On ostree systems this is a `containers-storage:` instance that
+//! lives in `/ostree/bootc/storage`.  On composefs systems the
+//! physical location is `/composefs/bootc/storage` with a compat
+//! symlink at `ostree/bootc -> ../composefs/bootc`.
 //!
 //! # composefs
 //!
@@ -39,6 +41,7 @@ use rustix::fs::Mode;
 use cfsctl::composefs;
 use composefs::fsverity::Sha512HashValue;
 
+use crate::bootc_composefs::backwards_compat::bcompat_boot::prepend_custom_prefix;
 use crate::bootc_composefs::boot::{EFI_LINUX, mount_esp};
 use crate::bootc_composefs::status::{ComposefsCmdline, composefs_booted, get_bootloader};
 use crate::lsm;
@@ -48,8 +51,6 @@ use crate::utils::{deployment_fd, open_dir_remount_rw};
 
 /// See <https://github.com/containers/composefs-rs/issues/159>
 pub type ComposefsRepository = composefs::repository::Repository<Sha512HashValue>;
-/// A composefs filesystem type alias
-pub type ComposefsFilesystem = composefs::tree::FileSystem<Sha512HashValue>;
 
 /// Path to the physical root
 pub const SYSROOT: &str = "sysroot";
@@ -81,8 +82,64 @@ pub(crate) fn ensure_composefs_dir(physical_root: &Dir) -> Result<()> {
 }
 
 /// The path to the bootc root directory, relative to the physical
-/// system root
+/// system root.  On ostree systems this is a real directory; on composefs
+/// systems it is a symlink to `../composefs/bootc` (see
+/// [`ensure_composefs_bootc_link`]).
 pub(crate) const BOOTC_ROOT: &str = "ostree/bootc";
+
+/// The "real" bootc root for composefs-native systems, relative to the
+/// physical system root.
+pub(crate) const COMPOSEFS_BOOTC_ROOT: &str = "composefs/bootc";
+
+/// On a composefs install the containers-storage lives under
+/// `composefs/bootc/storage`.  To keep the rest of the code (and the
+/// `/usr/lib/bootc/storage` symlink which points through `ostree/bootc`)
+/// working, we create:
+///
+///   `ostree/bootc -> ../composefs/bootc`
+///
+/// This function is idempotent.
+pub(crate) fn ensure_composefs_bootc_link(physical_root: &Dir) -> Result<()> {
+    // Ensure the real directory exists
+    physical_root
+        .create_dir_all(COMPOSEFS_BOOTC_ROOT)
+        .with_context(|| format!("Creating {COMPOSEFS_BOOTC_ROOT}"))?;
+
+    // Create the `ostree/` parent if needed (it won't exist on a pure
+    // composefs install that never touched ostree).
+    physical_root
+        .create_dir_all("ostree")
+        .context("Creating ostree directory")?;
+
+    // If ostree/bootc already exists as a real directory (e.g. from an
+    // older install or from the ostree path), leave it alone — this
+    // function is only for fresh composefs installs.
+    match physical_root.symlink_metadata(BOOTC_ROOT) {
+        Ok(meta) if meta.is_symlink() => {
+            // Already a symlink — nothing to do
+            return Ok(());
+        }
+        Ok(_meta) => {
+            // It's a real directory.  This shouldn't happen during a fresh
+            // composefs install, but if it does just leave it.
+            tracing::warn!(
+                "{BOOTC_ROOT} already exists as a directory, not replacing with symlink"
+            );
+            return Ok(());
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            // Good — doesn't exist yet, we'll create the symlink
+        }
+        Err(e) => return Err(e).context(format!("Querying {BOOTC_ROOT}")),
+    }
+
+    physical_root
+        .symlink_contents(format!("../{COMPOSEFS_BOOTC_ROOT}"), BOOTC_ROOT)
+        .with_context(|| format!("Creating {BOOTC_ROOT} -> ../{COMPOSEFS_BOOTC_ROOT} symlink"))?;
+
+    tracing::info!("Created {BOOTC_ROOT} -> ../{COMPOSEFS_BOOTC_ROOT}");
+    Ok(())
+}
 
 /// Storage accessor for a booted system.
 ///
@@ -194,7 +251,7 @@ impl BootedStorage {
                 let (physical_root, run) = get_physical_root_and_run()?;
                 let mut composefs = ComposefsRepository::open_path(&physical_root, COMPOSEFS)?;
                 if cmdline.allow_missing_fsverity {
-                    composefs.set_insecure(true);
+                    composefs.set_insecure();
                 }
                 let composefs = Arc::new(composefs);
 
@@ -210,6 +267,10 @@ impl BootedStorage {
                     Bootloader::None => unreachable!("Checked at install time"),
                 };
 
+                let meta_json = physical_root
+                    .open_dir(COMPOSEFS)?
+                    .open_optional("meta.json")?;
+
                 let storage = Storage {
                     physical_root,
                     physical_root_path: Utf8PathBuf::from("/sysroot"),
@@ -217,9 +278,15 @@ impl BootedStorage {
                     boot_dir: Some(boot_dir),
                     esp: Some(esp_mount),
                     ostree: Default::default(),
-                    composefs: OnceCell::from(composefs),
+                    composefs: OnceCell::from(composefs.clone()),
                     imgstore: Default::default(),
                 };
+
+                if meta_json.is_none() {
+                    let cmdline = composefs_booted()?
+                        .ok_or_else(|| anyhow::anyhow!("Could not get booted composefs cmdline"))?;
+                    prepend_custom_prefix(&storage, &cmdline).await?;
+                }
 
                 Some(Self { storage })
             }
@@ -417,26 +484,35 @@ impl Storage {
     }
 
     /// Access the image storage; will automatically initialize it if necessary.
+    ///
+    /// Works on both ostree and composefs-only systems.  On ostree the
+    /// SELinux policy is loaded from the booted deployment; on composefs
+    /// (where ostree isn't initialized) we fall back to the host root policy.
     pub(crate) fn get_ensure_imgstore(&self) -> Result<&CStorage> {
         if let Some(imgstore) = self.imgstore.get() {
             return Ok(imgstore);
         }
-        let ostree = self.get_ostree()?;
-        let sysroot_dir = crate::utils::sysroot_dir(ostree)?;
 
-        let sepolicy = if ostree.booted_deployment().is_none() {
-            // fallback to policy from container root
-            // this should only happen during cleanup of a broken install
-            tracing::trace!("falling back to container root's selinux policy");
-            let container_root = Dir::open_ambient_dir("/", cap_std::ambient_authority())?;
-            lsm::new_sepolicy_at(&container_root)?
+        let (sysroot_dir, sepolicy) = if let Ok(ostree) = self.get_ostree() {
+            let sysroot_dir = crate::utils::sysroot_dir(ostree)?;
+            let sepolicy = if ostree.booted_deployment().is_none() {
+                tracing::trace!("falling back to container root's selinux policy");
+                let container_root = Dir::open_ambient_dir("/", cap_std::ambient_authority())?;
+                lsm::new_sepolicy_at(&container_root)?
+            } else {
+                tracing::trace!("loading sepolicy from booted ostree deployment");
+                let dep = ostree.booted_deployment().unwrap();
+                let dep_fs = deployment_fd(ostree, &dep)?;
+                lsm::new_sepolicy_at(&dep_fs)?
+            };
+            (sysroot_dir, sepolicy)
         } else {
-            // load the sepolicy from the booted ostree deployment so the imgstorage can be
-            // properly labeled with /var/lib/container/storage labels
-            tracing::trace!("loading sepolicy from booted ostree deployment");
-            let dep = ostree.booted_deployment().unwrap();
-            let dep_fs = deployment_fd(ostree, &dep)?;
-            lsm::new_sepolicy_at(&dep_fs)?
+            // Composefs-only: ostree is not initialized. Use the physical
+            // root directly and load SELinux policy from the host root.
+            let sysroot_dir = self.physical_root.try_clone()?;
+            let root = Dir::open_ambient_dir("/", cap_std::ambient_authority())?;
+            let sepolicy = lsm::new_sepolicy_at(&root)?;
+            (sysroot_dir, sepolicy)
         };
 
         tracing::trace!("sepolicy in get_ensure_imgstore: {sepolicy:?}");
@@ -470,22 +546,34 @@ impl Storage {
         let ostree = self.get_ostree()?;
         let ostree_repo = &ostree.repo();
         let ostree_verity = ostree_ext::fsverity::is_verity_enabled(ostree_repo)?;
-        let mut composefs =
-            ComposefsRepository::open_path(self.physical_root.open_dir(COMPOSEFS)?, ".")?;
+        let (mut composefs, _created) = ComposefsRepository::init_path(
+            self.physical_root.open_dir(COMPOSEFS)?,
+            ".",
+            composefs::fsverity::Algorithm::SHA512,
+            ostree_verity.enabled,
+        )?;
         if !ostree_verity.enabled {
             tracing::debug!("Setting insecure mode for composefs repo");
-            composefs.set_insecure(true);
+            composefs.set_insecure();
         }
         let composefs = Arc::new(composefs);
         let r = Arc::clone(self.composefs.get_or_init(|| composefs));
         Ok(r)
     }
 
-    /// Update the mtime on the storage root directory
+    /// Update the mtime on the storage root directory.
+    ///
+    /// This touches `ostree/bootc` (or its symlink target on composefs
+    /// systems) so that `bootc-status-updated.path` fires.
     #[context("Updating storage root mtime")]
     pub(crate) fn update_mtime(&self) -> Result<()> {
-        let ostree = self.get_ostree()?;
-        let sysroot_dir = crate::utils::sysroot_dir(ostree).context("Reopen sysroot directory")?;
+        // On composefs-only systems ostree is not initialized, so fall
+        // back to the physical root directly.
+        let sysroot_dir = if let Ok(ostree) = self.get_ostree() {
+            crate::utils::sysroot_dir(ostree).context("Reopen sysroot directory")?
+        } else {
+            self.physical_root.try_clone()?
+        };
 
         sysroot_dir
             .update_timestamps(std::path::Path::new(BOOTC_ROOT))

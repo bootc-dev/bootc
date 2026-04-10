@@ -27,6 +27,8 @@ use camino::Utf8Path;
 use fn_error_context::context;
 use xshell::{Shell, cmd};
 
+use crate::bcvk::BcvkInstallOpts;
+
 const SYSEXT_DIR: &str = "target/sysext";
 const DEV_VM_NAME: &str = "bootc-dev";
 const DEV_VM_LABEL: &str = "bootc.dev=1";
@@ -266,23 +268,16 @@ fn create_vm(sh: &Shell) -> Result<()> {
         .unwrap_or_else(|_| "quay.io/centos-bootc/centos-bootc:stream10".to_string());
     let bind_mount = format!("{}:{}", sysext_path, VM_SYSEXT_MNT);
 
-    let variant = std::env::var("BOOTC_variant").unwrap_or_else(|_| "ostree".to_string());
+    let bcvk_opts = BcvkInstallOpts::from_env();
+    let install_args = bcvk_opts.install_args();
+    let firmware_args = bcvk_opts.firmware_args()?;
+
     let mut bcvk_cmd = cmd!(
         sh,
         "bcvk libvirt run --name={DEV_VM_NAME} --replace --label={DEV_VM_LABEL} --bind={bind_mount}"
     );
-
-    let seal_state = std::env::var("BOOTC_seal_state").unwrap_or_else(|_| "unsealed".to_string());
-    if variant == "composefs" && seal_state == "sealed" {
-        let secureboot_dir = Utf8Path::new("target/test-secureboot");
-        if !secureboot_dir.exists() {
-            println!("Generating secure boot keys for sealed variant...");
-            cmd!(sh, "./hack/generate-secureboot-keys")
-                .run()
-                .context("Failed to generate secure boot keys")?;
-        }
-        bcvk_cmd = bcvk_cmd.arg("--secure-boot-keys=target/test-secureboot");
-    }
+    bcvk_cmd = bcvk_cmd.args(&install_args);
+    bcvk_cmd = bcvk_cmd.args(&firmware_args);
 
     bcvk_cmd = bcvk_cmd.args(["--ssh-wait", &base_img]);
     bcvk_cmd.run().context("Failed to create VM")?;

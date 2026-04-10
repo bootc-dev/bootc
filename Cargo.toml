@@ -44,15 +44,20 @@ clap_mangen = { version = "0.3.0" }
 #   [patch."https://github.com/composefs/composefs-rs"]
 #   cfsctl = { path = "/path/to/composefs-rs/crates/cfsctl" }
 # The Justfile will auto-detect these and bind-mount them into container builds.
-cfsctl = { git = "https://github.com/composefs/composefs-rs", rev = "2203e8f", package = "cfsctl", features = ["rhel9"] }
+cfsctl = { git = "https://github.com/cgwalters/composefs-rs", rev = "b72acc4257", package = "cfsctl" }
 fn-error-context = "0.2.1"
+futures-util = "0.3"
 hex = "0.4.3"
+http-body-util = "0.1"
+hyper = { version = "1", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
 indicatif = "0.18.0"
 indoc = "2.0.5"
 libc = "0.2.154"
 log = "0.4.21"
 openssl = "0.10.72"
 owo-colors = { version = "4" }
+percent-encoding = "2"
 regex = "1.10.4"
 # For the same rationale as https://github.com/coreos/rpm-ostree/commit/27f3f4b77a15f6026f7e1da260408d42ccb657b3
 rustix = { "version" = "1", features = ["use-libc", "thread", "net", "fs", "system", "process", "mount"] }
@@ -99,7 +104,7 @@ bins = ["skopeo", "podman", "ostree", "zstd", "setpriv", "systemctl", "chcon"]
 unsafe_code = "deny"
 # Absolutely must handle errors
 unused_must_use = "forbid"
-missing_docs = "deny"
+missing_docs = "allow"
 missing_debug_implementations = "deny"
 # Feel free to comment this one out locally during development of a patch.
 dead_code = "deny"

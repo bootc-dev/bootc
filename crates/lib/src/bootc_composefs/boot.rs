@@ -61,10 +61,11 @@
 //! 1. **Primary**: New/upgraded deployment (default boot target)
 //! 2. **Secondary**: Currently booted deployment (rollback option)
 
-use std::ffi::OsStr;
 use std::fs::create_dir_all;
+use std::io::Read;
 use std::io::Write;
 use std::path::Path;
+use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow, bail};
 use bootc_kernel_cmdline::utf8::{Cmdline, Parameter, ParameterKey};
@@ -81,42 +82,27 @@ use clap::ValueEnum;
 use composefs::fs::read_file;
 use composefs::fsverity::{FsVerityHashValue, Sha512HashValue};
 use composefs::tree::RegularFile;
-use composefs_boot::BootOps;
 use composefs_boot::bootloader::{
     BootEntry as ComposefsBootEntry, EFI_ADDON_DIR_EXT, EFI_ADDON_FILE_EXT, EFI_EXT, PEType,
-    UsrLibModulesVmlinuz,
+    UsrLibModulesVmlinuz, get_boot_resources,
 };
 use composefs_boot::{cmdline::get_cmdline_composefs, os_release::OsReleaseInfo, uki};
-use composefs_oci::image::create_filesystem as create_composefs_filesystem;
 use fn_error_context::context;
 use rustix::{mount::MountFlags, path::Arg};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    bootc_composefs::repo::get_imgref,
-    composefs_consts::{TYPE1_ENT_PATH, TYPE1_ENT_PATH_STAGED},
-};
-use crate::{
-    bootc_composefs::repo::open_composefs_repo,
-    store::{ComposefsFilesystem, Storage},
-};
-use crate::{
-    bootc_composefs::state::{get_booted_bls, write_composefs_state},
-    composefs_consts::TYPE1_BOOT_DIR_PREFIX,
-};
-use crate::{bootc_composefs::status::ComposefsCmdline, task::Task};
-use crate::{
-    bootc_composefs::status::get_container_manifest_and_config, bootc_kargs::compute_new_kargs,
-};
+use crate::bootc_composefs::state::{get_booted_bls, write_composefs_state};
+use crate::bootc_composefs::status::ComposefsCmdline;
+use crate::bootc_kargs::compute_new_kargs;
+use crate::composefs_consts::{TYPE1_BOOT_DIR_PREFIX, TYPE1_ENT_PATH, TYPE1_ENT_PATH_STAGED};
+use crate::parsers::bls_config::{BLSConfig, BLSConfigType};
+use crate::task::Task;
+use crate::{bootc_composefs::repo::open_composefs_repo, store::Storage};
 use crate::{bootc_composefs::status::get_sorted_grub_uki_boot_entries, install::PostFetchState};
 use crate::{
-    composefs_consts::UKI_NAME_PREFIX,
-    parsers::bls_config::{BLSConfig, BLSConfigType},
-};
-use crate::{
     composefs_consts::{
-        BOOT_LOADER_ENTRIES, STAGED_BOOT_LOADER_ENTRIES, USER_CFG, USER_CFG_STAGED,
+        BOOT_LOADER_ENTRIES, STAGED_BOOT_LOADER_ENTRIES, UKI_NAME_PREFIX, USER_CFG, USER_CFG_STAGED,
     },
     spec::{Bootloader, Host},
 };
@@ -148,23 +134,9 @@ pub(crate) const BOOTC_UKI_DIR: &str = "EFI/Linux/bootc";
 
 pub(crate) enum BootSetupType<'a> {
     /// For initial setup, i.e. install to-disk
-    Setup(
-        (
-            &'a RootSetup,
-            &'a State,
-            &'a PostFetchState,
-            &'a ComposefsFilesystem,
-        ),
-    ),
+    Setup((&'a RootSetup, &'a State, &'a PostFetchState)),
     /// For `bootc upgrade`
-    Upgrade(
-        (
-            &'a Storage,
-            &'a BootedComposefs,
-            &'a ComposefsFilesystem,
-            &'a Host,
-        ),
-    ),
+    Upgrade((&'a Storage, &'a BootedComposefs, &'a Host)),
 }
 
 #[derive(
@@ -451,41 +423,22 @@ fn write_bls_boot_entries_to_disk(
 }
 
 /// Parses /usr/lib/os-release and returns (id, title, version)
-fn parse_os_release(
-    fs: &crate::store::ComposefsFilesystem,
-    repo: &crate::store::ComposefsRepository,
-) -> Result<Option<(String, Option<String>, Option<String>)>> {
+/// Expects a reference to the root of the filesystem, or the root
+/// of a mounted EROFS
+pub fn parse_os_release(root: &Dir) -> Result<Option<(String, Option<String>, Option<String>)>> {
     // Every update should have its own /usr/lib/os-release
-    let (dir, fname) = fs
-        .root
-        .split(OsStr::new("/usr/lib/os-release"))
-        .context("Getting /usr/lib/os-release")?;
+    let file = root
+        .open_optional("usr/lib/os-release")
+        .context("Opening usr/lib/os-release")?;
 
-    let os_release = dir
-        .get_file_opt(fname)
-        .context("Getting /usr/lib/os-release")?;
-
-    let Some(os_rel_file) = os_release else {
+    let Some(mut os_rel_file) = file else {
         return Ok(None);
     };
 
-    let file_contents = match read_file(os_rel_file, repo) {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::warn!("Could not read /usr/lib/os-release: {e:?}");
-            return Ok(None);
-        }
-    };
+    let mut file_contents = String::new();
+    os_rel_file.read_to_string(&mut file_contents)?;
 
-    let file_contents = match std::str::from_utf8(&file_contents) {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::warn!("/usr/lib/os-release did not have valid UTF-8: {e}");
-            return Ok(None);
-        }
-    };
-
-    let parsed = OsReleaseInfo::parse(file_contents);
+    let parsed = OsReleaseInfo::parse(&file_contents);
 
     let os_id = parsed
         .get_value(&["ID"])
@@ -521,8 +474,8 @@ pub(crate) fn setup_composefs_bls_boot(
 ) -> Result<String> {
     let id_hex = id.to_hex();
 
-    let (root_path, esp_device, mut cmdline_refs, fs, bootloader) = match setup_type {
-        BootSetupType::Setup((root_setup, state, postfetch, fs)) => {
+    let (root_path, esp_device, mut cmdline_refs, bootloader) = match setup_type {
+        BootSetupType::Setup((root_setup, state, postfetch)) => {
             // root_setup.kargs has [root=UUID=<UUID>, "rw"]
             let mut cmdline_options = Cmdline::new();
 
@@ -555,12 +508,11 @@ pub(crate) fn setup_composefs_bls_boot(
                 root_setup.physical_root_path.clone(),
                 esp_part.path(),
                 cmdline_options,
-                fs,
                 postfetch.detected_bootloader.clone(),
             )
         }
 
-        BootSetupType::Upgrade((storage, booted_cfs, fs, host)) => {
+        BootSetupType::Upgrade((storage, booted_cfs, host)) => {
             let bootloader = host.require_composefs_booted()?.bootloader.clone();
 
             let boot_dir = storage.require_boot_dir()?;
@@ -594,7 +546,6 @@ pub(crate) fn setup_composefs_bls_boot(
                 Utf8PathBuf::from("/sysroot"),
                 esp_dev.path(),
                 cmdline,
-                fs,
                 bootloader,
             )
         }
@@ -603,13 +554,13 @@ pub(crate) fn setup_composefs_bls_boot(
     // Remove "root=" from kernel cmdline as systemd-auto-gpt-generator should use DPS
     // UUID
     if bootloader == Bootloader::Systemd {
-        cmdline_refs.remove(&ParameterKey::from("root"));
+        cmdline_refs.remove(&ParameterKey::from("root") as &ParameterKey);
     }
 
     let is_upgrade = matches!(setup_type, BootSetupType::Upgrade(..));
 
     let current_root = if is_upgrade {
-        Some(&Dir::open_ambient_dir("/", ambient_authority()).context("Opening root")?)
+        Some(&Dir::open_ambient_dir("/", ambient_authority()).context("Opening root")? as &Dir)
     } else {
         None
     };
@@ -668,7 +619,7 @@ pub(crate) fn setup_composefs_bls_boot(
             let boot_digest = compute_boot_digest(usr_lib_modules_vmlinuz, &repo)
                 .context("Computing boot digest")?;
 
-            let osrel = parse_os_release(fs, &repo)?;
+            let osrel = parse_os_release(mounted_erofs)?;
 
             let (os_id, title, version, sort_key) = match osrel {
                 Some((id_str, title_opt, version_opt)) => (
@@ -1093,7 +1044,7 @@ pub(crate) fn setup_composefs_uki_boot(
 ) -> Result<String> {
     let (root_path, esp_device, bootloader, missing_fsverity_allowed, uki_addons) = match setup_type
     {
-        BootSetupType::Setup((root_setup, state, postfetch, ..)) => {
+        BootSetupType::Setup((root_setup, state, postfetch)) => {
             state.require_no_kargs_for_uki()?;
 
             // Locate ESP partition device by walking up to the root disk(s)
@@ -1108,7 +1059,7 @@ pub(crate) fn setup_composefs_uki_boot(
             )
         }
 
-        BootSetupType::Upgrade((storage, booted_cfs, _, host)) => {
+        BootSetupType::Upgrade((storage, booted_cfs, host)) => {
             let sysroot = Utf8PathBuf::from("/sysroot"); // Still needed for root_path
             let bootloader = host.require_composefs_booted()?.bootloader.clone();
 
@@ -1250,7 +1201,7 @@ fn get_secureboot_keys(fs: &Dir, p: &str) -> Result<Option<SecurebootKeys>> {
 pub(crate) async fn setup_composefs_boot(
     root_setup: &RootSetup,
     state: &State,
-    image_id: &str,
+    pull_result: &composefs_oci::PullResult<Sha512HashValue>,
     allow_missing_fsverity: bool,
 ) -> Result<()> {
     const COMPOSEFS_BOOT_SETUP_JOURNAL_ID: &str = "1f0e9d8c7b6a5f4e3d2c1b0a9f8e7d6c5";
@@ -1258,17 +1209,28 @@ pub(crate) async fn setup_composefs_boot(
     tracing::info!(
         message_id = COMPOSEFS_BOOT_SETUP_JOURNAL_ID,
         bootc.operation = "boot_setup",
-        bootc.image_id = image_id,
+        bootc.config_digest = %pull_result.config_digest,
         bootc.allow_missing_fsverity = allow_missing_fsverity,
         "Setting up composefs boot",
     );
 
     let mut repo = open_composefs_repo(&root_setup.physical_root)?;
-    repo.set_insecure(allow_missing_fsverity);
+    if allow_missing_fsverity {
+        repo.set_insecure();
+    }
 
-    let mut fs = create_composefs_filesystem(&repo, image_id, None)?;
-    let entries = fs.transform_for_boot(&repo)?;
-    let id = fs.commit_image(&repo, None)?;
+    let repo = Arc::new(repo);
+
+    // Generate the bootable EROFS image (idempotent).
+    let id = composefs_oci::generate_boot_image(&repo, &pull_result.manifest_digest)
+        .context("Generating bootable EROFS image")?;
+
+    // Reconstruct the OCI filesystem to discover boot entries (kernel, initramfs, etc.).
+    let fs = composefs_oci::image::create_filesystem(&*repo, &pull_result.config_digest, None)
+        .context("Creating composefs filesystem for boot entry discovery")?;
+    let entries =
+        get_boot_resources(&fs, &*repo).context("Extracting boot entries from OCI image")?;
+
     let mounted_fs = Dir::reopen_dir(
         &repo
             .mount(&id.to_hex())
@@ -1311,16 +1273,23 @@ pub(crate) async fn setup_composefs_boot(
 
     let boot_type = BootType::from(entry);
 
+    // Unwrap Arc to pass owned repo to boot setup functions.
+    let repo = Arc::try_unwrap(repo).map_err(|_| {
+        anyhow::anyhow!(
+            "BUG: Arc<Repository> still has other references after boot image generation"
+        )
+    })?;
+
     let boot_digest = match boot_type {
         BootType::Bls => setup_composefs_bls_boot(
-            BootSetupType::Setup((&root_setup, &state, &postfetch, &fs)),
+            BootSetupType::Setup((&root_setup, &state, &postfetch)),
             repo,
             &id,
             entry,
             &mounted_fs,
         )?,
         BootType::Uki => setup_composefs_uki_boot(
-            BootSetupType::Setup((&root_setup, &state, &postfetch, &fs)),
+            BootSetupType::Setup((&root_setup, &state, &postfetch)),
             repo,
             &id,
             entries,
@@ -1334,11 +1303,7 @@ pub(crate) async fn setup_composefs_boot(
         None,
         boot_type,
         boot_digest,
-        &get_container_manifest_and_config(&get_imgref(
-            &state.source.imageref.transport.to_string(),
-            &state.source.imageref.name,
-        ))
-        .await?,
+        &pull_result.manifest_digest.to_string(),
         allow_missing_fsverity,
     )
     .await?;

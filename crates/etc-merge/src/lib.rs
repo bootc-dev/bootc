@@ -3,7 +3,6 @@
 #![allow(dead_code)]
 
 use fn_error_context::context;
-use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::io::BufReader;
@@ -11,7 +10,6 @@ use std::io::Write;
 use std::os::fd::{AsFd, AsRawFd};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
 
 use anyhow::Context;
 use cap_std_ext::cap_std;
@@ -19,7 +17,7 @@ use cap_std_ext::cap_std::fs::{Dir as CapStdDir, MetadataExt, Permissions, Permi
 use cap_std_ext::dirext::CapStdExtDirExt;
 use cfsctl::composefs;
 use composefs::fsverity::{FsVerityHashValue, Sha256HashValue, Sha512HashValue};
-use composefs::generic_tree::{Directory, Inode, Leaf, LeafContent, Stat};
+use composefs::generic_tree::{Directory, FileSystem, Inode, Leaf, LeafContent, LeafId, Stat};
 use composefs::tree::ImageError;
 use rustix::fs::{
     AtFlags, Gid, Uid, XattrFlags, lgetxattr, llistxattr, lsetxattr, readlinkat, symlinkat,
@@ -43,7 +41,7 @@ impl CustomMetadata {
     }
 }
 
-type Xattrs = RefCell<BTreeMap<Box<OsStr>, Box<[u8]>>>;
+type Xattrs = BTreeMap<Box<OsStr>, Box<[u8]>>;
 
 struct MyStat(Stat);
 
@@ -147,7 +145,7 @@ fn get_deletions(
                 }
             }
 
-            Inode::Leaf(..) => match current.ref_leaf(file_name) {
+            Inode::Leaf(..) => match current.leaf_id(file_name) {
                 Ok(..) => {
                     // Empty as all additions/modifications are tracked earlier in `get_modifications`
                 }
@@ -189,6 +187,8 @@ fn get_deletions(
 fn get_modifications(
     pristine: &Directory<CustomMetadata>,
     current: &Directory<CustomMetadata>,
+    pristine_leaves: &[Leaf<CustomMetadata>],
+    current_leaves: &[Leaf<CustomMetadata>],
     new: &Directory<CustomMetadata>,
     mut current_path: PathBuf,
     diff: &mut Diff,
@@ -210,7 +210,15 @@ fn get_modifications(
                         let total_added = diff.added.len();
                         let total_modified = diff.modified.len();
 
-                        get_modifications(old_dir, &curr_dir, new, current_path.clone(), diff)?;
+                        get_modifications(
+                            old_dir,
+                            &curr_dir,
+                            pristine_leaves,
+                            current_leaves,
+                            new,
+                            current_path.clone(),
+                            diff,
+                        )?;
 
                         // This directory or its contents were modified/added
                         // Check if the new directory was deleted from new_etc
@@ -242,8 +250,10 @@ fn get_modifications(
                 }
             }
 
-            Inode::Leaf(leaf) => match pristine.ref_leaf(path) {
-                Ok(old_leaf) => {
+            Inode::Leaf(leaf_id, _) => match pristine.leaf_id(path) {
+                Ok(old_leaf_id) => {
+                    let leaf = &current_leaves[leaf_id.0];
+                    let old_leaf = &pristine_leaves[old_leaf_id.0];
                     if !stat_eq_ignore_mtime(&old_leaf.stat, &leaf.stat) {
                         diff.modified.push(current_path.clone());
                         current_path.pop();
@@ -328,22 +338,31 @@ pub fn traverse_etc(
     current_etc: &CapStdDir,
     new_etc: Option<&CapStdDir>,
 ) -> anyhow::Result<(
-    Directory<CustomMetadata>,
-    Directory<CustomMetadata>,
-    Option<Directory<CustomMetadata>>,
+    FileSystem<CustomMetadata>,
+    FileSystem<CustomMetadata>,
+    Option<FileSystem<CustomMetadata>>,
 )> {
-    let mut pristine_etc_files = Directory::new(Stat::uninitialized());
-    recurse_dir(pristine_etc, &mut pristine_etc_files)
-        .context(format!("Recursing {pristine_etc:?}"))?;
+    let mut pristine_etc_files = FileSystem::new(Stat::uninitialized());
+    recurse_dir(
+        pristine_etc,
+        &mut pristine_etc_files.root,
+        &mut pristine_etc_files.leaves,
+    )
+    .context(format!("Recursing {pristine_etc:?}"))?;
 
-    let mut current_etc_files = Directory::new(Stat::uninitialized());
-    recurse_dir(current_etc, &mut current_etc_files)
-        .context(format!("Recursing {current_etc:?}"))?;
+    let mut current_etc_files = FileSystem::new(Stat::uninitialized());
+    recurse_dir(
+        current_etc,
+        &mut current_etc_files.root,
+        &mut current_etc_files.leaves,
+    )
+    .context(format!("Recursing {current_etc:?}"))?;
 
     let new_etc_files = match new_etc {
         Some(new_etc) => {
-            let mut new_etc_files = Directory::new(Stat::uninitialized());
-            recurse_dir(new_etc, &mut new_etc_files).context(format!("Recursing {new_etc:?}"))?;
+            let mut new_etc_files = FileSystem::new(Stat::uninitialized());
+            recurse_dir(new_etc, &mut new_etc_files.root, &mut new_etc_files.leaves)
+                .context(format!("Recursing {new_etc:?}"))?;
 
             Some(new_etc_files)
         }
@@ -357,9 +376,9 @@ pub fn traverse_etc(
 /// Computes the differences between two directory snapshots.
 #[context("Computing diff")]
 pub fn compute_diff(
-    pristine_etc_files: &Directory<CustomMetadata>,
-    current_etc_files: &Directory<CustomMetadata>,
-    new_etc_files: &Directory<CustomMetadata>,
+    pristine_etc_files: &FileSystem<CustomMetadata>,
+    current_etc_files: &FileSystem<CustomMetadata>,
+    new_etc_files: &FileSystem<CustomMetadata>,
 ) -> anyhow::Result<Diff> {
     let mut diff = Diff {
         added: vec![],
@@ -368,16 +387,18 @@ pub fn compute_diff(
     };
 
     get_modifications(
-        &pristine_etc_files,
-        &current_etc_files,
-        &new_etc_files,
+        &pristine_etc_files.root,
+        &current_etc_files.root,
+        &pristine_etc_files.leaves,
+        &current_etc_files.leaves,
+        &new_etc_files.root,
         PathBuf::new(),
         &mut diff,
     )?;
 
     get_deletions(
-        &pristine_etc_files,
-        &current_etc_files,
+        &pristine_etc_files.root,
+        &current_etc_files.root,
         PathBuf::new(),
         &mut diff,
     )?;
@@ -418,7 +439,7 @@ fn collect_xattrs(etc_fd: &CapStdDir, rel_path: impl AsRef<Path>) -> anyhow::Res
         size = llistxattr(&path, &mut xattrs_name_buf).context("llistxattr")?;
     }
 
-    let xattrs: Xattrs = RefCell::new(BTreeMap::new());
+    let mut xattrs: Xattrs = BTreeMap::new();
 
     for name_buf in xattrs_name_buf[..size]
         .split(|&b| b == 0)
@@ -434,7 +455,7 @@ fn collect_xattrs(etc_fd: &CapStdDir, rel_path: impl AsRef<Path>) -> anyhow::Res
             size = lgetxattr(&path, name_buf, &mut xattrs_value_buf).context("lgetxattr")?;
         }
 
-        xattrs.borrow_mut().insert(
+        xattrs.insert(
             Box::<OsStr>::from(name),
             Box::<[u8]>::from(&xattrs_value_buf[..size]),
         );
@@ -445,7 +466,7 @@ fn collect_xattrs(etc_fd: &CapStdDir, rel_path: impl AsRef<Path>) -> anyhow::Res
 
 #[context("Copying xattrs")]
 fn copy_xattrs(xattrs: &Xattrs, new_etc_fd: &CapStdDir, path: &Path) -> anyhow::Result<()> {
-    for (attr, value) in xattrs.borrow().iter() {
+    for (attr, value) in xattrs.iter() {
         let fdpath = &Path::new(&format!("/proc/self/fd/{}", new_etc_fd.as_raw_fd())).join(path);
         lsetxattr(fdpath, attr.as_ref(), value, XattrFlags::empty())
             .with_context(|| format!("setxattr {attr:?} for {fdpath:?}"))?;
@@ -454,7 +475,11 @@ fn copy_xattrs(xattrs: &Xattrs, new_etc_fd: &CapStdDir, path: &Path) -> anyhow::
     Ok(())
 }
 
-fn recurse_dir(dir: &CapStdDir, root: &mut Directory<CustomMetadata>) -> anyhow::Result<()> {
+fn recurse_dir(
+    dir: &CapStdDir,
+    root: &mut Directory<CustomMetadata>,
+    leaves: &mut Vec<Leaf<CustomMetadata>>,
+) -> anyhow::Result<()> {
     for entry in dir.entries()? {
         let entry = entry.context(format!("Getting entry"))?;
         let entry_name = entry.file_name();
@@ -474,13 +499,12 @@ fn recurse_dir(dir: &CapStdDir, root: &mut Directory<CustomMetadata>) -> anyhow:
 
             let os_str = OsStr::from_bytes(readlinkat_result.as_bytes());
 
-            root.insert(
-                &entry_name,
-                Inode::Leaf(Rc::new(Leaf {
-                    stat: MyStat::from((&entry_meta, xattrs)).0,
-                    content: LeafContent::Symlink(Box::from(os_str)),
-                })),
-            );
+            let id = LeafId(leaves.len());
+            leaves.push(Leaf {
+                stat: MyStat::from((&entry_meta, xattrs)).0,
+                content: LeafContent::Symlink(Box::from(os_str)),
+            });
+            root.insert(&entry_name, Inode::leaf(id));
 
             continue;
         }
@@ -492,7 +516,7 @@ fn recurse_dir(dir: &CapStdDir, root: &mut Directory<CustomMetadata>) -> anyhow:
 
             let mut directory = Directory::new(MyStat::from((&entry_meta, xattrs)).0);
 
-            recurse_dir(&dir, &mut directory)?;
+            recurse_dir(&dir, &mut directory, leaves)?;
 
             root.insert(&entry_name, Inode::Directory(Box::new(directory)));
 
@@ -524,16 +548,15 @@ fn recurse_dir(dir: &CapStdDir, root: &mut Directory<CustomMetadata>) -> anyhow:
         };
 
         if let Some(measured_verity) = measured_verity {
-            root.insert(
-                &entry_name,
-                Inode::Leaf(Rc::new(Leaf {
-                    stat: MyStat::from((&entry_meta, xattrs)).0,
-                    content: LeafContent::Regular(CustomMetadata::new(
-                        "".into(),
-                        Some(measured_verity),
-                    )),
-                })),
-            );
+            let id = LeafId(leaves.len());
+            leaves.push(Leaf {
+                stat: MyStat::from((&entry_meta, xattrs)).0,
+                content: LeafContent::Regular(CustomMetadata::new(
+                    "".into(),
+                    Some(measured_verity),
+                )),
+            });
+            root.insert(&entry_name, Inode::leaf(id));
 
             continue;
         }
@@ -549,13 +572,12 @@ fn recurse_dir(dir: &CapStdDir, root: &mut Directory<CustomMetadata>) -> anyhow:
 
         let content_digest = hex::encode(hasher.finish()?);
 
-        root.insert(
-            &entry_name,
-            Inode::Leaf(Rc::new(Leaf {
-                stat: MyStat::from((&entry_meta, xattrs)).0,
-                content: LeafContent::Regular(CustomMetadata::new(content_digest, None)),
-            })),
-        );
+        let id = LeafId(leaves.len());
+        leaves.push(Leaf {
+            stat: MyStat::from((&entry_meta, xattrs)).0,
+            content: LeafContent::Regular(CustomMetadata::new(content_digest, None)),
+        });
+        root.insert(&entry_name, Inode::leaf(id));
     }
 
     Ok(())
@@ -630,7 +652,7 @@ fn create_dir_with_perms(
 fn merge_leaf(
     current_etc_fd: &CapStdDir,
     new_etc_fd: &CapStdDir,
-    leaf: &Rc<Leaf<CustomMetadata>>,
+    leaf: &Leaf<CustomMetadata>,
     new_inode: Option<&Inode<CustomMetadata>>,
     file: &PathBuf,
 ) -> anyhow::Result<()> {
@@ -680,6 +702,7 @@ fn merge_modified_files(
     files: &Vec<PathBuf>,
     current_etc_fd: &CapStdDir,
     current_etc_dirtree: &Directory<CustomMetadata>,
+    current_leaves: &[Leaf<CustomMetadata>],
     new_etc_fd: &CapStdDir,
     new_etc_dirtree: &Directory<CustomMetadata>,
 ) -> anyhow::Result<()> {
@@ -701,10 +724,16 @@ fn merge_modified_files(
 
                 match current_inode {
                     Inode::Directory(..) => {
-                        create_dir_with_perms(new_etc_fd, file, current_inode.stat(), new_inode)?;
+                        create_dir_with_perms(
+                            new_etc_fd,
+                            file,
+                            current_inode.stat(current_leaves),
+                            new_inode,
+                        )?;
                     }
 
-                    Inode::Leaf(leaf) => {
+                    Inode::Leaf(leaf_id, _) => {
+                        let leaf = &current_leaves[leaf_id.0];
                         merge_leaf(current_etc_fd, new_etc_fd, leaf, new_inode, file)?
                     }
                 };
@@ -712,11 +741,15 @@ fn merge_modified_files(
 
             // Directory/File does not exist in the new /etc
             Err(ImageError::NotFound(..)) => match current_inode {
-                Inode::Directory(..) => {
-                    create_dir_with_perms(new_etc_fd, file, current_inode.stat(), None)?
-                }
+                Inode::Directory(..) => create_dir_with_perms(
+                    new_etc_fd,
+                    file,
+                    current_inode.stat(current_leaves),
+                    None,
+                )?,
 
-                Inode::Leaf(leaf) => {
+                Inode::Leaf(leaf_id, _) => {
+                    let leaf = &current_leaves[leaf_id.0];
                     merge_leaf(current_etc_fd, new_etc_fd, leaf, None, file)?;
                 }
             },
@@ -734,26 +767,28 @@ fn merge_modified_files(
 #[context("Merging")]
 pub fn merge(
     current_etc_fd: &CapStdDir,
-    current_etc_dirtree: &Directory<CustomMetadata>,
+    current_etc_dirtree: &FileSystem<CustomMetadata>,
     new_etc_fd: &CapStdDir,
-    new_etc_dirtree: &Directory<CustomMetadata>,
+    new_etc_dirtree: &FileSystem<CustomMetadata>,
     diff: &Diff,
 ) -> anyhow::Result<()> {
     merge_modified_files(
         &diff.added,
         current_etc_fd,
-        current_etc_dirtree,
+        &current_etc_dirtree.root,
+        &current_etc_dirtree.leaves,
         new_etc_fd,
-        new_etc_dirtree,
+        &new_etc_dirtree.root,
     )
     .context("Merging added files")?;
 
     merge_modified_files(
         &diff.modified,
         current_etc_fd,
-        current_etc_dirtree,
+        &current_etc_dirtree.root,
+        &current_etc_dirtree.leaves,
         new_etc_fd,
-        new_etc_dirtree,
+        &new_etc_dirtree.root,
     )
     .context("Merging modified files")?;
 

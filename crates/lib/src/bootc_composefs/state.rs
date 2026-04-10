@@ -28,20 +28,42 @@ use rustix::{
 use crate::bootc_composefs::boot::BootType;
 use crate::bootc_composefs::repo::get_imgref;
 use crate::bootc_composefs::status::{
-    ComposefsCmdline, ImgConfigManifest, StagedDeployment, get_sorted_type1_boot_entries,
+    ComposefsCmdline, StagedDeployment, get_sorted_type1_boot_entries,
 };
 use crate::parsers::bls_config::BLSConfigType;
 use crate::store::{BootedComposefs, Storage};
 use crate::{
     composefs_consts::{
         COMPOSEFS_STAGED_DEPLOYMENT_FNAME, COMPOSEFS_TRANSIENT_STATE_DIR, ORIGIN_KEY_BOOT,
-        ORIGIN_KEY_BOOT_DIGEST, ORIGIN_KEY_BOOT_TYPE, SHARED_VAR_PATH, STATE_DIR_RELATIVE,
+        ORIGIN_KEY_BOOT_DIGEST, ORIGIN_KEY_BOOT_TYPE, ORIGIN_KEY_IMAGE, ORIGIN_KEY_MANIFEST_DIGEST,
+        SHARED_VAR_PATH, STATE_DIR_RELATIVE,
     },
     parsers::bls_config::BLSConfig,
     spec::ImageReference,
     spec::{FilesystemOverlay, FilesystemOverlayAccessMode, FilesystemOverlayPersistence},
     utils::path_relative_to,
 };
+
+/// Read and parse the `.origin` INI file for a deployment.
+///
+/// Returns `None` if the state directory or origin file doesn't exist
+/// (e.g. the deployment was partially deleted).
+#[context("Reading origin for deployment {deployment_id}")]
+pub(crate) fn read_origin(sysroot: &Dir, deployment_id: &str) -> Result<Option<tini::Ini>> {
+    let depl_state_path = std::path::PathBuf::from(STATE_DIR_RELATIVE).join(deployment_id);
+
+    let Some(state_dir) = sysroot.open_dir_optional(&depl_state_path)? else {
+        return Ok(None);
+    };
+
+    let origin_filename = format!("{deployment_id}.origin");
+    let Some(origin_contents) = state_dir.read_to_string_optional(&origin_filename)? else {
+        return Ok(None);
+    };
+
+    let ini = tini::Ini::from_string(&origin_contents).context("Failed to parse origin file")?;
+    Ok(Some(ini))
+}
 
 pub(crate) fn get_booted_bls(boot_dir: &Dir, booted_cfs: &BootedComposefs) -> Result<BLSConfig> {
     let sorted_entries = get_sorted_type1_boot_entries(boot_dir, true)?;
@@ -172,16 +194,14 @@ pub(crate) fn update_target_imgref_in_origin(
     booted_cfs: &BootedComposefs,
     imgref: &ImageReference,
 ) -> Result<()> {
+    let imgref = get_imgref(&imgref.transport, &imgref.image)?;
     add_update_in_origin(
         storage,
         booted_cfs.cmdline.digest.as_ref(),
         "origin",
         &[(
             ORIGIN_CONTAINER,
-            &format!(
-                "ostree-unverified-image:{}",
-                get_imgref(&imgref.transport, &imgref.image)
-            ),
+            &format!("ostree-unverified-image:{imgref}"),
         )],
     )
 }
@@ -214,15 +234,15 @@ pub(crate) fn update_boot_digest_in_origin(
 /// * `staged`            - Whether this is a staged deployment (writes to transient state dir)
 /// * `boot_type`         - Boot loader type (`Bls` or `Uki`)
 /// * `boot_digest`       - Optional boot digest for verification
-/// * `container_details` - Container manifest and config used to create this deployment
+/// * `manifest_digest`   - OCI manifest content digest, stored in the origin file so the
+///                         manifest+config can be retrieved from the composefs repo later
 ///
 /// # State Directory Structure
 ///
 /// Creates the following structure under `/sysroot/state/deploy/{deployment_id}/`:
 /// * `etc/`                    - Copy of system configuration files
 /// * `var`                     - Symlink to shared `/var` directory
-/// * `{deployment_id}.origin`  - OSTree-style origin configuration
-/// * `{deployment_id}.imginfo` - Container image manifest and config as JSON
+/// * `{deployment_id}.origin`  - Origin configuration with image ref, boot, and image metadata
 ///
 /// For staged deployments, also writes to `/run/composefs/staged-deployment`.
 #[context("Writing composefs state")]
@@ -233,7 +253,7 @@ pub(crate) async fn write_composefs_state(
     staged: Option<StagedDeployment>,
     boot_type: BootType,
     boot_digest: String,
-    container_details: &ImgConfigManifest,
+    manifest_digest: &str,
     allow_missing_fsverity: bool,
 ) -> Result<()> {
     let state_path = root_path
@@ -266,7 +286,7 @@ pub(crate) async fn write_composefs_state(
         ..
     } = &target_imgref;
 
-    let imgref = get_imgref(&transport, &image_name);
+    let imgref = get_imgref(transport, image_name)?;
 
     let mut config = tini::Ini::new().section("origin").item(
         ORIGIN_CONTAINER,
@@ -282,17 +302,14 @@ pub(crate) async fn write_composefs_state(
         .section(ORIGIN_KEY_BOOT)
         .item(ORIGIN_KEY_BOOT_DIGEST, boot_digest);
 
+    // Store the OCI manifest digest so we can retrieve the manifest+config
+    // from the composefs repository later (composefs-rs stores them as splitstreams).
+    config = config
+        .section(ORIGIN_KEY_IMAGE)
+        .item(ORIGIN_KEY_MANIFEST_DIGEST, manifest_digest);
+
     let state_dir =
         Dir::open_ambient_dir(&state_path, ambient_authority()).context("Opening state dir")?;
-
-    // NOTE: This is only supposed to be temporary until we decide on where to store
-    // the container manifest/config
-    state_dir
-        .atomic_write(
-            format!("{}.imginfo", deployment_id.to_hex()),
-            serde_json::to_vec(&container_details)?,
-        )
-        .context("Failed to write to .imginfo file")?;
 
     state_dir
         .atomic_write(

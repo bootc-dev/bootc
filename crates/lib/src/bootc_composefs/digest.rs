@@ -2,6 +2,7 @@
 
 use std::fs::File;
 use std::io::BufWriter;
+use std::os::fd::OwnedFd;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -11,7 +12,7 @@ use cap_std_ext::cap_std::fs::Dir;
 use cfsctl::composefs;
 use cfsctl::composefs_boot;
 use composefs::dumpfile;
-use composefs::fsverity::FsVerityHashValue;
+use composefs::fsverity::{Algorithm, FsVerityHashValue};
 use composefs_boot::BootOps as _;
 use tempfile::TempDir;
 
@@ -29,9 +30,11 @@ pub(crate) fn new_temp_composefs_repo() -> Result<(TempDir, Arc<ComposefsReposit
 
     td_dir.create_dir("repo")?;
     let repo_dir = td_dir.open_dir("repo")?;
-    let mut repo = ComposefsRepository::open_path(&repo_dir, ".").context("Init cfs repo")?;
+    let (mut repo, _created) =
+        ComposefsRepository::init_path(&repo_dir, ".", Algorithm::SHA512, false)
+            .context("Init cfs repo")?;
     // We don't need to hard require verity on the *host* system, we're just computing a checksum here
-    repo.set_insecure(true);
+    repo.set_insecure();
     Ok((td_guard, Arc::new(repo)))
 }
 
@@ -53,7 +56,7 @@ pub(crate) fn new_temp_composefs_repo() -> Result<(TempDir, Arc<ComposefsReposit
 /// * The filesystem cannot be read
 /// * The transform or digest computation fails
 #[fn_error_context::context("Computing composefs digest")]
-pub(crate) fn compute_composefs_digest(
+pub(crate) async fn compute_composefs_digest(
     path: &Utf8Path,
     write_dumpfile_to: Option<&Utf8Path>,
 ) -> Result<String> {
@@ -64,9 +67,19 @@ pub(crate) fn compute_composefs_digest(
     let (_td_guard, repo) = new_temp_composefs_repo()?;
 
     // Read filesystem from path, transform for boot, compute digest
-    let mut fs =
-        composefs::fs::read_container_root(rustix::fs::CWD, path.as_std_path(), Some(&repo))
-            .context("Reading container root")?;
+    let dirfd: OwnedFd = rustix::fs::open(
+        path.as_std_path(),
+        rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::DIRECTORY | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::empty(),
+    )
+    .with_context(|| format!("Opening {path}"))?;
+    let mut fs = composefs::fs::read_container_root(
+        dirfd,
+        std::path::PathBuf::from("."),
+        Some(repo.clone()),
+    )
+    .await
+    .context("Reading container root")?;
     fs.transform_for_boot(&repo).context("Preparing for boot")?;
     let id = fs.compute_image_id();
     let digest = id.to_hex();
@@ -114,15 +127,15 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn test_compute_composefs_digest() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_compute_composefs_digest() {
         // Create temp directory with test filesystem structure
         let td = tempfile::tempdir().unwrap();
         create_test_filesystem(td.path()).unwrap();
 
         // Compute the digest
         let path = Utf8Path::from_path(td.path()).unwrap();
-        let digest = compute_composefs_digest(path, None).unwrap();
+        let digest = compute_composefs_digest(path, None).await.unwrap();
 
         // Verify it's a valid hex string of expected length (SHA-512 = 128 hex chars)
         assert_eq!(
@@ -137,16 +150,16 @@ mod tests {
         );
 
         // Verify consistency - computing twice on the same filesystem produces the same result
-        let digest2 = compute_composefs_digest(path, None).unwrap();
+        let digest2 = compute_composefs_digest(path, None).await.unwrap();
         assert_eq!(
             digest, digest2,
             "Digest should be consistent across multiple computations"
         );
     }
 
-    #[test]
-    fn test_compute_composefs_digest_rejects_root() {
-        let result = compute_composefs_digest(Utf8Path::new("/"), None);
+    #[tokio::test]
+    async fn test_compute_composefs_digest_rejects_root() {
+        let result = compute_composefs_digest(Utf8Path::new("/"), None).await;
         assert!(result.is_err());
         let err = result.unwrap_err();
         let found = err.chain().any(|e| {

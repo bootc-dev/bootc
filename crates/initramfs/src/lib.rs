@@ -299,8 +299,23 @@ pub fn mount_composefs_image(
     name: &str,
     allow_missing_fsverity: bool,
 ) -> Result<OwnedFd> {
-    let mut repo = Repository::<Sha512HashValue>::open_path(sysroot, "composefs")?;
-    repo.set_insecure(allow_missing_fsverity);
+    // TODO: Once we're confident no deployments lack meta.json (i.e. all
+    // users have gone through at least one upgrade cycle), switch back to
+    // open_path which is a stricter check.
+    //
+    // Use init_path instead of open_path to handle upgrades from older
+    // composefs-rs versions that didn't create meta.json.  init_path is
+    // idempotent: it creates meta.json if missing, and succeeds if it
+    // already exists with the same algorithm.
+    let (mut repo, _created) = Repository::<Sha512HashValue>::init_path(
+        sysroot,
+        "composefs",
+        composefs::fsverity::Algorithm::SHA512,
+        !allow_missing_fsverity,
+    )?;
+    if allow_missing_fsverity {
+        repo.set_insecure();
+    }
     let rootfs = repo
         .mount(name)
         .context("Failed to mount composefs image")?;

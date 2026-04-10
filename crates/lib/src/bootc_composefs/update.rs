@@ -56,8 +56,8 @@ pub(crate) async fn is_image_pulled(
     repo: &ComposefsRepository,
     imgref: &ImageReference,
 ) -> Result<(Option<Sha512HashValue>, ImgConfigManifest)> {
-    let imgref_repr = get_imgref(&imgref.transport, &imgref.image);
-    let img_config_manifest = get_container_manifest_and_config(&imgref_repr).await?;
+    let imgref_repr = get_imgref(&imgref.transport, &imgref.image)?;
+    let img_config_manifest = get_container_manifest_and_config(&imgref_repr.to_string()).await?;
 
     let img_digest = img_config_manifest.manifest.config().digest().digest();
 
@@ -138,7 +138,10 @@ pub(crate) fn validate_update(
 ) -> Result<UpdateAction> {
     let repo = &*booted_cfs.repo;
 
-    let mut fs = create_filesystem(repo, img_digest, Some(config_verity))?;
+    let oci_digest: composefs_oci::OciDigest = img_digest
+        .parse()
+        .with_context(|| format!("Parsing config digest {img_digest}"))?;
+    let mut fs = create_filesystem(repo, &oci_digest, Some(config_verity))?;
     fs.transform_for_boot(&repo)?;
 
     let image_id = fs.compute_image_id();
@@ -250,19 +253,16 @@ pub(crate) async fn do_upgrade(
     booted_cfs: &BootedComposefs,
     host: &Host,
     imgref: &ImageReference,
-    img_manifest_config: &ImgConfigManifest,
     opts: &DoUpgradeOpts,
 ) -> Result<()> {
     start_finalize_stated_svc()?;
 
-    // Pre-flight disk space check before pulling any data.
-    crate::deploy::check_disk_space_composefs(
-        &booted_cfs.repo,
-        &img_manifest_config.manifest,
-        imgref,
-    )?;
-
-    let (repo, entries, id, fs) = pull_composefs_repo(
+    let crate::bootc_composefs::repo::PullRepoResult {
+        repo,
+        entries,
+        id,
+        manifest_digest,
+    } = pull_composefs_repo(
         &imgref.transport,
         &imgref.image,
         booted_cfs.cmdline.allow_missing_fsverity,
@@ -283,7 +283,7 @@ pub(crate) async fn do_upgrade(
 
     let boot_digest = match boot_type {
         BootType::Bls => setup_composefs_bls_boot(
-            BootSetupType::Upgrade((storage, booted_cfs, &fs, &host)),
+            BootSetupType::Upgrade((storage, booted_cfs, &host)),
             repo,
             &id,
             entry,
@@ -291,7 +291,7 @@ pub(crate) async fn do_upgrade(
         )?,
 
         BootType::Uki => setup_composefs_uki_boot(
-            BootSetupType::Upgrade((storage, booted_cfs, &fs, &host)),
+            BootSetupType::Upgrade((storage, booted_cfs, &host)),
             repo,
             &id,
             entries,
@@ -308,7 +308,7 @@ pub(crate) async fn do_upgrade(
         }),
         boot_type,
         boot_digest,
-        img_manifest_config,
+        &manifest_digest,
         booted_cfs.cmdline.allow_missing_fsverity,
     )
     .await?;
@@ -409,7 +409,7 @@ pub(crate) async fn upgrade_composefs(
     let repo = &*composefs.repo;
 
     let (img_pulled, mut img_config) = is_image_pulled(&repo, booted_imgref).await?;
-    let booted_img_digest = img_config.manifest.config().digest().digest().to_owned();
+    let booted_img_digest = img_config.manifest.config().digest().to_string();
 
     // Check if we already have this update staged
     // Or if we have another staged deployment with a different image
@@ -441,7 +441,7 @@ pub(crate) async fn upgrade_composefs(
                 storage,
                 composefs,
                 &host,
-                img_config.manifest.config().digest().digest(),
+                img_config.manifest.config().digest().as_ref(),
                 &cfg_verity,
                 false,
             )?;
@@ -453,15 +453,8 @@ pub(crate) async fn upgrade_composefs(
                 }
 
                 UpdateAction::Proceed => {
-                    return do_upgrade(
-                        storage,
-                        composefs,
-                        &host,
-                        booted_imgref,
-                        &img_config,
-                        &do_upgrade_opts,
-                    )
-                    .await;
+                    return do_upgrade(storage, composefs, &host, booted_imgref, &do_upgrade_opts)
+                        .await;
                 }
 
                 UpdateAction::UpdateOrigin => {
@@ -489,15 +482,8 @@ pub(crate) async fn upgrade_composefs(
             }
 
             UpdateAction::Proceed => {
-                return do_upgrade(
-                    storage,
-                    composefs,
-                    &host,
-                    booted_imgref,
-                    &img_config,
-                    &do_upgrade_opts,
-                )
-                .await;
+                return do_upgrade(storage, composefs, &host, booted_imgref, &do_upgrade_opts)
+                    .await;
             }
 
             UpdateAction::UpdateOrigin => {
@@ -507,22 +493,13 @@ pub(crate) async fn upgrade_composefs(
     }
 
     if opts.check {
-        let current_manifest =
-            get_imginfo(storage, &*composefs.cmdline.digest, Some(booted_imgref)).await?;
+        let current_manifest = get_imginfo(storage, &*composefs.cmdline.digest)?;
         let diff = ManifestDiff::new(&current_manifest.manifest, &img_config.manifest);
         diff.print();
         return Ok(());
     }
 
-    do_upgrade(
-        storage,
-        composefs,
-        &host,
-        booted_imgref,
-        &img_config,
-        &do_upgrade_opts,
-    )
-    .await?;
+    do_upgrade(storage, composefs, &host, booted_imgref, &do_upgrade_opts).await?;
 
     Ok(())
 }

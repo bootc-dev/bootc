@@ -108,6 +108,7 @@ pub(crate) fn generator(root: &Dir, unit_dir: &Dir) -> Result<()> {
         tracing::trace!("Root is writable");
         return Ok(());
     }
+
     let updated = fstab_generator_impl(root, unit_dir)?;
     tracing::trace!("Generated fstab: {updated}");
 

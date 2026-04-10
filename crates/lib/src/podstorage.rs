@@ -3,8 +3,11 @@
 //! The backend for podman and other tools is known as `container-storage:`,
 //! with a canonical instance that lives in `/var/lib/containers`.
 //!
-//! This is a `containers-storage:` instance` which is owned by bootc and
-//! is stored at `/sysroot/ostree/bootc`.
+//! This is a `containers-storage:` instance which is owned by bootc.
+//! On ostree systems it lives at `/sysroot/ostree/bootc/storage`;
+//! on composefs systems the physical location is
+//! `/sysroot/composefs/bootc/storage` with a compatibility symlink
+//! at `ostree/bootc -> ../composefs/bootc`.
 //!
 //! At the current time, this is only used for Logically Bound Images.
 
@@ -37,7 +40,7 @@ const SUBCMD_ARGV_CHUNKING: usize = 100;
 /// to how the untar process is forked in the child.
 pub(crate) const STORAGE_ALIAS_DIR: &str = "/run/bootc/storage";
 /// We pass this via /proc/self/fd to the child process.
-const STORAGE_RUN_FD: i32 = 3;
+pub(crate) const STORAGE_RUN_FD: i32 = 3;
 
 const LABELED: &str = ".bootc_labeled";
 
@@ -57,7 +60,6 @@ pub(crate) struct CStorage {
     sysroot: Dir,
     /// The location of container storage
     storage_root: Dir,
-    #[allow(dead_code)]
     /// Our runtime state
     run: Dir,
     /// The SELinux policy used for labeling the storage.
@@ -80,7 +82,11 @@ pub(crate) enum PullMode {
 
 #[allow(unsafe_code)]
 #[context("Binding storage roots")]
-fn bind_storage_roots(cmd: &mut Command, storage_root: &Dir, run_root: &Dir) -> Result<()> {
+pub(crate) fn bind_storage_roots(
+    cmd: &mut Command,
+    storage_root: &Dir,
+    run_root: &Dir,
+) -> Result<()> {
     // podman requires an absolute path, for two reasons right now:
     // - It writes the file paths into `db.sql`, a sqlite database for unknown reasons
     // - It forks helper binaries, so just giving it /proc/self/fd won't work as
@@ -126,14 +132,12 @@ fn bind_storage_roots(cmd: &mut Command, storage_root: &Dir, run_root: &Dir) -> 
 }
 
 // Initialize a `podman` subprocess with:
-// - storage overridden to point to to storage_root
-// - Authentication (auth.json) using the bootc/ostree owned auth
-fn new_podman_cmd_in(sysroot: &Dir, storage_root: &Dir, run_root: &Dir) -> Result<Command> {
-    let mut cmd = Command::new("podman");
-    bind_storage_roots(&mut cmd, storage_root, run_root)?;
-    let run_root = format!("/proc/self/fd/{STORAGE_RUN_FD}");
-    cmd.args(["--root", STORAGE_ALIAS_DIR, "--runroot", run_root.as_str()]);
-
+/// Set up `REGISTRY_AUTH_FILE` on a command, passing the bootc/ostree
+/// auth file via an anonymous tmpfile fd.
+///
+/// If no bootc-owned auth is configured, an empty `{}` is passed to
+/// prevent podman from falling back to user-owned auth paths.
+pub(crate) fn setup_auth(cmd: &mut Command, sysroot: &Dir) -> Result<()> {
     let tmpd = &cap_std::fs::Dir::open_ambient_dir("/tmp", cap_std::ambient_authority())?;
     let mut tempfile = cap_tempfile::TempFile::new_anonymous(tmpd).map(std::io::BufWriter::new)?;
 
@@ -157,6 +161,17 @@ fn new_podman_cmd_in(sysroot: &Dir, storage_root: &Dir, run_root: &Dir) -> Resul
     cmd.take_fd_n(fd, target_fd);
     cmd.env("REGISTRY_AUTH_FILE", format!("/proc/self/fd/{target_fd}"));
 
+    Ok(())
+}
+
+// - storage overridden to point to to storage_root
+// - Authentication (auth.json) using the bootc/ostree owned auth
+fn new_podman_cmd_in(sysroot: &Dir, storage_root: &Dir, run_root: &Dir) -> Result<Command> {
+    let mut cmd = Command::new("podman");
+    bind_storage_roots(&mut cmd, storage_root, run_root)?;
+    let run_root = format!("/proc/self/fd/{STORAGE_RUN_FD}");
+    cmd.args(["--root", STORAGE_ALIAS_DIR, "--runroot", run_root.as_str()]);
+    setup_auth(&mut cmd, sysroot)?;
     Ok(cmd)
 }
 
@@ -447,6 +462,24 @@ impl CStorage {
         cmd.run().await?;
         temp_runroot.close()?;
         Ok(())
+    }
+
+    /// Pull an image with streaming progress display.
+    ///
+    /// Uses the podman native libpod HTTP API instead of shelling out,
+    /// enabling per-blob download progress. Registry auth is handled
+    /// via `REGISTRY_AUTH_FILE` on the podman service process.
+    ///
+    /// Always pulls (policy=always) so updated digests are fetched
+    /// even if an image with the same tag exists locally.
+    pub(crate) async fn pull_with_progress(&self, image: &str) -> Result<()> {
+        let client = crate::podman_client::PodmanClient::connect(
+            &self.sysroot,
+            &self.storage_root,
+            &self.run,
+        )
+        .await?;
+        client.pull_with_progress(image).await
     }
 
     pub(crate) fn subpath() -> Utf8PathBuf {

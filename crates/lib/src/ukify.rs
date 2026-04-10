@@ -26,7 +26,7 @@ use crate::bootc_composefs::status::ComposefsCmdline;
 /// 5. Appends any additional kargs provided via --karg
 /// 6. Invokes ukify with computed arguments plus any pass-through args
 #[context("Building UKI")]
-pub(crate) fn build_ukify(
+pub(crate) async fn build_ukify(
     rootfs: &Utf8Path,
     extra_kargs: &[String],
     args: &[OsString],
@@ -78,7 +78,7 @@ pub(crate) fn build_ukify(
     }
 
     // Compute the composefs digest
-    let composefs_digest = compute_composefs_digest(rootfs, None)?;
+    let composefs_digest = compute_composefs_digest(rootfs, None).await?;
 
     // Get kernel arguments from kargs.d
     let mut cmdline = crate::bootc_kargs::get_kargs_in_root(&root, std::env::consts::ARCH)?;
@@ -126,12 +126,12 @@ mod tests {
     use super::*;
     use std::fs;
 
-    #[test]
-    fn test_build_ukify_no_kernel() {
+    #[tokio::test]
+    async fn test_build_ukify_no_kernel() {
         let tempdir = tempfile::tempdir().unwrap();
         let path = Utf8Path::from_path(tempdir.path()).unwrap();
 
-        let result = build_ukify(path, &[], &[], false);
+        let result = build_ukify(path, &[], &[], false).await;
         assert!(result.is_err());
         let err = format!("{:#}", result.unwrap_err());
         assert!(
@@ -140,8 +140,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_build_ukify_already_uki() {
+    #[tokio::test]
+    async fn test_build_ukify_already_uki() {
         let tempdir = tempfile::tempdir().unwrap();
         let path = Utf8Path::from_path(tempdir.path()).unwrap();
 
@@ -149,7 +149,7 @@ mod tests {
         fs::create_dir_all(tempdir.path().join("boot/EFI/Linux")).unwrap();
         fs::write(tempdir.path().join("boot/EFI/Linux/test.efi"), b"fake uki").unwrap();
 
-        let result = build_ukify(path, &[], &[], false);
+        let result = build_ukify(path, &[], &[], false).await;
         assert!(result.is_err());
         let err = format!("{:#}", result.unwrap_err());
         assert!(

@@ -86,6 +86,7 @@ mod lsm;
 pub(crate) mod metadata;
 mod parsers;
 mod podman;
+pub(crate) mod podman_client;
 mod podstorage;
 mod progress_jsonl;
 mod reboot;
@@ -95,6 +96,9 @@ mod store;
 mod task;
 mod ukify;
 mod utils;
+
+#[cfg(test)]
+pub(crate) mod testutils;
 
 #[cfg(feature = "docgen")]
 mod cli_json;

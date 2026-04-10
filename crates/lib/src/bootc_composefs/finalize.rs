@@ -12,7 +12,7 @@ use bootc_mount::tempmount::TempMount;
 use cap_std_ext::cap_std::{ambient_authority, fs::Dir};
 use cap_std_ext::dirext::CapStdExtDirExt;
 use cfsctl::composefs;
-use composefs::generic_tree::{Directory, Stat};
+use composefs::generic_tree::{FileSystem, Stat};
 use etc_merge::{compute_diff, merge, print_diff, traverse_etc};
 use rustix::fs::{fsync, renameat};
 use rustix::path::Arg;
@@ -41,7 +41,7 @@ pub(crate) async fn get_etc_diff(storage: &Storage, booted_cfs: &BootedComposefs
     let diff = compute_diff(
         &pristine_files,
         &current_files,
-        &Directory::new(Stat::uninitialized()),
+        &FileSystem::new(Stat::uninitialized()),
     )?;
 
     print_diff(&diff, &mut std::io::stdout());

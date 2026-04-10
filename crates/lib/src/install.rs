@@ -190,7 +190,7 @@ use self::baseline::InstallBlockDeviceOpts;
 use crate::bootc_composefs::status::ComposefsCmdline;
 use crate::bootc_composefs::{
     boot::setup_composefs_boot,
-    repo::{get_imgref, initialize_composefs_repository, open_composefs_repo},
+    repo::{get_imgref, initialize_composefs_repository},
     status::get_container_manifest_and_config,
 };
 use crate::boundimage::{BoundImage, ResolvedBoundImage};
@@ -205,8 +205,6 @@ use crate::task::Task;
 use crate::utils::sigpolicy_from_opt;
 use bootc_kernel_cmdline::{INITRD_ARG_PREFIX, ROOTFLAGS, bytes, utf8};
 use bootc_mount::Filesystem;
-use cfsctl::composefs;
-use composefs::fsverity::FsVerityHashValue;
 
 /// The toplevel boot directory
 pub(crate) const BOOT: &str = "boot";
@@ -2005,10 +2003,17 @@ async fn install_to_filesystem_impl(
         // Pre-flight disk space check for native composefs install path.
         {
             let imgref = &state.source.imageref;
-            let imgref_repr = get_imgref(&imgref.transport.to_string(), &imgref.name);
-            let img_manifest_config = get_container_manifest_and_config(&imgref_repr).await?;
+            let imgref_repr = get_imgref(&imgref.transport.to_string(), &imgref.name)?;
+            let img_manifest_config =
+                get_container_manifest_and_config(&imgref_repr.to_string()).await?;
             crate::store::ensure_composefs_dir(&rootfs.physical_root)?;
-            let cfs_repo = open_composefs_repo(&rootfs.physical_root)?;
+            // Use init_path since the repo may not exist yet during install
+            let (cfs_repo, _created) = crate::store::ComposefsRepository::init_path(
+                &rootfs.physical_root,
+                crate::store::COMPOSEFS,
+                cfsctl::composefs::fsverity::Algorithm::SHA512,
+                false,
+            )?;
             crate::deploy::check_disk_space_composefs(
                 &cfs_repo,
                 &img_manifest_config.manifest,
@@ -2025,16 +2030,11 @@ async fn install_to_filesystem_impl(
             state.composefs_options.allow_missing_verity,
         )
         .await?;
-        tracing::info!(
-            "id: {}, verity: {}",
-            pull_result.config_digest,
-            pull_result.config_verity.to_hex()
-        );
 
         setup_composefs_boot(
             rootfs,
             state,
-            &pull_result.config_digest,
+            &pull_result,
             state.composefs_options.allow_missing_verity,
         )
         .await?;

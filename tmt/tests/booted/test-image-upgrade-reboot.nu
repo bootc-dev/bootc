@@ -21,6 +21,7 @@ use tap.nu
 # This code runs on *each* boot.
 # Here we just capture information.
 bootc status
+bootc internals fsck
 journalctl --list-boots
 
 let st = bootc status --json | from json
