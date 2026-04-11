@@ -382,10 +382,39 @@ pub fn list_dev(dev: &Utf8Path) -> Result<Device> {
         .ok_or_else(|| anyhow!("no device output from lsblk for {dev}"))
 }
 
+#[context("Finding block device for ZFS dataset {dataset}")]
+fn list_dev_for_zfs_dataset(dataset: &str) -> Result<Device> {
+    let dataset = dataset.strip_prefix("ZFS=").unwrap_or(dataset);
+    let pool = dataset
+        .split('/')
+        .next()
+        .ok_or_else(|| anyhow!("Invalid ZFS dataset: {dataset}"))?;
+
+    let output = Command::new("zpool")
+        .args(["list", "-H", "-v", "-P", pool])
+        .run_get_string()
+        .with_context(|| format!("Querying ZFS pool {pool}"))?;
+
+    for line in output.lines() {
+        if line.starts_with('\t') || line.starts_with(' ') {
+            let dev_path = line.trim_start().split('\t').next().unwrap_or("").trim();
+            if dev_path.starts_with('/') {
+                return list_dev(Utf8Path::new(dev_path));
+            }
+        }
+    }
+
+    anyhow::bail!("Could not find a block device backing ZFS pool {pool}")
+}
+
 /// List the device containing the filesystem mounted at the given directory.
 pub fn list_dev_by_dir(dir: &Dir) -> Result<Device> {
     let fsinfo = bootc_mount::inspect_filesystem_of_dir(dir)?;
-    list_dev(&Utf8PathBuf::from(&fsinfo.source))
+    let source = &fsinfo.source;
+    if fsinfo.fstype == "zfs" || (!source.starts_with('/') && source.contains('/')) {
+        return list_dev_for_zfs_dataset(source);
+    }
+    list_dev(&Utf8PathBuf::from(source))
 }
 
 pub struct LoopbackDevice {
