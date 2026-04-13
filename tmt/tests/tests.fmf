@@ -97,6 +97,11 @@ check:
   - e2fsprogs
   test: bash booted/test-install-to-filesystem-var-mount.sh
 
+/test-32-multi-device-esp:
+  summary: Test multi-device ESP detection for to-existing-root
+  duration: 60m
+  test: nu booted/test-multi-device-esp.nu
+
 /test-33-bib-build:
   summary: Test building a qcow2 disk image with bootc-image-builder
   duration: 45m
