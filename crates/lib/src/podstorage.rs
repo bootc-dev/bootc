@@ -19,7 +19,7 @@ use bootc_utils::{AsyncCommandRunExt, CommandRunExt, ExitStatusExt};
 use camino::{Utf8Path, Utf8PathBuf};
 use cap_std_ext::cap_std::fs::Dir;
 use cap_std_ext::cap_tempfile::TempDir;
-use cap_std_ext::cmdext::CapStdExtCommandExt;
+use cap_std_ext::cmdext::{CapStdExtCommandExt, CmdFds};
 use cap_std_ext::dirext::CapStdExtDirExt;
 use cap_std_ext::{cap_std, cap_tempfile};
 use fn_error_context::context;
@@ -80,7 +80,12 @@ pub(crate) enum PullMode {
 
 #[allow(unsafe_code)]
 #[context("Binding storage roots")]
-fn bind_storage_roots(cmd: &mut Command, storage_root: &Dir, run_root: &Dir) -> Result<()> {
+pub(crate) fn bind_storage_roots(
+    cmd: &mut Command,
+    fds: &mut CmdFds,
+    storage_root: &Dir,
+    run_root: &Dir,
+) -> Result<()> {
     // podman requires an absolute path, for two reasons right now:
     // - It writes the file paths into `db.sql`, a sqlite database for unknown reasons
     // - It forks helper binaries, so just giving it /proc/self/fd won't work as
@@ -121,19 +126,16 @@ fn bind_storage_roots(cmd: &mut Command, storage_root: &Dir, run_root: &Dir) -> 
             Ok(())
         })
     };
-    cmd.take_fd_n(run_root, STORAGE_RUN_FD);
+    fds.take_fd_n(run_root, STORAGE_RUN_FD);
     Ok(())
 }
 
-// Initialize a `podman` subprocess with:
-// - storage overridden to point to to storage_root
-// - Authentication (auth.json) using the bootc/ostree owned auth
-fn new_podman_cmd_in(sysroot: &Dir, storage_root: &Dir, run_root: &Dir) -> Result<Command> {
-    let mut cmd = Command::new("podman");
-    bind_storage_roots(&mut cmd, storage_root, run_root)?;
-    let run_root = format!("/proc/self/fd/{STORAGE_RUN_FD}");
-    cmd.args(["--root", STORAGE_ALIAS_DIR, "--runroot", run_root.as_str()]);
-
+/// Set up `REGISTRY_AUTH_FILE` on a command, passing the bootc/ostree
+/// auth file via an anonymous tmpfile fd.
+///
+/// If no bootc-owned auth is configured, an empty `{}` is passed to
+/// prevent podman from falling back to user-owned auth paths.
+pub(crate) fn setup_auth(cmd: &mut Command, fds: &mut CmdFds, sysroot: &Dir) -> Result<()> {
     let tmpd = &cap_std::fs::Dir::open_ambient_dir("/tmp", cap_std::ambient_authority())?;
     let mut tempfile = cap_tempfile::TempFile::new_anonymous(tmpd).map(std::io::BufWriter::new)?;
 
@@ -154,9 +156,23 @@ fn new_podman_cmd_in(sysroot: &Dir, storage_root: &Dir, run_root: &Dir) -> Resul
         .into_std();
     let fd: Arc<OwnedFd> = std::sync::Arc::new(tempfile.into());
     let target_fd = fd.as_fd().as_raw_fd();
-    cmd.take_fd_n(fd, target_fd);
+    fds.take_fd_n(fd, target_fd);
     cmd.env("REGISTRY_AUTH_FILE", format!("/proc/self/fd/{target_fd}"));
 
+    Ok(())
+}
+
+// Initialize a `podman` subprocess with:
+// - storage overridden to point to to storage_root
+// - Authentication (auth.json) using the bootc/ostree owned auth
+fn new_podman_cmd_in(sysroot: &Dir, storage_root: &Dir, run_root: &Dir) -> Result<Command> {
+    let mut cmd = Command::new("podman");
+    let mut fds = CmdFds::new();
+    bind_storage_roots(&mut cmd, &mut fds, storage_root, run_root)?;
+    let run_root = format!("/proc/self/fd/{STORAGE_RUN_FD}");
+    cmd.args(["--root", STORAGE_ALIAS_DIR, "--runroot", run_root.as_str()]);
+    setup_auth(&mut cmd, &mut fds, sysroot)?;
+    cmd.take_fds(fds);
     Ok(cmd)
 }
 
@@ -435,7 +451,9 @@ impl CStorage {
         cmd.stdout(Stdio::null());
         // An ephemeral place for the transient state;
         let temp_runroot = TempDir::new(cap_std::ambient_authority())?;
-        bind_storage_roots(&mut cmd, &self.storage_root, &temp_runroot)?;
+        let mut fds = CmdFds::new();
+        bind_storage_roots(&mut cmd, &mut fds, &self.storage_root, &temp_runroot)?;
+        cmd.take_fds(fds);
 
         // The destination (target stateroot) + container storage dest
         let storage_dest = &format!(

@@ -14,7 +14,7 @@ use camino::{Utf8Component, Utf8Path, Utf8PathBuf};
 
 use cap_std::io_lifetimes;
 use cap_std_ext::cap_std::fs::Dir;
-use cap_std_ext::cmdext::CapStdExtCommandExt;
+use cap_std_ext::cmdext::{CapStdExtCommandExt, CmdFds};
 use cap_std_ext::{cap_std, cap_tempfile};
 use containers_image_proxy::oci_spec::image as oci_image;
 use fn_error_context::context;
@@ -423,7 +423,9 @@ pub async fn write_tar(
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .args(["commit"]);
-        c.take_fd_n(repofd.clone(), 3);
+        let mut fds = CmdFds::new();
+        fds.take_fd_n(repofd.clone(), 3);
+        c.take_fds(fds);
         c.arg("--repo=/proc/self/fd/3");
         if let Some(sepolicy) = sepolicy.as_ref() {
             c.arg("--selinux-policy");

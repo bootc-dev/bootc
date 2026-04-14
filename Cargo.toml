@@ -35,7 +35,7 @@ anstream = "1.0"
 anyhow = "1.0.82"
 camino = "1.1.6"
 canon-json = "0.2.1"
-cap-std-ext = "5.1.1"
+cap-std-ext = "5.1.2"
 cfg-if = "1.0"
 chrono = { version = "0.4.38", default-features = false }
 clap = "4.5.4"

@@ -2,7 +2,7 @@
 
 use super::ImageReference;
 use anyhow::{Context, Result};
-use cap_std_ext::cmdext::CapStdExtCommandExt;
+use cap_std_ext::cmdext::{CapStdExtCommandExt, CmdFds};
 use containers_image_proxy::oci_spec::image as oci_image;
 use fn_error_context::context;
 use io_lifetimes::OwnedFd;
@@ -80,7 +80,9 @@ pub async fn copy(
     cmd.arg("--digestfile");
     cmd.arg(digestfile.path());
     if let Some((add_fd, n)) = add_fd {
-        cmd.take_fd_n(add_fd, n);
+        let mut fds = CmdFds::new();
+        fds.take_fd_n(add_fd, n);
+        cmd.take_fds(fds);
     }
     if let Some(authfile) = authfile {
         cmd.arg("--authfile");

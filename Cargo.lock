@@ -173,7 +173,7 @@ version = "0.1.0"
 source = "git+https://github.com/bootc-dev/bcvk?rev=f4dd05a74ccb54084093c9167317a14356ca53e4#f4dd05a74ccb54084093c9167317a14356ca53e4"
 dependencies = [
  "camino",
- "cap-std-ext 5.1.1",
+ "cap-std-ext 5.1.2",
  "color-eyre",
  "data-encoding",
  "libc",
@@ -224,7 +224,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bootc-kernel-cmdline",
- "cap-std-ext 5.1.1",
+ "cap-std-ext 5.1.2",
  "cfsctl",
  "clap",
  "fn-error-context",
@@ -242,7 +242,7 @@ dependencies = [
  "bootc-internal-mount",
  "bootc-internal-utils",
  "camino",
- "cap-std-ext 5.1.1",
+ "cap-std-ext 5.1.2",
  "fn-error-context",
  "indoc",
  "libc",
@@ -261,7 +261,7 @@ dependencies = [
  "anyhow",
  "bootc-internal-utils",
  "camino",
- "cap-std-ext 5.1.1",
+ "cap-std-ext 5.1.2",
  "fn-error-context",
  "indoc",
  "libc",
@@ -277,7 +277,7 @@ version = "1.15.1"
 dependencies = [
  "anstream 1.0.0",
  "anyhow",
- "cap-std-ext 5.1.1",
+ "cap-std-ext 5.1.2",
  "chrono",
  "owo-colors",
  "rustix",
@@ -319,7 +319,7 @@ dependencies = [
  "bootc-tmpfiles",
  "camino",
  "canon-json",
- "cap-std-ext 5.1.1",
+ "cap-std-ext 5.1.2",
  "cfg-if",
  "cfsctl",
  "chrono",
@@ -370,7 +370,7 @@ dependencies = [
  "anyhow",
  "bootc-internal-utils",
  "camino",
- "cap-std-ext 5.1.1",
+ "cap-std-ext 5.1.2",
  "fn-error-context",
  "hex",
  "indoc",
@@ -388,7 +388,7 @@ dependencies = [
  "anyhow",
  "bootc-internal-utils",
  "camino",
- "cap-std-ext 5.1.1",
+ "cap-std-ext 5.1.2",
  "fn-error-context",
  "indoc",
  "rustix",
@@ -523,9 +523,9 @@ dependencies = [
 
 [[package]]
 name = "cap-std-ext"
-version = "5.1.1"
+version = "5.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "56f9d7cf114dea582f663f03f4c563d0fc5ca2c8fa4c496eb538d8f01981ea51"
+checksum = "6c6c5ac70c4465b47c3a322330f87c2df31e42ac527497d94dc1f1d1cb8989f9"
 dependencies = [
  "cap-primitives 4.0.2",
  "cap-tempfile 4.0.2",
@@ -1216,7 +1216,7 @@ version = "0.1.0"
 dependencies = [
  "anstream 1.0.0",
  "anyhow",
- "cap-std-ext 5.1.1",
+ "cap-std-ext 5.1.2",
  "cfsctl",
  "fn-error-context",
  "hex",
@@ -2079,7 +2079,7 @@ checksum = "784ff94e3f5a9b89659b8a4442104df6b5e7974c9b355c4f4ae6e9794af1ad2b"
 dependencies = [
  "camino",
  "canon-json",
- "cap-std-ext 5.1.1",
+ "cap-std-ext 5.1.2",
  "chrono",
  "flate2",
  "hex",
@@ -2179,7 +2179,7 @@ dependencies = [
  "bootc-internal-utils",
  "camino",
  "canon-json",
- "cap-std-ext 5.1.1",
+ "cap-std-ext 5.1.2",
  "cfsctl",
  "chrono",
  "clap",
@@ -3004,7 +3004,7 @@ dependencies = [
  "bcvk-qemu",
  "bootc-kernel-cmdline",
  "camino",
- "cap-std-ext 5.1.1",
+ "cap-std-ext 5.1.2",
  "clap",
  "data-encoding",
  "fn-error-context",
