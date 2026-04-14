@@ -153,3 +153,8 @@ check:
   summary: Test bootc install --karg-delete
   duration: 30m
   test: nu booted/test-install-karg-delete.nu
+
+/test-42-loader-entries-source:
+  summary: Test bootc loader-entries set-options-for-source
+  duration: 30m
+  test: nu booted/test-loader-entries-source.nu

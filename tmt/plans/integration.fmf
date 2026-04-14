@@ -246,4 +246,12 @@ execute:
     test:
       - /tmt/tests/tests/test-40-install-karg-delete
   extra-fixme_skip_if_composefs: true
+
+/plan-42-loader-entries-source:
+  summary: Test bootc loader-entries set-options-for-source
+  discover:
+    how: fmf
+    test:
+      - /tmt/tests/tests/test-42-loader-entries-source
+  extra-fixme_skip_if_composefs: true
 # END GENERATED PLANS

@@ -33,6 +33,7 @@ pulled and `bootc upgrade`.
 | **bootc usr-overlay** | Add a transient overlayfs on `/usr` |
 | **bootc install** | Install the running container to a target |
 | **bootc container** | Operations which can be executed as part of a container build |
+| **bootc loader-entries** | Operations on Boot Loader Specification (BLS) entries |
 | **bootc composefs-finalize-staged** |  |
 
 <!-- END GENERATED SUBCOMMANDS -->
