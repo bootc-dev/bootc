@@ -411,7 +411,7 @@ fn list_dev_for_zfs_dataset(dataset: &str) -> Result<Device> {
 pub fn list_dev_by_dir(dir: &Dir) -> Result<Device> {
     let fsinfo = bootc_mount::inspect_filesystem_of_dir(dir)?;
     let source = &fsinfo.source;
-    if fsinfo.fstype == "zfs" || (!source.starts_with('/') && source.contains('/')) {
+    if fsinfo.fstype == "zfs" || source.starts_with("ZFS=") {
         return list_dev_for_zfs_dataset(source);
     }
     list_dev(&Utf8PathBuf::from(source))
