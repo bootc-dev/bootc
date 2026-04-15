@@ -438,6 +438,10 @@ pub(crate) enum ContainerOpts {
         #[clap(long)]
         allow_missing_verity: bool,
 
+        /// Write a dumpfile to this path
+        #[clap(long)]
+        write_dumpfile_to: Option<Utf8PathBuf>,
+
         /// Additional arguments to pass to ukify (after `--`).
         #[clap(last = true)]
         args: Vec<OsString>,
@@ -1877,8 +1881,15 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
                 rootfs,
                 kargs,
                 allow_missing_verity,
+                write_dumpfile_to,
                 args,
-            } => crate::ukify::build_ukify(&rootfs, &kargs, &args, allow_missing_verity),
+            } => crate::ukify::build_ukify(
+                &rootfs,
+                &kargs,
+                &args,
+                allow_missing_verity,
+                write_dumpfile_to.as_deref(),
+            ),
             ContainerOpts::Export {
                 format,
                 target,
