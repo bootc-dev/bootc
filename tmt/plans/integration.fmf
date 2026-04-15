@@ -196,13 +196,6 @@ execute:
     test:
       - /tmt/tests/tests/test-35-composefs-gc
 
-/plan-35-composefs-gc-uki:
-  summary: Test composefs garbage collection for UKI
-  discover:
-    how: fmf
-    test:
-      - /tmt/tests/tests/test-35-composefs-gc-uki
-
 /plan-35-upgrade-preflight-disk-check:
   summary: Verify pre-flight disk space check rejects images with inflated layer sizes
   discover:
@@ -253,6 +246,13 @@ execute:
     test:
       - /tmt/tests/tests/test-40-install-karg-delete
   extra-fixme_skip_if_composefs: true
+
+/plan-41-composefs-gc-uki:
+  summary: Test composefs garbage collection for UKI
+  discover:
+    how: fmf
+    test:
+      - /tmt/tests/tests/test-41-composefs-gc-uki
 
 /plan-42-loader-entries-source:
   summary: Test bootc loader-entries set-options-for-source

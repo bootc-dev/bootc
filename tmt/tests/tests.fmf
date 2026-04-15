@@ -154,6 +154,11 @@ check:
   duration: 30m
   test: nu booted/test-install-karg-delete.nu
 
+/test-41-composefs-gc-uki:
+  summary: Test composefs garbage collection for UKI
+  duration: 30m
+  test: nu booted/test-composefs-gc-uki.nu
+
 /test-42-loader-entries-source:
   summary: Test bootc loader-entries set-options-for-source
   duration: 30m

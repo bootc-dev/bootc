@@ -6,13 +6,17 @@
 use std assert
 use tap.nu
 
+if not (tap is_composefs) {
+    exit 0
+}
+
 # bootc status
 let st = bootc status --json | from json
 let booted = $st.status.booted.image
 
 let dir_prefix = "bootc_composefs-"
 
-if not (tap is_composefs) or ($st.status.booted.composefs.bootType | str downcase) == "uki" {
+if ($st.status.booted.composefs.bootType | str downcase) == "uki" {
     exit 0
 }
 
@@ -52,11 +56,9 @@ def second_boot [] {
     assert equal $booted.image.image "localhost/bootc-derived"
 
     let path = cat /var/large-file-marker-objpath
-
     assert ($path | path exists)
 
     # Create another image with a different initrd so we can test kernel + initrd cleanup
-
     echo "
         FROM localhost/bootc
 
@@ -89,12 +91,8 @@ def second_boot [] {
     tmt-reboot
 }
 
-# The large file should've been GC'd as we switched to an image derived from the original one
 def third_boot [] {
     assert equal $booted.image.image "localhost/bootc-derived-initrd"
-
-    let path = cat /var/large-file-marker-objpath
-    assert (not ($"/sysroot/composefs/objects/($path)" | path exists))
 
     # Also assert we have two different kernel + initrd pairs
     let booted_verity = (bootc status --json | from json).status.booted.composefs.verity
@@ -157,6 +155,10 @@ def fifth_boot [] {
         mkdir /var/tmp/efi
         mount /dev/disk/by-partlabel/EFI-SYSTEM /var/tmp/efi
     }
+
+    # The large file should be GC'd in the previous switch
+    let path = cat /var/large-file-marker-objpath
+    assert (not ($path | path exists))
 
     assert equal $booted.image.image "localhost/bootc-final"
     assert (not ((cat /var/to-be-deleted-kernel | path exists)))
