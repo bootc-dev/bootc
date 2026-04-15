@@ -74,3 +74,41 @@ rm -vrf /usr/lib/bootc/bound-images.d
 ($cmd)
 "
 }
+
+export def make_uki_containerfile [containerfile: string] {
+    let is_cfs = (is_composefs)
+
+    if not $is_cfs {
+        return $containerfile
+    }
+
+    let st = bootc status --json | from json
+    let is_uki = ($st.status.booted.composefs.bootType | str downcase) == "uki"
+
+    if not $is_uki {
+        return $containerfile
+    }
+
+    let allow_missing_verity = $st.status.booted.composefs.missingVerityAllowed
+    # TODO: Handle sealed UKI
+    let seal_state = "unsealed"
+
+    let uki_stuff = $"
+        FROM base as base-final
+        RUN rm -rf /boot/EFI/Linux/*.efi
+
+        FROM base as sealed-uki
+        RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \\
+            --mount=type=bind,from=base-final,src=/,target=/run/target \\
+            /usr/bin/seal-uki /run/target /out /run/secrets ($allow_missing_verity) ($seal_state)
+
+        FROM base-final
+
+        # Copy the sealed UKI and finalize the image remove raw kernel, create symlinks
+        RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \\
+            --mount=type=bind,from=sealed-uki,src=/,target=/run/sealed-uki \\
+            /usr/bin/finalize-uki /run/sealed-uki/out
+    "
+
+    return $"($containerfile)\n($uki_stuff)"
+}

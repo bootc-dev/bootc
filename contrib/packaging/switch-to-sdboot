@@ -15,7 +15,7 @@ if rpm -q bootupd &>/dev/null; then
 fi
 
 # First install the unsigned systemd-boot RPM to get the package in place
-rpm -Uvh "${src}"/*.rpm
+rpm -Uvh --replacepkgs "${src}"/*.rpm
 
 # Now find where it installed the binary and override with our signed version
 sdboot=$(ls /usr/lib/systemd/boot/efi/systemd-boot*.efi)

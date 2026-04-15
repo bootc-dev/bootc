@@ -26,9 +26,35 @@ bootc image copy-to-storage
 
 # Build a derived image that removes LBIs
 cat > /tmp/Containerfile.drop-lbis <<'EOF'
-FROM localhost/bootc
+FROM localhost/bootc as base
 RUN rm -rf /usr/lib/bootc/bound-images.d/*
 EOF
+
+is_composefs=$(bootc status --json | jq '.status.booted.composefs')
+boot_type=$(bootc status --json | jq -r '.status.booted.composefs.bootType' | tr '[:upper:]' '[:lower:]')
+
+if [[ $is_composefs != "null" && $boot_type == "uki" ]]; then
+    allow_missing_verity=$(bootc status --json | jq -r '.status.booted.composefs.missingVerityAllowed')
+    seal_state="unsealed"
+
+    cat >> /tmp/Containerfile.drop-lbis <<-EOF
+    FROM base as base-final
+    RUN rm -rf /boot/EFI/Linux/*.efi
+
+    FROM base as sealed-uki
+    RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
+        --mount=type=bind,from=base-final,src=/,target=/run/target \
+        /usr/bin/seal-uki /run/target /out /run/secrets $allow_missing_verity $seal_state
+
+    FROM base-final
+
+    # Copy the sealed UKI and finalize the image remove raw kernel, create symlinks
+    RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
+        --mount=type=bind,from=sealed-uki,src=/,target=/run/sealed-uki \
+        /usr/bin/finalize-uki /run/sealed-uki/out
+EOF
+fi
+
 podman build -t "$TARGET_IMAGE" -f /tmp/Containerfile.drop-lbis
 
 # Create a 15GB sparse disk image in /var/tmp (not /tmp which may be tmpfs)
@@ -116,13 +142,16 @@ mount | grep /var/mnt/target || true
 df -h /var/mnt/target /var/mnt/target/boot /var/mnt/target/boot/efi /var/mnt/target/var
 
 COMPOSEFS_BACKEND=()
-
-is_composefs=$(bootc status --json | jq '.status.booted.composefs')
+KARGS=("--karg=root=UUID=$ROOT_UUID")
 
 if [[ $is_composefs != "null" ]]; then
     COMPOSEFS_BACKEND+=("--composefs-backend")
     tune2fs -O verity /dev/BL/var02
     tune2fs -O verity /dev/BL/root02
+
+    if [[ $boot_type == "uki" ]]; then
+        KARGS=()
+    fi
 fi
 
 # Run bootc install to-filesystem from within the container image under test
@@ -136,7 +165,7 @@ podman run \
     bootc install to-filesystem \
         --disable-selinux \
         "${COMPOSEFS_BACKEND[@]}" \
-        --karg=root=UUID="$ROOT_UUID" \
+        "${KARGS[@]}" \
         --root-mount-spec=UUID="$ROOT_UUID" \
         --boot-mount-spec=UUID="$BOOT_UUID" \
         /target

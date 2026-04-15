@@ -26,9 +26,10 @@ def initial_build [] {
     bootc image copy-to-storage
 
     # Build v1 image
-    "FROM localhost/bootc
+    let dockerfile = $"FROM localhost/bootc as base
 RUN echo v1 content > /usr/share/bootc-tag-test.txt
-" | save Dockerfile
+"
+    (tap make_uki_containerfile $dockerfile) | save Dockerfile
     podman build -t localhost/bootc-tag-test:v1 .
 
     # Verify v1 content
@@ -39,9 +40,10 @@ RUN echo v1 content > /usr/share/bootc-tag-test.txt
     bootc switch --transport containers-storage localhost/bootc-tag-test:v1
 
     # Build v2 image (different content) - use --force to overwrite Dockerfile
-    "FROM localhost/bootc
+    let dockerfile = $"FROM localhost/bootc as base
 RUN echo v2 content > /usr/share/bootc-tag-test.txt
-" | save --force Dockerfile
+"
+    (tap make_uki_containerfile $dockerfile) | save --force Dockerfile
     podman build -t localhost/bootc-tag-test:v2 .
 
     # Verify v2 content

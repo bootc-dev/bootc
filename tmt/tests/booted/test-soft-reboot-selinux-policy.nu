@@ -88,8 +88,8 @@ gpgkey=($gpgkey)
     # Installing a policy module will change the compiled policy checksum
     # Following Colin's suggestion and the composefs-rs example
     # We create a minimal policy module and install it
-    $"
-FROM localhost/bootc
+    (tap make_uki_containerfile $"
+FROM localhost/bootc as base
 ($repo_copy)
 
 # Install tools needed to build and install SELinux policy modules
@@ -117,7 +117,7 @@ RUN <<EORUN
     rm -rf /var/cache/dnf /var/lib/dnf
     rm -rf /var/lib/sepolgen /var/lib/rhsm /var/cache/ldconfig
 EORUN
-" | save Dockerfile
+") | save Dockerfile
     
     # Build the derived image
     podman build --quiet -t localhost/bootc-derived-policy .

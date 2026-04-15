@@ -42,9 +42,10 @@ def initial_switch [] {
         bootc image copy-to-storage
 
         print "Building derived container"
-        "FROM localhost/bootc
+        let dockerfile = $"FROM localhost/bootc as base
 RUN echo 'This is the rollback target image' > /usr/share/bootc-rollback-marker
-" | save Dockerfile
+"
+        (tap make_uki_containerfile $dockerfile) | save Dockerfile
 
         podman build -t $imgsrc .
         print $"Built derived image: ($imgsrc)"

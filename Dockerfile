@@ -57,10 +57,31 @@ FROM scratch as base
 COPY --from=target-base /target-rootfs/ /
 # SKIP_CONFIGS=1 skips LBIs, test kargs, and install configs (for FCOS testing)
 ARG SKIP_CONFIGS
+ARG boot_type
+ARG seal_state
 # Use tmpfs for /run and /tmp with bind mounts inside to avoid leaking mount stubs into the image
 RUN --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
-    --mount=type=bind,from=src,src=/src/hack,target=/run/hack \
+    --mount=type=bind,from=src,src=/src/hack,target=/run/hack <<-EOF
+    set -ex
+
     cd /run/hack/ && SKIP_CONFIGS="${SKIP_CONFIGS}" ./provision-derived.sh
+
+    pkgs_to_install=()
+    if [[ "${seal_state}" == "sealed" ]]; then
+        pkgs_to_install+=(sbsigntools)
+    fi
+
+    # Install systemd-ukify and systemd-boot for UKIs
+    # This also installs systemd-boot for the grub UKI case which is not ideal...
+    if [[ "${boot_type}" == "uki" ]]; then
+        pkgs_to_install+=(systemd-ukify)
+    fi
+
+    if [[ ${#pkgs_to_install[@]} -gt 0 ]]; then
+        dnf install -y "${pkgs_to_install[@]}"
+    fi
+EOF
+
 # Note we don't do any customization here yet
 # Mark this as a test image
 LABEL bootc.testimage="1"
@@ -165,14 +186,24 @@ RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp
 FROM base as base-penultimate
 ARG variant
 ARG bootloader
+ARG boot_type
+
 # Switch to a signed systemd-boot, if configured
 RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
     --mount=type=bind,from=packaging,src=/,target=/run/packaging \
     --mount=type=bind,from=sdboot-signed,src=/,target=/run/sdboot-signed <<EORUN
 set -xeuo pipefail
+
 if [[ "${bootloader}" == "systemd" ]]; then
   /run/packaging/switch-to-sdboot /run/sdboot-signed
 fi
+
+if [[ "${boot_type}" == "uki" ]]; then
+    cp /run/packaging/seal-uki /usr/bin/seal-uki
+    cp /run/packaging/finalize-uki /usr/bin/finalize-uki
+    cp /run/packaging/initialize-sealing-tools /usr/bin/initialize-sealing-tools
+fi
+
 EORUN
 # Configure the rootfs
 ARG rootfs=""

@@ -27,9 +27,10 @@ def initial_build [] {
     bootc image copy-to-storage
 
     # A simple derived container that adds a file, but also injects some kargs
-    "FROM localhost/bootc
+    let dockerfile = $"FROM localhost/bootc as base
 RUN echo test content > /usr/share/testfile-for-soft-reboot.txt
-" | save Dockerfile
+"
+    (tap make_uki_containerfile $dockerfile) | save Dockerfile
     # Build it
     podman build -t localhost/bootc-derived .
 
@@ -59,10 +60,11 @@ def second_boot [] {
     #assert equal (systemctl show -P SoftRebootsCount) "1"
 
     # A new derived with new kargs which should stop the soft reboot.
-    "FROM localhost/bootc
+    let dockerfile = $"FROM localhost/bootc as base
 RUN echo test content > /usr/share/testfile-for-soft-reboot.txt
-RUN echo 'kargs = ["foo1=bar2"]' | tee /usr/lib/bootc/kargs.d/00-foo1bar2.toml > /dev/null
-" | save Dockerfile
+RUN echo 'kargs = [\"foo1=bar2\"]' | tee /usr/lib/bootc/kargs.d/00-foo1bar2.toml > /dev/null
+"
+    (tap make_uki_containerfile $dockerfile) | save Dockerfile
     # Build it
     podman build -t localhost/bootc-derived .
 

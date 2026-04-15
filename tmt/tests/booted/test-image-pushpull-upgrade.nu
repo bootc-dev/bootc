@@ -44,10 +44,11 @@ def initial_build [] {
     mkdir usr/lib/bootc/kargs.d
     { kargs: $kargsv0 } | to toml | save usr/lib/bootc/kargs.d/05-testkargs.toml
     # A simple derived container that adds a file, but also injects some kargs
-    "FROM localhost/bootc
+    let dockerfile = $"FROM localhost/bootc as base
 COPY usr/ /usr/
 RUN echo test content > /usr/share/blah.txt
-" | save Dockerfile
+"
+    (tap make_uki_containerfile $dockerfile) | save Dockerfile
     # Build it
     podman build -t localhost/bootc-derived .
     # Just sanity check it
@@ -165,10 +166,11 @@ def second_boot [] {
 
     mkdir usr/lib/bootc/kargs.d
     { kargs: $kargsv1 } | to toml | save usr/lib/bootc/kargs.d/05-testkargs.toml
-    "FROM localhost/bootc
+    let dockerfile = $"FROM localhost/bootc as base
 COPY usr/ /usr/
 RUN echo test content2 > /usr/share/blah.txt
-" | save Dockerfile
+"
+    (tap make_uki_containerfile $dockerfile) | save Dockerfile
     # Build it
     podman build -t localhost/bootc-derived .
     let booted_digest = $booted.imageDigest

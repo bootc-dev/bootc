@@ -46,9 +46,10 @@ def initial_build [] {
     "v1" | save testing-bootc-upgrade-apply
 
     # A simple derived container (v1) that adds a file
-    "FROM localhost/bootc
+    let dockerfile = $"FROM localhost/bootc as base
 COPY testing-bootc-upgrade-apply /usr/share/testing-bootc-upgrade-apply
-" | save Dockerfile
+"
+    (tap make_uki_containerfile $dockerfile) | save Dockerfile
     # Build it
     podman build -t $imgsrc .
 
@@ -74,9 +75,10 @@ def second_boot [] {
     # Create test file v2 on host
     "v2" | save --force testing-bootc-upgrade-apply
 
-    "FROM localhost/bootc
+    let dockerfile = $"FROM localhost/bootc as base
 COPY testing-bootc-upgrade-apply /usr/share/testing-bootc-upgrade-apply
-" | save --force Dockerfile
+"
+    (tap make_uki_containerfile $dockerfile) | save --force Dockerfile
     podman build -t $imgsrc .
 
     # Now upgrade with --download-only (should set deployment to download-only mode)

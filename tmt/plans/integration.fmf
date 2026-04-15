@@ -196,6 +196,13 @@ execute:
     test:
       - /tmt/tests/tests/test-35-composefs-gc
 
+/plan-35-composefs-gc-uki:
+  summary: Test composefs garbage collection for UKI
+  discover:
+    how: fmf
+    test:
+      - /tmt/tests/tests/test-35-composefs-gc-uki
+
 /plan-35-upgrade-preflight-disk-check:
   summary: Verify pre-flight disk space check rejects images with inflated layer sizes
   discover:

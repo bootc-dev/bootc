@@ -48,9 +48,12 @@ def initial_build [] {
         bootc image copy-to-storage
 
         # A simple derived container that adds a file
-        "FROM localhost/bootc
-RUN touch /usr/share/testing-bootc-upgrade-apply
-" | save Dockerfile
+        (
+            tap make_uki_containerfile "
+                FROM localhost/bootc as base
+                RUN touch /usr/share/testing-bootc-upgrade-apply
+        ") | save Dockerfile
+
          # Build it
         podman build -t $imgsrc .
     }
