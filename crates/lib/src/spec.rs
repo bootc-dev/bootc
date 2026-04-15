@@ -270,6 +270,8 @@ pub struct BootEntryComposefs {
     /// The sha256sum of vmlinuz + initrd
     /// Only `Some` for Type1 boot entries
     pub boot_digest: Option<String>,
+    /// Whether fs-verity validation is optional
+    pub missing_verity_allowed: bool,
 }
 
 /// A bootable entry

@@ -606,6 +606,27 @@ fn write_download_only(
     Ok(())
 }
 
+fn write_fsverity_enforcement(
+    mut out: impl Write,
+    entry: &crate::spec::BootEntry,
+    prefix_len: usize,
+) -> Result<()> {
+    if let Some(cfs) = &entry.composefs {
+        write_row_name(&mut out, "FsVerity", prefix_len)?;
+        writeln!(
+            out,
+            "{}",
+            if cfs.missing_verity_allowed {
+                "Not Enforced"
+            } else {
+                "Enforced"
+            }
+        )?;
+    };
+
+    Ok(())
+}
+
 /// Render cached update information, showing what update is available.
 ///
 /// This is populated by a previous `bootc upgrade --check` that found
@@ -733,6 +754,8 @@ fn human_render_slot(
 
         // Show soft-reboot capability
         write_soft_reboot(&mut out, entry, prefix_len)?;
+
+        write_fsverity_enforcement(&mut out, entry, prefix_len)?;
 
         // Show download-only lock status
         write_download_only(&mut out, slot, entry, prefix_len)?;

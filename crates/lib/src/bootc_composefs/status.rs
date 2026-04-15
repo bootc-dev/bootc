@@ -450,6 +450,7 @@ async fn boot_entry_from_composefs_deployment(
     storage: &Storage,
     origin: tini::Ini,
     verity: &str,
+    missing_verity_allowed: bool,
 ) -> Result<BootEntry> {
     let image = match origin.get::<String>("origin", ORIGIN_CONTAINER) {
         Some(img_name_from_config) => {
@@ -502,6 +503,7 @@ async fn boot_entry_from_composefs_deployment(
             boot_type,
             bootloader: get_bootloader()?,
             boot_digest,
+            missing_verity_allowed,
         }),
         soft_reboot_capable: false,
     };
@@ -784,8 +786,15 @@ async fn composefs_deployment_status_from(
         let ini = tini::Ini::from_string(&config)
             .with_context(|| format!("Failed to parse file {verity_digest}.origin as ini"))?;
 
-        let mut boot_entry =
-            boot_entry_from_composefs_deployment(storage, ini, &verity_digest).await?;
+        let mut boot_entry = boot_entry_from_composefs_deployment(
+            storage,
+            ini,
+            &verity_digest,
+            // We will either have verity enforced or not (possible but we don't allow it)
+            // There won't be two deployments with one enforcing verity and one not
+            cmdline.allow_missing_fsverity,
+        )
+        .await?;
 
         // SAFETY: boot_entry.composefs will always be present
         let boot_type_from_origin = boot_entry.composefs.as_ref().unwrap().boot_type;
