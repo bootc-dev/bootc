@@ -107,7 +107,23 @@ repo_gpgcheck=0
 enabled=1
 enabled_metadata=1
 REPOEOF
-dnf -y install bootupd-0.2.32.43.g38208d3
+
+# This unfortunately has "older" versions with higher NEVRA:
+#
+# # dnf --disablerepo=* --enablerepo=copr:copr.fedorainfracloud.org:group_CoreOS:continuous repoquery bootupd 2> /dev/null
+# bootupd-0:0.2.32.45.gb483a63-1.fc45.x86_64
+# bootupd-0:202501200321.0.2.25.65.ge296f82-1.fc42.src
+# bootupd-0:202501200321.0.2.25.65.ge296f82-1.fc42.x86_64
+# bootupd-0:202501210627.0.2.25.67.gefe41b6-1.fc42.src
+#
+# So we need to be more selective, but also be dynamic to grab newer
+# versions
+#
+# The subscription-manager plugin needs to be disabled because it
+# likes to write warnings to stdout which corrupts the NEVRA output
+# we're going for here...
+bootupd_nevra=$(dnf --disableplugin=subscription-manager --disablerepo=* --enablerepo=copr:copr.fedorainfracloud.org:group_CoreOS:continuous repoquery --latest-limit 1 --arch "$(uname -m)" "bootupd-0.2.*")
+dnf -y install ${bootupd_nevra}
 rm -f /etc/yum.repos.d/coreos-continuous.repo
 
 dnf clean all
