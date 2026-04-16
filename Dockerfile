@@ -202,7 +202,7 @@ ARG boot_type
 # Install our bootc package (only needed for the compute-composefs-digest command)
 RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
     --mount=type=bind,from=packages,src=/,target=/run/packages \
-    rpm -Uvh --oldpackage /run/packages/bootc-*.rpm
+    rpm -Uvh --oldpackage --nosignature /run/packages/bootc-*.rpm
 RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
     --mount=type=secret,id=secureboot_key \
     --mount=type=secret,id=secureboot_cert \
