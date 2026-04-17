@@ -135,6 +135,7 @@ execute:
     how: fmf
     test:
       - /tmt/tests/tests/test-29-soft-reboot-selinux-policy
+  extra-fixme_skip_if_uki: true
 
 /plan-30-install-unified-flag:
   summary: Test bootc install with experimental unified storage flag

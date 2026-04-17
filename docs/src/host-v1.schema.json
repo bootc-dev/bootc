@@ -143,6 +143,10 @@
           "description": "Whether we boot using systemd or grub",
           "$ref": "#/$defs/Bootloader"
         },
+        "missingVerityAllowed": {
+          "description": "Whether fs-verity validation is optional",
+          "type": "boolean"
+        },
         "verity": {
           "description": "The erofs verity",
           "type": "string"
@@ -151,7 +155,8 @@
       "required": [
         "verity",
         "bootType",
-        "bootloader"
+        "bootloader",
+        "missingVerityAllowed"
       ]
     },
     "BootEntryOstree": {

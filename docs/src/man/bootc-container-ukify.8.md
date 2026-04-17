@@ -31,6 +31,10 @@ Any additional arguments after `--` are passed through to ukify unchanged.
 
     Make fs-verity validation optional in case the filesystem doesn't support it
 
+**--write-dumpfile-to**=*WRITE_DUMPFILE_TO*
+
+    Write a dumpfile to this path
+
 <!-- END GENERATED OPTIONS -->
 
 # EXAMPLES
