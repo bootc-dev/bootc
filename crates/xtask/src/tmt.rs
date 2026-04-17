@@ -23,6 +23,7 @@ const FIELD_SUMMARY: &str = "summary";
 const FIELD_ADJUST: &str = "adjust";
 
 const FIELD_FIXME_SKIP_IF_COMPOSEFS: &str = "fixme_skip_if_composefs";
+const FIELD_FIXME_SKIP_IF_UKI: &str = "fixme_skip_if_uki";
 
 // bcvk options
 const BCVK_OPT_BIND_STORAGE_RO: &str = "--bind-storage-ro";
@@ -246,6 +247,7 @@ fn verify_ssh_connectivity(sh: &Shell, port: u16, key_path: &Utf8Path) -> Result
 struct PlanMetadata {
     try_bind_storage: bool,
     skip_if_composefs: bool,
+    skip_if_uki: bool,
 }
 
 /// Parse integration.fmf to extract extra-try_bind_storage for all plans
@@ -286,6 +288,7 @@ fn parse_plan_metadata(
                     .and_modify(|m| m.try_bind_storage = b)
                     .or_insert(PlanMetadata {
                         try_bind_storage: b,
+                        skip_if_uki: false,
                         skip_if_composefs: false,
                     });
             }
@@ -301,6 +304,23 @@ fn parse_plan_metadata(
                     .and_modify(|m| m.skip_if_composefs = b)
                     .or_insert(PlanMetadata {
                         skip_if_composefs: b,
+                        skip_if_uki: false,
+                        try_bind_storage: false,
+                    });
+            }
+        }
+
+        if let Some(skip_if_uki) = plan_data.get(&serde_yaml::Value::String(format!(
+            "extra-{}",
+            FIELD_FIXME_SKIP_IF_UKI
+        ))) {
+            if let Some(b) = skip_if_uki.as_bool() {
+                plan_metadata
+                    .entry(plan_name.to_string())
+                    .and_modify(|m| m.skip_if_uki = b)
+                    .or_insert(PlanMetadata {
+                        skip_if_uki: b,
+                        skip_if_composefs: false,
                         try_bind_storage: false,
                     });
             }
@@ -403,6 +423,16 @@ pub(crate) fn run_tmt(sh: &Shell, args: &RunTmtArgs) -> Result<()> {
                 .iter()
                 .find(|(key, _)| plan.ends_with(key.as_str()))
                 .map(|(_, v)| v.skip_if_composefs)
+                .unwrap_or(false)
+        });
+    }
+
+    if matches!(args.boot_type, crate::BootType::Uki) {
+        plans.retain(|plan| {
+            !plan_metadata
+                .iter()
+                .find(|(key, _)| plan.ends_with(key.as_str()))
+                .map(|(_, v)| v.skip_if_uki)
                 .unwrap_or(false)
         });
     }
@@ -910,6 +940,8 @@ struct TestDef {
     try_bind_storage: bool,
     /// Whether to skip this test for composefs backend
     skip_if_composefs: bool,
+    /// Whether to skip this test for images with UKI
+    skip_if_uki: bool,
     /// TMT fmf attributes to pass through (summary, duration, adjust, etc.)
     tmt: serde_yaml::Value,
 }
@@ -1011,12 +1043,24 @@ pub(crate) fn update_integration() -> Result<()> {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
+        let skip_if_uki = metadata
+            .extra
+            .as_mapping()
+            .and_then(|m| {
+                m.get(&serde_yaml::Value::String(
+                    FIELD_FIXME_SKIP_IF_UKI.to_string(),
+                ))
+            })
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
         tests.push(TestDef {
             number: metadata.number,
             name: display_name,
             test_command,
             try_bind_storage,
             skip_if_composefs,
+            skip_if_uki,
             tmt: metadata.tmt,
         });
     }
@@ -1150,6 +1194,13 @@ pub(crate) fn update_integration() -> Result<()> {
         if test.skip_if_composefs {
             plan_value.insert(
                 serde_yaml::Value::String(format!("extra-{}", FIELD_FIXME_SKIP_IF_COMPOSEFS)),
+                serde_yaml::Value::Bool(true),
+            );
+        }
+
+        if test.skip_if_uki {
+            plan_value.insert(
+                serde_yaml::Value::String(format!("extra-{}", FIELD_FIXME_SKIP_IF_UKI)),
                 serde_yaml::Value::Bool(true),
             );
         }

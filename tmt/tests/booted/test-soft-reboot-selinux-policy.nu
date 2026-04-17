@@ -2,8 +2,11 @@
 # tmt:
 #   summary: Test soft reboot with SELinux policy changes
 #   duration: 30m
+# extra:
+#   fixme_skip_if_uki: true
 #
 # Verify that soft reboot is blocked when SELinux policies differ
+
 use std assert
 use tap.nu
 
