@@ -126,6 +126,38 @@ bootupd_nevra=$(dnf --disableplugin=subscription-manager --disablerepo=* --enabl
 dnf -y install ${bootupd_nevra}
 rm -f /etc/yum.repos.d/coreos-continuous.repo
 
+# Temporary: upgrade ostree to 2026.1 for bootconfig-extra support
+# (required by loader-entries source tracking)
+# xref https://github.com/ostreedev/ostree/pull/3570
+# TODO: Remove this block once all base images ship ostree >= 2026.1
+if ! rpm -q ostree 2>/dev/null | grep -q "2026\." ; then
+    arch=$(uname -m)
+    case "${ID}-${VERSION_ID}" in
+        "centos-9")
+            koji_base="https://kojihub.stream.centos.org/kojifiles/packages/ostree/2026.1/1.el9/${arch}"
+            dnf -y install \
+                "${koji_base}/ostree-2026.1-1.el9.${arch}.rpm" \
+                "${koji_base}/ostree-libs-2026.1-1.el9.${arch}.rpm"
+            if rpm -q ostree-grub2 &>/dev/null; then
+                dnf -y install "${koji_base}/ostree-grub2-2026.1-1.el9.${arch}.rpm"
+            fi
+            ;;
+        "centos-10")
+            koji_base="https://kojihub.stream.centos.org/kojifiles/vol/koji02/packages/ostree/2026.1/1.el10/${arch}"
+            dnf -y install \
+                "${koji_base}/ostree-2026.1-1.el10.${arch}.rpm" \
+                "${koji_base}/ostree-libs-2026.1-1.el10.${arch}.rpm"
+            if rpm -q ostree-grub2 &>/dev/null; then
+                dnf -y install "${koji_base}/ostree-grub2-2026.1-1.el10.${arch}.rpm"
+            fi
+            ;;
+        "fedora-"*)
+            dnf -y --enablerepo=updates-testing install \
+                ostree-2026.1 ostree-libs-2026.1
+            ;;
+    esac
+fi
+
 dnf clean all
 # Stock extra cleaning of logs and caches in general (mostly dnf)
 rm /var/log/* /var/cache /var/lib/{dnf,rpm-state,rhsm} -rf
