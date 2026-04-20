@@ -2053,6 +2053,24 @@ async fn install_to_filesystem_impl(
         }
     } else {
         ostree_install(state, rootfs, cleanup).await?;
+
+        // For s390x, we set zipl as the bootloader
+        // this needs to be done after the ostree commit is deployed,
+        // as we don't want zipl to run during the initial ostree deployement.
+        if cfg!(target_arch = "s390x") {
+            Command::new("ostree")
+                .args([
+                    "config",
+                    "--repo",
+                    "ostree/repo",
+                    "set",
+                    "sysroot.bootloader",
+                    "zipl",
+                ])
+                .cwd_dir(rootfs.physical_root.try_clone()?)
+                .run_capture_stderr()
+                .context("Setting bootloader config to zipl")?;
+        }
     }
 
     // As the very last step before filesystem finalization, do a full SELinux
