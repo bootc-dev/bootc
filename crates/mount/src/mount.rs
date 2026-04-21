@@ -145,6 +145,19 @@ pub fn mount(dev: &str, target: &Utf8Path) -> Result<()> {
         .run_inherited_with_cmd_context()
 }
 
+/// Mount a device with an explicit filesystem type.
+///
+/// This avoids relying on the `mount` utility's blkid auto-detection,
+/// which can fail in certain container environments (e.g. when the
+/// required filesystem kernel module is not yet loaded and the blkid
+/// probe doesn't work, causing mount to fall back to iterating
+/// `/etc/filesystems` and `/proc/filesystems`).
+pub fn mount_typed(dev: &str, fstype: &str, target: &Utf8Path) -> Result<()> {
+    Command::new("mount")
+        .args(["-t", fstype, dev, target.as_str()])
+        .run_inherited_with_cmd_context()
+}
+
 /// If the fsid of the passed path matches the fsid of the same path rooted
 /// at /proc/1/root, it is assumed that these are indeed the same mounted
 /// filesystem between container and host.

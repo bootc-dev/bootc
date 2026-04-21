@@ -484,7 +484,8 @@ pub(crate) fn install_create_rootfs(
         }
     }
 
-    bootc_mount::mount(&rootdev_path, &physical_root_path)?;
+    let fstype = &root_filesystem.to_string();
+    bootc_mount::mount_typed(&rootdev_path, fstype, &physical_root_path)?;
     let target_rootfs = Dir::open_ambient_dir(&physical_root_path, cap_std::ambient_authority())?;
     crate::lsm::ensure_dir_labeled(&target_rootfs, "", Some("/".into()), 0o755.into(), sepolicy)?;
     let physical_root = Dir::open_ambient_dir(&physical_root_path, cap_std::ambient_authority())?;
@@ -492,7 +493,7 @@ pub(crate) fn install_create_rootfs(
     // Create the underlying mount point directory, which should be labeled
     crate::lsm::ensure_dir_labeled(&target_rootfs, "boot", None, 0o755.into(), sepolicy)?;
     if let Some(bootdev) = bootdev {
-        bootc_mount::mount(&bootdev.path(), &bootfs)?;
+        bootc_mount::mount_typed(&bootdev.path(), fstype, &bootfs)?;
     }
     // And we want to label the root mount of /boot
     crate::lsm::ensure_dir_labeled(&target_rootfs, "boot", None, 0o755.into(), sepolicy)?;
