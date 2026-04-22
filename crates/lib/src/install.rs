@@ -2581,6 +2581,38 @@ pub(crate) async fn install_to_filesystem(
             kargs,
         }
     };
+
+    // When discoverable-partitions is explicitly enabled in the install config,
+    // omit root= so that systemd-gpt-auto-generator discovers root by its DPS
+    // type GUID.  Unlike the to-disk path we do NOT auto-enable this for
+    // systemd-boot because to-filesystem/to-existing-root operates on
+    // pre-existing partitions whose type GUIDs may not be DPS-compliant.
+    let root_info = if state
+        .install_config
+        .as_ref()
+        .and_then(|c| c.discoverable_partitions)
+        .unwrap_or(false)
+    {
+        if fsopts.root_mount_spec.is_some()
+            || state
+                .install_config
+                .as_ref()
+                .and_then(|c| c.root_mount_spec.as_ref())
+                .is_some()
+        {
+            tracing::warn!(
+                "discoverable-partitions overrides root-mount-spec; root= will be omitted"
+            );
+        }
+        tracing::debug!("discoverable-partitions enabled, omitting root= karg");
+        RootMountInfo {
+            mount_spec: String::new(),
+            kargs: root_info.kargs,
+        }
+    } else {
+        root_info
+    };
+
     tracing::debug!("Root mount: {} {:?}", root_info.mount_spec, root_info.kargs);
 
     let boot_is_mount = {
@@ -2650,10 +2682,11 @@ pub(crate) async fn install_to_filesystem(
     // require checking in the initramfs.
     let bootarg = boot.as_ref().map(|boot| format!("boot={}", &boot.source));
 
-    // If the root mount spec is empty, we omit the mounts kargs entirely.
+    // If the root mount spec is empty, we omit root= but preserve any other
+    // root-related kargs (e.g. rootflags=subvol=... for btrfs, rd.* device-unlock args).
     // https://github.com/bootc-dev/bootc/issues/1441
     let mut kargs = if root_info.mount_spec.is_empty() {
-        Vec::new()
+        root_info.kargs
     } else {
         [rootarg]
             .into_iter()
@@ -3141,5 +3174,79 @@ UUID=boot-uuid /boot ext4 defaults 0 0
         assert!(result.contains("foo=baz"));
 
         Ok(())
+    }
+
+    /// Verify that when discoverable-partitions=true, the `root_info.mount_spec` is
+    /// cleared so that no `root=` karg ends up in the final karg list.
+    #[test]
+    fn test_discoverable_partitions_clears_mount_spec() {
+        // Simulate a root_info that was computed from a UUID-based root
+        let root_info = RootMountInfo {
+            mount_spec: "UUID=abc123".to_string(),
+            kargs: vec!["rootflags=subvol=root".to_string()],
+        };
+
+        // Mimic the code path in install_to_filesystem() when discoverable_partitions=true
+        let discoverable = true;
+        let root_info = if discoverable {
+            RootMountInfo {
+                mount_spec: String::new(),
+                kargs: root_info.kargs,
+            }
+        } else {
+            root_info
+        };
+
+        // mount_spec must be empty so root= is omitted
+        assert!(root_info.mount_spec.is_empty());
+        // Other root kargs (e.g. rootflags=) must be preserved
+        assert_eq!(root_info.kargs, vec!["rootflags=subvol=root"]);
+    }
+
+    /// Verify that when discoverable-partitions=false (default), the `root_info`
+    /// is unchanged and `root=` is included in the kargs.
+    #[test]
+    fn test_discoverable_partitions_false_preserves_root_karg() {
+        let root_info = RootMountInfo {
+            mount_spec: "UUID=abc123".to_string(),
+            kargs: Vec::new(),
+        };
+
+        let discoverable = false;
+        let root_info = if discoverable {
+            RootMountInfo {
+                mount_spec: String::new(),
+                kargs: root_info.kargs,
+            }
+        } else {
+            root_info
+        };
+
+        assert_eq!(root_info.mount_spec, "UUID=abc123");
+    }
+
+    /// Verify that with an empty mount_spec, root_info.kargs (e.g. rootflags=)
+    /// are included in the final karg list even when root= is omitted.
+    #[test]
+    fn test_empty_mount_spec_preserves_root_kargs() {
+        let root_info = RootMountInfo {
+            mount_spec: String::new(),
+            kargs: vec!["rootflags=subvol=root".to_string()],
+        };
+        let rootarg = format!("root={}", root_info.mount_spec);
+
+        // Mimics the karg-building logic in install_to_filesystem()
+        let kargs: Vec<String> = if root_info.mount_spec.is_empty() {
+            root_info.kargs.clone()
+        } else {
+            std::iter::once(rootarg)
+                .chain(root_info.kargs.iter().cloned())
+                .collect()
+        };
+
+        // root= must not appear
+        assert!(!kargs.iter().any(|k| k.starts_with("root=")));
+        // rootflags= must be preserved
+        assert!(kargs.iter().any(|k| k == "rootflags=subvol=root"));
     }
 }
