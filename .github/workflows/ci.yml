@@ -335,6 +335,19 @@ jobs:
           name: packages-fedora-43
           path: target/packages/
 
+      - name: Ensure libvirt default network is active
+        run: |
+          set -euxo pipefail
+          virsh net-list --all
+          if virsh net-info default >/dev/null 2>&1; then
+            if ! virsh net-start default; then
+              echo "Note: virsh net-start default returned non-zero (network may already be active)"
+            fi
+            virsh net-autostart default || echo "Note: virsh net-autostart default returned non-zero"
+          fi
+          virsh net-list --all
+          virsh net-dhcp-leases default || echo "Note: no DHCP leases yet for default network"
+
       - name: Build container and test on CoreOS
         run: |
           BOOTC_SKIP_PACKAGE=1 just build

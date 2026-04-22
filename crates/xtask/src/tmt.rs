@@ -199,6 +199,19 @@ fn wait_for_vm_ready(sh: &Shell, vm_name: &str) -> Result<(u16, String)> {
     )
 }
 
+/// Dump libvirt diagnostics for a VM to aid debugging when SSH connectivity fails.
+/// Prints virsh information to stderr; all commands are best-effort (errors are ignored).
+fn dump_libvirt_diagnostics(sh: &Shell, vm_name: &str) {
+    eprintln!("=== libvirt diagnostics ===");
+    let _ = cmd!(sh, "virsh list --all").ignore_status().run();
+    let _ = cmd!(sh, "virsh net-list --all").ignore_status().run();
+    let _ = cmd!(sh, "virsh net-dhcp-leases default").ignore_status().run();
+    let _ = cmd!(sh, "virsh dominfo {vm_name}").ignore_status().run();
+    let _ = cmd!(sh, "virsh domiflist {vm_name}").ignore_status().run();
+    let _ = cmd!(sh, "virsh dumpxml {vm_name}").ignore_status().run();
+    eprintln!("=== end libvirt diagnostics ===");
+}
+
 /// Verify SSH connectivity to the VM
 /// Uses a more complex command similar to what TMT runs to ensure full readiness
 #[context("Verifying SSH connectivity")]
@@ -597,6 +610,7 @@ pub(crate) fn run_tmt(sh: &Shell, args: &RunTmtArgs) -> Result<()> {
         println!("Verifying SSH connectivity...");
         if let Err(e) = verify_ssh_connectivity(sh, ssh_port, &key_path) {
             eprintln!("SSH verification failed for plan {}: {:#}", plan, e);
+            dump_libvirt_diagnostics(sh, &vm_name);
             cleanup_vm();
             all_passed = false;
             test_results.push((plan.to_string(), false, None));
