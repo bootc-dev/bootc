@@ -3233,12 +3233,12 @@ UUID=boot-uuid /boot ext4 defaults 0 0
             mount_spec: String::new(),
             kargs: vec!["rootflags=subvol=root".to_string()],
         };
-        let rootarg = format!("root={}", root_info.mount_spec);
 
         // Mimics the karg-building logic in install_to_filesystem()
         let kargs: Vec<String> = if root_info.mount_spec.is_empty() {
             root_info.kargs.clone()
         } else {
+            let rootarg = format!("root={}", root_info.mount_spec);
             std::iter::once(rootarg)
                 .chain(root_info.kargs.iter().cloned())
                 .collect()
