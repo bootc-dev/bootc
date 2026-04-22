@@ -29,6 +29,16 @@ if not ($os_id == "fedora" and $version_id >= 43) {
     exit 0
 }
 
+# DPS root discovery only works when bootc install to-disk created the
+# partitions with DPS type GUIDs.  In Packit/gating CI the system was
+# installed via to-existing-root on pre-existing partitions, so skip.
+# BCVK_EXPORT=1 is set by xtask when running via bcvk (image-mode).
+if ($env.BCVK_EXPORT? | default "" | is-empty) {
+    print "# skip: not running in image-mode (BCVK_EXPORT not set)"
+    tap ok
+    exit 0
+}
+
 print $"Running on ($os_id) ($version_id), checking DPS root discovery"
 
 let cmdline = (open /proc/cmdline)
