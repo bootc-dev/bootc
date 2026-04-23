@@ -1955,12 +1955,24 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
         Opt::LoaderEntries(opts) => match opts {
             LoaderEntriesOpts::SetOptionsForSource(opts) => {
                 let storage = get_storage().await?;
-                let sysroot = storage.get_ostree()?;
-                crate::loader_entries::set_options_for_source_staged(
-                    sysroot,
-                    &opts.source,
-                    opts.options.as_deref(),
-                )?;
+                match storage.kind()? {
+                    BootedStorageKind::Ostree(_) => {
+                        let sysroot = storage.get_ostree()?;
+                        crate::loader_entries::set_options_for_source_staged(
+                            sysroot,
+                            &opts.source,
+                            opts.options.as_deref(),
+                        )?;
+                    }
+                    BootedStorageKind::Composefs(booted_cfs) => {
+                        crate::bootc_composefs::loader_entries::set_options_for_source(
+                            &storage,
+                            &booted_cfs,
+                            &opts.source,
+                            opts.options.as_deref(),
+                        )?;
+                    }
+                }
                 Ok(())
             }
         },

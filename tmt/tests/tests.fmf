@@ -158,3 +158,8 @@ check:
   summary: Test bootc loader-entries set-options-for-source
   duration: 30m
   test: nu booted/test-loader-entries-source.nu
+
+/test-43-composefs-loader-entries-source:
+  summary: Test bootc loader-entries set-options-for-source on composefs
+  duration: 30m
+  test: nu booted/test-composefs-loader-entries-source.nu
