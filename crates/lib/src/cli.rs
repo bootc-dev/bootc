@@ -1595,6 +1595,9 @@ async fn usroverlay(access_mode: FilesystemOverlayAccessMode) -> Result<()> {
 ///
 /// Requires `CAP_SYS_ADMIN` (needed for `setns()`); silently skipped when
 /// running unprivileged (e.g. during RPM build for manpage generation).
+/// Also skipped when `/proc/1/ns/ipc` is not accessible, which can happen
+/// in restricted build environments (e.g. Tekton/Buildah containers) where
+/// `/proc` is masked even for processes with `CAP_SYS_ADMIN`.
 fn join_host_ipc_namespace() -> Result<()> {
     let caps = rustix::thread::capabilities(None).context("capget")?;
     if !caps
@@ -1603,7 +1606,13 @@ fn join_host_ipc_namespace() -> Result<()> {
     {
         return Ok(());
     }
-    let ns_pid1 = std::fs::read_link("/proc/1/ns/ipc").context("reading /proc/1/ns/ipc")?;
+    let ns_pid1 = match std::fs::read_link("/proc/1/ns/ipc") {
+        Ok(v) => v,
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+            return Ok(());
+        }
+        Err(e) => return Err(e).context("reading /proc/1/ns/ipc"),
+    };
     let ns_self = std::fs::read_link("/proc/self/ns/ipc").context("reading /proc/self/ns/ipc")?;
     if ns_pid1 != ns_self {
         let pid1ipcns = std::fs::File::open("/proc/1/ns/ipc").context("open pid1 ipcns")?;
@@ -1612,7 +1621,6 @@ fn join_host_ipc_namespace() -> Result<()> {
             Some(rustix::thread::LinkNameSpaceType::InterProcessCommunication),
         )
         .context("setns(ipc)")?;
-        tracing::debug!("Joined pid1 IPC namespace");
     }
     Ok(())
 }
