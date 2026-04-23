@@ -4,9 +4,12 @@ set -xeuo pipefail
 
 RPM_DIR="${1:-/tmp}"
 
-# Install the RPM package
-# Use rpm -Uvh with --oldpackage to allow replacing with dev version
-rpm -Uvh --oldpackage --nosignature "${RPM_DIR}"/*.rpm
+# Install the RPM package Use rpm -Uvh with --oldpackage to allow
+# replacing with dev version, and --replacepkgs in case the NEVRA from
+# our local build already exists in the image which can happen if
+# there's no local modifications and it's already been pulled in from
+# the rhcontainerbot/bootc copr.
+rpm -Uvh --oldpackage --replacepkgs --nosignature "${RPM_DIR}"/*.rpm
 # Note: we don't need to clean up the source directory since it's a bind mount
 
 # Regenerate initramfs if we have initramfs-setup
