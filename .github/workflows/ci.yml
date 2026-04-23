@@ -335,6 +335,34 @@ jobs:
           name: packages-fedora-43
           path: target/packages/
 
+      - name: Ensure libvirt default network is present and active
+        run: |
+          set -euxo pipefail
+
+          virsh net-list --all || true
+
+          if ! virsh net-info default >/dev/null 2>&1; then
+            cat > /tmp/default-net.xml <<'EOF'
+          <network>
+            <name>default</name>
+            <forward mode='nat'/>
+            <bridge name='virbr0' stp='on' delay='0'/>
+            <ip address='192.168.122.1' netmask='255.255.255.0'>
+              <dhcp>
+                <range start='192.168.122.2' end='192.168.122.254'/>
+              </dhcp>
+            </ip>
+          </network>
+          EOF
+            sudo virsh net-define /tmp/default-net.xml
+          fi
+
+          sudo virsh net-start default || true
+          sudo virsh net-autostart default || true
+
+          virsh net-list --all
+          virsh net-dhcp-leases default || true
+
       - name: Build container and test on CoreOS
         run: |
           BOOTC_SKIP_PACKAGE=1 just build
