@@ -1,7 +1,8 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::sync::OnceLock;
 
 use anyhow::{Context, Result, anyhow};
 use camino::{Utf8Path, Utf8PathBuf};
@@ -10,6 +11,64 @@ use fn_error_context::context;
 use serde::Deserialize;
 
 use bootc_utils::CommandRunExt;
+
+/// Check whether the udev database is accessible (cached for the process lifetime).
+///
+/// When running inside a container or sandbox without `/run/udev`
+/// bind-mounted, tools like `lsblk` that depend on the udev database
+/// will return null for fields like `parttype` and `fstype`.
+///
+/// We check for `/run/udev/data` (the actual database directory) rather
+/// than just `/run/udev` because the parent directory can exist as an
+/// empty mount point without the database being populated.
+fn have_udev() -> bool {
+    static HAVE_UDEV: OnceLock<bool> = OnceLock::new();
+    *HAVE_UDEV.get_or_init(|| {
+        let r = Path::new("/run/udev/data").exists();
+        if !r {
+            tracing::debug!(
+                "udev database not available, will use blkid -p for partition metadata"
+            );
+        }
+        r
+    })
+}
+
+/// Probe a device with `blkid -p` and return all discovered properties
+/// as key-value pairs.
+///
+/// This uses the `export` output format (`KEY=value`, one per line) to
+/// retrieve all tags in a single invocation, rather than spawning blkid
+/// once per property.
+///
+/// Returns `Ok(empty map)` if blkid exits with code 2 (no tags found,
+/// e.g. the device is a whole disk). Other non-zero exits are propagated
+/// as errors.
+fn blkid_probe(dev: &str) -> Result<HashMap<String, String>> {
+    let mut cmd = Command::new("blkid");
+    cmd.args(["-p", "-o", "export"]).arg(dev);
+    cmd.log_debug();
+    let output = cmd.output().context("Failed to run blkid")?;
+    if !output.status.success() {
+        // blkid exits with 2 when no tags are found (e.g. whole disk)
+        if output.status.code() == Some(2) {
+            return Ok(HashMap::new());
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!(
+            "blkid -p failed on {dev} (exit status {}): {stderr}",
+            output.status
+        );
+    }
+    let text = String::from_utf8(output.stdout).context("blkid output is not UTF-8")?;
+    let mut props = HashMap::new();
+    for line in text.lines() {
+        if let Some((key, value)) = line.split_once('=') {
+            props.insert(key.to_string(), value.to_string());
+        }
+    }
+    Ok(props)
+}
 
 /// MBR partition type IDs that indicate an EFI System Partition.
 /// 0x06 is FAT16 (used as ESP on some MBR systems), 0xEF is the
@@ -29,7 +88,7 @@ struct DevicesOutput {
 }
 
 #[allow(dead_code)]
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, Deserialize)]
 pub struct Device {
     pub name: String,
     pub serial: Option<String>,
@@ -265,7 +324,12 @@ impl Device {
         Ok(Some(parsed))
     }
 
-    /// Older versions of util-linux may be missing some properties. Backfill them if they're missing.
+    /// Backfill properties that may be missing from lsblk output.
+    ///
+    /// Older versions of util-linux may lack `start` and `partn`; these are
+    /// backfilled from sysfs. When the udev database is unavailable (e.g.
+    /// inside a container sandbox), `parttype` and `pttype` are backfilled
+    /// via `blkid -p` which reads directly from the disk.
     pub fn backfill_missing(&mut self) -> Result<()> {
         // The "start" parameter was only added in a version of util-linux that's only
         // in Fedora 40 as of this writing.
@@ -276,6 +340,18 @@ impl Device {
         // what CentOS 9 / RHEL 9 ship (2.37). Note: sysfs uses "partition" not "partn".
         if self.partn.is_none() {
             self.partn = self.read_sysfs_property("partition")?;
+        }
+        // When udev is unavailable, lsblk can't populate parttype/pttype from
+        // the udev database. Fall back to blkid -p which probes the disk
+        // directly. See https://github.com/osbuild/osbuild/pull/2428
+        if !have_udev() && (self.parttype.is_none() || self.pttype.is_none()) {
+            let props = blkid_probe(&self.path())?;
+            if self.parttype.is_none() {
+                self.parttype = props.get("PART_ENTRY_TYPE").cloned();
+            }
+            if self.pttype.is_none() {
+                self.pttype = props.get("PTTYPE").cloned();
+            }
         }
         // Recurse to child devices
         for child in self.children.iter_mut().flatten() {
@@ -671,6 +747,26 @@ mod test {
         let bios = dev.find_partition_of_bios_boot().unwrap();
         assert_eq!(bios.partn, Some(1));
         assert_eq!(bios.parttype.as_deref().unwrap(), BIOS_BOOT);
+    }
+
+    /// Verify that without the udev database, partition type fields are null
+    /// and partition discovery fails. This simulates what happens when bootc
+    /// runs inside a sandbox (like osbuild's bwrap) without /run/udev.
+    #[test]
+    fn test_parse_lsblk_no_udev() {
+        let fixture = include_str!("../tests/fixtures/lsblk-no-udev.json");
+        let devs: DevicesOutput = serde_json::from_str(fixture).unwrap();
+        let dev = devs.blockdevices.into_iter().next().unwrap();
+        // Without udev, parttype and pttype are null
+        assert!(dev.pttype.is_none());
+        let children = dev.children.as_deref().unwrap();
+        assert_eq!(children.len(), 3);
+        assert!(children[0].parttype.is_none());
+        assert!(children[1].parttype.is_none());
+        assert!(children[2].parttype.is_none());
+        // ESP and BIOS boot discovery should fail (no parttype to match)
+        assert!(dev.find_partition_of_esp_optional().unwrap().is_none());
+        assert!(dev.find_partition_of_bios_boot().is_none());
     }
 
     #[test]

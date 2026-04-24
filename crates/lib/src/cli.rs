@@ -714,6 +714,31 @@ pub(crate) enum InternalsOpts {
         #[clap(long)]
         dry_run: bool,
     },
+    /// Block device inspection tools.
+    #[clap(subcommand)]
+    Blockdev(BlockdevOpts),
+}
+
+/// Subcommands for `bootc internals blockdev`.
+#[derive(Debug, clap::Subcommand, PartialEq, Eq)]
+pub(crate) enum BlockdevOpts {
+    /// List block device information (as JSON) for a given device path.
+    ///
+    /// This runs lsblk and backfills any missing partition metadata,
+    /// including falling back to `blkid -p` when the udev database
+    /// is unavailable.
+    Ls {
+        /// Block device path (e.g. /dev/vda)
+        device: Utf8PathBuf,
+    },
+    /// List block device information (as JSON) for the device backing a filesystem.
+    ///
+    /// Takes a directory path, finds the underlying block device, and
+    /// outputs its full device tree with backfilled metadata.
+    LsFilesystem {
+        /// Filesystem path (e.g. /sysroot)
+        path: Utf8PathBuf,
+    },
 }
 
 /// Options for the `set-options-for-source` subcommand.
@@ -2174,6 +2199,18 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
                         Ok(())
                     }
                 }
+            }
+            InternalsOpts::Blockdev(opts) => {
+                let dev = match opts {
+                    BlockdevOpts::Ls { device } => crate::blockdev::list_dev(&device)?,
+                    BlockdevOpts::LsFilesystem { path } => {
+                        let dir = Dir::open_ambient_dir(&path, cap_std::ambient_authority())?;
+                        crate::blockdev::list_dev_by_dir(&dir)?
+                    }
+                };
+                serde_json::to_writer_pretty(std::io::stdout().lock(), &dev)?;
+                println!();
+                Ok(())
             }
         },
         Opt::State(opts) => match opts {
