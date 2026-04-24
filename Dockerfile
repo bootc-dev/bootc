@@ -68,6 +68,13 @@ RUN --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
 
     pkgs_to_install=()
     if [[ "${seal_state}" == "sealed" ]]; then
+        . /usr/lib/os-release
+        case "${ID}${ID_LIKE:-}" in
+          *centos*|*rhel*)
+            # Enable EPEL for sbsigntools
+            dnf -y install epel-release
+            ;;
+        esac
         pkgs_to_install+=(sbsigntools)
     fi
 
@@ -203,6 +210,12 @@ if [[ "${boot_type}" == "uki" ]]; then
     cp /run/packaging/finalize-uki /usr/bin/finalize-uki
     cp /run/packaging/initialize-sealing-tools /usr/bin/initialize-sealing-tools
 fi
+
+# Fix linting for centos
+rm -rf /var/log
+rm -rf /var/lib
+rm -rf /var/cache
+rm -rf /run/rhsm
 
 EORUN
 # Configure the rootfs
