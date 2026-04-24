@@ -25,7 +25,7 @@ include an `Assisted-by: TOOLNAME (MODELNAME)`. For example,
 ## Code guidelines
 
 The [REVIEW.md](REVIEW.md) file describes expectations around
-testing, code quality, commit organization, etc. If you're
+testing, code quality, commit messages, commit organization, etc. If you're
 creating a change, it is strongly encouraged after each 
 commit and especially when you think a task is complete
 to spawn a subagent to perform a review using guidelines (alongside

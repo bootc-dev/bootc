@@ -90,24 +90,54 @@ follow your reasoning: "Especially grateful for breaking it up into individual
 commits so I can more easily follow your train of thought."
 
 Preparatory refactoring should be separate from behavioral changes. Each commit
-should tell a clear story and be reviewable independently. Commit messages should
-explain the "why" not just the "what," and use imperative mood ("Add feature"
-not "Added feature").
+should tell a clear story and be reviewable independently. Where applicable,
+create "prep" commits that could be merged separately from the behavioral change.
+
+### Commit Messages
+
+Write clear and descriptive commit messages using a `component: Summary`
+subject, such as `kernel: Add find API w/correct hyphen-dash equality, add docs`.
+Use imperative mood: "Add integration with..." not "Adds integration with...".
+
+The body of the commit should start with at least one sentence (or paragraph)
+describing **why** the change is being made, even for something apparently
+trivial. For example a "refactor" commit might have a "why" rationale of just
+"Prep for handling X later." A big commit introducing a feature may seem
+self-explanatory, but there is often ambient context like "A large-scale Debian
+user wanted this" that provides helpful grounding in the motivation.
+
+If there's a linked tracking issue, often that will contain a more extensive
+rationale that doesn't need to be duplicated entirely in the commit message,
+but do ensure the commit message has something useful on its own for a rationale.
+
+Keep it natural and concise. A few sentences of prose explaining the design
+intent or the high-level data flow is often good enough. If there's a
+non-obvious consequence of the change, call it out briefly (e.g. "Note the
+manifest becomes part of the GC root") rather than explaining the full
+mechanism. Think about what a reviewer needs to know that may not be obvious
+from a skim of the code.
+
+Do not restate obvious parts of what is already visible in the commit diff:
+
+- "Changed function X to call Y"
+- Generic `Changes:` sections with bulleted lists of implementation details
+- "Files changed" sections — completely redundant with git
+
+Implementation details belong in the code documentation. The goal of the
+commit message is like a "cover letter" for the change, with a primary
+rationale of why the change is being made, alongside a concise summary of
+its implementation.
+
+Another thing that can go in the commit message is brief descriptions
+of alternative approaches that were considered and discarded.
+
+Closes: tags should generally come at the end of the commit message.
 
 ### PR Descriptions
 
-PRs should link to the issues they address using `Closes:` or `Fixes:` with
-full URLs. One reviewer noted: "I edited this issue just now to have
-`Closes: <URL>` but let's try to be sure we're doing that kind of thing in
-general in the future."
+Generally, just restate the commit message.
 
-Document known limitations and caveats explicitly. When approaches have tradeoffs
-or don't fully solve a problem, say so. For complex investigations, use collapsible
-`<details>` sections to include debugging notes without cluttering the main
-description.
-
-Think about broader implications: "But we'll have this problem across all repos
-right?" Consider how your change affects the wider ecosystem.
+Where it makes sense, it is OK to include additional details though.
 
 ### Keeping PRs Current
 
@@ -122,7 +152,6 @@ rather than burning reviewer cycles.
 Do not add `Signed-off-by` lines automatically—these require explicit human
 action after review. If code was AI-assisted, include an `Assisted-by:` trailer
 indicating the tool and model used.
-
 
 ## Architecture and Design
 
