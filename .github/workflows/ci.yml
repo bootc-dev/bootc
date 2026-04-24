@@ -311,6 +311,10 @@ jobs:
   # when run in the same job as test-integration).
   # Uses fedora-43 as it's the current stable Fedora release matching CoreOS.
   test-coreos:
+    # https://github.com/ostreedev/ostree/pull/3571 broke this because /boot
+    # without a separate /boot partition isn't mounted in the initramfs anymore.
+    # We need to change to use coreos-assembler.
+    if: false
     needs: package
     runs-on: ubuntu-24.04
 
@@ -387,7 +391,7 @@ jobs:
   # Sentinel job for required checks - configure this job name in repository settings
   required-checks:
     if: always()
-    needs: [cargo-deny, validate, package, test-integration, test-upgrade, test-coreos, test-container-export]
+    needs: [cargo-deny, validate, package, test-integration, test-upgrade, test-container-export]
     runs-on: ubuntu-latest
     steps:
       - run: exit 1
@@ -397,5 +401,4 @@ jobs:
           needs.package.result != 'success' ||
           needs.test-integration.result != 'success' ||
           needs.test-upgrade.result != 'success' ||
-          needs.test-coreos.result != 'success' ||
           needs.test-container-export.result != 'success'
