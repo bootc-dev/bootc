@@ -165,6 +165,7 @@ RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp
 FROM base as base-penultimate
 ARG variant
 ARG bootloader
+ARG SKIP_CONFIGS
 # Switch to a signed systemd-boot, if configured
 RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
     --mount=type=bind,from=packaging,src=/,target=/run/packaging \
@@ -183,7 +184,7 @@ RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp
 RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
     --mount=type=bind,from=packaging,src=/,target=/run/packaging \
     --mount=type=bind,from=packages,src=/,target=/run/packages \
-    /run/packaging/install-rpm-and-setup /run/packages
+    SKIP_CONFIGS="${SKIP_CONFIGS}" /run/packaging/install-rpm-and-setup /run/packages
 # Inject some other configuration
 COPY --from=packaging /usr-extras/ /usr/
 # Clean up package manager caches

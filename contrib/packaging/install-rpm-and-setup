@@ -24,12 +24,16 @@ touch /usr/lib/.bootc-dev-stamp
 # Fedora 43+ ships a GRUB with the BLI module, so enable DPS
 # auto-discovery for root.  This must run after our RPM is installed
 # since older bootc doesn't recognize the discoverable-partitions key.
-. /usr/lib/os-release
-if [ "${ID}" = "fedora" ] && [ "${VERSION_ID}" -ge 43 ] 2>/dev/null; then
-  cat > /usr/lib/bootc/install/20-discoverable-partitions.toml <<'EOF'
+# Skip this when SKIP_CONFIGS is set (e.g. for CoreOS testing, where the
+# target system uses its own partitioning scheme without DPS type GUIDs).
+if [ -z "${SKIP_CONFIGS:-}" ]; then
+  . /usr/lib/os-release
+  if [ "${ID}" = "fedora" ] && [ "${VERSION_ID}" -ge 43 ] 2>/dev/null; then
+    cat > /usr/lib/bootc/install/20-discoverable-partitions.toml <<'EOF'
 [install]
 discoverable-partitions = true
 EOF
+  fi
 fi
 
 # Workaround for https://github.com/bootc-dev/bootc/issues/1546
