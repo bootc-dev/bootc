@@ -14,8 +14,7 @@ use cap_std_ext::dirext::CapStdExtDirExt;
 use cfsctl::composefs;
 use composefs::generic_tree::{Directory, Stat};
 use etc_merge::{compute_diff, merge, print_diff, traverse_etc};
-use rustix::fs::{fsync, renameat};
-use rustix::path::Arg;
+use rustix::fs::fsync;
 
 use fn_error_context::context;
 
@@ -124,8 +123,6 @@ pub(crate) async fn composefs_backend_finalize(
 
     let boot_dir = storage.require_boot_dir()?;
 
-    let esp_mount = storage.require_esp()?;
-
     // NOTE: Assuming here we won't have two bootloaders at the same time
     match booted_composefs.bootloader {
         Bootloader::Grub => match staged_composefs.boot_type {
@@ -133,14 +130,10 @@ pub(crate) async fn composefs_backend_finalize(
                 let entries_dir = boot_dir.open_dir("loader")?;
                 rename_exchange_bls_entries(&entries_dir)?;
             }
-            BootType::Uki => finalize_staged_grub_uki(&esp_mount.fd, boot_dir)?,
+            BootType::Uki => finalize_staged_grub_uki(boot_dir)?,
         },
 
         Bootloader::Systemd => {
-            if matches!(staged_composefs.boot_type, BootType::Uki) {
-                rename_staged_uki_entries(&esp_mount.fd)?;
-            }
-
             let entries_dir = boot_dir.open_dir("loader")?;
             rename_exchange_bls_entries(&entries_dir)?;
         }
@@ -152,42 +145,12 @@ pub(crate) async fn composefs_backend_finalize(
 }
 
 #[context("Grub: Finalizing staged UKI")]
-fn finalize_staged_grub_uki(esp_mount: &Dir, boot_fd: &Dir) -> Result<()> {
-    rename_staged_uki_entries(esp_mount)?;
-
+fn finalize_staged_grub_uki(boot_fd: &Dir) -> Result<()> {
     let entries_dir = boot_fd.open_dir("grub2")?;
     rename_exchange_user_cfg(&entries_dir)?;
 
     let entries_dir = entries_dir.reopen_as_ownedfd()?;
     fsync(entries_dir).context("fsync")?;
-
-    Ok(())
-}
-
-#[context("Renaming staged UKI entries")]
-fn rename_staged_uki_entries(esp_mount: &Dir) -> Result<()> {
-    for entry in esp_mount.entries()? {
-        let entry = entry?;
-
-        let filename = entry.file_name();
-        let filename = filename.as_str()?;
-
-        if !filename.ends_with(".staged") {
-            continue;
-        }
-
-        renameat(
-            &esp_mount,
-            filename,
-            &esp_mount,
-            // SAFETY: We won't reach here if not for the above condition
-            filename.strip_suffix(".staged").unwrap(),
-        )
-        .context("Renaming {filename}")?;
-    }
-
-    let esp_mount = esp_mount.reopen_as_ownedfd()?;
-    fsync(esp_mount).context("fsync")?;
 
     Ok(())
 }
