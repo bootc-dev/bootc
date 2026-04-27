@@ -10,12 +10,14 @@ name: CI
 
 permissions:
   actions: read
+  contents: read
 
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
+    types: [opened, synchronize, reopened, labeled]
   merge_group:
   workflow_dispatch: {}
 
@@ -31,6 +33,45 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Determine the OS matrix for CI jobs based on context:
+  #   - merge_group / workflow_dispatch / ci/merge label: all OSes
+  #   - ci/tier-1 label: centos-10 only (fast feedback on the primary target)
+  #   - plain PR: no heavy jobs
+  compute-ci-level:
+    runs-on: ubuntu-24.04
+    outputs:
+      package_os_matrix: ${{ steps.matrix.outputs.package_os_matrix }}
+      integration_os_matrix: ${{ steps.matrix.outputs.integration_os_matrix }}
+      upgrade_os_matrix: ${{ steps.matrix.outputs.upgrade_os_matrix }}
+      run_heavy: ${{ steps.matrix.outputs.run_heavy }}
+    steps:
+      - name: Compute OS matrices
+        id: matrix
+        run: |
+          LABELS='${{ toJson(github.event.pull_request.labels.*.name) }}'
+          EVENT='${{ github.event_name }}'
+
+          if [[ "$EVENT" == "merge_group" || "$EVENT" == "workflow_dispatch" ]] \
+              || echo "$LABELS" | jq -e 'index("ci/merge")' > /dev/null; then
+            # Full suite: all OSes
+            echo 'package_os_matrix=["fedora-43","fedora-44","fedora-45","centos-9","centos-10"]' >> "$GITHUB_OUTPUT"
+            echo 'integration_os_matrix=["fedora-43","fedora-44","centos-9","centos-10"]' >> "$GITHUB_OUTPUT"
+            echo 'upgrade_os_matrix=["fedora-43","centos-10"]' >> "$GITHUB_OUTPUT"
+            echo 'run_heavy=true' >> "$GITHUB_OUTPUT"
+          elif echo "$LABELS" | jq -e 'index("ci/tier-1")' > /dev/null; then
+            # Tier-1 only: centos-10
+            echo 'package_os_matrix=["centos-10"]' >> "$GITHUB_OUTPUT"
+            echo 'integration_os_matrix=["centos-10"]' >> "$GITHUB_OUTPUT"
+            echo 'upgrade_os_matrix=["centos-10"]' >> "$GITHUB_OUTPUT"
+            echo 'run_heavy=true' >> "$GITHUB_OUTPUT"
+          else
+            # Plain PR: skip heavy jobs entirely
+            echo 'package_os_matrix=[]' >> "$GITHUB_OUTPUT"
+            echo 'integration_os_matrix=[]' >> "$GITHUB_OUTPUT"
+            echo 'upgrade_os_matrix=[]' >> "$GITHUB_OUTPUT"
+            echo 'run_heavy=false' >> "$GITHUB_OUTPUT"
+          fi
+
   # Run basic validation checks (linting, formatting, etc)
   validate:
     runs-on: ubuntu-24.04
@@ -125,10 +166,12 @@ jobs:
         run: just build-mdbook
   # Build packages for each test OS
   package:
+    if: needs.compute-ci-level.outputs.run_heavy == 'true'
+    needs: compute-ci-level
     strategy:
       fail-fast: false
       matrix:
-        test_os: [fedora-43, fedora-44, fedora-45, centos-9, centos-10]
+        test_os: ${{ fromJson(needs.compute-ci-level.outputs.package_os_matrix) }}
 
     runs-on: ubuntu-24.04
 
@@ -156,11 +199,12 @@ jobs:
   # running unit and integration tests (using TMT, leveraging the support for nested virtualization
   # in the GHA runners)
   test-integration:
-    needs: package
+    if: needs.compute-ci-level.outputs.run_heavy == 'true'
+    needs: [compute-ci-level, package]
     strategy:
       fail-fast: false
       matrix:
-        test_os: [fedora-43, fedora-44, centos-9, centos-10]
+        test_os: ${{ fromJson(needs.compute-ci-level.outputs.integration_os_matrix) }}
         variant: [ostree, composefs]
         filesystem: ["ext4", "xfs"]
         bootloader: ["grub", "systemd"]
@@ -266,11 +310,12 @@ jobs:
   # then run readonly tests to verify the upgrade worked.
   # Excluded: centos-9 (lacks systemd.extra-unit.* support needed for --bind-storage-ro)
   test-upgrade:
-    needs: package
+    if: needs.compute-ci-level.outputs.run_heavy == 'true'
+    needs: [compute-ci-level, package]
     strategy:
       fail-fast: false
       matrix:
-        test_os: [fedora-43, centos-10]
+        test_os: ${{ fromJson(needs.compute-ci-level.outputs.upgrade_os_matrix) }}
         variant: [ostree, composefs]
 
     runs-on: ubuntu-24.04
@@ -316,7 +361,7 @@ jobs:
     # without a separate /boot partition isn't mounted in the initramfs anymore.
     # We need to change to use coreos-assembler.
     if: false
-    needs: package
+    needs: [compute-ci-level, package]
     runs-on: ubuntu-24.04
 
     steps:
@@ -358,7 +403,8 @@ jobs:
   # Builds localhost/bootc, exports as tarball, installs via Anaconda in QEMU,
   # and verifies the resulting disk boots.
   test-container-export:
-    needs: package
+    if: needs.compute-ci-level.outputs.run_heavy == 'true'
+    needs: [compute-ci-level, package]
     runs-on: ubuntu-24.04
 
     steps:
@@ -389,17 +435,19 @@ jobs:
           name: container-export-test-${{ env.ARCH }}
           path: target/anaconda-test/*.log
 
-  # Sentinel job for required checks - configure this job name in repository settings
+  # Sentinel job for required checks - configure this job name in repository settings.
+  # Accepts 'skipped' as success so that merge_group-only jobs don't block PRs.
   required-checks:
     if: always()
-    needs: [cargo-deny, validate, package, test-integration, test-upgrade, test-container-export]
+    needs: [compute-ci-level, cargo-deny, validate, install-tests, docs, package, test-integration, test-upgrade, test-container-export]
     runs-on: ubuntu-latest
     steps:
-      - run: exit 1
-        if: >-
-          needs.cargo-deny.result != 'success' ||
-          needs.validate.result != 'success' ||
-          needs.package.result != 'success' ||
-          needs.test-integration.result != 'success' ||
-          needs.test-upgrade.result != 'success' ||
-          needs.test-container-export.result != 'success'
+      - name: Check all jobs
+        env:
+          NEEDS: ${{ toJson(needs) }}
+        run: |
+          FAILED=$(echo "$NEEDS" | jq -r 'to_entries[] | select(.value.result | IN("success","skipped") | not) | .key')
+          if [ -n "$FAILED" ]; then
+            echo "The following jobs did not succeed: $FAILED"
+            exit 1
+          fi

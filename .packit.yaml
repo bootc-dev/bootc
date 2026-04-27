@@ -29,11 +29,32 @@ actions:
     - bash -c "ls -al contrib/packaging/"
 
 jobs:
+  # copr_build on PRs: only runs when ci/tier-1 or ci/merge label is present.
+  # ci/tier-1: centos-10 + fedora-44 (primary targets, all arches)
   - job: copr_build
     trigger: pull_request
+    identifier: tier-1
+    require:
+      label:
+        present:
+          - ci/tier-1
     targets:
-      # Primary targets are c9s, c10s and supported fedora right now,
-      # which build for all architectures
+      - centos-stream-10-x86_64
+      - centos-stream-10-aarch64
+      - centos-stream-10-s390x
+      - fedora-44-x86_64
+      - fedora-44-aarch64
+      - fedora-44-s390x
+
+  # ci/merge: full target set (mirrors what runs in the merge queue)
+  - job: copr_build
+    trigger: pull_request
+    identifier: full
+    require:
+      label:
+        present:
+          - ci/merge
+    targets:
       - centos-stream-9-x86_64
       - centos-stream-9-aarch64
       - centos-stream-9-s390x
@@ -46,9 +67,6 @@ jobs:
       - fedora-44-x86_64
       - fedora-44-aarch64
       - fedora-44-s390x
-      # Sanity check on secondary targets, fewer architectures just
-      # because the chance that we break e.g. ppc64le *just* on
-      # rawhide is basically nil.
       - fedora-rawhide-x86_64
       - fedora-rawhide-aarch64
       # Temporarily disabled due to too old Rust...reenable post 9.6
@@ -63,8 +81,35 @@ jobs:
     project: bootc
     enable_net: true
 
+  # Testing Farm on PRs: only runs when ci/tier-1 or ci/merge label is present.
+  # ci/tier-1: centos-10 + fedora-44 (primary targets)
   - job: tests
     trigger: pull_request
+    identifier: tier-1
+    require:
+      label:
+        present:
+          - ci/tier-1
+    targets:
+      - centos-stream-10-x86_64
+      - centos-stream-10-aarch64
+      - fedora-44-x86_64
+      - fedora-44-aarch64
+    tmt_plan: /tmt/plans/integration
+    tf_extra_params:
+      environments:
+        - tmt:
+            context:
+              running_env: "packit"
+
+  # ci/merge: full target set
+  - job: tests
+    trigger: pull_request
+    identifier: full
+    require:
+      label:
+        present:
+          - ci/merge
     targets:
       - centos-stream-9-x86_64
       - centos-stream-9-aarch64
