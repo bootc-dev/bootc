@@ -41,10 +41,12 @@ jobs:
     targets:
       - centos-stream-10-x86_64
       - centos-stream-10-aarch64
-      - centos-stream-10-s390x
+      # s390x disabled: https://github.com/fedora-copr/copr/issues/4219
+      # - centos-stream-10-s390x
       - fedora-44-x86_64
       - fedora-44-aarch64
-      - fedora-44-s390x
+      # s390x disabled: https://github.com/fedora-copr/copr/issues/4219
+      # - fedora-44-s390x
 
   # ci/merge: full target set (mirrors what runs in the merge queue)
   - job: copr_build
@@ -57,16 +59,20 @@ jobs:
     targets:
       - centos-stream-9-x86_64
       - centos-stream-9-aarch64
-      - centos-stream-9-s390x
+      # s390x disabled: https://github.com/fedora-copr/copr/issues/4219
+      # - centos-stream-9-s390x
       - centos-stream-10-x86_64
       - centos-stream-10-aarch64
-      - centos-stream-10-s390x
+      # s390x disabled: https://github.com/fedora-copr/copr/issues/4219
+      # - centos-stream-10-s390x
       - fedora-43-x86_64
       - fedora-43-aarch64
-      - fedora-43-s390x
+      # s390x disabled: https://github.com/fedora-copr/copr/issues/4219
+      # - fedora-43-s390x
       - fedora-44-x86_64
       - fedora-44-aarch64
-      - fedora-44-s390x
+      # s390x disabled: https://github.com/fedora-copr/copr/issues/4219
+      # - fedora-44-s390x
       - fedora-rawhide-x86_64
       - fedora-rawhide-aarch64
       # Temporarily disabled due to too old Rust...reenable post 9.6
