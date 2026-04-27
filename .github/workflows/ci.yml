@@ -91,9 +91,13 @@ jobs:
         log-level: warn
         command: check -A duplicate bans sources licenses
   # Test bootc installation scenarios and fsverity support
-  # TODO convert to be an integration test
+  # TODO convert to be an integration test: this would also
+  # ensure we inherit the `package` job (and in theory
+  # this could be a proper matrix)
   install-tests:
     name: "Test install"
+    if: needs.compute-ci-level.outputs.run_heavy == 'true'
+    needs: compute-ci-level
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout repository
