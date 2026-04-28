@@ -629,6 +629,10 @@ pub(crate) fn run_tmt(sh: &Shell, args: &RunTmtArgs) -> Result<()> {
         )
         .run();
 
+        // Log disk usage after each test run to help diagnose "no space left on device" failures
+        println!("Disk usage after plan {}:", plan);
+        let _ = cmd!(sh, "df -h").run();
+
         // Clean up VM regardless of test result (unless --preserve-vm is set)
         cleanup_vm();
 
