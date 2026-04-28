@@ -35,7 +35,7 @@ case "${ID}-${VERSION_ID}" in
         # nu is not available in CS10
         td=$(mktemp -d)
         cd $td
-        curl -kL "https://github.com/nushell/nushell/releases/download/0.103.0/nu-0.103.0-$(uname -m)-unknown-linux-gnu.tar.gz" --output nu.tar.gz
+        curl -fL --retry 5 --retry-delay 5 --retry-all-errors "https://github.com/nushell/nushell/releases/download/0.103.0/nu-0.103.0-$(uname -m)-unknown-linux-gnu.tar.gz" --output nu.tar.gz
         mkdir -p nu && tar zvxf nu.tar.gz --strip-components=1 -C nu
         mv nu/nu /usr/bin/nu
         rm -rf nu nu.tar.gz
