@@ -86,7 +86,6 @@ cat >/etc/yum.repos.d/rhcontainerbot-bootc.repo <<REPOEOF
 name=Copr repo for bootc owned by rhcontainerbot
 baseurl=https://download.copr.fedorainfracloud.org/results/rhcontainerbot/bootc/${copr_distro}-\$releasever-\$basearch/
 type=rpm-md
-skip_if_unavailable=True
 gpgcheck=1
 gpgkey=https://download.copr.fedorainfracloud.org/results/rhcontainerbot/bootc/pubkey.gpg
 repo_gpgcheck=0
@@ -100,7 +99,6 @@ cat >/etc/yum.repos.d/coreos-continuous.repo <<REPOEOF
 name=Copr repo for continuous owned by @CoreOS
 baseurl=https://download.copr.fedorainfracloud.org/results/@CoreOS/continuous/${copr_distro}-\$releasever-\$basearch/
 type=rpm-md
-skip_if_unavailable=True
 gpgcheck=1
 gpgkey=https://download.copr.fedorainfracloud.org/results/@CoreOS/continuous/pubkey.gpg
 repo_gpgcheck=0
