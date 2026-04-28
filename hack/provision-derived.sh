@@ -35,7 +35,7 @@ case "${ID}-${VERSION_ID}" in
         # nu is not available in CS10
         td=$(mktemp -d)
         cd $td
-        curl -kL "https://github.com/nushell/nushell/releases/download/0.103.0/nu-0.103.0-$(uname -m)-unknown-linux-gnu.tar.gz" --output nu.tar.gz
+        curl -fkL --retry 5 --retry-delay 5 --retry-all-errors "https://github.com/nushell/nushell/releases/download/0.103.0/nu-0.103.0-$(uname -m)-unknown-linux-gnu.tar.gz" --output nu.tar.gz
         mkdir -p nu && tar zvxf nu.tar.gz --strip-components=1 -C nu
         mv nu/nu /usr/bin/nu
         rm -rf nu nu.tar.gz
@@ -92,7 +92,8 @@ repo_gpgcheck=0
 enabled=1
 enabled_metadata=1
 REPOEOF
-dnf -y update bootc
+retry_dnf() { local n=0; until dnf "$@"; do n=$((n+1)); [ $n -lt 3 ] || return 1; echo "dnf retry $n..."; dnf clean metadata; sleep 10; done; }
+retry_dnf -y update bootc
 rm -f /etc/yum.repos.d/rhcontainerbot-bootc.repo
 cat >/etc/yum.repos.d/coreos-continuous.repo <<REPOEOF
 [copr:copr.fedorainfracloud.org:group_CoreOS:continuous]
@@ -105,23 +106,7 @@ repo_gpgcheck=0
 enabled=1
 enabled_metadata=1
 REPOEOF
-
-# This unfortunately has "older" versions with higher NEVRA:
-#
-# # dnf --disablerepo=* --enablerepo=copr:copr.fedorainfracloud.org:group_CoreOS:continuous repoquery bootupd 2> /dev/null
-# bootupd-0:0.2.32.45.gb483a63-1.fc45.x86_64
-# bootupd-0:202501200321.0.2.25.65.ge296f82-1.fc42.src
-# bootupd-0:202501200321.0.2.25.65.ge296f82-1.fc42.x86_64
-# bootupd-0:202501210627.0.2.25.67.gefe41b6-1.fc42.src
-#
-# So we need to be more selective, but also be dynamic to grab newer
-# versions
-#
-# The subscription-manager plugin needs to be disabled because it
-# likes to write warnings to stdout which corrupts the NEVRA output
-# we're going for here...
-bootupd_nevra=$(dnf --disableplugin=subscription-manager --disablerepo=* --enablerepo=copr:copr.fedorainfracloud.org:group_CoreOS:continuous repoquery --latest-limit 1 --arch "$(uname -m)" "bootupd-0.2.*")
-dnf -y install ${bootupd_nevra}
+retry_dnf -y install bootupd-0.2.32.43.g38208d3
 rm -f /etc/yum.repos.d/coreos-continuous.repo
 
 # Temporary: upgrade ostree to 2026.1 for bootconfig-extra support
