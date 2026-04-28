@@ -292,6 +292,14 @@ jobs:
 
           just clean-local-images
 
+      - name: Disk usage summary
+        if: always()
+        run: |
+          echo "### Disk usage" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          df -h >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
       - name: Archive TMT logs
         if: always()
         uses: actions/upload-artifact@v7
@@ -345,6 +353,14 @@ jobs:
 
       - name: Run upgrade test
         run: just test-upgrade
+
+      - name: Disk usage summary
+        if: always()
+        run: |
+          echo "### Disk usage" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          df -h >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Archive TMT logs
         if: always()
