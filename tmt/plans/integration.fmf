@@ -261,5 +261,4 @@ execute:
     how: fmf
     test:
       - /tmt/tests/tests/test-42-loader-entries-source
-  extra-fixme_skip_if_composefs: true
 # END GENERATED PLANS
