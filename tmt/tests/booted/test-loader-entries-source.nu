@@ -1,4 +1,6 @@
 # number: 42
+# extra:
+#   fixme_skip_if_composefs: true
 # tmt:
 #   summary: Test bootc loader-entries set-options-for-source
 #   duration: 30m
