@@ -22,6 +22,13 @@ mod sysext;
 mod tmt;
 
 const NAME: &str = "bootc";
+/// JSON schemas generated from the bootc CLI: (schema-name, output-path) pairs.
+/// All output paths must be under `docs/src/` and match the `*.schema.json` naming
+/// convention so the Dockerfile glob picks them up automatically.
+const JSON_SCHEMAS: &[(&str, &str)] = &[
+    ("host", "docs/src/host-v1.schema.json"),
+    ("progress", "docs/src/progress-v0.schema.json"),
+];
 /// File used to identify the bootc source tree toplevel.
 const TOPLEVEL_MARKER: &str = "ADOPTERS.md";
 const TAR_REPRODUCIBLE_OPTS: &[&str] = &[
@@ -45,8 +52,11 @@ struct Cli {
 enum Commands {
     /// Generate man pages
     Manpages,
-    /// Update generated files (man pages, JSON schemas)
-    UpdateGenerated,
+    /// Update or check generated files
+    UpdateGenerated {
+        #[command(subcommand)]
+        command: UpdateGeneratedCommands,
+    },
     /// Package the source code
     Package,
     /// Package source RPM
@@ -67,6 +77,27 @@ enum Commands {
     Bcvk {
         #[command(subcommand)]
         command: BcvkCommands,
+    },
+}
+
+/// Subcommands for `update-generated`
+#[derive(Debug, Subcommand)]
+enum UpdateGeneratedCommands {
+    /// Update/check files derived directly from source (tmt plans).
+    /// No binary build required; safe to run in any environment with the full source tree.
+    Direct {
+        /// Check that files are up to date instead of updating them.
+        /// Exits non-zero if any file needs regeneration, similar to `cargo fmt --check`.
+        #[arg(long)]
+        check: bool,
+    },
+    /// Update/check files derived from the built binary (man pages, JSON schemas).
+    /// Requires `cargo run --features=docgen` to extract the current CLI structure.
+    FromCode {
+        /// Check that files are up to date instead of updating them.
+        /// Exits non-zero if any file needs regeneration, similar to `cargo fmt --check`.
+        #[arg(long)]
+        check: bool,
     },
 }
 
@@ -270,7 +301,24 @@ fn try_main() -> Result<()> {
 
     match cli.command {
         Commands::Manpages => man::generate_man_pages(&sh),
-        Commands::UpdateGenerated => update_generated(&sh),
+        Commands::UpdateGenerated { command } => match command {
+            UpdateGeneratedCommands::Direct { check } => {
+                if check {
+                    tmt::check_integration()
+                } else {
+                    tmt::update_integration()
+                }
+            }
+            UpdateGeneratedCommands::FromCode { check } => {
+                if check {
+                    man::check_manpages(&sh)?;
+                    check_json_schemas(&sh)
+                } else {
+                    man::update_manpages(&sh)?;
+                    update_json_schemas(&sh)
+                }
+            }
+        },
         Commands::Package => package(&sh),
         Commands::PackageSrpm => package_srpm(&sh),
         Commands::Spec => spec(&sh),
@@ -522,37 +570,42 @@ fn package_srpm(sh: &Shell) -> Result<()> {
     Ok(())
 }
 
+/// Generate and normalize a JSON schema from the binary.
+/// Ensures a consistent trailing newline so files are stable across editors.
+fn generate_normalized_json_schema(sh: &Shell, of: &str) -> Result<String> {
+    let schema = cmd!(sh, "cargo run -q -- internals print-json-schema --of={of}").read()?;
+    Ok(if schema.ends_with('\n') {
+        schema
+    } else {
+        format!("{schema}\n")
+    })
+}
+
 /// Update JSON schema files
 #[context("Updating JSON schemas")]
 fn update_json_schemas(sh: &Shell) -> Result<()> {
-    for (of, target) in [
-        ("host", "docs/src/host-v1.schema.json"),
-        ("progress", "docs/src/progress-v0.schema.json"),
-    ] {
-        let schema = cmd!(sh, "cargo run -q -- internals print-json-schema --of={of}").read()?;
+    for (of, target) in JSON_SCHEMAS {
+        let schema = generate_normalized_json_schema(sh, of)?;
         std::fs::write(target, &schema)?;
         println!("Updated {target}");
     }
     Ok(())
 }
 
-/// Update all generated files
-/// This is the main command developers should use to update generated content.
-/// It handles:
-/// - Creating new man page templates for new commands
-/// - Syncing CLI options to existing man pages
-/// - Updating JSON schema files
-#[context("Updating generated files")]
-fn update_generated(sh: &Shell) -> Result<()> {
-    // Update man pages (create new templates + sync options)
-    man::update_manpages(sh)?;
-
-    // Update JSON schemas
-    update_json_schemas(sh)?;
-
-    // Update TMT integration.fmf
-    tmt::update_integration()?;
-
+/// Check that JSON schema files are up to date.
+/// Fails with an error if any file would change, similar to `cargo fmt --check`.
+#[context("Checking JSON schemas")]
+fn check_json_schemas(sh: &Shell) -> Result<()> {
+    for (of, target) in JSON_SCHEMAS {
+        let generated = generate_normalized_json_schema(sh, of)?;
+        let on_disk =
+            std::fs::read_to_string(target).with_context(|| format!("Reading {target}"))?;
+        if generated != on_disk {
+            anyhow::bail!(
+                "{target} is out of date; run `cargo xtask update-generated` to update it"
+            );
+        }
+    }
     Ok(())
 }
 

@@ -174,20 +174,19 @@ fn format_options_as_markdown(options: &[CliOption], positionals: &[CliPositiona
     result
 }
 
-/// Update markdown file with generated subcommands
-pub fn update_markdown_with_subcommands(
+/// Compute what `docs/src/man/<file>` should look like after regenerating its subcommands section.
+/// Returns `None` if the file has no subcommands marker (nothing to do).
+fn compute_markdown_with_subcommands(
     markdown_path: &Utf8Path,
+    content: &str,
     subcommands: &[CliCommand],
     parent_path: &[&str],
-) -> Result<()> {
-    let content =
-        fs::read_to_string(markdown_path).with_context(|| format!("Reading {}", markdown_path))?;
-
+) -> Result<Option<String>> {
     let begin_marker = "<!-- BEGIN GENERATED SUBCOMMANDS -->";
     let end_marker = "<!-- END GENERATED SUBCOMMANDS -->";
 
     let Some((before, rest)) = content.split_once(begin_marker) else {
-        return Ok(()); // Skip files without markers
+        return Ok(None); // Skip files without markers
     };
 
     let Some((_, after)) = rest.split_once(end_marker) else {
@@ -202,34 +201,25 @@ pub fn update_markdown_with_subcommands(
     // Trim trailing whitespace from before section and ensure exactly one blank line
     let before = before.trim_end();
 
-    let new_content = format!(
+    Ok(Some(format!(
         "{}\n\n{}\n{}{}{}",
         before, begin_marker, generated_subcommands, end_marker, after
-    );
-
-    // Only write if content has changed to avoid updating mtime unnecessarily
-    if new_content != content {
-        fs::write(markdown_path, new_content)
-            .with_context(|| format!("Writing to {}", markdown_path))?;
-        println!("Updated subcommands in {}", markdown_path);
-    }
-    Ok(())
+    )))
 }
 
-/// Update markdown file with generated options
-pub fn update_markdown_with_options(
+/// Compute what `docs/src/man/<file>` should look like after regenerating its options section.
+/// Returns `None` if the file has no options marker (nothing to do).
+fn compute_markdown_with_options(
     markdown_path: &Utf8Path,
+    content: &str,
     options: &[CliOption],
     positionals: &[CliPositional],
-) -> Result<()> {
-    let content =
-        fs::read_to_string(markdown_path).with_context(|| format!("Reading {}", markdown_path))?;
-
+) -> Result<Option<String>> {
     let begin_marker = "<!-- BEGIN GENERATED OPTIONS -->";
     let end_marker = "<!-- END GENERATED OPTIONS -->";
 
     let Some((before, rest)) = content.split_once(begin_marker) else {
-        return Ok(()); // Skip files without markers
+        return Ok(None); // Skip files without markers
     };
 
     let Some((_, after)) = rest.split_once(end_marker) else {
@@ -254,6 +244,48 @@ pub fn update_markdown_with_options(
         )
     } else {
         format!("{}\n\n{}\n{}{}", before, begin_marker, end_marker, after)
+    };
+
+    Ok(Some(new_content))
+}
+
+/// Update markdown file with generated subcommands
+pub fn update_markdown_with_subcommands(
+    markdown_path: &Utf8Path,
+    subcommands: &[CliCommand],
+    parent_path: &[&str],
+) -> Result<()> {
+    let content =
+        fs::read_to_string(markdown_path).with_context(|| format!("Reading {}", markdown_path))?;
+
+    let Some(new_content) =
+        compute_markdown_with_subcommands(markdown_path, &content, subcommands, parent_path)?
+    else {
+        return Ok(());
+    };
+
+    // Only write if content has changed to avoid updating mtime unnecessarily
+    if new_content != content {
+        fs::write(markdown_path, new_content)
+            .with_context(|| format!("Writing to {}", markdown_path))?;
+        println!("Updated subcommands in {}", markdown_path);
+    }
+    Ok(())
+}
+
+/// Update markdown file with generated options
+pub fn update_markdown_with_options(
+    markdown_path: &Utf8Path,
+    options: &[CliOption],
+    positionals: &[CliPositional],
+) -> Result<()> {
+    let content =
+        fs::read_to_string(markdown_path).with_context(|| format!("Reading {}", markdown_path))?;
+
+    let Some(new_content) =
+        compute_markdown_with_options(markdown_path, &content, options, positionals)?
+    else {
+        return Ok(());
     };
 
     // Only write if content has changed to avoid updating mtime unnecessarily
@@ -608,6 +640,121 @@ TODO: Add practical examples showing how to use this command.
     println!("   - Edit the templates to add detailed descriptions and examples");
     println!("   - Run 'cargo xtask manpages' to generate final man pages");
 
+    Ok(())
+}
+
+/// Check that all man page markdown files are up to date.
+/// Fails with an error if any file would change, similar to `cargo fmt --check`.
+#[context("Checking man pages")]
+pub fn check_manpages(sh: &Shell) -> Result<()> {
+    let cli_structure = extract_cli_json(sh)?;
+
+    // First: check no man pages are missing
+    fn collect_commands(cmd: &CliCommand, path: Vec<String>, acc: &mut Vec<Vec<String>>) {
+        for sub in &cmd.subcommands {
+            let mut sub_path = path.clone();
+            sub_path.push(sub.name.clone());
+            acc.push(sub_path.clone());
+            collect_commands(sub, sub_path, acc);
+        }
+    }
+    let mut commands_to_check = Vec::new();
+    collect_commands(&cli_structure, Vec::new(), &mut commands_to_check);
+    for command_parts in &commands_to_check {
+        let filename = format!("bootc-{}.8.md", command_parts.join("-"));
+        let filepath = Utf8Path::new("docs/src/man").join(&filename);
+        if !filepath.exists() {
+            anyhow::bail!(
+                "{} is missing; run `cargo xtask update-generated` to create it",
+                filepath
+            );
+        }
+    }
+
+    let mappings = discover_man_page_mappings(&cli_structure)?;
+
+    for (filename, subcommand_path) in mappings {
+        let markdown_path = Utf8Path::new("docs/src/man").join(&filename);
+        if !markdown_path.exists() {
+            continue;
+        }
+
+        let target_cmd = if let Some(ref path) = subcommand_path {
+            let path_refs: Vec<&str> = path.iter().map(|s| s.as_str()).collect();
+            find_subcommand(&cli_structure, &path_refs)
+                .ok_or_else(|| anyhow::anyhow!("Subcommand {:?} not found", path))?
+        } else {
+            &cli_structure
+        };
+
+        let content = fs::read_to_string(&markdown_path)
+            .with_context(|| format!("Reading {}", markdown_path))?;
+
+        if content.contains("<!-- BEGIN GENERATED OPTIONS -->") {
+            check_markdown_options(
+                &markdown_path,
+                &content,
+                &target_cmd.options,
+                &target_cmd.positionals,
+            )?;
+        }
+        if content.contains("<!-- BEGIN GENERATED SUBCOMMANDS -->") {
+            let parent_path: Vec<&str> = if let Some(path) = &subcommand_path {
+                path.iter().map(|s| s.as_str()).collect()
+            } else {
+                vec![]
+            };
+            check_markdown_subcommands(
+                &markdown_path,
+                &content,
+                &target_cmd.subcommands,
+                &parent_path,
+            )?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Compare-only variant of `update_markdown_with_options`.
+fn check_markdown_options(
+    markdown_path: &Utf8Path,
+    content: &str,
+    options: &[CliOption],
+    positionals: &[CliPositional],
+) -> Result<()> {
+    let Some(new_content) =
+        compute_markdown_with_options(markdown_path, content, options, positionals)?
+    else {
+        return Ok(());
+    };
+    if new_content != content {
+        anyhow::bail!(
+            "{} is out of date; run `cargo xtask update-generated` to update it",
+            markdown_path
+        );
+    }
+    Ok(())
+}
+
+/// Compare-only variant of `update_markdown_with_subcommands`.
+fn check_markdown_subcommands(
+    markdown_path: &Utf8Path,
+    content: &str,
+    subcommands: &[CliCommand],
+    parent_path: &[&str],
+) -> Result<()> {
+    let Some(new_content) =
+        compute_markdown_with_subcommands(markdown_path, content, subcommands, parent_path)?
+    else {
+        return Ok(());
+    };
+    if new_content != content {
+        anyhow::bail!(
+            "{} is out of date; run `cargo xtask update-generated` to update it",
+            markdown_path
+        );
+    }
     Ok(())
 }
 

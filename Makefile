@@ -129,9 +129,6 @@ fix-rust:
 	cargo clippy --fix --allow-dirty -- $(CLIPPY_CONFIG)
 .PHONY: fix-rust
 
-update-generated:
-	cargo xtask update-generated
-.PHONY: update-generated
 
 vendor:
 	cargo xtask $@

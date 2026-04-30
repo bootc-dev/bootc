@@ -964,16 +964,84 @@ impl PartialOrd for TestDef {
     }
 }
 
+/// Check that tmt generated files are up to date.
+/// Fails with an error if any file would change, similar to `cargo fmt --check`.
+#[context("Checking TMT generated files")]
+pub(crate) fn check_integration() -> Result<()> {
+    let tests_fmf_path = Utf8Path::new("tmt/tests/tests.fmf");
+    let integration_fmf_path = Utf8Path::new("tmt/plans/integration.fmf");
+
+    let (tests_generated, integration_generated) = generate_integration()?;
+
+    let tests_on_disk = std::fs::read_to_string(tests_fmf_path)
+        .with_context(|| format!("Reading {}", tests_fmf_path))?;
+    let integration_on_disk = std::fs::read_to_string(integration_fmf_path)
+        .with_context(|| format!("Reading {}", integration_fmf_path))?;
+
+    if tests_generated != tests_on_disk {
+        anyhow::bail!(
+            "{} is out of date; run `cargo xtask update-generated` to update it",
+            tests_fmf_path
+        );
+    }
+    if integration_generated != integration_on_disk {
+        anyhow::bail!(
+            "{} is out of date; run `cargo xtask update-generated` to update it",
+            integration_fmf_path
+        );
+    }
+
+    Ok(())
+}
+
 /// Generate tmt/plans/integration.fmf from test definitions
 #[context("Updating TMT integration.fmf")]
 pub(crate) fn update_integration() -> Result<()> {
+    let tests_fmf_path = Utf8Path::new("tmt/tests/tests.fmf");
+    let integration_fmf_path = Utf8Path::new("tmt/plans/integration.fmf");
+
+    let (tests_content, integration_content) = generate_integration()?;
+
+    let needs_update_tests = match std::fs::read_to_string(tests_fmf_path) {
+        Ok(existing) => existing != tests_content,
+        Err(_) => true,
+    };
+    if needs_update_tests {
+        std::fs::write(tests_fmf_path, &tests_content).context("Writing tests.fmf")?;
+        println!("Generated {}", tests_fmf_path);
+    } else {
+        println!("Unchanged: {}", tests_fmf_path);
+    }
+
+    let needs_update_integration = match std::fs::read_to_string(integration_fmf_path) {
+        Ok(existing) => existing != integration_content,
+        Err(_) => true,
+    };
+    if needs_update_integration {
+        std::fs::write(integration_fmf_path, &integration_content)
+            .context("Writing integration.fmf")?;
+        println!("Generated {}", integration_fmf_path);
+    } else {
+        println!("Unchanged: {}", integration_fmf_path);
+    }
+
+    Ok(())
+}
+
+/// Pure function: compute the content of tests.fmf and integration.fmf from
+/// the test file metadata in tmt/tests/booted/, without writing to disk.
+/// Returns (tests_fmf_content, integration_fmf_content).
+#[context("Generating TMT integration content")]
+fn generate_integration() -> Result<(String, String)> {
     // Define tests in order
     let mut tests = vec![];
 
     // Scan for test-*.nu, test-*.sh, and test-*.py files in tmt/tests/booted/
     let booted_dir = Utf8Path::new("tmt/tests/booted");
 
-    for entry in std::fs::read_dir(booted_dir)? {
+    for entry in std::fs::read_dir(booted_dir)
+        .with_context(|| format!("Reading directory {}", booted_dir))?
+    {
         let entry = entry?;
         let path = entry.path();
         let Some(filename) = path.file_name().and_then(|n| n.to_str()) else {
@@ -1072,8 +1140,6 @@ pub(crate) fn update_integration() -> Result<()> {
     tests.sort();
 
     // Generate single tests.fmf file using structured YAML
-    let tests_dir = Utf8Path::new("tmt/tests");
-    let tests_fmf_path = tests_dir.join("tests.fmf");
 
     // Build YAML structure
     let mut tests_mapping = serde_yaml::Mapping::new();
@@ -1131,19 +1197,6 @@ pub(crate) fn update_integration() -> Result<()> {
     tests_content.push_str("    result: info\n");
     tests_content.push_str("\n");
     tests_content.push_str(&tests_yaml_formatted);
-
-    // Only write if content changed
-    let needs_update = match std::fs::read_to_string(&tests_fmf_path) {
-        Ok(existing) => existing != tests_content,
-        Err(_) => true,
-    };
-
-    if needs_update {
-        std::fs::write(&tests_fmf_path, tests_content).context("Writing tests.fmf")?;
-        println!("Generated {}", tests_fmf_path);
-    } else {
-        println!("Unchanged: {}", tests_fmf_path);
-    }
 
     // Generate plans section using structured YAML
     let mut plans_mapping = serde_yaml::Mapping::new();
@@ -1237,12 +1290,12 @@ pub(crate) fn update_integration() -> Result<()> {
         plans_section.push('\n');
     }
 
-    // Update integration.fmf with generated plans
-    let output_path = Utf8Path::new("tmt/plans/integration.fmf");
+    // Build integration.fmf content by splicing the generated plans section
+    // between the existing marker lines, preserving hand-written content outside them.
+    let integration_fmf_path = Utf8Path::new("tmt/plans/integration.fmf");
     let existing_content =
-        std::fs::read_to_string(output_path).context("Reading integration.fmf")?;
+        std::fs::read_to_string(integration_fmf_path).context("Reading integration.fmf")?;
 
-    // Replace plans section
     let (before_plans, rest) = existing_content
         .split_once(PLAN_MARKER_BEGIN)
         .context("Missing # BEGIN GENERATED PLANS marker in integration.fmf")?;
@@ -1250,25 +1303,12 @@ pub(crate) fn update_integration() -> Result<()> {
         .split_once(PLAN_MARKER_END)
         .context("Missing # END GENERATED PLANS marker in integration.fmf")?;
 
-    let new_content = format!(
+    let integration_content = format!(
         "{}{}{}{}{}",
         before_plans, PLAN_MARKER_BEGIN, plans_section, PLAN_MARKER_END, after_plans
     );
 
-    // Only write if content changed
-    let needs_update = match std::fs::read_to_string(output_path) {
-        Ok(existing) => existing != new_content,
-        Err(_) => true,
-    };
-
-    if needs_update {
-        std::fs::write(output_path, new_content)?;
-        println!("Generated {}", output_path);
-    } else {
-        println!("Unchanged: {}", output_path);
-    }
-
-    Ok(())
+    Ok((tests_content, integration_content))
 }
 
 #[cfg(test)]

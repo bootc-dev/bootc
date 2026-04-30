@@ -169,10 +169,11 @@ test-upgrade *ARGS: build _build-upgrade-source-image
         "${composefs_args[@]}" \
         {{upgrade_source_img}} {{ARGS}} readonly
 
-# Run cargo fmt and clippy checks in container
+# Run all validation checks: tmt plan staleness (local), then fmt/clippy/man/schema (container)
 [group('core')]
 validate:
-    podman build {{base_buildargs}} --target validate .
+    cargo xtask update-generated direct --check
+    podman build {{base_buildargs}} --target validate-post-build .
 
 # Test container export via Anaconda liveimg install in a QEMU VM
 [group('testing')]
@@ -291,9 +292,12 @@ pullspec-for-os TYPE NAME:
 # ============================================================================
 
 # Update generated files (man pages, JSON schemas)
+# tmt plans are updated directly; man pages + JSON schemas are regenerated
+# inside a container (so ostree is available) and written back via --output.
 [group('maintenance')]
 update-generated:
-    cargo run -p xtask update-generated
+    cargo xtask update-generated direct
+    podman build {{base_buildargs}} --target update-generated-from-code-output --output type=local,dest=. .
 
 # Remove all locally-built test container images
 [group('maintenance')]

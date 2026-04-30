@@ -185,6 +185,24 @@ RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp
 FROM buildroot as validate
 RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp --mount=type=cache,target=/src/target --mount=type=cache,target=/var/roothome make validate
 
+FROM validate as validate-post-build
+RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp --mount=type=cache,target=/src/target --mount=type=cache,target=/var/roothome \
+    cargo xtask update-generated from-code --check
+
+# Stage for updating generated docs files (man pages, JSON schemas) on the host.
+# Usage: podman build --target update-generated-from-code --output type=local,dest=. .
+# This runs `from-code` inside the container (where ostree is available) and
+# exports only the generated files back to the host working directory.
+FROM buildroot as update-generated-from-code
+RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp --mount=type=cache,target=/src/target --mount=type=cache,target=/var/roothome \
+    cargo xtask update-generated from-code
+# Export only the generated docs — not the entire container filesystem.
+# Glob patterns here automatically pick up any new schemas added to JSON_SCHEMAS
+# in crates/xtask/src/xtask.rs without requiring Dockerfile changes.
+FROM scratch as update-generated-from-code-output
+COPY --from=update-generated-from-code /src/docs/src/man/ /docs/src/man/
+COPY --from=update-generated-from-code /src/docs/src/*.schema.json /docs/src/
+
 # ----
 # Stages for the final image
 # ----

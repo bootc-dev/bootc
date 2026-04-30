@@ -8,6 +8,8 @@
 # Toplevel build bits
 !Makefile
 !Cargo.*
+# cargo alias config (defines `cargo xtask` shorthand used in Dockerfile stages)
+!.cargo/config.toml
 # License and doc files needed for RPM
 !LICENSE-*
 !README.md
