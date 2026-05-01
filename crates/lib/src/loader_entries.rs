@@ -17,17 +17,17 @@ use ostree_ext::ostree;
 use std::collections::BTreeMap;
 
 /// The BLS extension key prefix for source-tracked options.
-const OPTIONS_SOURCE_KEY_PREFIX: &str = "x-options-source-";
+pub(crate) const OPTIONS_SOURCE_KEY_PREFIX: &str = "x-options-source-";
 
 /// A validated source name (alphanumeric + hyphens + underscores, non-empty).
 ///
 /// This is a newtype wrapper around `String` that enforces validation at
 /// construction time. See <https://lexi-lambda.github.io/blog/2019/11/05/parse-don-t-validate/>.
-struct SourceName(String);
+pub(crate) struct SourceName(String);
 
 impl SourceName {
     /// Parse and validate a source name.
-    fn parse(source: &str) -> Result<Self> {
+    pub(crate) fn parse(source: &str) -> Result<Self> {
         ensure!(!source.is_empty(), "Source name must not be empty");
         ensure!(
             source
@@ -39,7 +39,7 @@ impl SourceName {
     }
 
     /// The BLS key for this source (e.g., `x-options-source-tuned`).
-    fn bls_key(&self) -> String {
+    pub(crate) fn bls_key(&self) -> String {
         format!("{OPTIONS_SOURCE_KEY_PREFIX}{}", self.0)
     }
 }
@@ -59,7 +59,7 @@ impl std::fmt::Display for SourceName {
 
 /// Extract source options from BLS entry content. Parses `x-options-source-*` keys
 /// from the raw BLS text since the ostree BootconfigParser doesn't expose key iteration.
-fn extract_source_options_from_bls(content: &str) -> BTreeMap<String, CmdlineOwned> {
+pub(crate) fn extract_source_options_from_bls(content: &str) -> BTreeMap<String, CmdlineOwned> {
     let mut sources = BTreeMap::new();
     for line in content.lines() {
         let line = line.trim();
@@ -89,7 +89,7 @@ fn extract_source_options_from_bls(content: &str) -> BTreeMap<String, CmdlineOwn
 /// 3. Add the new options for the specified source
 ///
 /// Options not tracked by any source are preserved as-is.
-fn compute_merged_options(
+pub(crate) fn compute_merged_options(
     current_options: &str,
     source_options: &BTreeMap<String, CmdlineOwned>,
     target_source: &SourceName,
