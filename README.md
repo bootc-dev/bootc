@@ -58,6 +58,9 @@ There is also a list of [MAINTAINERS.md](MAINTAINERS.md), and please review our 
 ## Governance
 See [GOVERNANCE.md](GOVERNANCE.md) for project governance details.
 
+## Community Meetings
+See [Community Meetings](meetings/) for the details and join us.
+
 ## Badges
 
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/10113/badge)](https://www.bestpractices.dev/projects/10113)
