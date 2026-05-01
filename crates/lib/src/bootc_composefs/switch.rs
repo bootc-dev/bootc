@@ -51,12 +51,22 @@ pub(crate) async fn switch_composefs(
     let repo = &*booted_cfs.repo;
     let (image, img_config) = is_image_pulled(repo, &target_imgref).await?;
 
-    // Use unified storage if explicitly requested, or auto-detect if the
-    // target image is already in bootc-owned containers-storage.
+    // Use unified storage if explicitly requested, or auto-detect: either the
+    // target image is already in bootc-owned containers-storage, OR the booted
+    // image is — which means the user has opted into unified storage and all
+    // subsequent operations (including switch to a new image) should use it.
     let use_unified = if opts.unified_storage_exp {
         true
     } else {
-        crate::deploy::image_exists_in_unified_storage(storage, &target_imgref).await?
+        let booted_imgref = host.spec.image.as_ref();
+        let booted_unified = if let Some(booted) = booted_imgref {
+            crate::deploy::image_exists_in_unified_storage(storage, booted).await?
+        } else {
+            false
+        };
+        let target_unified =
+            crate::deploy::image_exists_in_unified_storage(storage, &target_imgref).await?;
+        booted_unified || target_unified
     };
 
     let do_upgrade_opts = DoUpgradeOpts {

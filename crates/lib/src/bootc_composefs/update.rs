@@ -416,11 +416,17 @@ pub(crate) async fn upgrade_composefs(
     let imgref = derived_image.as_ref().or(current_image);
     let mut booted_imgref = imgref.ok_or_else(|| anyhow::anyhow!("No image source specified"))?;
 
-    // Auto-detect unified storage: if the image is already in bootc-owned
-    // containers-storage (e.g. from a previous `bootc image set-unified`),
-    // use the zero-copy path.
-    do_upgrade_opts.use_unified =
-        crate::deploy::image_exists_in_unified_storage(storage, booted_imgref).await?;
+    // Auto-detect unified storage: use the unified path if the target image is
+    // already in bootc-owned containers-storage, OR if the booted image is —
+    // the latter means the user has opted into unified storage and all
+    // subsequent operations should use it.
+    let current_unified = if let Some(current) = current_image {
+        crate::deploy::image_exists_in_unified_storage(storage, current).await?
+    } else {
+        false
+    };
+    do_upgrade_opts.use_unified = current_unified
+        || crate::deploy::image_exists_in_unified_storage(storage, booted_imgref).await?;
 
     let repo = &*composefs.repo;
 
