@@ -265,7 +265,20 @@ fn create_vm(sh: &Shell) -> Result<()> {
 
     let base_img = std::env::var("BOOTC_BASE_IMAGE")
         .or_else(|_| std::env::var("BOOTC_base"))
-        .unwrap_or_else(|_| "quay.io/centos-bootc/centos-bootc:stream10".to_string());
+        .unwrap_or_else(|_| {
+            // Prefer localhost/bootc if it exists (local composefs build), otherwise
+            // fall back to the upstream stream10 base.
+            let local_exists = Command::new("podman")
+                .args(["image", "exists", "localhost/bootc"])
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+            if local_exists {
+                "localhost/bootc".to_string()
+            } else {
+                "quay.io/centos-bootc/centos-bootc:stream10".to_string()
+            }
+        });
     let bind_mount = format!("{}:{}", sysext_path, VM_SYSEXT_MNT);
 
     let bcvk_opts = BcvkInstallOpts::from_env();
