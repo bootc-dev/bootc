@@ -86,9 +86,6 @@ pub(crate) enum UpdateAction {
     Skip,
     /// Proceed with the update
     Proceed,
-    /// Only update the target imgref in the .origin file
-    /// Will only be returned if the Operation is update and not switch
-    UpdateOrigin,
 }
 
 /// Determines what action should be taken for the update
@@ -125,9 +122,8 @@ pub(crate) enum UpdateAction {
 /// * `is_switch`     - Whether this is an update operation or a switch operation
 ///
 /// # Returns
-/// * UpdateAction::Skip         - Skip the update/switch as we have it as a deployment
-/// * UpdateAction::UpdateOrigin - Just update the target imgref in the origin file
-/// * UpdateAction::Proceed      - Proceed with the update
+/// * UpdateAction::Skip    - Skip the update/switch as we have it as a deployment
+/// * UpdateAction::Proceed - Proceed with the update
 pub(crate) fn validate_update(
     storage: &Storage,
     booted_cfs: &BootedComposefs,
@@ -146,33 +142,25 @@ pub(crate) fn validate_update(
 
     let image_id = fs.compute_image_id();
 
-    // Case1
-    //
-    // "update" image has the same verity as the one currently booted
-    // This could be someone trying to `bootc switch <remote_image>` where
-    // remote_image is the exact same image as the one currently booted, but
-    // they are wanting to change the target
-    // We just update the image origin file here
-    //
-    // If it's not a switch op, then we skip the update
-    if image_id.to_hex() == *booted_cfs.cmdline.digest {
-        let ret = if is_switch {
-            UpdateAction::UpdateOrigin
-        } else {
-            UpdateAction::Skip
-        };
-
-        return Ok(ret);
-    }
-
     let all_deployments = host.all_composefs_deployments()?;
 
     let found_depl = all_deployments
         .iter()
         .find(|d| d.deployment.verity == image_id.to_hex());
 
-    // We have this in our deployments somewhere, i.e. Case 2 or 3
-    if found_depl.is_some() {
+    if let Some(collision) = found_depl {
+        if is_switch {
+            // For `bootc switch`, any digest collision is an error: two images
+            // from different sources can produce identical composefs roots and we
+            // cannot safely reuse an existing state directory seeded from a
+            // different image.
+            anyhow::bail!(
+                "Target image has the same fs-verity digest as the existing {:?} deployment.",
+                collision.ty,
+            );
+        }
+        // For `bootc upgrade`, matching the booted deployment means nothing to
+        // do; matching a non-booted deployment (staged/rollback) means skip.
         return Ok(UpdateAction::Skip);
     }
 
@@ -274,6 +262,21 @@ pub(crate) async fn do_upgrade(
         opts.use_unified,
     )
     .await?;
+
+    // If the target image produces the same fs-verity digest as any existing
+    // deployment (booted, staged, rollback, or pinned), error out.  Two images
+    // from different sources can have identical content; we cannot silently reuse
+    // an existing state directory whose /etc was seeded from a different image.
+    let all_deployments = host.all_composefs_deployments()?;
+    if let Some(collision) = all_deployments
+        .iter()
+        .find(|d| d.deployment.verity == id.to_hex())
+    {
+        anyhow::bail!(
+            "Target image has the same fs-verity digest as the existing {:?} deployment.",
+            collision.ty,
+        );
+    }
 
     let Some(entry) = entries.iter().next() else {
         anyhow::bail!("No boot entries!");
@@ -476,10 +479,6 @@ pub(crate) async fn upgrade_composefs(
                     )
                     .await;
                 }
-
-                UpdateAction::UpdateOrigin => {
-                    anyhow::bail!("Updating origin not supported for update operation")
-                }
             }
         }
     }
@@ -511,10 +510,6 @@ pub(crate) async fn upgrade_composefs(
                     &img_config.manifest,
                 )
                 .await;
-            }
-
-            UpdateAction::UpdateOrigin => {
-                anyhow::bail!("Updating origin not supported for update operation")
             }
         }
     }

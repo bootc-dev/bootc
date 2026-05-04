@@ -187,24 +187,6 @@ fn add_update_in_origin(
     Ok(())
 }
 
-/// Updates the currently booted image's target imgref
-pub(crate) fn update_target_imgref_in_origin(
-    storage: &Storage,
-    booted_cfs: &BootedComposefs,
-    imgref: &ImageReference,
-) -> Result<()> {
-    let imgref = imgref.to_image_proxy_ref()?;
-    add_update_in_origin(
-        storage,
-        booted_cfs.cmdline.digest.as_ref(),
-        "origin",
-        &[(
-            ORIGIN_CONTAINER,
-            &format!("ostree-unverified-image:{imgref}"),
-        )],
-    )
-}
-
 pub(crate) fn update_boot_digest_in_origin(
     storage: &Storage,
     digest: &str,

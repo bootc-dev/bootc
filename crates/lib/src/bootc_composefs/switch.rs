@@ -3,7 +3,6 @@ use fn_error_context::context;
 
 use crate::{
     bootc_composefs::{
-        state::update_target_imgref_in_origin,
         status::get_composefs_status,
         update::{DoUpgradeOpts, UpdateAction, do_upgrade, is_image_pulled, validate_update},
     },
@@ -93,13 +92,6 @@ pub(crate) async fn switch_composefs(
                     &img_config.manifest,
                 )
                 .await;
-            }
-
-            UpdateAction::UpdateOrigin => {
-                // The staged image will never be the current image's verity digest
-                println!("Image already in composefs repository");
-                println!("Updating target image reference");
-                return update_target_imgref_in_origin(storage, booted_cfs, &target_imgref);
             }
         }
     }

@@ -262,4 +262,11 @@ execute:
     test:
       - /tmt/tests/tests/test-42-loader-entries-source
   extra-fixme_skip_if_composefs: true
+
+/plan-43-switch-same-digest:
+  summary: Error on bootc switch to image with identical fs-verity digest
+  discover:
+    how: fmf
+    test:
+      - /tmt/tests/tests/test-43-switch-same-digest
 # END GENERATED PLANS

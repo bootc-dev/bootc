@@ -163,3 +163,8 @@ check:
   summary: Test bootc loader-entries set-options-for-source
   duration: 30m
   test: nu booted/test-loader-entries-source.nu
+
+/test-43-switch-same-digest:
+  summary: Error on bootc switch to image with identical fs-verity digest
+  duration: 10m
+  test: nu booted/test-switch-same-digest.nu
