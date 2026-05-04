@@ -36,15 +36,17 @@ if $is_composefs {
     print "# TODO composefs: skipping pull test - cfs oci pull requires write access to sysroot"
     bootc internals cfs --help
 
-    # Verify that GC on a freshly booted system would not prune any
-    # images or streams.  This validates that our OCI tags and
-    # manifest→image refs correctly root the entire chain.
-    # Note: a small number of orphaned objects is expected (e.g. from
-    # manifest splitstream rewrites) and is harmless.
-    print "# Verifying composefs GC dry-run does not prune images or streams"
-    let gc_output = (bootc internals composefs-gc --dry-run)
-    print $gc_output
-    assert (not ($gc_output | str contains "Pruned symlinks")) "GC dry-run should not prune any images or streams on a freshly booted system"
+    # Regression test for https://github.com/bootc-dev/bootc/issues/1808 :
+    # `bootc internals cfs gc` was deleting live deployment objects.
+    # Verify GC dry-run does not prune any OCI image or stream symlinks.
+    # A small number of raw object orphans (~4) is expected: pull rewrites
+    # the config+manifest splitstreams to add EROFS refs, leaving the
+    # originals unreferenced until the next GC run.  Those are harmless.
+    # We use --assert-no-op in the dedicated writable GC test plan instead.
+    print "# Verifying composefs GC dry-run does not prune OCI structure (issue #1808)"
+    let gc_out = (bootc internals composefs-gc --dry-run)
+    print $gc_out
+    assert (not ($gc_out | str contains "Pruned symlinks")) "GC must not prune any OCI image or stream symlinks on a live system"
 } else {
     # When not on composefs, run the full test including initialization
     bootc internals test-composefs

@@ -182,6 +182,10 @@ def sixth_boot [i: int] {
 
     # Just this being booted counts as success
     if $i == 3 {
+        # After multiple GC cycles, assert the repo is fully clean.
+        # Regression check for issue #1808: GC must not identify any live
+        # deployment objects as garbage.
+        bootc internals composefs-gc --assert-no-op
         tap ok
         return
     }

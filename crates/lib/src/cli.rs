@@ -718,6 +718,10 @@ pub(crate) enum InternalsOpts {
     ComposefsGC {
         #[clap(long)]
         dry_run: bool,
+        /// Exit with an error if GC would remove any objects or prune any symlinks.
+        /// Implies `--dry-run`.  Intended for use in tests and health-checks.
+        #[clap(long)]
+        assert_no_op: bool,
     },
     /// Block device inspection tools.
     #[clap(subcommand)]
@@ -2201,7 +2205,10 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
                     }
                 }
             }
-            InternalsOpts::ComposefsGC { dry_run } => {
+            InternalsOpts::ComposefsGC {
+                dry_run,
+                assert_no_op,
+            } => {
                 let storage = &get_storage().await?;
 
                 match storage.kind()? {
@@ -2210,9 +2217,11 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
                     }
 
                     BootedStorageKind::Composefs(booted_cfs) => {
-                        let gc_result = composefs_gc(storage, &booted_cfs, dry_run).await?;
+                        let effective_dry_run = dry_run || assert_no_op;
+                        let gc_result =
+                            composefs_gc(storage, &booted_cfs, effective_dry_run).await?;
 
-                        if dry_run {
+                        if effective_dry_run {
                             println!("Dry run (no files deleted)");
                         }
 
@@ -2226,6 +2235,20 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
                                 "Pruned symlinks: {} images, {} streams",
                                 gc_result.images_pruned, gc_result.streams_pruned
                             );
+                        }
+
+                        if assert_no_op {
+                            let is_noop = gc_result.objects_removed == 0
+                                && gc_result.images_pruned == 0
+                                && gc_result.streams_pruned == 0;
+                            if !is_noop {
+                                anyhow::bail!(
+                                    "--assert-no-op: GC would remove {} object(s), {} image symlink(s), {} stream symlink(s) (issue #1808)",
+                                    gc_result.objects_removed,
+                                    gc_result.images_pruned,
+                                    gc_result.streams_pruned,
+                                );
+                            }
                         }
 
                         Ok(())
