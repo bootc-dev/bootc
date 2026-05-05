@@ -53,18 +53,20 @@ RUN --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
     /run/packaging/enable-compose-repos
 RUN --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp /usr/libexec/bootc-base-imagectl build-rootfs --manifest=standard /target-rootfs
 
-FROM scratch as base
+FROM scratch as fetch
 COPY --from=target-base /target-rootfs/ /
 # SKIP_CONFIGS=1 skips LBIs, test kargs, and install configs (for FCOS testing)
 ARG SKIP_CONFIGS
 ARG boot_type
 ARG seal_state
-# Use tmpfs for /run and /tmp with bind mounts inside to avoid leaking mount stubs into the image
+# All network-fetching operations: package installs from distro repos, Copr, Koji.
+# Separated so `just build-fetch --target=fetch` can be retried independently on
+# transient network failures without re-running the configuration phase.
 RUN --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
     --mount=type=bind,from=src,src=/src/hack,target=/run/hack <<-EOF
     set -ex
 
-    cd /run/hack/ && SKIP_CONFIGS="${SKIP_CONFIGS}" ./provision-derived.sh
+    cd /run/hack/ && SKIP_CONFIGS="${SKIP_CONFIGS}" ./provision-fetch.sh
 
     pkgs_to_install=()
     if [[ "${seal_state}" == "sealed" ]]; then
@@ -106,7 +108,7 @@ CMD ["/sbin/init"]
 
 # This layer contains things which aren't in the default image and may
 # be used for sealing images in particular.
-FROM base as tools
+FROM fetch as tools
 RUN --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
     --mount=type=bind,from=packaging,src=/,target=/run/packaging \
     /run/packaging/initialize-sealing-tools
@@ -117,6 +119,14 @@ RUN --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
 # all external dependencies are clearly delineated.
 # This is verified in `cargo xtask check-buildsys`.
 # -------------
+
+FROM fetch as base
+ARG SKIP_CONFIGS
+# Local configuration only — no network access required or permitted.
+# Sits after the cutoff so the linter enforces --network=none automatically.
+RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
+    --mount=type=bind,from=src,src=/src/hack,target=/run/hack \
+    sh -c 'cd /run/hack/ && SKIP_CONFIGS="${SKIP_CONFIGS}" ./provision-configure.sh'
 
 FROM buildroot as build
 # Version for RPM build (optional, computed from git in Justfile)

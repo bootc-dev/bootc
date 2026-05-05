@@ -74,6 +74,56 @@ build: package _keygen && _pull-lbi-images
     eval $(just _git-build-vars)
     podman build {{_nocache_arg}} --build-arg=image_version=${VERSION} --build-context "packages=${pkg_path}" -t {{base_img}} {{buildargs}} .
 
+# Fetch all external dependencies with a retry loop.
+#
+# This runs `podman build --target=fetch` for both the main image and the
+# upgrade-source image, retrying on transient network failures (Koji 503s,
+# Copr outages, quay.io blips, etc.).  In CI this runs as its own step
+# before `just build` / `just test-upgrade` so that flakes don't require
+# re-queueing the entire PR.
+#
+# The retry parameters can be overridden via environment variables:
+#   BOOTC_CI_RETRIES=10 BOOTC_CI_DELAY=60 just build-fetch
+[group('core')]
+build-fetch: _keygen
+    #!/bin/bash
+    set -euo pipefail
+    retries=${BOOTC_CI_RETRIES:-3}
+    delay=${BOOTC_CI_DELAY:-30}
+    retry() {
+        local attempt
+        for attempt in $(seq 1 "$retries"); do
+            echo "--- Attempt ${attempt}/${retries}: $*"
+            if "$@"; then
+                return 0
+            fi
+            if [ "$attempt" -lt "$retries" ]; then
+                echo "--- Attempt ${attempt} failed, retrying in ${delay}s..."
+                sleep "$delay"
+            fi
+        done
+        echo "--- All ${retries} attempts failed: $*" >&2
+        return 1
+    }
+    # Pull the base images explicitly so failures are retried cleanly
+    # before we even start the container build.
+    retry podman pull -q {{base}}
+    retry podman pull -q {{buildroot_base}}
+    # Pull LBI images (also fetched later by _pull-lbi-images, but doing it
+    # here means a failure is retried rather than aborting the full build).
+    for img in {{lbi_images}}; do
+        retry podman pull -q "$img"
+    done
+    # Build the network-heavy fetch stage of the main image.  If this
+    # succeeds, `just build` will get a cache hit on the fetch layer and
+    # run entirely offline.
+    # Note: buildargs (not base_buildargs) is needed here because the
+    # target-base stage requires --cap-add/--security-opt for bwrap.
+    retry podman build {{_nocache_arg}} --target=fetch {{buildargs}} .
+    # Same for the upgrade-source image used by test-upgrade.
+    retry podman build {{_nocache_arg}} --build-arg=base={{base}} \
+        --target=fetch -f tmt/tests/Dockerfile.upgrade-source .
+
 # Show available build variants and current configuration
 [group('core')]
 list-variants:

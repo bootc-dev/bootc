@@ -27,6 +27,9 @@ env:
   # as the default runner user doesn't have access
   LIBVIRT_DEFAULT_URI: "qemu:///session"
   DEV_IMAGE: ghcr.io/bootc-dev/dev-bootc
+  # Retry parameters for `just build-fetch` (transient Koji/Copr/quay.io failures)
+  BOOTC_CI_RETRIES: "10"
+  BOOTC_CI_DELAY: "60"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -108,6 +111,9 @@ jobs:
         run: sudo tune2fs -O verity $(findmnt -vno SOURCE /)
       - name: Install utils
         run: sudo apt -y install fsverity just
+      - name: Fetch external dependencies (with retry)
+        run: just build-fetch
+
       - name: Integration tests
         run: |
           set -xeu
@@ -271,6 +277,9 @@ jobs:
           name: packages-${{ matrix.test_os }}
           path: target/packages/
 
+      - name: Fetch external dependencies (with retry)
+        run: BOOTC_SKIP_PACKAGE=1 just build-fetch
+
       - name: Build container
         run: |
           BOOTC_SKIP_PACKAGE=1 just bootloader=$BOOTC_bootloader build
@@ -354,6 +363,9 @@ jobs:
         with:
           name: packages-${{ matrix.test_os }}
           path: target/packages/
+
+      - name: Fetch external dependencies (with retry)
+        run: just build-fetch
 
       - name: Run upgrade test
         run: just test-upgrade

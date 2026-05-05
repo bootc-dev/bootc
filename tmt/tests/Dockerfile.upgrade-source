@@ -4,17 +4,30 @@
 #
 # Note: we do NOT pass `cloudinit` to provision-derived.sh because bcvk
 # handles SSH key injection itself; cloud-init interferes with that.
+#
+# The build is split into two stages mirroring the main Dockerfile:
+#   fetch  — all network I/O (packages from repos, Koji, Copr, GitHub)
+#   final  — local configuration only, no network
+# `just build-fetch` targets the fetch stage with a retry loop so transient
+# failures (Koji 503s, Copr outages) don't require re-queueing the whole PR.
 ARG base
-FROM ${base}
-COPY hack/provision-derived.sh hack/packages.txt contrib/packaging/configure-rootfs /run/provision/
-ARG variant=ostree
+FROM ${base} AS fetch
+COPY hack/provision-fetch.sh hack/packages.txt /run/provision/
 RUN --mount=type=tmpfs,target=/tmp <<EORUN
 set -xeuo pipefail
 cd /run/provision
-# Install nu and tmt dependencies using the same script as the main build,
-# but with SKIP_CONFIGS=1 since we don't need LBIs or test kargs in the
-# upgrade source image (those come from the image we upgrade into).
-SKIP_CONFIGS=1 ./provision-derived.sh
+# SKIP_CONFIGS=1: no LBIs or test kargs needed in the upgrade source image
+# (those come from the image we upgrade into).
+SKIP_CONFIGS=1 ./provision-fetch.sh
+EORUN
+
+FROM fetch
+COPY hack/provision-configure.sh contrib/packaging/configure-rootfs /run/provision/
+ARG variant=ostree
+RUN --network=none --mount=type=tmpfs,target=/tmp <<EORUN
+set -xeuo pipefail
+cd /run/provision
+SKIP_CONFIGS=1 ./provision-configure.sh
 # Ensure a root filesystem type is configured so `bootc install to-disk`
 # works for base images that don't ship a default (e.g. Fedora).
 # For the ostree variant, configure-rootfs will default to xfs.
