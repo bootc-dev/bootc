@@ -17,4 +17,13 @@ install() {
     mkdir -p "${initdir}${systemdsystemunitdir}/initrd-root-fs.target.wants"
     ln_r "${systemdsystemunitdir}/${service}" \
         "${systemdsystemunitdir}/initrd-root-fs.target.wants/${service}"
+
+    # Install the host's setup-root-conf.toml if present so that
+    # per-image composefs mount configuration (e.g. etc.transient) is
+    # embedded in the initramfs without requiring manual --include flags.
+    # Use '[[ -e ]] && inst_simple' rather than inst_if_exists, which is
+    # not available in all dracut invocation contexts (e.g. explicit
+    # dracut --force in a Containerfile RUN layer).
+    [[ -e /usr/lib/composefs/setup-root-conf.toml ]] && \
+        inst_simple /usr/lib/composefs/setup-root-conf.toml
 }
