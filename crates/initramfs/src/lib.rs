@@ -233,11 +233,16 @@ fn overlay_state(
     base: impl AsFd,
     state: impl AsFd,
     source: &str,
-    mode: Option<rustix::fs::Mode>,
+    _mode: Option<rustix::fs::Mode>,
     mount_attr_flags: Option<MountAttrFlags>,
 ) -> Result<()> {
-    let upper = ensure_dir(state.as_fd(), "upper", mode)?;
-    let work = ensure_dir(state.as_fd(), "work", mode)?;
+    // upper must be 0755: the overlayfs merged view inherits permissions from
+    // upperdir, so 0700 would make / (or the mounted subdir) inaccessible to
+    // non-root processes (dbus, anything that drops privileges).
+    // work is kernel-internal and never visible in the merged view; 0700 is fine.
+    // See: https://github.com/composefs/composefs-rs/issues/287
+    let upper = ensure_dir(state.as_fd(), "upper", Some(0o755.into()))?;
+    let work = ensure_dir(state.as_fd(), "work", Some(0o700.into()))?;
 
     let overlayfs = FsHandle::open("overlay")?;
     fsconfig_set_string(overlayfs.as_fd(), "source", source)?;
