@@ -61,6 +61,9 @@ pub(crate) struct ImgConfigManifest {
 pub(crate) struct ComposefsCmdline {
     pub allow_missing_fsverity: bool,
     pub digest: Box<str>,
+    /// True when the root is a transient overlay (source prefix `transient:composefs=`).
+    /// Set by [`composefs_booted`]; always `false` when constructed from a cmdline string.
+    pub is_transient: bool,
 }
 
 /// Information about a deployment for soft reboot comparison
@@ -79,6 +82,7 @@ impl ComposefsCmdline {
         ComposefsCmdline {
             allow_missing_fsverity,
             digest: digest_str.into(),
+            is_transient: false,
         }
     }
 
@@ -86,6 +90,7 @@ impl ComposefsCmdline {
         ComposefsCmdline {
             allow_missing_fsverity,
             digest: digest.into(),
+            is_transient: false,
         }
     }
 
@@ -159,17 +164,37 @@ pub(crate) fn composefs_booted() -> Result<Option<&'static ComposefsCmdline>> {
     // Find the source of / mountpoint as the cmdline doesn't change on soft-reboot
     let root_mnt = inspect_filesystem("/".into())?;
 
-    // This is of the format composefs:<composefs_hash>
-    let verity_from_mount_src = root_mnt
-        .source
-        .strip_prefix("composefs:")
-        .ok_or_else(|| anyhow::anyhow!("Root not mounted using composefs"))?;
+    // The mount source encodes the composefs digest in one of two formats:
+    //   - Normal boot:    "composefs:<hash>"
+    //   - Transient root: "transient:composefs=<hash>"
+    // Strip either prefix to get the digest and record whether the root is
+    // transient, then compare the digest with the cmdline value to detect
+    // soft-reboots into a different deployment.
+    let (verity_from_mount_src, is_transient) =
+        if let Some(v) = root_mnt.source.strip_prefix("composefs:") {
+            (v, false)
+        } else if let Some(v) = root_mnt.source.strip_prefix("transient:composefs=") {
+            (v, true)
+        } else {
+            anyhow::bail!(
+                "Root not mounted using composefs (source: {})",
+                root_mnt.source
+            )
+        };
 
     let r = if *verity_from_mount_src != *v.digest {
         // soft rebooted into another deployment
-        CACHED_DIGEST_VALUE.get_or_init(|| Some(ComposefsCmdline::new(verity_from_mount_src)))
+        CACHED_DIGEST_VALUE.get_or_init(|| {
+            let mut c = ComposefsCmdline::new(verity_from_mount_src);
+            c.is_transient = is_transient;
+            Some(c)
+        })
     } else {
-        CACHED_DIGEST_VALUE.get_or_init(|| Some(v))
+        CACHED_DIGEST_VALUE.get_or_init(|| {
+            let mut c = v;
+            c.is_transient = is_transient;
+            Some(c)
+        })
     };
 
     Ok(r.as_ref())
