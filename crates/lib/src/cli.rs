@@ -649,6 +649,9 @@ pub(crate) enum InternalsOpts {
         /// Relabel this path
         path: Utf8PathBuf,
     },
+    /// Relabel the overlay mount point inodes after SELinux policy load.
+    /// Called by the generated bootc-early-overlay-relabel unit.
+    RelabelOverlayMountpoints,
     /// Proxy frontend for the `ostree-ext` CLI.
     OstreeExt {
         #[clap(allow_hyphen_values = true)]
@@ -2111,6 +2114,9 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
                     &ostree::SePolicy::new(&gio::File::for_path("/"), gio::Cancellable::NONE)?;
                 crate::lsm::relabel_recurse(root, path, as_path.as_deref(), sepolicy)?;
                 Ok(())
+            }
+            InternalsOpts::RelabelOverlayMountpoints => {
+                crate::generator::relabel_overlay_mountpoints()
             }
             InternalsOpts::BootcInstallCompletion { sysroot, stateroot } => {
                 let rootfs = &Dir::open_ambient_dir("/", cap_std::ambient_authority())?;

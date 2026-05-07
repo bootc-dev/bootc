@@ -119,6 +119,39 @@ struct Config {
     root: RootConfig,
 }
 
+/// Default path to the setup-root configuration file, relative to the booted root.
+pub const SETUP_ROOT_CONF_PATH: &str = "/usr/lib/composefs/setup-root-conf.toml";
+
+/// Returns `true` if the configuration at `path` requests a transient `/etc`
+/// overlay.  Used by the systemd generator to decide whether to emit the
+/// SELinux relabel unit *before* those mounts exist (the generator runs before
+/// `local-fs.target`).
+///
+/// Returns `false` if the file is absent or unreadable (safe default: no unit
+/// emitted for non-transient systems).
+pub fn config_has_transient_submounts(path: &std::path::Path) -> bool {
+    let text = match std::fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(e) => {
+            tracing::debug!("Could not read {}: {e:#}", path.display());
+            return false;
+        }
+    };
+    let config: Config = match toml::from_str(&text) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::debug!("Could not parse {}: {e:#}", path.display());
+            return false;
+        }
+    };
+    // Only /etc overlay triggers the relabel unit.
+    let is_transient = |mc: &MountConfig| match mc.mount {
+        Some(mt) => mt == MountType::Transient,
+        None => mc.transient,
+    };
+    is_transient(&config.etc)
+}
+
 /// Command-line arguments
 #[derive(Parser, Debug)]
 pub struct Args {

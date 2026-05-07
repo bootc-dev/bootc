@@ -1,0 +1,12 @@
+[Unit]
+Description=Fix SELinux labels on transient overlay mount points
+Documentation=man:bootc(1)
+DefaultDependencies=no
+ConditionSecurity=selinux
+After=local-fs.target
+Before=sysinit.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=bootc internals relabel-overlay-mountpoints

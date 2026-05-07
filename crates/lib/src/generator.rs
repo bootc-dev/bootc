@@ -1,11 +1,12 @@
 use std::io::BufRead;
 
 use anyhow::{Context, Result};
-use camino::Utf8PathBuf;
+use camino::{Utf8Path, Utf8PathBuf};
 use cap_std::fs::Dir;
 use cap_std_ext::{cap_std, dirext::CapStdExtDirExt};
 use fn_error_context::context;
 use ostree_ext::container_utils::{OSTREE_BOOTED, is_ostree_booted_in};
+use ostree_ext::{gio, ostree};
 use rustix::{fd::AsFd, fs::StatVfsMountFlags};
 
 use crate::install::DESTRUCTIVE_CLEANUP;
@@ -17,6 +18,8 @@ const MULTI_USER_TARGET: &str = "multi-user.target";
 const EDIT_UNIT: &str = "bootc-fstab-edit.service";
 const FSTAB_ANACONDA_STAMP: &str = "Created by anaconda";
 pub(crate) const BOOTC_EDITED_STAMP: &str = "Updated by bootc-fstab-edit.service";
+const TRANSIENT_RELABEL_UNIT: &str = "bootc-early-overlay-relabel.service";
+const SYSINIT_TARGET: &str = "sysinit.target";
 
 /// Called when the root is read-only composefs to reconcile /etc/fstab
 #[context("bootc generator")]
@@ -86,7 +89,53 @@ pub(crate) fn unit_enablement_impl(sysroot: &Dir, unit_dir: &Dir) -> Result<()> 
 
 /// Main entrypoint for the generator
 pub(crate) fn generator(root: &Dir, unit_dir: &Dir) -> Result<()> {
-    // Only run on ostree systems
+    // === Relabel unit: runs for ALL composefs boots (native or ostree) ===
+    // Must be before the ostree-booted guard because native composefs boots do
+    // not write /run/ostree-booted, but still need the relabel unit when any
+    // transient overlay is active.
+    //
+    // Gate on the root being overlayfs (composefs always mounts an overlay, so
+    // this excludes non-composefs systems without needing the ostree-booted marker).
+    //
+    // Two triggering conditions, detected independently:
+    //
+    // 1. Transient root: the initramfs sets the overlay source to
+    //    "transient:composefs=<digest>" in /proc/self/mountinfo.  Detect via
+    //    inspect_filesystem() rather than fstatvfs() because the `ro` kernel
+    //    cmdline flag can make an otherwise-writable overlay appear read-only
+    //    at generator time.
+    //
+    // 2. Transient /etc: this is mounted by bootc-root-setup.service
+    //    which runs *after* the generator, so fstatvfs would see the read-only
+    //    composefs at generator time.  Read setup-root-conf.toml directly from
+    //    the booted image instead.
+    {
+        let st = rustix::fs::fstatfs(root.as_fd())?;
+        if st.f_type == libc::OVERLAYFS_SUPER_MAGIC {
+            let root_is_transient =
+                match bootc_mount::inspect_filesystem(camino::Utf8Path::new("/")) {
+                    Ok(fs) => fs.source.starts_with("transient:composefs="),
+                    Err(e) => {
+                        tracing::debug!("Could not inspect root filesystem: {e:#}");
+                        false
+                    }
+                };
+            let submounts_are_transient = bootc_initramfs_setup::config_has_transient_submounts(
+                std::path::Path::new(bootc_initramfs_setup::SETUP_ROOT_CONF_PATH),
+            );
+            if root_is_transient || submounts_are_transient {
+                tracing::debug!(
+                    root_is_transient,
+                    submounts_are_transient,
+                    "Transient overlay detected; generating relabel unit"
+                );
+                generate_transient_overlay_relabel(unit_dir)?;
+            }
+        }
+    }
+
+    // === Ostree-specific generator logic ===
+    // Only run on ostree systems (native composefs boots skip below).
     if !root.try_exists(OSTREE_BOOTED)? {
         return Ok(());
     }
@@ -97,15 +146,17 @@ pub(crate) fn generator(root: &Dir, unit_dir: &Dir) -> Result<()> {
 
     unit_enablement_impl(sysroot, unit_dir)?;
 
-    // Also only run if the root is a read-only overlayfs (a composefs really)
+    // Only run for overlayfs roots (composefs mounts an overlay, regular or transient).
     let st = rustix::fs::fstatfs(root.as_fd())?;
     if st.f_type != libc::OVERLAYFS_SUPER_MAGIC {
         tracing::trace!("Root is not overlayfs");
         return Ok(());
     }
+
+    // The fstab editor only applies to read-only composefs roots (not transient).
     let st = rustix::fs::fstatvfs(root.as_fd())?;
     if !st.f_flag.contains(StatVfsMountFlags::RDONLY) {
-        tracing::trace!("Root is writable");
+        tracing::trace!("Root is writable, skipping fstab generator");
         return Ok(());
     }
 
@@ -134,6 +185,58 @@ ExecStart=bootc internals fixup-etc-fstab\n\
     let target = "local-fs-pre.target.wants";
     unit_dir.create_dir_all(target)?;
     unit_dir.symlink(&format!("../{EDIT_UNIT}"), &format!("{target}/{EDIT_UNIT}"))?;
+    Ok(())
+}
+
+/// Generate a oneshot service that relabels the transient overlay inode
+/// after SELinux policy loads, fixing the tmpfs_t label SELinux assigns to
+/// overlay upper-dir inodes at policy-load time.
+fn generate_transient_overlay_relabel(unit_dir: &Dir) -> Result<()> {
+    unit_dir.atomic_write(
+        TRANSIENT_RELABEL_UNIT,
+        include_str!("units/bootc-early-overlay-relabel.service"),
+    )?;
+    let wants = format!("{SYSINIT_TARGET}.wants");
+    unit_dir.create_dir_all(&wants)?;
+    unit_dir.symlink(
+        &format!("../{TRANSIENT_RELABEL_UNIT}"),
+        &format!("{wants}/{TRANSIENT_RELABEL_UNIT}"),
+    )?;
+    Ok(())
+}
+
+/// Relabel transient overlay mount point inodes using the running SELinux policy.
+/// Called by the generated bootc-early-overlay-relabel.service oneshot to fix
+/// the tmpfs_t label that fs_use_trans assigns to overlay upper-dir inodes at
+/// policy-load time.  Each of /, /etc, /var is relabelled iff it is a writable
+/// overlayfs (i.e. a transient overlay, not the read-only composefs).
+pub(crate) fn relabel_overlay_mountpoints() -> Result<()> {
+    let policy = ostree::SePolicy::new(&gio::File::for_path("/"), gio::Cancellable::NONE)
+        .context("Loading SELinux policy")?;
+    for path in ["/", "/etc", "/var"] {
+        let dir = Dir::open_ambient_dir(path, cap_std::ambient_authority())
+            .with_context(|| format!("Opening {path}"))?;
+        let st = rustix::fs::fstatfs(dir.as_fd())?;
+        if st.f_type != libc::OVERLAYFS_SUPER_MAGIC {
+            tracing::trace!("{path} is not an overlayfs mount, skipping relabel");
+            continue;
+        }
+        let stv = rustix::fs::fstatvfs(dir.as_fd())?;
+        if stv.f_flag.contains(StatVfsMountFlags::RDONLY) {
+            tracing::trace!("{path} is a read-only overlayfs (composefs), skipping relabel");
+            continue;
+        }
+        let metadata = dir.metadata(".").with_context(|| format!("stat {path}"))?;
+        crate::lsm::relabel(
+            &dir,
+            &metadata,
+            Utf8Path::new("."),
+            Some(Utf8Path::new(path)),
+            &policy,
+        )
+        .with_context(|| format!("Relabelling {path}"))?;
+        tracing::debug!("Relabelled {path}");
+    }
     Ok(())
 }
 
@@ -237,6 +340,51 @@ mod tests {
             tempdir.atomic_write(OSTREE_BOOTED, "ostree booted")?;
             fstab_generator_impl(&tempdir, &unit_dir).unwrap();
             assert_eq!(unit_dir.entries()?.count(), 2);
+
+            Ok(())
+        }
+
+        #[test]
+        fn test_transient_overlay_relabel_generated() -> Result<()> {
+            let tempdir = fixture()?;
+            let unit_dir = &tempdir.open_dir("run/systemd/system")?;
+
+            // We can't fake fstatfs or findmnt, so call generate_transient_overlay_relabel directly.
+            generate_transient_overlay_relabel(unit_dir)?;
+
+            // The unit file must exist
+            assert!(unit_dir.try_exists(TRANSIENT_RELABEL_UNIT)?);
+            // The symlink in sysinit.target.wants must point at the generated unit
+            let wants = format!("{SYSINIT_TARGET}.wants");
+            let link = unit_dir.read_link_contents(format!("{wants}/{TRANSIENT_RELABEL_UNIT}"))?;
+            let link: camino::Utf8PathBuf = link.try_into().unwrap();
+            assert_eq!(link, format!("../{TRANSIENT_RELABEL_UNIT}"));
+            // The unit must invoke bootc internals relabel-overlay-mountpoints
+            let content = unit_dir.read_to_string(TRANSIENT_RELABEL_UNIT)?;
+            assert!(
+                content.contains("ExecStart=bootc internals relabel-overlay-mountpoints"),
+                "unexpected unit content: {content}"
+            );
+
+            Ok(())
+        }
+
+        #[test]
+        fn test_transient_overlay_relabel_idempotent() -> Result<()> {
+            let tempdir = fixture()?;
+            let unit_dir = &tempdir.open_dir("run/systemd/system")?;
+
+            // Calling generate_transient_overlay_relabel twice must succeed
+            generate_transient_overlay_relabel(unit_dir)?;
+            // Second call: atomic_write overwrites the unit file; symlink already exists
+            // (symlink won't be re-created because the dir already contains it).
+            // The test just checks the call doesn't error.
+            // We need to remove the old symlink first (same as how enable_unit does it).
+            let wants = format!("{SYSINIT_TARGET}.wants");
+            unit_dir.remove_file_optional(format!("{wants}/{TRANSIENT_RELABEL_UNIT}"))?;
+            generate_transient_overlay_relabel(unit_dir)?;
+
+            assert!(unit_dir.try_exists(TRANSIENT_RELABEL_UNIT)?);
 
             Ok(())
         }
