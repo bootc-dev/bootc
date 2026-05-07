@@ -123,7 +123,7 @@ validate:
 	(cd crates/ostree-ext && cargo check --no-default-features)
 	(cd crates/lib && cargo check --no-default-features)
 	cargo clippy -- $(CLIPPY_CONFIG)
-	env RUSTDOCFLAGS='-D warnings' cargo doc --lib
+	env RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps --document-private-items
 .PHONY: validate
 fix-rust:
 	cargo clippy --fix --allow-dirty -- $(CLIPPY_CONFIG)
