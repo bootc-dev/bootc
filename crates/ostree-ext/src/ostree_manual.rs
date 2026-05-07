@@ -6,7 +6,7 @@ use std::ptr;
 use ostree::prelude::{Cast, InputStreamExtManual};
 use ostree::{gio, glib};
 
-/// Equivalent of `g_file_read()` for ostree::RepoFile to work around https://github.com/ostreedev/ostree/issues/2703
+/// Equivalent of `g_file_read()` for ostree::RepoFile to work around <https://github.com/ostreedev/ostree/issues/2703>
 #[allow(unsafe_code)]
 pub fn repo_file_read(f: &ostree::RepoFile) -> Result<gio::InputStream, glib::Error> {
     use glib::translate::*;

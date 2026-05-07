@@ -152,7 +152,7 @@ pub(crate) enum ContainerOpts {
         authfile: Option<PathBuf>,
 
         /// Path to a JSON-formatted serialized container configuration; this is the
-        /// `config` property of https://github.com/opencontainers/image-spec/blob/main/config.md
+        /// `config` property of <https://github.com/opencontainers/image-spec/blob/main/config.md>
         #[clap(long)]
         config: Option<Utf8PathBuf>,
 

@@ -378,7 +378,7 @@ impl<'a, W: std::io::Write> OstreeTarWriter<'a, W> {
     /// Append all xattrs to the tar stream *except* security.selinux, because
     /// that one doesn't become visible in `podman run` anyways, so we couldn't
     /// rely on it in some cases.
-    /// https://github.com/containers/storage/blob/0d4a8d2aaf293c9f0464b888d932ab5147a284b9/pkg/archive/archive.go#L85
+    /// <https://github.com/containers/storage/blob/0d4a8d2aaf293c9f0464b888d932ab5147a284b9/pkg/archive/archive.go#L85>
     #[context("Writing tar xattrs")]
     fn append_tarstream_xattrs(&mut self, xattrs: &glib::Variant) -> Result<()> {
         let v = xattrs.data_as_bytes();
@@ -646,7 +646,7 @@ impl<'a, W: std::io::Write> OstreeTarWriter<'a, W> {
 
 /// Append xattrs to the tar stream as PAX extensions, excluding security.selinux
 /// which doesn't become visible in container runtimes anyway.
-/// https://github.com/containers/storage/blob/0d4a8d2aaf293c9f0464b888d932ab5147a284b9/pkg/archive/archive.go#L85
+/// <https://github.com/containers/storage/blob/0d4a8d2aaf293c9f0464b888d932ab5147a284b9/pkg/archive/archive.go#L85>
 #[context("Writing tar xattrs")]
 fn append_pax_xattrs<W: std::io::Write>(
     out: &mut tar::Builder<W>,

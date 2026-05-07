@@ -93,7 +93,7 @@ impl BcvkInstallOpts {
     /// Return firmware / secure-boot args for `bcvk libvirt run`.
     ///
     /// For sealed images the secure boot keys directory must already
-    /// exist; the caller can use [`ensure_secureboot_keys`] first.
+    /// exist; the caller can use `ensure_secureboot_keys` first.
     #[context("Building firmware arguments")]
     pub(crate) fn firmware_args(&self) -> Result<Vec<String>> {
         let sb_keys_dir = Utf8Path::new(DEFAULT_SB_KEYS_DIR);

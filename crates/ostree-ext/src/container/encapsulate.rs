@@ -32,7 +32,7 @@ pub const DIFFID_LABEL: &str = "ostree.final-diffid";
 pub const BOOTC_LABEL: &str = "containers.bootc";
 
 /// Annotation injected into the layer to say that this is an ostree commit.
-/// However, because this gets lost when converted to D2S2 https://docs.docker.com/registry/spec/manifest-v2-2/
+/// However, because this gets lost when converted to D2S2 <https://docs.docker.com/registry/spec/manifest-v2-2/>
 /// schema, it's not actually useful today.  But, we keep it
 /// out of principle.
 const BLOB_OSTREE_ANNOTATION: &str = "ostree.encapsulated";

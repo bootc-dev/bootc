@@ -185,7 +185,7 @@ pub async fn unencapsulate(repo: &ostree::Repo, imgref: &OstreeImageReference) -
     importer.unencapsulate().await
 }
 
-/// A wrapper for [`get_blob`] which fetches a layer and decompresses it.
+/// A wrapper for [`ImageProxy::get_blob`] which fetches a layer and decompresses it.
 pub(crate) async fn fetch_layer<'a>(
     proxy: &'a ImageProxy,
     img: &OpenedImage,

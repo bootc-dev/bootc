@@ -52,8 +52,8 @@ where
     })
 }
 
-/// Flatten a nested Result<Result<T>>, defaulting to converting the error type to an `anyhow::Error`.
-/// See https://doc.rust-lang.org/std/result/enum.Result.html#method.flatten
+/// Flatten a nested `Result<Result<T>>`, defaulting to converting the error type to an `anyhow::Error`.
+/// See <https://doc.rust-lang.org/std/result/enum.Result.html#method.flatten>
 pub(crate) fn flatten_anyhow<T, E>(r: std::result::Result<Result<T>, E>) -> Result<T>
 where
     E: Display + Debug + Send + Sync + 'static,

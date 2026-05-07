@@ -122,7 +122,7 @@
 //!
 //! ## See Also
 //!
-//! - [`super::encapsulate`]: Export ostree commits to container images
+//! - [`fn@super::encapsulate`]: Export ostree commits to container images
 //! - [`crate::tar`]: Tar stream format for layer content
 
 use super::*;
@@ -183,7 +183,7 @@ pub type MetaFilteredData = HashMap<String, HashMap<String, u32>>;
 
 /// The ref prefixes which point to ostree deployments.  (TODO: Add an official API for this)
 const OSTREE_BASE_DEPLOYMENT_REFS: &[&str] = &["ostree/0", "ostree/1"];
-/// A layering violation we'll carry for a bit to band-aid over https://github.com/coreos/rpm-ostree/issues/4185
+/// A layering violation we'll carry for a bit to band-aid over <https://github.com/coreos/rpm-ostree/issues/4185>
 const RPMOSTREE_BASE_REFS: &[&str] = &["rpmostree/base"];
 
 /// Convert e.g. sha256:12345... into `/ostree/container/blob/sha256_2B12345...`.
@@ -504,7 +504,7 @@ pub fn manifest_digest_from_commit(commit: &glib::Variant) -> Result<Digest> {
 
 /// Given a target diffid, return its corresponding layer.  In our current model,
 /// we require a 1-to-1 mapping between the two up until the ostree level.
-/// For a bit more information on this, see https://github.com/opencontainers/image-spec/blob/main/config.md
+/// For a bit more information on this, see <https://github.com/opencontainers/image-spec/blob/main/config.md>
 fn layer_from_diffid<'a>(
     manifest: &'a ImageManifest,
     config: &ImageConfiguration,
@@ -608,7 +608,7 @@ fn timestamp_of_manifest_or_config(
 }
 
 /// Automatically clean up files that may have been injected by container
-/// builds. xref https://github.com/containers/buildah/issues/4242
+/// builds. xref <https://github.com/containers/buildah/issues/4242>
 fn cleanup_root(root: &Dir) -> Result<()> {
     const RUNTIME_INJECTED: &[&str] = &["usr/etc/hostname", "usr/etc/resolv.conf"];
     for ent in RUNTIME_INJECTED {

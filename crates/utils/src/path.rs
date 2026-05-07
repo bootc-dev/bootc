@@ -14,7 +14,7 @@ pub struct PathQuotedDisplay<'a> {
 /// characters such as '+' which are typically safe, but it's fine if
 /// we're overly conservative.
 ///
-/// For bash for example: https://www.gnu.org/software/bash/manual/html_node/Definitions.html#index-metacharacter
+/// For bash for example: <https://www.gnu.org/software/bash/manual/html_node/Definitions.html#index-metacharacter>
 fn is_shellsafe(c: char) -> bool {
     matches!(c, '/' | '.' | '-' | '_' | ',' | '=' | ':') || c.is_alphanumeric()
 }

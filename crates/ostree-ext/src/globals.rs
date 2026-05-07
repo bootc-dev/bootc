@@ -18,7 +18,7 @@ struct ConfigPaths {
 
 /// Get the runtime and persistent config directories.  In the system (root) case, these
 /// system(root) case:  /run/ostree           /etc/ostree        /usr/lib/ostree
-/// user(nonroot) case: /run/user/$uid/ostree ~/.config/ostree   <none>
+/// user(nonroot) case: /run/user/$uid/ostree ~/.config/ostree   (none)
 fn get_config_paths(root: bool) -> &'static ConfigPaths {
     if root {
         static PATHS_ROOT: OnceLock<ConfigPaths> = OnceLock::new();

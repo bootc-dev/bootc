@@ -814,7 +814,7 @@ pub(crate) fn tmt_provision(sh: &Shell, args: &TmtProvisionArgs) -> Result<()> {
 /// # extra:
 /// #   try_bind_storage: true
 /// # tmt:
-/// #   <yaml content>
+/// #   (yaml content)
 fn parse_tmt_metadata(content: &str) -> Result<Option<TmtMetadata>> {
     let mut number = None;
     let mut in_extra_block = false;

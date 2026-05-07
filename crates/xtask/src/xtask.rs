@@ -1,4 +1,4 @@
-//! See https://github.com/matklad/cargo-xtask
+//! See <https://github.com/matklad/cargo-xtask>
 //! This project now has a Justfile and a Makefile.
 //! Commands here are not always intended to be run directly
 //! by the user - add commands here which otherwise might
@@ -269,7 +269,7 @@ pub(crate) struct TmtProvisionArgs {
     /// Image name (e.g., "localhost/bootc")
     pub(crate) image: String,
 
-    /// VM name (defaults to "bootc-tmt-manual-<timestamp>")
+    /// VM name (defaults to "bootc-tmt-manual-`<timestamp>`")
     #[arg(value_name = "VM_NAME")]
     pub(crate) vm_name: Option<String>,
 }

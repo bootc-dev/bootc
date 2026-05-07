@@ -25,7 +25,7 @@ fn loginctl_users() -> Result<BTreeSet<String>> {
     loginctl_parse(loginctl_raw_output)
 }
 
-/// See [`test::test_parse_lsblk`] for example loginctl output
+/// See `test::test_parse_lsblk` for example loginctl output
 #[context("loginctl_parse")]
 fn loginctl_parse(users: Value) -> Result<BTreeSet<String>> {
     users

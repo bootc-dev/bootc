@@ -102,7 +102,7 @@ pub fn list_stateroots(sysroot: &ostree::Sysroot) -> Result<Vec<Stateroot>> {
     Ok(r)
 }
 
-/// Given a string, if it matches the form of an automatic state root, parse it into its <year>.<serial> pair.
+/// Given a string, if it matches the form of an automatic state root, parse it into its `<year>.<serial>` pair.
 fn parse_auto_stateroot_name(name: &str) -> Option<(u64, u64)> {
     let Some(statename) = name.strip_prefix(AUTO_STATEROOT_PREFIX) else {
         return None;

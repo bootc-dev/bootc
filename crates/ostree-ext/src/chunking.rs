@@ -600,8 +600,8 @@ fn get_partitions_with_threshold<'a>(
 ///  Compare the flattened vector to components to see if pkgs added, updated,
 ///  removed or kept same
 ///  if pkgs added, then add them to the last bin of prior
-///  if pkgs removed, then remove them from the prior[i]
-///  iterate through prior[i] and make bins according to the name in nevra of pkgs to update
+///  if pkgs removed, then remove them from the prior\[i\]
+///  iterate through prior\[i\] and make bins according to the name in nevra of pkgs to update
 ///  required packages
 /// else if pkg structure to be changed || prior build not specified
 ///  Recompute optimal packaging structure (Compute partitions, place packages and optimize build)
