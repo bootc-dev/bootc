@@ -4,7 +4,7 @@ use std::path::Path;
 use std::{fs::create_dir_all, process::Command};
 
 use anyhow::{Context, Result};
-use bootc_initramfs_setup::overlay_transient;
+use bootc_initramfs_setup::{mount_at_wrapper, overlay_transient};
 use bootc_kernel_cmdline::utf8::Cmdline;
 use bootc_mount::tempmount::TempMount;
 use bootc_utils::CommandRunExt;
@@ -323,16 +323,13 @@ pub(crate) fn composefs_usr_overlay(access_mode: FilesystemOverlayAccessMode) ->
 
     let usr = Dir::open_ambient_dir("/usr", ambient_authority()).context("Opening /usr")?;
 
-    // Get the mode from the underlying /usr directory
-    let usr_metadata = usr.metadata(".").context("Getting /usr metadata")?;
-    let usr_mode = Mode::from_raw_mode(usr_metadata.permissions().mode());
-
     let mount_attr_flags = match access_mode {
         FilesystemOverlayAccessMode::ReadOnly => Some(MountAttrFlags::MOUNT_ATTR_RDONLY),
         FilesystemOverlayAccessMode::ReadWrite => None,
     };
 
-    overlay_transient(usr, Some(usr_mode), mount_attr_flags)?;
+    let overlay_fd = overlay_transient(usr.as_fd(), "transient", mount_attr_flags)?;
+    mount_at_wrapper(overlay_fd, &usr, ".").context("Attaching /usr overlay")?;
 
     println!("A {} overlayfs is now mounted on /usr", access_mode);
     println!("All changes there will be discarded on reboot.");

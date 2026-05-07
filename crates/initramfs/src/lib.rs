@@ -1,7 +1,7 @@
 //! Mount helpers for bootc-initramfs
 
 use std::{
-    ffi::{CString, OsString},
+    ffi::OsString,
     fmt::Debug,
     io::ErrorKind,
     os::fd::{AsFd, AsRawFd, OwnedFd},
@@ -9,8 +9,6 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use cap_std_ext::cap_std::fs::Dir;
-use cap_std_ext::dirext::CapStdExtDirExt;
 use clap::Parser;
 use rustix::{
     fs::{CWD, Mode, OFlags, major, minor, mkdirat, openat, stat, symlink},
@@ -82,27 +80,29 @@ fn set_mount_readonly(fd: impl AsFd) -> Result<()> {
 }
 
 /// Types of mounts supported by the configuration
-#[derive(Clone, Copy, Debug, Deserialize)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum MountType {
-    /// No mount
+    /// No mount; "root" is an alias meaning this dir is part of the root mount
+    #[serde(alias = "root")]
     None,
     /// Bind mount
     Bind,
     /// Overlay mount
     Overlay,
-    /// Transient mount
+    /// Transient mount; "volatile" is an alias (Unix convention for tmpfs)
+    #[serde(alias = "volatile")]
     Transient,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, PartialEq)]
 struct RootConfig {
     #[serde(default)]
     transient: bool,
 }
 
 /// Configuration for mount operations
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, PartialEq)]
 pub struct MountConfig {
     /// The type of mount to use
     pub mount: Option<MountType>,
@@ -111,19 +111,16 @@ pub struct MountConfig {
     pub transient: bool,
 }
 
-#[derive(Deserialize, Default)]
+#[derive(Debug, Deserialize, Default, PartialEq)]
 struct Config {
     #[serde(default)]
     etc: MountConfig,
-    #[serde(default)]
-    var: MountConfig,
     #[serde(default)]
     root: RootConfig,
 }
 
 /// Command-line arguments
 #[derive(Parser, Debug)]
-#[command(version)]
 pub struct Args {
     #[arg(help = "Execute this command (for testing)")]
     /// Execute this command (for testing)
@@ -205,21 +202,15 @@ fn bind_mount(fd: impl AsFd, path: &str) -> Result<OwnedFd> {
     Ok(res?)
 }
 
-/// Mount a tmpfs, inheriting the SELinux label from the base filesystem
-/// if provided. See <https://github.com/containers/bootc/issues/1992>.
+/// Mount a tmpfs to use as the upper layer for an overlay.
+///
+/// TODO: sync these options with systemd's root mounting, there's some tweaks there for default tmpfs
+/// and we may want to make this configurable anyways i nthe future
+///
+/// See <https://github.com/containers/bootc/issues/1992>.
 #[context("Mounting tmpfs for overlay")]
-fn mount_tmpfs_for_overlay(base: Option<impl AsFd>) -> Result<OwnedFd> {
+fn mount_tmpfs_for_overlay() -> Result<OwnedFd> {
     let tmpfs = FsHandle::open("tmpfs")?;
-
-    if let Some(base_fd) = base {
-        let base_dir = Dir::reopen_dir(&base_fd.as_fd())?;
-        if let Some(label) = base_dir.getxattr(".", "security.selinux")? {
-            if let Ok(cstr) = CString::new(label) {
-                fsconfig_set_string(tmpfs.as_fd(), "rootcontext", &cstr)?;
-            }
-        }
-    }
-
     fsconfig_create(tmpfs.as_fd())?;
     Ok(fsmount(
         tmpfs.as_fd(),
@@ -228,19 +219,18 @@ fn mount_tmpfs_for_overlay(base: Option<impl AsFd>) -> Result<OwnedFd> {
     )?)
 }
 
-#[context("Mounting state as overlay")]
-fn overlay_state(
+/// Build an overlayfs fsmount fd from an existing state dir (upper+work).
+///
+/// upper is 0755: the merged view inherits permissions from upperdir, so 0700
+/// would make the mountpoint inaccessible to non-root processes.  work is
+/// kernel-internal and never visible; 0700 is fine.
+/// See: <https://github.com/composefs/composefs-rs/issues/287>
+fn build_overlay_fd(
     base: impl AsFd,
     state: impl AsFd,
     source: &str,
-    _mode: Option<rustix::fs::Mode>,
     mount_attr_flags: Option<MountAttrFlags>,
-) -> Result<()> {
-    // upper must be 0755: the overlayfs merged view inherits permissions from
-    // upperdir, so 0700 would make / (or the mounted subdir) inaccessible to
-    // non-root processes (dbus, anything that drops privileges).
-    // work is kernel-internal and never visible in the merged view; 0700 is fine.
-    // See: https://github.com/composefs/composefs-rs/issues/287
+) -> Result<OwnedFd> {
     let upper = ensure_dir(state.as_fd(), "upper", Some(0o755.into()))?;
     let work = ensure_dir(state.as_fd(), "work", Some(0o700.into()))?;
 
@@ -250,33 +240,50 @@ fn overlay_state(
     overlayfs_set_fd(overlayfs.as_fd(), "upperdir", upper.as_fd())?;
     overlayfs_set_lower_and_data_fds(&overlayfs, base.as_fd(), None::<OwnedFd>)?;
     fsconfig_create(overlayfs.as_fd())?;
-    let fs = fsmount(
+    Ok(fsmount(
         overlayfs.as_fd(),
         FsMountFlags::FSMOUNT_CLOEXEC,
         mount_attr_flags.unwrap_or(MountAttrFlags::empty()),
-    )?;
+    )?)
+}
 
+/// Mount a persistent state directory as an overlay on top of `base`,
+/// attaching the result immediately at `.` relative to `base`.
+#[context("Mounting state as overlay")]
+fn overlay_state(
+    base: impl AsFd,
+    state: impl AsFd,
+    source: &str,
+    mount_attr_flags: Option<MountAttrFlags>,
+) -> Result<()> {
+    let fs = build_overlay_fd(&base, state, source, mount_attr_flags)?;
     mount_at_wrapper(fs, base, ".").context("Moving mount")
 }
 
-/// Mounts a transient overlayfs with passed in fd as the lowerdir.
+/// Creates a transient overlayfs with the passed-in fd as the lowerdir.
 ///
-/// The tmpfs used for the overlay upper layer inherits the SELinux label
-/// from the base filesystem to prevent label mismatches (see #1992).
-#[context("Mounting transient overlayfs")]
+/// Returns a detached (not yet attached) `OwnedFd` for the overlay mount.
+/// The caller is responsible for attaching it to the filesystem tree.
+///
+/// `source` is used verbatim as the overlay's `source` fsconfig option and
+/// appears in `/proc/self/mountinfo`.  For the composefs root, pass
+/// `"transient:composefs=<digest_hex>"` so that `composefs_booted()` can
+/// recover the verity digest from the mount source after switch-root.  For
+/// non-root transient mounts (e.g. `/usr`, `/var`) pass `"transient"`.
+///
+/// The SELinux label on `/` is fixed after boot by
+/// `bootc-early-overlay-relabel.service`; no initramfs-side xattr write is
+/// needed (kernel `fs_use_trans tmpfs` relabeling at policy-load time would
+/// overwrite anything written here).
+#[context("Creating transient overlayfs")]
 pub fn overlay_transient(
     base: impl AsFd,
-    mode: Option<rustix::fs::Mode>,
+    source: &str,
     mount_attr_flags: Option<MountAttrFlags>,
-) -> Result<()> {
-    let tmpfs = mount_tmpfs_for_overlay(Some(&base))?;
-    overlay_state(
-        base,
-        prepare_mount(tmpfs)?,
-        "transient",
-        mode,
-        mount_attr_flags,
-    )
+) -> Result<OwnedFd> {
+    let tmpfs = mount_tmpfs_for_overlay()?;
+    let state = prepare_mount(tmpfs)?;
+    build_overlay_fd(base, state, source, mount_attr_flags)
 }
 
 #[context("Opening rootfs")]
@@ -349,9 +356,14 @@ pub fn mount_subdir(
             open_dir(&state, subdir)?,
             "overlay",
             None,
-            None,
         ),
-        MountType::Transient => overlay_transient(open_dir(&new_root, subdir)?, None, None),
+        MountType::Transient => {
+            // For subdirectory transient mounts, create the overlay and immediately
+            // attach it at the subdirectory path in new_root.
+            let subdir_fd = open_dir(&new_root, subdir)?;
+            let overlay_fd = overlay_transient(subdir_fd.as_fd(), "transient", None)?;
+            mount_at_wrapper(overlay_fd, &new_root, subdir)
+        }
     }
 }
 
@@ -394,8 +406,8 @@ pub fn setup_root(args: Args) -> Result<()> {
 
     let (image, insecure) = get_cmdline_composefs::<Sha512HashValue>(&cmdline)?;
 
-    let new_root = match args.root_fs {
-        Some(path) => open_root_fs(&path).context("Failed to clone specified root fs")?,
+    let new_root = match &args.root_fs {
+        Some(path) => open_root_fs(path).context("Failed to clone specified root fs")?,
         None => mount_composefs_image(&sysroot, &image.to_hex(), insecure)?,
     };
 
@@ -413,25 +425,122 @@ pub fn setup_root(args: Args) -> Result<()> {
         mount_at_wrapper(&new_root, CWD, &mount_target)?;
     }
 
-    if config.root.transient {
-        overlay_transient(&new_root, None, None)?;
-    }
+    // When transient root is enabled, place an overlay on top of the composefs.
+    // On pre-6.15, since the composefs is already attached at `mount_target`,
+    // the overlay is also immediately attached there.  We then open the overlay
+    // via its path so that subsequent mounts target the visible merged tree.
+    //
+    // On 6.15+, the whole tree is assembled in floating mode; `overlay_transient`
+    // returns a detached overlay fd that we can directly mount into.
+    //
+    // `new_root` always refers to the composefs fd; mounting via it after the
+    // overlay is in place would land in the hidden lower layer.
+    let transient_overlay_fd: Option<OwnedFd> = if config.root.transient {
+        let overlay_fd = overlay_transient(
+            &new_root,
+            &format!("transient:composefs={}", image.to_hex()),
+            None,
+        )?;
 
-    match composefs::mount::mount_at(&sysroot_clone, &new_root, "sysroot") {
+        if cfg!(feature = "pre-6.15") {
+            // In pre-6.15, the composefs is already attached at `mount_target`.
+            // Attach the overlay on top of it, then reopen the path to get a
+            // dirfd that resolves through the overlay (not the hidden composefs).
+            mount_at_wrapper(&overlay_fd, CWD, &mount_target)
+                .context("Moving transient overlay onto sysroot")?;
+            Some(open_dir(CWD, &mount_target).context("Opening attached overlay root")?)
+        } else {
+            // On 6.15+ we assemble in floating mode; use the detached overlay fd
+            // directly for subsequent mounts into the tree.
+            Some(overlay_fd)
+        }
+    } else {
+        None
+    };
+
+    // When transient root is active the overlay sits on top of the composefs.
+    // Mounts placed via `new_root` would land in the composefs lower layer and
+    // be invisible from the running system.  Use the overlay fd for all
+    // post-overlay mounts (sysroot, etc, var) so they appear in the merged view.
+    let visible_root: &dyn AsFd = transient_overlay_fd
+        .as_ref()
+        .map_or(&new_root as &dyn AsFd, |fd| fd as &dyn AsFd);
+
+    // Mount the physical sysroot (with the composefs repo) into the new root
+    // so that `bootc status` and other tools can find it after switch-root.
+    match composefs::mount::mount_at(&sysroot_clone, visible_root, "sysroot") {
         Ok(()) | Err(Errno::NOENT) => {}
         Err(err) => Err(err)?,
     }
 
     // etc + var
     let state = open_dir(open_dir(&sysroot, "state/deploy")?, image.to_hex())?;
-    mount_subdir(&new_root, &state, "etc", config.etc, MountType::Bind)?;
-    mount_subdir(&new_root, &state, "var", config.var, MountType::Bind)?;
+    mount_subdir(visible_root, &state, "etc", config.etc, MountType::Bind)?;
+    mount_subdir(visible_root, &state, "var", MountConfig::default(), MountType::Bind)?;
 
     if cfg!(not(feature = "pre-6.15")) {
-        // Replace the /sysroot with the new composed root filesystem
+        // Replace the /sysroot with the new composed root filesystem.
+        // When a transient overlay is active, mount it rather than the bare
+        // composefs so the running system sees the writable merged view.
         unmount(&args.sysroot, UnmountFlags::DETACH)?;
-        mount_at_wrapper(&new_root, CWD, &mount_target)?;
+        mount_at_wrapper(visible_root, CWD, &mount_target)?;
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(toml: &str) -> Config {
+        toml::from_str(toml).expect("TOML parse failed")
+    }
+
+    #[test]
+    fn test_config_defaults() {
+        let config = parse("");
+        assert_eq!(
+            config,
+            Config {
+                etc: MountConfig {
+                    mount: None,
+                    transient: false
+                },
+                root: RootConfig { transient: false },
+            }
+        );
+    }
+
+    #[test]
+    fn test_mounttype_none() {
+        let config = parse("[etc]\nmount = \"none\"");
+        assert_eq!(config.etc.mount, Some(MountType::None));
+    }
+
+    #[test]
+    fn test_mounttype_root_alias() {
+        let config = parse("[etc]\nmount = \"root\"");
+        assert_eq!(config.etc.mount, Some(MountType::None));
+    }
+
+    #[test]
+    fn test_etc_transient_flag() {
+        let config = parse("[etc]\ntransient = true");
+        assert_eq!(config.etc.transient, true);
+        assert_eq!(config.etc.mount, None);
+    }
+
+    #[test]
+    fn test_root_transient() {
+        let config = parse("[root]\ntransient = true");
+        assert_eq!(config.root.transient, true);
+    }
+
+    #[test]
+    fn test_combined_config() {
+        let config = parse("[root]\ntransient = true\n[etc]\nmount = \"root\"");
+        assert_eq!(config.root.transient, true);
+        assert_eq!(config.etc.mount, Some(MountType::None));
+    }
 }
