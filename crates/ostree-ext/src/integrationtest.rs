@@ -138,10 +138,8 @@ fn test_proxy_auth() -> Result<()> {
     } else {
         assert_eq!(c.authfile.unwrap().as_path(), authpath,);
     }
-    let c = ImageProxyConfig {
-        auth_anonymous: true,
-        ..Default::default()
-    };
+    let mut c = ImageProxyConfig::default();
+    c.auth_anonymous = true;
     assert_eq!(c.authfile, None);
     std::fs::remove_file(authpath)?;
     let mut c = ImageProxyConfig::default();

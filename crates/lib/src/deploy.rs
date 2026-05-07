@@ -38,10 +38,9 @@ const BASE_IMAGE_PREFIX: &str = "ostree/container/baseimage/bootc";
 /// This allows registries to distinguish "image pulls for bootc client runs"
 /// from other skopeo/containers-image users.
 pub(crate) fn new_proxy_config() -> ostree_ext::containers_image_proxy::ImageProxyConfig {
-    ostree_ext::containers_image_proxy::ImageProxyConfig {
-        user_agent_prefix: Some(format!("bootc/{}", env!("CARGO_PKG_VERSION"))),
-        ..Default::default()
-    }
+    let mut c = ostree_ext::containers_image_proxy::ImageProxyConfig::default();
+    c.user_agent_prefix = Some(format!("bootc/{}", env!("CARGO_PKG_VERSION")));
+    c
 }
 
 /// Set on an ostree commit if this is a derived commit

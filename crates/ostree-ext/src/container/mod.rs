@@ -777,10 +777,8 @@ mod tests {
         assert!(c.skopeo_cmd.is_none());
 
         // Verify interaction with explicit isolation
-        let mut c = ImageProxyConfig {
-            skopeo_cmd: Some(Command::new("skopeo")),
-            ..Default::default()
-        };
+        let mut c = ImageProxyConfig::default();
+        c.skopeo_cmd = Some(Command::new("skopeo"));
         super::merge_default_container_proxy_opts_with_isolation(&mut c, Some("foo")).unwrap();
         assert_eq!(c.skopeo_cmd.unwrap().get_program(), "skopeo");
     }

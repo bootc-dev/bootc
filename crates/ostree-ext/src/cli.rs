@@ -566,13 +566,12 @@ pub(crate) enum Opt {
 #[allow(clippy::from_over_into)]
 impl Into<ostree_container::store::ImageProxyConfig> for ContainerProxyOpts {
     fn into(self) -> ostree_container::store::ImageProxyConfig {
-        ostree_container::store::ImageProxyConfig {
-            auth_anonymous: self.auth_anonymous,
-            authfile: self.authfile,
-            certificate_directory: self.cert_dir,
-            insecure_skip_tls_verification: Some(self.insecure_skip_tls_verification),
-            ..Default::default()
-        }
+        let mut c = ostree_container::store::ImageProxyConfig::default();
+        c.auth_anonymous = self.auth_anonymous;
+        c.authfile = self.authfile;
+        c.certificate_directory = self.cert_dir;
+        c.insecure_skip_tls_verification = Some(self.insecure_skip_tls_verification);
+        c
     }
 }
 

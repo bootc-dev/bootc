@@ -232,8 +232,8 @@ dependencies = [
  "anyhow",
  "bootc-kernel-cmdline",
  "cap-std-ext 5.1.2",
- "cfsctl",
  "clap",
+ "composefs-ctl",
  "fn-error-context",
  "libc",
  "rustix",
@@ -328,12 +328,12 @@ dependencies = [
  "canon-json",
  "cap-std-ext 5.1.2",
  "cfg-if",
- "cfsctl",
  "chrono",
  "clap",
  "clap_complete",
  "clap_mangen",
  "comfy-table",
+ "composefs-ctl",
  "etc-merge",
  "fn-error-context",
  "futures-util",
@@ -632,28 +632,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
 
 [[package]]
-name = "cfsctl"
-version = "0.3.0"
-source = "git+https://github.com/composefs/composefs-rs?rev=54d248f7a7#54d248f7a77d60d168a46dfacda8cad3e955af9d"
-dependencies = [
- "anyhow",
- "clap",
- "comfy-table",
- "composefs",
- "composefs-boot",
- "composefs-oci",
- "cstorage",
- "env_logger",
- "fn-error-context",
- "hex",
- "indicatif 0.17.11",
- "rustix",
- "serde",
- "serde_json",
- "tokio",
-]
-
-[[package]]
 name = "chacha20"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -790,8 +768,8 @@ checksum = "55b672471b4e9f9e95499ea597ff64941a309b2cdbffcc46f2cc5e2d971fd335"
 
 [[package]]
 name = "composefs"
-version = "0.3.0"
-source = "git+https://github.com/composefs/composefs-rs?rev=54d248f7a7#54d248f7a77d60d168a46dfacda8cad3e955af9d"
+version = "0.4.0"
+source = "git+https://github.com/composefs/composefs-rs?rev=4dd43a107e#4dd43a107ecfff3a2b8a816a2f9c4ea429f51c44"
 dependencies = [
  "anyhow",
  "composefs-ioctls",
@@ -815,8 +793,8 @@ dependencies = [
 
 [[package]]
 name = "composefs-boot"
-version = "0.3.0"
-source = "git+https://github.com/composefs/composefs-rs?rev=54d248f7a7#54d248f7a77d60d168a46dfacda8cad3e955af9d"
+version = "0.4.0"
+source = "git+https://github.com/composefs/composefs-rs?rev=4dd43a107e#4dd43a107ecfff3a2b8a816a2f9c4ea429f51c44"
 dependencies = [
  "anyhow",
  "composefs",
@@ -829,9 +807,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "composefs-ctl"
+version = "0.4.0"
+source = "git+https://github.com/composefs/composefs-rs?rev=4dd43a107e#4dd43a107ecfff3a2b8a816a2f9c4ea429f51c44"
+dependencies = [
+ "anyhow",
+ "clap",
+ "comfy-table",
+ "composefs",
+ "composefs-boot",
+ "composefs-oci",
+ "composefs-storage",
+ "env_logger",
+ "fn-error-context",
+ "hex",
+ "indicatif 0.17.11",
+ "rustix",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "composefs-ioctls"
-version = "0.3.0"
-source = "git+https://github.com/composefs/composefs-rs?rev=54d248f7a7#54d248f7a77d60d168a46dfacda8cad3e955af9d"
+version = "0.4.0"
+source = "git+https://github.com/composefs/composefs-rs?rev=4dd43a107e#4dd43a107ecfff3a2b8a816a2f9c4ea429f51c44"
 dependencies = [
  "rustix",
  "thiserror 2.0.18",
@@ -839,20 +839,22 @@ dependencies = [
 
 [[package]]
 name = "composefs-oci"
-version = "0.3.0"
-source = "git+https://github.com/composefs/composefs-rs?rev=54d248f7a7#54d248f7a77d60d168a46dfacda8cad3e955af9d"
+version = "0.4.0"
+source = "git+https://github.com/composefs/composefs-rs?rev=4dd43a107e#4dd43a107ecfff3a2b8a816a2f9c4ea429f51c44"
 dependencies = [
  "anyhow",
  "async-compression",
  "base64 0.22.1",
  "bytes",
+ "cap-std-ext 5.1.2",
  "composefs",
  "composefs-boot",
+ "composefs-storage",
  "containers-image-proxy",
- "cstorage",
  "fn-error-context",
  "hex",
  "indicatif 0.18.4",
+ "ocidir",
  "rustix",
  "serde",
  "serde_json",
@@ -862,6 +864,31 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+]
+
+[[package]]
+name = "composefs-storage"
+version = "0.4.0"
+source = "git+https://github.com/composefs/composefs-rs?rev=4dd43a107e#4dd43a107ecfff3a2b8a816a2f9c4ea429f51c44"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "cap-std 4.0.2",
+ "cap-std-ext 4.0.7",
+ "crc",
+ "flate2",
+ "jsonrpc-fdpass",
+ "oci-spec",
+ "rustix",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tar-core",
+ "thiserror 2.0.18",
+ "tokio",
+ "toml 0.8.23",
+ "tracing",
+ "zstd",
 ]
 
 [[package]]
@@ -930,14 +957,14 @@ dependencies = [
 
 [[package]]
 name = "containers-image-proxy"
-version = "0.9.2"
+version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f4efbec7ca93c60462005402029839fcc8958eb5239bab1dd09f6d3e5165911a"
+checksum = "a00f7ac9ad66c570e37fcbf7644d678dcfabb50a4d8e85136ceb2fa45335597c"
 dependencies = [
- "cap-std-ext 4.0.7",
+ "cap-std-ext 5.1.2",
  "futures-util",
  "itertools",
- "oci-spec 0.8.4",
+ "oci-spec",
  "rustix",
  "semver",
  "serde",
@@ -1048,31 +1075,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "77727bb15fa921304124b128af125e7e3b968275d1b108b379190264f4423710"
 dependencies = [
  "hybrid-array",
-]
-
-[[package]]
-name = "cstorage"
-version = "0.3.0"
-source = "git+https://github.com/composefs/composefs-rs?rev=54d248f7a7#54d248f7a77d60d168a46dfacda8cad3e955af9d"
-dependencies = [
- "anyhow",
- "base64 0.22.1",
- "cap-std 4.0.2",
- "cap-std-ext 4.0.7",
- "crc",
- "flate2",
- "jsonrpc-fdpass",
- "oci-spec 0.8.4",
- "rustix",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tar-core",
- "thiserror 2.0.18",
- "tokio",
- "toml 0.8.23",
- "tracing",
- "zstd",
 ]
 
 [[package]]
@@ -1284,7 +1286,7 @@ dependencies = [
  "anstream",
  "anyhow",
  "cap-std-ext 5.1.2",
- "cfsctl",
+ "composefs-ctl",
  "fn-error-context",
  "hex",
  "openssl",
@@ -2348,23 +2350,6 @@ dependencies = [
 
 [[package]]
 name = "oci-spec"
-version = "0.8.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fc3da52b83ce3258fbf29f66ac784b279453c2ac3c22c5805371b921ede0d308"
-dependencies = [
- "const_format",
- "derive_builder",
- "getset",
- "regex",
- "serde",
- "serde_json",
- "strum",
- "strum_macros",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "oci-spec"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e8445a2631507cec628a15fdd6154b54a3ab3f20ed4fe9d73a3b8b7a4e1ba03a"
@@ -2382,9 +2367,9 @@ dependencies = [
 
 [[package]]
 name = "ocidir"
-version = "0.7.1"
+version = "0.7.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b2559988a4497b6f6cb02c3066c008515b2d6d98234fb683e284235ef5141295"
+checksum = "bdb92f511503ca78a6b3c2a5415c49aa9bb03169d2715f67b1c0dc1654ed9636"
 dependencies = [
  "camino",
  "canon-json",
@@ -2392,7 +2377,7 @@ dependencies = [
  "chrono",
  "flate2",
  "hex",
- "oci-spec 0.8.4",
+ "oci-spec",
  "openssl",
  "serde",
  "serde_json",
@@ -2489,11 +2474,11 @@ dependencies = [
  "camino",
  "canon-json",
  "cap-std-ext 5.1.2",
- "cfsctl",
  "chrono",
  "clap",
  "clap_mangen",
  "comfy-table",
+ "composefs-ctl",
  "containers-image-proxy",
  "flate2",
  "fn-error-context",
@@ -3401,7 +3386,7 @@ dependencies = [
  "indicatif 0.18.4",
  "indoc",
  "libtest-mimic",
- "oci-spec 0.9.0",
+ "oci-spec",
  "rand 0.10.1",
  "rexpect",
  "rustix",
