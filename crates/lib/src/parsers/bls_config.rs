@@ -5,8 +5,8 @@
 use anyhow::{Result, anyhow};
 use bootc_kernel_cmdline::utf8::{Cmdline, CmdlineOwned};
 use camino::Utf8PathBuf;
-use cfsctl::composefs_boot;
 use composefs_boot::bootloader::EFI_EXT;
+use composefs_ctl::composefs_boot;
 use core::fmt;
 use std::collections::HashMap;
 use std::fmt::Display;

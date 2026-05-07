@@ -9,11 +9,11 @@ use anyhow::{Context, Result};
 use camino::Utf8Path;
 use cap_std_ext::cap_std;
 use cap_std_ext::cap_std::fs::Dir;
-use cfsctl::composefs;
-use cfsctl::composefs_boot;
 use composefs::dumpfile;
 use composefs::fsverity::{Algorithm, FsVerityHashValue};
 use composefs_boot::BootOps as _;
+use composefs_ctl::composefs;
+use composefs_ctl::composefs_boot;
 use tempfile::TempDir;
 
 use crate::store::ComposefsRepository;

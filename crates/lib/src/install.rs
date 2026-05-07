@@ -2016,7 +2016,7 @@ async fn install_to_filesystem_impl(
             let (cfs_repo, _created) = crate::store::ComposefsRepository::init_path(
                 &rootfs.physical_root,
                 crate::store::COMPOSEFS,
-                cfsctl::composefs::fsverity::Algorithm::SHA512,
+                composefs_ctl::composefs::fsverity::Algorithm::SHA512,
                 false,
             )?;
             crate::deploy::check_disk_space_composefs(

@@ -24,8 +24,6 @@ use rustix::{
 
 use serde::Deserialize;
 
-use cfsctl::composefs;
-use cfsctl::composefs_boot;
 use composefs::{
     fsverity::{FsVerityHashValue, Sha512HashValue},
     mount::FsHandle,
@@ -33,6 +31,8 @@ use composefs::{
     repository::Repository,
 };
 use composefs_boot::cmdline::get_cmdline_composefs;
+use composefs_ctl::composefs;
+use composefs_ctl::composefs_boot;
 
 use fn_error_context::context;
 

@@ -3,11 +3,11 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 
-use cfsctl::composefs;
-use cfsctl::composefs_boot;
-use cfsctl::composefs_oci;
 use composefs::fsverity::{FsVerityHashValue, Sha512HashValue};
 use composefs_boot::bootloader::{BootEntry as ComposefsBootEntry, get_boot_resources};
+use composefs_ctl::composefs;
+use composefs_ctl::composefs_boot;
+use composefs_ctl::composefs_oci;
 use composefs_oci::{
     LocalFetchOpt, PullOptions, PullResult,
     image::create_filesystem as create_composefs_filesystem, tag_image,

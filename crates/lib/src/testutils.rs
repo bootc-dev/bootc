@@ -167,7 +167,7 @@ impl TestRoot {
         let (mut repo, _created) = ComposefsRepository::init_path(
             &repo_dir,
             ".",
-            cfsctl::composefs::fsverity::Algorithm::SHA512,
+            composefs_ctl::composefs::fsverity::Algorithm::SHA512,
             false,
         )
         .context("Initializing composefs repo")?;

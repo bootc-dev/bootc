@@ -13,15 +13,15 @@ use anyhow::{Context, Result, anyhow, ensure};
 use camino::{Utf8Path, Utf8PathBuf};
 use cap_std_ext::cap_std;
 use cap_std_ext::cap_std::fs::Dir;
-use cfsctl::composefs;
-use cfsctl::composefs_boot;
-use cfsctl::composefs_oci;
 use clap::CommandFactory;
 use clap::Parser;
 use clap::ValueEnum;
 use composefs::dumpfile;
 use composefs::fsverity;
 use composefs::fsverity::FsVerityHashValue;
+use composefs_ctl::composefs;
+use composefs_ctl::composefs_boot;
+use composefs_ctl::composefs_oci;
 
 use composefs_boot::BootOps as _;
 use etc_merge::{compute_diff, print_diff};
@@ -2083,7 +2083,7 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
                     Ok(())
                 }
             },
-            InternalsOpts::Cfs { args } => cfsctl::run_from_iter(args.iter()).await,
+            InternalsOpts::Cfs { args } => composefs_ctl::run_from_iter(args.iter()).await,
             InternalsOpts::Reboot => crate::reboot::reboot(),
             InternalsOpts::Fsck => {
                 let storage = &get_storage().await?;

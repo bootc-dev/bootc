@@ -38,8 +38,8 @@ use ostree_ext::sysroot::SysrootLock;
 use ostree_ext::{gio, ostree};
 use rustix::fs::Mode;
 
-use cfsctl::composefs;
 use composefs::fsverity::Sha512HashValue;
+use composefs_ctl::composefs;
 
 use crate::bootc_composefs::backwards_compat::bcompat_boot::prepend_custom_prefix;
 use crate::bootc_composefs::boot::{EFI_LINUX, mount_esp};

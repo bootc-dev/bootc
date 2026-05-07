@@ -8,7 +8,7 @@ use std::str::FromStr;
 use anyhow::{Context, Result};
 use cap_std::fs::Dir;
 use cap_std_ext::cap_std;
-use cfsctl::composefs::fsverity as composefs_fsverity;
+use composefs_ctl::composefs::fsverity as composefs_fsverity;
 use composefs_fsverity::Sha256HashValue;
 use ostree::gio;
 

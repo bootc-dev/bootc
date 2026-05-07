@@ -4,8 +4,8 @@ use std::fmt::Display;
 
 use anyhow::Result;
 use camino::Utf8PathBuf;
-use cfsctl::composefs_boot;
 use composefs_boot::bootloader::EFI_EXT;
+use composefs_ctl::composefs_boot;
 use nom::{
     Err, IResult, Parser,
     bytes::complete::{escaped, tag, take_until},

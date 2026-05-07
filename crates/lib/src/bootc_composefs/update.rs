@@ -1,11 +1,11 @@
 use anyhow::{Context, Result};
 use camino::Utf8PathBuf;
 use cap_std_ext::{cap_std::fs::Dir, dirext::CapStdExtDirExt};
-use cfsctl::composefs;
-use cfsctl::composefs_boot;
-use cfsctl::composefs_oci;
 use composefs::fsverity::{FsVerityHashValue, Sha512HashValue};
 use composefs_boot::BootOps;
+use composefs_ctl::composefs;
+use composefs_ctl::composefs_boot;
+use composefs_ctl::composefs_oci;
 use composefs_oci::image::create_filesystem;
 use fn_error_context::context;
 use ocidir::cap_std::ambient_authority;

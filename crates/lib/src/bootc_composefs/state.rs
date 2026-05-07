@@ -13,8 +13,8 @@ use canon_json::CanonJsonSerialize;
 use cap_std_ext::cap_std::ambient_authority;
 use cap_std_ext::cap_std::fs::{Dir, Permissions, PermissionsExt};
 use cap_std_ext::dirext::CapStdExtDirExt;
-use cfsctl::composefs;
 use composefs::fsverity::{FsVerityHashValue, Sha512HashValue};
+use composefs_ctl::composefs;
 use fn_error_context::context;
 
 use ostree_ext::container::deploy::ORIGIN_CONTAINER;

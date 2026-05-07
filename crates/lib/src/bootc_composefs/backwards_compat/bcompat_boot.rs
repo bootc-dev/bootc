@@ -23,7 +23,7 @@ use crate::{
 use anyhow::{Context, Result};
 use camino::Utf8PathBuf;
 use cap_std_ext::{cap_std::fs::Dir, dirext::CapStdExtDirExt};
-use cfsctl::composefs_boot::bootloader::{EFI_ADDON_DIR_EXT, EFI_EXT};
+use composefs_ctl::composefs_boot::bootloader::{EFI_ADDON_DIR_EXT, EFI_EXT};
 use fn_error_context::context;
 use ocidir::cap_std::ambient_authority;
 use rustix::fs::{RenameFlags, fsync, renameat_with};

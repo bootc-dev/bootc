@@ -117,4 +117,4 @@ The following rustdoc documentation is generated from the source code with
 
 These crates are pulled from git and are not published to crates.io (so not on docs.rs).
 
-- [cfsctl](internals/cfsctl/index.html) - composefs-rs entrypoint crate (re-exports composefs, composefs-boot, composefs-oci)
+- [composefs-ctl](internals/composefs_ctl/index.html) - composefs-rs entrypoint crate (re-exports composefs, composefs-boot, composefs-oci)

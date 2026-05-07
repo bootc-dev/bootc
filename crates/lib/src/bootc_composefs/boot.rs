@@ -75,9 +75,6 @@ use cap_std_ext::{
     cap_std::{ambient_authority, fs::Dir},
     dirext::CapStdExtDirExt,
 };
-use cfsctl::composefs;
-use cfsctl::composefs_boot;
-use cfsctl::composefs_oci;
 use clap::ValueEnum;
 use composefs::fs::read_file;
 use composefs::fsverity::{FsVerityHashValue, Sha512HashValue};
@@ -87,6 +84,9 @@ use composefs_boot::bootloader::{
     UsrLibModulesVmlinuz, get_boot_resources,
 };
 use composefs_boot::{cmdline::get_cmdline_composefs, os_release::OsReleaseInfo, uki};
+use composefs_ctl::composefs;
+use composefs_ctl::composefs_boot;
+use composefs_ctl::composefs_oci;
 use fn_error_context::context;
 use rustix::{mount::MountFlags, path::Arg};
 use schemars::JsonSchema;

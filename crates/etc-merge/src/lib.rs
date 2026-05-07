@@ -15,10 +15,10 @@ use anyhow::Context;
 use cap_std_ext::cap_std;
 use cap_std_ext::cap_std::fs::{Dir as CapStdDir, MetadataExt, Permissions, PermissionsExt};
 use cap_std_ext::dirext::CapStdExtDirExt;
-use cfsctl::composefs;
 use composefs::fsverity::{FsVerityHashValue, Sha256HashValue, Sha512HashValue};
 use composefs::generic_tree::{Directory, FileSystem, Inode, Leaf, LeafContent, LeafId, Stat};
 use composefs::tree::ImageError;
+use composefs_ctl::composefs;
 use rustix::fs::{
     AtFlags, Gid, Uid, XattrFlags, lgetxattr, llistxattr, lsetxattr, readlinkat, symlinkat,
 };
