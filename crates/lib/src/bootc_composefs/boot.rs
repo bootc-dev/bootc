@@ -195,10 +195,31 @@ fi
     )
 }
 
-/// Mount the ESP from the provided device
+/// Mount flags shared by all ESP mounts: non-executable, no setuid.
+const ESP_MOUNT_FLAGS: MountFlags =
+    MountFlags::from_bits_retain(MountFlags::NOEXEC.bits() | MountFlags::NOSUID.bits());
+
+/// FAT mount options: owner-only permissions on files (0600) and dirs (0700).
+const ESP_MOUNT_DATA: &std::ffi::CStr = c"fmask=0177,dmask=0077";
+
+/// Mount the ESP from the provided device into a temporary directory.
 pub fn mount_esp(device: &str) -> Result<TempMount> {
-    let flags = MountFlags::NOEXEC | MountFlags::NOSUID;
-    TempMount::mount_dev(device, "vfat", flags, Some(c"fmask=0177,dmask=0077"))
+    TempMount::mount_dev(device, "vfat", ESP_MOUNT_FLAGS, Some(ESP_MOUNT_DATA))
+}
+
+/// Mount the ESP from `device` at the given path and return a guard that
+/// synchronously unmounts (and flushes) it on drop.
+pub(crate) fn mount_esp_at(
+    device: &str,
+    path: std::path::PathBuf,
+) -> Result<bootc_mount::tempmount::MountGuard> {
+    bootc_mount::tempmount::MountGuard::mount(
+        device,
+        path,
+        "vfat",
+        ESP_MOUNT_FLAGS,
+        Some(ESP_MOUNT_DATA),
+    )
 }
 
 /// Filename release field for primary (new/upgraded) entry.
@@ -1145,6 +1166,100 @@ pub(crate) fn setup_composefs_uki_boot(
     Ok(boot_digest)
 }
 
+/// A composefs image attached to a temporary directory with the ESP and a
+/// tmpfs mounted inside it, ready for bootloader installation.
+///
+/// The composefs image (a detached `fsmount(2)` fd with no VFS path) is
+/// attached to a tmpdir via `move_mount(2)`, giving us a real filesystem path
+/// that `mount(2)` and bootctl can use.  The ESP is mounted at
+/// `<tmpdir>/efi` (if that directory exists in the image) or `<tmpdir>/boot`,
+/// per the Boot Loader Specification.  A tmpfs is also mounted at
+/// `<tmpdir>/tmp` to provide a writable scratch area for tools invoked with
+/// `--root`.
+///
+/// Drop order matters: the ESP and tmpfs guards are declared before `composefs`
+/// so they are unmounted (and flushed) before the composefs root is detached.
+pub(crate) struct MountedImageRoot {
+    // Unmounted before `composefs` on drop; ESP before tmp (inner before outer).
+    _esp: bootc_mount::tempmount::MountGuard,
+    _tmp: bootc_mount::tempmount::MountGuard,
+    composefs: TempMount,
+    pub(crate) esp_subdir: &'static str,
+}
+
+impl MountedImageRoot {
+    /// Find the ESP on `device`, attach the composefs image to a tmpdir, and
+    /// mount the ESP and a scratch tmpfs inside it.
+    // TODO: install to all ESPs on multi-device setups
+    #[context("Preparing image root for bootloader installation")]
+    pub(crate) fn new(
+        composefs_mnt_fd: std::os::fd::OwnedFd,
+        device: &bootc_blockdev::Device,
+    ) -> Result<Self> {
+        let roots = device.find_all_roots()?;
+        let mut esp_part = None;
+        for root in &roots {
+            if let Some(esp) = root.find_partition_of_esp_optional()? {
+                esp_part = Some(esp);
+                break;
+            }
+        }
+        let esp_part = esp_part.ok_or_else(|| anyhow!("ESP partition not found"))?;
+
+        // Attach the detached composefs fsmount fd to a real tmpdir path so
+        // that mount(2) and bootctl --root can work with it.
+        let composefs = TempMount::mount_fd(composefs_mnt_fd)
+            .context("Attaching composefs image to temporary directory")?;
+
+        // TODO: support XBOOTLDR.  Per BLS, the ESP should be mounted at /efi
+        // when a separate XBOOTLDR partition is present at /boot.  bootc does
+        // not yet detect or use XBOOTLDR in the composefs install path, so
+        // unconditionally mount the ESP at /boot for now.
+        let esp_subdir = "boot";
+
+        let esp_path = composefs.dir.path().join(esp_subdir);
+        let esp =
+            mount_esp_at(&esp_part.path(), esp_path).context("Mounting ESP into composefs root")?;
+
+        // Mount a tmpfs over /tmp so that tools invoked with --root have a
+        // writable scratch area without touching the read-only EROFS root.
+        let tmp_path = composefs.dir.path().join("tmp");
+        let tmp = bootc_mount::tempmount::MountGuard::mount(
+            "tmpfs",
+            tmp_path,
+            "tmpfs",
+            MountFlags::NOEXEC | MountFlags::NOSUID | MountFlags::NODEV,
+            None::<&std::ffi::CStr>,
+        )
+        .context("Mounting tmpfs into composefs root")?;
+
+        Ok(Self {
+            _esp: esp,
+            _tmp: tmp,
+            composefs,
+            esp_subdir,
+        })
+    }
+
+    /// The composefs image as a capability-safe directory (for file reads).
+    pub(crate) fn dir(&self) -> &Dir {
+        &self.composefs.fd
+    }
+
+    /// Real filesystem path of the composefs tmpdir root.
+    pub(crate) fn root_path(&self) -> &std::path::Path {
+        self.composefs.dir.path()
+    }
+
+    /// Open the mounted ESP as a capability-safe directory.
+    pub(crate) fn open_esp_dir(&self) -> Result<Dir> {
+        self.composefs
+            .fd
+            .open_dir(self.esp_subdir)
+            .with_context(|| format!("Opening ESP at /{}", self.esp_subdir))
+    }
+}
+
 pub struct SecurebootKeys {
     pub dir: Dir,
     pub keys: Vec<Utf8PathBuf>,
@@ -1225,13 +1340,12 @@ pub(crate) async fn setup_composefs_boot(
     let entries =
         get_boot_resources(&fs, &*repo).context("Extracting boot entries from OCI image")?;
 
-    let mounted_fs = Dir::reopen_dir(
-        &repo
-            .mount(&id.to_hex())
-            .context("Failed to mount composefs image")?,
-    )?;
+    let composefs_mnt_fd = repo
+        .mount(&id.to_hex())
+        .context("Failed to mount composefs image")?;
+    let mounted_root = MountedImageRoot::new(composefs_mnt_fd, &root_setup.device_info)?;
 
-    let postfetch = PostFetchState::new(state, &mounted_fs)?;
+    let postfetch = PostFetchState::new(state, mounted_root.dir())?;
 
     let boot_uuid = root_setup
         .get_boot_uuid()?
@@ -1253,11 +1367,9 @@ pub(crate) async fn setup_composefs_boot(
         )?;
     } else {
         crate::bootloader::install_systemd_boot(
-            &root_setup.device_info,
-            &root_setup.physical_root_path,
+            &mounted_root,
             &state.config_opts,
-            None,
-            get_secureboot_keys(&mounted_fs, BOOTC_AUTOENROLL_PATH)?,
+            get_secureboot_keys(mounted_root.dir(), BOOTC_AUTOENROLL_PATH)?,
         )?;
     }
 
@@ -1280,7 +1392,7 @@ pub(crate) async fn setup_composefs_boot(
             repo,
             &id,
             entry,
-            &mounted_fs,
+            mounted_root.dir(),
         )?,
         BootType::Uki => setup_composefs_uki_boot(
             BootSetupType::Setup((&root_setup, &state, &postfetch)),

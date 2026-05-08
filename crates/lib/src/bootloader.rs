@@ -10,7 +10,7 @@ use fn_error_context::context;
 
 use bootc_mount as mount;
 
-use crate::bootc_composefs::boot::{SecurebootKeys, mount_esp};
+use crate::bootc_composefs::boot::{MountedImageRoot, SecurebootKeys};
 use crate::utils;
 
 /// The name of the mountpoint for efi (as a subdirectory of /boot, or at the toplevel)
@@ -22,6 +22,16 @@ const BOOTUPD_UPDATES: &str = "usr/lib/bootupd/updates";
 
 // from: https://github.com/systemd/systemd/blob/26b2085d54ebbfca8637362eafcb4a8e3faf832f/man/systemd-boot.xml#L392
 const SYSTEMD_KEY_DIR: &str = "loader/keys";
+
+/// Redirect bootctl's entry-token write into a tmpfs scratch area.
+///
+/// bootctl unconditionally writes `<KERNEL_INSTALL_CONF_ROOT>/entry-token`
+/// during installation.  Because systemd's `path_join()` is naive string
+/// concatenation (see `src/bootctl/bootctl-install.c`), setting this to
+/// `/tmp` causes the write to land at `<composefs_root>/tmp/entry-token`
+/// on the MountedImageRoot tmpfs, where it is automatically discarded.
+/// bootc does not use the entry-token at all.
+const KERNEL_INSTALL_CONF_ROOT: &str = "/tmp";
 
 /// Mount the first ESP found among backing devices at /boot/efi.
 ///
@@ -218,66 +228,79 @@ pub(crate) fn install_via_bootupd(
     }
 }
 
-/// Install systemd-boot to the first ESP found among backing devices.
-///
-/// On multi-device setups only the first ESP is installed to; additional
-/// ESPs on other backing devices are left untouched.
-// TODO: install to all ESPs on multi-device setups
+/// Install systemd-boot using a pre-prepared boot root.
 #[context("Installing bootloader")]
 pub(crate) fn install_systemd_boot(
-    device: &bootc_blockdev::Device,
-    _rootfs: &Utf8Path,
+    prepared_root: &MountedImageRoot,
     configopts: &crate::install::InstallConfigOpts,
-    _deployment_path: Option<&str>,
     autoenroll: Option<SecurebootKeys>,
 ) -> Result<()> {
-    let roots = device.find_all_roots()?;
-    let mut esp_part = None;
-    for root in &roots {
-        if let Some(esp) = root.find_partition_of_esp_optional()? {
-            esp_part = Some(esp);
-            break;
-        }
-    }
-    let esp_part = esp_part.ok_or_else(|| anyhow::anyhow!("ESP partition not found"))?;
-
-    let esp_mount = mount_esp(&esp_part.path()).context("Mounting ESP")?;
-    let esp_path = Utf8Path::from_path(esp_mount.dir.path())
-        .ok_or_else(|| anyhow::anyhow!("Failed to convert ESP mount path to UTF-8"))?;
-
     println!("Installing bootloader via systemd-boot");
 
-    let mut bootctl_args = vec!["install", "--esp-path", esp_path.as_str()];
+    // We use the --root of the mounted target root, so we have the right /etc/os-release.
+    let root_path = prepared_root
+        .root_path()
+        .to_str()
+        .ok_or_else(|| anyhow::anyhow!("composefs tmpdir path is not UTF-8"))?;
+    let esp_path_in_root = format!("/{}", prepared_root.esp_subdir);
+
+    let mut bootctl_args = vec![
+        "install",
+        "--root",
+        root_path,
+        "--esp-path",
+        esp_path_in_root.as_str(),
+        // If we supported XBOOTLDR in the future, that'd go here with --boot-path.
+    ];
 
     if configopts.generic_image {
-        bootctl_args.extend(["--random-seed", "no"]);
+        bootctl_args.extend(["--random-seed", "no", "--no-variables"]);
     }
 
     Command::new("bootctl")
         .args(bootctl_args)
+        // Skip partition-type GUID validation because e.g. osbuild
+        // may not provide the udev database.
+        .env("SYSTEMD_RELAX_ESP_CHECKS", "1")
+        // bootc doesn't use the entry-token file, but bootctl still tries to
+        // write it.  Redirect into /tmp (a tmpfs mounted by MountedImageRoot)
+        // so the write succeeds and is automatically discarded.
+        .env("KERNEL_INSTALL_CONF_ROOT", KERNEL_INSTALL_CONF_ROOT)
         .log_debug()
-        .run_inherited_with_cmd_context()?;
+        // Capture stderr so bootctl error messages appear in our error chain.
+        .run_capture_stderr()?;
 
     if let Some(SecurebootKeys { dir, keys }) = autoenroll {
-        let path = esp_path.join(SYSTEMD_KEY_DIR);
-        create_dir_all(&path)?;
+        let esp_dir = prepared_root.open_esp_dir()?;
+        let keys_path = prepared_root
+            .root_path()
+            .join(prepared_root.esp_subdir)
+            .join(SYSTEMD_KEY_DIR);
+        create_dir_all(&keys_path).with_context(|| {
+            format!("Creating secureboot key directory {}", keys_path.display())
+        })?;
 
-        let keys_dir = esp_mount
-            .fd
+        let keys_dir = esp_dir
             .open_dir(SYSTEMD_KEY_DIR)
-            .with_context(|| format!("Opening {path}"))?;
+            .with_context(|| format!("Opening {SYSTEMD_KEY_DIR}"))?;
 
         for filename in keys.iter() {
-            let p = path.join(&filename);
-
-            // create directory if it doesn't already exist
-            if let Some(parent) = p.parent() {
-                create_dir_all(parent)?;
+            // Each key lives in a subdirectory, e.g. "PK/PK.auth".
+            // Create the per-key subdirectory before copying the file into it.
+            if let Some(parent) = filename.parent() {
+                if !parent.as_str().is_empty() {
+                    keys_dir
+                        .create_dir_all(parent)
+                        .with_context(|| format!("Creating key subdirectory {parent}"))?;
+                }
             }
-
-            dir.copy(&filename, &keys_dir, &filename)
-                .with_context(|| format!("Copying secure boot key: {p}"))?;
-            println!("Wrote Secure Boot key: {p}");
+            dir.copy(filename, &keys_dir, filename)
+                .with_context(|| format!("Copying secure boot key {filename:?}"))?;
+            println!(
+                "Wrote Secure Boot key: {}/{}",
+                keys_path.display(),
+                filename.as_str()
+            );
         }
         if keys.is_empty() {
             tracing::debug!("No Secure Boot keys provided for systemd-boot enrollment");
