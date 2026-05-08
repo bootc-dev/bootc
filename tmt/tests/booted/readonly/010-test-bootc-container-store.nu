@@ -33,8 +33,9 @@ if not $has_storage {
     # And verify this works
     bootc image cmd list -q o>/dev/null
 
-    bootc image cmd pull busybox
-    podman --storage-opt=additionalimagestore=/usr/lib/bootc/storage image exists busybox
+    let public_test_image = "quay.io/libpod/busybox:latest"
+    bootc image cmd pull $public_test_image
+    podman --storage-opt=additionalimagestore=/usr/lib/bootc/storage image exists $public_test_image
 
     # Images in bootc storage should be listed with type "unified"
     let images = bootc image list --format json | from json

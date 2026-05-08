@@ -56,7 +56,7 @@ if $is_composefs {
     # we can't get from `bootc internals cfs ...`
     mkdir /var/tmp/sysroot/composefs
     bootc internals cfs --insecure --repo /var/tmp/sysroot/composefs init
-    bootc internals cfs --insecure --repo /var/tmp/sysroot/composefs oci pull docker://busybox busybox
+    bootc internals cfs --insecure --repo /var/tmp/sysroot/composefs oci pull docker://quay.io/libpod/busybox:latest busybox
     test -L /var/tmp/sysroot/composefs/streams/refs/oci/busybox
 }
 
