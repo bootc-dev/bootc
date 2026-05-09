@@ -1,4 +1,5 @@
 use std::thread::JoinHandle;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use camino::{Utf8Path, Utf8PathBuf};
@@ -299,14 +300,21 @@ fn parse_plan_metadata(
 struct RunPlanResult {
     plan_name: String,
     passed: bool,
+    time_taken: Option<Duration>,
     run_id: Option<String>,
 }
 
 impl RunPlanResult {
-    fn new(plan_name: String, passed: bool, run_id: Option<String>) -> Self {
+    fn new(
+        plan_name: String,
+        passed: bool,
+        time_taken: Option<Duration>,
+        run_id: Option<String>,
+    ) -> Self {
         Self {
             plan_name,
             passed,
+            time_taken,
             run_id,
         }
     }
@@ -331,7 +339,7 @@ fn run_plan(
         Ok(sh) => sh,
         Err(err) => {
             eprintln!("Failed to create new shell instance: {err:?}");
-            return RunPlanResult::new(plan, false, None);
+            return RunPlanResult::new(plan, false, None, None);
         }
     };
 
@@ -340,7 +348,7 @@ fn run_plan(
     let log_dir_args: Vec<String> = if bcvk_has_log_dir {
         if let Err(e) = std::fs::create_dir_all(&vm_log_dir) {
             eprintln!("Creating VM log directory {}: {e:?}", vm_log_dir);
-            return RunPlanResult::new(plan, false, None);
+            return RunPlanResult::new(plan, false, None, None);
         }
 
         println!("VM logs will be written to: {}", vm_log_dir);
@@ -360,7 +368,7 @@ fn run_plan(
 
     if let Err(e) = launch_result {
         eprintln!("Failed to launch VM for plan {}: {:#}", plan, e);
-        return RunPlanResult::new(plan, false, None);
+        return RunPlanResult::new(plan, false, None, None);
     }
 
     // Ensure VM cleanup happens even on error (unless --preserve-vm is set)
@@ -384,7 +392,7 @@ fn run_plan(
         Err(e) => {
             eprintln!("Failed to get VM info for plan {}: {:#}", plan, e);
             cleanup_vm();
-            return RunPlanResult::new(plan, false, None);
+            return RunPlanResult::new(plan, false, None, None);
         }
     };
 
@@ -398,7 +406,7 @@ fn run_plan(
         Err(e) => {
             eprintln!("Failed to create SSH key file for plan {}: {:#}", plan, e);
             cleanup_vm();
-            return RunPlanResult::new(plan, false, None);
+            return RunPlanResult::new(plan, false, None, None);
         }
     };
 
@@ -410,14 +418,14 @@ fn run_plan(
         Err(e) => {
             eprintln!("Failed to convert key path for plan {}: {:#}", plan, e);
             cleanup_vm();
-            return RunPlanResult::new(plan, false, None);
+            return RunPlanResult::new(plan, false, None, None);
         }
     };
 
     if let Err(e) = std::fs::write(&key_path, ssh_key) {
         eprintln!("Failed to write SSH key for plan {}: {:#}", plan, e);
         cleanup_vm();
-        return RunPlanResult::new(plan, false, None);
+        return RunPlanResult::new(plan, false, None, None);
     }
 
     // Set proper permissions on the key file (SSH requires 0600)
@@ -427,7 +435,7 @@ fn run_plan(
         if let Err(e) = std::fs::set_permissions(&key_path, perms) {
             eprintln!("Failed to set key permissions for plan {}: {:#}", plan, e);
             cleanup_vm();
-            return RunPlanResult::new(plan, false, None);
+            return RunPlanResult::new(plan, false, None, None);
         }
     }
 
@@ -442,12 +450,14 @@ fn run_plan(
             );
         }
         cleanup_vm();
-        return RunPlanResult::new(plan, false, None);
+        return RunPlanResult::new(plan, false, None, None);
     }
 
     println!("SSH connectivity verified");
 
     let ssh_port_str = ssh_port.to_string();
+
+    let time_start = std::time::Instant::now();
 
     // Run tmt for this specific plan using connect provisioner
     println!("Running tmt tests for plan {}...", plan);
@@ -470,6 +480,8 @@ fn run_plan(
         )
         .run();
 
+    let elapsed = time_start.elapsed();
+
     // Log disk usage after each test run to help diagnose "no space left on device" failures
     println!("Disk usage after plan {}:", plan);
     let _ = cmd!(sh, "df -h").run();
@@ -480,11 +492,11 @@ fn run_plan(
     let plan_result = match test_result {
         Ok(_) => {
             println!("Plan {} completed successfully", plan);
-            RunPlanResult::new(plan, true, Some(run_id))
+            RunPlanResult::new(plan, true, Some(elapsed), Some(run_id))
         }
         Err(e) => {
             eprintln!("Plan {} failed: {:#}", plan, e);
-            RunPlanResult::new(plan, false, Some(run_id))
+            RunPlanResult::new(plan, false, Some(elapsed), Some(run_id))
         }
     };
 
@@ -682,9 +694,13 @@ pub(crate) fn run_tmt(sh: &Shell, args: &RunTmtArgs) -> Result<()> {
         install_opts.push(format!("--karg={k}"));
     }
 
+    let start = std::time::Instant::now();
+
     println!("Creating base disk...");
     let opts = install_opts.clone();
     cmd!(sh, "bcvk libvirt to-base-disk {opts...} localhost/bootc").run()?;
+
+    println!("Creating base disk took: {:#?}", start.elapsed());
 
     // Generate a random suffix for VM names
     let random_suffix = generate_random_suffix();
@@ -827,9 +843,13 @@ pub(crate) fn run_tmt(sh: &Shell, args: &RunTmtArgs) -> Result<()> {
     println!("\n========================================");
     println!("Test Summary");
     println!("========================================");
+
+    test_results.sort_by(|a, b| b.time_taken.cmp(&a.time_taken));
+
     for RunPlanResult {
         plan_name: plan,
         passed,
+        time_taken,
         ..
     } in &test_results
     {
@@ -839,7 +859,12 @@ pub(crate) fn run_tmt(sh: &Shell, args: &RunTmtArgs) -> Result<()> {
             all_passed = false;
             "FAILED"
         };
-        println!("{}: {}", plan, status);
+        println!(
+            "{}: {} ({:?})",
+            plan,
+            status,
+            time_taken.unwrap_or(Duration::from_secs(0))
+        );
     }
     println!("========================================\n");
 
