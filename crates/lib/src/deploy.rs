@@ -9,6 +9,7 @@ use std::process::Command;
 
 use anyhow::{Context, Result, anyhow};
 use bootc_kernel_cmdline::utf8::CmdlineOwned;
+use bootc_utils::skopeo_bin;
 use cap_std::fs::{Dir, MetadataExt};
 use cap_std_ext::cap_std;
 use cap_std_ext::dirext::CapStdExtDirExt;
@@ -557,7 +558,7 @@ pub(crate) async fn prepare_for_pull_unified(
 
     // Configure the importer to use bootc storage as an additional image store
     let mut config = new_proxy_config();
-    let mut cmd = Command::new("skopeo");
+    let mut cmd = Command::new(skopeo_bin());
     // Use the physical path to bootc storage from the Storage struct
     let storage_path = format!(
         "{}/{}",

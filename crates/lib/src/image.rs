@@ -30,7 +30,7 @@ pub(crate) const IMAGE_DEFAULT: &str = "localhost/bootc";
 /// get structured responses.
 async fn image_exists_in_host_storage(image: &str) -> Result<bool> {
     use tokio::process::Command as AsyncCommand;
-    let mut cmd = AsyncCommand::new("podman");
+    let mut cmd = AsyncCommand::new(bootc_utils::podman_bin());
     cmd.args(["image", "exists", image]);
     Ok(cmd.status().await?.success())
 }

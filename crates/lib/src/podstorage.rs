@@ -167,7 +167,7 @@ pub(crate) fn setup_auth(cmd: &mut Command, fds: &mut CmdFds, sysroot: &Dir) -> 
 // - storage overridden to point to to storage_root
 // - Authentication (auth.json) using the bootc/ostree owned auth
 fn new_podman_cmd_in(sysroot: &Dir, storage_root: &Dir, run_root: &Dir) -> Result<Command> {
-    let mut cmd = Command::new("podman");
+    let mut cmd = Command::new(bootc_utils::podman_bin());
     let mut fds = CmdFds::new();
     bind_storage_roots(&mut cmd, &mut fds, storage_root, run_root)?;
     let run_root = format!("/proc/self/fd/{STORAGE_RUN_FD}");
@@ -201,7 +201,7 @@ pub fn set_additional_image_store<'c>(
 ///
 /// Call this function any time we're going to write to containers-storage.
 pub(crate) fn ensure_floating_c_storage_initialized() {
-    if let Err(e) = Command::new("podman")
+    if let Err(e) = Command::new(bootc_utils::podman_bin())
         .args(["system", "info"])
         .stdout(Stdio::null())
         .run_capture_stderr()
@@ -447,7 +447,7 @@ impl CStorage {
     /// to this storage.
     #[context("Pulling from host storage: {image}")]
     pub(crate) async fn pull_from_host_storage(&self, image: &str) -> Result<()> {
-        let mut cmd = Command::new("podman");
+        let mut cmd = Command::new(bootc_utils::podman_bin());
         cmd.stdin(Stdio::null());
         cmd.stdout(Stdio::null());
         // An ephemeral place for the transient state;

@@ -100,7 +100,7 @@ impl PodmanClient {
         std::fs::create_dir_all("/run/bootc/").ok();
         let _ = std::fs::remove_file(&socket_path);
 
-        let mut cmd = std::process::Command::new("podman");
+        let mut cmd = std::process::Command::new(bootc_utils::podman_bin());
         let mut fds = CmdFds::new();
         crate::podstorage::bind_storage_roots(&mut cmd, &mut fds, storage_root, run_root)?;
         crate::podstorage::setup_auth(&mut cmd, &mut fds, sysroot)?;
@@ -252,7 +252,7 @@ impl PodmanClient {
         tracing::debug!(
             "Image uses non-docker transport, falling back to podman pull subprocess: {image}"
         );
-        let mut cmd = Command::new("podman");
+        let mut cmd = Command::new(bootc_utils::podman_bin());
         let mut fds = CmdFds::new();
         crate::podstorage::bind_storage_roots(
             &mut cmd,

@@ -588,7 +588,7 @@ pub fn merge_default_container_proxy_opts_with_isolation(
         if let Some(authfile) = config.authfile.take() {
             config.auth_data = Some(std::fs::File::open(authfile)?);
         }
-        let cmd = crate::isolation::unprivileged_subprocess("skopeo", user);
+        let cmd = crate::isolation::unprivileged_subprocess(bootc_utils::skopeo_bin(), user);
         config.skopeo_cmd = Some(cmd);
     }
     Ok(())

@@ -51,7 +51,7 @@ pub(crate) fn container_policy_is_default_insecure() -> Result<bool> {
 
 /// Create a Command builder for skopeo.
 pub(crate) fn new_cmd() -> std::process::Command {
-    let mut cmd = std::process::Command::new("skopeo");
+    let mut cmd = std::process::Command::new(bootc_utils::skopeo_bin());
     cmd.stdin(Stdio::null());
     cmd
 }

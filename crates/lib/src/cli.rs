@@ -1853,7 +1853,7 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
                         );
                     }
                     // And ensure we're finding the image in the host storage
-                    let mut cmd = Command::new("skopeo");
+                    let mut cmd = Command::new(bootc_utils::skopeo_bin());
                     set_additional_image_store(&mut cmd, "/run/host-container-storage");
                     proxycfg.skopeo_cmd = Some(cmd);
                     iid
