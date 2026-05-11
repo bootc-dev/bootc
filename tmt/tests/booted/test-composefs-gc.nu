@@ -2,6 +2,9 @@
 # tmt:
 #   summary: Test composefs garbage collection with same and different kernel+initrd
 #   duration: 30m
+# extra:
+#   skip_if_ostree: true
+#   fixme_skip_if_uki: true
 
 use std assert
 use tap.nu
