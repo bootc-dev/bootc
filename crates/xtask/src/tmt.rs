@@ -1,5 +1,6 @@
-use std::thread::JoinHandle;
+use std::sync::mpsc;
 use std::time::Duration;
+use std::usize;
 
 use anyhow::{Context, Result};
 use camino::{Utf8Path, Utf8PathBuf};
@@ -38,6 +39,36 @@ const ENV_BOOTC_UPGRADE_IMAGE: &str = "BOOTC_upgrade_image";
 
 // Distro identifiers
 const DISTRO_CENTOS_9: &str = "centos-9";
+
+// Tests sorted by time taken (descending)
+const TESTS_SORTED_BY_TIME: [&str; 23] = [
+    // 10+ mins
+    "multi-device-esp",
+    "composefs-gc-uki",
+    "composefs-gc",
+    // 5+ mins
+    "loader-entries-source",
+    "download-only-upgrade",
+    "bib-build",
+    "rollback",
+    "logically-bound-switch",
+    "soft-reboot",
+    "switch-to-unified",
+    "image-pushpull-upgrade",
+    "install-no-boot-dir",
+    "upgrade-tag",
+    "custom-selinux-policy",
+    "factory-reset",
+    // 3+ mins
+    "upgrade-check-status",
+    "soft-reboot-selinux-policy",
+    "install-bootloader-none",
+    "install-outside-container",
+    "install-unified-flag",
+    "usroverlay",
+    "image-upgrade-reboot",
+    "install-karg-delete",
+];
 
 // Import the argument types from xtask.rs
 use crate::bcvk::BcvkInstallOpts;
@@ -728,6 +759,13 @@ pub(crate) fn run_tmt(sh: &Shell, args: &RunTmtArgs) -> Result<()> {
         return Ok(());
     }
 
+    plans.sort_by_key(|full_plan_name| {
+        TESTS_SORTED_BY_TIME
+            .iter()
+            .position(|test_time| full_plan_name.contains(test_time))
+            .unwrap_or(usize::MAX)
+    });
+
     println!("Found {} test plan(s): {:?}", plans.len(), plans);
 
     // Determine base log directory: CLI flag > TMT_LOG_DIR env var > default.
@@ -790,7 +828,7 @@ pub(crate) fn run_tmt(sh: &Shell, args: &RunTmtArgs) -> Result<()> {
     // Environment variables to pass to tmt (in addition to args.env)
     let mut tmt_env_vars = Vec::new();
 
-    let mut handles: Vec<JoinHandle<RunPlanResult>> = vec![];
+    let mut active_threads = 0;
 
     let num_cpu = std::thread::available_parallelism()
         .map(|c| c.get())
@@ -808,6 +846,8 @@ pub(crate) fn run_tmt(sh: &Shell, args: &RunTmtArgs) -> Result<()> {
     let parallel_vms = (avail_cpu / vm_cpu).min(6);
 
     println!("parallel_vms: {parallel_vms}");
+
+    let (tx, rx) = mpsc::channel::<RunPlanResult>();
 
     // Run each plan in its own VM
     for plan in plans {
@@ -868,8 +908,9 @@ pub(crate) fn run_tmt(sh: &Shell, args: &RunTmtArgs) -> Result<()> {
         let vm_cpu = vm_cpu.to_string();
         let base_log_dir = base_log_dir.clone();
 
-        let handle = std::thread::spawn(move || {
-            run_plan(
+        let tx_clone = tx.clone();
+        std::thread::spawn(move || {
+            let result = run_plan(
                 cloned_plan,
                 cloned_vm_name,
                 image,
@@ -883,36 +924,44 @@ pub(crate) fn run_tmt(sh: &Shell, args: &RunTmtArgs) -> Result<()> {
                 vm_mem,
                 base_log_dir,
                 bcvk_has_log_dir,
-            )
+            );
+
+            if let Err(e) = tx_clone.send(result) {
+                eprintln!("Failed to send result through channel: {}", e);
+            }
         });
 
-        handles.push(handle);
+        active_threads += 1;
 
-        if handles.len() >= parallel_vms {
-            let e = handles.remove(0).join();
-
-            match e {
+        // wait for a thread to complete if we've reached the parallel limit
+        if active_threads >= parallel_vms {
+            match rx.recv() {
                 Ok(plan_result) => {
                     test_results.push(plan_result);
+                    active_threads -= 1;
                 }
-
                 Err(e) => {
-                    eprintln!("Join failed: {e:?}");
+                    eprintln!("Failed to receive result from channel: {}", e);
+                    // still decrement to avoid infinite loop
+                    // in theory this shouldn't happen as we loop over plans, but
+                    // for sanity
+                    active_threads -= 1;
                 }
             }
         }
     }
 
-    for h in handles {
-        let e = h.join();
+    // drop the sender to signal no more messages
+    drop(tx);
 
-        match e {
+    // remaining results from channel
+    for _ in 0..active_threads {
+        match rx.recv() {
             Ok(plan_result) => {
                 test_results.push(plan_result);
             }
-
             Err(e) => {
-                eprintln!("Join failed: {e:?}");
+                eprintln!("Failed to receive remaining result from channel: {}", e);
             }
         }
     }
