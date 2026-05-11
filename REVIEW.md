@@ -139,6 +139,20 @@ Generally, just restate the commit message.
 
 Where it makes sense, it is OK to include additional details though.
 
+### Further changes on top of existing commits
+
+If you have followup fixes (whether that's part of a local loop or
+as part of addressing PR review), it is generally encouraged to *squash*
+the fixes into the prior commit. Do not create generically-named "Update <file>" commits
+or "Address review feedback" or "Fix cargo fmt" commits.
+
+This applies equally when an AI tool (e.g. Gemini, Copilot) suggests a
+change via a review comment — applying the suggestion creates a new commit
+with an auto-generated subject. That commit should be squashed before the
+PR is merged.
+
+In other words either a commit "stands alone" with its own rationale or it doesn't.
+
 ### Keeping PRs Current
 
 Keep PRs rebased on main. When CI failures are fixed in other PRs, rebase to
