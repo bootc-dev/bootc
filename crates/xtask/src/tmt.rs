@@ -25,6 +25,10 @@ const FIELD_ADJUST: &str = "adjust";
 const FIELD_FIXME_SKIP_IF_COMPOSEFS: &str = "fixme_skip_if_composefs";
 const FIELD_FIXME_SKIP_IF_UKI: &str = "fixme_skip_if_uki";
 
+/// For tests that should only run for composefs systems
+/// Ex. composefs-gc
+const FIELD_SKIP_IF_OSTREE: &str = "skip_if_ostree";
+
 // bcvk options
 const BCVK_OPT_BIND_STORAGE_RO: &str = "--bind-storage-ro";
 const ENV_BOOTC_UPGRADE_IMAGE: &str = "BOOTC_upgrade_image";
@@ -249,10 +253,11 @@ fn verify_ssh_connectivity(sh: &Shell, port: u16, key_path: &Utf8Path) -> Result
     )
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 struct PlanMetadata {
     try_bind_storage: bool,
     skip_if_composefs: bool,
+    skip_if_ostree: bool,
     skip_if_uki: bool,
 }
 
@@ -294,8 +299,7 @@ fn parse_plan_metadata(
                     .and_modify(|m| m.try_bind_storage = b)
                     .or_insert(PlanMetadata {
                         try_bind_storage: b,
-                        skip_if_uki: false,
-                        skip_if_composefs: false,
+                        ..Default::default()
                     });
             }
         }
@@ -310,8 +314,7 @@ fn parse_plan_metadata(
                     .and_modify(|m| m.skip_if_composefs = b)
                     .or_insert(PlanMetadata {
                         skip_if_composefs: b,
-                        skip_if_uki: false,
-                        try_bind_storage: false,
+                        ..Default::default()
                     });
             }
         }
@@ -326,8 +329,22 @@ fn parse_plan_metadata(
                     .and_modify(|m| m.skip_if_uki = b)
                     .or_insert(PlanMetadata {
                         skip_if_uki: b,
-                        skip_if_composefs: false,
-                        try_bind_storage: false,
+                        ..Default::default()
+                    });
+            }
+        }
+
+        if let Some(skip_if_ostree) = plan_data.get(&serde_yaml::Value::String(format!(
+            "extra-{}",
+            FIELD_SKIP_IF_OSTREE
+        ))) {
+            if let Some(b) = skip_if_ostree.as_bool() {
+                plan_metadata
+                    .entry(plan_name.to_string())
+                    .and_modify(|m| m.skip_if_ostree = b)
+                    .or_insert(PlanMetadata {
+                        skip_if_ostree: b,
+                        ..Default::default()
                     });
             }
         }
@@ -431,6 +448,14 @@ pub(crate) fn run_tmt(sh: &Shell, args: &RunTmtArgs) -> Result<()> {
                 .iter()
                 .find(|(key, _)| plan.ends_with(key.as_str()))
                 .map(|(_, v)| v.skip_if_composefs)
+                .unwrap_or(false)
+        });
+    } else {
+        plans.retain(|plan| {
+            !plan_metadata
+                .iter()
+                .find(|(key, _)| plan.ends_with(key.as_str()))
+                .map(|(_, v)| v.skip_if_ostree)
                 .unwrap_or(false)
         });
     }
@@ -992,6 +1017,8 @@ struct TestDef {
     try_bind_storage: bool,
     /// Whether to skip this test for composefs backend
     skip_if_composefs: bool,
+    /// Whether to skip this test for ostree backend
+    skip_if_ostree: bool,
     /// Whether to skip this test for images with UKI
     skip_if_uki: bool,
     /// TMT fmf attributes to pass through (summary, duration, adjust, etc.)
@@ -1157,6 +1184,13 @@ fn generate_integration() -> Result<(String, String)> {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
+        let skip_if_ostree = metadata
+            .extra
+            .as_mapping()
+            .and_then(|m| m.get(&serde_yaml::Value::String(FIELD_SKIP_IF_OSTREE.to_string())))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
         let skip_if_uki = metadata
             .extra
             .as_mapping()
@@ -1174,6 +1208,7 @@ fn generate_integration() -> Result<(String, String)> {
             test_command,
             try_bind_storage,
             skip_if_composefs,
+            skip_if_ostree,
             skip_if_uki,
             tmt: metadata.tmt,
         });
@@ -1293,6 +1328,13 @@ fn generate_integration() -> Result<(String, String)> {
         if test.skip_if_composefs {
             plan_value.insert(
                 serde_yaml::Value::String(format!("extra-{}", FIELD_FIXME_SKIP_IF_COMPOSEFS)),
+                serde_yaml::Value::Bool(true),
+            );
+        }
+
+        if test.skip_if_ostree {
+            plan_value.insert(
+                serde_yaml::Value::String(format!("extra-{}", FIELD_SKIP_IF_OSTREE)),
                 serde_yaml::Value::Bool(true),
             );
         }

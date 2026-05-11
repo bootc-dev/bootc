@@ -197,6 +197,8 @@ execute:
     how: fmf
     test:
       - /tmt/tests/tests/test-35-composefs-gc
+  extra-skip_if_ostree: true
+  extra-fixme_skip_if_uki: true
 
 /plan-35-upgrade-preflight-disk-check:
   summary: Verify pre-flight disk space check rejects images with inflated layer sizes
@@ -257,6 +259,7 @@ execute:
     how: fmf
     test:
       - /tmt/tests/tests/test-41-composefs-gc-uki
+  extra-skip_if_ostree: true
 
 /plan-42-loader-entries-source:
   summary: Test bootc loader-entries set-options-for-source
@@ -272,6 +275,7 @@ execute:
     how: fmf
     test:
       - /tmt/tests/tests/test-43-switch-same-digest
+  extra-skip_if_ostree: true
 
 /plan-44-shadow-fixup:
   summary: Test bootc-sysusers-shadow-sync removes orphaned gshadow entries before sysusers
