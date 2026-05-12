@@ -59,7 +59,7 @@ jobs:
             # Full suite: all OSes
             echo 'package_os_matrix=["fedora-43","fedora-44","fedora-45","centos-9","centos-10"]' >> "$GITHUB_OUTPUT"
             echo 'integration_os_matrix=["fedora-43","fedora-44","centos-9","centos-10"]' >> "$GITHUB_OUTPUT"
-            echo 'upgrade_os_matrix=["fedora-43","centos-10"]' >> "$GITHUB_OUTPUT"
+            echo 'upgrade_os_matrix=["fedora-44","centos-10"]' >> "$GITHUB_OUTPUT"
             echo 'run_heavy=true' >> "$GITHUB_OUTPUT"
           elif echo "$LABELS" | jq -e 'index("ci/tier-1")' > /dev/null; then
             # Tier-1 only: centos-10
