@@ -40,6 +40,16 @@ if [[ "${variant}" == composefs* ]]; then
     echo 'add_dracutmodules+=" bootc "' > /etc/dracut.conf.d/50-bootc-composefs.conf
     kver=$(cd /usr/lib/modules && echo *)
     dracut --force --kver "$kver" "/usr/lib/modules/$kver/initramfs.img"
+else
+    . /usr/lib/os-release
+
+    if [[ $ID == "fedora" && $VERSION_ID == "44" ]]; then
+        # We skip kernel postinstall in "provision-fetch" which would've generated
+        # the initrd, so we do it ourselves here
+        kver=$(cd /usr/lib/modules && echo *)
+        dracut --force --kver "$kver" "/usr/lib/modules/$kver/initramfs.img"
+    fi
 fi
+
 rm -rf /run/provision
 EORUN
