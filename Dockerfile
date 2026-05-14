@@ -108,7 +108,7 @@ RUN --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
     # Install systemd-ukify and systemd-boot for UKIs
     # This also installs systemd-boot for the grub UKI case which is not ideal...
     if [[ "${boot_type}" == "uki" ]]; then
-        pkgs_to_install+=(systemd-ukify)
+        pkgs_to_install+=(systemd-ukify binutils)
     fi
 
     if [[ ${#pkgs_to_install[@]} -gt 0 ]]; then
@@ -178,7 +178,10 @@ ARG pkgversion
 ARG SOURCE_DATE_EPOCH
 ENV SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}
 # Build RPM directly from source, using cached target directory
-RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp --mount=type=cache,target=/src/target --mount=type=cache,target=/var/roothome RPM_VERSION="${pkgversion}" /src/contrib/packaging/build-rpm
+RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
+    --mount=type=cache,target=/src/target \
+    --mount=type=cache,target=/var/roothome \
+    RPM_VERSION="${pkgversion}" /src/contrib/packaging/build-rpm
 
 # Build a systemd-sysext containing just the bootc binary.
 # Skips RPM machinery entirely for fast incremental rebuilds.
@@ -261,7 +264,7 @@ COPY --from=update-generated-from-code /src/docs/src/*.schema.json /docs/src/
 # ----
 
 # Perform all filesystem transformations except generating the sealed UKI (if configured)
-FROM base as base-penultimate
+FROM base as base-penultimate-source
 ARG variant
 ARG bootloader
 ARG boot_type
@@ -290,6 +293,10 @@ rm -rf /var/cache
 rm -rf /run/rhsm
 
 EORUN
+
+FROM base-penultimate-source as base-penultimate
+ARG boot_type
+
 # Configure the rootfs
 ARG rootfs=""
 RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
@@ -309,8 +316,18 @@ RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp
     install -D -m 0644 -t /usr/lib/bootc/kargs.d /run/usr-extras/lib/bootc/kargs.d/*.toml
 # Clean up package manager caches
 RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
-    --mount=type=bind,from=packaging,src=/,target=/run/packaging \
+    --mount=type=bind,from=base-penultimate-source,src=/,target=/run/base-penultimate-src \
+    --mount=type=bind,from=packaging,src=/,target=/run/packaging <<EORUN
     /run/packaging/cleanup
+
+    # Remove kernel + initrd if UKI
+    if [[ "${boot_type}" == "uki" ]]; then
+        kver=$(bootc container inspect --rootfs /run/base-penultimate-src --json | jq -r '.kernel.version')
+
+        rm -v "/usr/lib/modules/$kver/vmlinuz"
+        rm -v "/usr/lib/modules/$kver/initramfs.img"
+    fi
+EORUN
 
 # Generate the sealed UKI in a separate stage
 # This computes the composefs digest from base-penultimate and creates a signed UKI
@@ -327,18 +344,27 @@ RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp
 RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
     --mount=type=secret,id=secureboot_key \
     --mount=type=secret,id=secureboot_cert \
+    --mount=type=bind,from=base-penultimate-source,src=/,target=/run/base-penultimate-src \
     --mount=type=bind,from=packaging,src=/,target=/run/packaging \
     --mount=type=bind,from=base-penultimate,src=/,target=/run/target <<EORUN
 set -xeuo pipefail
 
-allow_missing_verity=false
+allow_missing_verity=()
 
 if [[ $filesystem == "xfs" ]]; then
-    allow_missing_verity=true
+    allow_missing_verity=(--allow-missing-verity)
 fi
 
 if test "${boot_type}" = "uki"; then
-  /run/packaging/seal-uki /run/target /out /run/secrets $allow_missing_verity $seal_state
+  kver=$(bootc container inspect --rootfs /run/base-penultimate-src --json | jq -r '.kernel.version')
+
+  /run/packaging/seal-uki \
+      --target /run/target \
+      --output /out \
+      --secrets /run/secrets \
+      "${allow_missing_verity[@]}" \
+      --kernel-dir "/run/base-penultimate-src/usr/lib/modules/$kver" \
+      --seal-state $seal_state
 fi
 EORUN
 
@@ -348,11 +374,13 @@ ARG variant
 ARG boot_type
 # Copy the sealed UKI and finalize the image (remove raw kernel, create symlinks)
 RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
+    --mount=type=bind,from=base-penultimate-source,src=/,target=/run/base-penultimate-src \
     --mount=type=bind,from=packaging,src=/,target=/run/packaging \
     --mount=type=bind,from=sealed-uki,src=/,target=/run/sealed-uki <<EORUN
 set -xeuo pipefail
 if test "${boot_type}" = "uki"; then
-  /run/packaging/finalize-uki /run/sealed-uki/out
+  kver=$(bootc container inspect --rootfs /run/base-penultimate-src --json | jq -r '.kernel.version')
+  /run/packaging/finalize-uki /run/sealed-uki/out "$kver"
 fi
 EORUN
 # And finally, test our linting

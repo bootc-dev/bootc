@@ -13,6 +13,18 @@ ARG filesystem=ext4
 FROM scratch AS packaging
 COPY contrib/packaging /
 
+# Get kernel + initrd from the UKI
+FROM localhost/bootc as kernel
+ARG boot_type
+RUN <<-EOF
+    if test "${boot_type}" = "uki"; then
+        kver=$(bootc container inspect --rootfs / --json | jq -r '.kernel.version')
+        mkdir -p "/boot/$kver"
+        objcopy -O binary --only-section=.initrd "/boot/EFI/Linux/$kver.efi" "/boot/$kver/initramfs.img"
+        objcopy -O binary --only-section=.linux "/boot/EFI/Linux/$kver.efi" "/boot/$kver/vmlinuz"
+    fi
+EOF
+
 # Create the upgrade content (a simple marker file).
 # For UKI builds, we also remove the existing UKI so that seal-uki can
 # regenerate it with the correct composefs digest for this derived image.
@@ -36,16 +48,26 @@ RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp
     --mount=type=secret,id=secureboot_key \
     --mount=type=secret,id=secureboot_cert \
     --mount=type=bind,from=packaging,src=/,target=/run/packaging \
+    --mount=type=bind,from=kernel,src=/,target=/run/kernel \
     --mount=type=bind,from=upgrade-base,src=/,target=/run/target <<EORUN
 set -xeuo pipefail
 
-allow_missing_verity=false
-if [ "${filesystem}" = "xfs" ]; then
-    allow_missing_verity=true
+allow_missing_verity=()
+
+if [[ $filesystem == "xfs" ]]; then
+    allow_missing_verity=(--allow-missing-verity)
 fi
 
 if test "${boot_type}" = "uki"; then
-  /run/packaging/seal-uki /run/target /out /run/secrets "${allow_missing_verity}" "${seal_state}"
+  kver=$(bootc container inspect --rootfs /run/kernel --json | jq -r '.kernel.version')
+
+  /run/packaging/seal-uki \
+      --target /run/target \
+      --output /out \
+      --secrets /run/secrets \
+      "${allow_missing_verity[@]}" \
+      --kernel-dir "/run/kernel/boot/$kver" \
+      --seal-state $seal_state
 fi
 EORUN
 
@@ -54,9 +76,11 @@ FROM upgrade-base
 ARG boot_type
 RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
     --mount=type=bind,from=packaging,src=/,target=/run/packaging \
+    --mount=type=bind,from=kernel,src=/,target=/run/kernel \
     --mount=type=bind,from=sealed-upgrade-uki,src=/,target=/run/sealed-uki <<EORUN
 set -xeuo pipefail
 if test "${boot_type}" = "uki"; then
-  /run/packaging/finalize-uki /run/sealed-uki/out
+  kver=$(bootc container inspect --rootfs /run/kernel --json | jq -r '.kernel.version')
+  /run/packaging/finalize-uki /run/sealed-uki/out $kver
 fi
 EORUN
