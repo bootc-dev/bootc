@@ -15,6 +15,7 @@ use fn_error_context::context;
 
 use crate::bootc_composefs::digest::compute_composefs_digest;
 use crate::bootc_composefs::status::ComposefsCmdline;
+use crate::kernel::KernelInternal;
 
 /// Build a UKI from the given rootfs.
 ///
@@ -30,6 +31,7 @@ pub(crate) async fn build_ukify(
     rootfs: &Utf8Path,
     extra_kargs: &[String],
     args: &[OsString],
+    kernel: Option<KernelInternal>,
     allow_missing_fsverity: bool,
     write_dumpfile_to: Option<&Utf8Path>,
 ) -> Result<()> {
@@ -52,12 +54,14 @@ pub(crate) async fn build_ukify(
     let root = Dir::open_ambient_dir(rootfs, cap_std_ext::cap_std::ambient_authority())
         .with_context(|| format!("Opening rootfs {rootfs}"))?;
 
-    // Find the kernel
-    let kernel = crate::kernel::find_kernel(&root)?
-        .ok_or_else(|| anyhow::anyhow!("No kernel found in {rootfs}"))?;
+    let kernel_final = match kernel {
+        Some(ref kernel) => kernel,
+        None => &crate::kernel::find_kernel(&root)?
+            .ok_or_else(|| anyhow::anyhow!("No kernel found in {rootfs}"))?,
+    };
 
     // Extract vmlinuz and initramfs paths, or bail if this is already a UKI
-    let (vmlinuz_path, initramfs_path) = match kernel.k_type {
+    let (vmlinuz_path, initramfs_path) = match &kernel_final.k_type {
         crate::kernel::KernelType::Vmlinuz { path, initramfs } => (path, initramfs),
         crate::kernel::KernelType::Uki { path, .. } => {
             anyhow::bail!("Cannot build UKI: rootfs already contains a UKI at {path}");
@@ -65,17 +69,31 @@ pub(crate) async fn build_ukify(
     };
 
     // Verify kernel and initramfs exist
-    if !root
-        .try_exists(&vmlinuz_path)
-        .context("Checking for vmlinuz")?
-    {
-        anyhow::bail!("Kernel not found at {vmlinuz_path}");
-    }
-    if !root
-        .try_exists(&initramfs_path)
-        .context("Checking for initramfs")?
-    {
-        anyhow::bail!("Initramfs not found at {initramfs_path}");
+    //
+    // NOTE: Not using cap_std here as the vmlinuz/initramfs path from
+    // args can be outside of "rootfs"
+    if kernel.is_some() {
+        if !vmlinuz_path.exists() {
+            anyhow::bail!("Kernel not found at {vmlinuz_path}");
+        }
+
+        if !initramfs_path.exists() {
+            anyhow::bail!("Initramfs not found at {initramfs_path}");
+        }
+    } else {
+        if !root
+            .try_exists(&vmlinuz_path)
+            .context("Checking for vmlinuz")?
+        {
+            anyhow::bail!("Kernel not found at {vmlinuz_path}");
+        }
+
+        if !root
+            .try_exists(&initramfs_path)
+            .context("Checking for initramfs")?
+        {
+            anyhow::bail!("Initramfs not found at {initramfs_path}");
+        }
     }
 
     // Compute the composefs digest
@@ -105,7 +123,7 @@ pub(crate) async fn build_ukify(
         .arg("--initrd")
         .arg(&initramfs_path)
         .arg("--uname")
-        .arg(&kernel.kernel.version)
+        .arg(&kernel_final.kernel.version)
         .arg("--cmdline")
         .arg(&cmdline_str)
         .arg("--os-release")
@@ -134,7 +152,7 @@ mod tests {
         let tempdir = tempfile::tempdir().unwrap();
         let path = Utf8Path::from_path(tempdir.path()).unwrap();
 
-        let result = build_ukify(path, &[], &[], false, None).await;
+        let result = build_ukify(path, &[], &[], None, false, None).await;
         assert!(result.is_err());
         let err = format!("{:#}", result.unwrap_err());
         assert!(
@@ -156,7 +174,7 @@ mod tests {
         )
         .unwrap();
 
-        let result = build_ukify(path, &[], &[], false, None).await;
+        let result = build_ukify(path, &[], &[], None, false, None).await;
         assert!(result.is_err());
         let err = format!("{:#}", result.unwrap_err());
         assert!(

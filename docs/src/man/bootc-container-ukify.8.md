@@ -35,6 +35,10 @@ Any additional arguments after `--` are passed through to ukify unchanged.
 
     Write a dumpfile to this path
 
+**--kernel-dir**=*KERNEL_DIR*
+
+    The directory containing the kernel and initramfs.img Must be of the format /parent/$kernel_version
+
 <!-- END GENERATED OPTIONS -->
 
 # EXAMPLES

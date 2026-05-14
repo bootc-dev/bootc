@@ -442,6 +442,13 @@ pub(crate) enum ContainerOpts {
         #[clap(long)]
         write_dumpfile_to: Option<Utf8PathBuf>,
 
+        /// The directory containing the kernel and initramfs.img
+        /// Must be of the format /parent/$kernel_version
+        ///
+        /// Ex. /boot/6.18.7-100.fc42.x86_64
+        #[clap(long)]
+        kernel_dir: Option<Utf8PathBuf>,
+
         /// Additional arguments to pass to ukify (after `--`).
         #[clap(last = true)]
         args: Vec<OsString>,
@@ -1902,12 +1909,36 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
                 kargs,
                 allow_missing_verity,
                 write_dumpfile_to,
+                kernel_dir,
                 args,
             } => {
+                let kernel = match kernel_dir {
+                    Some(kernel_dir) => {
+                        let kver = kernel_dir
+                            .components()
+                            .last()
+                            .ok_or_else(|| anyhow::anyhow!("Could not determine kernel version"))?;
+
+                        Some(crate::kernel::KernelInternal {
+                            kernel: crate::kernel::Kernel {
+                                unified: false,
+                                version: kver.to_string(),
+                            },
+                            k_type: crate::kernel::KernelType::Vmlinuz {
+                                path: kernel_dir.join("vmlinuz"),
+                                initramfs: kernel_dir.join("initramfs.img"),
+                            },
+                        })
+                    }
+
+                    None => None,
+                };
+
                 crate::ukify::build_ukify(
                     &rootfs,
                     &kargs,
                     &args,
+                    kernel,
                     allow_missing_verity,
                     write_dumpfile_to.as_deref(),
                 )
