@@ -34,24 +34,49 @@ is_composefs=$(bootc status --json | jq '.status.booted.composefs')
 boot_type=$(bootc status --json | jq -r '.status.booted.composefs.bootType' | tr '[:upper:]' '[:lower:]')
 
 if [[ $is_composefs != "null" && $boot_type == "uki" ]]; then
-    allow_missing_verity=$(bootc status --json | jq -r '.status.booted.composefs.missingVerityAllowed')
+    allow_missing_verity=()
+
+    if [[ "$(bootc status --json | jq -r '.status.booted.composefs.missingVerityAllowed')" == "true" ]]; then
+        allow_missing_verity=("--allow-missing-verity")
+    fi
+
     seal_state="unsealed"
 
     cat >> /tmp/Containerfile.drop-lbis <<-EOF
-    FROM base as base-final
-    RUN rm -rf /boot/EFI/Linux/*.efi
+FROM base as kernel
+RUN <<-RUNEOF
+    kver=\$(bootc container inspect --rootfs / --json | jq -r '.kernel.version')
+    mkdir -p "/boot/\$kver"
+    objcopy -O binary --only-section=.initrd "/boot/EFI/Linux/\$kver.efi" "/boot/\$kver/initramfs.img"
+    objcopy -O binary --only-section=.linux "/boot/EFI/Linux/\$kver.efi" "/boot/\$kver/vmlinuz"
+RUNEOF
 
-    FROM base as sealed-uki
-    RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
-        --mount=type=bind,from=base-final,src=/,target=/run/target \
-        /usr/bin/seal-uki /run/target /out /run/secrets $allow_missing_verity $seal_state
+FROM base as base-final
+RUN rm -rf /boot/EFI/Linux/*.efi
 
-    FROM base-final
+FROM base as sealed-uki
+RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
+    --mount=type=bind,from=kernel,src=/,target=/run/kernel \
+    --mount=type=bind,from=base-final,src=/,target=/run/target <<RUNEOF
 
-    # Copy the sealed UKI and finalize the image remove raw kernel, create symlinks
-    RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
-        --mount=type=bind,from=sealed-uki,src=/,target=/run/sealed-uki \
-        /usr/bin/finalize-uki /run/sealed-uki/out
+    kver=\$(bootc container inspect --rootfs /run/kernel --json | jq -r '.kernel.version')
+
+    /usr/bin/seal-uki \
+      --target /run/target \
+      --output /out \
+      --secrets /run/secrets \
+      --kernel-dir /run/kernel/boot/\$kver \
+      --seal-state $seal_state \
+      "${allow_missing_verity[@]}"
+
+RUNEOF
+
+FROM base-final
+
+RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
+    --mount=type=bind,from=sealed-uki,src=/,target=/run/sealed-uki \
+    --mount=type=bind,from=kernel,src=/,target=/run/kernel \
+    /usr/bin/finalize-uki /run/sealed-uki/out \$(bootc container inspect --rootfs /run/kernel --json | jq -r '.kernel.version')
 EOF
 fi
 

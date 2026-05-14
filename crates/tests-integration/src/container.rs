@@ -51,6 +51,8 @@ pub(crate) fn test_bootc_container_inspect() -> Result<()> {
         .as_bool()
         .expect("kernel.unified should be a boolean");
 
+    println!("kernel: {kernel:#?}");
+
     let is_uki = std::env::var("BOOTC_boot_type").is_ok_and(|var| var == "uki");
 
     if let Some(variant) = std::env::var("BOOTC_variant").ok() {
