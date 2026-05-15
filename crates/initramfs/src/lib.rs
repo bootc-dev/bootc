@@ -116,6 +116,8 @@ struct Config {
     #[serde(default)]
     etc: MountConfig,
     #[serde(default)]
+    var: MountConfig,
+    #[serde(default)]
     root: RootConfig,
 }
 
@@ -437,6 +439,30 @@ pub fn setup_root(args: Args) -> Result<()> {
         .cmdline
         .unwrap_or(Cmdline::from_proc().context("Failed to read cmdline")?);
 
+    // Auto-detect systemd.volatile=state: if the kernel cmdline requests a
+    // volatile /var via the systemd fstab-generator, skip our initramfs
+    // bind-mount of /var from the deployment state directory.  This leaves
+    // /var as an empty directory from the composefs image so that
+    // systemd-fstab-generator can mount a fresh tmpfs there at local-fs.target.
+    // An explicit `[var] mount = "none"` in setup-root-conf.toml has the same
+    // effect; the cmdline check is a convenience so users only need the kargs.d
+    // entry without also editing setup-root-conf.toml.
+    let config = {
+        let mut config = config;
+        // value_of returns None for a missing key, Some("") for a bare flag,
+        // or Some("state") / Some("overlay") / Some("yes") for key=value form.
+        let volatile_val = cmdline.value_of("systemd.volatile");
+        let var_volatile = matches!(volatile_val, Some("state") | Some("overlay"));
+        if var_volatile && config.var.mount.is_none() && !config.var.transient {
+            tracing::debug!(
+                "systemd.volatile={} detected; skipping /var state bind-mount",
+                volatile_val.unwrap_or("")
+            );
+            config.var.mount = Some(MountType::None);
+        }
+        config
+    };
+
     let (image, insecure) = get_cmdline_composefs::<Sha512HashValue>(&cmdline)?;
 
     let new_root = match &args.root_fs {
@@ -509,7 +535,12 @@ pub fn setup_root(args: Args) -> Result<()> {
     // etc + var
     let state = open_dir(open_dir(&sysroot, "state/deploy")?, image.to_hex())?;
     mount_subdir(visible_root, &state, "etc", config.etc, MountType::Bind)?;
-    mount_subdir(visible_root, &state, "var", MountConfig::default(), MountType::Bind)?;
+    // /var is bind-mounted from the deployment state directory by default.
+    // The systemd.volatile=state cmdline detection above (or an explicit
+    // [var] mount = "none" in setup-root-conf.toml) can change this to
+    // MountType::None, which skips the bind-mount entirely and leaves /var
+    // as an empty directory from the composefs image for systemd to fill.
+    mount_subdir(visible_root, &state, "var", config.var, MountType::Bind)?;
 
     if cfg!(not(feature = "pre-6.15")) {
         // Replace the /sysroot with the new composed root filesystem.
@@ -540,6 +571,10 @@ mod tests {
                     mount: None,
                     transient: false
                 },
+                var: MountConfig {
+                    mount: None,
+                    transient: false
+                },
                 root: RootConfig { transient: false },
             }
         );
@@ -562,6 +597,14 @@ mod tests {
         let config = parse("[etc]\ntransient = true");
         assert_eq!(config.etc.transient, true);
         assert_eq!(config.etc.mount, None);
+    }
+
+    #[test]
+    fn test_var_none() {
+        // mount = "none" skips the state bind-mount; combine with
+        // systemd.volatile=state karg to get a fresh tmpfs on every boot.
+        let config = parse("[var]\nmount = \"none\"");
+        assert_eq!(config.var.mount, Some(MountType::None));
     }
 
     #[test]

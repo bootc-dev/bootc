@@ -62,6 +62,7 @@
 - [composefs backend](experimental-composefs.md)
 - [unified storage](experimental-unified-storage.md)
 - [`man bootc-root-setup.service`](man/bootc-root-setup.service.5.md)
+- [`man bootc-setup-root-conf.toml`](man/bootc-setup-root-conf.5.md)
 - [fsck](experimental-fsck.md)
 - [install reset](experimental-install-reset.md)
 - [--progress-fd](experimental-progress-fd.md)

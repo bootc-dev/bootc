@@ -4,69 +4,45 @@ bootc-root-setup.service
 
 # DESCRIPTION
 
-This service runs in the initramfs to set up the root filesystem when composefs is enabled.
-It is only activated when the `composefs` kernel command line parameter is present.
+A oneshot systemd service that runs in the initramfs to set up the root
+filesystem when the composefs backend is active.  It is gated on the
+`composefs=` kernel command line argument and on
+`ConditionPathExists=/etc/initrd-release`, so it only runs inside an initramfs.
 
-The service performs the following operations:
+The service is ordered after `sysroot.mount` and before
+`initrd-root-fs.target`.  It performs the following steps:
 
-- Mounts the composefs image specified in the kernel command line
-- Sets up `/etc` and `/var` directories from the deployment state
-- Optionally configures transient overlays based on the configuration file
-- Prepares the root filesystem for switch-root
+1. Opens the composefs repository at `/sysroot/composefs`.
+2. Mounts the EROFS image identified by the `composefs=<digest>` kernel
+   argument, with fs-verity verification.
+3. Optionally wraps the root in a transient tmpfs overlay
+   (see `root.transient` in **bootc-setup-root-conf.toml(5)**).
+4. Bind-mounts or overlays `/etc` and `/var` from the per-deployment state
+   directory at `/sysroot/state/deploy/<digest>/`.
+5. Replaces `/sysroot` with the fully assembled root, ready for switch-root.
 
-This service runs after `sysroot.mount` and `ostree-prepare-root.service`, and before
-`initrd-root-fs.target`.
+# CONFIGURATION
 
-# CONFIGURATION FILE
+Behaviour is controlled by an optional TOML file installed into the initramfs:
 
-The service reads an optional configuration file at `/usr/lib/composefs/setup-root-conf.toml`.
-If this file does not exist, default settings are used.
+`/usr/lib/composefs/setup-root-conf.toml`
 
-**WARNING**: The configuration file format and composefs integration are experimental
-and subject to change.
+See **bootc-setup-root-conf.toml(5)** for the full option reference.
 
-## Configuration Options
+# INSTALLATION
 
-The configuration file uses TOML format with the following sections:
+The service and its binary (`/usr/lib/bootc/initramfs-setup`) are installed
+into the initramfs by the `51bootc` dracut module.  The module also installs
+`/usr/lib/composefs/setup-root-conf.toml` when it is present on the host image,
+so image authors do not need manual `dracut --include` invocations.
 
-### `[root]`
-
-- `transient` (boolean): If true, mounts the root filesystem as a transient overlay.
-  This makes all changes to `/` ephemeral and lost on reboot. Default: false.
-
-### `[etc]`
-
-- `mount` (string): Mount type for `/etc`. Options: "none", "bind", "overlay", "transient".
-  Default: "bind".
-- `transient` (boolean): Shorthand for `mount = "transient"`. Default: false.
-
-### `[var]`
-
-- `mount` (string): Mount type for `/var`. Options: "none", "bind", "overlay", "transient".
-  Default: "bind".
-- `transient` (boolean): Shorthand for `mount = "transient"`. Default: false.
-
-## Example Configuration
-
-```toml
-[root]
-transient = false
-
-[etc]
-mount = "bind"
-
-[var]
-mount = "overlay"
-```
-
-# EXPERIMENTAL STATUS
-
-The composefs integration, including this service and its configuration file format,
-is experimental and subject to change.
+The `51bootc` module is *not* enabled by default (so that e.g. `apt|dnf install bootc`
+don't pull it in). It's recommended for base images to enable it via a config file
+in e.g. `/usr/lib/dracut/dracut.conf.d`.
 
 # SEE ALSO
 
-**bootc(8)**
+**bootc-setup-root-conf.toml(5)**, **bootc(8)**
 
 # VERSION
 

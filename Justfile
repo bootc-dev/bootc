@@ -43,6 +43,8 @@ filesystem := env("BOOTC_filesystem", "ext4")
 boot_type := env("BOOTC_boot_type", "bls")
 # Only used for composefs tests
 seal_state := env("BOOTC_seal_state", "unsealed")
+# Baseconfigs to inject into the image for testing (e.g. "etc-transient" or "root-transient")
+baseconfigs := env("BOOTC_baseconfigs", "")
 # Base container image to build from
 base := env("BOOTC_base", "quay.io/centos-bootc/centos-bootc:stream10")
 # Buildroot base image
@@ -56,18 +58,21 @@ no_auto_local_deps := env("BOOTC_no_auto_local_deps", "")
 # Internal variables
 nocache := env("BOOTC_nocache", "")
 _nocache_arg := if nocache != "" { "--no-cache" } else { "" }
+_baseconfigs_env := if baseconfigs != "" { "--env=BOOTC_baseconfigs=" + baseconfigs } else { "" }
 testimage_label := "bootc.testimage=1"
 lbi_images := "quay.io/curl/curl:latest quay.io/curl/curl-base:latest registry.access.redhat.com/ubi9/podman:latest"
 fedora-coreos := "quay.io/fedora/fedora-coreos:testing-devel"
 generic_buildargs := ""
 _extra_src_args := if extra_src != "" { "-v " + extra_src + ":/run/extra-src:ro --security-opt=label=disable" } else { "" }
+# filesystem arg: required for bootc container ukify to allow missing fsverity
 base_buildargs := generic_buildargs + " " + _extra_src_args \
                   + " --build-arg=base=" + base \
                   + " --build-arg=variant=" + variant \
                   + " --build-arg=bootloader=" + bootloader \
                   + " --build-arg=boot_type=" + boot_type \
                   + " --build-arg=seal_state=" + seal_state \
-                  + " --build-arg=filesystem=" + filesystem # required for bootc container ukify to allow missing fsverity
+                  + " --build-arg=filesystem=" + filesystem \
+                  + " --build-arg=baseconfigs=" + baseconfigs
 buildargs := base_buildargs \
              + " --cap-add=all --security-opt=label=type:container_runtime_t --device /dev/fuse" \
              + " --secret=id=secureboot_key,src=target/test-secureboot/db.key --secret=id=secureboot_cert,src=target/test-secureboot/db.crt"
@@ -266,7 +271,31 @@ test-container-export: build
 # Run tmt tests without rebuilding (for fast iteration)
 [group('testing')]
 test-tmt-nobuild *ARGS:
-    cargo xtask run-tmt --env=BOOTC_variant={{variant}} --upgrade-image={{upgrade_img}} {{base_img}} {{ARGS}}
+    cargo xtask run-tmt --env=BOOTC_variant={{variant}} {{_baseconfigs_env}} --upgrade-image={{upgrade_img}} {{base_img}} {{ARGS}}
+
+# Run readonly tests with a baseconfig baked into the image at build time.
+# Requires composefs variant. Example: just variant=composefs test-tmt-baseconfig root-transient
+[group('testing')]
+test-tmt-baseconfig baseconfig *ARGS:
+    just variant=composefs baseconfigs={{baseconfig}} build
+    just variant=composefs baseconfigs={{baseconfig}} _build-upgrade-image
+    cargo xtask run-tmt \
+        --env=BOOTC_variant=composefs \
+        --env=BOOTC_baseconfigs={{baseconfig}} \
+        --upgrade-image={{upgrade_img}} \
+        --composefs-backend \
+        --bootloader={{bootloader}} \
+        --filesystem={{filesystem}} \
+        --boot-type={{boot_type}} \
+        --seal-state={{seal_state}} \
+        {{base_img}} readonly {{ARGS}}
+
+# Run readonly tests for all standard baseconfigs
+[group('testing')]
+test-baseconfigs *ARGS:
+    just test-tmt-baseconfig etc-transient {{ARGS}}
+    just test-tmt-baseconfig root-transient {{ARGS}}
+    just test-tmt-baseconfig var-volatile {{ARGS}}
 
 # Run tmt tests on Fedora CoreOS
 [group('testing')]

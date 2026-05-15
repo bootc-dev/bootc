@@ -222,6 +222,7 @@ FROM base as base-penultimate
 ARG variant
 ARG bootloader
 ARG boot_type
+ARG baseconfigs=""
 
 # Switch to a signed systemd-boot, if configured
 RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
@@ -251,6 +252,10 @@ ARG rootfs=""
 RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
     --mount=type=bind,from=packaging,src=/,target=/run/packaging \
     /run/packaging/configure-rootfs "${variant}" "${rootfs}"
+# Inject base configuration (e.g. transient-etc, transient-root) before dracut runs
+RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
+    --mount=type=bind,from=packaging,src=/,target=/run/packaging \
+    /run/packaging/inject-baseconfig "${variant}" "${baseconfigs}"
 # Override with our built package
 RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
     --mount=type=bind,from=packaging,src=/,target=/run/packaging \

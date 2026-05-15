@@ -220,10 +220,8 @@ jobs:
         bootloader: ["grub", "systemd"]
         boot_type: ["bls", "uki"]
         seal_state: ["sealed", "unsealed"]
-
         exclude:
-          # centos-9 fails with EUCLEAN (https://github.com/bootc-dev/bootc/issues/1812)
-          # See: https://github.com/bootc-dev/bcvk/pull/204
+          # https://github.com/bootc-dev/bootc/issues/1812
           - test_os: centos-9
             variant: composefs
           - seal_state: "sealed"
@@ -385,6 +383,79 @@ jobs:
           name: "tmt-log-${{ matrix.test_os }}-${{ matrix.variant }}-upgrade-${{ env.ARCH }}"
           path: /var/tmp/tmt
 
+  # Test readonly behaviour with baseconfigs (transient mounts) baked into the image.
+  # Composefs-only: setup-root-conf.toml is a composefs concept; ostree uses a
+  # different config format (prepare-root.conf) and is not covered here.
+  # Runs once per distro × baseconfig — no bootloader/filesystem/boot_type matrix.
+  test-baseconfigs:
+    if: needs.compute-ci-level.outputs.run_heavy == 'true'
+    needs: [compute-ci-level, package]
+    strategy:
+      fail-fast: false
+      matrix:
+        test_os: ${{ fromJson(needs.compute-ci-level.outputs.integration_os_matrix) }}
+        baseconfigs: ["etc-transient", "root-transient", "var-volatile"]
+        exclude:
+          # centos-9 ships an older dracut that lacks the auto-install of setup-root-conf.toml
+          - test_os: centos-9
+
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v6
+      - name: Bootc Ubuntu Setup
+        uses: bootc-dev/actions/bootc-ubuntu-setup@main
+        with:
+          libvirt: true
+      - name: Install tmt
+        run: pip install --user "tmt[provision-virtual]"
+
+      - name: Setup env
+        run: |
+          BASE=$(just pullspec-for-os base ${{ matrix.test_os }})
+          echo "BOOTC_base=${BASE}" >> $GITHUB_ENV
+          echo "BOOTC_variant=composefs" >> $GITHUB_ENV
+          echo "BOOTC_baseconfigs=${{ matrix.baseconfigs }}" >> $GITHUB_ENV
+          echo "RUST_BACKTRACE=full" >> $GITHUB_ENV
+
+      - name: Download package artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: packages-${{ matrix.test_os }}
+          path: target/packages/
+
+      - name: Build container with baseconfig
+        run: BOOTC_SKIP_PACKAGE=1 just build
+
+      - name: Build upgrade image
+        run: just _build-upgrade-image
+
+      - name: Run TMT readonly tests
+        run: |
+          cargo xtask run-tmt \
+            --env=BOOTC_variant=composefs \
+            --env=BOOTC_baseconfigs=${{ matrix.baseconfigs }} \
+            --composefs-backend --bootloader=grub --filesystem=ext4 \
+            --seal-state=unsealed --boot-type=bls \
+            --upgrade-image=localhost/bootc-upgrade \
+            localhost/bootc readonly
+          just clean-local-images
+
+      - name: Disk usage summary
+        if: always()
+        run: |
+          echo "### Disk usage" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          df -h >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Archive TMT logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: "tmt-log-${{ matrix.test_os }}-composefs-baseconfigs-${{ matrix.baseconfigs }}-${{ env.ARCH }}"
+          path: /var/tmp/tmt
+
   # Test bootc install on Fedora CoreOS (separate job to avoid disk space issues
   # when run in the same job as test-integration).
   # Uses fedora-43 as it's the current stable Fedora release matching CoreOS.
@@ -471,7 +542,7 @@ jobs:
   # Accepts 'skipped' as success so that merge_group-only jobs don't block PRs.
   required-checks:
     if: always()
-    needs: [compute-ci-level, cargo-deny, validate, install-tests, docs, package, test-integration, test-upgrade, test-container-export]
+    needs: [compute-ci-level, cargo-deny, validate, install-tests, docs, package, test-integration, test-upgrade, test-baseconfigs, test-container-export]
     runs-on: ubuntu-latest
     steps:
       - name: Check all jobs
