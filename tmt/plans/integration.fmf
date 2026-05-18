@@ -217,6 +217,7 @@ execute:
     how: fmf
     test:
       - /tmt/tests/tests/test-37-install-no-boot-dir
+  extra-fixme_skip_if_composefs: true
 
 /plan-37-upgrade-check-status:
   summary: Verify upgrade --check populates cached update in status
@@ -232,6 +233,7 @@ execute:
     how: fmf
     test:
       - /tmt/tests/tests/test-38-install-bootloader-none
+  extra-fixme_skip_if_composefs: true
 
 /plan-39-upgrade-tag:
   summary: Test bootc upgrade --tag functionality with containers-storage

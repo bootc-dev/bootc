@@ -2,7 +2,12 @@
 # tmt:
 #   summary: Test bootc install to-filesystem without /boot directory
 #   duration: 30m
-#
+# extra:
+#   # bootloader=none is not supported for composefs and this test fails
+#   # when trying to install bootloader for composefs. For ostree, the
+#   # bootloader installation is simply skipped
+#   fixme_skip_if_composefs: true
+
 use std assert
 use tap.nu
 
@@ -19,7 +24,7 @@ def main [] {
     mount -o loop disk.img /var/mnt
 
     setenforce 0
-
+    
     tap run_install $"bootc install to-filesystem --disable-selinux --bootloader=none --source-imgref ($target_image) /var/mnt"
 
     umount /var/mnt
