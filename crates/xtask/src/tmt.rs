@@ -1,4 +1,4 @@
-use std::sync::mpsc;
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 use std::usize;
 
@@ -382,6 +382,7 @@ fn run_plan(
     vm_mem_mb: String,
     base_log_dir: Utf8PathBuf,
     bcvk_has_log_dir: bool,
+    libvirt_lock: Arc<Mutex<()>>,
 ) -> RunPlanResult {
     let sh = match Shell::new() {
         Ok(sh) => sh,
@@ -407,12 +408,23 @@ fn run_plan(
 
     // Launch VM with bcvk
     let firmware_args_slice = firmware_args.as_slice();
+
+    let guard = match libvirt_lock.lock() {
+        Ok(g) => g,
+        Err(e) => {
+            eprintln!("Mutex lock failed for plan {plan}: {e:#}");
+            return RunPlanResult::new(plan, false, None, None);
+        }
+    };
+
     let launch_result = cmd!(
             sh,
             "bcvk libvirt run --name {vm_name} --memory {vm_mem_mb} --cpus {vm_cpu} --detach {firmware_args_slice...} {COMMON_INST_ARGS...} {plan_bcvk_opts...} {log_dir_args...} {image}"
         )
         .run()
         .context("Launching VM with bcvk");
+
+    drop(guard);
 
     if let Err(e) = launch_result {
         eprintln!("Failed to launch VM for plan {}: {:#}", plan, e);
@@ -796,6 +808,8 @@ pub(crate) fn run_tmt(sh: &Shell, args: &RunTmtArgs) -> Result<()> {
 
     let (tx, rx) = mpsc::channel::<RunPlanResult>();
 
+    let libvirt_lock = Arc::new(Mutex::new(()));
+
     // Run each plan in its own VM
     for plan in plans {
         let plan_name = sanitize_plan_name(plan);
@@ -854,6 +868,7 @@ pub(crate) fn run_tmt(sh: &Shell, args: &RunTmtArgs) -> Result<()> {
         let vm_mem = vm_mem.to_string();
         let vm_cpu = vm_cpu.to_string();
         let base_log_dir = base_log_dir.clone();
+        let libvirt_lock = libvirt_lock.clone();
 
         let tx_clone = tx.clone();
         std::thread::spawn(move || {
@@ -871,6 +886,7 @@ pub(crate) fn run_tmt(sh: &Shell, args: &RunTmtArgs) -> Result<()> {
                 vm_mem,
                 base_log_dir,
                 bcvk_has_log_dir,
+                libvirt_lock,
             );
 
             if let Err(e) = tx_clone.send(result) {
