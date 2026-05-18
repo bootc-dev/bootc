@@ -630,6 +630,9 @@ pub(crate) enum InternalsOpts {
         late_dir: Option<Utf8PathBuf>,
     },
     FixupEtcFstab,
+    /// Remove orphaned and duplicate entries from /etc/shadow and /etc/gshadow
+    /// before systemd-sysusers runs.
+    SysusersSync,
     /// Should only be used by `make update-generated`
     PrintJsonSchema {
         #[clap(long)]
@@ -2094,6 +2097,7 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
                 Ok(())
             }
             InternalsOpts::FixupEtcFstab => crate::deploy::fixup_etc_fstab(&root),
+            InternalsOpts::SysusersSync => crate::sysusers_cleanup::run(&root),
             InternalsOpts::PrintJsonSchema { of } => {
                 let schema = match of {
                     SchemaType::Host => schema_for!(crate::spec::Host),

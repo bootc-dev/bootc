@@ -1,0 +1,13 @@
+[Unit]
+Description=Sync /etc/shadow and /etc/gshadow before systemd-sysusers
+Documentation=man:bootc-sysusers-shadow-sync.service(5)
+DefaultDependencies=no
+Before=systemd-sysusers.service
+After=systemd-remount-fs.service
+After=systemd-tmpfiles-setup-dev-early.service
+ConditionPathIsReadWrite=/etc
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/bootc internals sysusers-sync

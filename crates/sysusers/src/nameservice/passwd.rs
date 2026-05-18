@@ -7,14 +7,14 @@ use std::io::{BufRead, BufReader, Write};
 
 // Entry from passwd file.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct PasswdEntry {
-    pub(crate) name: String,
-    pub(crate) passwd: String,
-    pub(crate) uid: u32,
-    pub(crate) gid: u32,
-    pub(crate) gecos: String,
-    pub(crate) home_dir: String,
-    pub(crate) shell: String,
+pub struct PasswdEntry {
+    pub name: String,
+    pub passwd: String,
+    pub uid: u32,
+    pub gid: u32,
+    pub gecos: String,
+    pub home_dir: String,
+    pub shell: String,
 }
 
 impl PasswdEntry {
@@ -50,7 +50,7 @@ impl PasswdEntry {
     }
 }
 
-pub(crate) fn parse_passwd_content(content: impl BufRead) -> Result<Vec<PasswdEntry>> {
+pub fn parse_passwd_content(content: impl BufRead) -> Result<Vec<PasswdEntry>> {
     let mut passwds = vec![];
     for (line_num, line) in content.lines().enumerate() {
         let input =
@@ -78,7 +78,7 @@ pub(crate) fn parse_passwd_content(content: impl BufRead) -> Result<Vec<PasswdEn
     Ok(passwds)
 }
 
-pub(crate) fn load_etc_passwd(rootfs: &Dir) -> Result<Option<Vec<PasswdEntry>>> {
+pub fn load_etc_passwd(rootfs: &Dir) -> Result<Option<Vec<PasswdEntry>>> {
     if let Some(r) = rootfs.open_optional("etc/passwd")? {
         parse_passwd_content(BufReader::new(r)).map(Some)
     } else {

@@ -1,8 +1,7 @@
 //! Parse and generate systemd sysusers.d entries.
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-#[allow(dead_code)]
-mod nameservice;
+pub mod nameservice;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead, BufReader};

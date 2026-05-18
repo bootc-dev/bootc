@@ -269,4 +269,11 @@ execute:
     how: fmf
     test:
       - /tmt/tests/tests/test-43-switch-same-digest
+
+/plan-44-shadow-fixup:
+  summary: Test bootc-sysusers-shadow-sync removes orphaned gshadow entries before sysusers
+  discover:
+    how: fmf
+    test:
+      - /tmt/tests/tests/test-44-shadow-fixup
 # END GENERATED PLANS

@@ -168,3 +168,8 @@ check:
   summary: Error on bootc switch to image with identical fs-verity digest
   duration: 10m
   test: nu booted/test-switch-same-digest.nu
+
+/test-44-shadow-fixup:
+  summary: Test bootc-sysusers-shadow-sync removes orphaned gshadow entries before sysusers
+  duration: 30m
+  test: nu booted/test-44-shadow-fixup.nu

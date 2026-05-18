@@ -94,6 +94,7 @@ mod reboot;
 pub mod spec;
 mod status;
 mod store;
+mod sysusers_cleanup;
 mod task;
 mod ukify;
 mod utils;

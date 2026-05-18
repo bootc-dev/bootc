@@ -9,25 +9,25 @@ use std::io::{BufRead, Write};
 // Field names taken from (presumably glibc's) /usr/include/shadow.h, descriptions adapted
 // from the [shadow(3) manual page](https://man7.org/linux/man-pages/man3/shadow.3.html).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ShadowEntry {
+pub struct ShadowEntry {
     /// user login name
-    pub(crate) namp: String,
+    pub namp: String,
     /// encrypted password
-    pub(crate) pwdp: String,
+    pub pwdp: String,
     /// days (from Jan 1, 1970) since password was last changed
-    pub(crate) lstchg: Option<u32>,
+    pub lstchg: Option<u32>,
     /// days before which password may not be changed
-    pub(crate) min: Option<u32>,
+    pub min: Option<u32>,
     /// days after which password must be changed
-    pub(crate) max: Option<u32>,
+    pub max: Option<u32>,
     /// days before password is to expire that user is warned of pending password expiration
-    pub(crate) warn: Option<u32>,
+    pub warn: Option<u32>,
     /// days after password expires that account is considered inactive and disabled
-    pub(crate) inact: Option<u32>,
+    pub inact: Option<u32>,
     /// date (in days since Jan 1, 1970) when account will be disabled
-    pub(crate) expire: Option<u32>,
+    pub expire: Option<u32>,
     /// reserved for future use
-    pub(crate) flag: String,
+    pub flag: String,
 }
 
 fn u32_or_none(value: &str) -> Result<Option<u32>, std::num::ParseIntError> {
@@ -84,7 +84,7 @@ impl ShadowEntry {
     }
 }
 
-pub(crate) fn parse_shadow_content(content: impl BufRead) -> Result<Vec<ShadowEntry>> {
+pub fn parse_shadow_content(content: impl BufRead) -> Result<Vec<ShadowEntry>> {
     let mut entries = vec![];
     for (line_num, line) in content.lines().enumerate() {
         let input =

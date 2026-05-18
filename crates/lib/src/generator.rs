@@ -20,6 +20,7 @@ const FSTAB_ANACONDA_STAMP: &str = "Created by anaconda";
 pub(crate) const BOOTC_EDITED_STAMP: &str = "Updated by bootc-fstab-edit.service";
 const TRANSIENT_RELABEL_UNIT: &str = "bootc-early-overlay-relabel.service";
 const SYSINIT_TARGET: &str = "sysinit.target";
+const SHADOW_SYNC_UNIT: &str = "bootc-sysusers-shadow-sync.service";
 
 /// Called when the root is read-only composefs to reconcile /etc/fstab
 #[context("bootc generator")]
@@ -134,6 +135,28 @@ pub(crate) fn generator(root: &Dir, unit_dir: &Dir) -> Result<()> {
         }
     }
 
+    // === Shadow sync unit: runs for ALL bootc systems (native composefs or ostree) ===
+    // Must be before the ostree-booted guard because native composefs boots do
+    // not write /run/ostree-booted, but still need the shadow sync to clean up
+    // stale shadow/gshadow entries (the rechunk scenario).  Gate on either a
+    // composefs mount source (native composefs boot) or the ostree-booted marker.
+    {
+        let is_composefs = match bootc_mount::inspect_filesystem(camino::Utf8Path::new("/")) {
+            Ok(fs) => {
+                fs.source.starts_with("composefs:") || fs.source.starts_with("transient:composefs=")
+            }
+            Err(e) => {
+                tracing::debug!("Could not inspect root filesystem: {e:#}");
+                false
+            }
+        };
+        let is_ostree = root.try_exists(OSTREE_BOOTED)?;
+        if is_composefs || is_ostree {
+            let updated = shadow_sync_generator_impl(root, unit_dir)?;
+            tracing::trace!("Enabled shadow sync: {updated}");
+        }
+    }
+
     // === Ostree-specific generator logic ===
     // Only run on ostree systems (native composefs boots skip below).
     if !root.try_exists(OSTREE_BOOTED)? {
@@ -164,6 +187,31 @@ pub(crate) fn generator(root: &Dir, unit_dir: &Dir) -> Result<()> {
     tracing::trace!("Generated fstab: {updated}");
 
     Ok(())
+}
+
+/// Enable the statically-installed shadow sync unit by symlinking it into
+/// `sysinit.target.wants/` in the generator output directory.
+///
+/// The unit file itself lives at `/usr/lib/systemd/system/bootc-sysusers-shadow-sync.service`
+/// and is shipped with bootc; the generator only performs conditional enablement.
+///
+/// We check existence of `/etc/shadow` rather than writability because systemd
+/// sandboxes generators in a private read-only mount namespace (see
+/// `systemd.generator(7)`), so any writability check would always fail even
+/// though `/etc` will be on its own writable mount by the time the service
+/// actually runs.  The caller already gates on the ostree-booted marker,
+/// which guarantees we are on a bootc system where `/etc` is writable at
+/// service-run time.
+#[context("shadow sync generator")]
+pub(crate) fn shadow_sync_generator_impl(root: &Dir, unit_dir: &Dir) -> Result<bool> {
+    if !root.try_exists("etc/shadow")? {
+        tracing::trace!("/etc/shadow not found, skipping shadow sync");
+        return Ok(false);
+    }
+
+    tracing::debug!("/etc/shadow found, enabling {SHADOW_SYNC_UNIT}");
+    enable_unit(unit_dir, SHADOW_SYNC_UNIT, "sysinit.target")?;
+    Ok(true)
 }
 
 /// Parse /etc/fstab and check if the root mount is out of sync with the composefs
@@ -415,6 +463,52 @@ UUID=341c4712-54e8-4839-8020-d94073b1dc8b /boot                   xfs     defaul
             assert!(!updated);
             assert_eq!(unit_dir.entries()?.count(), 0);
 
+            Ok(())
+        }
+
+        #[test]
+        fn test_shadow_sync_no_shadow() -> Result<()> {
+            // No /etc/shadow => should not enable (boot detection is caller's job)
+            let tempdir = fixture()?;
+            let unit_dir = &tempdir.open_dir("run/systemd/system")?;
+            let generated = shadow_sync_generator_impl(&tempdir, unit_dir)?;
+            assert!(!generated);
+            assert_eq!(unit_dir.entries()?.count(), 0);
+            Ok(())
+        }
+
+        #[test]
+        fn test_shadow_sync_enables_when_shadow_present() -> Result<()> {
+            // /etc/shadow present => enables the static unit
+            let tempdir = fixture()?;
+            tempdir.atomic_write("etc/shadow", "root:*:18912:0:99999:7:::\n")?;
+            let unit_dir = &tempdir.open_dir("run/systemd/system")?;
+            let generated = shadow_sync_generator_impl(&tempdir, unit_dir)?;
+            assert!(generated);
+            // The generator creates a symlink in sysinit.target.wants/; check the
+            // directory entry exists (symlink_contents creates an absolute-path symlink
+            // that cap-std won't follow in a tempdir, so we check metadata directly).
+            let wants = unit_dir.open_dir("sysinit.target.wants")?;
+            let meta = wants.symlink_metadata(SHADOW_SYNC_UNIT)?;
+            assert!(meta.is_symlink(), "expected symlink for {SHADOW_SYNC_UNIT}");
+            Ok(())
+        }
+
+        /// Verify that generator() enables the shadow sync unit on traditional
+        /// ostree boots (tmpfs root, OSTREE_BOOTED marker present).
+        #[test]
+        fn test_generator_shadow_sync_on_non_composefs() -> Result<()> {
+            let tempdir = fixture()?;
+            tempdir.atomic_write(OSTREE_BOOTED, "")?;
+            tempdir.atomic_write("etc/shadow", "root:*:18912:0:99999:7:::\n")?;
+            let unit_dir = &tempdir.open_dir("run/systemd/system")?;
+            generator(&tempdir, unit_dir)?;
+            let wants = unit_dir.open_dir("sysinit.target.wants")?;
+            let meta = wants.symlink_metadata(SHADOW_SYNC_UNIT)?;
+            assert!(
+                meta.is_symlink(),
+                "shadow sync unit must be enabled on non-composefs ostree systems"
+            );
             Ok(())
         }
     }

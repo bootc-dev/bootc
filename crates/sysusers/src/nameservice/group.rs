@@ -7,11 +7,11 @@ use std::io::{BufRead, BufReader, Write};
 
 // Entry from group file.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct GroupEntry {
-    pub(crate) name: String,
-    pub(crate) passwd: String,
-    pub(crate) gid: u32,
-    pub(crate) users: Vec<String>,
+pub struct GroupEntry {
+    pub name: String,
+    pub passwd: String,
+    pub gid: u32,
+    pub users: Vec<String>,
 }
 
 impl GroupEntry {
@@ -45,7 +45,7 @@ impl GroupEntry {
     }
 }
 
-pub(crate) fn parse_group_content(content: impl BufRead) -> Result<Vec<GroupEntry>> {
+pub fn parse_group_content(content: impl BufRead) -> Result<Vec<GroupEntry>> {
     let mut groups = vec![];
     for (line_num, line) in content.lines().enumerate() {
         let input =
@@ -73,7 +73,7 @@ pub(crate) fn parse_group_content(content: impl BufRead) -> Result<Vec<GroupEntr
     Ok(groups)
 }
 
-pub(crate) fn load_etc_group(rootfs: &Dir) -> Result<Vec<GroupEntry>> {
+pub fn load_etc_group(rootfs: &Dir) -> Result<Vec<GroupEntry>> {
     let r = rootfs.open("etc/group").map(BufReader::new)?;
     parse_group_content(r)
 }
