@@ -36,7 +36,8 @@ use bootc_utils::try_deserialize_timestamp;
 use cap_std_ext::{cap_std::fs::Dir, dirext::CapStdExtDirExt};
 use ostree_container::OstreeImageReference;
 use ostree_ext::container::{self as ostree_container};
-use ostree_ext::containers_image_proxy;
+use ostree_ext::containers_image_proxy::{ImageProxy, ImageReference};
+
 use ostree_ext::oci_spec;
 use ostree_ext::{container::deploy::ORIGIN_CONTAINER, oci_spec::image::ImageConfiguration};
 
@@ -379,14 +380,16 @@ pub(crate) fn list_bootloader_entries(storage: &Storage) -> Result<Vec<Bootloade
 /// imgref = transport:image_name
 #[context("Getting container info")]
 pub(crate) async fn get_container_manifest_and_config(
-    imgref: &String,
+    imgref: &ImageReference,
 ) -> Result<ImgConfigManifest> {
     let mut config = crate::deploy::new_proxy_config();
-    ostree_ext::container::merge_default_container_proxy_opts(&mut config)?;
-    let proxy = containers_image_proxy::ImageProxy::new_with_config(config).await?;
+
+    ostree_ext::container::apply_container_proxy_opts_for_transport(&mut config, imgref.transport)?;
+
+    let proxy = ImageProxy::new_with_config(config).await?;
 
     let img = proxy
-        .open_image(&imgref)
+        .open_image_ref(&imgref)
         .await
         .with_context(|| format!("Opening image {imgref}"))?;
 

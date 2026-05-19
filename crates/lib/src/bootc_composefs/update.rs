@@ -58,7 +58,7 @@ pub(crate) async fn is_image_pulled(
     imgref: &ImageReference,
 ) -> Result<(Option<Sha512HashValue>, ImgConfigManifest)> {
     let imgref_repr = imgref.to_image_proxy_ref()?;
-    let img_config_manifest = get_container_manifest_and_config(&imgref_repr.to_string()).await?;
+    let img_config_manifest = get_container_manifest_and_config(&imgref_repr).await?;
 
     let img_digest = img_config_manifest.manifest.config().digest().digest();
 

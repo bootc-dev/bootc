@@ -2017,8 +2017,7 @@ async fn install_to_filesystem_impl(
         // Pre-flight disk space check for native composefs install path.
         {
             let imgref = &state.source.imageref;
-            let imgref_repr = imgref.to_string();
-            let img_manifest_config = get_container_manifest_and_config(&imgref_repr).await?;
+            let img_manifest_config = get_container_manifest_and_config(&imgref).await?;
             crate::store::ensure_composefs_dir(&rootfs.physical_root)?;
             // Use init_path since the repo may not exist yet during install
             let (cfs_repo, _created) = crate::store::ComposefsRepository::init_path(

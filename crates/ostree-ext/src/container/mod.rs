@@ -496,6 +496,20 @@ pub fn version_for_config(config: &oci_spec::image::ImageConfiguration) -> Optio
     None
 }
 
+/// Apply appropriate container proxy options based on transport type
+pub fn apply_container_proxy_opts_for_transport(
+    config: &mut containers_image_proxy::ImageProxyConfig,
+    transport: Transport,
+) -> Result<()> {
+    if transport == Transport::ContainerStorage {
+        // Fetching from containers-storage, may require privileges to read files
+        merge_default_container_proxy_opts_with_isolation(config, None)
+    } else {
+        // Apply our defaults to the proxy config
+        merge_default_container_proxy_opts(config)
+    }
+}
+
 pub mod deploy;
 mod encapsulate;
 pub use encapsulate::*;

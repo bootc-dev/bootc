@@ -635,13 +635,7 @@ impl ImageImporter {
         imgref: &OstreeImageReference,
         mut config: ImageProxyConfig,
     ) -> Result<Self> {
-        if imgref.imgref.transport == Transport::ContainerStorage {
-            // Fetching from containers-storage, may require privileges to read files
-            merge_default_container_proxy_opts_with_isolation(&mut config, None)?;
-        } else {
-            // Apply our defaults to the proxy config
-            merge_default_container_proxy_opts(&mut config)?;
-        }
+        apply_container_proxy_opts_for_transport(&mut config, imgref.imgref.transport)?;
         let proxy = ImageProxy::new_with_config(config).await?;
 
         system_repo_journal_print(
