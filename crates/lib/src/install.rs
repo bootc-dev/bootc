@@ -1208,7 +1208,7 @@ async fn install_container(
                 &root_setup.physical_root,
                 &mut pathbuf,
                 policy,
-                Some(deployment_root_devino),
+                &[deployment_root_devino],
             )
             .with_context(|| format!("Recursive SELinux relabeling of {d}"))?;
         }
@@ -2093,7 +2093,27 @@ async fn install_to_filesystem_impl(
     if let Some(policy) = state.load_policy()? {
         tracing::info!("Performing final SELinux relabeling of physical root");
         let mut path = Utf8PathBuf::from("");
-        crate::lsm::ensure_dir_labeled_recurse(&rootfs.physical_root, &mut path, &policy, None)
+        // Ostree sets the immutable ext4 attribute on each deployment checkout
+        // directory, which causes lsetfilecon() to return EPERM.  Those dirs
+        // are already correctly labeled by the earlier composefs import pass,
+        // so skip each checkout by dev/ino.  We enumerate them via the ostree
+        // sysroot API rather than raw filesystem iteration, and use
+        // symlink_metadata() to avoid any TOCTOU issues.
+        let mut skip: Vec<(libc::dev_t, libc::ino64_t)> = Vec::new();
+        let sysroot = ostree::Sysroot::new(Some(&gio::File::for_path(
+            &rootfs.physical_root_path,
+        )));
+        sysroot.load(gio::Cancellable::NONE)?;
+        for deployment in sysroot.deployments() {
+            let dirpath = sysroot.deployment_dirpath(&deployment);
+            if let Some(m) = rootfs
+                .physical_root
+                .symlink_metadata_optional(dirpath.as_str())?
+            {
+                skip.push((m.dev() as libc::dev_t, m.ino() as libc::ino64_t));
+            }
+        }
+        crate::lsm::ensure_dir_labeled_recurse(&rootfs.physical_root, &mut path, &policy, &skip)
             .context("Final SELinux relabeling of physical root")?;
     } else {
         tracing::debug!("Skipping final SELinux relabel (SELinux is disabled)");
