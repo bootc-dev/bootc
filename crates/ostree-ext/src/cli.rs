@@ -43,7 +43,7 @@ pub fn parse_imgref(s: &str) -> Result<OstreeImageReference> {
 
 /// Parse a base [`ImageReference`] from a CLI argument.
 pub fn parse_base_imgref(s: &str) -> Result<ImageReference> {
-    ImageReference::try_from(s)
+    Ok(ImageReference::try_from(s)?)
 }
 
 /// Parse an [`ostree::Repo`] from a CLI argument.

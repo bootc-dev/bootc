@@ -25,7 +25,7 @@ use crate::{
         bls_config::{BLSConfig, BLSConfigType, parse_bls_config},
         grub_menuconfig::{MenuEntry, parse_grub_menuentry_file},
     },
-    spec::{BootEntry, BootOrder, Host, HostSpec, ImageReference, ImageStatus},
+    spec::{BootEntry, BootOrder, Host, HostSpec, ImageStatus},
     store::Storage,
     utils::{EfiError, read_uefi_var},
 };
@@ -493,7 +493,7 @@ fn boot_entry_from_composefs_deployment(
     let image = match origin.get::<String>("origin", ORIGIN_CONTAINER) {
         Some(img_name_from_config) => {
             let ostree_img_ref = OstreeImageReference::from_str(&img_name_from_config)?;
-            let img_ref = ImageReference::from(ostree_img_ref);
+            let img_ref = crate::spec::ImageReference::from(ostree_img_ref);
 
             let img_conf = get_imginfo(storage, &verity)?;
 

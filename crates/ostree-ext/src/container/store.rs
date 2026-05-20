@@ -2096,8 +2096,9 @@ fn gc_image_layers_impl(
     let deployment_commits = list_container_deployment_manifests(repo, cancellable)?;
     let all_manifests = all_images
         .into_iter()
-        .map(|img| {
-            ImageReference::try_from(img.as_str()).and_then(|ir| manifest_for_image(repo, &ir))
+        .map(|img| -> Result<_> {
+            let ir = ImageReference::try_from(img.as_str())?;
+            manifest_for_image(repo, &ir)
         })
         .chain(deployment_commits.into_iter().map(Ok))
         .collect::<Result<Vec<_>>>()?;

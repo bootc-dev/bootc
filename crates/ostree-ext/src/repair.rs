@@ -183,7 +183,7 @@ pub fn analyze_for_repair(sysroot: &SysrootLock, verbose: bool) -> Result<Repair
     let all_images = container_store::list_images(repo)?;
     let all_images = all_images
         .into_iter()
-        .map(|img| crate::container::ImageReference::try_from(img.as_str()))
+        .map(|img| -> Result<_> { Ok(crate::container::ImageReference::try_from(img.as_str())?) })
         .collect::<Result<Vec<_>>>()?;
     println!("Verifying ostree-container images: {}", all_images.len());
     let mut likely_corrupted_container_image_merges = Vec::new();

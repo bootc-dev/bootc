@@ -187,34 +187,10 @@ pub(crate) const COMPONENT_SEPARATOR: char = ',';
 type Result<T> = anyhow::Result<T>;
 
 /// A backend/transport for OCI/Docker images.
-#[derive(Copy, Clone, Hash, Debug, PartialEq, Eq)]
-pub enum Transport {
-    /// A remote Docker/OCI registry (`registry:` or `docker://`)
-    Registry,
-    /// A local OCI directory (`oci:`)
-    OciDir,
-    /// A local OCI archive tarball (`oci-archive:`)
-    OciArchive,
-    /// A local Docker archive tarball (`docker-archive:`)
-    DockerArchive,
-    /// Local container storage (`containers-storage:`)
-    ContainerStorage,
-    /// Local directory (`dir:`)
-    Dir,
-    /// Local Docker daemon (`docker-daemon:`)
-    DockerDaemon,
-}
+pub type Transport = containers_image_proxy::transport::Transport;
 
 /// Combination of a remote image reference and transport.
-///
-/// For example,
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
-pub struct ImageReference {
-    /// The storage and transport for the image
-    pub transport: Transport,
-    /// The image name (e.g. `quay.io/somerepo/someimage:latest`)
-    pub name: String,
-}
+pub type ImageReference = containers_image_proxy::ImageReference;
 
 /// Policy for signature verification.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -238,77 +214,6 @@ pub struct OstreeImageReference {
     pub sigverify: SignatureSource,
     /// The container image reference.
     pub imgref: ImageReference,
-}
-
-impl TryFrom<&str> for Transport {
-    type Error = anyhow::Error;
-
-    fn try_from(value: &str) -> Result<Self> {
-        Ok(match value {
-            Self::REGISTRY_STR | "docker" => Self::Registry,
-            Self::OCI_STR => Self::OciDir,
-            Self::OCI_ARCHIVE_STR => Self::OciArchive,
-            Self::DOCKER_ARCHIVE_STR => Self::DockerArchive,
-            Self::CONTAINERS_STORAGE_STR => Self::ContainerStorage,
-            Self::LOCAL_DIRECTORY_STR => Self::Dir,
-            Self::DOCKER_DAEMON_STR => Self::DockerDaemon,
-            o => return Err(anyhow!("Unknown transport '{}'", o)),
-        })
-    }
-}
-
-impl Transport {
-    const OCI_STR: &'static str = "oci";
-    const OCI_ARCHIVE_STR: &'static str = "oci-archive";
-    const DOCKER_ARCHIVE_STR: &'static str = "docker-archive";
-    const CONTAINERS_STORAGE_STR: &'static str = "containers-storage";
-    const LOCAL_DIRECTORY_STR: &'static str = "dir";
-    const REGISTRY_STR: &'static str = "registry";
-    const DOCKER_DAEMON_STR: &'static str = "docker-daemon";
-
-    /// Retrieve an identifier that can then be re-parsed from [`Transport::try_from::<&str>`].
-    pub fn serializable_name(&self) -> &'static str {
-        match self {
-            Transport::Registry => Self::REGISTRY_STR,
-            Transport::OciDir => Self::OCI_STR,
-            Transport::OciArchive => Self::OCI_ARCHIVE_STR,
-            Transport::DockerArchive => Self::DOCKER_ARCHIVE_STR,
-            Transport::ContainerStorage => Self::CONTAINERS_STORAGE_STR,
-            Transport::Dir => Self::LOCAL_DIRECTORY_STR,
-            Transport::DockerDaemon => Self::DOCKER_DAEMON_STR,
-        }
-    }
-}
-
-impl TryFrom<&str> for ImageReference {
-    type Error = anyhow::Error;
-
-    fn try_from(value: &str) -> Result<Self> {
-        let (transport_name, mut name) = value
-            .split_once(':')
-            .ok_or_else(|| anyhow!("Missing ':' in {}", value))?;
-        let transport: Transport = transport_name.try_into()?;
-        if name.is_empty() {
-            return Err(anyhow!("Invalid empty name in {}", value));
-        }
-        if transport_name == "docker" {
-            name = name
-                .strip_prefix("//")
-                .ok_or_else(|| anyhow!("Missing // in docker:// in {}", value))?;
-        }
-        Ok(Self {
-            transport,
-            name: name.to_string(),
-        })
-    }
-}
-
-impl FromStr for ImageReference {
-    type Err = anyhow::Error;
-
-    fn from_str(s: &str) -> Result<Self> {
-        Self::try_from(s)
-    }
 }
 
 impl TryFrom<&str> for SignatureSource {
@@ -385,28 +290,6 @@ impl FromStr for OstreeImageReference {
 
     fn from_str(s: &str) -> Result<Self> {
         Self::try_from(s)
-    }
-}
-
-impl std::fmt::Display for Transport {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let s = match self {
-            // TODO once skopeo supports this, canonicalize as registry:
-            Self::Registry => "docker://",
-            Self::OciArchive => "oci-archive:",
-            Self::DockerArchive => "docker-archive:",
-            Self::OciDir => "oci:",
-            Self::ContainerStorage => "containers-storage:",
-            Self::Dir => "dir:",
-            Self::DockerDaemon => "docker-daemon:",
-        };
-        f.write_str(s)
-    }
-}
-
-impl std::fmt::Display for ImageReference {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}{}", self.transport, self.name)
     }
 }
 
@@ -642,7 +525,7 @@ mod tests {
             Transport::DockerArchive,
             Transport::OciDir,
         ] {
-            assert_eq!(Transport::try_from(v.serializable_name()).unwrap(), v);
+            assert_eq!(Transport::try_from(v.to_string().as_ref()).unwrap(), v);
         }
     }
 
