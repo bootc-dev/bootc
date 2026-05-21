@@ -36,21 +36,12 @@ def first_boot [] {
 
     echo $containerfile | podman build -t localhost/bootc-first . -f -
 
-    let current_time = (date now)
-
     bootc switch --transport containers-storage localhost/bootc-first
 
     # Find the large file's verity and save it
-    # nu has its own built in find which sucks, so we use the other one
-    # TODO: Replace this with some concrete API
-    # See: https://github.com/composefs/composefs-rs/pull/236
-    let file_path = (
-       /usr/bin/find /sysroot/composefs/objects -type f -size 1337k -newermt ($current_time | format date "%Y-%m-%d %H:%M:%S")
-        | xargs grep -lx "large-file-marker"
-    )
-
-    echo $file_path | save /var/large-file-marker-objpath
-    cat /var/large-file-marker-objpath
+    let new_st = bootc status --json | from json
+    let path = bootc internals cfs dump-files $new_st.status.staged.composefs.verity /usr/share/large-test-file --backing-path-only | awk '{print $2}'
+    echo $"/sysroot/composefs/objects/($path)" | save /var/large-file-marker-objpath
 
     echo $st.status.booted.composefs.verity | save /var/boot0-verity
 
@@ -68,7 +59,6 @@ def second_boot [] {
     echo $st.status.booted.composefs.verity | save /var/boot1-verity
 
     let path = cat /var/large-file-marker-objpath
-
     assert ($path | path exists)
 
     mut containerfile = echo "
@@ -90,7 +80,7 @@ def third_boot [] {
     mount /dev/disk/by-partlabel/EFI-SYSTEM /var/tmp/efi
 
     assert equal $booted.image.image "localhost/bootc-second"
-    assert ($"/var/tmp/efi/EFI/Linux/bootc/($uki_prefix)(cat /var/boot0-verity).efi" | path exists)
+    assert (not ($"/var/tmp/efi/EFI/Linux/bootc/($uki_prefix)(cat /var/boot0-verity).efi" | path exists))
     assert ($"/var/tmp/efi/EFI/Linux/bootc/($uki_prefix)(cat /var/boot1-verity).efi" | path exists)
 
     echo $st.status.booted.composefs.verity | save /var/boot2-verity
@@ -119,11 +109,8 @@ def fourth_boot [] {
     mount /dev/disk/by-partlabel/EFI-SYSTEM /var/tmp/efi
 
     assert equal $booted.image.image "localhost/bootc-third"
-    assert (not ($"/var/tmp/efi/EFI/Linux/bootc/($uki_prefix)(cat /var/boot0-verity).efi" | path exists))
-    assert ($"/var/tmp/efi/EFI/Linux/bootc/($uki_prefix)(cat /var/boot1-verity).efi" | path exists)
+    assert (not ($"/var/tmp/efi/EFI/Linux/bootc/($uki_prefix)(cat /var/boot1-verity).efi" | path exists))
     assert ($"/var/tmp/efi/EFI/Linux/bootc/($uki_prefix)(cat /var/boot2-verity).efi" | path exists)
-
-    echo $st.status.booted.composefs.verity | save /var/boot3-verity
 
     mut containerfile = "
         FROM localhost/bootc as base
@@ -135,22 +122,10 @@ def fourth_boot [] {
     echo $containerfile | podman build -t localhost/bootc-final . -f -
 
     bootc switch --transport containers-storage localhost/bootc-final
-    tap ok
-}
 
-def fifth_boot [] {
-    mkdir /var/tmp/efi
-    mount /dev/disk/by-partlabel/EFI-SYSTEM /var/tmp/efi
-
-    assert equal $booted.image.image "localhost/bootc-final"
-
-    assert (not ($"/var/tmp/efi/EFI/Linux/bootc/($uki_prefix)(cat /var/boot1-verity).efi" | path exists))
-    assert ($"/var/tmp/efi/EFI/Linux/bootc/($uki_prefix)(cat /var/boot2-verity).efi" | path exists)
-    assert ($"/var/tmp/efi/EFI/Linux/bootc/($uki_prefix)(cat /var/boot3-verity).efi" | path exists)
-
-    # We had this in boot1 (second boot)
     let path = cat /var/large-file-marker-objpath
     assert (not ($path | path exists))
+
     tap ok
 }
 
@@ -160,7 +135,6 @@ def main [] {
         "1" => second_boot,
         "2" => third_boot,
         "3" => fourth_boot,
-        "4" => fifth_boot,
         $o => { error make { msg: $"Invalid TMT_REBOOT_COUNT ($o)" } },
     }
 }

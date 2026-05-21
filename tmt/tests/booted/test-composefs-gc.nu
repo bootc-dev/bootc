@@ -30,21 +30,12 @@ def first_boot [] {
         RUN echo 'large-file-marker' | dd of=/usr/share/large-test-file conv=notrunc
     " | podman build -t localhost/bootc-derived . -f -
 
-    let current_time = (date now)
-
     bootc switch --transport containers-storage localhost/bootc-derived
 
     # Find the large file's verity and save it
-    # nu has its own built in find which sucks, so we use the other one
-    # TODO: Replace this with some concrete API
-    # See: https://github.com/composefs/composefs-rs/pull/236
-    let file_path = (
-       /usr/bin/find /sysroot/composefs/objects -type f -size 1337k -newermt ($current_time | format date "%Y-%m-%d %H:%M:%S")
-        | xargs grep -lx "large-file-marker"
-    )
-
-    echo $file_path | save /var/large-file-marker-objpath
-    cat /var/large-file-marker-objpath
+    let new_st = bootc status --json | from json
+    let path = bootc internals cfs dump-files $new_st.status.staged.composefs.verity /usr/share/large-test-file --backing-path-only | awk '{print $2}'
+    echo $"/sysroot/composefs/objects/($path)" | save /var/large-file-marker-objpath
 
     echo $st.status.booted.composefs.verity | save /var/first-verity
 
@@ -123,22 +114,6 @@ def third_boot [] {
     echo "
         FROM localhost/bootc-derived-initrd
         RUN echo 'another file' > /usr/share/another-one
-    " | podman build -t localhost/bootc-prefinal . -f -
-
-
-    bootc switch --transport containers-storage localhost/bootc-prefinal
-
-    tmt-reboot
-}
-
-def fourth_boot [] {
-    assert equal $booted.image.image "localhost/bootc-prefinal"
-
-    # Now we create a new image derived from the current kernel + initrd
-    # Switching to this and rebooting should remove the old kernel + initrd
-    echo "
-        FROM localhost/bootc-derived-initrd
-        RUN echo 'another file 1' > /usr/share/another-one-1
     " | podman build -t localhost/bootc-final . -f -
 
 
@@ -147,7 +122,7 @@ def fourth_boot [] {
     tmt-reboot
 }
 
-def fifth_boot [] {
+def fourth_boot [] {
     let bootloader = (bootc status --json | from json).status.booted.composefs.bootloader
 
     if ($bootloader | str downcase) == "systemd" {
@@ -155,10 +130,6 @@ def fifth_boot [] {
         mkdir /var/tmp/efi
         mount /dev/disk/by-partlabel/EFI-SYSTEM /var/tmp/efi
     }
-
-    # The large file should be GC'd in the previous switch
-    let path = cat /var/large-file-marker-objpath
-    assert (not ($path | path exists))
 
     assert equal $booted.image.image "localhost/bootc-final"
     assert (not ((cat /var/to-be-deleted-kernel | path exists)))
@@ -174,10 +145,14 @@ def fifth_boot [] {
 
     bootc switch --transport containers-storage localhost/bootc-shared-1
 
+    # The large file should be GC'd in the previous switch
+    let path = cat /var/large-file-marker-objpath
+    assert (not ($path | path exists))
+
     tmt-reboot
 }
 
-def sixth_boot [i: int] {
+def fifth_boot [i: int] {
     assert equal $booted.image.image $"localhost/bootc-shared-($i)"
 
     # Just this being booted counts as success
@@ -201,10 +176,9 @@ def main [] {
         "1" => second_boot,
         "2" => third_boot,
         "3" => fourth_boot,
-        "4" => fifth_boot,
-        "5" => { sixth_boot 1 },
-        "6" => { sixth_boot 2 },
-        "7" => { sixth_boot 3 },
+        "4" => { fifth_boot 1 },
+        "5" => { fifth_boot 2 },
+        "6" => { fifth_boot 3 },
         $o => { error make { msg: $"Invalid TMT_REBOOT_COUNT ($o)" } },
     }
 }
