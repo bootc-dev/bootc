@@ -324,7 +324,7 @@ pub(crate) async fn do_upgrade(
 
     // We take into account the staged bootloader entries so this won't remove
     // the currently staged entry
-    composefs_gc(storage, booted_cfs, false).await?;
+    composefs_gc(storage, booted_cfs, false, true).await?;
 
     apply_upgrade(storage, booted_cfs, &id.to_hex(), opts).await
 }

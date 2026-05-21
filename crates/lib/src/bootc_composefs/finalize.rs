@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use crate::bootc_composefs::boot::BootType;
+use crate::bootc_composefs::gc::composefs_gc;
 use crate::bootc_composefs::rollback::{rename_exchange_bls_entries, rename_exchange_user_cfg};
 use crate::bootc_composefs::status::get_composefs_status;
 use crate::composefs_consts::STATE_DIR_ABS;
@@ -123,7 +124,6 @@ pub(crate) async fn composefs_backend_finalize(
 
     let boot_dir = storage.require_boot_dir()?;
 
-    // NOTE: Assuming here we won't have two bootloaders at the same time
     match booted_composefs.bootloader {
         Bootloader::Grub => match staged_composefs.boot_type {
             BootType::Bls => {
@@ -140,6 +140,10 @@ pub(crate) async fn composefs_backend_finalize(
 
         Bootloader::None => unreachable!("Checked at install time"),
     };
+
+    // Now that we have successfully updated bootloader entires, we can GC the unreferenced ones
+    // We do not prune the composefs repository here though
+    composefs_gc(storage, booted_cfs, false, false).await?;
 
     Ok(())
 }

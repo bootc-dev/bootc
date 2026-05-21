@@ -261,7 +261,7 @@ pub(crate) async fn delete_composefs_deployment(
 
     delete_depl_boot_entries(&depl_to_del, &storage, deleting_staged)?;
 
-    composefs_gc(storage, booted_cfs, true).await?;
+    composefs_gc(storage, booted_cfs, false, true).await?;
 
     Ok(())
 }

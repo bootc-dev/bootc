@@ -722,6 +722,9 @@ pub(crate) enum InternalsOpts {
         /// Implies `--dry-run`.  Intended for use in tests and health-checks.
         #[clap(long)]
         assert_no_op: bool,
+        /// Prune the composefs repository in addition to boot binaries
+        #[clap(long)]
+        prune_repo: bool,
     },
     /// Block device inspection tools.
     #[clap(subcommand)]
@@ -2208,6 +2211,7 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
             InternalsOpts::ComposefsGC {
                 dry_run,
                 assert_no_op,
+                prune_repo,
             } => {
                 let storage = &get_storage().await?;
 
@@ -2219,7 +2223,8 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
                     BootedStorageKind::Composefs(booted_cfs) => {
                         let effective_dry_run = dry_run || assert_no_op;
                         let gc_result =
-                            composefs_gc(storage, &booted_cfs, effective_dry_run).await?;
+                            composefs_gc(storage, &booted_cfs, effective_dry_run, prune_repo)
+                                .await?;
 
                         if effective_dry_run {
                             println!("Dry run (no files deleted)");

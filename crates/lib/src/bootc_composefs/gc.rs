@@ -213,6 +213,7 @@ pub(crate) async fn composefs_gc(
     storage: &Storage,
     booted_cfs: &BootedComposefs,
     dry_run: bool,
+    prune_repo: bool,
 ) -> Result<GcResult> {
     const COMPOSEFS_GC_JOURNAL_ID: &str = "3b2a1f0e9d8c7b6a5f4e3d2c1b0a9f8e7";
 
@@ -286,6 +287,10 @@ pub(crate) async fn composefs_gc(
             BootType::Bls => delete_kernel_initrd(storage, &get_type1_dir_name(verity), dry_run)?,
             BootType::Uki => delete_uki(storage, verity, dry_run)?,
         }
+    }
+
+    if !prune_repo {
+        return Ok(GcResult::default());
     }
 
     // Identify orphaned deployments: state dirs or bootloader entries
