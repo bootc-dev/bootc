@@ -94,17 +94,29 @@ pub(crate) fn supports_bootupd(root: &Dir) -> Result<bool> {
 ///
 /// Runs `bootupctl backend install --help` and looks for `--filesystem` in the
 /// output. When `deployment_path` is set the command runs inside a bwrap
-/// container so we probe the binary from the target image.
+/// container so we probe the binary from the target image; if bwrap cannot
+/// create a namespace (see <https://github.com/bootc-dev/bootc/issues/2111>)
+/// the wrapper transparently falls back to probing the buildroot's
+/// `bootupctl` instead.
+///
+/// Caveat for the fallback path: a buildroot `bootupctl` older than the
+/// target's can falsely report no `--filesystem` support and force the
+/// legacy `--device` invocation even when the target image would
+/// support `--filesystem`. The fallback only fires under
+/// qemu-user-mode emulation where the bwrap path is unusable anyway,
+/// so we accept the divergence.
 fn bootupd_supports_filesystem(rootfs: &Utf8Path, deployment_path: Option<&str>) -> Result<bool> {
-    let help_args = ["bootupctl", "backend", "install", "--help"];
+    let help_args = ["backend", "install", "--help"];
     let output = if let Some(deploy) = deployment_path {
         let target_root = rootfs.join(deploy);
         BwrapCmd::new(&target_root)
             .set_default_path()
-            .run_get_string(help_args)?
+            .with_fallback("bootupctl")
+            .args(help_args.iter().copied())
+            .run_get_string()?
     } else {
         Command::new("bootupctl")
-            .args(&help_args[1..])
+            .args(&help_args)
             .log_debug()
             .run_get_string()?
     };
@@ -201,9 +213,24 @@ pub(crate) fn install_via_bootupd(
 
         tracing::debug!("Running bootupctl via bwrap in {}", target_root);
 
-        // Prepend "bootupctl" to the args for bwrap
-        let mut bwrap_args = vec!["bootupctl"];
-        bwrap_args.extend(bootupd_args);
+        // If bwrap can't create a namespace (see `BwrapCmdWithFallback` /
+        // https://github.com/bootc-dev/bootc/issues/2111) we re-run
+        // bootupctl directly in the buildroot. Outside the chroot the
+        // trailing positional rootfs arg(s) need the real rootfs path
+        // instead of the chroot-relative "/", which is what
+        // `rootfs_mount` is set to in the bwrap path. The arg-pair
+        // mapping below makes that rewrite explicit at each position.
+        //
+        // The fallback also drops the bwrap binds (no `/boot` from
+        // the target rootfs is bound over the buildroot's `/boot`);
+        // it is sound because bootupctl resolves the boot directory
+        // through the `--filesystem`/trailing-rootfs arg we pass it,
+        // so it ends up at `<real_rootfs>/boot` regardless of what
+        // `/boot` is on the host running it.
+        let real_rootfs = rootfs.as_str();
+        let arg_pairs = bootupd_args
+            .iter()
+            .map(|&a| (a, if a == "/" { real_rootfs } else { a }));
 
         let mut cmd = BwrapCmd::new(&target_root)
             // Bind mount /boot from the physical target root so bootupctl can find
@@ -218,7 +245,10 @@ pub(crate) fn install_via_bootupd(
 
         // The $PATH in the bwrap env is not complete enough for some images
         // so we inject a reasonable default.
-        cmd.set_default_path().run(bwrap_args)
+        cmd.set_default_path()
+            .with_fallback("bootupctl")
+            .arg_pairs(arg_pairs)
+            .run()
     } else {
         // Running directly without chroot
         Command::new("bootupctl")
