@@ -118,6 +118,13 @@ pub(crate) async fn composefs_backend_finalize(
     let diff = compute_diff(&pristine_files, &current_files, &new_files)?;
     merge(&current_etc, &current_files, &new_etc, &new_files, &diff)?;
 
+    // Remove /etc/.updated from the new deployment so that ConditionNeedsUpdate=|/etc
+    // services (systemd-sysusers, systemd-tmpfiles) run on the first boot, mirroring
+    // what ostree does in sysroot_finalize_deployment.
+    new_etc
+        .remove_file_optional(".updated")
+        .context("Removing /etc/.updated from staged deployment")?;
+
     // Unmount EROFS
     drop(erofs_tmp_mnt);
 

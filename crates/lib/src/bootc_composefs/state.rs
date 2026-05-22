@@ -132,16 +132,27 @@ pub(crate) fn initialize_state(
             .run_capture_stderr()?;
     }
 
-    let cp_ret = Command::new("cp")
+    Command::new("cp")
         .args([
             "-a",
             "--remove-destination",
             &format!("{}/etc/.", tempdir.dir.path().as_str()?),
             &format!("{state_path}/etc/."),
         ])
-        .run_capture_stderr();
+        .run_capture_stderr()?;
 
-    cp_ret
+    // Remove /etc/.updated so that ConditionNeedsUpdate=|/etc services
+    // (e.g. systemd-sysusers, systemd-tmpfiles) run on the first boot of
+    // this deployment, mirroring what ostree does in sysroot_finalize_deployment.
+    // Without this, systemd sees /etc/.updated from the container image and
+    // concludes /etc is already up-to-date, causing sysusers to be skipped.
+    let state_etc = Dir::open_ambient_dir(format!("{state_path}/etc"), ambient_authority())
+        .context("Opening state etc dir")?;
+    state_etc
+        .remove_file_optional(".updated")
+        .context("Removing /etc/.updated")?;
+
+    Ok(())
 }
 
 /// Adds or updates the provided key/value pairs in the .origin file of the deployment pointed to
