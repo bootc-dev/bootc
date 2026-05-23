@@ -4,6 +4,8 @@
 //!
 mod bwrap;
 pub use bwrap::*;
+mod chroot;
+pub use chroot::*;
 mod command;
 pub use command::*;
 mod iterators;

@@ -2,7 +2,7 @@ use std::fs::create_dir_all;
 use std::process::Command;
 
 use anyhow::{Context, Result, anyhow, bail};
-use bootc_utils::{BwrapCmd, CommandRunExt};
+use bootc_utils::{ChrootCmd, CommandRunExt};
 use camino::Utf8Path;
 use cap_std_ext::cap_std::fs::Dir;
 use cap_std_ext::dirext::CapStdExtDirExt;
@@ -93,13 +93,13 @@ pub(crate) fn supports_bootupd(root: &Dir) -> Result<bool> {
 /// Check whether the target bootupd supports `--filesystem`.
 ///
 /// Runs `bootupctl backend install --help` and looks for `--filesystem` in the
-/// output. When `deployment_path` is set the command runs inside a bwrap
-/// container so we probe the binary from the target image.
+/// output. When `deployment_path` is set the command runs inside a chroot
+/// (via [`ChrootCmd`]) so we probe the binary from the target image.
 fn bootupd_supports_filesystem(rootfs: &Utf8Path, deployment_path: Option<&str>) -> Result<bool> {
     let help_args = ["bootupctl", "backend", "install", "--help"];
     let output = if let Some(deploy) = deployment_path {
         let target_root = rootfs.join(deploy);
-        BwrapCmd::new(&target_root)
+        ChrootCmd::new(&target_root)
             .set_default_path()
             .run_get_string(help_args)?
     } else {
@@ -124,7 +124,7 @@ fn bootupd_supports_filesystem(rootfs: &Utf8Path, deployment_path: Option<&str>)
 ///
 /// When the target bootupd supports `--filesystem` we pass it pointing at a
 /// block-backed mount so that bootupd can resolve the backing device(s) itself
-/// via `lsblk`.  In the bwrap path we bind-mount the physical root at
+/// via `lsblk`.  In the chroot path we bind-mount the physical root at
 /// `/sysroot` to give `lsblk` a real block-backed path.
 ///
 /// For older bootupd versions that lack `--filesystem` we fall back to the
@@ -140,8 +140,8 @@ pub(crate) fn install_via_bootupd(
     // bootc defaults to only targeting the platform boot method.
     let bootupd_opts = (!configopts.generic_image).then_some(["--update-firmware", "--auto"]);
 
-    // When not running inside the target container (through `--src-imgref`) we use
-    // will bwrap as a chroot to run bootupctl from the deployment.
+    // When not running inside the target container (through `--src-imgref`) we
+    // run bootupctl from the deployment via a chroot ([`ChrootCmd`]).
     // This makes sure we use binaries from the target image rather than the buildroot.
     // In that case, the target rootfs is replaced with `/` because this is just used by
     // bootupd to find the backing device.
@@ -191,21 +191,23 @@ pub(crate) fn install_via_bootupd(
         bootupd_args.push(rootfs_mount);
     }
 
-    // Run inside a bwrap container. It takes care of mounting and creating
-    // the necessary API filesystems in the target deployment and acts as
-    // a nicer `chroot`.
+    // Run inside a chroot ([`ChrootCmd`]). It sets up a fresh mount
+    // namespace and the necessary API filesystems in the target
+    // deployment, without requiring a user namespace (which fails under
+    // qemu-user — see <https://github.com/bootc-dev/bootc/issues/2111>).
     if let Some(deploy) = deployment_path {
         let target_root = rootfs.join(deploy);
         let boot_path = rootfs.join("boot");
         let rootfs_path = rootfs.to_path_buf();
 
-        tracing::debug!("Running bootupctl via bwrap in {}", target_root);
+        tracing::debug!("Running bootupctl via chroot in {}", target_root);
 
-        // Prepend "bootupctl" to the args for bwrap
-        let mut bwrap_args = vec!["bootupctl"];
-        bwrap_args.extend(bootupd_args);
+        // Prepend "bootupctl" to the args (ChrootCmd's calling
+        // convention puts the program in args[0]).
+        let mut chroot_args = vec!["bootupctl"];
+        chroot_args.extend(bootupd_args);
 
-        let mut cmd = BwrapCmd::new(&target_root)
+        let mut cmd = ChrootCmd::new(&target_root)
             // Bind mount /boot from the physical target root so bootupctl can find
             // the boot partition and install the bootloader there
             .bind(&boot_path, &"/boot");
@@ -216,9 +218,9 @@ pub(crate) fn install_via_bootupd(
             cmd = cmd.bind(&rootfs_path, &"/sysroot");
         }
 
-        // The $PATH in the bwrap env is not complete enough for some images
-        // so we inject a reasonable default.
-        cmd.set_default_path().run(bwrap_args)
+        // ChrootCmd starts the child with a cleared environment, so we
+        // inject a default $PATH for it to find sub-tools.
+        cmd.set_default_path().run(chroot_args)
     } else {
         // Running directly without chroot
         Command::new("bootupctl")
