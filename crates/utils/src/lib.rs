@@ -2,8 +2,6 @@
 //! things here that only depend on the standard library and
 //! "core" crates.
 //!
-mod bwrap;
-pub use bwrap::*;
 mod chroot;
 pub use chroot::*;
 mod command;
