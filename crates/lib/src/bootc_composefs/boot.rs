@@ -607,7 +607,7 @@ pub(crate) fn setup_composefs_bls_boot(
             )
         }
 
-        Bootloader::Systemd => {
+        Bootloader::Systemd | Bootloader::GrubCC => {
             let efi_mount = mount_esp(&esp_device).context("Mounting ESP")?;
 
             let mounted_efi = Utf8PathBuf::from(efi_mount.dir.path().as_str()?);
@@ -1169,7 +1169,9 @@ pub(crate) fn setup_composefs_uki_boot(
             write_grub_uki_menuentry(root_path, &setup_type, uki_info.boot_label, id, &esp_device)?
         }
 
-        Bootloader::Systemd => write_systemd_uki_config(&esp_mount.fd, &setup_type, uki_info, id)?,
+        Bootloader::Systemd | Bootloader::GrubCC => {
+            write_systemd_uki_config(&esp_mount.fd, &setup_type, uki_info, id)?
+        }
 
         Bootloader::None => unreachable!("Checked at install time"),
     };
@@ -1369,13 +1371,48 @@ pub(crate) async fn setup_composefs_boot(
             &root_setup.device_info.require_single_root()?,
             boot_uuid,
         )?;
-    } else if postfetch.detected_bootloader == Bootloader::Grub {
+    } else if matches!(
+        postfetch.detected_bootloader,
+        Bootloader::Grub | Bootloader::GrubCC
+    ) {
         crate::bootloader::install_via_bootupd(
             &root_setup.device_info,
             &root_setup.physical_root_path,
             &state.config_opts,
             None,
         )?;
+
+        // FIXME: Remove this hack once we have support in bootupd
+        if matches!(postfetch.detected_bootloader, Bootloader::GrubCC) {
+            root_setup
+                .physical_root
+                .remove_dir_all("boot/grub2")
+                .context("removing grub2")?;
+
+            let (os_id, ..) = parse_os_release(mounted_root.dir())?
+                .ok_or_else(|| anyhow::anyhow!("Failed to parse os-release"))?;
+
+            let dir = format!("EFI/{os_id}");
+
+            // Files are in EFI/<os-name>/
+            let efis_dir = mounted_root
+                .open_esp_dir()
+                .context("opening esp")?
+                .open_dir(&dir)
+                .with_context(|| format!("Opening {dir}"))?;
+
+            efis_dir
+                .remove_file_optional("bootuuid.cfg")
+                .context("Removing bootuuid.cfg")?;
+            efis_dir
+                .remove_file_optional("grub.cfg")
+                .context("Removing grub.cfg")?;
+
+            mounted_root
+                .dir()
+                .copy("usr/lib/grub-cc/grubx64-cc.efi", &efis_dir, "grubx64.efi")
+                .context("Copying grub-cc binary")?;
+        }
     } else {
         crate::bootloader::install_systemd_boot(
             &mounted_root,

@@ -92,6 +92,7 @@
 
 use std::cell::OnceCell;
 use std::ops::Deref;
+use std::os::fd::{AsFd, AsRawFd};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -335,7 +336,9 @@ impl BootedStorage {
                 let boot_dir = match get_bootloader()? {
                     Bootloader::Grub => physical_root.open_dir("boot").context("Opening boot")?,
                     // NOTE: Handle XBOOTLDR partitions here if and when we use it
-                    Bootloader::Systemd => esp_mount.fd.try_clone().context("Cloning fd")?,
+                    Bootloader::Systemd | Bootloader::GrubCC => {
+                        esp_mount.fd.try_clone().context("Cloning fd")?
+                    }
                     Bootloader::None => unreachable!("Checked at install time"),
                 };
 
@@ -526,7 +529,7 @@ impl Storage {
         // the actual binaries inside ESP/EFI/Linux
         let boot_dir = match get_bootloader()? {
             Bootloader::Grub => boot_dir.try_clone()?,
-            Bootloader::Systemd => {
+            Bootloader::Systemd | Bootloader::GrubCC => {
                 let boot_dir = boot_dir
                     .open_dir(EFI_LINUX)
                     .with_context(|| format!("Opening {EFI_LINUX}"))?;

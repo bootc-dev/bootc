@@ -1291,6 +1291,7 @@ pub(crate) fn exec_in_host_mountns(args: &[std::ffi::OsString]) -> Result<()> {
     Err(Command::new(cmd).args(args).arg0(bootc_utils::NAME).exec()).context("exec")?
 }
 
+#[derive(Debug)]
 pub(crate) struct RootSetup {
     #[cfg(feature = "install-to-disk")]
     luks_device: Option<String>,
@@ -1874,7 +1875,7 @@ async fn install_with_sysroot(
                     Some(&deployment_path.as_str()),
                 )?;
             }
-            Bootloader::Systemd => {
+            Bootloader::Systemd | Bootloader::GrubCC => {
                 anyhow::bail!("bootupd is required for ostree-based installs");
             }
             Bootloader::None => {

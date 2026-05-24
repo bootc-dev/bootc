@@ -151,6 +151,8 @@ pub(crate) struct LocalRustDepsArgs {
 pub enum Bootloader {
     /// grub as bootloader
     Grub,
+    /// grub cc as bootloader
+    GrubCC,
     /// systemd-boot as bootloader
     Systemd,
 }
@@ -159,6 +161,7 @@ impl Display for Bootloader {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Bootloader::Grub => f.write_str("grub"),
+            Bootloader::GrubCC => f.write_str("grub-cc"),
             Bootloader::Systemd => f.write_str("systemd"),
         }
     }

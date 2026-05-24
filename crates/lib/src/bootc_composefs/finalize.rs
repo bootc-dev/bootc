@@ -140,7 +140,7 @@ pub(crate) async fn composefs_backend_finalize(
             BootType::Uki => finalize_staged_grub_uki(boot_dir)?,
         },
 
-        Bootloader::Systemd => {
+        Bootloader::Systemd | Bootloader::GrubCC => {
             let entries_dir = boot_dir.open_dir("loader")?;
             rename_exchange_bls_entries(&entries_dir)?;
         }

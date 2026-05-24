@@ -55,7 +55,7 @@ fn use_discoverable_partitions(state: &State) -> bool {
     // systemd-boot always supports BLI
     matches!(
         state.config_opts.bootloader,
-        Some(crate::spec::Bootloader::Systemd)
+        Some(crate::spec::Bootloader::Systemd) | Some(crate::spec::Bootloader::GrubCC)
     )
 }
 

@@ -237,6 +237,8 @@ pub enum Bootloader {
     /// Use Grub as the bootloader
     #[default]
     Grub,
+    /// Use Grub for confidential clusters as the bootloader
+    GrubCC,
     /// Use SystemdBoot as the bootloader
     Systemd,
     /// Don't use a bootloader managed by bootc
@@ -247,6 +249,7 @@ impl Display for Bootloader {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let string = match self {
             Bootloader::Grub => "grub",
+            Bootloader::GrubCC => "grub-cc",
             Bootloader::Systemd => "systemd",
             Bootloader::None => "none",
         };
@@ -261,6 +264,7 @@ impl FromStr for Bootloader {
     fn from_str(value: &str) -> Result<Self> {
         match value {
             "grub" => Ok(Self::Grub),
+            "grub-cc" => Ok(Self::GrubCC),
             "systemd" => Ok(Self::Systemd),
             "none" => Ok(Self::None),
             unrecognized => Err(anyhow::anyhow!("Unrecognized bootloader: '{unrecognized}'")),

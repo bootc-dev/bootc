@@ -403,7 +403,7 @@ pub(crate) fn list_bootloader_entries(storage: &Storage) -> Result<Vec<Bootloade
             }
         }
 
-        Bootloader::Systemd => list_type1_entries(boot_dir)?,
+        Bootloader::Systemd | Bootloader::GrubCC => list_type1_entries(boot_dir)?,
 
         Bootloader::None => unreachable!("Checked at install time"),
     };
@@ -451,10 +451,14 @@ pub(crate) fn get_bootloader() -> Result<Bootloader> {
     let bootloader = match read_uefi_var(EFI_LOADER_INFO) {
         Ok(loader) => {
             if loader.to_lowercase().contains("systemd-boot") {
-                Bootloader::Systemd
-            } else {
-                Bootloader::Grub
+                return Ok(Bootloader::Systemd);
             }
+
+            if loader.to_lowercase().contains("grub cc") {
+                return Ok(Bootloader::GrubCC);
+            }
+
+            return Ok(Bootloader::Grub);
         }
 
         Err(efi_error) => match efi_error {
@@ -958,7 +962,7 @@ async fn composefs_deployment_status_from(
         },
 
         // We will have BLS stuff and the UKI stuff in the same DIR
-        Bootloader::Systemd => {
+        Bootloader::Systemd | Bootloader::GrubCC => {
             let bls_configs = get_sorted_type1_boot_entries(boot_dir, true)?;
             let bls_config = bls_configs
                 .first()

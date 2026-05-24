@@ -59,6 +59,7 @@ COPY --from=target-base /target-rootfs/ /
 ARG SKIP_CONFIGS
 ARG boot_type
 ARG seal_state
+ARG bootloader
 # All network-fetching operations: package installs from distro repos, Copr, Koji.
 # Separated so `just build-fetch --target=fetch` can be retried independently on
 # transient network failures without re-running the configuration phase.
@@ -89,6 +90,20 @@ RUN --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
     if [[ ${#pkgs_to_install[@]} -gt 0 ]]; then
         dnf install -y "${pkgs_to_install[@]}"
     fi
+
+    if [[ "$bootloader" == "grub-cc" ]]; then
+        # We have this until we get grub-cc support in bootupd
+        arch=$(uname -m)
+        curl -L -o /var/grub-cc.rpm "https://kojipkgs.fedoraproject.org/packages/grub2/2.12/59.eln156/x86_64/grub2-efi-x64-cc-2.12-59.eln156.${arch}.rpm"
+        mkdir /var/grub-cc
+        rpm2archive /var/grub-cc.rpm | tar -xvz -C /var/grub-cc
+        file=$(find /var/grub-cc -name '*.efi')
+        mkdir /usr/lib/grub-cc
+        cp $file /usr/lib/grub-cc
+        rm -rvf /var/grub-cc
+        rm -rvf /var/grub-cc.rpm
+    fi
+
 EOF
 
 # Note we don't do any customization here yet

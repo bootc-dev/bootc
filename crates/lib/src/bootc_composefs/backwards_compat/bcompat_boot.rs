@@ -384,7 +384,7 @@ pub(crate) async fn prepend_custom_prefix(
                 rename_exchange_user_cfg(&grub_dir)?;
             }
 
-            Bootloader::Systemd => {
+            Bootloader::Systemd | Bootloader::GrubCC => {
                 handle_bls_conf(storage, cfs_cmdline, boot_dir, true)?;
             }
 

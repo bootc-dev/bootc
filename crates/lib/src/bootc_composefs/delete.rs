@@ -153,7 +153,7 @@ fn delete_depl_boot_entries(
             }
         },
 
-        Bootloader::Systemd => {
+        Bootloader::Systemd | Bootloader::GrubCC => {
             // For Systemd UKI as well, we use .conf files
             delete_type1_conf_file(deployment, boot_dir, deleting_staged)
         }

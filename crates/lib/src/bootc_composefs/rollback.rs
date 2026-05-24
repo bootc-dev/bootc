@@ -262,7 +262,7 @@ pub(crate) async fn composefs_rollback(
             }
         },
 
-        Bootloader::Systemd => {
+        Bootloader::Systemd | Bootloader::GrubCC => {
             // We use BLS entries for systemd UKI as well
             rollback_composefs_entries(&host, boot_dir, rollback_entry.bootloader.clone())?;
         }
