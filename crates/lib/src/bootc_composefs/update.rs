@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use camino::Utf8PathBuf;
 use cap_std_ext::{cap_std::fs::Dir, dirext::CapStdExtDirExt};
+use composefs::erofs::format::FormatVersion;
 use composefs::fsverity::{FsVerityHashValue, Sha512HashValue};
 use composefs_boot::BootOps;
 use composefs_ctl::composefs;
@@ -142,13 +143,18 @@ pub(crate) fn validate_update(
     let mut fs = create_filesystem(repo, &oci_digest, Some(config_verity))?;
     fs.transform_for_boot(&repo)?;
 
-    let image_id = fs.compute_image_id(repo.erofs_version());
+    // Match against both EROFS format ids: a deployment committed by a repo
+    // that generates both formats may be recorded under either the V1
+    // (composefs.digest=v1-...) or V2 (composefs=, legacy shorthand) digest.
+    // compute_image_id is a cheap in-memory EROFS generation.
+    let id_v1 = fs.compute_image_id(FormatVersion::V1);
+    let id_v2 = fs.compute_image_id(FormatVersion::V2);
 
     let all_deployments = host.all_composefs_deployments()?;
 
     let found_depl = all_deployments
         .iter()
-        .find(|d| d.deployment.verity == image_id.to_hex());
+        .find(|d| d.deployment.verity == id_v1.to_hex() || d.deployment.verity == id_v2.to_hex());
 
     if let Some(collision) = found_depl {
         if is_switch {
@@ -194,10 +200,13 @@ pub(crate) fn validate_update(
         .open_dir(STATE_DIR_RELATIVE)
         .context("Opening state dir")?;
 
-    if state_dir.exists(image_id.to_hex()) {
-        state_dir
-            .remove_dir_all(image_id.to_hex())
-            .context("Removing state")?;
+    // Deployments may be keyed by either V1 or V2 digest; check both to
+    // clean up state from any prior version.
+    for id in [&id_v1, &id_v2] {
+        let hex = id.to_hex();
+        if state_dir.exists(&hex) {
+            state_dir.remove_dir_all(&hex).context("Removing state")?;
+        }
     }
 
     Ok(UpdateAction::Proceed)
@@ -236,6 +245,34 @@ async fn apply_upgrade(
     Ok(())
 }
 
+/// Refuse to deploy if `deploy_id` collides with an existing deployment
+/// (booted, staged, rollback, or pinned).
+///
+/// `deploy_id` names the `state/deploy/<deploy_id>` directory whose `/etc` is
+/// seeded from the deploying image.  Two images from different sources can
+/// produce identical content (hence the same fs-verity digest); silently
+/// reusing such a directory would graft one image's `/etc` onto another, so we
+/// bail instead.
+///
+/// This complements `validate_update`, which only checks `switch` (and `Skip`s
+/// for `upgrade`); the `img_pulled == None` path also reaches `do_upgrade`
+/// without going through it, so the guard is enforced here against the real
+/// deploy key.
+fn ensure_no_deploy_collision(host: &Host, deploy_id: &Sha512HashValue) -> Result<()> {
+    let deploy_hex = deploy_id.to_hex();
+    if let Some(collision) = host
+        .all_composefs_deployments()?
+        .iter()
+        .find(|d| d.deployment.verity == deploy_hex)
+    {
+        anyhow::bail!(
+            "Target image has the same fs-verity digest as the existing {:?} deployment.",
+            collision.ty,
+        );
+    }
+    Ok(())
+}
+
 /// Performs the Update or Switch operation
 #[context("Performing Upgrade Operation")]
 pub(crate) async fn do_upgrade(
@@ -254,7 +291,7 @@ pub(crate) async fn do_upgrade(
     let crate::bootc_composefs::repo::PullRepoResult {
         repo,
         entries,
-        id,
+        boot_id,
         manifest_digest,
     } = pull_composefs_repo(
         imgref,
@@ -263,56 +300,89 @@ pub(crate) async fn do_upgrade(
     )
     .await?;
 
-    // If the target image produces the same fs-verity digest as any existing
-    // deployment (booted, staged, rollback, or pinned), error out.  Two images
-    // from different sources can have identical content; we cannot silently reuse
-    // an existing state directory whose /etc was seeded from a different image.
-    let all_deployments = host.all_composefs_deployments()?;
-    if let Some(collision) = all_deployments
-        .iter()
-        .find(|d| d.deployment.verity == id.to_hex())
-    {
-        anyhow::bail!(
-            "Target image has the same fs-verity digest as the existing {:?} deployment.",
-            collision.ty,
-        );
-    }
-
     let Some(entry) = entries.iter().next() else {
         anyhow::bail!("No boot entries!");
     };
 
+    let boot_type = BootType::from(entry);
+
+    // Mounting just needs *a* valid bootable EROFS to read boot resources from;
+    // V1 and V2 are byte-distinct serializations of the same filesystem, so
+    // `boot_id` (the repo-default format from generate_boot_image) always works
+    // and is guaranteed to exist.
     let mounted_fs = Dir::reopen_dir(
         &repo
-            .mount(&id.to_hex())
+            .mount(&boot_id.to_hex())
             .context("Failed to mount composefs image")?,
     )?;
 
-    let boot_type = BootType::from(entry);
+    // Open the OCI image to read both stored boot EROFS digests.  The UKI may
+    // have been sealed with either the V1 or V2 boot image digest, so we need
+    // both for verification.
+    let manifest_oci_digest: composefs_oci::OciDigest = manifest_digest
+        .parse()
+        .with_context(|| format!("Parsing manifest digest {manifest_digest}"))?;
+    let oci_img = composefs_oci::oci_image::OciImage::open(&repo, &manifest_oci_digest, None)
+        .context("Opening OCI image to read boot image refs")?;
+    let boot_id_v1 = oci_img.boot_image_ref_v1().cloned();
+    let boot_id_v2 = oci_img.boot_image_ref_v2().cloned();
 
-    let boot_digest = match boot_type {
-        BootType::Bls => setup_composefs_bls_boot(
-            BootSetupType::Upgrade((storage, booted_cfs, &host)),
-            repo,
-            &id,
-            entry,
-            &mounted_fs,
-        )?,
+    // The deployment key must equal the digest in the next-boot composefs karg
+    // (see setup_composefs_boot for the full rationale).  V1 is the preferred
+    // default because it works on both RHEL9 (which lacks V2 support) and newer
+    // kernels.  For BLS this is the final key; for UKI it is overridden by
+    // whatever digest the UKI cmdline actually carries.
+    //
+    // `provisional_format` tracks which EROFS format `provisional_deploy_id`
+    // actually is, so the BLS karg we write can be tagged correctly (see
+    // `build_composefs_karg`).
+    let (provisional_deploy_id, provisional_format) = match &boot_id_v1 {
+        Some(v1) => (v1.clone(), FormatVersion::V1),
+        None => (boot_id.clone(), repo.erofs_version()),
+    };
+
+    let boot_ids: Vec<Sha512HashValue> = [boot_id_v1, boot_id_v2].into_iter().flatten().collect();
+
+    // Early collision check against the provisional key, before any ESP or
+    // bootloader writes.  This catches BLS (where the provisional is the final
+    // key) and the common V1-sealed UKI case, avoiding leaving orphaned ESP
+    // entries behind on a bail.  A UKI sealed with a V2 digest is still caught
+    // by the authoritative re-check below, once its real key is known.
+    ensure_no_deploy_collision(host, &provisional_deploy_id)?;
+
+    let (boot_digest, deploy_id) = match boot_type {
+        BootType::Bls => (
+            setup_composefs_bls_boot(
+                BootSetupType::Upgrade((storage, booted_cfs, &host)),
+                repo,
+                &provisional_deploy_id,
+                provisional_format,
+                entry,
+                &mounted_fs,
+            )?,
+            provisional_deploy_id,
+        ),
 
         BootType::Uki => setup_composefs_uki_boot(
             BootSetupType::Upgrade((storage, booted_cfs, &host)),
             repo,
-            &id,
+            &provisional_deploy_id,
+            &boot_ids,
             entries,
         )?,
     };
 
+    // Authoritative collision check against the final deploy key.  For UKI this
+    // may differ from the provisional checked above (e.g. a UKI sealed with V2
+    // instead of V1), so this is the load-bearing guarantee.
+    ensure_no_deploy_collision(host, &deploy_id)?;
+
     write_composefs_state(
         &Utf8PathBuf::from("/sysroot"),
-        &id,
+        &deploy_id,
         imgref,
         Some(StagedDeployment {
-            depl_id: id.to_hex(),
+            depl_id: deploy_id.to_hex(),
             finalization_locked: opts.download_only,
         }),
         boot_type,
@@ -334,7 +404,7 @@ pub(crate) async fn do_upgrade(
     )
     .await?;
 
-    apply_upgrade(storage, booted_cfs, &id.to_hex(), opts).await
+    apply_upgrade(storage, booted_cfs, &deploy_id.to_hex(), opts).await
 }
 
 #[context("Upgrading composefs")]

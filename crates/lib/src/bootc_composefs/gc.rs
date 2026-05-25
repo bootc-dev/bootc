@@ -402,16 +402,20 @@ pub(crate) async fn composefs_gc(
                         ref_digest,
                         None,
                     ) {
-                        if let Some(img_ref) = img.image_ref(booted_cfs.repo.erofs_version()) {
-                            if img_ref.to_hex() == *verity {
-                                tracing::info!(
-                                    "Deployment {verity} has no manifest_digest in origin; \
-                                     found matching manifest {ref_digest} via image_ref"
-                                );
-                                live_manifest_digests.push(ref_digest.clone());
-                                found_manifest = true;
-                                break;
-                            }
+                        // Check both V1 and V2 slots: the deployment verity
+                        // may have been produced under either format.
+                        let img_ref_hex = img
+                            .image_ref_v1()
+                            .or_else(|| img.image_ref_v2())
+                            .map(|id| id.to_hex());
+                        if img_ref_hex.as_deref() == Some(verity.as_str()) {
+                            tracing::info!(
+                                "Deployment {verity} has no manifest_digest in origin; \
+                                 found matching manifest {ref_digest} via image_ref"
+                            );
+                            live_manifest_digests.push(ref_digest.clone());
+                            found_manifest = true;
+                            break;
                         }
                     }
                 }

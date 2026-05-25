@@ -74,6 +74,7 @@ use cap_std_ext::{
     dirext::CapStdExtDirExt,
 };
 use clap::ValueEnum;
+use composefs::erofs::format::FormatVersion;
 use composefs::fs::read_file;
 use composefs::fsverity::{FsVerityHashValue, Sha512HashValue};
 use composefs::tree::RegularFile;
@@ -82,21 +83,24 @@ use composefs_boot::bootloader::{
     UsrLibModulesVmlinuz, get_boot_resources,
 };
 use composefs_boot::{
-    cmdline::ComposefsCmdline as ComposefsBootCmdline, os_release::OsReleaseInfo, uki,
+    cmdline::ComposefsCmdline as BootComposefsCmdline, os_release::OsReleaseInfo, uki,
 };
 use composefs_ctl::composefs;
 use composefs_ctl::composefs_boot;
 use composefs_ctl::composefs_oci;
 use fn_error_context::context;
-use linux_kernel_cmdline::utf8::{Cmdline, Parameter};
+use linux_kernel_cmdline::utf8::{Cmdline, Parameter, ParameterKey};
 use rustix::{mount::MountFlags, path::Arg};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::bootc_composefs::state::{get_booted_bls, write_composefs_state};
-use crate::bootc_composefs::status::ComposefsCmdline;
+use crate::bootc_composefs::status::build_composefs_karg;
 use crate::bootc_kargs::compute_new_kargs;
-use crate::composefs_consts::{TYPE1_BOOT_DIR_PREFIX, TYPE1_ENT_PATH, TYPE1_ENT_PATH_STAGED};
+use crate::composefs_consts::{
+    COMPOSEFS_CMDLINE, COMPOSEFS_DIGEST_CMDLINE, TYPE1_BOOT_DIR_PREFIX, TYPE1_ENT_PATH,
+    TYPE1_ENT_PATH_STAGED,
+};
 use crate::parsers::bls_config::{BLSConfig, BLSConfigType, EFIKey};
 use crate::spec::BootloaderKind;
 use crate::task::Task;
@@ -134,6 +138,7 @@ const AUTH_EXT: &str = "auth";
 /// This is relative to the ESP
 pub(crate) const BOOTC_UKI_DIR: &str = "EFI/Linux/bootc";
 
+#[derive(Copy, Clone)]
 pub(crate) enum BootSetupType<'a> {
     /// For initial setup, i.e. install to-disk
     Setup((&'a RootSetup, &'a State, &'a PostFetchState)),
@@ -484,6 +489,29 @@ struct BLSEntryPath {
     config_path: Utf8PathBuf,
 }
 
+/// Replace the composefs karg in `cmdline` with `new_karg`.
+///
+/// The composefs karg's *key* differs by EROFS format version: V2 (and the
+/// legacy pre-versioned format) uses `composefs=`, while V1/V0 use the
+/// self-describing `composefs.digest=` form (see [`build_composefs_karg`]).
+/// Since [`Cmdline::add_or_modify`] only replaces a parameter with a
+/// matching key, switching formats between deployments (e.g. downgrading
+/// from a V1 to a V2 deployment) would otherwise leave the *old* key's karg
+/// behind on the command line. A stale `composefs.digest=` left over from a
+/// prior V1 deployment takes precedence in composefs-boot's cmdline parser,
+/// which would cause the wrong (old, possibly garbage-collected) rootfs to
+/// be mounted. Remove both possible keys before adding the new one so only
+/// it remains.
+fn replace_composefs_karg(cmdline: &mut Cmdline, new_karg: &str) -> Result<()> {
+    cmdline.remove(&ParameterKey::from(COMPOSEFS_CMDLINE));
+    cmdline.remove(&ParameterKey::from(COMPOSEFS_DIGEST_CMDLINE));
+
+    let param = Parameter::parse(new_karg).context("Failed to create 'composefs=' parameter")?;
+    cmdline.add_or_modify(&param);
+
+    Ok(())
+}
+
 /// Sets up and writes BLS entries and binaries (VMLinuz + Initrd) to disk
 ///
 /// # Returns
@@ -493,6 +521,7 @@ pub(crate) fn setup_composefs_bls_boot(
     setup_type: BootSetupType,
     repo: crate::store::ComposefsRepository,
     id: &Sha512HashValue,
+    format_version: FormatVersion,
     entry: &ComposefsBootEntry<Sha512HashValue>,
     mounted_erofs: &Dir,
 ) -> Result<String> {
@@ -505,9 +534,12 @@ pub(crate) fn setup_composefs_bls_boot(
 
             cmdline_options.extend(&root_setup.kargs);
 
-            let composefs_cmdline =
-                ComposefsCmdline::build(&id_hex, state.composefs_options.allow_missing_verity);
-            cmdline_options.extend(&Cmdline::from(&composefs_cmdline.to_string()));
+            let composefs_cmdline = build_composefs_karg(
+                id.clone(),
+                format_version,
+                state.composefs_options.allow_missing_verity,
+            );
+            cmdline_options.extend(&Cmdline::from(&composefs_cmdline));
 
             // If there's a separate /boot partition, add a systemd.mount-extra
             // karg so systemd mounts it after reboot. This avoids writing to
@@ -553,14 +585,13 @@ pub(crate) fn setup_composefs_bls_boot(
                 _ => anyhow::bail!("Found NonEFI config"),
             };
 
-            // Copy all cmdline args, replacing only `composefs=`
-            let cfs_cmdline =
-                ComposefsCmdline::build(&id_hex, booted_cfs.cmdline.allow_missing_fsverity)
-                    .to_string();
-
-            let param = Parameter::parse(&cfs_cmdline)
-                .context("Failed to create 'composefs=' parameter")?;
-            cmdline.add_or_modify(&param);
+            // Copy all cmdline args, replacing the composefs karg
+            let cfs_cmdline = build_composefs_karg(
+                id.clone(),
+                format_version,
+                booted_cfs.cmdline.allow_missing_fsverity,
+            );
+            replace_composefs_karg(&mut cmdline, &cfs_cmdline)?;
 
             // Locate ESP partition device by walking up to the root disk(s)
             let root_dev = bootc_blockdev::list_dev_by_dir(&storage.physical_root)?;
@@ -784,6 +815,11 @@ struct UKIInfo {
     version: Option<String>,
     os_id: Option<String>,
     boot_digest: String,
+    /// The composefs image digest parsed from (and validated against) the UKI's
+    /// own cmdline.  For UKI boots, setup-root opens `state/deploy/<this>` using
+    /// the karg baked into the UKI, so the deploy directory must be named after
+    /// exactly this value regardless of which EROFS format (V1 or V2) was sealed.
+    composefs_digest: Sha512HashValue,
 }
 
 /// Writes a PortableExecutable to ESP along with any PE specific or Global addons
@@ -794,6 +830,7 @@ fn write_pe_to_esp(
     file_path: &Utf8Path,
     pe_type: PEType,
     uki_id: &Sha512HashValue,
+    boot_ids: &[Sha512HashValue],
     missing_fsverity_allowed: bool,
     mounted_efi: impl AsRef<Path>,
 ) -> Result<Option<UKIInfo>> {
@@ -812,10 +849,12 @@ fn write_pe_to_esp(
     if matches!(pe_type, PEType::Uki) {
         let cmdline = uki::get_cmdline_buffered(&mut uki_reader).context("Getting UKI cmdline")?;
 
-        let composefs_info = ComposefsBootCmdline::<Sha512HashValue>::from_cmdline(&cmdline)
+        let composefs_info = BootComposefsCmdline::<Sha512HashValue>::from_cmdline(&cmdline)
             .context("Parsing composefs=")?
-            .ok_or_else(|| anyhow::anyhow!("No composefs image in UKI cmdline"))?;
-        let composefs_cmdline = composefs_info.digest();
+            .ok_or_else(|| {
+                anyhow::anyhow!("No composefs= or composefs.digest.v1= karg found in UKI cmdline")
+            })?;
+        let composefs_digest = composefs_info.digest().clone();
         let missing_verity_allowed_cmdline = composefs_info.is_insecure();
 
         // If the UKI cmdline does not match what the user has passed as cmdline option
@@ -834,11 +873,9 @@ fn write_pe_to_esp(
             _ => { /* no-op */ }
         }
 
-        if *composefs_cmdline != *uki_id {
-            anyhow::bail!(
-                "The UKI has the wrong composefs= parameter (is '{composefs_cmdline:?}', should be {uki_id:?})"
-            );
-        }
+        composefs_info
+            .validate_digest(boot_ids)
+            .context("Validating UKI composefs digest")?;
 
         uki_reader.seek(SeekFrom::Start(0))?;
         let osrel = uki::get_text_section_buffered(&mut uki_reader, ".osrel")?;
@@ -855,6 +892,7 @@ fn write_pe_to_esp(
             version: parsed_osrel.get_version(),
             os_id: parsed_osrel.get_value(&["ID"]),
             boot_digest,
+            composefs_digest,
         });
     }
 
@@ -888,8 +926,19 @@ fn write_pe_to_esp(
     let pe_dir = Dir::open_ambient_dir(&final_pe_path, ambient_authority())
         .with_context(|| format!("Opening {final_pe_path:?}"))?;
 
+    // For UKIs, name the .efi file after the composefs cmdline digest (the
+    // deploy key that setup-root uses), NOT the provisional uki_id.  When the
+    // UKI was sealed with --erofs-version=v1, uki_id (v2) and the cmdline
+    // digest (v1) differ; using the cmdline digest keeps the filename, BLS
+    // config, and state directory in agreement.
+    let pe_name_owned;
     let pe_name = match pe_type {
-        PEType::Uki => &get_uki_name(&uki_id.to_hex()),
+        PEType::Uki => {
+            // SAFETY: boot_label is always set to Some above when pe_type == Uki
+            let deploy_digest = &boot_label.as_ref().unwrap().composefs_digest;
+            pe_name_owned = get_uki_name(&deploy_digest.to_hex());
+            &pe_name_owned
+        }
         PEType::UkiAddon => file_path
             .components()
             .last()
@@ -1074,8 +1123,9 @@ pub(crate) fn setup_composefs_uki_boot(
     setup_type: BootSetupType,
     repo: crate::store::ComposefsRepository,
     id: &Sha512HashValue,
+    boot_ids: &[Sha512HashValue],
     entries: Vec<ComposefsBootEntry<Sha512HashValue>>,
-) -> Result<String> {
+) -> Result<(String, Sha512HashValue)> {
     let (root_path, esp_device, bootloader, missing_fsverity_allowed, uki_addons) = match setup_type
     {
         BootSetupType::Setup((root_setup, state, postfetch)) => {
@@ -1155,7 +1205,8 @@ pub(crate) fn setup_composefs_uki_boot(
                     &entry.file,
                     utf8_file_path,
                     entry.pe_type,
-                    &id,
+                    id,
+                    boot_ids,
                     missing_fsverity_allowed,
                     esp_mount.dir.path(),
                 )?;
@@ -1172,17 +1223,32 @@ pub(crate) fn setup_composefs_uki_boot(
 
     let boot_digest = uki_info.boot_digest.clone();
 
-    match bootloader.kind()? {
-        BootloaderKind::GRUBClassic => {
-            write_grub_uki_menuentry(root_path, &setup_type, uki_info.boot_label, id, &esp_device)?
-        }
+    // The deploy key for a UKI boot is the composefs digest baked into the UKI
+    // cmdline (already validated against `boot_ids` in `write_pe_to_esp`).
+    // setup-root opens `state/deploy/<this>` using that same karg, so we must
+    // key the deployment off exactly this value -- whether the UKI was sealed
+    // with a V1 or V2 EROFS digest.
+    let deploy_id = uki_info.composefs_digest.clone();
 
-        BootloaderKind::BLSCompatible => {
-            write_systemd_uki_config(&esp_mount.fd, &setup_type, uki_info, id, &bootloader)?
-        }
+    match bootloader.kind()? {
+        BootloaderKind::GRUBClassic => write_grub_uki_menuentry(
+            root_path,
+            &setup_type,
+            uki_info.boot_label,
+            &deploy_id,
+            &esp_device,
+        )?,
+
+        BootloaderKind::BLSCompatible => write_systemd_uki_config(
+            &esp_mount.fd,
+            &setup_type,
+            uki_info,
+            &deploy_id,
+            &bootloader,
+        )?,
     };
 
-    Ok(boot_digest)
+    Ok((boot_digest, deploy_id))
 }
 
 /// A composefs image attached to a temporary directory with the ESP and a
@@ -1353,6 +1419,15 @@ pub(crate) async fn setup_composefs_boot(
     let id = composefs_oci::generate_boot_image(&repo, &pull_result.manifest_digest)
         .context("Generating bootable EROFS image")?;
 
+    // Open the OCI image to read both stored boot EROFS digests.  The UKI may
+    // have been sealed with either the V1 or V2 boot image digest, so we need
+    // both for verification.
+    let oci_img =
+        composefs_oci::oci_image::OciImage::open(&*repo, &pull_result.manifest_digest, None)
+            .context("Opening OCI image to read boot image refs")?;
+    let boot_id_v1 = oci_img.boot_image_ref_v1().cloned();
+    let boot_id_v2 = oci_img.boot_image_ref_v2().cloned();
+
     // Reconstruct the OCI filesystem to discover boot entries (kernel, initramfs, etc.).
     let fs = composefs_oci::image::create_filesystem(&*repo, &pull_result.config_digest, None)
         .context("Creating composefs filesystem for boot entry discovery")?;
@@ -1446,25 +1521,58 @@ pub(crate) async fn setup_composefs_boot(
         )
     })?;
 
-    let boot_digest = match boot_type {
-        BootType::Bls => setup_composefs_bls_boot(
-            BootSetupType::Setup((&root_setup, &state, &postfetch)),
-            repo,
-            &id,
-            entry,
-            mounted_root.dir(),
-        )?,
+    // The deployment key is the hash that setup-root looks for in
+    // state/deploy/<hash>, derived from the composefs karg.  The two boot types
+    // establish that karg differently:
+    //
+    //  * BLS: bootc writes the karg itself, so we are free to choose the key.
+    //    Prefer the V1 digest, falling back to the primary id for legacy repos
+    //    with no separate V1 boot ref.  V1 is the preferred default because it
+    //    works on both RHEL9 (which lacks V2 support) and newer kernels; this
+    //    must stay in sync with the same choice made for upgrades in
+    //    `do_upgrade`.
+    //
+    //  * UKI: the karg is baked into the UKI at seal time, so the key is
+    //    whatever digest the UKI carries.  `setup_composefs_uki_boot` parses and
+    //    validates that against the boot refs and returns it, so we override the
+    //    provisional value below.  This keeps us correct whether the UKI was
+    //    sealed with the V1 (default) or V2 EROFS digest.
+    //
+    // `provisional_format` tracks which EROFS format `provisional_deploy_id`
+    // actually is, so the BLS karg we write can be tagged correctly (see
+    // `build_composefs_karg`).
+    let (provisional_deploy_id, provisional_format) = match boot_id_v1.as_ref() {
+        Some(v1) => (v1.clone(), FormatVersion::V1),
+        None => (id.clone(), repo.erofs_version()),
+    };
+
+    // Collect whichever boot image refs exist; the UKI cmdline may carry either.
+    let boot_ids: Vec<Sha512HashValue> = [boot_id_v1, boot_id_v2].into_iter().flatten().collect();
+
+    let (boot_digest, deploy_id) = match boot_type {
+        BootType::Bls => (
+            setup_composefs_bls_boot(
+                BootSetupType::Setup((&root_setup, &state, &postfetch)),
+                repo,
+                &provisional_deploy_id,
+                provisional_format,
+                entry,
+                mounted_root.dir(),
+            )?,
+            provisional_deploy_id,
+        ),
         BootType::Uki => setup_composefs_uki_boot(
             BootSetupType::Setup((&root_setup, &state, &postfetch)),
             repo,
-            &id,
+            &provisional_deploy_id,
+            &boot_ids,
             entries,
         )?,
     };
 
     write_composefs_state(
         &root_setup.physical_root_path,
-        &id,
+        &deploy_id,
         &crate::spec::ImageReference::from(state.target_imgref.clone()),
         None,
         boot_type,
@@ -1480,6 +1588,58 @@ pub(crate) async fn setup_composefs_boot(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_replace_composefs_karg_removes_stale_v1_digest() {
+        // Simulate a system that most recently booted a V1-formatted
+        // deployment (`composefs.digest=`), now upgrading/downgrading to a
+        // V2-formatted one (`composefs=`).
+        let mut cmdline =
+            Cmdline::from("root=UUID=abc rw composefs.digest=v1-sha512-12:aabbcc console=ttyS0");
+
+        let new_hex = "ff".repeat(64);
+        let new_karg = format!("composefs={new_hex}");
+        replace_composefs_karg(&mut cmdline, &new_karg).unwrap();
+
+        let rendered = cmdline.to_string();
+
+        // The stale V1 key must be gone entirely, not just its value updated,
+        // since composefs-boot's cmdline parser checks `composefs.digest=`
+        // before `composefs=` and would otherwise pick the wrong deployment.
+        assert!(
+            !rendered.contains("composefs.digest"),
+            "stale composefs.digest karg was not removed: {rendered}"
+        );
+        assert!(
+            rendered.contains(&new_karg),
+            "new composefs karg missing: {rendered}"
+        );
+        // Unrelated kargs are preserved.
+        assert!(rendered.contains("root=UUID=abc"));
+        assert!(rendered.contains("console=ttyS0"));
+    }
+
+    #[test]
+    fn test_replace_composefs_karg_removes_stale_v2_composefs() {
+        // The reverse direction: upgrading from a V2-formatted deployment to
+        // a V1-formatted one should remove the old `composefs=` key too.
+        let mut cmdline = Cmdline::from("root=UUID=abc rw composefs=aabbcc");
+
+        let new_hex = "ff".repeat(64);
+        let new_karg = format!("composefs.digest=v1-sha512-12:{new_hex}");
+        replace_composefs_karg(&mut cmdline, &new_karg).unwrap();
+
+        let rendered = cmdline.to_string();
+
+        assert!(
+            !rendered.contains("composefs=aabbcc"),
+            "stale composefs karg was not removed: {rendered}"
+        );
+        assert!(
+            rendered.contains(&new_karg),
+            "new composefs.digest karg missing: {rendered}"
+        );
+    }
 
     #[test]
     fn test_type1_filename_generation() {

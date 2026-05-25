@@ -347,6 +347,7 @@ ARG variant
 ARG filesystem
 ARG seal_state
 ARG boot_type
+ARG erofs_version=v1
 # Install our bootc package (only needed for the compute-composefs-digest command)
 RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
     --mount=type=bind,from=packages,src=/,target=/run/packages \
@@ -374,7 +375,8 @@ if test "${boot_type}" = "uki"; then
       --secrets /run/secrets \
       "${allow_missing_verity[@]}" \
       --kernel-dir "/run/kernel/$kver" \
-      --seal-state $seal_state
+      --seal-state $seal_state \
+      --erofs-version $erofs_version
 fi
 EORUN
 

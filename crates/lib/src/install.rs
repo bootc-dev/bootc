@@ -2023,10 +2023,13 @@ async fn install_to_filesystem_impl(
             let imgref = &state.source.imageref;
             let img_manifest_config = get_container_manifest_and_config(&imgref).await?;
             crate::store::ensure_composefs_dir(&rootfs.physical_root)?;
-            // Use init_path since the repo may not exist yet during install
-            let config =
+            // Use init_path since the repo may not exist yet during install.
+            // Generate both V1 and V2 EROFS images (see initialize_composefs_repository);
+            // this config must match the one used there since it re-inits the same repo.
+            let mut config =
                 RepositoryConfig::new(composefs_ctl::composefs::fsverity::Algorithm::SHA512)
                     .set_insecure();
+            crate::store::set_dual_erofs_formats(&mut config);
             let (cfs_repo, _created) = crate::store::ComposefsRepository::init_path(
                 &rootfs.physical_root,
                 crate::store::COMPOSEFS,

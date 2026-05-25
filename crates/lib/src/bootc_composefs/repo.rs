@@ -100,12 +100,15 @@ pub(crate) async fn initialize_composefs_repository(
 
     crate::store::ensure_composefs_dir(rootfs_dir)?;
 
-    let config = RepositoryConfig::new(composefs::fsverity::Algorithm::SHA512);
-    let config = if allow_missing_fsverity {
-        config.set_insecure()
-    } else {
-        config
+    let mut config = {
+        let c = RepositoryConfig::new(composefs::fsverity::Algorithm::SHA512);
+        if allow_missing_fsverity {
+            c.set_insecure()
+        } else {
+            c
+        }
     };
+    crate::store::set_dual_erofs_formats(&mut config);
     let (repo, _created) =
         crate::store::ComposefsRepository::init_path(rootfs_dir, "composefs", config)
             .context("Failed to initialize composefs repository")?;
@@ -173,7 +176,9 @@ pub(crate) async fn initialize_composefs_repository(
 pub(crate) struct PullRepoResult {
     pub(crate) repo: crate::store::ComposefsRepository,
     pub(crate) entries: Vec<ComposefsBootEntry<Sha512HashValue>>,
-    pub(crate) id: Sha512HashValue,
+    /// The boot image digest from `generate_boot_image` for the repo's default
+    /// EROFS format.  Used to mount a bootable EROFS for reading boot resources.
+    pub(crate) boot_id: Sha512HashValue,
     /// The OCI manifest content digest (e.g. "sha256:abc...")
     pub(crate) manifest_digest: String,
 }
@@ -360,7 +365,7 @@ pub(crate) async fn pull_composefs_repo(
     );
 
     // Generate the bootable EROFS image (idempotent).
-    let id = composefs_oci::generate_boot_image(&repo, &pull_result.manifest_digest)
+    let boot_id = composefs_oci::generate_boot_image(&repo, &pull_result.manifest_digest)
         .context("Generating bootable EROFS image")?;
 
     // Get boot entries from the OCI filesystem (untransformed).
@@ -380,7 +385,7 @@ pub(crate) async fn pull_composefs_repo(
     Ok(PullRepoResult {
         repo,
         entries,
-        id,
+        boot_id,
         manifest_digest: pull_result.manifest_digest.to_string(),
     })
 }

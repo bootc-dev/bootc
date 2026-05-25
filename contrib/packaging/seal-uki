@@ -3,6 +3,8 @@
 set -xeuo pipefail
 
 missing_verity=()
+# EROFS format version to pass to bootc container ukify (optional, default: v1)
+erofs_version=v1
 
 while [ ! -z "${1:-}" ]; do
     case "$1" in
@@ -41,6 +43,13 @@ while [ ! -z "${1:-}" ]; do
         # Path to the directory containing kernel and initramfs
         "--kernel-dir")
             kernel_dir="$2"
+            shift
+            shift
+        ;;
+
+        # EROFS format version to pass to bootc container ukify
+        "--erofs-version")
+            erofs_version="$2"
             shift
             shift
         ;;
@@ -85,4 +94,4 @@ containerukifyargs=(--rootfs "${target}")
 
 # Build the UKI using bootc container ukify
 # This computes the composefs digest, reads kargs from kargs.d, and invokes ukify
-bootc container ukify "${containerukifyargs[@]}" "${kernel_params[@]}" "${missing_verity[@]}" -- "${ukifyargs[@]}"
+bootc container ukify "${containerukifyargs[@]}" "${kernel_params[@]}" "${missing_verity[@]}" --erofs-version="${erofs_version}" -- "${ukifyargs[@]}"
