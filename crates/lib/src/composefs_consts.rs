@@ -1,5 +1,7 @@
-/// composefs= parameter in kernel cmdline
+/// composefs= parameter in kernel cmdline (V2 format)
 pub const COMPOSEFS_CMDLINE: &str = "composefs";
+/// composefs.digest= parameter in kernel cmdline (V1 format)
+pub const COMPOSEFS_DIGEST_CMDLINE: &str = "composefs.digest";
 
 /// Directory to store transient state, such as staged deployemnts etc
 pub(crate) const COMPOSEFS_TRANSIENT_STATE_DIR: &str = "/run/composefs";

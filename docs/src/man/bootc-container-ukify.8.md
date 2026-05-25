@@ -31,6 +31,16 @@ Any additional arguments after `--` are passed through to ukify unchanged.
 
     Make fs-verity validation optional in case the filesystem doesn't support it
 
+**--erofs-version**=*EROFS_VERSION*
+
+    EROFS format version to use when computing the composefs digest
+
+    Possible values:
+    - v1
+    - v2
+
+    Default: v1
+
 **--write-dumpfile-to**=*WRITE_DUMPFILE_TO*
 
     Write a dumpfile to this path

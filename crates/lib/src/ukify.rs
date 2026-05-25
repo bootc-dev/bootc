@@ -13,8 +13,12 @@ use cap_std_ext::cap_std::fs::Dir;
 use fn_error_context::context;
 use linux_kernel_cmdline::utf8::Cmdline;
 
+use composefs::erofs::format::FormatVersion;
+use composefs::fsverity::{FsVerityHashValue, Sha512HashValue};
+use composefs_ctl::composefs;
+
 use crate::bootc_composefs::digest::compute_composefs_digest;
-use crate::bootc_composefs::status::ComposefsCmdline;
+use crate::bootc_composefs::status::build_composefs_karg;
 use crate::kernel::KernelInternal;
 
 /// Build a UKI from the given rootfs.
@@ -33,6 +37,7 @@ pub(crate) async fn build_ukify(
     args: &[OsString],
     kernel: Option<KernelInternal>,
     allow_missing_fsverity: bool,
+    erofs_version: FormatVersion,
     write_dumpfile_to: Option<&Utf8Path>,
 ) -> Result<()> {
     // Warn if --karg is used (temporary workaround)
@@ -97,15 +102,22 @@ pub(crate) async fn build_ukify(
     }
 
     // Compute the composefs digest
-    let composefs_digest = compute_composefs_digest(rootfs, write_dumpfile_to).await?;
+    let composefs_digest =
+        compute_composefs_digest(rootfs, erofs_version, write_dumpfile_to).await?;
+    let composefs_digest = Sha512HashValue::from_hex(&composefs_digest)
+        .context("Parsing computed composefs digest")?;
 
     // Get kernel arguments from kargs.d
     let mut cmdline = crate::bootc_kargs::get_kargs_in_root(&root, std::env::consts::ARCH)?;
 
-    // Add the composefs digest
-    cmdline.extend(&Cmdline::from(
-        ComposefsCmdline::build(&composefs_digest, allow_missing_fsverity).to_string(),
-    ));
+    // Add the composefs digest, tagging the karg with the same EROFS format
+    // version used to compute it so it stays boot-compatible (see
+    // `build_composefs_karg`).
+    cmdline.extend(&Cmdline::from(build_composefs_karg(
+        composefs_digest,
+        erofs_version,
+        allow_missing_fsverity,
+    )));
 
     // Add any extra kargs provided via --karg
     for karg in extra_kargs {
@@ -152,7 +164,7 @@ mod tests {
         let tempdir = tempfile::tempdir().unwrap();
         let path = Utf8Path::from_path(tempdir.path()).unwrap();
 
-        let result = build_ukify(path, &[], &[], None, false, None).await;
+        let result = build_ukify(path, &[], &[], None, false, FormatVersion::V2, None).await;
         assert!(result.is_err());
         let err = format!("{:#}", result.unwrap_err());
         assert!(
@@ -174,7 +186,7 @@ mod tests {
         )
         .unwrap();
 
-        let result = build_ukify(path, &[], &[], None, false, None).await;
+        let result = build_ukify(path, &[], &[], None, false, FormatVersion::V2, None).await;
         assert!(result.is_err());
         let err = format!("{:#}", result.unwrap_err());
         assert!(
