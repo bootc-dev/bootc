@@ -83,7 +83,7 @@ use composefs_boot::bootloader::{
     UsrLibModulesVmlinuz, get_boot_resources,
 };
 use composefs_boot::{
-    cmdline::ComposefsCmdline as ComposefsBootCmdline, os_release::OsReleaseInfo, uki,
+    cmdline::ComposefsCmdline as BootComposefsCmdline, os_release::OsReleaseInfo, uki,
 };
 use composefs_ctl::composefs;
 use composefs_ctl::composefs_boot;
@@ -813,9 +813,9 @@ fn write_pe_to_esp(
     if matches!(pe_type, PEType::Uki) {
         let cmdline = uki::get_cmdline_buffered(&mut uki_reader).context("Getting UKI cmdline")?;
 
-        let composefs_info = ComposefsBootCmdline::<Sha512HashValue>::from_cmdline(&cmdline)
+        let composefs_info = BootComposefsCmdline::<Sha512HashValue>::from_cmdline(&cmdline)
             .context("Parsing composefs=")?
-            .ok_or_else(|| anyhow::anyhow!("No composefs image in UKI cmdline"))?;
+            .ok_or_else(|| anyhow::anyhow!("No composefs= or composefs.digest.v1= karg found in UKI cmdline"))?;
         let composefs_cmdline = composefs_info.digest();
         let missing_verity_allowed_cmdline = composefs_info.is_insecure();
 

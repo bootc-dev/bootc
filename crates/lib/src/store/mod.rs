@@ -623,6 +623,7 @@ impl Storage {
         let config = if ostree_verity.enabled {
             config
         } else {
+            tracing::debug!("Setting insecure mode for composefs repo");
             config.set_insecure()
         };
         let (composefs, _created) =

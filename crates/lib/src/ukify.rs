@@ -13,6 +13,9 @@ use camino::Utf8Path;
 use cap_std_ext::cap_std::fs::Dir;
 use fn_error_context::context;
 
+use composefs::erofs::format::FormatVersion;
+use composefs_ctl::composefs;
+
 use crate::bootc_composefs::digest::compute_composefs_digest;
 use crate::bootc_composefs::status::ComposefsCmdline;
 use crate::kernel::KernelInternal;
@@ -33,6 +36,7 @@ pub(crate) async fn build_ukify(
     args: &[OsString],
     kernel: Option<KernelInternal>,
     allow_missing_fsverity: bool,
+    erofs_version: FormatVersion,
     write_dumpfile_to: Option<&Utf8Path>,
 ) -> Result<()> {
     // Warn if --karg is used (temporary workaround)
@@ -97,7 +101,8 @@ pub(crate) async fn build_ukify(
     }
 
     // Compute the composefs digest
-    let composefs_digest = compute_composefs_digest(rootfs, write_dumpfile_to).await?;
+    let composefs_digest =
+        compute_composefs_digest(rootfs, erofs_version, write_dumpfile_to).await?;
 
     // Get kernel arguments from kargs.d
     let mut cmdline = crate::bootc_kargs::get_kargs_in_root(&root, std::env::consts::ARCH)?;
@@ -152,7 +157,7 @@ mod tests {
         let tempdir = tempfile::tempdir().unwrap();
         let path = Utf8Path::from_path(tempdir.path()).unwrap();
 
-        let result = build_ukify(path, &[], &[], None, false, None).await;
+        let result = build_ukify(path, &[], &[], None, false, FormatVersion::V2, None).await;
         assert!(result.is_err());
         let err = format!("{:#}", result.unwrap_err());
         assert!(
@@ -174,7 +179,7 @@ mod tests {
         )
         .unwrap();
 
-        let result = build_ukify(path, &[], &[], None, false, None).await;
+        let result = build_ukify(path, &[], &[], None, false, FormatVersion::V2, None).await;
         assert!(result.is_err());
         let err = format!("{:#}", result.unwrap_err());
         assert!(
