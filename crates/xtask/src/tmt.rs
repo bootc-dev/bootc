@@ -34,7 +34,7 @@ const DISTRO_CENTOS_9: &str = "centos-9";
 
 // Import the argument types from xtask.rs
 use crate::bcvk::BcvkInstallOpts;
-use crate::{RunTmtArgs, SealState, TmtProvisionArgs};
+use crate::{RunTmtArgs, SealState, TmtProvisionArgs, out_of_sync_error};
 
 /// Generate a random alphanumeric suffix for VM names
 fn generate_random_suffix() -> String {
@@ -941,16 +941,10 @@ pub(crate) fn check_integration() -> Result<()> {
         .with_context(|| format!("Reading {}", integration_fmf_path))?;
 
     if tests_generated != tests_on_disk {
-        anyhow::bail!(
-            "{} is out of date; run `cargo xtask update-generated` to update it",
-            tests_fmf_path
-        );
+        return out_of_sync_error(&format!("{tests_fmf_path} is out of date"));
     }
     if integration_generated != integration_on_disk {
-        anyhow::bail!(
-            "{} is out of date; run `cargo xtask update-generated` to update it",
-            integration_fmf_path
-        );
+        return out_of_sync_error(&format!("{integration_fmf_path} is out of date"));
     }
 
     Ok(())

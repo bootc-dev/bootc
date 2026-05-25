@@ -10,6 +10,8 @@ use serde::{Deserialize, Serialize};
 use std::{fs, io::Write};
 use xshell::{Shell, cmd};
 
+use crate::out_of_sync_error;
+
 /// Represents a CLI option extracted from the JSON dump
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CliOption {
@@ -664,10 +666,7 @@ pub fn check_manpages(sh: &Shell) -> Result<()> {
         let filename = format!("bootc-{}.8.md", command_parts.join("-"));
         let filepath = Utf8Path::new("docs/src/man").join(&filename);
         if !filepath.exists() {
-            anyhow::bail!(
-                "{} is missing; run `cargo xtask update-generated` to create it",
-                filepath
-            );
+            return out_of_sync_error(&format!("{filepath} is missing"));
         }
     }
 
@@ -729,10 +728,7 @@ fn check_markdown_options(
         return Ok(());
     };
     if new_content != content {
-        anyhow::bail!(
-            "{} is out of date; run `cargo xtask update-generated` to update it",
-            markdown_path
-        );
+        return out_of_sync_error(&format!("{markdown_path} is out of date"));
     }
     Ok(())
 }
@@ -750,10 +746,7 @@ fn check_markdown_subcommands(
         return Ok(());
     };
     if new_content != content {
-        anyhow::bail!(
-            "{} is out of date; run `cargo xtask update-generated` to update it",
-            markdown_path
-        );
+        return out_of_sync_error(&format!("{markdown_path} is out of date"));
     }
     Ok(())
 }

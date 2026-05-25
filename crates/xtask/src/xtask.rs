@@ -40,6 +40,11 @@ const TAR_REPRODUCIBLE_OPTS: &[&str] = &[
     "--pax-option=exthdr.name=%d/PaxHeaders/%f,delete=atime,delete=ctime",
 ];
 
+/// Helper function to write out out-of-sync error messages for manpages, tmt tests
+fn out_of_sync_error(message: &str) -> Result<()> {
+    anyhow::bail!("{}; run `just update-generated` to update it", message)
+}
+
 /// Build tasks for bootc
 #[derive(Debug, Parser)]
 #[command(name = "xtask")]
@@ -623,9 +628,7 @@ fn check_json_schemas(sh: &Shell) -> Result<()> {
         let on_disk =
             std::fs::read_to_string(target).with_context(|| format!("Reading {target}"))?;
         if generated != on_disk {
-            anyhow::bail!(
-                "{target} is out of date; run `cargo xtask update-generated` to update it"
-            );
+            return out_of_sync_error(&format!("{target} is out of date"));
         }
     }
     Ok(())
