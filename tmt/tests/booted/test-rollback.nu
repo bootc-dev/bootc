@@ -103,6 +103,31 @@ def third_boot_verify [] {
 
 def fourth_boot_verify [] {
     back_to_first_depl Fourth
+
+    # Stage a new deployment, then rollback -> staged deployment should be removed
+    let dockerfile = $"
+        FROM localhost/bootc as base
+        RUN echo 'Second Stage' > /usr/share/second-stage
+    "
+
+    (tap make_uki_containerfile $dockerfile) | podman build -t localhost/second-stage . -f -
+
+    bootc switch --transport containers-storage localhost/second-stage
+
+    assert (
+        (bootc status --json | from json).status
+        | get staged
+        | is-not-empty
+    )
+
+    bootc rollback
+
+    assert (
+        (bootc status --json | from json).status
+        | get staged
+        | is-empty
+    )
+
     tap ok
 }
 
