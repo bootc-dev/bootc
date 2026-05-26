@@ -405,22 +405,30 @@ pub(crate) async fn get_container_manifest_and_config(
 
 #[context("Getting bootloader")]
 pub(crate) fn get_bootloader() -> Result<Bootloader> {
-    match read_uefi_var(EFI_LOADER_INFO) {
+    static BOOTLOADER: OnceLock<Bootloader> = OnceLock::new();
+
+    if let Some(bootloader) = BOOTLOADER.get() {
+        return Ok(*bootloader);
+    }
+
+    let bootloader = match read_uefi_var(EFI_LOADER_INFO) {
         Ok(loader) => {
             if loader.to_lowercase().contains("systemd-boot") {
-                return Ok(Bootloader::Systemd);
+                Bootloader::Systemd
+            } else {
+                Bootloader::Grub
             }
-
-            return Ok(Bootloader::Grub);
         }
 
         Err(efi_error) => match efi_error {
-            EfiError::SystemNotUEFI => return Ok(Bootloader::Grub),
-            EfiError::MissingVar => return Ok(Bootloader::Grub),
-
-            e => return Err(anyhow::anyhow!("Failed to read EfiLoaderInfo: {e:?}")),
+            EfiError::SystemNotUEFI | EfiError::MissingVar => Bootloader::Grub,
+            e => anyhow::bail!("Failed to read EfiLoaderInfo: {e:?}"),
         },
-    }
+    };
+
+    BOOTLOADER.get_or_init(|| bootloader);
+
+    return Ok(bootloader);
 }
 
 /// Retrieves the OCI manifest and config for a deployment from the composefs repository.

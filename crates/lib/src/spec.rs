@@ -230,7 +230,7 @@ pub struct BootEntryOstree {
 
 /// Bootloader type to determine whether system was booted via Grub or Systemd
 #[derive(
-    clap::ValueEnum, Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema,
+    clap::ValueEnum, Debug, Default, Copy, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema,
 )]
 #[serde(rename_all = "kebab-case")]
 pub enum Bootloader {
