@@ -4,6 +4,7 @@ use anyhow::{Context, Result, anyhow};
 use cap_std_ext::cap_std::fs::Dir;
 use cap_std_ext::dirext::CapStdExtDirExt;
 use fn_error_context::context;
+use ocidir::cap_std::ambient_authority;
 use rustix::fs::{AtFlags, RenameFlags, fsync, renameat_with};
 
 use crate::bootc_composefs::boot::{
@@ -11,8 +12,11 @@ use crate::bootc_composefs::boot::{
     secondary_sort_key, type1_entry_conf_file_name,
 };
 use crate::bootc_composefs::status::{get_composefs_status, get_sorted_type1_boot_entries};
-use crate::composefs_consts::TYPE1_ENT_PATH_STAGED;
-use crate::spec::Bootloader;
+use crate::composefs_consts::{
+    COMPOSEFS_STAGED_DEPLOYMENT_FNAME, COMPOSEFS_TRANSIENT_STATE_DIR, TYPE1_ENT_PATH_STAGED,
+};
+use crate::deploy::ROLLBACK_JOURNAL_ID;
+use crate::spec::{Bootloader, Host};
 use crate::store::{BootedComposefs, Storage};
 use crate::{
     bootc_composefs::{boot::get_efi_uuid_source, status::get_sorted_grub_uki_boot_entries},
@@ -124,7 +128,7 @@ fn rollback_grub_uki_entries(boot_dir: &Dir) -> Result<()> {
 ///    a. Here we assume that rollback is queued as there's no way to differentiate between this
 ///    case and Case 1-b. This is what ostree does as well
 #[context("Rolling back {bootloader} entries")]
-fn rollback_composefs_entries(boot_dir: &Dir, bootloader: Bootloader) -> Result<()> {
+fn rollback_composefs_entries(host: &Host, boot_dir: &Dir, bootloader: Bootloader) -> Result<()> {
     // Get all boot entries sorted in descending order by sort-key
     let mut all_configs = get_sorted_type1_boot_entries(&boot_dir, false)?;
 
@@ -142,6 +146,32 @@ fn rollback_composefs_entries(boot_dir: &Dir, bootloader: Bootloader) -> Result<
     // This is the previous deployment - it should become primary (rollback target)
     // OR if rollback was queued, it would become secondary
     all_configs[1].sort_key = Some(secondary_sort_key(os_id));
+
+    // Ostree will drop any staged deployment on rollback
+    // We follow the same approach for now
+    //
+    // Cleanup any previous staged entries
+    boot_dir
+        .remove_all_optional(TYPE1_ENT_PATH_STAGED)
+        .context("Removing staged entries")?;
+
+    if let Some(staged) = &host.status.staged {
+        tracing::info!(
+            message_id = ROLLBACK_JOURNAL_ID,
+            "Removing currently staged composefs deployment {}",
+            // SAFETY: This is a staged composefs entry, so composefs property
+            // will always exist
+            staged.composefs.as_ref().unwrap().verity
+        );
+
+        let transient_dir =
+            Dir::open_ambient_dir(COMPOSEFS_TRANSIENT_STATE_DIR, ambient_authority())
+                .context("Opening transient dir")?;
+
+        transient_dir
+            .remove_file(COMPOSEFS_STAGED_DEPLOYMENT_FNAME)
+            .context("Removing staged deployment file")?;
+    }
 
     // Write these
     boot_dir
@@ -213,11 +243,9 @@ pub(crate) async fn composefs_rollback(
     let rollback_status = host
         .status
         .rollback
+        .as_ref()
         .ok_or_else(|| anyhow!("No rollback available"))?;
 
-    // TODO: Handle staged deployment
-    // Ostree will drop any staged deployment on rollback but will keep it if it is the first item
-    // in the new deployment list
     let Some(rollback_entry) = &rollback_status.composefs else {
         anyhow::bail!("Rollback deployment not a composefs deployment")
     };
@@ -227,7 +255,7 @@ pub(crate) async fn composefs_rollback(
     match &rollback_entry.bootloader {
         Bootloader::Grub => match rollback_entry.boot_type {
             BootType::Bls => {
-                rollback_composefs_entries(boot_dir, rollback_entry.bootloader.clone())?;
+                rollback_composefs_entries(&host, boot_dir, rollback_entry.bootloader.clone())?;
             }
             BootType::Uki => {
                 rollback_grub_uki_entries(boot_dir)?;
@@ -236,7 +264,7 @@ pub(crate) async fn composefs_rollback(
 
         Bootloader::Systemd => {
             // We use BLS entries for systemd UKI as well
-            rollback_composefs_entries(boot_dir, rollback_entry.bootloader.clone())?;
+            rollback_composefs_entries(&host, boot_dir, rollback_entry.bootloader.clone())?;
         }
 
         Bootloader::None => unreachable!("Checked at install time"),

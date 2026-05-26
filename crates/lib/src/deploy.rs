@@ -1118,9 +1118,10 @@ fn write_reboot_required(image: &str) -> Result<()> {
     Ok(())
 }
 
+pub(crate) const ROLLBACK_JOURNAL_ID: &str = "26f3b1eb24464d12aa5e7b544a6b5468";
+
 /// Implementation of rollback functionality
 pub(crate) async fn rollback(sysroot: &Storage) -> Result<()> {
-    const ROLLBACK_JOURNAL_ID: &str = "26f3b1eb24464d12aa5e7b544a6b5468";
     let ostree = sysroot.get_ostree()?;
     let (booted_ostree, deployments, host) = crate::status::get_status_require_booted(ostree)?;
 
