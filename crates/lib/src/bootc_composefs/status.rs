@@ -243,18 +243,26 @@ fn get_sorted_grub_uki_boot_entries_helper<'a>(
     parse_grub_menuentry_file(str)
 }
 
+/// Get sorted boot entries
+/// The sort here is done in terms of what will be shown on the boot menu
+/// For systemd-boot, the entries are sorted by `sort-key`
+/// For grub, the entries are sorted by the filename in descending order
 pub(crate) fn get_sorted_type1_boot_entries(
     boot_dir: &Dir,
     ascending: bool,
 ) -> Result<Vec<BLSConfig>> {
-    get_sorted_type1_boot_entries_helper(boot_dir, ascending, false)
+    let bootloader = get_bootloader()?;
+    get_sorted_type1_boot_entries_helper(boot_dir, ascending, false, bootloader)
 }
 
+/// Same as [`get_sorted_type1_boot_entries`], but returns staged entries
+/// See [`get_sorted_type1_boot_entries`] for more details
 pub(crate) fn get_sorted_staged_type1_boot_entries(
     boot_dir: &Dir,
     ascending: bool,
 ) -> Result<Vec<BLSConfig>> {
-    get_sorted_type1_boot_entries_helper(boot_dir, ascending, true)
+    let bootloader = get_bootloader()?;
+    get_sorted_type1_boot_entries_helper(boot_dir, ascending, true, bootloader)
 }
 
 #[context("Getting sorted Type1 boot entries")]
@@ -262,15 +270,20 @@ fn get_sorted_type1_boot_entries_helper(
     boot_dir: &Dir,
     ascending: bool,
     get_staged_entries: bool,
+    bootloader: crate::spec::Bootloader,
 ) -> Result<Vec<BLSConfig>> {
-    let mut all_configs = vec![];
+    #[derive(Debug)]
+    struct ConfigWithFilename {
+        config: BLSConfig,
+        filename: String,
+    }
 
     let dir = match get_staged_entries {
         true => {
             let dir = boot_dir.open_dir_optional(TYPE1_ENT_PATH_STAGED)?;
 
             let Some(dir) = dir else {
-                return Ok(all_configs);
+                return Ok(vec![]);
             };
 
             dir.read_dir(".")?
@@ -278,6 +291,8 @@ fn get_sorted_type1_boot_entries_helper(
 
         false => boot_dir.read_dir(TYPE1_ENT_PATH)?,
     };
+
+    let mut configs_with_filenames = vec![];
 
     for entry in dir {
         let entry = entry?;
@@ -302,12 +317,31 @@ fn get_sorted_type1_boot_entries_helper(
 
         let config = parse_bls_config(&contents).context("Parsing bls config")?;
 
-        all_configs.push(config);
+        configs_with_filenames.push(ConfigWithFilename {
+            config,
+            filename: file_name.to_string(),
+        });
     }
 
-    all_configs.sort_by(|a, b| if ascending { a.cmp(b) } else { b.cmp(a) });
+    // Sort based on bootloader type
+    configs_with_filenames.sort_by(|a, b| {
+        let ord = match bootloader {
+            // For systemd-boot sort by sort-key
+            Bootloader::Systemd => a.config.cmp(&b.config),
+            // For grub, sort by filename in descending order
+            Bootloader::Grub => b.filename.cmp(&a.filename),
+            Bootloader::None => {
+                unreachable!("Bootloader checked during installation should not have been none")
+            }
+        };
 
-    Ok(all_configs)
+        if ascending { ord } else { ord.reverse() }
+    });
+
+    Ok(configs_with_filenames
+        .into_iter()
+        .map(|c| c.config)
+        .collect())
 }
 
 pub(crate) fn list_type1_entries(boot_dir: &Dir) -> Result<Vec<BootloaderEntry>> {
@@ -979,7 +1013,11 @@ async fn composefs_deployment_status_from(
 mod tests {
     use cap_std_ext::{cap_std, dirext::CapStdExtDirExt};
 
-    use crate::parsers::{bls_config::BLSConfigType, grub_menuconfig::MenuentryBody};
+    use crate::bootc_composefs::boot::{
+        FILENAME_PRIORITY_PRIMARY, FILENAME_PRIORITY_SECONDARY, primary_sort_key,
+        secondary_sort_key, type1_entry_conf_file_name,
+    };
+    use crate::parsers::grub_menuconfig::MenuentryBody;
 
     use super::*;
 
@@ -1024,30 +1062,16 @@ mod tests {
         tempdir.atomic_write("loader/entries/entry1.conf", entry1)?;
         tempdir.atomic_write("loader/entries/entry2.conf", entry2)?;
 
-        let result = get_sorted_type1_boot_entries(&tempdir, true).unwrap();
-
-        let mut config1 = BLSConfig::default();
-        config1.title = Some("Fedora 42.20250623.3.1 (CoreOS)".into());
-        config1.sort_key = Some("1".into());
-        config1.cfg_type = BLSConfigType::NonEFI {
-            linux: "/boot/7e11ac46e3e022053e7226a20104ac656bf72d1a84e3a398b7cce70e9df188b6/vmlinuz-5.14.10".into(),
-            initrd: vec!["/boot/7e11ac46e3e022053e7226a20104ac656bf72d1a84e3a398b7cce70e9df188b6/initramfs-5.14.10.img".into()],
-            options: Some("root=UUID=abc123 rw composefs=7e11ac46e3e022053e7226a20104ac656bf72d1a84e3a398b7cce70e9df188b6".into()),
-        };
-
-        let mut config2 = BLSConfig::default();
-        config2.title = Some("Fedora 41.20250214.2.0 (CoreOS)".into());
-        config2.sort_key = Some("2".into());
-        config2.cfg_type = BLSConfigType::NonEFI {
-            linux: "/boot/febdf62805de2ae7b6b597f2a9775d9c8a753ba1e5f09298fc8fbe0b0d13bf01/vmlinuz-5.14.10".into(),
-            initrd: vec!["/boot/febdf62805de2ae7b6b597f2a9775d9c8a753ba1e5f09298fc8fbe0b0d13bf01/initramfs-5.14.10.img".into()],
-            options: Some("root=UUID=abc123 rw composefs=febdf62805de2ae7b6b597f2a9775d9c8a753ba1e5f09298fc8fbe0b0d13bf01".into())
-        };
+        let result =
+            get_sorted_type1_boot_entries_helper(&tempdir, true, false, Bootloader::Systemd)
+                .unwrap();
 
         assert_eq!(result[0].sort_key.as_ref().unwrap(), "1");
         assert_eq!(result[1].sort_key.as_ref().unwrap(), "2");
 
-        let result = get_sorted_type1_boot_entries(&tempdir, false).unwrap();
+        let result =
+            get_sorted_type1_boot_entries_helper(&tempdir, false, false, Bootloader::Systemd)
+                .unwrap();
         assert_eq!(result[0].sort_key.as_ref().unwrap(), "2");
         assert_eq!(result[1].sort_key.as_ref().unwrap(), "1");
 
@@ -1214,6 +1238,180 @@ mod tests {
             verity_set.contains(digest_staged.as_str()),
             "Should contain staged entry"
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_sorted_type1_boot_entries_helper_systemd() -> Result<()> {
+        let tempdir = cap_std_ext::cap_tempfile::tempdir(cap_std::ambient_authority())?;
+
+        // Create entries with different sort-keys for systemd-boot testing
+        let entry1 = format!(
+            r#"
+            title Fedora Linux (1.0.0)
+            version 1.0.0
+            sort-key {}
+            linux /boot/vmlinuz
+            initrd /boot/initramfs.img
+        "#,
+            secondary_sort_key("fedora")
+        );
+
+        let entry2 = format!(
+            r#"
+            title Fedora Linux (2.0.0) 
+            version 2.0.0
+            sort-key {}
+            linux /boot/vmlinuz
+            initrd /boot/initramfs.img
+        "#,
+            primary_sort_key("fedora")
+        );
+
+        let entry3 = format!(
+            r#"
+            title Fedora Linux (1.5.0)
+            version 1.5.0
+            sort-key {}
+            linux /boot/vmlinuz
+            initrd /boot/initramfs.img
+        "#,
+            primary_sort_key("fedora")
+        );
+
+        tempdir.create_dir_all("loader/entries")?;
+
+        // Use realistic filenames as used in production
+        let filename1 = type1_entry_conf_file_name("fedora", "1.0.0", FILENAME_PRIORITY_SECONDARY);
+        let filename2 = type1_entry_conf_file_name("fedora", "2.0.0", FILENAME_PRIORITY_PRIMARY);
+        let filename3 = type1_entry_conf_file_name("fedora", "1.5.0", FILENAME_PRIORITY_PRIMARY);
+
+        tempdir.atomic_write(format!("loader/entries/{}", filename1), entry1)?;
+        tempdir.atomic_write(format!("loader/entries/{}", filename2), entry2)?;
+        tempdir.atomic_write(format!("loader/entries/{}", filename3), entry3)?;
+
+        // Test systemd-boot sorting (by sort-key, then by version in descending order)
+        let result = get_sorted_type1_boot_entries_helper(
+            &tempdir,
+            true,
+            false,
+            crate::spec::Bootloader::Systemd,
+        )?;
+
+        assert_eq!(result.len(), 3);
+        // With ascending=true, primary sort-key (bootc-fedora-0) should come before secondary (bootc-fedora-1)
+        // Within primary sort-key, version 2.0.0 should come before 1.5.0 (descending version order)
+        assert_eq!(
+            result[0].sort_key.as_ref().unwrap(),
+            &primary_sort_key("fedora")
+        );
+        assert_eq!(result[0].version(), "2.0.0".into()); // Entry 2 (version 2.0.0)
+        assert_eq!(
+            result[1].sort_key.as_ref().unwrap(),
+            &primary_sort_key("fedora")
+        );
+        assert_eq!(result[1].version(), "1.5.0".into()); // Entry 3 (version 1.5.0)
+        assert_eq!(
+            result[2].sort_key.as_ref().unwrap(),
+            &secondary_sort_key("fedora")
+        );
+        assert_eq!(result[2].version(), "1.0.0".into()); // Entry 1 (version 1.0.0)
+
+        // Test descending order
+        let result = get_sorted_type1_boot_entries_helper(
+            &tempdir,
+            false,
+            false,
+            crate::spec::Bootloader::Systemd,
+        )?;
+
+        assert_eq!(result.len(), 3);
+        // With ascending=false, secondary sort-key should come before primary
+        assert_eq!(
+            result[0].sort_key.as_ref().unwrap(),
+            &secondary_sort_key("fedora")
+        );
+        assert_eq!(result[0].version(), "1.0.0".into()); // Entry 1
+        assert_eq!(
+            result[1].sort_key.as_ref().unwrap(),
+            &primary_sort_key("fedora")
+        );
+        assert_eq!(result[1].version(), "1.5.0".into()); // Entry 3
+        assert_eq!(
+            result[2].sort_key.as_ref().unwrap(),
+            &primary_sort_key("fedora")
+        );
+        assert_eq!(result[2].version(), "2.0.0".into()); // Entry 2
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_sorted_type1_boot_entries_helper_grub() -> Result<()> {
+        let tempdir = cap_std_ext::cap_tempfile::tempdir(cap_std::ambient_authority())?;
+
+        // Create entries with sort-keys but GRUB ignores them and sorts by filename
+        let entry1 = format!(
+            r#"
+            title Fedora Linux (41.20251125.0)
+            version 41.20251125.0
+            sort-key {}
+            linux /boot/vmlinuz
+            initrd /boot/initramfs.img
+        "#,
+            secondary_sort_key("fedora")
+        );
+
+        let entry2 = format!(
+            r#"
+            title Fedora Linux (42.20251125.0)
+            version 42.20251125.0
+            sort-key {}
+            linux /boot/vmlinuz
+            initrd /boot/initramfs.img
+        "#,
+            primary_sort_key("fedora")
+        );
+
+        tempdir.create_dir_all("loader/entries")?;
+
+        // Use realistic filenames - GRUB will sort by these, not sort-key
+        let filename1 =
+            type1_entry_conf_file_name("fedora", "41.20251125.0", FILENAME_PRIORITY_SECONDARY);
+        let filename2 =
+            type1_entry_conf_file_name("fedora", "42.20251125.0", FILENAME_PRIORITY_PRIMARY);
+
+        tempdir.atomic_write(format!("loader/entries/{}", filename1), entry1)?;
+        tempdir.atomic_write(format!("loader/entries/{}", filename2), entry2)?;
+
+        let result = get_sorted_type1_boot_entries_helper(
+            &tempdir,
+            true,
+            false,
+            crate::spec::Bootloader::Grub,
+        )?;
+
+        assert_eq!(result.len(), 2);
+        // With ascending=true for GRUB, we reverse the default descending filename order
+        // Filenames: bootc_fedora-41.20251125.0-0.conf, bootc_fedora-42.20251125.0-1.conf
+        // Ascending filename order should be: 42-1, 41-0
+        assert_eq!(result[0].version(), "42.20251125.0".into());
+        assert_eq!(result[1].version(), "41.20251125.0".into());
+
+        // Test descending order (GRUB's default filename sorting)
+        let result = get_sorted_type1_boot_entries_helper(
+            &tempdir,
+            false,
+            false,
+            crate::spec::Bootloader::Grub,
+        )?;
+
+        assert_eq!(result.len(), 2);
+        // With ascending=false for GRUB, filenames should be sorted in descending order
+        // Descending filename order should be: 42-1, 41-0
+        assert_eq!(result[0].version(), "41.20251125.0".into());
+        assert_eq!(result[1].version(), "42.20251125.0".into());
 
         Ok(())
     }
