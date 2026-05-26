@@ -1,4 +1,4 @@
-use std::{collections::HashSet, io::Read, sync::OnceLock};
+use std::{io::Read, sync::OnceLock};
 
 use anyhow::{Context, Result};
 use bootc_kernel_cmdline::utf8::Cmdline;
@@ -831,7 +831,6 @@ async fn composefs_deployment_status_from(
         Err(e) => Err(e),
     }?;
 
-    // NOTE: This cannot work if we support both BLS and UKI at the same time
     let mut boot_type: Option<BootType> = None;
 
     // Boot entries from deployments that are neither booted nor staged deployments
@@ -966,6 +965,8 @@ async fn composefs_deployment_status_from(
 
     // Determine rollback deployment by matching extra deployment boot entries against entires read from /boot
     // This collects verity digest across bls and grub enties, we should just have one of them, but still works
+    //
+    // We want this ordered, so we have a vector here
     let bootloader_configured_verity = sorted_bls_config
         .iter()
         .flatten()
@@ -976,9 +977,9 @@ async fn composefs_deployment_status_from(
                 .flatten()
                 .map(|menu| menu.get_verity()),
         )
-        .collect::<Result<HashSet<_>>>()?;
+        .collect::<Result<Vec<_>>>()?;
 
-    let rollback_candidates: Vec<_> = extra_deployment_boot_entries
+    let mut rollback_candidates: Vec<_> = extra_deployment_boot_entries
         .into_iter()
         .filter(|entry| {
             let verity = &entry
@@ -990,10 +991,22 @@ async fn composefs_deployment_status_from(
         })
         .collect();
 
-    if rollback_candidates.len() > 1 {
-        anyhow::bail!("Multiple extra entries in /boot, could not determine rollback entry");
-    } else if let Some(rollback_entry) = rollback_candidates.into_iter().next() {
-        host.status.rollback = Some(rollback_entry);
+    // We get sorted bootloader entries, so here we re-sort the rollback candidates
+    // wrt their positions in the sorted bootloader entries as that's what determines
+    // what's shown on the bootloader menu. The very next boot entry, that's not the
+    // default should be the rollback
+    rollback_candidates.sort_by_key(|ent| {
+        bootloader_configured_verity
+            .iter()
+            // SAFETY: ent.composefs will definitely exist
+            .position(|v| ent.composefs.as_ref().unwrap().verity == *v)
+    });
+
+    if !rollback_candidates.is_empty() {
+        let mut iter = rollback_candidates.into_iter();
+
+        host.status.rollback = iter.next();
+        host.status.other_deployments = iter.collect();
     }
 
     host.status.rollback_queued = is_rollback_queued;
