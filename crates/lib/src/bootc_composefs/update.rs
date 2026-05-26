@@ -11,6 +11,7 @@ use fn_error_context::context;
 use ocidir::cap_std::ambient_authority;
 use ostree_ext::container::ManifestDiff;
 
+use crate::bootc_composefs::gc::GCOpts;
 use crate::{
     bootc_composefs::{
         boot::{BootSetupType, BootType, setup_composefs_bls_boot, setup_composefs_uki_boot},
@@ -324,7 +325,15 @@ pub(crate) async fn do_upgrade(
 
     // We take into account the staged bootloader entries so this won't remove
     // the currently staged entry
-    composefs_gc(storage, booted_cfs, false, true).await?;
+    composefs_gc(
+        storage,
+        booted_cfs,
+        GCOpts {
+            dry_run: false,
+            prune_repo: true,
+        },
+    )
+    .await?;
 
     apply_upgrade(storage, booted_cfs, &id.to_hex(), opts).await
 }

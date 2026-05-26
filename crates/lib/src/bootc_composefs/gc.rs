@@ -192,6 +192,11 @@ fn unreferenced_boot_binaries<'a>(
         .collect()
 }
 
+pub(crate) struct GCOpts {
+    pub(crate) dry_run: bool,
+    pub(crate) prune_repo: bool,
+}
+
 /// 1. List all bootloader entries
 /// 2. List all EROFS images
 /// 3. List all state directories
@@ -212,8 +217,7 @@ fn unreferenced_boot_binaries<'a>(
 pub(crate) async fn composefs_gc(
     storage: &Storage,
     booted_cfs: &BootedComposefs,
-    dry_run: bool,
-    prune_repo: bool,
+    gc_opts: GCOpts,
 ) -> Result<GcResult> {
     const COMPOSEFS_GC_JOURNAL_ID: &str = "3b2a1f0e9d8c7b6a5f4e3d2c1b0a9f8e7";
 
@@ -284,12 +288,14 @@ pub(crate) async fn composefs_gc(
 
     for (ty, verity) in unreferenced_boot_binaries {
         match ty {
-            BootType::Bls => delete_kernel_initrd(storage, &get_type1_dir_name(verity), dry_run)?,
-            BootType::Uki => delete_uki(storage, verity, dry_run)?,
+            BootType::Bls => {
+                delete_kernel_initrd(storage, &get_type1_dir_name(verity), gc_opts.dry_run)?
+            }
+            BootType::Uki => delete_uki(storage, verity, gc_opts.dry_run)?,
         }
     }
 
-    if !prune_repo {
+    if !gc_opts.prune_repo {
         return Ok(GcResult::default());
     }
 
@@ -329,13 +335,13 @@ pub(crate) async fn composefs_gc(
 
     for verity in &orphaned_state_dirs {
         tracing::debug!("Cleaning up orphaned state dir: {verity}");
-        delete_staged(staged, &all_orphans, dry_run)?;
-        delete_state_dir(&sysroot, verity, dry_run)?;
+        delete_staged(staged, &all_orphans, gc_opts.dry_run)?;
+        delete_state_dir(&sysroot, verity, gc_opts.dry_run)?;
     }
 
     for verity in &orphaned_boot_entries {
         tracing::debug!("Cleaning up orphaned bootloader entry: {verity}");
-        delete_staged(staged, &all_orphans, dry_run)?;
+        delete_staged(staged, &all_orphans, gc_opts.dry_run)?;
     }
 
     // Collect the set of manifest digests referenced by live deployments,
@@ -431,7 +437,7 @@ pub(crate) async fn composefs_gc(
             .any(|(tag_name, _)| tag_name == &expected_tag);
         if !has_tag {
             tracing::info!("Creating missing bootc tag for live deployment: {expected_tag}");
-            if !dry_run {
+            if !gc_opts.dry_run {
                 composefs_oci::tag_image(&*booted_cfs.repo, manifest_digest, &expected_tag)
                     .with_context(|| format!("Creating migration tag {expected_tag}"))?;
             }
@@ -450,7 +456,7 @@ pub(crate) async fn composefs_gc(
 
         if !live_manifest_digests.iter().any(|d| d == manifest_digest) {
             tracing::debug!("Removing unreferenced bootc tag: {tag_name}");
-            if !dry_run {
+            if !gc_opts.dry_run {
                 composefs_oci::untag_image(&*booted_cfs.repo, tag_name)
                     .with_context(|| format!("Removing tag {tag_name}"))?;
             }
@@ -463,7 +469,7 @@ pub(crate) async fn composefs_gc(
         .collect::<Vec<_>>();
 
     // Prune containers-storage: remove images not backing any live deployment.
-    if !dry_run && !live_container_images.is_empty() {
+    if !gc_opts.dry_run && !live_container_images.is_empty() {
         let subpath = crate::podstorage::CStorage::subpath();
         if sysroot.try_exists(&subpath).unwrap_or(false) {
             let run = Dir::open_ambient_dir("/run", cap_std_ext::cap_std::ambient_authority())?;
@@ -482,7 +488,7 @@ pub(crate) async fn composefs_gc(
     // images for deployments that predate the manifest→image link;
     // once all deployments have been pulled with the new code, these
     // become redundant.
-    let gc_result = if dry_run {
+    let gc_result = if gc_opts.dry_run {
         booted_cfs.repo.gc_dry_run(&additional_roots)?
     } else {
         booted_cfs.repo.gc(&additional_roots)?

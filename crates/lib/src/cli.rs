@@ -38,7 +38,7 @@ use schemars::schema_for;
 use serde::{Deserialize, Serialize};
 
 use crate::bootc_composefs::delete::delete_composefs_deployment;
-use crate::bootc_composefs::gc::composefs_gc;
+use crate::bootc_composefs::gc::{GCOpts, composefs_gc};
 use crate::bootc_composefs::soft_reboot::{prepare_soft_reboot_composefs, reset_soft_reboot};
 use crate::bootc_composefs::{
     digest::{compute_composefs_digest, new_temp_composefs_repo},
@@ -2231,12 +2231,18 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
                     }
 
                     BootedStorageKind::Composefs(booted_cfs) => {
-                        let effective_dry_run = dry_run || assert_no_op;
-                        let gc_result =
-                            composefs_gc(storage, &booted_cfs, effective_dry_run, prune_repo)
-                                .await?;
+                        let dry_run = dry_run || assert_no_op;
+                        let gc_result = composefs_gc(
+                            storage,
+                            &booted_cfs,
+                            GCOpts {
+                                dry_run,
+                                prune_repo,
+                            },
+                        )
+                        .await?;
 
-                        if effective_dry_run {
+                        if dry_run {
                             println!("Dry run (no files deleted)");
                         }
 

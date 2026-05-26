@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use crate::bootc_composefs::boot::BootType;
-use crate::bootc_composefs::gc::composefs_gc;
+use crate::bootc_composefs::gc::{GCOpts, composefs_gc};
 use crate::bootc_composefs::rollback::{rename_exchange_bls_entries, rename_exchange_user_cfg};
 use crate::bootc_composefs::status::get_composefs_status;
 use crate::composefs_consts::STATE_DIR_ABS;
@@ -150,7 +150,15 @@ pub(crate) async fn composefs_backend_finalize(
 
     // Now that we have successfully updated bootloader entires, we can GC the unreferenced ones
     // We do not prune the composefs repository here though
-    composefs_gc(storage, booted_cfs, false, false).await?;
+    composefs_gc(
+        storage,
+        booted_cfs,
+        GCOpts {
+            dry_run: false,
+            prune_repo: false,
+        },
+    )
+    .await?;
 
     Ok(())
 }

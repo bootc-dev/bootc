@@ -6,7 +6,7 @@ use cap_std_ext::{cap_std::fs::Dir, dirext::CapStdExtDirExt};
 use crate::{
     bootc_composefs::{
         boot::{BootType, get_efi_uuid_source},
-        gc::composefs_gc,
+        gc::{GCOpts, composefs_gc},
         rollback::{composefs_rollback, rename_exchange_user_cfg},
         status::{get_composefs_status, get_sorted_grub_uki_boot_entries},
     },
@@ -261,7 +261,15 @@ pub(crate) async fn delete_composefs_deployment(
 
     delete_depl_boot_entries(&depl_to_del, &storage, deleting_staged)?;
 
-    composefs_gc(storage, booted_cfs, false, true).await?;
+    composefs_gc(
+        storage,
+        booted_cfs,
+        GCOpts {
+            dry_run: false,
+            prune_repo: true,
+        },
+    )
+    .await?;
 
     Ok(())
 }
