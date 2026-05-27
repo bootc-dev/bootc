@@ -445,6 +445,7 @@ After=anaconda-program-log.service"#;
         debug: false,
         readonly: true,
         log_file: None,
+        virtiofsd_binary: None,
     };
 
     // Build QemuConfig using bcvk-qemu
