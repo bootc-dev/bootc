@@ -7,10 +7,13 @@ Tracking issue: <https://github.com/bootc-dev/bootc/issues/20>
 
 ## Overview
 
-Unified storage is an experimental feature that allows bootc to fetch and store
-the default OS image in the same [containers/storage](https://github.com/containers/storage)
-backend used for [logically bound images](logically-bound-images.md) (and by podman).
-This enables several benefits:
+Unified storage is the goal of having all storage for bootc be "unified" with the storage
+used by a container runtime, such as podman.
+
+Currently, bootc uses either ostree or composefs. [Logically bound images](logically-bound-images.md)
+use the podman container storage.
+
+## Goals
 
 - Direct support for zstd:chunked: Container images using zstd:chunked compression
   can be efficiently pulled with deduplication
@@ -20,20 +23,6 @@ This enables several benefits:
   are stored only once
 - When used with `bootc image cmd build`, can support direct build into the bootc-owned
   storage without a copy from the podman (or other app container) storage.
-
-## Background
-
-Historically, bootc has used two separate storage backends:
-
-1. **ostree**: For the booted host OS image, via [ostree-rs-ext](https://github.com/ostreedev/ostree-rs-ext/)
-2. **containers/storage**: For logically bound images (LBIs)
-
-This split created challenges: the booted image couldn't be easily accessed
-by podman, and container layer sharing between the host and LBIs wasn't possible.
-
-Unified storage addresses this by pulling the host image into the bootc-owned
-container storage (`/usr/lib/bootc/storage`) first, then importing from there
-into ostree and setting it up for booting (e.g. performing SELinux labeling).
 
 ## Current status
 
@@ -56,16 +45,10 @@ from its container storage into ostree, or when copying between different
 container storage instances, each layer is fully re-serialized even when both
 storages are on the same filesystem.
 
-With reflink support (as proposed in that issue), copies between storages on
-the same filesystem would be nearly instantaneous and use no additional disk
-space. Without it, unified storage works but involves redundant I/O and
-temporary disk space usage proportional to layer sizes. This is particularly
-noticeable with large non-chunked layers.
-
 The architectural fix requires separating metadata from data in the copy path,
 allowing file descriptors to be passed and reflinked rather than streamed
-through tar. This is related to the composefs approach of content-addressed
-storage with distinct metadata and data channels.
+through tar. This will be solved by putting [composefs-rs](https://github.com/containers/composefs-rs)
+in the middle to orchestrate zero-copy pulls. See [Future plans: composefs-to-ostree](#future-plans-composefs-to-ostree).
 
 ## Enabling unified storage
 
@@ -153,7 +136,41 @@ podman --storage-opt=additionalimagestore=/usr/lib/bootc/storage run localhost/b
 Unified storage is complementary to the [composefs backend](experimental-composefs.md).
 While unified storage changes *how images are pulled* (using containers/storage),
 the composefs backend changes *how the filesystem is stored and verified*.
-These features can potentially be combined in the future.
+
+## Future plans: composefs-to-ostree
+
+These features will be combined in upcoming work to build a "composefs-first"
+import pipeline. In this planned model, containers/storage will pull the image,
+composefs will import it via reflinks (`FICLONE`), and then ostree will 
+synthesize its commit by `FICLONE`ing from the composefs objects.
+
+This will eliminate tar serialization entirely, meaning only one physical copy
+of the image data will exist on disk, shared across all three stores.
+
+## Future plans: composefs-as-storage
+
+Looking further ahead, the ultimate evolution of unified storage is to make the host's `/sysroot/composefs` object store the single, global source of truth for all content-addressed files on the system.
+
+Instead of `containers/storage` maintaining its own copy of application image layers and merely sharing the *host* OS layers, podman's composefs backend could be configured to write objects directly into `/sysroot/composefs` on bootc-managed systems.
+
+This means there would be exactly one storage pool for:
+
+1. The bootc host OS image
+2. Logically bound app containers
+3. Standard Podman app containers
+4. Flatpak apps (by having flatpak's system helper write to the same object store)
+
+Every file across the entire system—whether part of the base OS, a containerized database, or a desktop application—would be deduplicated automatically and perfectly at the object level via fsverity digests.
+
+### Implementation notes
+
+For developers, the internal design and target architecture for this three-store
+unified storage model is documented in the rustdoc comments of the relevant source files:
+
+- `crates/lib/src/store/mod.rs` — the target three-store architecture and reflink behavior
+- `crates/lib/src/bootc_composefs/repo.rs` — composefs unified pull path stages
+- `crates/lib/src/deploy.rs` — pull dispatch and ostree backend synthesis
+- `crates/lib/src/image.rs` — `bootc image set-unified` entrypoints
 
 ## Limitations
 

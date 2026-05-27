@@ -1,3 +1,40 @@
+//! Composefs repository lifecycle and OCI pull paths.
+//!
+//! This module owns how OCI images get into the composefs object store.
+//! There are two pull paths, selected by the `use_unified` flag:
+//!
+//! ## Direct pull (`use_unified = false`)
+//!
+//! `pull_composefs_direct` fetches from the source transport (registry, OCI
+//! dir, etc.) straight into the composefs repo via `composefs_oci::pull` with
+//! default options. No containers-storage involvement.
+//!
+//! ## Unified pull (`use_unified = true`)
+//!
+//! `pull_composefs_unified` is the two-stage path that populates all three
+//! stores (see [`crate::store`] for the architecture overview):
+//!
+//! **Stage 1** — Pull into bootc-owned containers-storage via
+//! `CStorage::pull_with_progress` (or `pull_from_host_storage` if the image
+//! already exists in the default podman store, saving a network round-trip).
+//!
+//! **Stage 2** — `composefs_oci::pull` with `LocalFetchOpt::ZeroCopy` and
+//! `storage_root` pointing at the containers-storage directory. composefs-ctl
+//! walks the overlay `diff/` directories and FICLONEs each file into the
+//! composefs object store keyed by its SHA-512 fsverity digest. On a
+//! reflink-capable filesystem this is near-instantaneous and consumes no
+//! additional disk space.
+//!
+//! The caller provides `storage_path` as an absolute filesystem path string
+//! (not a `Dir` fd) because composefs-ctl passes it to a child skopeo process.
+//! It is derived from the physical root fd via `/proc/self/fd/{fd}` readlink.
+//!
+//! ## Entry points
+//!
+//! - [`pull_composefs_repo`] — upgrade/switch on a composefs-booted system.
+//! - [`initialize_composefs_repository`] — `bootc install` with the composefs
+//!   backend.
+
 use fn_error_context::context;
 use std::sync::Arc;
 

@@ -1,5 +1,77 @@
 //! The [`Storage`] type holds references to three different types of
-//! storage:
+//! storage that together implement the unified storage model.
+//!
+//! # Planned three-store architecture
+//!
+//! The planned architecture for unified storage involves three content stores that
+//! share physical disk blocks on a reflink-capable filesystem (XFS, btrfs):
+//!
+//! 1. **bootc-owned containers-storage** at `/sysroot/ostree/bootc/storage`
+//!    (overlay driver) — the image is accessible to podman and shares layers
+//!    with Logically Bound Images.
+//! 2. **composefs object store** at `/sysroot/composefs/objects/`
+//!    (SHA-512 content-addressed) — used by composefs-boot to mount the
+//!    rootfs as EROFS.  Populated from containers-storage via `FICLONE`
+//!    (`composefs_oci::pull` with `ZeroCopy`).
+//! 3. **ostree bare repo** at `/sysroot/ostree/repo/objects/`
+//!    (SHA-256 content-addressed) — provides deployment, rollback, fsck, and
+//!    delta updates.  Populated from the composefs object store via `FICLONE`
+//!    (`import_from_composefs_repo`).
+//!
+//! Each `FICLONE` ioctl lets the kernel mark source and destination extents as
+//! copy-on-write siblings with no userspace data movement. On ext4 (no
+//! reflinks), each step falls back to a byte copy.
+//!
+//! ## Implementation Plan
+//!
+//! The containers-storage → composefs step (arrow 1) is already implemented
+//! for the composefs boot backend in `crates/lib/src/bootc_composefs/repo.rs`
+//! via `pull_composefs_unified`.
+//!
+//! Wiring all three steps together for the ostree backend is the major planned work.
+//! The composefs → ostree step (arrow 2) was proven by the `composefs-to-ostree`
+//! spike branch. The planned implementation for the ostree backend will:
+//!
+//! 1. Perform a lazy cached probe (`reflinks_supported`) at install time.
+//! 2. Pull into containers-storage first (Stage 1).
+//! 3. Use `composefs_oci::pull` with `LocalFetchOpt::ZeroCopy` to populate composefs (Stage 2).
+//! 4. Finally, synthesize the ostree commit by walking the composefs tree,
+//!    reading metadata, computing SELinux labels, computing the ostree checksum,
+//!    and `FICLONE`ing into the ostree bare repo (Stage 3).
+//!
+//! ## Long-term: Global composefs store
+//!
+//! The ultimate planned state (the "composefs-as-storage" plan) is to have podman's
+//! composefs backend natively write objects to `/sysroot/composefs` directly, bypassing
+//! even `containers-storage`. This would mean flatpak, podman, and bootc all share exactly
+//! one global pool of content-addressed, deduplicated files.
+//!
+//! ## Why composefs in the middle
+//!
+//! The old unified storage path (containers-storage → skopeo tar → ostree)
+//! serialized layers twice. composefs-ctl's `ZeroCopy` pull mode instead walks
+//! the overlay `diff/` directories and FICLONEs each file into the composefs
+//! object store keyed by SHA-512 fsverity digest — no tar involved.
+//! See [container-libs#144](https://github.com/containers/container-libs/issues/144).
+//!
+//! ## Why reflink and not hardlink between composefs and ostree
+//!
+//! composefs is content-addressed by SHA-512 of raw bytes: two paths with
+//! identical content share one composefs inode. ostree bare mode stores
+//! uid/gid/mode/xattrs including `security.selinux` on each inode. Two files
+//! with the same bytes but different SELinux labels produce different ostree
+//! checksums but share one composefs object. One inode can hold only one
+//! `security.selinux` value, so hardlinking would silently corrupt labels.
+//! Reflink gives each ostree object its own inode while sharing disk extents.
+//!
+//! ## Reflink probe
+//!
+//! The reflink probe is performed lazily and cached. It creates
+//! two anonymous temporary files (via `O_TMPFILE`, no
+//! cleanup needed), writes one byte to the source, and attempts
+//! `ioctl(FICLONE)`. Returns `true` on success, `false` on `EOPNOTSUPP` or
+//! `EXDEV`. The probe directory is `composefs/objects` if it already exists,
+//! otherwise the physical root itself.
 //!
 //! # OSTree
 //!

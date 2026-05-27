@@ -1,6 +1,17 @@
-//! # Controlling bootc-managed images
-//!
 //! APIs for operating on container images in the bootc storage.
+//!
+//! ## `bootc image set-unified`
+//!
+//! `set_unified_entrypoint` dispatches to `set_unified` (ostree backend) or
+//! `set_unified_composefs` (composefs backend). Both pull the currently booted
+//! image into bootc-owned containers-storage so that future upgrade/switch
+//! operations can use the unified storage path.
+//!
+//! In the planned three-store architecture (see [`crate::store`]), this will
+//! require a reflink-capable filesystem (XFS or btrfs) by default to enable
+//! block sharing. The planned `--allow-copy` flag will opt into a byte copy
+//! for environments like ext4 where podman access to the OS image matters
+//! more than disk efficiency.
 
 use anyhow::{Context, Result, bail};
 use bootc_utils::CommandRunExt;

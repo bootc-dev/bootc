@@ -1,6 +1,48 @@
-//! # Write deployments merging image with configmap
+//! Pull dispatch and deployment staging for the ostree backend.
 //!
-//! Create a merged filesystem tree with the image and mounted configmaps.
+//! ## Planned Pull paths
+//!
+//! The top-level entry point for upgrade/switch will eventually select
+//! among three paths based on the `unified` flag and filesystem capability:
+//!
+//! - **Unified + reflinks** (`unified = true`, XFS/btrfs): `pull_via_composefs_unified`
+//!   — the planned three-store pipeline. Pulls into containers-storage first, then
+//!   ZeroCopy into composefs, then synthesizes the ostree commit via FICLONE.
+//!   See [`crate::store`] for the architecture diagram.
+//!
+//! - **Non-unified + reflinks** (`unified = false`, XFS/btrfs): `pull_via_composefs`
+//!   — fetches from registry directly into composefs (no containers-storage),
+//!   then synthesizes the ostree commit via FICLONE.
+//!
+//! - **No reflinks** (ext4): `pull` — the legacy ostree-native tar importer
+//!   (`ostree_container::store::ImageImporter`).
+//!
+//! ## Planned composefs → ostree synthesis
+//!
+//! The synthesis plan relies on `import_from_composefs_repo` from
+//! `ostree_ext::container::composefs_import` to walk the composefs
+//! filesystem tree and for each regular file:
+//!
+//! 1. Reads uid/gid/mode/xattrs from composefs metadata. SELinux labels are
+//!    computed in bulk before the walk via `selabel()` and looked up per-file;
+//!    a NUL terminator is appended because composefs-rs omits it but the kernel
+//!    stores it.
+//! 2. Computes the ostree content checksum in-memory (SHA-256 of
+//!    `uid:gid:mode:xattrs:file-content`).
+//! 3. Issues `ioctl(FICLONE)` from the composefs object fd into a new `O_TMPFILE`
+//!    in the ostree object directory.
+//! 4. Applies metadata (`fchown`, `fchmod`, `fsetxattr`) and links the tmpfile
+//!    into the ostree content-addressed path.
+//!
+//! `/etc` is remapped to `usr/etc`; virtual toplevel paths (`proc`, `sys`,
+//! `dev`, etc.) are excluded — matching the ostree-container tar importer.
+//!
+//! ## Auto-detection
+//!
+//! `image_exists_in_unified_storage` checks whether the target image is already
+//! present in bootc-owned containers-storage. Call sites use this to select
+//! `unified = true` automatically without requiring an explicit flag from the
+//! user once `bootc image set-unified` has been run.
 
 use std::collections::HashSet;
 use std::io::{BufRead, Write};
