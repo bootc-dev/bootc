@@ -62,8 +62,7 @@
 //! 2. **Secondary**: Currently booted deployment (rollback option)
 
 use std::fs::create_dir_all;
-use std::io::Read;
-use std::io::Write;
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -347,12 +346,13 @@ fn compute_boot_digest_type1(dir: &Dir) -> Result<String> {
 /// * entry - BootEntry containing VMlinuz and Initrd
 /// * repo - The composefs repository
 #[context("Computing boot digest")]
-pub(crate) fn compute_boot_digest_uki(uki: &[u8]) -> Result<String> {
-    let vmlinuz =
-        uki::get_section(uki, ".linux").ok_or_else(|| anyhow::anyhow!(".linux not present"))??;
-
-    let initramfs = uki::get_section(uki, ".initrd")
-        .ok_or_else(|| anyhow::anyhow!(".initrd not present"))??;
+pub(crate) fn compute_boot_digest_uki<R: Read + Seek>(uki_reader: &mut R) -> Result<String> {
+    let vmlinuz = uki::get_section_buffered(uki_reader, ".linux").context(".linux not present")?;
+    uki_reader
+        .seek(SeekFrom::Start(0))
+        .context("Moving seek to 0")?;
+    let initramfs =
+        uki::get_section_buffered(uki_reader, ".initrd").context(".initrd not present")?;
 
     let mut hasher = openssl::hash::Hasher::new(openssl::hash::MessageDigest::sha256())
         .context("Creating hasher")?;
@@ -796,17 +796,23 @@ fn write_pe_to_esp(
     missing_fsverity_allowed: bool,
     mounted_efi: impl AsRef<Path>,
 ) -> Result<Option<UKIInfo>> {
-    let efi_bin = read_file(file, &repo).context("Reading .efi binary")?;
+    let mut uki_reader = match file {
+        RegularFile::Inline(..) => {
+            // UKI/Addons would always be large enough to be an external object
+            anyhow::bail!("File too small to be UKI/Addon")
+        }
+        RegularFile::External(id, ..) => std::fs::File::from(repo.open_object(id)?),
+    };
 
     let mut boot_label: Option<UKIInfo> = None;
 
     // UKI Extension might not even have a cmdline
     // TODO: UKI Addon might also have a composefs= cmdline?
     if matches!(pe_type, PEType::Uki) {
-        let cmdline = uki::get_cmdline(&efi_bin).context("Getting UKI cmdline")?;
+        let cmdline = uki::get_cmdline_buffered(&mut uki_reader).context("Getting UKI cmdline")?;
 
         let (composefs_cmdline, missing_verity_allowed_cmdline) =
-            get_cmdline_composefs::<Sha512HashValue>(cmdline).context("Parsing composefs=")?;
+            get_cmdline_composefs::<Sha512HashValue>(&cmdline).context("Parsing composefs=")?;
 
         // If the UKI cmdline does not match what the user has passed as cmdline option
         // NOTE: This will only be checked for new installs and now upgrades/switches
@@ -830,14 +836,18 @@ fn write_pe_to_esp(
             );
         }
 
-        let osrel = uki::get_text_section(&efi_bin, ".osrel")?;
+        uki_reader.seek(SeekFrom::Start(0))?;
+        let osrel = uki::get_text_section_buffered(&mut uki_reader, ".osrel")?;
 
-        let parsed_osrel = OsReleaseInfo::parse(osrel);
+        let parsed_osrel = OsReleaseInfo::parse(&osrel);
 
-        let boot_digest = compute_boot_digest_uki(&efi_bin)?;
+        uki_reader.seek(SeekFrom::Start(0))?;
+        let boot_digest = compute_boot_digest_uki(&mut uki_reader)?;
 
+        uki_reader.seek(SeekFrom::Start(0))?;
         boot_label = Some(UKIInfo {
-            boot_label: uki::get_boot_label(&efi_bin).context("Getting UKI boot label")?,
+            boot_label: uki::get_boot_label_buffered(&mut uki_reader)
+                .context("Getting UKI boot label")?,
             version: parsed_osrel.get_version(),
             os_id: parsed_osrel.get_value(&["ID"]),
             boot_digest,
@@ -883,8 +893,9 @@ fn write_pe_to_esp(
             .as_str(),
     };
 
+    uki_reader.seek(SeekFrom::Start(0))?;
     pe_dir
-        .atomic_write(pe_name, efi_bin)
+        .atomic_replace_with(pe_name, |writer| std::io::copy(&mut uki_reader, writer))
         .context("Writing UKI")?;
 
     rustix::fs::fsync(

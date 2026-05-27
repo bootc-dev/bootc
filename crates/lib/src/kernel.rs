@@ -75,18 +75,18 @@ pub(crate) fn find_kernel(root: &Dir) -> Result<Option<KernelInternal>> {
     if let Some(uki_path) = find_uki_path(root)? {
         let version = uki_path.file_stem().unwrap_or(uki_path.as_str()).to_owned();
 
-        let uki = root.read(&uki_path).context("Reading UKI")?;
+        let mut uki = root.open(&uki_path).context("Opening UKI")?;
 
         // Best effort to check for composefs=?verity in the UKI cmdline
-        let cmdline = composefs_boot::uki::get_section(&uki, ".cmdline");
+        let cmdline = composefs_boot::uki::get_section_buffered(&mut uki, ".cmdline");
 
         let cmdline = match cmdline {
-            Some(Ok(cmdline)) => {
-                let cmdline_str = std::str::from_utf8(cmdline)?;
+            Ok(cmdline) => {
+                let cmdline_str = std::str::from_utf8(&cmdline)?;
                 Some(Cmdline::from(cmdline_str.to_owned()))
             }
 
-            Some(Err(uki_error)) => match uki_error {
+            Err(uki_error) => match uki_error {
                 composefs_boot::uki::UkiError::MissingSection(_) => {
                     // TODO(Johan-Liebert1): Check this when we have full UKI Addons support
                     // The cmdline might be in an addon, so don't allow missing verity
@@ -95,8 +95,6 @@ pub(crate) fn find_kernel(root: &Dir) -> Result<Option<KernelInternal>> {
 
                 e => anyhow::bail!("Failed to read UKI cmdline: {e:?}"),
             },
-
-            None => None,
         };
 
         return Ok(Some(KernelInternal {
