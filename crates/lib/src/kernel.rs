@@ -168,6 +168,7 @@ fn find_uki_path(root: &Dir) -> Result<Option<Utf8PathBuf>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bootc_utils::create_minimal_pe;
     use cap_std_ext::{cap_std, cap_tempfile, dirext::CapStdExtDirExt};
 
     #[test]
@@ -209,7 +210,7 @@ mod tests {
     fn test_find_kernel_uki() -> Result<()> {
         let tempdir = cap_tempfile::tempdir(cap_std::ambient_authority())?;
         tempdir.create_dir_all("boot/EFI/Linux")?;
-        tempdir.atomic_write("boot/EFI/Linux/fedora-6.12.0.efi", b"fake uki")?;
+        tempdir.atomic_write("boot/EFI/Linux/fedora-6.12.0.efi", &create_minimal_pe())?;
 
         let kernel_internal = find_kernel(&tempdir)?.expect("should find kernel");
         assert_eq!(kernel_internal.kernel.version, "fedora-6.12.0");
@@ -233,7 +234,7 @@ mod tests {
             b"fake kernel",
         )?;
         tempdir.create_dir_all("boot/EFI/Linux")?;
-        tempdir.atomic_write("boot/EFI/Linux/fedora-6.12.0.efi", b"fake uki")?;
+        tempdir.atomic_write("boot/EFI/Linux/fedora-6.12.0.efi", &create_minimal_pe())?;
 
         let kernel_internal = find_kernel(&tempdir)?.expect("should find kernel");
         // UKI should take precedence
@@ -246,9 +247,9 @@ mod tests {
     fn test_find_uki_path_sorted() -> Result<()> {
         let tempdir = cap_tempfile::tempdir(cap_std::ambient_authority())?;
         tempdir.create_dir_all("boot/EFI/Linux")?;
-        tempdir.atomic_write("boot/EFI/Linux/zzz.efi", b"fake uki")?;
-        tempdir.atomic_write("boot/EFI/Linux/aaa.efi", b"fake uki")?;
-        tempdir.atomic_write("boot/EFI/Linux/mmm.efi", b"fake uki")?;
+        tempdir.atomic_write("boot/EFI/Linux/zzz.efi", &create_minimal_pe())?;
+        tempdir.atomic_write("boot/EFI/Linux/aaa.efi", &create_minimal_pe())?;
+        tempdir.atomic_write("boot/EFI/Linux/mmm.efi", &create_minimal_pe())?;
 
         // Should return first in sorted order
         let path = find_uki_path(&tempdir)?.expect("should find uki");

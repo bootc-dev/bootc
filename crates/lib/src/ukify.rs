@@ -124,6 +124,8 @@ pub(crate) async fn build_ukify(
 
 #[cfg(test)]
 mod tests {
+    use bootc_utils::create_minimal_pe;
+
     use super::*;
     use std::fs;
 
@@ -148,7 +150,11 @@ mod tests {
 
         // Create a UKI structure
         fs::create_dir_all(tempdir.path().join("boot/EFI/Linux")).unwrap();
-        fs::write(tempdir.path().join("boot/EFI/Linux/test.efi"), b"fake uki").unwrap();
+        fs::write(
+            tempdir.path().join("boot/EFI/Linux/test.efi"),
+            &create_minimal_pe(),
+        )
+        .unwrap();
 
         let result = build_ukify(path, &[], &[], false, None).await;
         assert!(result.is_err());

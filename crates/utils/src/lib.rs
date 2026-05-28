@@ -18,6 +18,8 @@ mod timestamp;
 pub use timestamp::*;
 mod tracing_util;
 pub use tracing_util::*;
+mod uki;
+pub use uki::*;
 
 /// The name of our binary
 pub const NAME: &str = "bootc";
