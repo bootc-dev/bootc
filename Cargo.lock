@@ -168,7 +168,7 @@ checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 [[package]]
 name = "bcvk-qemu"
 version = "0.1.0"
-source = "git+https://github.com/bootc-dev/bcvk?rev=e953294441c49bc6cd8a25fb5e6b5d7a71eaa143#e953294441c49bc6cd8a25fb5e6b5d7a71eaa143"
+source = "git+https://github.com/bootc-dev/bcvk?rev=c1adfa9834aec219ea3c015e04871a46b375b0f0#c1adfa9834aec219ea3c015e04871a46b375b0f0"
 dependencies = [
  "camino",
  "cap-std-ext 5.1.2",
@@ -770,7 +770,7 @@ checksum = "55b672471b4e9f9e95499ea597ff64941a309b2cdbffcc46f2cc5e2d971fd335"
 [[package]]
 name = "composefs"
 version = "0.4.0"
-source = "git+https://github.com/composefs/composefs-rs?rev=b8e656dd33115648c2a8de6c71a66834d72c912c#b8e656dd33115648c2a8de6c71a66834d72c912c"
+source = "git+https://github.com/composefs/composefs-rs?rev=e2770757762ec5091bb183bf0e778fe97c8d5694#e2770757762ec5091bb183bf0e778fe97c8d5694"
 dependencies = [
  "anyhow",
  "composefs-ioctls",
@@ -795,7 +795,7 @@ dependencies = [
 [[package]]
 name = "composefs-boot"
 version = "0.4.0"
-source = "git+https://github.com/composefs/composefs-rs?rev=b8e656dd33115648c2a8de6c71a66834d72c912c#b8e656dd33115648c2a8de6c71a66834d72c912c"
+source = "git+https://github.com/composefs/composefs-rs?rev=e2770757762ec5091bb183bf0e778fe97c8d5694#e2770757762ec5091bb183bf0e778fe97c8d5694"
 dependencies = [
  "anyhow",
  "composefs",
@@ -810,7 +810,7 @@ dependencies = [
 [[package]]
 name = "composefs-ctl"
 version = "0.4.0"
-source = "git+https://github.com/composefs/composefs-rs?rev=b8e656dd33115648c2a8de6c71a66834d72c912c#b8e656dd33115648c2a8de6c71a66834d72c912c"
+source = "git+https://github.com/composefs/composefs-rs?rev=e2770757762ec5091bb183bf0e778fe97c8d5694#e2770757762ec5091bb183bf0e778fe97c8d5694"
 dependencies = [
  "anyhow",
  "clap",
@@ -832,7 +832,7 @@ dependencies = [
 [[package]]
 name = "composefs-ioctls"
 version = "0.4.0"
-source = "git+https://github.com/composefs/composefs-rs?rev=b8e656dd33115648c2a8de6c71a66834d72c912c#b8e656dd33115648c2a8de6c71a66834d72c912c"
+source = "git+https://github.com/composefs/composefs-rs?rev=e2770757762ec5091bb183bf0e778fe97c8d5694#e2770757762ec5091bb183bf0e778fe97c8d5694"
 dependencies = [
  "rustix",
  "thiserror 2.0.18",
@@ -841,7 +841,7 @@ dependencies = [
 [[package]]
 name = "composefs-oci"
 version = "0.4.0"
-source = "git+https://github.com/composefs/composefs-rs?rev=b8e656dd33115648c2a8de6c71a66834d72c912c#b8e656dd33115648c2a8de6c71a66834d72c912c"
+source = "git+https://github.com/composefs/composefs-rs?rev=e2770757762ec5091bb183bf0e778fe97c8d5694#e2770757762ec5091bb183bf0e778fe97c8d5694"
 dependencies = [
  "anyhow",
  "async-compression",
@@ -870,7 +870,7 @@ dependencies = [
 [[package]]
 name = "composefs-storage"
 version = "0.4.0"
-source = "git+https://github.com/composefs/composefs-rs?rev=b8e656dd33115648c2a8de6c71a66834d72c912c#b8e656dd33115648c2a8de6c71a66834d72c912c"
+source = "git+https://github.com/composefs/composefs-rs?rev=e2770757762ec5091bb183bf0e778fe97c8d5694#e2770757762ec5091bb183bf0e778fe97c8d5694"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -879,7 +879,7 @@ dependencies = [
  "crc",
  "flate2",
  "jsonrpc-fdpass",
- "oci-spec",
+ "oci-spec 0.9.0",
  "rustix",
  "serde",
  "serde_json",
@@ -965,7 +965,7 @@ dependencies = [
  "cap-std-ext 5.1.2",
  "futures-util",
  "itertools",
- "oci-spec",
+ "oci-spec 0.9.0",
  "rustix",
  "semver",
  "serde",
@@ -2366,6 +2366,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "oci-spec"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3df6f876ad774d6a676f7e968f5c3edacc32f90e65fe680a8b686235396556fb"
+dependencies = [
+ "const_format",
+ "derive_builder",
+ "getset",
+ "regex",
+ "serde",
+ "serde_json",
+ "strum",
+ "strum_macros",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "ocidir"
 version = "0.7.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2377,7 +2394,7 @@ dependencies = [
  "chrono",
  "flate2",
  "hex",
- "oci-spec",
+ "oci-spec 0.9.0",
  "openssl",
  "serde",
  "serde_json",
@@ -3392,7 +3409,7 @@ dependencies = [
  "indicatif 0.18.4",
  "indoc",
  "libtest-mimic",
- "oci-spec",
+ "oci-spec 0.10.0",
  "rand 0.10.1",
  "rexpect",
  "rustix",
