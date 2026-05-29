@@ -154,7 +154,9 @@ impl Device {
     /// We read `/sys/class/block/<name>/partition` rather than parsing device
     /// names because naming conventions vary across disk types (sd, nvme, dm, etc.).
     /// On multipath devices the sysfs `partition` attribute doesn't exist, so we
-    /// fall back to the `partn` field reported by lsblk.
+    /// fall back to the `partn` field reported by lsblk, then to parsing the
+    /// partition suffix from the ESP device path relative to the parent device
+    /// path (e.g. parent `/dev/mapper/mpatha`, ESP `/dev/mapper/mpatha2` → `"2"`).
     pub fn get_esp_partition_number(&self) -> Result<String> {
         let esp_device = self.find_partition_of_esp()?;
         let devname = &esp_device.name;
@@ -169,6 +171,15 @@ impl Device {
         if self.is_mpath()? {
             if let Some(partn) = esp_device.partn {
                 return Ok(partn.to_string());
+            }
+            // Last resort: strip the parent device path from the ESP device path,
+            // then skip any non-digit separator (e.g. "p") to get the partition number.
+            // For example: parent "/dev/mapper/mpatha", ESP "/dev/mapper/mpatha2" → "2"
+            //              parent "/dev/mapper/mpatha", ESP "/dev/mapper/mpathap2" → "2"
+            let parent_path = self.path();
+            let esp_path = esp_device.path();
+            if let Some(n) = parse_partition_number_from_suffix(&parent_path, &esp_path) {
+                return Ok(n);
             }
         }
         anyhow::bail!("Not supported for {devname}")
@@ -695,6 +706,26 @@ pub fn parse_size_mib(mut s: &str) -> Result<u64> {
     Ok(v * mul)
 }
 
+/// Extract a partition number by stripping the parent device path from the
+/// ESP partition device path, then skipping any non-digit separator characters.
+///
+/// Multipath partition devices are named by appending a partition suffix to
+/// the parent device path. The suffix may include a separator like "p" before
+/// the digits:
+///   - `/dev/mapper/mpatha`  + `2`  → `/dev/mapper/mpatha2`
+///   - `/dev/mapper/mpatha`  + `p2` → `/dev/mapper/mpathap2`
+///
+/// This function returns `None` if the ESP path doesn't start with the parent
+/// path or if no trailing digits are found in the suffix.
+fn parse_partition_number_from_suffix(parent_path: &str, esp_path: &str) -> Option<String> {
+    let suffix = esp_path.strip_prefix(parent_path)?;
+    let digits = suffix.trim_start_matches(|c: char| !c.is_ascii_digit());
+    if digits.is_empty() {
+        return None;
+    }
+    Some(digits.to_string())
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -926,5 +957,47 @@ mod test {
         // No ESP types present: 0x83 (Linux) and 0x82 (swap)
         let dev = make_mbr_disk(&["0x83", "0x82"]);
         assert!(dev.find_partition_of_esp().is_err());
+    }
+
+    #[test]
+    fn test_parse_partition_number_from_suffix() {
+        // Short alias like /dev/mapper/mpatha → /dev/mapper/mpatha2
+        assert_eq!(
+            parse_partition_number_from_suffix("/dev/mapper/mpatha", "/dev/mapper/mpatha2"),
+            Some("2".into())
+        );
+        // With a "p" separator: /dev/mapper/mpatha → /dev/mapper/mpathap2
+        assert_eq!(
+            parse_partition_number_from_suffix("/dev/mapper/mpatha", "/dev/mapper/mpathap2"),
+            Some("2".into())
+        );
+        // WWID-style name with "part" separator
+        assert_eq!(
+            parse_partition_number_from_suffix(
+                "/dev/mapper/3600508b4001",
+                "/dev/mapper/3600508b4001-part1"
+            ),
+            Some("1".into())
+        );
+        // Multi-digit partition number
+        assert_eq!(
+            parse_partition_number_from_suffix("/dev/mapper/mpatha", "/dev/mapper/mpatha12"),
+            Some("12".into())
+        );
+        // ESP path doesn't share the parent prefix → None
+        assert_eq!(
+            parse_partition_number_from_suffix("/dev/mapper/mpatha", "/dev/sda1"),
+            None
+        );
+        // No digits in suffix → None
+        assert_eq!(
+            parse_partition_number_from_suffix("/dev/mapper/mpatha", "/dev/mapper/mpathap"),
+            None
+        );
+        // Identical paths (no suffix at all) → None
+        assert_eq!(
+            parse_partition_number_from_suffix("/dev/mapper/mpatha", "/dev/mapper/mpatha"),
+            None
+        );
     }
 }
