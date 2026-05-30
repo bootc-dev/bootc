@@ -1409,7 +1409,7 @@ mod tests {
         );
         // Verify the version is present (not just "bootc/")
         assert!(
-            prefix.len() > "bootc/".len(),
+            prefix.strip_prefix("bootc/").is_some_and(|v| !v.is_empty()),
             "Version should be present after bootc/"
         );
     }
