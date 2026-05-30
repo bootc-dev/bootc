@@ -100,11 +100,20 @@ pub(crate) async fn initialize_composefs_repository(
 
     crate::store::ensure_composefs_dir(rootfs_dir)?;
 
-    let config = RepositoryConfig::new(composefs::fsverity::Algorithm::SHA512);
-    let config = if allow_missing_fsverity {
-        config.set_insecure()
-    } else {
-        config
+    let mut config = {
+        let c = RepositoryConfig::new(composefs::fsverity::Algorithm::SHA512);
+        if allow_missing_fsverity {
+            c.set_insecure()
+        } else {
+            c
+        }
+    };
+    // Generate both V1 and V2 EROFS images so a deployment can be booted via
+    // either the composefs= legacy shorthand (V2) or composefs.digest= (V1/V2)
+    // karg.  This makes both digests available for any boot path.
+    config.erofs_formats = composefs::erofs::format::FormatConfig {
+        default: composefs::erofs::format::FormatVersion::V1,
+        extra: [composefs::erofs::format::FormatVersion::V2].into(),
     };
     let (repo, _created) =
         crate::store::ComposefsRepository::init_path(rootfs_dir, "composefs", config)

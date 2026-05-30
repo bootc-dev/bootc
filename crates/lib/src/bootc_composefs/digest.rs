@@ -23,8 +23,8 @@ use crate::store::ComposefsRepository;
 /// Creates a temporary composefs repository for computing digests.
 ///
 /// The `erofs_version` controls which EROFS format the digest is computed for:
-/// use `FormatVersion::V1` to get a `composefs.digest.v1=` karg (V1 EROFS, C-tool
-/// compatible) or `FormatVersion::V2` for the legacy `composefs=` karg.
+/// use `FormatVersion::V1` to get a `composefs.digest=v1-sha256-12:<hex>` karg (V1 EROFS,
+/// C-tool compatible) or `FormatVersion::V2` for the legacy `composefs=<hex>` karg.
 ///
 /// Returns the TempDir guard (must be kept alive for the repo to remain valid)
 /// and the repository wrapped in Arc.

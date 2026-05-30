@@ -51,7 +51,9 @@ fn parse_cli_bool(s: &str) -> std::result::Result<bool, String> {
     match s {
         "1" | "true" => Ok(true),
         "0" | "false" => Ok(false),
-        other => Err(format!("invalid value '{other}' (expected 0, 1, true, or false)")),
+        other => Err(format!(
+            "invalid value '{other}' (expected 0, 1, true, or false)"
+        )),
     }
 }
 

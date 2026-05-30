@@ -785,6 +785,12 @@ struct UKIInfo {
     version: Option<String>,
     os_id: Option<String>,
     boot_digest: String,
+    /// The composefs image digest parsed from (and validated against) the UKI's
+    /// own cmdline.  This is the authoritative deployment key for UKI boots:
+    /// setup-root opens `state/deploy/<this>` using the karg baked into the UKI,
+    /// so the deploy directory must be named after exactly this value regardless
+    /// of which EROFS format (V1 or V2) was sealed.
+    composefs_cmdline: Sha512HashValue,
 }
 
 /// Writes a PortableExecutable to ESP along with any PE specific or Global addons
@@ -795,6 +801,7 @@ fn write_pe_to_esp(
     file_path: &Utf8Path,
     pe_type: PEType,
     uki_id: &Sha512HashValue,
+    boot_ids: &[&Sha512HashValue],
     missing_fsverity_allowed: bool,
     mounted_efi: impl AsRef<Path>,
 ) -> Result<Option<UKIInfo>> {
@@ -816,7 +823,7 @@ fn write_pe_to_esp(
         let composefs_info = BootComposefsCmdline::<Sha512HashValue>::from_cmdline(&cmdline)
             .context("Parsing composefs=")?
             .ok_or_else(|| anyhow::anyhow!("No composefs= or composefs.digest.v1= karg found in UKI cmdline"))?;
-        let composefs_cmdline = composefs_info.digest();
+        let composefs_cmdline = composefs_info.digest().clone();
         let missing_verity_allowed_cmdline = composefs_info.is_insecure();
 
         // If the UKI cmdline does not match what the user has passed as cmdline option
@@ -835,11 +842,9 @@ fn write_pe_to_esp(
             _ => { /* no-op */ }
         }
 
-        if *composefs_cmdline != *uki_id {
-            anyhow::bail!(
-                "The UKI has the wrong composefs= parameter (is '{composefs_cmdline:?}', should be {uki_id:?})"
-            );
-        }
+        composefs_info
+            .validate_digest(boot_ids.iter().copied())
+            .context("Validating UKI composefs digest")?;
 
         uki_reader.seek(SeekFrom::Start(0))?;
         let osrel = uki::get_text_section_buffered(&mut uki_reader, ".osrel")?;
@@ -856,6 +861,7 @@ fn write_pe_to_esp(
             version: parsed_osrel.get_version(),
             os_id: parsed_osrel.get_value(&["ID"]),
             boot_digest,
+            composefs_cmdline,
         });
     }
 
@@ -889,8 +895,18 @@ fn write_pe_to_esp(
     let pe_dir = Dir::open_ambient_dir(&final_pe_path, ambient_authority())
         .with_context(|| format!("Opening {final_pe_path:?}"))?;
 
+    // For UKIs, name the .efi file after the composefs cmdline digest (the
+    // deploy key that setup-root uses), NOT the provisional uki_id.  When the
+    // UKI was sealed with --erofs-version=v1, uki_id (v2) and the cmdline
+    // digest (v1) differ; using the cmdline digest keeps the filename, BLS
+    // config, and state directory in agreement.
+    let pe_name_owned;
     let pe_name = match pe_type {
-        PEType::Uki => &get_uki_name(&uki_id.to_hex()),
+        PEType::Uki => {
+            let deploy_digest = &boot_label.as_ref().unwrap().composefs_cmdline;
+            pe_name_owned = get_uki_name(&deploy_digest.to_hex());
+            &pe_name_owned
+        }
         PEType::UkiAddon => file_path
             .components()
             .last()
@@ -1071,8 +1087,9 @@ pub(crate) fn setup_composefs_uki_boot(
     setup_type: BootSetupType,
     repo: crate::store::ComposefsRepository,
     id: &Sha512HashValue,
+    boot_ids: &[&Sha512HashValue],
     entries: Vec<ComposefsBootEntry<Sha512HashValue>>,
-) -> Result<String> {
+) -> Result<(String, Sha512HashValue)> {
     let (root_path, esp_device, bootloader, missing_fsverity_allowed, uki_addons) = match setup_type
     {
         BootSetupType::Setup((root_setup, state, postfetch)) => {
@@ -1152,7 +1169,8 @@ pub(crate) fn setup_composefs_uki_boot(
                     &entry.file,
                     utf8_file_path,
                     entry.pe_type,
-                    &id,
+                    id,
+                    boot_ids,
                     missing_fsverity_allowed,
                     esp_mount.dir.path(),
                 )?;
@@ -1169,17 +1187,30 @@ pub(crate) fn setup_composefs_uki_boot(
 
     let boot_digest = uki_info.boot_digest.clone();
 
-    match bootloader {
-        Bootloader::Grub => {
-            write_grub_uki_menuentry(root_path, &setup_type, uki_info.boot_label, id, &esp_device)?
-        }
+    // The deploy key for a UKI boot is the composefs digest baked into the UKI
+    // cmdline (already validated against `boot_ids` in `write_pe_to_esp`).
+    // setup-root opens `state/deploy/<this>` using that same karg, so we must
+    // key the deployment off exactly this value -- whether the UKI was sealed
+    // with the V2 (default) or V1 EROFS digest.
+    let deploy_id = uki_info.composefs_cmdline.clone();
 
-        Bootloader::Systemd => write_systemd_uki_config(&esp_mount.fd, &setup_type, uki_info, id)?,
+    match bootloader {
+        Bootloader::Grub => write_grub_uki_menuentry(
+            root_path,
+            &setup_type,
+            uki_info.boot_label,
+            &deploy_id,
+            &esp_device,
+        )?,
+
+        Bootloader::Systemd => {
+            write_systemd_uki_config(&esp_mount.fd, &setup_type, uki_info, &deploy_id)?
+        }
 
         Bootloader::None => unreachable!("Checked at install time"),
     };
 
-    Ok(boot_digest)
+    Ok((boot_digest, deploy_id))
 }
 
 /// A composefs image attached to a temporary directory with the ESP and a
@@ -1350,6 +1381,15 @@ pub(crate) async fn setup_composefs_boot(
     let id = composefs_oci::generate_boot_image(&repo, &pull_result.manifest_digest)
         .context("Generating bootable EROFS image")?;
 
+    // Open the OCI image to read both stored boot EROFS digests.  The UKI may
+    // have been sealed with either the V1 or V2 boot image digest, so we need
+    // both for verification.
+    let oci_img =
+        composefs_oci::oci_image::OciImage::open(&*repo, &pull_result.manifest_digest, None)
+            .context("Opening OCI image to read boot image refs")?;
+    let boot_id_v1 = oci_img.boot_image_ref_v1().cloned();
+    let boot_id_v2 = oci_img.boot_image_ref_v2().cloned();
+
     // Reconstruct the OCI filesystem to discover boot entries (kernel, initramfs, etc.).
     let fs = composefs_oci::image::create_filesystem(&*repo, &pull_result.config_digest, None)
         .context("Creating composefs filesystem for boot entry discovery")?;
@@ -1402,25 +1442,49 @@ pub(crate) async fn setup_composefs_boot(
         )
     })?;
 
-    let boot_digest = match boot_type {
-        BootType::Bls => setup_composefs_bls_boot(
-            BootSetupType::Setup((&root_setup, &state, &postfetch)),
-            repo,
-            &id,
-            entry,
-            mounted_root.dir(),
-        )?,
+    // The deployment key is the hash that setup-root looks for in
+    // state/deploy/<hash>, derived from the composefs karg.  The two boot types
+    // establish that karg differently:
+    //
+    //  * BLS: bootc writes the karg itself, so we are free to choose the key.
+    //    Prefer the V2 digest (matching the default EROFS format), falling back
+    //    to the primary id for legacy repos with no separate V2 boot ref.
+    //
+    //  * UKI: the karg is baked into the UKI at seal time, so the key is
+    //    whatever digest the UKI carries.  `setup_composefs_uki_boot` parses and
+    //    validates that against the boot refs and returns it, so we override the
+    //    provisional value below.  This keeps us correct whether the UKI was
+    //    sealed with the V2 (default) or V1 EROFS digest.
+    let provisional_deploy_id = boot_id_v2.as_ref().cloned().unwrap_or_else(|| id.clone());
+
+    // Collect whichever boot image refs exist; the UKI cmdline may carry either.
+    let boot_ids_owned: Vec<Sha512HashValue> =
+        [boot_id_v1, boot_id_v2].into_iter().flatten().collect();
+    let boot_ids: Vec<&Sha512HashValue> = boot_ids_owned.iter().collect();
+
+    let (boot_digest, deploy_id) = match boot_type {
+        BootType::Bls => (
+            setup_composefs_bls_boot(
+                BootSetupType::Setup((&root_setup, &state, &postfetch)),
+                repo,
+                &provisional_deploy_id,
+                entry,
+                mounted_root.dir(),
+            )?,
+            provisional_deploy_id,
+        ),
         BootType::Uki => setup_composefs_uki_boot(
             BootSetupType::Setup((&root_setup, &state, &postfetch)),
             repo,
-            &id,
+            &provisional_deploy_id,
+            &boot_ids,
             entries,
         )?,
     };
 
     write_composefs_state(
         &root_setup.physical_root_path,
-        &id,
+        &deploy_id,
         &crate::spec::ImageReference::from(state.target_imgref.clone()),
         None,
         boot_type,
