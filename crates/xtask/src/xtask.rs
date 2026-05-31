@@ -45,6 +45,16 @@ fn out_of_sync_error(message: &str) -> Result<()> {
     anyhow::bail!("{}; run `just update-generated` to update it", message)
 }
 
+/// Parse a `0`/`1` boolean from a CLI/env value so the flag can be driven from
+/// the Justfile (e.g. `BOOTC_skip_bind_storage=1`).
+fn parse_cli_bool(s: &str) -> std::result::Result<bool, String> {
+    match s {
+        "1" | "true" => Ok(true),
+        "0" | "false" => Ok(false),
+        other => Err(format!("invalid value '{other}' (expected 0, 1, true, or false)")),
+    }
+}
+
 /// Build tasks for bootc
 #[derive(Debug, Parser)]
 #[command(name = "xtask")]
@@ -230,6 +240,24 @@ pub(crate) struct RunTmtArgs {
     /// Upgrade image to use when bind-storage-ro is available (e.g., localhost/bootc-upgrade)
     #[clap(long)]
     pub(crate) upgrade_image: Option<String>,
+
+    /// Skip the `--bind-storage-ro` host container-storage virtiofs mount even for
+    /// plans that request it.  Useful where libvirt-managed virtiofsd cannot run
+    /// (nested user namespaces, cloud/non-qemu).  Plans that depend on a locally
+    /// built upgrade image being available in-VM via bind-storage will not be able
+    /// to perform the upgrade/switch step.
+    ///
+    /// Takes `0`/`1`/`true`/`false` so it can be driven from the Justfile via
+    /// `BOOTC_skip_bind_storage=1`.  A bare `--skip-bind-storage` means `1`.
+    #[arg(
+        long,
+        env = "BOOTC_skip_bind_storage",
+        num_args = 0..=1,
+        default_value_t = false,
+        default_missing_value = "1",
+        value_parser = parse_cli_bool,
+    )]
+    pub(crate) skip_bind_storage: bool,
 
     /// Preserve VMs after test completion (useful for debugging)
     #[arg(long)]
@@ -772,5 +800,20 @@ fn validate_composefs_digest(sh: &Shell, args: &ValidateComposefsDigestArgs) -> 
             .ignore_status()
             .run()?;
         anyhow::bail!("Composefs digest mismatch");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_cli_bool() {
+        assert_eq!(parse_cli_bool("1"), Ok(true));
+        assert_eq!(parse_cli_bool("true"), Ok(true));
+        assert_eq!(parse_cli_bool("0"), Ok(false));
+        assert_eq!(parse_cli_bool("false"), Ok(false));
+        assert!(parse_cli_bool("").is_err());
+        assert!(parse_cli_bool("maybe").is_err());
     }
 }
