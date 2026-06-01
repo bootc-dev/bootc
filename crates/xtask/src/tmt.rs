@@ -394,6 +394,25 @@ struct RunPlanResult {
     run_id: Option<String>,
 }
 
+struct VmConfig {
+    cpu: String,
+    mem: String,
+    parallel_count: usize,
+    preserve: bool,
+}
+
+struct TestContext<'a> {
+    random_suffix: &'a str,
+    distro: &'a str,
+    image: &'a str,
+    upgrade_image: Option<&'a str>,
+}
+
+struct TmtConfig<'a> {
+    context: &'a [String],
+    user_env: &'a [String],
+}
+
 impl RunPlanResult {
     fn new(
         plan_name: String,
@@ -411,17 +430,17 @@ impl RunPlanResult {
 }
 
 fn run_plan(
-    plan: String,
-    vm_name: String,
-    image: String,
+    plan: &str,
+    vm_name: &str,
+    image: &str,
     plan_bcvk_opts: Vec<String>,
     firmware_args: Vec<String>,
     context: Vec<String>,
     tmt_env_vars: Vec<String>,
     arg_env: Vec<String>,
     preserve_vm: bool,
-    vm_cpu: String,
-    vm_mem_mb: String,
+    vm_cpu: &str,
+    vm_mem_mb: &str,
     base_log_dir: Utf8PathBuf,
     bcvk_has_log_dir: bool,
     libvirt_lock: Arc<Mutex<()>>,
@@ -430,7 +449,7 @@ fn run_plan(
         Ok(sh) => sh,
         Err(err) => {
             eprintln!("Failed to create new shell instance: {err:?}");
-            return RunPlanResult::new(plan, false, None, None);
+            return RunPlanResult::new(plan.to_string(), false, None, None);
         }
     };
 
@@ -439,7 +458,7 @@ fn run_plan(
     let log_dir_args: Vec<String> = if bcvk_has_log_dir {
         if let Err(e) = std::fs::create_dir_all(&vm_log_dir) {
             eprintln!("Creating VM log directory {}: {e:?}", vm_log_dir);
-            return RunPlanResult::new(plan, false, None, None);
+            return RunPlanResult::new(plan.to_string(), false, None, None);
         }
 
         println!("VM logs will be written to: {}", vm_log_dir);
@@ -455,7 +474,7 @@ fn run_plan(
         Ok(g) => g,
         Err(e) => {
             eprintln!("Mutex lock failed for plan {plan}: {e:#}");
-            return RunPlanResult::new(plan, false, None, None);
+            return RunPlanResult::new(plan.to_string(), false, None, None);
         }
     };
 
@@ -481,7 +500,7 @@ fn run_plan(
             plan
         );
 
-        return RunPlanResult::new(plan, false, None, None);
+        return RunPlanResult::new(plan.to_string(), false, None, None);
     }
 
     // Ensure VM cleanup happens even on error (unless --preserve-vm is set)
@@ -505,7 +524,7 @@ fn run_plan(
         Err(e) => {
             eprintln!("Failed to get VM info for plan {}: {:#}", plan, e);
             cleanup_vm();
-            return RunPlanResult::new(plan, false, None, None);
+            return RunPlanResult::new(plan.to_string(), false, None, None);
         }
     };
 
@@ -519,7 +538,7 @@ fn run_plan(
         Err(e) => {
             eprintln!("Failed to create SSH key file for plan {}: {:#}", plan, e);
             cleanup_vm();
-            return RunPlanResult::new(plan, false, None, None);
+            return RunPlanResult::new(plan.to_string(), false, None, None);
         }
     };
 
@@ -531,14 +550,14 @@ fn run_plan(
         Err(e) => {
             eprintln!("Failed to convert key path for plan {}: {:#}", plan, e);
             cleanup_vm();
-            return RunPlanResult::new(plan, false, None, None);
+            return RunPlanResult::new(plan.to_string(), false, None, None);
         }
     };
 
     if let Err(e) = std::fs::write(&key_path, ssh_key) {
         eprintln!("Failed to write SSH key for plan {}: {:#}", plan, e);
         cleanup_vm();
-        return RunPlanResult::new(plan, false, None, None);
+        return RunPlanResult::new(plan.to_string(), false, None, None);
     }
 
     // Set proper permissions on the key file (SSH requires 0600)
@@ -548,7 +567,7 @@ fn run_plan(
         if let Err(e) = std::fs::set_permissions(&key_path, perms) {
             eprintln!("Failed to set key permissions for plan {}: {:#}", plan, e);
             cleanup_vm();
-            return RunPlanResult::new(plan, false, None, None);
+            return RunPlanResult::new(plan.to_string(), false, None, None);
         }
     }
 
@@ -563,7 +582,7 @@ fn run_plan(
             );
         }
         cleanup_vm();
-        return RunPlanResult::new(plan, false, None, None);
+        return RunPlanResult::new(plan.to_string(), false, None, None);
     }
 
     println!("SSH connectivity verified");
@@ -577,7 +596,7 @@ fn run_plan(
 
     // Generate a unique run ID for this test
     // Use the VM name which already contains a random suffix for uniqueness
-    let run_id = vm_name.clone();
+    let run_id = vm_name;
 
     // Run tmt for this specific plan
     // Note: provision must come before plan for connect to work properly
@@ -605,11 +624,21 @@ fn run_plan(
     let plan_result = match test_result {
         Ok(_) => {
             println!("Plan {} completed successfully", plan);
-            RunPlanResult::new(plan, true, Some(elapsed), Some(run_id))
+            RunPlanResult::new(
+                plan.to_string(),
+                true,
+                Some(elapsed),
+                Some(run_id.to_string()),
+            )
         }
         Err(e) => {
             eprintln!("Plan {} failed: {:#}", plan, e);
-            RunPlanResult::new(plan, false, Some(elapsed), Some(run_id))
+            RunPlanResult::new(
+                plan.to_string(),
+                false,
+                Some(elapsed),
+                Some(run_id.to_string()),
+            )
         }
     };
 
@@ -638,6 +667,192 @@ fn run_plan(
     }
 
     plan_result
+}
+
+fn run_plans(
+    sh: &Shell,
+    args: &RunTmtArgs,
+    plans: Vec<&str>,
+    plan_metadata: &std::collections::HashMap<String, PlanMetadata>,
+    bcvk_opts: &crate::bcvk::BcvkInstallOpts,
+    firmware_args: &[String],
+    vm_config: VmConfig,
+    test_context: TestContext,
+    tmt_config: &TmtConfig,
+    libvirt_lock: &Arc<Mutex<()>>,
+) -> Result<Vec<RunPlanResult>> {
+    // Determine base log directory: CLI flag > TMT_LOG_DIR env var > default.
+    // Filter out empty TMT_LOG_DIR (e.g. TMT_LOG_DIR="") to avoid creating
+    // log subdirectories in the current working directory.
+    let base_log_dir: Utf8PathBuf = if let Some(ref d) = args.log_dir {
+        d.clone()
+    } else if let Some(env_dir) = std::env::var("TMT_LOG_DIR").ok().filter(|s| !s.is_empty()) {
+        Utf8PathBuf::from(env_dir)
+    } else {
+        Utf8PathBuf::from("/var/tmp/tmt")
+    };
+
+    // Probe whether this bcvk supports --log-dir (added in bcvk 0.17).
+    // Older installs silently lack it; we skip the flag rather than hard-failing.
+    let bcvk_has_log_dir = cmd!(sh, "bcvk libvirt run --help")
+        .ignore_stderr()
+        .read()
+        .map(|help| help.contains("--log-dir"))
+        .unwrap_or(false);
+
+    let mut test_results: Vec<RunPlanResult> = Vec::new();
+    let mut active_threads = 0;
+    let (tx, rx) = mpsc::channel::<RunPlanResult>();
+
+    for plan in plans {
+        let plan_name = sanitize_plan_name(plan);
+        let vm_name = format!("bootc-tmt-{}-{}", test_context.random_suffix, plan_name);
+
+        println!("\n========================================");
+        println!("Running plan: {}", plan);
+        println!("VM name: {}", vm_name);
+        println!("========================================\n");
+
+        // Get bcvk-opts based on plan metadata and distro support
+        let (plan_bcvk_opts, env_vars) = {
+            let supports_bind_storage_ro = distro_supports_bind_storage_ro(test_context.distro);
+            let try_bind_storage = plan_metadata
+                .iter()
+                .find(|(key, _)| plan.ends_with(key.as_str()))
+                .map(|(_, v)| v.try_bind_storage)
+                .unwrap_or(false);
+
+            let mut opts = Vec::new();
+            let mut env_vars = Vec::new();
+
+            if try_bind_storage && supports_bind_storage_ro {
+                opts.push(BCVK_OPT_BIND_STORAGE_RO.to_string());
+                if let Some(upgrade_img) = test_context.upgrade_image {
+                    env_vars.push(format!("{}={}", ENV_BOOTC_UPGRADE_IMAGE, upgrade_img));
+                }
+            } else if try_bind_storage && !supports_bind_storage_ro {
+                println!(
+                    "Note: Test wants bind storage but skipping on {} (missing systemd.extra-unit.* support)",
+                    test_context.distro
+                );
+            }
+
+            opts.extend(bcvk_opts.install_args());
+
+            (opts, env_vars)
+        };
+
+        let firmware_args = firmware_args.to_vec();
+        let context = tmt_config.context.to_vec();
+        let user_env = tmt_config.user_env.to_vec();
+        let cloned_plan = plan.to_string();
+        let cloned_vm_name = vm_name.to_string();
+        let image = test_context.image.to_string();
+        let vm_mem = vm_config.mem.clone();
+        let vm_cpu = vm_config.cpu.clone();
+        let base_log_dir = base_log_dir.clone();
+        let libvirt_lock = libvirt_lock.clone();
+
+        let tx_clone = tx.clone();
+        std::thread::spawn(move || {
+            let result = run_plan(
+                &cloned_plan,
+                &cloned_vm_name,
+                &image,
+                plan_bcvk_opts,
+                firmware_args,
+                context,
+                env_vars,
+                user_env,
+                vm_config.preserve,
+                &vm_cpu,
+                &vm_mem,
+                base_log_dir,
+                bcvk_has_log_dir,
+                libvirt_lock,
+            );
+
+            if let Err(e) = tx_clone.send(result) {
+                eprintln!("Failed to send result through channel: {}", e);
+            }
+        });
+
+        active_threads += 1;
+
+        if active_threads >= vm_config.parallel_count {
+            match rx.recv() {
+                Ok(plan_result) => {
+                    test_results.push(plan_result);
+                    active_threads -= 1;
+                }
+                Err(e) => {
+                    eprintln!("Failed to receive result from channel: {}", e);
+                    active_threads -= 1;
+                }
+            }
+        }
+    }
+
+    drop(tx);
+
+    for _ in 0..active_threads {
+        match rx.recv() {
+            Ok(plan_result) => {
+                test_results.push(plan_result);
+            }
+            Err(e) => {
+                eprintln!("Failed to receive remaining result from channel: {}", e);
+            }
+        }
+    }
+
+    Ok(test_results)
+}
+
+fn print_error_reports(sh: &Shell, failed_tests: &Vec<&RunPlanResult>) {
+    println!("\n========================================");
+    println!("Detailed Error Reports");
+    println!("========================================\n");
+
+    for RunPlanResult {
+        plan_name: plan,
+        run_id,
+        ..
+    } in failed_tests
+    {
+        println!("----------------------------------------");
+        println!("Plan: {}", plan);
+        println!("----------------------------------------");
+
+        match run_id {
+            Some(id) => {
+                println!("Run ID: {}\n", id);
+
+                // Run tmt with the specific run ID and generate verbose report
+                let report_result = cmd!(sh, "tmt run -i {id} report -vvv")
+                    .ignore_status()
+                    .run();
+
+                match report_result {
+                    Ok(_) => {}
+                    Err(e) => {
+                        eprintln!(
+                            "Warning: Failed to generate detailed report for {}: {:#}",
+                            plan, e
+                        );
+                    }
+                }
+            }
+
+            None => {
+                println!("Run ID not available - cannot generate detailed report");
+            }
+        }
+
+        println!("\n");
+    }
+
+    println!("========================================\n");
 }
 
 /// Run TMT tests using bcvk for VM management
@@ -780,25 +995,6 @@ pub(crate) fn run_tmt(sh: &Shell, args: &RunTmtArgs) -> Result<()> {
 
     println!("Found {} test plan(s): {:?}", plans.len(), plans);
 
-    // Determine base log directory: CLI flag > TMT_LOG_DIR env var > default.
-    // Filter out empty TMT_LOG_DIR (e.g. TMT_LOG_DIR="") to avoid creating
-    // log subdirectories in the current working directory.
-    let base_log_dir: Utf8PathBuf = if let Some(ref d) = args.log_dir {
-        d.clone()
-    } else if let Some(env_dir) = std::env::var("TMT_LOG_DIR").ok().filter(|s| !s.is_empty()) {
-        Utf8PathBuf::from(env_dir)
-    } else {
-        Utf8PathBuf::from("/var/tmp/tmt")
-    };
-
-    // Probe whether this bcvk supports --log-dir (added in bcvk 0.17).
-    // Older installs silently lack it; we skip the flag rather than hard-failing.
-    let bcvk_has_log_dir = cmd!(sh, "bcvk libvirt run --help")
-        .ignore_stderr()
-        .read()
-        .map(|help| help.contains("--log-dir"))
-        .unwrap_or(false);
-
     let mut install_opts = Vec::new();
 
     // Add --filesystem=xfs by default on fedora-coreos
@@ -833,15 +1029,6 @@ pub(crate) fn run_tmt(sh: &Shell, args: &RunTmtArgs) -> Result<()> {
     // Generate a random suffix for VM names
     let random_suffix = generate_random_suffix();
 
-    // Track overall success/failure
-    let mut all_passed = true;
-    let mut test_results: Vec<RunPlanResult> = Vec::new();
-
-    // Environment variables to pass to tmt (in addition to args.env)
-    let mut tmt_env_vars = Vec::new();
-
-    let mut active_threads = 0;
-
     let num_cpu = std::thread::available_parallelism()
         .map(|c| c.get())
         .unwrap_or(1);
@@ -849,138 +1036,45 @@ pub(crate) fn run_tmt(sh: &Shell, args: &RunTmtArgs) -> Result<()> {
     println!("num_cpu: {num_cpu}");
 
     let (vm_cpu, vm_mem) = (1, 2048);
-
-    // Leave 1 cpu for the host
-    // If there's only 1 cpu (unlikely), then we only run 1 VM
     let avail_cpu = (num_cpu - 1).max(1);
-
-    // More than this and we bottleneck on IO
     let parallel_vms = (avail_cpu / vm_cpu).min(6);
 
     println!("parallel_vms: {parallel_vms}");
 
-    let (tx, rx) = mpsc::channel::<RunPlanResult>();
-
     let libvirt_lock = Arc::new(Mutex::new(()));
 
-    // Run each plan in its own VM
-    for plan in plans {
-        let plan_name = sanitize_plan_name(plan);
-        let vm_name = format!("bootc-tmt-{}-{}", random_suffix, plan_name);
+    let vm_config = VmConfig {
+        cpu: vm_cpu.to_string(),
+        mem: vm_mem.to_string(),
+        parallel_count: parallel_vms,
+        preserve: preserve_vm,
+    };
 
-        println!("\n========================================");
-        println!("Running plan: {}", plan);
-        println!("VM name: {}", vm_name);
-        println!("========================================\n");
+    let test_context = TestContext {
+        random_suffix: &random_suffix,
+        distro: &distro,
+        image,
+        upgrade_image: args.upgrade_image.as_deref(),
+    };
 
-        // Reset plan-specific environment variables
-        tmt_env_vars.clear();
+    let tmt_config = TmtConfig {
+        context: &context,
+        user_env: &args.env,
+    };
 
-        // Get bcvk-opts based on plan metadata and distro support
-        let plan_bcvk_opts = {
-            let supports_bind_storage_ro = distro_supports_bind_storage_ro(&distro);
-
-            // Plan names from tmt are like /tmt/plans/integration/plan-01-readonly
-            // but metadata keys are like /plan-01-readonly, so match on suffix
-            let try_bind_storage = plan_metadata
-                .iter()
-                .find(|(key, _)| plan.ends_with(key.as_str()))
-                .map(|(_, v)| v.try_bind_storage)
-                .unwrap_or(false);
-
-            let mut opts = Vec::new();
-
-            // If test wants bind storage and distro supports it, add --bind-storage-ro
-            if try_bind_storage && supports_bind_storage_ro {
-                opts.push(BCVK_OPT_BIND_STORAGE_RO.to_string());
-
-                // If upgrade image is provided, set it as an environment variable for tmt
-                // (not bcvk, as bcvk doesn't support --env)
-                if let Some(ref upgrade_img) = args.upgrade_image {
-                    tmt_env_vars.push(format!("{}={}", ENV_BOOTC_UPGRADE_IMAGE, upgrade_img));
-                }
-            } else if try_bind_storage && !supports_bind_storage_ro {
-                println!(
-                    "Note: Test wants bind storage but skipping on {} (missing systemd.extra-unit.* support)",
-                    distro
-                );
-            }
-
-            opts.extend(bcvk_opts.install_args());
-
-            opts
-        };
-
-        let firmware_args = firmware_args.clone();
-        let context = context.clone();
-        let tmt_env_vars = tmt_env_vars.clone();
-        let env = args.env.clone();
-        let cloned_plan = plan.to_string();
-        let cloned_vm_name = vm_name.to_string();
-        let image = image.to_string();
-        let vm_mem = vm_mem.to_string();
-        let vm_cpu = vm_cpu.to_string();
-        let base_log_dir = base_log_dir.clone();
-        let libvirt_lock = libvirt_lock.clone();
-
-        let tx_clone = tx.clone();
-        std::thread::spawn(move || {
-            let result = run_plan(
-                cloned_plan,
-                cloned_vm_name,
-                image,
-                plan_bcvk_opts,
-                firmware_args,
-                context,
-                tmt_env_vars,
-                env,
-                preserve_vm,
-                vm_cpu,
-                vm_mem,
-                base_log_dir,
-                bcvk_has_log_dir,
-                libvirt_lock,
-            );
-
-            if let Err(e) = tx_clone.send(result) {
-                eprintln!("Failed to send result through channel: {}", e);
-            }
-        });
-
-        active_threads += 1;
-
-        // wait for a thread to complete if we've reached the parallel limit
-        if active_threads >= parallel_vms {
-            match rx.recv() {
-                Ok(plan_result) => {
-                    test_results.push(plan_result);
-                    active_threads -= 1;
-                }
-                Err(e) => {
-                    eprintln!("Failed to receive result from channel: {}", e);
-                    // still decrement to avoid infinite loop
-                    // in theory this shouldn't happen as we loop over plans, but
-                    // for sanity
-                    active_threads -= 1;
-                }
-            }
-        }
-    }
-
-    // drop the sender to signal no more messages
-    drop(tx);
-
-    // remaining results from channel
-    for _ in 0..active_threads {
-        match rx.recv() {
-            Ok(plan_result) => {
-                test_results.push(plan_result);
-            }
-            Err(e) => {
-                eprintln!("Failed to receive remaining result from channel: {}", e);
-            }
-        }
-    }
+    // Run all plans
+    let mut test_results = run_plans(
+        sh,
+        args,
+        plans,
+        &plan_metadata,
+        &bcvk_opts,
+        &firmware_args,
+        vm_config,
+        test_context,
+        &tmt_config,
+        &libvirt_lock,
+    )?;
 
     // Print summary
     println!("\n========================================");
@@ -996,12 +1090,7 @@ pub(crate) fn run_tmt(sh: &Shell, args: &RunTmtArgs) -> Result<()> {
         ..
     } in &test_results
     {
-        let status = if *passed {
-            "PASSED"
-        } else {
-            all_passed = false;
-            "FAILED"
-        };
+        let status = if *passed { "PASSED" } else { "FAILED" };
         println!(
             "{}: {} ({:?})",
             plan,
@@ -1017,50 +1106,85 @@ pub(crate) fn run_tmt(sh: &Shell, args: &RunTmtArgs) -> Result<()> {
         .filter(|plan_res| !plan_res.passed)
         .collect();
 
-    if !failed_tests.is_empty() {
-        println!("\n========================================");
-        println!("Detailed Error Reports");
-        println!("========================================\n");
-
-        for RunPlanResult {
-            plan_name: plan,
-            run_id,
-            ..
-        } in failed_tests
-        {
-            println!("----------------------------------------");
-            println!("Plan: {}", plan);
-            println!("----------------------------------------");
-
-            if let Some(id) = run_id {
-                println!("Run ID: {}\n", id);
-
-                // Run tmt with the specific run ID and generate verbose report
-                let report_result = cmd!(sh, "tmt run -i {id} report -vvv")
-                    .ignore_status()
-                    .run();
-
-                match report_result {
-                    Ok(_) => {}
-                    Err(e) => {
-                        eprintln!(
-                            "Warning: Failed to generate detailed report for {}: {:#}",
-                            plan, e
-                        );
-                    }
-                }
-            } else {
-                println!("Run ID not available - cannot generate detailed report");
-            }
-
-            println!("\n");
-        }
-
-        println!("========================================\n");
+    if failed_tests.is_empty() {
+        println!("All tests passed");
+        return Ok(());
     }
 
-    if !all_passed {
-        anyhow::bail!("Some test plans failed");
+    print_error_reports(sh, &failed_tests);
+
+    // Rerun failed plans
+    println!("Rerunning failed plans...\n");
+
+    let failed_plan_names: Vec<&str> = failed_tests
+        .iter()
+        .map(|result| result.plan_name.as_str())
+        .collect();
+
+    let rerun_suffix = format!("{}-rerun", random_suffix);
+    let test_context_rerun = TestContext {
+        random_suffix: &rerun_suffix,
+        distro: &distro,
+        image,
+        upgrade_image: args.upgrade_image.as_deref(),
+    };
+
+    let vm_config_rerun = VmConfig {
+        cpu: vm_cpu.to_string(),
+        mem: vm_mem.to_string(),
+        parallel_count: parallel_vms,
+        preserve: preserve_vm,
+    };
+
+    let rerun_results = run_plans(
+        sh,
+        args,
+        failed_plan_names,
+        &plan_metadata,
+        &bcvk_opts,
+        &firmware_args,
+        vm_config_rerun,
+        test_context_rerun,
+        &tmt_config,
+        &libvirt_lock,
+    )?;
+
+    // Print rerun summary
+    println!("\n========================================");
+    println!("Rerun Summary");
+    println!("========================================");
+
+    let mut rerun_all_passed = true;
+    for RunPlanResult {
+        plan_name: plan,
+        passed,
+        time_taken,
+        ..
+    } in &rerun_results
+    {
+        let status = if *passed {
+            "PASSED"
+        } else {
+            rerun_all_passed = false;
+            "FAILED"
+        };
+        println!(
+            "{}: {} ({:?})",
+            plan,
+            status,
+            time_taken.unwrap_or(Duration::from_secs(0))
+        );
+    }
+    println!("========================================\n");
+
+    if !rerun_all_passed {
+        let failed_reran_tests: Vec<_> = rerun_results
+            .iter()
+            .filter(|plan_res| !plan_res.passed)
+            .collect();
+
+        print_error_reports(sh, &failed_reran_tests);
+        anyhow::bail!("Some test plans still failed after rerun");
     }
 
     Ok(())
