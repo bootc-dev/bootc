@@ -173,3 +173,8 @@ check:
   summary: Test bootc-sysusers-shadow-sync removes orphaned gshadow entries before sysusers
   duration: 30m
   test: nu booted/test-44-shadow-fixup.nu
+
+/test-45-composefs-corruped-state-resilience:
+  summary: Test composefs backend resilience to state corruption
+  duration: 30m
+  test: nu booted/test-composefs-corruped-state-resilience.nu

@@ -842,8 +842,19 @@ async fn composefs_deployment_status_from(
         ..
     } in bootloader_entry_verity
     {
-        let ini = read_origin(&storage.physical_root, &verity_digest)?
-            .ok_or_else(|| anyhow::anyhow!("No origin file for deployment {verity_digest}"))?;
+        let ini = read_origin(&storage.physical_root, &verity_digest)?;
+
+        let Some(ini) = ini else {
+            const STATUS_JOURNAL_ID: &str = "d264f924dadb4c31bff0412107d391fb";
+
+            tracing::warn!(
+                message_id = STATUS_JOURNAL_ID,
+                bootc.operation = "status",
+                "No origin file for deployment {verity_digest}"
+            );
+
+            continue;
+        };
 
         let mut boot_entry = boot_entry_from_composefs_deployment(
             storage,

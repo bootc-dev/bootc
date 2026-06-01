@@ -276,4 +276,11 @@ execute:
     how: fmf
     test:
       - /tmt/tests/tests/test-44-shadow-fixup
+
+/plan-45-composefs-corruped-state-resilience:
+  summary: Test composefs backend resilience to state corruption
+  discover:
+    how: fmf
+    test:
+      - /tmt/tests/tests/test-45-composefs-corruped-state-resilience
 # END GENERATED PLANS
