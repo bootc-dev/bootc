@@ -217,9 +217,11 @@ jobs:
         test_os: ${{ fromJson(needs.compute-ci-level.outputs.integration_os_matrix) }}
         variant: [ostree, composefs]
         filesystem: ["ext4", "xfs"]
-        bootloader: ["grub", "systemd"]
+        # TODO: Remove "grub" once "grub-cc" is stable
+        bootloader: ["grub", "grub-cc", "systemd"]
         boot_type: ["bls", "uki"]
         seal_state: ["sealed", "unsealed"]
+
         exclude:
           # https://github.com/bootc-dev/bootc/issues/1812
           - test_os: centos-9
@@ -244,6 +246,22 @@ jobs:
             boot_type: uki
           - variant: ostree
             bootloader: systemd
+
+          # For now only have grub-cc tests in F44
+          - test_os: fedora-45
+            bootloader: grub-cc
+          - test_os: fedora-43
+            bootloader: grub-cc
+          - test_os: centos-9
+            bootloader: grub-cc
+          - test_os: centos-10
+            bootloader: grub-cc
+          # Not in ostree
+          - variant: ostree
+            bootloader: grub-cc
+          # Not yet "sealed"
+          - bootloader: grub-cc
+            seal_state: sealed
 
     runs-on: ubuntu-24.04
 
