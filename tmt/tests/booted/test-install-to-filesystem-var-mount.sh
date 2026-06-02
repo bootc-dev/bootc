@@ -46,9 +46,7 @@ if [[ $is_composefs != "null" && $boot_type == "uki" ]]; then
 FROM base as kernel
 RUN <<-RUNEOF
     kver=\$(bootc container inspect --rootfs / --json | jq -r '.kernel.version')
-    mkdir -p "/boot/\$kver"
-    objcopy -O binary --only-section=.initrd "/boot/EFI/Linux/\$kver.efi" "/boot/\$kver/initramfs.img"
-    objcopy -O binary --only-section=.linux "/boot/EFI/Linux/\$kver.efi" "/boot/\$kver/vmlinuz"
+    bootc internals uki extract /boot/EFI/Linux/\$kver.efi /boot
 RUNEOF
 
 FROM base as base-final

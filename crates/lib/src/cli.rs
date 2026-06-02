@@ -4,7 +4,7 @@
 
 use std::ffi::{CString, OsStr, OsString};
 use std::fs::File;
-use std::io::{BufWriter, Seek};
+use std::io::{BufWriter, Seek, SeekFrom};
 use std::os::fd::AsFd;
 use std::os::unix::process::CommandExt;
 use std::process::Command;
@@ -27,6 +27,7 @@ use composefs_boot::BootOps as _;
 use etc_merge::{compute_diff, print_diff};
 use fn_error_context::context;
 use indoc::indoc;
+use ocidir::cap_std::ambient_authority;
 use ostree::gio;
 use ostree_container::store::PrepareResult;
 use ostree_ext::container as ostree_container;
@@ -627,6 +628,19 @@ pub(crate) enum FsverityOpts {
     },
 }
 
+#[derive(Debug, clap::Subcommand, PartialEq, Eq)]
+pub(crate) enum UkiSubcommands {
+    /// Extract kernel + initrd from a UKI
+    /// The output (vmlinuz + initramfs.img) is placed in a directory named
+    /// after the kernel version found in the UKI
+    Extract {
+        /// The path to the UKI PE
+        path: Utf8PathBuf,
+        /// The output path
+        output_path: Utf8PathBuf,
+    },
+}
+
 /// Hidden, internal only options
 #[derive(Debug, clap::Subcommand, PartialEq, Eq)]
 pub(crate) enum InternalsOpts {
@@ -743,6 +757,9 @@ pub(crate) enum InternalsOpts {
     /// Block device inspection tools.
     #[clap(subcommand)]
     Blockdev(BlockdevOpts),
+    /// For various UKI operations
+    #[clap(subcommand)]
+    Uki(UkiSubcommands),
 }
 
 /// Subcommands for `bootc internals blockdev`.
@@ -2323,6 +2340,40 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
                 println!();
                 Ok(())
             }
+            InternalsOpts::Uki(uki_opts) => match uki_opts {
+                UkiSubcommands::Extract { path, output_path } => {
+                    let mut uki_file =
+                        std::fs::File::open(&path).with_context(|| format!("Opening {path}"))?;
+
+                    let uname =
+                        composefs_boot::uki::get_text_section_buffered(&mut uki_file, ".uname")
+                            .context("Getting uname")?;
+
+                    std::fs::create_dir_all(&output_path).context("Creating output directory")?;
+
+                    let output_dir = Dir::open_ambient_dir(&output_path, ambient_authority())
+                        .context("Opening output dir")?;
+                    output_dir.create_dir(&uname)?;
+
+                    let output_dir = output_dir.open_dir(&uname)?;
+
+                    for (section_name, file_name) in
+                        [(".linux", "vmlinuz"), (".initrd", "initramfs.img")]
+                    {
+                        uki_file
+                            .seek(SeekFrom::Start(0))
+                            .context("Seeking to start")?;
+                        let section =
+                            composefs_boot::uki::get_section_buffered(&mut uki_file, section_name)
+                                .with_context(|| format!("Getting {section_name} section"))?;
+                        output_dir
+                            .write(file_name, section)
+                            .with_context(|| format!("Writing {file_name}"))?;
+                    }
+
+                    Ok(())
+                }
+            },
         },
         Opt::State(opts) => match opts {
             StateOpts::WipeOstree => {
