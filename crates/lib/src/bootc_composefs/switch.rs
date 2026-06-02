@@ -38,7 +38,7 @@ pub(crate) async fn switch_composefs(
         anyhow::bail!("Target image is undefined")
     };
 
-    const COMPOSEFS_SWITCH_JOURNAL_ID: &str = "7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d1";
+    const COMPOSEFS_SWITCH_JOURNAL_ID: &str = "087ccc03481a477b83c0f6ba62500724";
 
     tracing::info!(
         message_id = COMPOSEFS_SWITCH_JOURNAL_ID,

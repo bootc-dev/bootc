@@ -1395,7 +1395,7 @@ async fn switch_ostree(
     }
 
     // Log the switch operation to systemd journal
-    const SWITCH_JOURNAL_ID: &str = "7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d1";
+    const SWITCH_JOURNAL_ID: &str = "62d26891bbd54962999b0530b8b62239";
     let old_image = host
         .spec
         .image

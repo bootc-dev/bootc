@@ -747,7 +747,7 @@ pub(crate) async fn pull_from_prepared(
     // Log successful import completion (skip if using unified storage to avoid double logging)
     let is_unified_path = imgref.transport == "containers-storage";
     if !is_unified_path {
-        const IMPORT_COMPLETE_JOURNAL_ID: &str = "4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8";
+        const IMPORT_COMPLETE_JOURNAL_ID: &str = "7e957f234eaa4933911c79921141f036";
 
         tracing::info!(
             message_id = IMPORT_COMPLETE_JOURNAL_ID,
@@ -781,7 +781,7 @@ pub(crate) async fn pull(
     match prepare_for_pull(repo, imgref, target_imgref, booted_deployment).await? {
         PreparedPullResult::AlreadyPresent(existing) => {
             // Log that the image was already present (Debug level since it's not actionable)
-            const IMAGE_ALREADY_PRESENT_ID: &str = "5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9";
+            const IMAGE_ALREADY_PRESENT_ID: &str = "3d9f60e7e6764fea915eda15487a09e9";
             tracing::debug!(
                 message_id = IMAGE_ALREADY_PRESENT_ID,
                 bootc.image.reference = &imgref.image,
@@ -796,7 +796,7 @@ pub(crate) async fn pull(
             // Check disk space before attempting to pull
             check_disk_space_ostree(repo, &prepared_image_meta, imgref)?;
             // Log that we're pulling a new image
-            const PULLING_NEW_IMAGE_ID: &str = "6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0";
+            const PULLING_NEW_IMAGE_ID: &str = "c9784b417efb49009602f81064cfd4ad";
             tracing::info!(
                 message_id = PULLING_NEW_IMAGE_ID,
                 bootc.image.reference = &imgref.image,
@@ -823,7 +823,7 @@ pub(crate) async fn wipe_ostree(sysroot: Sysroot) -> Result<()> {
 
 pub(crate) async fn cleanup(sysroot: &Storage) -> Result<()> {
     // Log the cleanup operation to systemd journal
-    const CLEANUP_JOURNAL_ID: &str = "2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6";
+    const CLEANUP_JOURNAL_ID: &str = "c0ce56c6c48e4055bca6a88e01b2b15d";
 
     tracing::info!(
         message_id = CLEANUP_JOURNAL_ID,
@@ -1260,7 +1260,7 @@ fn find_newest_deployment_name(deploysdir: &Dir) -> Result<String> {
 // Implementation of `bootc switch --in-place`
 pub(crate) fn switch_origin_inplace(root: &Dir, imgref: &ImageReference) -> Result<String> {
     // Log the in-place switch operation to systemd journal
-    const SWITCH_INPLACE_JOURNAL_ID: &str = "3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7";
+    const SWITCH_INPLACE_JOURNAL_ID: &str = "135b37b98ff94f268906a367e7f779bd";
 
     tracing::info!(
         message_id = SWITCH_INPLACE_JOURNAL_ID,

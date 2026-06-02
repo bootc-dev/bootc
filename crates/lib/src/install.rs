@@ -2139,7 +2139,7 @@ fn installation_complete() {
 #[cfg(feature = "install-to-disk")]
 pub(crate) async fn install_to_disk(mut opts: InstallToDiskOpts) -> Result<()> {
     // Log the disk installation operation to systemd journal
-    const INSTALL_DISK_JOURNAL_ID: &str = "8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2";
+    const INSTALL_DISK_JOURNAL_ID: &str = "f80dba2139774cb3aff588b8ba3fbfbf";
     let source_image = opts
         .source_opts
         .source_imgref
@@ -2467,7 +2467,7 @@ pub(crate) async fn install_to_filesystem(
     cleanup: Cleanup,
 ) -> Result<()> {
     // Log the installation operation to systemd journal
-    const INSTALL_FILESYSTEM_JOURNAL_ID: &str = "9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3";
+    const INSTALL_FILESYSTEM_JOURNAL_ID: &str = "ed27102d680c41c4b2b7b215d0fbb3f8";
     let source_image = opts
         .source_opts
         .source_imgref
@@ -2748,7 +2748,7 @@ pub(crate) async fn install_to_filesystem(
 
 pub(crate) async fn install_to_existing_root(opts: InstallToExistingRootOpts) -> Result<()> {
     // Log the existing root installation operation to systemd journal
-    const INSTALL_EXISTING_ROOT_JOURNAL_ID: &str = "7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1";
+    const INSTALL_EXISTING_ROOT_JOURNAL_ID: &str = "da5b42ce20314930b021a5e297c89bd4";
     let source_image = opts
         .source_opts
         .source_imgref
@@ -2938,7 +2938,7 @@ pub(crate) async fn install_reset(opts: InstallResetOpts) -> Result<()> {
 /// Implementation of `bootc install finalize`.
 pub(crate) async fn install_finalize(target: &Utf8Path) -> Result<()> {
     // Log the installation finalization operation to systemd journal
-    const INSTALL_FINALIZE_JOURNAL_ID: &str = "6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0";
+    const INSTALL_FINALIZE_JOURNAL_ID: &str = "961f3ab64c3f4da1a5a07152f66942b8";
 
     tracing::info!(
         message_id = INSTALL_FINALIZE_JOURNAL_ID,

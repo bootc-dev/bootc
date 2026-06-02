@@ -277,7 +277,7 @@ pub(crate) async fn impl_completion(
     stateroot: Option<&str>,
 ) -> Result<()> {
     // Log the completion operation to systemd journal
-    const COMPLETION_JOURNAL_ID: &str = "0f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4";
+    const COMPLETION_JOURNAL_ID: &str = "2f657aed50c2467187bc8e7411ad0b7c";
     tracing::info!(
         message_id = COMPLETION_JOURNAL_ID,
         bootc.stateroot = stateroot.unwrap_or("default"),

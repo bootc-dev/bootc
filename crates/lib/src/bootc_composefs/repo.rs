@@ -79,7 +79,7 @@ pub(crate) async fn initialize_composefs_repository(
     allow_missing_fsverity: bool,
     use_unified: bool,
 ) -> Result<PullResult<Sha512HashValue>> {
-    const COMPOSEFS_REPO_INIT_JOURNAL_ID: &str = "5d4c3b2a1f0e9d8c7b6a5f4e3d2c1b0a9";
+    const COMPOSEFS_REPO_INIT_JOURNAL_ID: &str = "3cae9eff71b64f50b63d856a02ba217c";
 
     let rootfs_dir = &root_setup.physical_root;
     let image_name = &state.source.imageref.name;
@@ -278,7 +278,7 @@ pub(crate) async fn pull_composefs_repo(
     allow_missing_fsverity: bool,
     use_unified: bool,
 ) -> Result<PullRepoResult> {
-    const COMPOSEFS_PULL_JOURNAL_ID: &str = "4c3b2a1f0e9d8c7b6a5f4e3d2c1b0a9f8";
+    const COMPOSEFS_PULL_JOURNAL_ID: &str = "bd0a8ed0d5004a1e9d6ba429992c2eb7";
 
     let imgref = spec_imgref.to_image_proxy_ref()?;
 

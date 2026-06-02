@@ -9,7 +9,15 @@ pub fn initialize_tracing() {
     let journald_layer = if rustix::process::getuid().is_root() {
         tracing_journald::layer()
             .ok()
-            .map(|layer| layer.with_filter(tracing_subscriber::filter::LevelFilter::INFO))
+            // Drop the default `F_` field prefix so our structured fields map to
+            // native journal fields: `message_id` -> the well-known `MESSAGE_ID`
+            // (queryable via `journalctl MESSAGE_ID=...`) and e.g.
+            // `bootc.image.reference` -> `BOOTC_IMAGE_REFERENCE`.
+            .map(|layer| {
+                layer
+                    .with_field_prefix(None)
+                    .with_filter(tracing_subscriber::filter::LevelFilter::INFO)
+            })
     } else {
         None
     };

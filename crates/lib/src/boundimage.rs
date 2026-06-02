@@ -40,7 +40,7 @@ pub(crate) struct ResolvedBoundImage {
 /// Given a deployment, pull all container images it references.
 pub(crate) async fn pull_bound_images(sysroot: &Storage, deployment: &Deployment) -> Result<()> {
     // Log the bound images operation to systemd journal
-    const BOUND_IMAGES_JOURNAL_ID: &str = "1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5";
+    const BOUND_IMAGES_JOURNAL_ID: &str = "0c1b3a5e81784fcf9484770bce6acd8a";
     tracing::info!(
         message_id = BOUND_IMAGES_JOURNAL_ID,
         bootc.deployment.osname = deployment.osname().as_str(),

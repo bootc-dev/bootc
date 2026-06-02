@@ -219,7 +219,7 @@ pub(crate) async fn composefs_gc(
     booted_cfs: &BootedComposefs,
     gc_opts: GCOpts,
 ) -> Result<GcResult> {
-    const COMPOSEFS_GC_JOURNAL_ID: &str = "3b2a1f0e9d8c7b6a5f4e3d2c1b0a9f8e7";
+    const COMPOSEFS_GC_JOURNAL_ID: &str = "09ef238c077343fc9ac0fb82cb56a387";
 
     tracing::info!(
         message_id = COMPOSEFS_GC_JOURNAL_ID,

@@ -186,7 +186,7 @@ pub(crate) async fn composefs_rollback(
     storage: &Storage,
     booted_cfs: &BootedComposefs,
 ) -> Result<()> {
-    const COMPOSEFS_ROLLBACK_JOURNAL_ID: &str = "6f5e4d3c2b1a0f9e8d7c6b5a4e3d2c1b0";
+    const COMPOSEFS_ROLLBACK_JOURNAL_ID: &str = "4337b7d6663e42d09ba176075646922b";
 
     tracing::info!(
         message_id = COMPOSEFS_ROLLBACK_JOURNAL_ID,

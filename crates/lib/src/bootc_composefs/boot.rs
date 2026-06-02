@@ -1324,7 +1324,7 @@ pub(crate) async fn setup_composefs_boot(
     pull_result: &composefs_oci::PullResult<Sha512HashValue>,
     allow_missing_fsverity: bool,
 ) -> Result<()> {
-    const COMPOSEFS_BOOT_SETUP_JOURNAL_ID: &str = "1f0e9d8c7b6a5f4e3d2c1b0a9f8e7d6c5";
+    const COMPOSEFS_BOOT_SETUP_JOURNAL_ID: &str = "ed426a753d3f4d698528c0228449de3f";
 
     tracing::info!(
         message_id = COMPOSEFS_BOOT_SETUP_JOURNAL_ID,
