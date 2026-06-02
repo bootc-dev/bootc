@@ -108,7 +108,7 @@ RUN --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
     # Install systemd-ukify and systemd-boot for UKIs
     # This also installs systemd-boot for the grub UKI case which is not ideal...
     if [[ "${boot_type}" == "uki" ]]; then
-        pkgs_to_install+=(systemd-ukify binutils)
+        pkgs_to_install+=(systemd-ukify)
     fi
 
     if [[ ${#pkgs_to_install[@]} -gt 0 ]]; then

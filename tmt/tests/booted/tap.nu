@@ -102,9 +102,7 @@ export def make_uki_containerfile [containerfile: string] {
         FROM base as kernel
         RUN <<-EOF
             kver=$\(bootc container inspect --rootfs / --json | jq -r '.kernel.version'\)
-            mkdir -p /boot/$kver
-            objcopy -O binary --only-section=.initrd /boot/EFI/Linux/$kver.efi /boot/$kver/initramfs.img
-            objcopy -O binary --only-section=.linux /boot/EFI/Linux/$kver.efi /boot/$kver/vmlinuz
+            bootc internals uki extract /boot/EFI/Linux/$kver.efi /boot
         EOF
 
         FROM base as base-final
