@@ -1402,13 +1402,12 @@ mod tests {
         let prefix = config
             .user_agent_prefix
             .expect("user_agent_prefix should be set");
-        assert!(
-            prefix.starts_with("bootc/"),
-            "User agent should start with bootc/"
-        );
         // Verify the version is present (not just "bootc/")
+        let version = prefix
+            .strip_prefix("bootc/")
+            .expect("User agent should start with bootc/");
         assert!(
-            prefix.len() > "bootc/".len(),
+            !version.is_empty(),
             "Version should be present after bootc/"
         );
     }
