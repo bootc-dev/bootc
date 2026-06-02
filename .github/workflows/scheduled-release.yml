@@ -2,14 +2,12 @@ name: Create Release PR
 
 on:
   schedule:
-    # Run every 3 weeks on Monday at 8:00 AM UTC
-    # Note: GitHub Actions doesn't support "every 3 weeks" directly,
-    # so we use a workaround by running weekly and checking if it's been 3 weeks
+    # Run weekly on Monday at 8:00 AM UTC
     - cron: '0 8 * * 1'
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version type to release, either "minor" (default) or "patch" for just a bugfix release'
+        description: 'Version type to release, either "patch" (default) or "minor"'
         required: false
         type: string
 
@@ -38,39 +36,10 @@ jobs:
       - name: Mark git checkout as safe
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
-      - name: Check if it's time for a release
-        id: check_schedule
-        run: |
-          # For manual workflow dispatch, always proceed
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "should_release=true" >> $GITHUB_OUTPUT
-            exit 0
-          fi
-
-          START_DATE="2026-01-05" # start of a 3 week sprint
-          START_TIMESTAMP=$(date -d "$START_DATE" +%s)
-          CURRENT_TIMESTAMP=$(date +%s)
-          # Add 12 hour buffer (43200 seconds) to account for scheduling delays
-          ADJUSTED_TIMESTAMP=$((CURRENT_TIMESTAMP + 43200))
-          DAYS_SINCE_START=$(( (ADJUSTED_TIMESTAMP - START_TIMESTAMP) / 86400 ))
-          WEEKS_SINCE_START=$(( DAYS_SINCE_START / 7 ))
-
-          echo "Days since start date ($START_DATE): $DAYS_SINCE_START"
-          echo "Weeks since start date: $WEEKS_SINCE_START"
-
-          # Release every 3 weeks
-          if [ $WEEKS_SINCE_START -gt 0 ] && [ $((WEEKS_SINCE_START % 3)) -eq 0 ]; then
-            echo "should_release=true" >> $GITHUB_OUTPUT
-          else
-            echo "should_release=false" >> $GITHUB_OUTPUT
-          fi
-
       - name: Install deps
-        if: steps.check_schedule.outputs.should_release == 'true'
         run: ./ci/installdeps.sh
 
       - name: Import GPG key
-        if: steps.check_schedule.outputs.should_release == 'true'
         uses: crazy-max/ghaction-import-gpg@v7
         with:
           gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
@@ -81,15 +50,14 @@ jobs:
 
       - name: Generate release changes
         id: create_commit
-        if: steps.check_schedule.outputs.should_release == 'true'
         env:
           INPUT_VERSION: ${{ github.event.inputs.version }}
         run: |
           dnf -y install go-md2man
           cargo install cargo-edit
 
-          # Default to bumping a minor
-          cargo set-version --manifest-path crates/lib/Cargo.toml --package bootc-lib --bump ${INPUT_VERSION:-minor}
+          # Default to bumping a patch
+          cargo set-version --manifest-path crates/lib/Cargo.toml --package bootc-lib --bump ${INPUT_VERSION:-patch}
           VERSION=$(cargo read-manifest --manifest-path crates/lib/Cargo.toml | jq -r '.version')
 
           # Set internal crate versions to match the bootc release version
@@ -97,8 +65,6 @@ jobs:
           cargo set-version --manifest-path crates/mount/Cargo.toml --package bootc-internal-mount "$VERSION"
           cargo set-version --manifest-path crates/blockdev/Cargo.toml --package bootc-internal-blockdev "$VERSION"
 
-          cargo update --workspace
-          cargo xtask update-generated
           echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
 
       - name: Create Pull Request
