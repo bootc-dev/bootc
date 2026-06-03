@@ -74,11 +74,12 @@ def second_boot [] {
 
     assert ($active_state == "active") $"bootc-sysusers-shadow-sync.service not active: ($active_state)"
 
-    # The service must have logged removing the stale gshadow entry.
-    let journal = (^journalctl -u bootc-sysusers-shadow-sync.service -b 0 --no-pager)
-    assert ($journal | str contains "orphaned") (
-        $"bootc-sysusers-shadow-sync.service did not log removing orphaned entries;\njournal:\n($journal)"
-    )
+    # Print the service journal for diagnostic context; don't assert on it.
+    # The log message is emitted via tracing_journald, which can be silently
+    # dropped if the journal socket is not yet visible at process start (e.g.
+    # volatile journals, early-boot races).  The file-state checks below are
+    # the authoritative proof that the service did its job.
+    ^journalctl -u bootc-sysusers-shadow-sync.service -b 0 --no-pager | print
 
     # sysusers must have (re)created the group cleanly in /etc/group.
     let group_lines = (open /etc/group | lines | where { |l| $l | str starts-with "testbootcgroup:" })
