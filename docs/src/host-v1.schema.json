@@ -215,6 +215,11 @@
           "const": "grub"
         },
         {
+          "description": "Use Grub for confidential clusters as the bootloader",
+          "type": "string",
+          "const": "grub-cc"
+        },
+        {
           "description": "Use SystemdBoot as the bootloader",
           "type": "string",
           "const": "systemd"

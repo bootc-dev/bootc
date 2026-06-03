@@ -166,6 +166,7 @@ set `discoverable-partitions = true` in their install configuration
 
     Possible values:
     - grub
+    - grub-cc
     - systemd
     - none
 

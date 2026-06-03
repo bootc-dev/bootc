@@ -212,6 +212,7 @@ of migrating the fstab entries. See the "Injecting kernel arguments" section abo
 
     Possible values:
     - grub
+    - grub-cc
     - systemd
     - none
 

@@ -120,6 +120,7 @@ is currently expected to be empty by default.
 
     Possible values:
     - grub
+    - grub-cc
     - systemd
     - none
 
