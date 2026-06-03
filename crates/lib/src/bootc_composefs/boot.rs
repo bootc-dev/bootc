@@ -96,6 +96,7 @@ use crate::bootc_composefs::status::ComposefsCmdline;
 use crate::bootc_kargs::compute_new_kargs;
 use crate::composefs_consts::{TYPE1_BOOT_DIR_PREFIX, TYPE1_ENT_PATH, TYPE1_ENT_PATH_STAGED};
 use crate::parsers::bls_config::{BLSConfig, BLSConfigType};
+use crate::spec::BootloaderKind;
 use crate::task::Task;
 use crate::{bootc_composefs::repo::open_composefs_repo, store::Storage};
 use crate::{bootc_composefs::status::get_sorted_grub_uki_boot_entries, install::PostFetchState};
@@ -582,8 +583,8 @@ pub(crate) fn setup_composefs_bls_boot(
 
     compute_new_kargs(mounted_erofs, current_root, &mut cmdline_refs)?;
 
-    let (entry_paths, _tmpdir_guard) = match bootloader {
-        Bootloader::Grub => {
+    let (entry_paths, _tmpdir_guard) = match bootloader.kind()? {
+        BootloaderKind::GRUBClassic => {
             let root = Dir::open_ambient_dir(&root_path, ambient_authority())
                 .context("Opening root path")?;
 
@@ -607,7 +608,7 @@ pub(crate) fn setup_composefs_bls_boot(
             )
         }
 
-        Bootloader::Systemd | Bootloader::GrubCC => {
+        BootloaderKind::BLSCompatible => {
             let efi_mount = mount_esp(&esp_device).context("Mounting ESP")?;
 
             let mounted_efi = Utf8PathBuf::from(efi_mount.dir.path().as_str()?);
@@ -622,8 +623,6 @@ pub(crate) fn setup_composefs_bls_boot(
                 Some(efi_mount),
             )
         }
-
-        Bootloader::None => unreachable!("Checked at install time"),
     };
 
     let (bls_config, boot_digest, os_id) = match &entry {
@@ -1164,16 +1163,14 @@ pub(crate) fn setup_composefs_uki_boot(
 
     let boot_digest = uki_info.boot_digest.clone();
 
-    match bootloader {
-        Bootloader::Grub => {
+    match bootloader.kind()? {
+        BootloaderKind::GRUBClassic => {
             write_grub_uki_menuentry(root_path, &setup_type, uki_info.boot_label, id, &esp_device)?
         }
 
-        Bootloader::Systemd | Bootloader::GrubCC => {
+        BootloaderKind::BLSCompatible => {
             write_systemd_uki_config(&esp_mount.fd, &setup_type, uki_info, id)?
         }
-
-        Bootloader::None => unreachable!("Checked at install time"),
     };
 
     Ok(boot_digest)

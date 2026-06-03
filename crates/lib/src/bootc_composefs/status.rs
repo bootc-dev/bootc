@@ -25,7 +25,7 @@ use crate::{
         bls_config::{BLSConfig, BLSConfigType, parse_bls_config},
         grub_menuconfig::{MenuEntry, parse_grub_menuentry_file},
     },
-    spec::{BootEntry, BootOrder, Host, HostSpec, ImageStatus},
+    spec::{BootEntry, BootOrder, BootloaderKind, Host, HostSpec, ImageStatus},
     store::Storage,
     utils::{EfiError, read_uefi_var},
 };
@@ -374,8 +374,8 @@ pub(crate) fn list_bootloader_entries(storage: &Storage) -> Result<Vec<Bootloade
     let bootloader = get_bootloader()?;
     let boot_dir = storage.require_boot_dir()?;
 
-    let entries = match bootloader {
-        Bootloader::Grub => {
+    let entries = match bootloader.kind()? {
+        BootloaderKind::GRUBClassic => {
             // Grub entries are always in boot
             let grub_dir = boot_dir.open_dir("grub2").context("Opening grub dir")?;
 
@@ -403,9 +403,7 @@ pub(crate) fn list_bootloader_entries(storage: &Storage) -> Result<Vec<Bootloade
             }
         }
 
-        Bootloader::Systemd | Bootloader::GrubCC => list_type1_entries(boot_dir)?,
-
-        Bootloader::None => unreachable!("Checked at install time"),
+        BootloaderKind::BLSCompatible => list_type1_entries(boot_dir)?,
     };
 
     Ok(entries)
@@ -920,8 +918,11 @@ async fn composefs_deployment_status_from(
     let booted_cfs = host.require_composefs_booted()?;
 
     let mut grub_menu_string = String::new();
-    let (is_rollback_queued, sorted_bls_config, grub_menu_entries) = match booted_cfs.bootloader {
-        Bootloader::Grub => match boot_type {
+    let (is_rollback_queued, sorted_bls_config, grub_menu_entries) = match booted_cfs
+        .bootloader
+        .kind()?
+    {
+        BootloaderKind::GRUBClassic => match boot_type {
             BootType::Bls => {
                 let bls_configs = get_sorted_type1_boot_entries(boot_dir, false)?;
                 let bls_config = bls_configs
@@ -962,7 +963,7 @@ async fn composefs_deployment_status_from(
         },
 
         // We will have BLS stuff and the UKI stuff in the same DIR
-        Bootloader::Systemd | Bootloader::GrubCC => {
+        BootloaderKind::BLSCompatible => {
             let bls_configs = get_sorted_type1_boot_entries(boot_dir, true)?;
             let bls_config = bls_configs
                 .first()
@@ -985,8 +986,6 @@ async fn composefs_deployment_status_from(
 
             (is_rollback_queued, Some(bls_configs), None)
         }
-
-        Bootloader::None => unreachable!("Checked at install time"),
     };
 
     // Determine rollback deployment by matching extra deployment boot entries against entires read from /boot

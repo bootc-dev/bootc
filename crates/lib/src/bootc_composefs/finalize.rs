@@ -5,7 +5,7 @@ use crate::bootc_composefs::gc::{GCOpts, composefs_gc};
 use crate::bootc_composefs::rollback::{rename_exchange_bls_entries, rename_exchange_user_cfg};
 use crate::bootc_composefs::status::get_composefs_status;
 use crate::composefs_consts::STATE_DIR_ABS;
-use crate::spec::Bootloader;
+use crate::spec::BootloaderKind;
 use crate::store::{BootedComposefs, Storage};
 use anyhow::{Context, Result};
 use bootc_initramfs_setup::mount_composefs_image;
@@ -131,8 +131,8 @@ pub(crate) async fn composefs_backend_finalize(
 
     let boot_dir = storage.require_boot_dir()?;
 
-    match booted_composefs.bootloader {
-        Bootloader::Grub => match staged_composefs.boot_type {
+    match booted_composefs.bootloader.kind()? {
+        BootloaderKind::GRUBClassic => match staged_composefs.boot_type {
             BootType::Bls => {
                 let entries_dir = boot_dir.open_dir("loader")?;
                 rename_exchange_bls_entries(&entries_dir)?;
@@ -140,12 +140,10 @@ pub(crate) async fn composefs_backend_finalize(
             BootType::Uki => finalize_staged_grub_uki(boot_dir)?,
         },
 
-        Bootloader::Systemd | Bootloader::GrubCC => {
+        BootloaderKind::BLSCompatible => {
             let entries_dir = boot_dir.open_dir("loader")?;
             rename_exchange_bls_entries(&entries_dir)?;
         }
-
-        Bootloader::None => unreachable!("Checked at install time"),
     };
 
     // Now that we have successfully updated bootloader entires, we can GC the unreferenced ones

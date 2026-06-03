@@ -92,7 +92,6 @@
 
 use std::cell::OnceCell;
 use std::ops::Deref;
-use std::os::fd::{AsFd, AsRawFd};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -119,7 +118,7 @@ use crate::bootc_composefs::boot::{EFI_LINUX, mount_esp};
 use crate::bootc_composefs::status::{ComposefsCmdline, composefs_booted, get_bootloader};
 use crate::lsm;
 use crate::podstorage::CStorage;
-use crate::spec::{Bootloader, ImageStatus};
+use crate::spec::{BootloaderKind, ImageStatus};
 use crate::utils::{deployment_fd, open_dir_remount_rw};
 
 /// See <https://github.com/containers/composefs-rs/issues/159>
@@ -333,13 +332,14 @@ impl BootedStorage {
                 let esp_dev = root_dev.find_first_colocated_esp()?;
                 let esp_mount = mount_esp(&esp_dev.path())?;
 
-                let boot_dir = match get_bootloader()? {
-                    Bootloader::Grub => physical_root.open_dir("boot").context("Opening boot")?,
+                let boot_dir = match get_bootloader()?.kind()? {
+                    BootloaderKind::GRUBClassic => {
+                        physical_root.open_dir("boot").context("Opening boot")?
+                    }
                     // NOTE: Handle XBOOTLDR partitions here if and when we use it
-                    Bootloader::Systemd | Bootloader::GrubCC => {
+                    BootloaderKind::BLSCompatible => {
                         esp_mount.fd.try_clone().context("Cloning fd")?
                     }
-                    Bootloader::None => unreachable!("Checked at install time"),
                 };
 
                 let storage = Storage {
@@ -527,16 +527,15 @@ impl Storage {
 
         // boot dir in case of systemd-boot points to the ESP, but we store
         // the actual binaries inside ESP/EFI/Linux
-        let boot_dir = match get_bootloader()? {
-            Bootloader::Grub => boot_dir.try_clone()?,
-            Bootloader::Systemd | Bootloader::GrubCC => {
+        let boot_dir = match get_bootloader()?.kind()? {
+            BootloaderKind::GRUBClassic => boot_dir.try_clone()?,
+            BootloaderKind::BLSCompatible => {
                 let boot_dir = boot_dir
                     .open_dir(EFI_LINUX)
                     .with_context(|| format!("Opening {EFI_LINUX}"))?;
 
                 boot_dir
             }
-            Bootloader::None => anyhow::bail!("Unknown bootloader"),
         };
 
         Ok(boot_dir)

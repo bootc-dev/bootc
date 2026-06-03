@@ -12,6 +12,7 @@ use ocidir::cap_std::ambient_authority;
 use ostree_ext::container::ManifestDiff;
 
 use crate::bootc_composefs::gc::GCOpts;
+use crate::spec::BootloaderKind;
 use crate::{
     bootc_composefs::{
         boot::{BootSetupType, BootType, setup_composefs_bls_boot, setup_composefs_uki_boot},
@@ -30,7 +31,7 @@ use crate::{
         COMPOSEFS_STAGED_DEPLOYMENT_FNAME, COMPOSEFS_TRANSIENT_STATE_DIR, STATE_DIR_RELATIVE,
         TYPE1_ENT_PATH_STAGED, USER_CFG_STAGED,
     },
-    spec::{Bootloader, Host, ImageReference},
+    spec::{Host, ImageReference},
     store::{BootedComposefs, ComposefsRepository, Storage},
 };
 
@@ -170,8 +171,8 @@ pub(crate) fn validate_update(
 
     // Remove staged bootloader entries, if any
     // GC should take care of the UKI PEs and other binaries
-    match get_bootloader()? {
-        Bootloader::Grub => match booted.boot_type {
+    match get_bootloader()?.kind()? {
+        BootloaderKind::GRUBClassic => match booted.boot_type {
             BootType::Bls => rm_staged_type1_ent(boot_dir)?,
 
             BootType::Uki => {
@@ -184,9 +185,7 @@ pub(crate) fn validate_update(
             }
         },
 
-        Bootloader::Systemd | Bootloader::GrubCC => rm_staged_type1_ent(boot_dir)?,
-
-        Bootloader::None => unreachable!("Checked at install time"),
+        BootloaderKind::BLSCompatible => rm_staged_type1_ent(boot_dir)?,
     }
 
     // Remove state directory

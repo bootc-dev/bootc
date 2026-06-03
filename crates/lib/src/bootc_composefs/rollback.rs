@@ -16,7 +16,7 @@ use crate::composefs_consts::{
     COMPOSEFS_STAGED_DEPLOYMENT_FNAME, COMPOSEFS_TRANSIENT_STATE_DIR, TYPE1_ENT_PATH_STAGED,
 };
 use crate::deploy::ROLLBACK_JOURNAL_ID;
-use crate::spec::{Bootloader, Host};
+use crate::spec::{Bootloader, BootloaderKind, Host};
 use crate::store::{BootedComposefs, Storage};
 use crate::{
     bootc_composefs::{boot::get_efi_uuid_source, status::get_sorted_grub_uki_boot_entries},
@@ -252,8 +252,8 @@ pub(crate) async fn composefs_rollback(
 
     let boot_dir = storage.require_boot_dir()?;
 
-    match &rollback_entry.bootloader {
-        Bootloader::Grub => match rollback_entry.boot_type {
+    match &rollback_entry.bootloader.kind()? {
+        BootloaderKind::GRUBClassic => match rollback_entry.boot_type {
             BootType::Bls => {
                 rollback_composefs_entries(&host, boot_dir, rollback_entry.bootloader.clone())?;
             }
@@ -262,12 +262,10 @@ pub(crate) async fn composefs_rollback(
             }
         },
 
-        Bootloader::Systemd | Bootloader::GrubCC => {
+        BootloaderKind::BLSCompatible => {
             // We use BLS entries for systemd UKI as well
             rollback_composefs_entries(&host, boot_dir, rollback_entry.bootloader.clone())?;
         }
-
-        Bootloader::None => unreachable!("Checked at install time"),
     }
 
     if reverting {

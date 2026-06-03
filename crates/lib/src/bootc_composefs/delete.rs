@@ -15,7 +15,7 @@ use crate::{
         TYPE1_ENT_PATH, TYPE1_ENT_PATH_STAGED, USER_CFG_STAGED,
     },
     parsers::bls_config::{BLSConfigType, parse_bls_config},
-    spec::{BootEntry, Bootloader, DeploymentEntry},
+    spec::{BootEntry, BootloaderKind, DeploymentEntry},
     status::Slot,
     store::{BootedComposefs, Storage},
 };
@@ -145,20 +145,18 @@ fn delete_depl_boot_entries(
 ) -> Result<()> {
     let boot_dir = storage.require_boot_dir()?;
 
-    match deployment.deployment.bootloader {
-        Bootloader::Grub => match deployment.deployment.boot_type {
+    match deployment.deployment.bootloader.kind()? {
+        BootloaderKind::GRUBClassic => match deployment.deployment.boot_type {
             BootType::Bls => delete_type1_conf_file(deployment, boot_dir, deleting_staged),
             BootType::Uki => {
                 remove_grub_menucfg_entry(&deployment.deployment.verity, boot_dir, deleting_staged)
             }
         },
 
-        Bootloader::Systemd | Bootloader::GrubCC => {
+        BootloaderKind::BLSCompatible => {
             // For Systemd UKI as well, we use .conf files
             delete_type1_conf_file(deployment, boot_dir, deleting_staged)
         }
-
-        Bootloader::None => unreachable!("Checked at install time"),
     }
 }
 

@@ -17,7 +17,7 @@ use crate::{
         TYPE1_ENT_PATH_STAGED, UKI_NAME_PREFIX, USER_CFG_STAGED,
     },
     parsers::bls_config::{BLSConfig, BLSConfigType},
-    spec::Bootloader,
+    spec::BootloaderKind,
     store::Storage,
 };
 use anyhow::{Context, Result};
@@ -323,8 +323,8 @@ pub(crate) async fn prepend_custom_prefix(
             handle_bls_conf(storage, cfs_cmdline, boot_dir, false)?;
         }
 
-        BootType::Uki => match bootloader {
-            Bootloader::Grub => {
+        BootType::Uki => match bootloader.kind()? {
+            BootloaderKind::GRUBClassic => {
                 let esp = storage.require_esp()?;
 
                 let mut buf = String::new();
@@ -384,11 +384,9 @@ pub(crate) async fn prepend_custom_prefix(
                 rename_exchange_user_cfg(&grub_dir)?;
             }
 
-            Bootloader::Systemd | Bootloader::GrubCC => {
+            BootloaderKind::BLSCompatible => {
                 handle_bls_conf(storage, cfs_cmdline, boot_dir, true)?;
             }
-
-            Bootloader::None => unreachable!("Checked at install time"),
         },
     };
 

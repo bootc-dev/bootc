@@ -245,6 +245,15 @@ pub enum Bootloader {
     None,
 }
 
+#[derive(Debug)]
+pub enum BootloaderKind {
+    /// Bootloader that support Bootloader Specification
+    /// GrubCC and SystemdBoot
+    BLSCompatible,
+    /// Classic Grub
+    GRUBClassic,
+}
+
 impl Display for Bootloader {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let string = match self {
@@ -268,6 +277,18 @@ impl FromStr for Bootloader {
             "systemd" => Ok(Self::Systemd),
             "none" => Ok(Self::None),
             unrecognized => Err(anyhow::anyhow!("Unrecognized bootloader: '{unrecognized}'")),
+        }
+    }
+}
+
+impl Bootloader {
+    /// Returns whether the Bootloader is BLSCompatible
+    /// Throws and error if Bootloader is None
+    pub(crate) fn kind(&self) -> Result<BootloaderKind> {
+        match self {
+            Bootloader::Grub => Ok(BootloaderKind::GRUBClassic),
+            Bootloader::Systemd | Bootloader::GrubCC => Ok(BootloaderKind::BLSCompatible),
+            Bootloader::None => anyhow::bail!("Bootloader was None"),
         }
     }
 }
