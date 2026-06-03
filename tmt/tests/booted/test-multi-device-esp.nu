@@ -437,8 +437,9 @@ def main [] {
     # supports GRUB today.  Skip when the image uses systemd-boot.
     if (tap is_composefs) {
         let st = bootc status --json | from json
-        if ($st.status.booted.composefs.bootloader | str downcase) == "systemd" {
-            print "SKIP: multi-device ESP test not supported with systemd-boot"
+        let bootloader = $st.status.booted.composefs.bootloader | str downcase
+        if $bootloader == "systemd" or $bootloader == "grub-cc" {
+            print $"SKIP: multi-device ESP test not supported with ($bootloader)"
             tap ok
             return
         }

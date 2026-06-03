@@ -13,7 +13,7 @@ if not (tap is_composefs) {
 let st = bootc status --json | from json
 let booted = $st.status.booted.image
 let is_uki = ($st.status.booted.composefs.bootType | str downcase) == "uki"
-let is_grub = $st.status.booted.composefs.bootloader == "grub"
+let is_grub = ($st.status.booted.composefs.bootloader | str downcase) == "grub"
 
 # NOTE: Not testing for grub menuentries as that's niche case and we will
 # remove it once we have https://github.com/bootc-dev/bootc/issues/2212
@@ -24,8 +24,9 @@ if ($is_uki and $is_grub) {
 def first_boot [] {
     bootc image copy-to-storage
 
-    let bootloader = $st.status.booted.composefs.bootloader
-    let entries_dir = if ($bootloader | str downcase) == "systemd" {
+    let bootloader = $st.status.booted.composefs.bootloader | str downcase
+    
+    let entries_dir = if $bootloader == "systemd" or $bootloader == "grub-cc" {
         mkdir /var/tmp/efi
         mount /dev/disk/by-partlabel/EFI-SYSTEM /var/tmp/efi
         "/var/tmp/efi/loader/entries"

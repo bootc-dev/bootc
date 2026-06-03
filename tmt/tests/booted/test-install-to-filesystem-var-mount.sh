@@ -141,11 +141,15 @@ echo "Filesystem layout:"
 mount | grep /var/mnt/target || true
 df -h /var/mnt/target /var/mnt/target/boot /var/mnt/target/boot/efi /var/mnt/target/var
 
-COMPOSEFS_BACKEND=()
+bootloader=$(bootc status --json | jq -r '.status.booted.composefs.bootloader' | tr '[:upper:]' '[:lower:]')
+
+COMPOSEFS_BACKEND_PARAMS=()
 KARGS=("--karg=root=UUID=$ROOT_UUID")
 
 if [[ $is_composefs != "null" ]]; then
-    COMPOSEFS_BACKEND+=("--composefs-backend")
+    COMPOSEFS_BACKEND_PARAMS+=("--composefs-backend")
+    COMPOSEFS_BACKEND_PARAMS+=("--bootloader" "${bootloader}")
+
     tune2fs -O verity /dev/BL/var02
     tune2fs -O verity /dev/BL/root02
 
@@ -164,7 +168,7 @@ podman run \
     "$TARGET_IMAGE" \
     bootc install to-filesystem \
         --disable-selinux \
-        "${COMPOSEFS_BACKEND[@]}" \
+        "${COMPOSEFS_BACKEND_PARAMS[@]}" \
         "${KARGS[@]}" \
         --root-mount-spec=UUID="$ROOT_UUID" \
         --boot-mount-spec=UUID="$BOOT_UUID" \
@@ -186,16 +190,12 @@ else
     # It works for now as the CI runs separately for each bootloader, but we need to get the 
     # bootloader from the installed systemd if we wish to run the tests locally without rebuilding the images
     # This probably also happens in other tests, one instance is install-outside-container
-    bootloader=$(bootc status --json | jq '.status.booted.composefs.bootloader' | tr '[:upper:]' '[:lower:]')
-    bootloader=${bootloader//\"/}
-
     if [[ $bootloader == "grub" ]]; then
         test -d /var/mnt/target/boot/grub2 || test -d /var/mnt/target/boot/loader
     else
         test -d /var/mnt/target/boot/efi/EFI
         test -d /var/mnt/target/boot/efi/loader/entries
     fi
-
 fi
 
 

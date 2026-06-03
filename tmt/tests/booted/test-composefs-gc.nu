@@ -88,9 +88,9 @@ def third_boot [] {
     # Also assert we have two different kernel + initrd pairs
     let booted_verity = (bootc status --json | from json).status.booted.composefs.verity
 
-    let bootloader = (bootc status --json | from json).status.booted.composefs.bootloader
+    let bootloader = ((bootc status --json | from json).status.booted.composefs.bootloader | str downcase)
 
-    let boot_dir = if ($bootloader | str downcase) == "systemd" {
+    let boot_dir = if $bootloader == "systemd" or $bootloader == "grub-cc" {
         # TODO: Some concrete API for this would be great
         mkdir /var/tmp/efi
         mount /dev/disk/by-partlabel/EFI-SYSTEM /var/tmp/efi
@@ -123,9 +123,9 @@ def third_boot [] {
 }
 
 def fourth_boot [] {
-    let bootloader = (bootc status --json | from json).status.booted.composefs.bootloader
+    let bootloader = ((bootc status --json | from json).status.booted.composefs.bootloader | str downcase)
 
-    if ($bootloader | str downcase) == "systemd" {
+    if $bootloader == "systemd" or $bootloader == "grub-cc" {
         # TODO: Some concrete API for this would be great
         mkdir /var/tmp/efi
         mount /dev/disk/by-partlabel/EFI-SYSTEM /var/tmp/efi

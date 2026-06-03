@@ -7,6 +7,12 @@ def parse_cmdline []  {
     open /proc/cmdline | str trim | split row " "
 }
 
+def find_root_eq_in_cmdline [bootloader: string] {
+    let cmdline = parse_cmdline
+    let has_root_param = ($cmdline | any { |param| $param | str starts-with 'root=' })
+    assert (not $has_root_param) $"($bootloader) image should not have root= in kernel cmdline; systemd-gpt-auto-generator should discover the root partition via DPS"
+}
+
 # Detect composefs by checking if composefs field is present
 let st = bootc status --json | from json
 let is_composefs = (tap is_composefs)
@@ -24,10 +30,13 @@ if $expecting_composefs {
         let bootctl_output = (bootctl)
 
         if ($bootctl_output | str contains 'Product: systemd-boot') {
-            let cmdline = parse_cmdline
-            let has_root_param = ($cmdline | any { |param| $param | str starts-with 'root=' })
-            assert (not $has_root_param) "systemd-boot image should not have root= in kernel cmdline; systemd-gpt-auto-generator should discover the root partition via DPS"
+            find_root_eq_in_cmdline "systemd-boot"
         }
+    }
+
+    # GrubCC also supports BLS and shouldn't need root=
+    if $bootloader == "grub-cc" {
+        find_root_eq_in_cmdline "grub-cc"
     }
 }
 

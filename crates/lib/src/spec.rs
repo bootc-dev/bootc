@@ -238,6 +238,7 @@ pub enum Bootloader {
     #[default]
     Grub,
     /// Use Grub for confidential clusters as the bootloader
+    #[serde(rename = "grub-cc")]
     GrubCC,
     /// Use SystemdBoot as the bootloader
     Systemd,
@@ -245,7 +246,7 @@ pub enum Bootloader {
     None,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum BootloaderKind {
     /// Bootloader that support Bootloader Specification
     /// GrubCC and SystemdBoot
