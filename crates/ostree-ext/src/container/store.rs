@@ -137,6 +137,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 use canon_json::CanonJsonSerialize;
 use cap_std_ext::cap_std;
 use cap_std_ext::cap_std::fs::{Dir, MetadataExt};
+use gvariant::{Marker as _, Structure as _};
 
 use cap_std_ext::dirext::CapStdExtDirExt;
 use containers_image_proxy::{ImageProxy, OpenedImage};
@@ -172,12 +173,17 @@ const IMAGE_PREFIX: &str = "ostree/container/image";
 /// ref with the project name, so the final ref may be of the form e.g. `ostree/container/baseimage/bootc/foo`.
 pub const BASE_IMAGE_PREFIX: &str = "ostree/container/baseimage";
 
-/// The key injected into the merge commit for the manifest digest.
-pub(crate) const META_MANIFEST_DIGEST: &str = "ostree.manifest-digest";
-/// The key injected into the merge commit with the manifest serialized as JSON.
-const META_MANIFEST: &str = "ostree.manifest";
-/// The key injected into the merge commit with the image configuration serialized as JSON.
-const META_CONFIG: &str = "ostree.container.image-config";
+/// The key for the manifest digest in ostree commit metadata.
+pub const META_MANIFEST_DIGEST: &str = "ostree.manifest-digest";
+/// The key for the serialized OCI manifest in ostree commit metadata.
+pub const META_MANIFEST: &str = "ostree.manifest";
+/// The key for the serialized OCI image configuration in ostree commit metadata.
+pub const META_CONFIG: &str = "ostree.container.image-config";
+/// Commit metadata key written by the composefs import path to indicate this commit
+/// was synthesized from a composefs repository rather than imported layer-by-layer.
+/// When present, per-layer blob refs do not exist and `query_image_commit` should
+/// use the merge commit itself as the base commit.
+pub const META_COMPOSEFS_SYNTHESIZED: &str = "ostree-ext.composefs-synthesized";
 /// The type used to store content filtering information.
 pub type MetaFilteredData = HashMap<String, HashMap<String, u32>>;
 
@@ -197,7 +203,7 @@ fn ref_for_layer(l: &oci_image::Descriptor) -> Result<String> {
 }
 
 /// Convert e.g. sha256:12345... into `/ostree/container/blob/sha256_2B12345...`.
-fn ref_for_image(l: &ImageReference) -> Result<String> {
+pub fn ref_for_image(l: &ImageReference) -> Result<String> {
     refescape::prefix_escape_for_ref(IMAGE_PREFIX, &l.to_string())
 }
 
@@ -585,7 +591,7 @@ pub(crate) fn parse_ostree_manifest_layout<'a>(
 }
 
 /// Find the timestamp of the manifest (or config), ignoring errors.
-fn timestamp_of_manifest_or_config(
+pub(crate) fn timestamp_of_manifest_or_config(
     manifest: &ImageManifest,
     config: &ImageConfiguration,
 ) -> Option<u64> {
@@ -1624,6 +1630,58 @@ pub fn list_images(repo: &ostree::Repo) -> Result<Vec<String>> {
         .collect()
 }
 
+/// Recursively walk a dirtree GVariant, calling `f` with each file's hex content checksum.
+///
+/// Reads `(a(say)a(sayay))` — the ostree DIRTREE format — directly from GVariant bytes,
+/// the same approach used by [`crate::ima`].  Subdirectories are visited depth-first.
+fn walk_dirtree_checksums(
+    repo: &ostree::Repo,
+    dirtree_checksum: &str,
+    f: &mut impl FnMut(&str) -> Result<()>,
+) -> Result<()> {
+    use crate::objgv::gv_dirtree;
+    use gvariant::aligned_bytes::TryAsAligned as _;
+
+    let v = repo.load_variant(ostree::ObjectType::DirTree, dirtree_checksum)?;
+    let bytes = v.data_as_bytes();
+    let bytes = bytes.try_as_aligned()?;
+    let tree = gv_dirtree!().cast(bytes);
+    let (files, dirs) = tree.to_tuple();
+
+    let mut hexbuf = [0u8; 64];
+    for file in files {
+        let (_name, csum) = file.to_tuple();
+        hex::encode_to_slice(csum, &mut hexbuf)?;
+        f(std::str::from_utf8(&hexbuf)?)?;
+    }
+    for dir in dirs {
+        let (_name, contents_csum, _meta_csum) = dir.to_tuple();
+        hex::encode_to_slice(contents_csum, &mut hexbuf)?;
+        walk_dirtree_checksums(repo, std::str::from_utf8(&hexbuf)?, f)?;
+    }
+    Ok(())
+}
+
+/// Call `f` once for each regular-file content checksum (hex SHA-256) reachable from
+/// `commit_checksum`, reading dirtree GVariants directly without GObject overhead.
+///
+/// Subtrees are visited depth-first.  Shared dirtree objects that appear more than once
+/// in the tree will be visited multiple times.
+pub fn for_each_file_checksum(
+    repo: &ostree::Repo,
+    commit_checksum: &str,
+    f: &mut impl FnMut(&str) -> Result<()>,
+) -> Result<()> {
+    use crate::objgv::gv_commit;
+    use gvariant::aligned_bytes::TryAsAligned as _;
+
+    let (commit_v, _) = repo.load_commit(commit_checksum)?;
+    let commit_bytes = commit_v.data_as_bytes();
+    let commit_bytes = commit_bytes.try_as_aligned()?;
+    let root_dirtree = hex::encode(gv_commit!().cast(commit_bytes).to_tuple().6);
+    walk_dirtree_checksums(repo, &root_dirtree, f)
+}
+
 /// Attempt to query metadata for a pulled image; if it is corrupted,
 /// the error is printed to stderr and None is returned.
 fn try_query_image(
@@ -1745,11 +1803,21 @@ pub fn query_image_commit(repo: &ostree::Repo, commit: &str) -> Result<Box<Layer
     let mut layers = manifest.layers().iter().cloned();
     // We require a base layer.
     let base_layer = layers.next().ok_or_else(|| anyhow!("No layers found"))?;
-    let base_layer = query_layer(repo, base_layer)?;
-    let ostree_ref = base_layer.ostree_ref.as_str();
-    let base_commit = base_layer
-        .commit
-        .ok_or_else(|| anyhow!("Missing base image ref {ostree_ref}"))?;
+
+    // Commits synthesized from a composefs repository carry this metadata key.
+    // They have no per-layer blob refs; the merge commit is the base tree.
+    let is_composefs_synthesized = commit_meta
+        .lookup::<bool>(META_COMPOSEFS_SYNTHESIZED)?
+        .unwrap_or(false);
+    let base_commit = if is_composefs_synthesized {
+        merge_commit.clone()
+    } else {
+        let base_layer = query_layer(repo, base_layer)?;
+        let ostree_ref = base_layer.ostree_ref.as_str();
+        base_layer
+            .commit
+            .ok_or_else(|| anyhow!("Missing base image ref {ostree_ref}"))?
+    };
 
     let detached_commitmeta =
         repo.read_commit_detached_metadata(&merge_commit, gio::Cancellable::NONE)?;
@@ -1877,15 +1945,21 @@ fn chunking_from_layer_committed(
 }
 
 /// Export an imported container image to a target OCI directory.
+///
+/// The source image is identified by its already-resolved [`LayeredImageState`]
+/// rather than an image reference, so callers may obtain it either via
+/// [`query_image`] (by reference) or [`query_image_commit`] (by deployment
+/// commit checksum). The latter is important for the booted deployment, whose
+/// recorded spec transport may not match the transport of the ostree-container
+/// ref that actually backs its commit.
 #[context("Copying image")]
 pub(crate) fn export_to_oci(
     repo: &ostree::Repo,
-    imgref: &ImageReference,
+    srcinfo: &LayeredImageState,
     dest_oci: &Dir,
     tag: Option<&str>,
     opts: ExportToOCIOpts,
 ) -> Result<Descriptor> {
-    let srcinfo = query_image(repo, imgref)?.ok_or_else(|| anyhow!("No such image"))?;
     let (commit_layer, component_layers, remaining_layers) =
         parse_manifest_layout(&srcinfo.manifest, &srcinfo.configuration)?;
 
@@ -1996,6 +2070,36 @@ pub async fn export(
     dest_imgref: &ImageReference,
     opts: Option<ExportToOCIOpts>,
 ) -> Result<oci_image::Digest> {
+    let srcinfo = query_image(repo, src_imgref)?.ok_or_else(|| anyhow!("No such image"))?;
+    export_impl(repo, &srcinfo, dest_imgref, opts).await
+}
+
+/// Like [`export`], but identifies the source image by an ostree commit
+/// checksum (e.g. a deployment's `csum()`) rather than an image reference.
+///
+/// This is the reliable way to export the booted image: it resolves the image
+/// state directly from the commit via [`query_image_commit`], so it works even
+/// when the deployment's recorded spec transport differs from the transport of
+/// the ostree-container ref backing the commit.
+#[context("Export")]
+pub async fn export_commit(
+    repo: &ostree::Repo,
+    commit: &str,
+    dest_imgref: &ImageReference,
+    opts: Option<ExportToOCIOpts>,
+) -> Result<oci_image::Digest> {
+    let srcinfo = query_image_commit(repo, commit)?;
+    export_impl(repo, &srcinfo, dest_imgref, opts).await
+}
+
+/// Shared implementation for [`export`] and [`export_commit`]: serialize an
+/// already-resolved image state to `dest_imgref`.
+async fn export_impl(
+    repo: &ostree::Repo,
+    srcinfo: &LayeredImageState,
+    dest_imgref: &ImageReference,
+    opts: Option<ExportToOCIOpts>,
+) -> Result<oci_image::Digest> {
     let opts = opts.unwrap_or_default();
     let target_oci = dest_imgref.transport == Transport::OciDir;
     let tempdir = if !target_oci {
@@ -2007,14 +2111,14 @@ pub async fn export(
             progress_to_stdout: opts.progress_to_stdout,
             ..Default::default()
         };
-        export_to_oci(repo, src_imgref, &td, None, opts)?;
+        export_to_oci(repo, srcinfo, &td, None, opts)?;
         td
     } else {
         let (path, tag) = parse_oci_path_and_tag(dest_imgref.name.as_str());
         tracing::debug!("using OCI path={path} tag={tag:?}");
         let path = Dir::open_ambient_dir(path, cap_std::ambient_authority())
             .with_context(|| format!("Opening {path}"))?;
-        let descriptor = export_to_oci(repo, src_imgref, &path, tag, opts)?;
+        let descriptor = export_to_oci(repo, srcinfo, &path, tag, opts)?;
         return Ok(descriptor.digest().clone());
     };
     // Pass the temporary oci directory as the current working directory for the skopeo process
