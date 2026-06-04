@@ -510,6 +510,7 @@ pub fn apply_container_proxy_opts_for_transport(
     }
 }
 
+pub mod composefs_import;
 pub mod deploy;
 mod encapsulate;
 pub use encapsulate::*;
