@@ -22,9 +22,11 @@ More about this in the docs; see below.
 The CLI and API are considered stable. We will ensure that every existing system
 can be upgraded in place seamlessly across any future changes.
 
-## Documentation
+## Website and Documentation
 
-See the [project documentation](https://bootc.dev/bootc/).
+- Website: <https://bootc.dev>
+- Blog: <https://bootc.dev/blog>
+- Project documentation: <https://bootc.dev/bootc/>
 
 ## Versioning
 
