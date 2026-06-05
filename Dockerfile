@@ -261,8 +261,9 @@ RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp
     --mount=type=bind,from=packaging,src=/,target=/run/packaging \
     --mount=type=bind,from=packages,src=/,target=/run/packages \
     /run/packaging/install-rpm-and-setup /run/packages
-# Inject some other configuration
-COPY --from=packaging /usr-extras/ /usr/
+RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
+    --mount=type=bind,from=packaging,src=/usr-extras,target=/run/usr-extras \
+    install -D -m 0644 -t /usr/lib/bootc/kargs.d /run/usr-extras/lib/bootc/kargs.d/*.toml
 # Clean up package manager caches
 RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
     --mount=type=bind,from=packaging,src=/,target=/run/packaging \
