@@ -110,10 +110,14 @@ impl BcvkInstallOpts {
                      Run 'just generate-secureboot-keys' to generate them."
                 );
             }
-        } else if matches!(self.bootloader, Some(Bootloader::Systemd)) {
-            Ok(vec!["--firmware=uefi-insecure".into()])
         } else {
-            Ok(Vec::new())
+            // Use insecure firmware for all non-sealed images.  The stock
+            // OVMF Secure Boot key database does not include the distro
+            // signing keys needed to verify shim/grub, so Secure Boot
+            // verification fails at the firmware level with
+            // "Security Violation".  Sealed images work because they enroll
+            // custom test keys and use a test-signed systemd-boot.
+            Ok(vec!["--firmware=uefi-insecure".into()])
         }
     }
 }
