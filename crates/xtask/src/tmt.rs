@@ -12,6 +12,7 @@ const PLAN_MARKER_END: &str = "# END GENERATED PLANS\n";
 // Cloud-init can take 2-3 minutes to start SSH
 const VM_READY_TIMEOUT_SECS: u64 = 60;
 const SSH_CONNECTIVITY_MAX_ATTEMPTS: u32 = 60;
+const SSH_CONNECTIVITY_MAX_ATTEMPTS_EXTENDED: u32 = 120;
 const SSH_CONNECTIVITY_RETRY_DELAY_SECS: u64 = 3;
 
 // Base args - firmware type will be added dynamically based on secure boot key availability
@@ -168,11 +169,21 @@ fn wait_for_vm_ready(sh: &Shell, vm_name: &str) -> Result<(u16, String)> {
 /// Uses a more complex command similar to what TMT runs to ensure full readiness
 #[context("Verifying SSH connectivity")]
 fn verify_ssh_connectivity(sh: &Shell, port: u16, key_path: &Utf8Path) -> Result<()> {
+    verify_ssh_connectivity_with_attempts(sh, port, key_path, SSH_CONNECTIVITY_MAX_ATTEMPTS)
+}
+
+#[context("Verifying SSH connectivity")]
+fn verify_ssh_connectivity_with_attempts(
+    sh: &Shell,
+    port: u16,
+    key_path: &Utf8Path,
+    max_attempts: u32,
+) -> Result<()> {
     use std::thread;
     use std::time::Duration;
 
     let port_str = port.to_string();
-    for attempt in 1..=SSH_CONNECTIVITY_MAX_ATTEMPTS {
+    for attempt in 1..=max_attempts {
         // Test with a complex command like TMT uses (exports + whoami)
         // Use IdentitiesOnly=yes to prevent ssh-agent from offering other keys
         let result = cmd!(
@@ -190,21 +201,31 @@ fn verify_ssh_connectivity(sh: &Shell, port: u16, key_path: &Utf8Path) -> Result
         }
 
         if attempt % 10 == 0 {
-            println!(
-                "Waiting for SSH... attempt {}/{}",
-                attempt, SSH_CONNECTIVITY_MAX_ATTEMPTS
-            );
+            println!("Waiting for SSH... attempt {}/{}", attempt, max_attempts);
         }
 
-        if attempt < SSH_CONNECTIVITY_MAX_ATTEMPTS {
+        if attempt < max_attempts {
             thread::sleep(Duration::from_secs(SSH_CONNECTIVITY_RETRY_DELAY_SECS));
         }
     }
 
     anyhow::bail!(
         "SSH connectivity check failed after {} attempts",
-        SSH_CONNECTIVITY_MAX_ATTEMPTS
+        max_attempts
     )
+}
+
+fn get_ssh_connectivity_attempts(args: &RunTmtArgs) -> u32 {
+    let uses_grub_bls = matches!(args.bootloader, Some(crate::Bootloader::Grub))
+        && matches!(args.boot_type, crate::BootType::Bls);
+    let uses_xfs = args.filesystem.as_deref() == Some("xfs");
+    let is_unsealed = !matches!(args.seal_state, Some(crate::SealState::Sealed));
+
+    if args.composefs_backend && uses_grub_bls && uses_xfs && is_unsealed {
+        SSH_CONNECTIVITY_MAX_ATTEMPTS_EXTENDED
+    } else {
+        SSH_CONNECTIVITY_MAX_ATTEMPTS
+    }
 }
 
 #[derive(Debug)]
@@ -579,7 +600,9 @@ pub(crate) fn run_tmt(sh: &Shell, args: &RunTmtArgs) -> Result<()> {
 
         // Verify SSH connectivity
         println!("Verifying SSH connectivity...");
-        if let Err(e) = verify_ssh_connectivity(sh, ssh_port, &key_path) {
+        let ssh_attempts = get_ssh_connectivity_attempts(args);
+        if let Err(e) = verify_ssh_connectivity_with_attempts(sh, ssh_port, &key_path, ssh_attempts)
+        {
             eprintln!("SSH verification failed for plan {}: {:#}", plan, e);
             cleanup_vm();
             all_passed = false;
@@ -1270,6 +1293,24 @@ fn generate_integration() -> Result<(String, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{BootType, Bootloader, RunTmtArgs, SealState};
+
+    fn base_args() -> RunTmtArgs {
+        RunTmtArgs {
+            image: "localhost/bootc".to_string(),
+            filters: vec![],
+            context: vec![],
+            env: vec![],
+            upgrade_image: None,
+            preserve_vm: false,
+            composefs_backend: false,
+            bootloader: None,
+            filesystem: None,
+            seal_state: None,
+            boot_type: BootType::Bls,
+            karg: vec![],
+        }
+    }
 
     #[test]
     fn test_parse_tmt_metadata_basic() {
@@ -1383,6 +1424,35 @@ use std assert
             Some(&serde_yaml::Value::String(
                 "Execute local upgrade tests".to_string()
             ))
+        );
+    }
+
+    #[test]
+    fn test_ssh_attempts_extended_for_composefs_grub_bls_xfs_unsealed() {
+        let mut args = base_args();
+        args.composefs_backend = true;
+        args.bootloader = Some(Bootloader::Grub);
+        args.filesystem = Some("xfs".to_string());
+        args.seal_state = Some(SealState::Unsealed);
+
+        assert_eq!(
+            get_ssh_connectivity_attempts(&args),
+            SSH_CONNECTIVITY_MAX_ATTEMPTS_EXTENDED
+        );
+    }
+
+    #[test]
+    fn test_ssh_attempts_default_for_non_matching_configs() {
+        let mut args = base_args();
+        args.composefs_backend = true;
+        args.bootloader = Some(Bootloader::Systemd);
+        args.filesystem = Some("ext4".to_string());
+        args.boot_type = BootType::Uki;
+        args.seal_state = Some(SealState::Sealed);
+
+        assert_eq!(
+            get_ssh_connectivity_attempts(&args),
+            SSH_CONNECTIVITY_MAX_ATTEMPTS
         );
     }
 }
