@@ -1,7 +1,7 @@
 title: containers/bootc
 description: bootc documentation
 baseurl: "/bootc"
-url: "https://bootc-dev.github.io"
+url: "https://bootc.dev"
 # Comment above and use below for local development
 # url: "http://localhost:4000"
 permalink: /:title/

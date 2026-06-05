@@ -625,7 +625,7 @@ static LINT_BASEIMAGE_ROOT: Lint = Lint::new_fatal(
     indoc! { r#"
 Check that expected files are present in the root of the filesystem; such
 as /sysroot and a composefs configuration for ostree. More in
-<https://bootc-dev.github.io/bootc/bootc-images.html#standard-image-content>.
+<https://bootc.dev/bootc/bootc-images.html#standard-image-content>.
 "#},
     check_baseimage_root,
 );
@@ -736,7 +736,7 @@ image may not be visible.
 Using systemd-sysusers to allocate users and groups will ensure that these are allocated
 on system startup alongside other users.
 
-More on this topic in <https://bootc-dev.github.io/bootc/building/users-and-groups.html>
+More on this topic in <https://bootc.dev/bootc/building/users-and-groups.html>
 "# },
     check_sysusers,
 );

@@ -24,7 +24,7 @@ can be upgraded in place seamlessly across any future changes.
 
 ## Documentation
 
-See the [project documentation](https://bootc-dev.github.io/bootc/).
+See the [project documentation](https://bootc.dev/bootc/).
 
 ## Versioning
 

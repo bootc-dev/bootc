@@ -8,9 +8,9 @@
 //! to provide a fully "container native" tool for using
 //! bootable container images.
 //!
-//! For user-facing documentation, see <https://bootc-dev.github.io/bootc/>.
+//! For user-facing documentation, see <https://bootc.dev/bootc/>.
 //! For architecture and internals documentation, see the
-//! [Internals](https://bootc-dev.github.io/bootc/internals.html) section.
+//! [Internals](https://bootc.dev/bootc/internals.html) section.
 //!
 //! # Crate Overview
 //!
