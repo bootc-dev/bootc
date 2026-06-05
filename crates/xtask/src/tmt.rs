@@ -419,6 +419,25 @@ pub(crate) fn run_tmt(sh: &Shell, args: &RunTmtArgs) -> Result<()> {
 
     println!("Found {} test plan(s): {:?}", plans.len(), plans);
 
+    // Determine base log directory: CLI flag > TMT_LOG_DIR env var > default.
+    // Filter out empty TMT_LOG_DIR (e.g. TMT_LOG_DIR="") to avoid creating
+    // log subdirectories in the current working directory.
+    let base_log_dir: Utf8PathBuf = if let Some(ref d) = args.log_dir {
+        d.clone()
+    } else if let Some(env_dir) = std::env::var("TMT_LOG_DIR").ok().filter(|s| !s.is_empty()) {
+        Utf8PathBuf::from(env_dir)
+    } else {
+        Utf8PathBuf::from("/var/tmp/tmt")
+    };
+
+    // Probe whether this bcvk supports --log-dir (added in bcvk 0.17).
+    // Older installs silently lack it; we skip the flag rather than hard-failing.
+    let bcvk_has_log_dir = cmd!(sh, "bcvk libvirt run --help")
+        .ignore_stderr()
+        .read()
+        .map(|help| help.contains("--log-dir"))
+        .unwrap_or(false);
+
     // Generate a random suffix for VM names
     let random_suffix = generate_random_suffix();
 
@@ -483,11 +502,22 @@ pub(crate) fn run_tmt(sh: &Shell, args: &RunTmtArgs) -> Result<()> {
             opts
         };
 
+        // Set up per-VM log directory for journal + console capture (if bcvk supports it)
+        let vm_log_dir = base_log_dir.join(&vm_name);
+        let log_dir_args: Vec<String> = if bcvk_has_log_dir {
+            std::fs::create_dir_all(&vm_log_dir)
+                .with_context(|| format!("Creating VM log directory {}", vm_log_dir))?;
+            println!("VM logs will be written to: {}", vm_log_dir);
+            vec![format!("--log-dir=journal,console={}", vm_log_dir)]
+        } else {
+            vec![]
+        };
+
         // Launch VM with bcvk
         let firmware_args_slice = firmware_args.as_slice();
         let launch_result = cmd!(
             sh,
-            "bcvk libvirt run --name {vm_name} --detach {firmware_args_slice...} {COMMON_INST_ARGS...} {plan_bcvk_opts...} {image}"
+            "bcvk libvirt run --name {vm_name} --detach {firmware_args_slice...} {COMMON_INST_ARGS...} {plan_bcvk_opts...} {log_dir_args...} {image}"
         )
         .run()
         .context("Launching VM with bcvk");
@@ -581,6 +611,12 @@ pub(crate) fn run_tmt(sh: &Shell, args: &RunTmtArgs) -> Result<()> {
         println!("Verifying SSH connectivity...");
         if let Err(e) = verify_ssh_connectivity(sh, ssh_port, &key_path) {
             eprintln!("SSH verification failed for plan {}: {:#}", plan, e);
+            if bcvk_has_log_dir {
+                eprintln!(
+                    "VM logs (journal + console) may be available at: {}",
+                    vm_log_dir
+                );
+            }
             cleanup_vm();
             all_passed = false;
             test_results.push((plan.to_string(), false, None));

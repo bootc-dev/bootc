@@ -253,6 +253,12 @@ pub(crate) struct RunTmtArgs {
     /// Additional kernel arguments to pass to bcvk
     #[arg(long)]
     pub(crate) karg: Vec<String>,
+
+    /// Base directory for VM log files (journal + console).
+    /// Defaults to $TMT_LOG_DIR if set, otherwise /var/tmp/tmt.
+    /// Each VM gets its own subdirectory: `<log-dir>/<vm-name>/`
+    #[arg(long)]
+    pub(crate) log_dir: Option<camino::Utf8PathBuf>,
 }
 
 impl RunTmtArgs {
