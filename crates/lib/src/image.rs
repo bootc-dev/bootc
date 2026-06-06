@@ -15,9 +15,15 @@
 //!
 //! ## `bootc image set-unified full`
 //!
-//! `set_unified_entrypoint` onboards the ostree backend via `set_unified`.
-//! Composefs-native onboarding is provided separately by the
-//! composefs-native feature.
+//! `set_unified_entrypoint` dispatches to `set_unified` (ostree backend) or
+//! `set_unified_composefs` (composefs backend).  The composefs path:
+//!
+//! 1. Pulls the currently booted image into bootc-owned containers-storage
+//!    (directly, or by copying from the host store to avoid the network).
+//! 2. Runs a full reconcile so that the rollback and staged images are
+//!    backfilled too (see below).
+//! 3. *Only then* writes the `bootc.json` flag — so a failure in steps 1–2
+//!    leaves the system un-marked rather than half-migrated.
 //!
 //! After this, all subsequent upgrades/switches route through the forward
 //! unified pipeline (cstorage → composefs reflink).  On a reflink-capable
@@ -1771,10 +1777,8 @@ pub(crate) async fn set_unified_entrypoint(enabled_with_copy: bool) -> Result<()
 
     let storage = crate::cli::get_storage().await?;
 
-    if let crate::store::BootedStorageKind::Composefs(_) = storage.kind()? {
-        anyhow::bail!(
-            "unified storage onboarding on the composefs-native backend requires the composefs-native feature"
-        );
+    if let crate::store::BootedStorageKind::Composefs(booted_cfs) = storage.kind()? {
+        return set_unified_composefs(&storage, &booted_cfs, local_fetch).await;
     }
 
     // Initialize floating c_storage early - needed for container operations
@@ -1887,6 +1891,182 @@ async fn bind_ostree_composefs(sysroot: &crate::store::Storage) -> Result<()> {
         .context("Writing composefs binding to ostree repo config")?;
 
     println!("ostree\u{2194}composefs binding enabled; run `bootc upgrade` to fetch and activate.");
+    Ok(())
+}
+
+/// Composefs implementation of set_unified: pull the booted image into
+/// bootc-owned containers-storage so future upgrades use the unified
+/// (zero-copy) path automatically.
+#[context("Setting unified storage for composefs")]
+async fn set_unified_composefs(
+    storage: &crate::store::Storage,
+    booted_cfs: &crate::store::BootedComposefs,
+    local_fetch: composefs_ctl::composefs_oci::LocalFetchOpt,
+) -> Result<()> {
+    use crate::bootc_composefs::status::get_composefs_status;
+
+    const SET_UNIFIED_CFS_JOURNAL_ID: &str = "2b1c0d9e8f7a6b5c4d3e2f1a0b9c8d7e";
+
+    let host = get_composefs_status(storage, booted_cfs)
+        .await
+        .context("Getting composefs deployment status")?;
+
+    let imgref = host
+        .spec
+        .image
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("No image source specified for booted deployment"))?;
+
+    tracing::info!(
+        message_id = SET_UNIFIED_CFS_JOURNAL_ID,
+        bootc.image.reference = &imgref.image,
+        bootc.image.transport = &imgref.transport,
+        "Pulling booted image into bootc containers-storage for unified storage: {}",
+        imgref,
+    );
+
+    let imgstore = storage.get_ensure_imgstore()?;
+
+    // Pull into bootc-owned containers-storage if not already there.
+    let img_transport = imgref.to_transport_image()?;
+    if imgstore.exists(&img_transport).await? {
+        tracing::info!(
+            message_id = SET_UNIFIED_CFS_JOURNAL_ID,
+            bootc.status = "already_in_bootc_storage",
+            "Image already present in bootc containers-storage",
+        );
+    } else {
+        // If the image exists in the host's default containers-storage
+        // (/var/lib/containers), copy from there (avoids network).
+        // Otherwise, pull from the original transport.
+        let image_in_host = image_exists_in_host_storage(&imgref.image).await?;
+
+        if image_in_host {
+            tracing::info!(
+                "Image {} found in host containers-storage; copying to bootc storage",
+                &imgref.image
+            );
+            let image_name = imgref.image.clone();
+            let copy_msg = format!("Copying {} to bootc storage", &image_name);
+            async_task_with_spinner(&copy_msg, async move {
+                imgstore.pull_from_host_storage(&image_name).await
+            })
+            .await?;
+        } else {
+            let pull_ref = img_transport;
+            let pull_msg = format!("Pulling {} to bootc storage", &pull_ref);
+            async_task_with_spinner(&pull_msg, async move {
+                imgstore.pull_with_progress(&pull_ref).await
+            })
+            .await?;
+        }
+
+        // Verify
+        let imgstore = storage.get_ensure_imgstore()?;
+        let img_transport = imgref.to_transport_image()?;
+        if !imgstore.exists(&img_transport).await? {
+            anyhow::bail!(
+                "Image was pulled but not found in bootc storage: {}",
+                &imgref.image
+            );
+        }
+    }
+
+    // Ensure the booted image has a bootc GC tag in the composefs repo so that
+    // reconcile_unified_storage (called next) can find it via list_refs.
+    // The rollback/staged images are tagged at deploy time by pull_via_composefs;
+    // only the booted image may be missing its tag on a freshly-onboarded system.
+    {
+        use crate::bootc_composefs::state::read_origin;
+        use crate::composefs_consts::{ORIGIN_KEY_IMAGE, ORIGIN_KEY_MANIFEST_DIGEST};
+        use composefs_ctl::composefs_oci::tag_image;
+
+        // The booted deployment ID is its fsverity digest (ComposefsCmdline.digest).
+        let deployment_id = &booted_cfs.cmdline.digest;
+
+        // The manifest digest is stored in the .origin file by pull_via_composefs.
+        let ini = read_origin(&storage.physical_root, deployment_id)
+            .context("Reading booted deployment origin for composefs GC tag")?;
+        if let Some(ini) = ini {
+            if let Some(manifest_digest_str) =
+                ini.get::<String>(ORIGIN_KEY_IMAGE, ORIGIN_KEY_MANIFEST_DIGEST)
+            {
+                let manifest_digest: composefs_oci::OciDigest = manifest_digest_str
+                    .parse()
+                    .context("Parsing manifest digest from origin")?;
+                let cfs_repo = storage.get_ensure_composefs()?;
+                let tag =
+                    crate::bootc_composefs::repo::bootc_tag_for_manifest(&manifest_digest_str);
+
+                let existing_refs =
+                    composefs_oci::list_refs(&*cfs_repo).context("Listing composefs refs")?;
+                if existing_refs.iter().any(|(t, _)| t == &tag) {
+                    tracing::info!("Bootc GC tag {tag} already exists in composefs repo");
+                } else {
+                    tracing::info!("Writing bootc GC tag {tag} for booted image in composefs repo");
+                    tag_image(&*cfs_repo, &manifest_digest, &tag)
+                        .context("Tagging booted image as bootc GC root in composefs repo")?;
+                }
+            } else {
+                tracing::warn!(
+                    "No manifest digest in origin for deployment {deployment_id}; \
+                     bootc GC tag not written (legacy deployment?)"
+                );
+            }
+        } else {
+            tracing::warn!(
+                "No origin file for deployment {deployment_id}; \
+                 bootc GC tag not written"
+            );
+        }
+    }
+
+    // Reconcile all live deployments (booted + rollback + staged) into
+    // containers-storage.  This is the key step that makes fsck pass after
+    // set-unified on a system with a rollback deployment.
+    let summary = reconcile_unified_storage(storage).await?;
+    tracing::info!(
+        message_id = SET_UNIFIED_CFS_JOURNAL_ID,
+        bootc.reconcile.checked = summary.checked,
+        bootc.reconcile.restored = summary.restored,
+        bootc.reconcile.already_present = summary.already_present,
+        "Unified storage reconcile complete",
+    );
+    if !summary.failures.is_empty() {
+        let msgs: Vec<String> = summary
+            .failures
+            .iter()
+            .map(|(name, e)| format!("{name}: {e:#}"))
+            .collect();
+        bail!(
+            "Failed to reconcile {} image(s) into containers-storage:\n{}",
+            summary.failures.len(),
+            msgs.join("\n")
+        );
+    }
+
+    // Write composefs/bootc.json so pull_via_composefs routes through the
+    // three-store unified pipeline on all subsequent upgrades/switches.
+    {
+        use composefs_ctl::composefs_oci::LocalFetchOpt;
+        let mut meta =
+            crate::store::BootcRepoMeta::read(&storage.physical_root)?.unwrap_or_default();
+        meta.version = 1;
+        meta.unified = if local_fetch == LocalFetchOpt::ZeroCopy {
+            crate::spec::UnifiedStorageState::Enabled
+        } else {
+            crate::spec::UnifiedStorageState::EnabledWithCopy
+        };
+        meta.write(&storage.physical_root)
+            .context("Writing unified-storage flag to composefs/bootc.json")?;
+    }
+
+    tracing::info!(
+        message_id = SET_UNIFIED_CFS_JOURNAL_ID,
+        bootc.status = "set_unified_complete",
+        "Unified storage set. Future upgrade/switch will use zero-copy path automatically.",
+    );
+    println!("Unified storage enabled for {}.", imgref.image);
     Ok(())
 }
 
