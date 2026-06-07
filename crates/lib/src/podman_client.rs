@@ -198,8 +198,11 @@ impl PodmanClient {
 
         let encoded_ref =
             percent_encoding::utf8_percent_encode(image, percent_encoding::NON_ALPHANUMERIC);
+        // Use policy=newer rather than always: the registry is still contacted
+        // to detect a moved tag, but blob content already present locally is not
+        // re-downloaded when the image is unchanged.
         let uri = format!(
-            "/{LIBPOD_API_VERSION}/libpod/images/pull?reference={encoded_ref}&pullProgress=true&policy=always"
+            "/{LIBPOD_API_VERSION}/libpod/images/pull?reference={encoded_ref}&pullProgress=true&policy=newer"
         );
 
         tracing::debug!("POST {uri}");

@@ -254,6 +254,12 @@ pub(crate) enum ContainerImageOpts {
         /// the new manifest.
         #[clap(long)]
         check: Option<Utf8PathBuf>,
+
+        /// Synthesize the ostree commit from a composefs OCI pull
+        /// (via `import_from_composefs_repo`) instead of the classic tar
+        /// pipeline.  Used to validate equivalence between the two backends.
+        #[clap(long)]
+        composefs_unified: bool,
     },
 
     /// Output metadata about an already stored container image.
@@ -862,6 +868,84 @@ async fn container_info(imgref: &OstreeImageReference) -> Result<()> {
     Ok(())
 }
 
+/// Write a layered container image into an OSTree commit using the composefs pipeline.
+async fn container_store_composefs_unified(
+    repo: &ostree::Repo,
+    imgref: &OstreeImageReference,
+    ostree_digestfile: Option<Utf8PathBuf>,
+    quiet: bool,
+) -> Result<()> {
+    use composefs_ctl::composefs::fsverity::{Algorithm, DEFAULT_LG_BLOCKSIZE, Sha512HashValue};
+    use composefs_ctl::composefs::repository::Repository;
+    use composefs_ctl::composefs_oci;
+    use composefs_ctl::composefs_oci::oci_image::OciImage;
+    use std::sync::Arc;
+
+    if !quiet {
+        println!("Pulling (composefs-unified): {imgref}");
+    }
+
+    // Create a temporary composefs repository.
+    let cfs_tempdir = tempfile::tempdir_in("/var/tmp")
+        .context("Creating temporary directory for composefs repo")?;
+    let cfs_dirfd = cap_std::fs::Dir::open_ambient_dir(cfs_tempdir.path(), cap_std::ambient_authority())
+        .context("Opening composefs tempdir")?;
+    let algo = Algorithm::Sha512 {
+        lg_blocksize: DEFAULT_LG_BLOCKSIZE,
+    };
+    let (cfs_repo, _) =
+        Repository::<Sha512HashValue>::init_path(cfs_dirfd, ".", algo, false)
+            .context("Initializing temporary composefs repository")?;
+    let cfs_repo = Arc::new(cfs_repo);
+
+    // Derive the transport string for composefs_oci::pull.
+    // ImageReference::Display produces e.g. "docker://quay.io/..." for registry
+    // transport, "oci:/path", "containers-storage:name" — all accepted by
+    // composefs_oci::pull via containers_image_proxy::ImageReference::try_from.
+    let transport_str = imgref.imgref.to_string();
+
+    let pull_result = composefs_oci::pull(&cfs_repo, &transport_str, None, Default::default())
+        .await
+        .with_context(|| format!("Pulling {transport_str} into composefs repo"))?;
+
+    // Open the OCI image to retrieve manifest + config.
+    let oci_image = OciImage::open(&cfs_repo, &pull_result.manifest_digest, None)
+        .context("Opening OCI image from composefs repo")?;
+    let manifest = oci_image.manifest().clone();
+    let config = oci_image
+        .config()
+        .cloned()
+        .context("OCI image has no config (artifact, not a container image)")?;
+    let manifest_digest_str = pull_result.manifest_digest.to_string();
+
+    // Synthesize an ostree commit from the composefs tree.
+    // import_from_composefs_repo opens its own auto_transaction internally.
+    let commit = crate::container::composefs_import::import_from_composefs_repo(
+        repo,
+        &cfs_repo,
+        &pull_result.config_digest,
+        &manifest_digest_str,
+        &manifest,
+        &config,
+        false, // reflinks_required: use copy fallback for any filesystem
+    )
+    .context("Synthesizing ostree commit from composefs tree")?;
+
+    // Write the ostree ref so the commit is findable — mirrors the classic pull path.
+    let ostree_ref = crate::container::store::ref_for_image(&imgref.imgref)
+        .context("Computing ostree ref for image")?;
+    let txn = repo
+        .auto_transaction(gio::Cancellable::NONE)
+        .context("Beginning ostree transaction for ref write")?;
+    repo.transaction_set_ref(None, &ostree_ref, Some(commit.as_str()));
+    txn.commit(gio::Cancellable::NONE)
+        .context("Committing ostree ref transaction")?;
+
+    write_digest_file(ostree_digestfile, &commit)?;
+    println!("Wrote (composefs-unified): {} => {}", imgref, commit);
+    Ok(())
+}
+
 /// Write a layered container image into an OSTree commit.
 async fn container_store(
     repo: &ostree::Repo,
@@ -870,7 +954,14 @@ async fn container_store(
     proxyopts: ContainerProxyOpts,
     quiet: bool,
     check: Option<Utf8PathBuf>,
+    composefs_unified: bool,
 ) -> Result<()> {
+    if composefs_unified {
+        if check.is_some() {
+            anyhow::bail!("--check is not supported with --composefs-unified");
+        }
+        return container_store_composefs_unified(repo, imgref, ostree_digestfile, quiet).await;
+    }
     let mut imp = ImageImporter::new(repo, imgref, proxyopts.into()).await?;
     let prep = match imp.prepare().await? {
         PrepareResult::AlreadyPresent(c) => {
@@ -1113,10 +1204,19 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
                     proxyopts,
                     quiet,
                     check,
+                    composefs_unified,
                 } => {
                     let repo = parse_repo(&repo)?;
-                    container_store(&repo, &imgref, ostree_digestfile, proxyopts, quiet, check)
-                        .await
+                    container_store(
+                        &repo,
+                        &imgref,
+                        ostree_digestfile,
+                        proxyopts,
+                        quiet,
+                        check,
+                        composefs_unified,
+                    )
+                    .await
                 }
                 ContainerImageOpts::Reexport {
                     repo,

@@ -1,3 +1,35 @@
+//! Read composefs deployment state: bootloader entries, image metadata, and
+//! running system status.
+//!
+//! ## Bootloader entries as the source of truth
+//!
+//! On a composefs system the bootloader entries (BLS snippets in
+//! `/boot/loader/entries/`) are the authoritative record of what the system
+//! can boot.  Each entry carries a `composefs=<sha512-fsverity>` kernel
+//! argument that uniquely identifies the composefs image.
+//!
+//! `list_bootloader_entries` parses every BLS entry and returns a
+//! [`BootloaderEntry`] for each one (its `fsverity` and `boot_artifact_name`).
+//! `get_imginfo` resolves a deployment to an [`ImgConfigManifest`] — the OCI
+//! config and manifest — by reading the manifest digest from the deployment's
+//! `.origin` file and then opening that image from the composefs repo
+//! (`OciImage::open`).  It falls back to a legacy `.imginfo` file for
+//! deployments created before the manifest digest was stored in `.origin`.
+//! The OCI config digest derived from this is the stable image identifier
+//! used throughout unified storage.
+//!
+//! Both `inspect_unified_storage` (read-only fsck) and
+//! `collect_pinned_config_digests` (reconcile) use this path to identify the
+//! set of images that must be present in containers-storage.
+//!
+//! ## Relationship to ostree deployment list
+//!
+//! `composefs_deployment_status_from` consults the ostree deployment list
+//! (which is itself derived from the bootloader entries) to attach
+//! `DeploymentStatus` to each entry — booted, rollback, staged, or none.
+//! The ostree list adds staging state that the BLS entries alone do not
+//! expose.
+
 use std::{collections::HashSet, io::Read, sync::OnceLock};
 
 use anyhow::{Context, Result};
@@ -977,6 +1009,17 @@ async fn composefs_deployment_status_from(
     };
 
     host.status.usr_overlay = get_composefs_usr_overlay_status().ok().flatten();
+
+    // Populate storage status from bootc repo metadata stored on the physical root.
+    // Native composefs systems have no ostree repo, so ostree_composefs_bound is
+    // always false here.
+    host.status.storage = crate::store::BootcRepoMeta::read(&storage.physical_root)
+        .ok()
+        .flatten()
+        .map(|meta| crate::spec::StorageStatus {
+            unified: meta.unified,
+            ostree_composefs_bound: false,
+        });
 
     set_soft_reboot_capability(storage, &mut host, sorted_bls_config, cmdline)?;
 

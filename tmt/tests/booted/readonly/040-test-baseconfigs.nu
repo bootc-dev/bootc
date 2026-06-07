@@ -74,6 +74,30 @@ for config in $configs {
             assert equal $driver "overlay" $"podman should use overlay driver on tmpfs /var, got: ($driver)"
             print $"# podman graph driver: ($driver) ✓"
         },
+        "unified-storage" => {
+            print "# Checking unified-storage: image must be in unified mode"
+            # The install config (baked in at image build time) should have caused
+            # bootc install to enable unified storage, so the booted image must be
+            # reported as type "unified" from day 1 (no set-unified needed).
+            let images = (bootc image list --format json | from json)
+            let unified = ($images | where image_type == "unified")
+            assert (($unified | length) > 0) "Expected booted image to be unified (installed via unified-storage baseconfig)"
+            print $"# unified images: ($unified | length) ✓"
+
+            # The bootc-owned storage symlink must be present
+            assert ("/usr/lib/bootc/storage" | path exists) "/usr/lib/bootc/storage must exist"
+            print "# /usr/lib/bootc/storage exists ✓"
+
+            # The install config TOML that enabled this must be present in the image
+            assert ("/usr/lib/bootc/install/00-storage.toml" | path exists) \
+                "/usr/lib/bootc/install/00-storage.toml must be present in unified-storage image"
+            print "# /usr/lib/bootc/install/00-storage.toml exists ✓"
+
+            # fsck must pass
+            print "# Running bootc internals fsck images"
+            bootc internals fsck images
+            print "# fsck passed ✓"
+        },
         _ => {
             print $"# Unknown baseconfig token: ($config) — skipping"
         }

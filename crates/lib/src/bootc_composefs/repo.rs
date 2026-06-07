@@ -78,6 +78,7 @@ pub(crate) async fn initialize_composefs_repository(
     root_setup: &RootSetup,
     allow_missing_fsverity: bool,
     use_unified: bool,
+    local_fetch: LocalFetchOpt,
 ) -> Result<PullResult<Sha512HashValue>> {
     const COMPOSEFS_REPO_INIT_JOURNAL_ID: &str = "3cae9eff71b64f50b63d856a02ba217c";
 
@@ -136,7 +137,14 @@ pub(crate) async fn initialize_composefs_repository(
         let imgstore = CStorage::create(rootfs_dir, &run, sepolicy.as_ref())?;
         let storage_path = root_setup.physical_root_path.join(CStorage::subpath());
 
-        let r = pull_composefs_unified(&imgstore, storage_path.as_str(), &repo, &imgref).await?;
+        let r = pull_composefs_unified(
+            &imgstore,
+            storage_path.as_str(),
+            &repo,
+            &imgref,
+            local_fetch,
+        )
+        .await?;
 
         // SELinux-label the containers-storage now that all pulls are done.
         imgstore
@@ -216,16 +224,18 @@ async fn pull_composefs_unified(
     storage_path: &str,
     repo: &Arc<crate::store::ComposefsRepository>,
     imgref: &containers_image_proxy::ImageReference,
+    local_fetch: LocalFetchOpt,
 ) -> Result<PullResult<Sha512HashValue>> {
     let image = &imgref.name;
 
     // Stage 1: get the image into bootc-owned containers-storage.
     if imgref.transport == containers_image_proxy::Transport::ContainerStorage {
-        // The image is in the default containers-storage (/var/lib/containers/storage).
-        // Copy it into bootc-owned storage.
+        // The image is in a containers-storage instance — either the default
+        // /var/lib/containers/storage or an additional image store advertised
+        // via STORAGE_OPTS (e.g. the bcvk virtiofs mount).
         tracing::info!("Unified pull: copying {image} from host containers-storage");
         imgstore
-            .pull_from_host_storage(image)
+            .pull_from_containers_storage(image)
             .await
             .context("Copying image from host containers-storage into bootc storage")?;
     } else {
@@ -247,11 +257,11 @@ async fn pull_composefs_unified(
     let storage = std::path::Path::new(storage_path);
     let pull_opts = PullOptions {
         // The image is already in bootc-owned containers-storage at this point
-        // (placed there by Stage 1 of the unified pull). Use ZeroCopy so we
-        // actually import via reflink/hardlink and fail loudly if that isn't
-        // possible — a plain copy fallback here would mean Stage 1 and Stage 2
-        // are on different filesystems or the storage root is wrong.
-        local_fetch: LocalFetchOpt::ZeroCopy,
+        // (placed there by Stage 1 of the unified pull). CopyMode controls
+        // whether a fallback to byte copies is acceptable:
+        // ZeroCopy → fail if reflinks unavailable (storage.unified = "enabled")
+        // IfPossible → byte-copy fallback ok (storage.unified = "enabled-with-copy")
+        local_fetch,
         storage_root: Some(storage),
         ..Default::default()
     };
@@ -277,6 +287,7 @@ pub(crate) async fn pull_composefs_repo(
     spec_imgref: &crate::spec::ImageReference,
     allow_missing_fsverity: bool,
     use_unified: bool,
+    local_fetch: LocalFetchOpt,
 ) -> Result<PullRepoResult> {
     const COMPOSEFS_PULL_JOURNAL_ID: &str = "bd0a8ed0d5004a1e9d6ba429992c2eb7";
 
@@ -327,7 +338,7 @@ pub(crate) async fn pull_composefs_repo(
         let imgstore = CStorage::create(&rootfs_dir, &run, sepolicy.as_ref())?;
         let storage_path = format!("/sysroot/{}", CStorage::subpath());
 
-        pull_composefs_unified(&imgstore, &storage_path, &repo, &imgref).await?
+        pull_composefs_unified(&imgstore, &storage_path, &repo, &imgref, local_fetch).await?
     } else {
         pull_composefs_direct(&repo, &imgref).await?
     };

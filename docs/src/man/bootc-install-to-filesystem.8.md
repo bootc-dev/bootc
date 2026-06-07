@@ -73,7 +73,7 @@ is currently expected to be empty by default.
 
 **--skip-fetch-check**
 
-    Verify the image can be fetched from the bootc image. Updates may fail when the installation host is authenticated with the registry but the pull secret is not in the bootc image
+    Skip the fetch check (inverse of `--run-fetch-check`). When true, the pre-install registry reachability probe is skipped. Useful when the caller has already verified connectivity or when installing in an air-gapped environment
 
 **--disable-selinux**
 

@@ -19,6 +19,11 @@ pub(crate) struct Inspect {
 pub(crate) struct ImageListEntry {
     pub(crate) id: String,
     pub(crate) names: Option<Vec<String>>,
+    /// Manifest digest as reported by podman (may differ from the composefs
+    /// OCI manifest digest when layers are recompressed during copy).
+    /// Kept for diagnostic purposes; use `id` (config sha256) for matching.
+    #[allow(dead_code)]
+    pub(crate) digest: Option<String>,
 }
 
 /// Given an image ID, return its manifest digest

@@ -17,6 +17,7 @@
 #
 use std assert
 use tap.nu
+use bootc_testlib.nu
 
 # This code runs on *each* boot.
 # Here we just capture information.
@@ -118,6 +119,7 @@ def second_boot [] {
 }
 
 def main [] {
+    bootc_testlib initial_status_and_checks
     # See https://tmt.readthedocs.io/en/stable/stories/features.html#reboot-during-test
     match $env.TMT_REBOOT_COUNT? {
         null | "0" => initial_build,

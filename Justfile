@@ -290,12 +290,27 @@ test-tmt-baseconfig baseconfig *ARGS:
         --seal-state={{seal_state}} \
         {{base_img}} readonly {{ARGS}}
 
+# Run unified-storage baseconfig test (works with ostree variant, no composefs required)
+[group('testing')]
+test-tmt-baseconfig-unified-storage *ARGS:
+    just baseconfigs=unified-storage build
+    just baseconfigs=unified-storage _build-upgrade-image
+    cargo xtask run-tmt \
+        --env=BOOTC_baseconfigs=unified-storage \
+        --upgrade-image={{upgrade_img}} \
+        --bootloader={{bootloader}} \
+        --filesystem={{filesystem}} \
+        --boot-type={{boot_type}} \
+        --seal-state={{seal_state}} \
+        {{base_img}} readonly {{ARGS}}
+
 # Run readonly tests for all standard baseconfigs
 [group('testing')]
 test-baseconfigs *ARGS:
     just test-tmt-baseconfig etc-transient {{ARGS}}
     just test-tmt-baseconfig root-transient {{ARGS}}
     just test-tmt-baseconfig var-volatile {{ARGS}}
+    just test-tmt-baseconfig-unified-storage {{ARGS}}
 
 # Run tmt tests on Fedora CoreOS
 [group('testing')]

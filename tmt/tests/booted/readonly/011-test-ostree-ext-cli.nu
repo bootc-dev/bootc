@@ -9,8 +9,14 @@ tap begin "verify bootc wrapping ostree-ext"
 let st = bootc status --json | from json
 # Detect composefs by checking if composefs field is present
 let is_composefs = (tap is_composefs)
+# On unified storage installs the ostree commit is synthesized from composefs
+# via FICLONE reflinks rather than imported via the ostree-container protocol,
+# so the ostree-container image metadata is not available.
+let is_unified = ($st.status.storage?.unified? | default "disabled") != "disabled"
 if $is_composefs {
     print "# TODO composefs: skipping test - ostree-container commands don't work with composefs"
+} else if $is_unified {
+    print "# unified storage: skipping test - ostree commit synthesized from composefs, no ostree-container metadata"
 } else {
     let booted = $st.status.booted.image
     # Then verify we can extract its metadata via the ostree-container code.

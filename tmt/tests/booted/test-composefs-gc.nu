@@ -5,6 +5,7 @@
 
 use std assert
 use tap.nu
+use bootc_testlib.nu
 
 if not (tap is_composefs) {
     exit 0
@@ -171,6 +172,7 @@ def fifth_boot [i: int] {
 }
 
 def main [] {
+    bootc_testlib initial_status_and_checks
     match $env.TMT_REBOOT_COUNT? {
         null | "0" => first_boot,
         "1" => second_boot,

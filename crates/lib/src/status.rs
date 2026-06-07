@@ -428,6 +428,40 @@ pub(crate) fn get_status(
         .map(|d| d.unlocked())
         .and_then(crate::spec::deployment_unlocked_state_to_usr_overlay);
 
+    // Populate storage status.  Two independent signals contribute:
+    //
+    // 1. `BootcRepoMeta` (composefs/bootc.json) — present only on Unified systems;
+    //    carries the `unified` field.
+    // 2. The ostree repo-config flag (`[composefs] unified = true`) — present on
+    //    both BoundOnly and Unified systems; read via `ostree_composefs_bound`.
+    //
+    // A BoundOnly system has no BootcRepoMeta, so `unified` defaults to Disabled.
+    // We still want `storage` to be Some so the binding is visible in JSON output.
+    let unified = crate::utils::sysroot_dir(sysroot)
+        .and_then(|sysroot_dir| {
+            sysroot_dir
+                .open_dir(crate::store::SYSROOT)
+                .map_err(Into::into)
+        })
+        .and_then(|physical_root| crate::store::BootcRepoMeta::read(&physical_root))
+        .ok()
+        .flatten()
+        .map(|meta| meta.unified)
+        .unwrap_or(crate::spec::UnifiedStorageState::Disabled);
+    // Read repo-config binding flag; treat any error as false (e.g. no repo on
+    // native composefs systems).
+    let ostree_composefs_bound =
+        crate::deploy::ostree_composefs_bound(&booted_ostree.repo()).unwrap_or(false);
+    let storage_status =
+        if unified != crate::spec::UnifiedStorageState::Disabled || ostree_composefs_bound {
+            Some(crate::spec::StorageStatus {
+                unified,
+                ostree_composefs_bound,
+            })
+        } else {
+            None
+        };
+
     let mut host = Host::new(spec);
     host.status = HostStatus {
         staged,
@@ -437,6 +471,7 @@ pub(crate) fn get_status(
         rollback_queued,
         ty,
         usr_overlay,
+        storage: storage_status,
     };
     Ok((deployments, host))
 }
@@ -726,6 +761,9 @@ fn human_render_slot(
     // Show /usr overlay status
     write_usr_overlay(&mut out, slot, host_status, prefix_len)?;
 
+    // Show storage status
+    write_storage(&mut out, slot, host_status, prefix_len)?;
+
     if verbose {
         // Show additional information in verbose mode similar to rpm-ostree
         if let Some(ostree) = &entry.ostree {
@@ -779,6 +817,31 @@ fn write_usr_overlay(
         if let Some(ref overlay) = host_status.usr_overlay {
             write_row_name(&mut out, "/usr overlay", prefix_len)?;
             writeln!(out, "{}", overlay)?;
+        }
+    }
+    Ok(())
+}
+
+/// Helper function to render storage status
+fn write_storage(
+    mut out: impl Write,
+    slot: Option<Slot>,
+    host_status: &crate::spec::HostStatus,
+    prefix_len: usize,
+) -> Result<()> {
+    // Only show storage info for the booted slot
+    if matches!(slot, Some(Slot::Booted)) {
+        if let Some(ref storage) = host_status.storage {
+            use crate::spec::UnifiedStorageState;
+            if storage.unified != UnifiedStorageState::Disabled {
+                write_row_name(&mut out, "Storage", prefix_len)?;
+                writeln!(out, "unified ({})", storage.unified)?;
+            } else if storage.ostree_composefs_bound {
+                // BoundOnly: ostree commit synthesised from composefs tree,
+                // but containers-storage is not participating.
+                write_row_name(&mut out, "Storage", prefix_len)?;
+                writeln!(out, "ostree-composefs-bound")?;
+            }
         }
     }
     Ok(())
@@ -1036,6 +1099,64 @@ mod tests {
             let result = format_timestamp(&input).to_string();
             assert_eq!(result, expected, "Failed for input {input:?}");
         }
+    }
+
+    /// Helper: call `write_storage` for the Booted slot and return the output.
+    fn write_storage_output(storage: Option<crate::spec::StorageStatus>) -> String {
+        use crate::spec::HostStatus;
+        let host_status = HostStatus {
+            storage,
+            ..Default::default()
+        };
+        let mut w = Vec::new();
+        write_storage(&mut w, Some(Slot::Booted), &host_status, 12).unwrap();
+        String::from_utf8(w).unwrap()
+    }
+
+    #[test]
+    fn test_write_storage_disabled() {
+        // No storage section — classic ostree, no output expected.
+        let out = write_storage_output(None);
+        assert!(
+            out.is_empty(),
+            "Expected no output for None storage, got: {out:?}"
+        );
+    }
+
+    #[test]
+    fn test_write_storage_bound_only() {
+        // BoundOnly: composefs bound, containers-storage not participating.
+        let storage = crate::spec::StorageStatus {
+            unified: crate::spec::UnifiedStorageState::Disabled,
+            ostree_composefs_bound: true,
+        };
+        let out = write_storage_output(Some(storage));
+        assert!(
+            out.contains("ostree-composefs-bound"),
+            "Expected 'ostree-composefs-bound' in output, got: {out:?}"
+        );
+        assert!(
+            !out.contains("unified"),
+            "Should not show 'unified' for bound-only, got: {out:?}"
+        );
+    }
+
+    #[test]
+    fn test_write_storage_unified() {
+        // Unified: containers-storage participating; should show unified, not bound label.
+        let storage = crate::spec::StorageStatus {
+            unified: crate::spec::UnifiedStorageState::Enabled,
+            ostree_composefs_bound: true,
+        };
+        let out = write_storage_output(Some(storage));
+        assert!(
+            out.contains("unified"),
+            "Expected 'unified' in output, got: {out:?}"
+        );
+        assert!(
+            !out.contains("ostree-composefs-bound"),
+            "Should not show bound label when unified is active, got: {out:?}"
+        );
     }
 
     fn human_status_from_spec_fixture(spec_fixture: &str) -> Result<String> {

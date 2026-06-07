@@ -21,6 +21,18 @@ if $is_upgrade {
     exit 0
 }
 
+# After a `bootc switch --transport containers-storage`, the booted transport
+# is containers-storage. The aleph file records the original install-time
+# registry image, so the cross-check against the current booted image would
+# legitimately fail. Skip in this case.
+let st = bootc status --json | from json
+let booted_transport = $st.status.booted.image.image.transport
+if $booted_transport == "containers-storage" {
+    print "# Skipping aleph cross-check: booted from containers-storage (aleph records original install)"
+    tap ok
+    exit 0
+}
+
 # Detect composefs by checking if composefs field is present
 let is_composefs = (tap is_composefs)
 if $is_composefs {
@@ -35,7 +47,7 @@ if $is_composefs {
     assert ($aleph.selinux | is-not-empty) "selinux field should be non-empty"
 
     # Cross-check aleph fields against the booted image from bootc status
-    let st = bootc status --json | from json
+    # (st was already parsed above for the transport check)
     let booted = $st.status.booted
 
     # Verify the digest field matches the booted image digest

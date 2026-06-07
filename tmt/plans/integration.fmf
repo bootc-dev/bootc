@@ -137,14 +137,6 @@ execute:
       - /tmt/tests/tests/test-29-soft-reboot-selinux-policy
   extra-fixme_skip_if_uki: true
 
-/plan-30-install-unified-flag:
-  summary: Test bootc install with experimental unified storage flag
-  discover:
-    how: fmf
-    test:
-      - /tmt/tests/tests/test-30-install-unified-flag
-  extra-fixme_skip_if_composefs: true
-
 /plan-31-switch-mutate-in-place:
   summary: switch --mutate-in-place
   discover:
@@ -276,4 +268,37 @@ execute:
     how: fmf
     test:
       - /tmt/tests/tests/test-44-shadow-fixup
+
+/plan-44-unified-storage:
+  summary: Readonly tests after onboarding to unified storage via set-unified
+  discover:
+    how: fmf
+    test:
+      - /tmt/tests/tests/test-44-unified-storage
+
+/plan-45-install-unified-flag:
+  summary: Readonly tests after install with --experimental-unified-storage
+  discover:
+    how: fmf
+    test:
+      - /tmt/tests/tests/test-45-install-unified-flag
+  extra-fixme_skip_if_composefs: true
+  extra-bootc_install_args: --experimental-unified-storage
+
+/plan-46-install-ostree-composefs-unified:
+  summary: Readonly tests after install with --experimental-ostree-composefs-unified (bound-only)
+  discover:
+    how: fmf
+    test:
+      - /tmt/tests/tests/test-46-install-ostree-composefs-unified
+  extra-fixme_skip_if_composefs: true
+  extra-bootc_install_args: --experimental-ostree-composefs-unified
+
+/plan-47-set-unified-composefs:
+  summary: Runtime set-unified composefs then verify persistence across reboot
+  discover:
+    how: fmf
+    test:
+      - /tmt/tests/tests/test-47-set-unified-composefs
+  extra-fixme_skip_if_composefs: true
 # END GENERATED PLANS

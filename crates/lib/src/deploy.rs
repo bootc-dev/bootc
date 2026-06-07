@@ -42,16 +42,14 @@
 //! `image_exists_in_unified_storage` checks whether the target image is already
 //! present in bootc-owned containers-storage. Call sites use this to select
 //! `unified = true` automatically without requiring an explicit flag from the
-//! user once `bootc image set-unified` has been run.
+//! user once `bootc image set-unified full` has been run.
 
 use std::collections::HashSet;
 use std::io::{BufRead, Write};
 use std::os::fd::AsFd;
-use std::process::Command;
 
 use anyhow::{Context, Result, anyhow};
 use bootc_kernel_cmdline::utf8::CmdlineOwned;
-use bootc_utils::skopeo_bin;
 use cap_std::fs::{Dir, MetadataExt};
 use cap_std_ext::cap_std;
 use cap_std_ext::dirext::CapStdExtDirExt;
@@ -59,7 +57,10 @@ use fn_error_context::context;
 use ostree::{gio, glib};
 use ostree_container::OstreeImageReference;
 use ostree_ext::container as ostree_container;
-use ostree_ext::container::store::{ImageImporter, ImportProgress, PrepareResult, PreparedImport};
+use ostree_ext::container::store::{
+    ImageImporter, ImportProgress, META_COMPOSEFS_SYNTHESIZED, PrepareResult, PreparedImport,
+};
+use ostree_ext::keyfileext::KeyFileExt;
 use ostree_ext::oci_spec::image::{Descriptor, Digest};
 use ostree_ext::ostree::Deployment;
 use ostree_ext::ostree::{self, Sysroot};
@@ -75,6 +76,43 @@ use crate::utils::async_task_with_spinner;
 
 // TODO use https://github.com/ostreedev/ostree-rs-ext/pull/493/commits/afc1837ff383681b947de30c0cefc70080a4f87a
 const BASE_IMAGE_PREFIX: &str = "ostree/container/baseimage/bootc";
+
+/// Group name in the ostree repo config that holds the composefs binding flag.
+pub(crate) const COMPOSEFS_CONFIG_GROUP: &str = "composefs";
+
+/// Key in the `[composefs]` group that records the ostree↔composefs binding.
+///
+/// When `true`, the ostree repo commit objects are synthesized from the
+/// composefs tree rather than imported via the classic tar-based importer.
+/// This signal lives in the repo config so it is intrinsic to the repository
+/// itself (and therefore persists across deploys), separately from the
+/// containers-storage participation flag in `composefs/bootc.json`.
+pub(crate) const COMPOSEFS_CONFIG_UNIFIED: &str = "unified";
+
+/// Read the ostree↔composefs binding flag (`[composefs] unified`) from the
+/// ostree repo config.  Returns `false` if the key or group is absent.
+pub(crate) fn ostree_composefs_bound(repo: &ostree::Repo) -> Result<bool> {
+    let cfg = repo.copy_config();
+    Ok(cfg
+        .optional_bool(COMPOSEFS_CONFIG_GROUP, COMPOSEFS_CONFIG_UNIFIED)?
+        .unwrap_or(false))
+}
+
+/// Idempotently set `[composefs] unified = true` in the ostree repo config.
+///
+/// This marks the ostree repo as bound to the composefs tree so that future
+/// pulls know to use the composefs→ostree synthesis path.  The write is
+/// skipped when the flag is already set to avoid an unnecessary fsync.
+pub(crate) fn set_ostree_composefs_bound(repo: &ostree::Repo) -> Result<()> {
+    if ostree_composefs_bound(repo)? {
+        return Ok(());
+    }
+    let config = repo.copy_config();
+    config.set_boolean(COMPOSEFS_CONFIG_GROUP, COMPOSEFS_CONFIG_UNIFIED, true);
+    repo.write_config(&config)?;
+    repo.reload_config(gio::Cancellable::NONE)?;
+    Ok(())
+}
 
 /// Create an ImageProxyConfig with bootc's user agent prefix set.
 ///
@@ -143,23 +181,6 @@ pub(crate) async fn new_importer(
     booted_deployment: Option<&ostree::Deployment>,
 ) -> Result<ostree_container::store::ImageImporter> {
     let config = new_proxy_config();
-    let mut imp = ostree_container::store::ImageImporter::new(repo, imgref, config).await?;
-    imp.require_bootable();
-    // We do our own GC/prune in deploy::prune(), so skip the importer's internal one.
-    imp.disable_gc();
-    if let Some(deployment) = booted_deployment {
-        imp.set_sepolicy_commit(deployment.csum().to_string());
-    }
-    Ok(imp)
-}
-
-/// Wrapper for pulling a container image with a custom proxy config (e.g. for unified storage).
-pub(crate) async fn new_importer_with_config(
-    repo: &ostree::Repo,
-    imgref: &ostree_container::OstreeImageReference,
-    config: ostree_ext::containers_image_proxy::ImageProxyConfig,
-    booted_deployment: Option<&ostree::Deployment>,
-) -> Result<ostree_container::store::ImageImporter> {
     let mut imp = ostree_container::store::ImageImporter::new(repo, imgref, config).await?;
     imp.require_bootable();
     // We do our own GC/prune in deploy::prune(), so skip the importer's internal one.
@@ -415,12 +436,23 @@ pub(crate) async fn prune_container_store(sysroot: &Storage) -> Result<()> {
             });
         }
     }
-    // Convert to a hashset of just the image names
-    let image_names = HashSet::from_iter(all_bound_images.iter().map(|img| img.image.as_str()));
-    let pruned = sysroot
-        .get_ensure_imgstore()?
-        .prune_except_roots(&image_names)
-        .await?;
+
+    let imgstore = sysroot.get_ensure_imgstore()?;
+
+    // Also protect images that have composefs tags — these are managed by the unified
+    // storage pipeline and must not be pruned even if no live deployment currently
+    // references them (e.g. after `bootc switch`). The composefs splitstreams depend
+    // on the containers-storage data being present. Storage reconciles this binding;
+    // see [`Storage::composefs_protected_image_names`].
+    let composefs_protected = sysroot.composefs_protected_image_names().await?;
+
+    let mut image_names: HashSet<&str> = all_bound_images
+        .iter()
+        .map(|img| img.image.as_str())
+        .collect();
+    image_names.extend(composefs_protected.iter().map(|s| s.as_str()));
+
+    let pruned = imgstore.prune_except_roots(&image_names).await?;
     tracing::debug!("Pruned images: {}", pruned.len());
     Ok(())
 }
@@ -463,16 +495,6 @@ pub(crate) fn check_disk_space_ostree(
         min_free,
         imgref,
     )
-}
-
-/// Verify there is sufficient disk space to pull an image into the composefs store
-/// via the ostree unified-storage path (uses `PreparedImportMeta`).
-pub(crate) fn check_disk_space_unified(
-    cfs: &crate::store::ComposefsRepository,
-    image_meta: &PreparedImportMeta,
-    imgref: &ImageReference,
-) -> Result<()> {
-    check_disk_space_inner(cfs.objects_dir()?, image_meta.bytes_to_fetch, 0, imgref)
 }
 
 /// Verify there is sufficient disk space to pull an image into the composefs store
@@ -545,154 +567,315 @@ pub(crate) async fn prepare_for_pull(
     Ok(PreparedPullResult::Ready(Box::new(prepared_image)))
 }
 
-/// Check whether the image exists in bootc's unified container storage.
+/// Check whether unified base-image storage is enabled on this system.
 ///
-/// This is used for auto-detection: if the image already exists in bootc storage
-/// (e.g., from a previous `bootc image set-unified` or LBI pull), we can use
-/// the unified storage path for faster imports.
+/// Returns `true` iff `composefs/bootc.json` exists and has `unified-storage: true`.
+/// This is the authoritative signal written by `bootc image set-unified full` (and by
+/// `bootc install --experimental-unified-storage`).
 ///
-/// Returns true if the image exists in bootc storage.
-pub(crate) async fn image_exists_in_unified_storage(
-    store: &Storage,
-    imgref: &ImageReference,
-) -> Result<bool> {
-    let imgstore = store.get_ensure_imgstore()?;
-    let image_ref_str = imgref.to_transport_image()?;
-    imgstore.exists(&image_ref_str).await
+/// If the composefs repository doesn't exist yet, the file is absent and this
+/// returns `false` — a single cheap file-open attempt with no side effects.
+pub(crate) fn unified_storage_enabled(store: &Storage) -> Result<bool> {
+    Ok(crate::store::BootcRepoMeta::read(&store.physical_root)?
+        .map(|m| m.unified != crate::spec::UnifiedStorageState::Disabled)
+        .unwrap_or(false))
 }
 
-/// Unified approach: Use bootc's CStorage to pull the image, then prepare from containers-storage.
-/// This reuses the same infrastructure as LBIs.
-pub(crate) async fn prepare_for_pull_unified(
-    repo: &ostree::Repo,
-    imgref: &ImageReference,
-    target_imgref: Option<&OstreeImageReference>,
-    store: &Storage,
-    booted_deployment: Option<&ostree::Deployment>,
-) -> Result<PreparedPullResult> {
-    // Get or initialize the bootc container storage (same as used for LBIs)
-    let imgstore = store.get_ensure_imgstore()?;
-
-    let image_ref_str = imgref.to_transport_image()?;
-
-    // Always pull to ensure we have the latest image, whether from a remote
-    // registry or a locally rebuilt image
-    tracing::info!(
-        "Unified pull: pulling from transport '{}' to bootc storage",
-        &imgref.transport
-    );
-
-    // Pull the image into bootc containers-storage with per-layer
-    // download progress via the podman native API.
-    imgstore
-        .pull_with_progress(&image_ref_str)
-        .await
-        .context("Pulling image into bootc containers-storage")?;
-
-    // Now create a containers-storage reference to read from bootc storage
-    tracing::info!("Unified pull: now importing from containers-storage transport");
-    let containers_storage_imgref = ImageReference {
-        transport: "containers-storage".to_string(),
-        image: imgref.image.clone(),
-        signature: imgref.signature.clone(),
-    };
-    let ostree_imgref = OstreeImageReference::from(containers_storage_imgref);
-
-    // Configure the importer to use bootc storage as an additional image store
-    let mut config = new_proxy_config();
-    let mut cmd = Command::new(skopeo_bin());
-    // Use the physical path to bootc storage from the Storage struct
-    let storage_path = format!(
-        "{}/{}",
-        store.physical_root_path,
-        crate::podstorage::CStorage::subpath()
-    );
-    crate::podstorage::set_additional_image_store(&mut cmd, &storage_path);
-    config.skopeo_cmd = Some(cmd);
-
-    // Use the preparation flow with the custom config
-    let mut imp = new_importer_with_config(repo, &ostree_imgref, config, booted_deployment).await?;
-    if let Some(target) = target_imgref {
-        imp.set_target(target);
-    }
-    let prep = match imp.prepare().await? {
-        PrepareResult::AlreadyPresent(c) => {
-            println!("No changes in {imgref:#} => {}", c.manifest_digest);
-            return Ok(PreparedPullResult::AlreadyPresent(Box::new((*c).into())));
-        }
-        PrepareResult::Ready(p) => p,
-    };
-    check_bootc_label(&prep.config);
-    if let Some(warning) = prep.deprecated_warning() {
-        ostree_ext::cli::print_deprecated_warning(warning).await;
-    }
-    ostree_ext::cli::print_layer_status(&prep);
-    let layers_to_fetch = prep.layers_to_fetch().collect::<Result<Vec<_>>>()?;
-
-    // Log that we're importing a new image from containers-storage
-    const PULLING_NEW_IMAGE_ID: &str = "6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0";
-    tracing::info!(
-        message_id = PULLING_NEW_IMAGE_ID,
-        bootc.image.reference = &imgref.image,
-        bootc.image.transport = "containers-storage",
-        bootc.original_transport = &imgref.transport,
-        bootc.status = "importing_from_storage",
-        "Importing image from bootc storage: {}",
-        ostree_imgref
-    );
-
-    let prepared_image = PreparedImportMeta {
-        imp,
-        n_layers_to_fetch: layers_to_fetch.len(),
-        layers_total: prep.all_layers().count(),
-        bytes_to_fetch: layers_to_fetch.iter().map(|(l, _)| l.layer.size()).sum(),
-        bytes_total: prep.all_layers().map(|l| l.layer.size()).sum(),
-        digest: prep.manifest_digest.clone(),
-        prep,
-    };
-
-    Ok(PreparedPullResult::Ready(Box::new(prepared_image)))
+/// The ostree↔composefs storage binding state of the system.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BindingState {
+    /// Classic ostree: no composefs binding, no containers-storage participation.
+    Disabled,
+    /// ostree commit synthesized from the composefs tree, but the image is NOT
+    /// in bootc-owned containers-storage (not visible to `podman run`).
+    BoundOnly,
+    /// Bound AND participating in containers-storage.
+    Unified,
 }
 
-/// Unified pull: Use podman to pull to containers-storage, then read from there
-pub(crate) async fn pull_unified(
+/// Pure classification of a (bound, cstorage) pair into a [`BindingState`].
+///
+/// Extracted into its own function so it can be unit-tested without a live
+/// `Storage` or `ostree::Repo`.
+pub(crate) fn classify_binding(bound: bool, cstorage: bool) -> BindingState {
+    match (bound, cstorage) {
+        (false, _) => BindingState::Disabled,
+        (true, false) => BindingState::BoundOnly,
+        (true, true) => BindingState::Unified,
+    }
+}
+
+/// Derive the binding state from both signals: the `[composefs] unified` repo
+/// config key (binding) and `BootcRepoMeta.unified` (containers-storage).
+///
+/// Backward compat: systems onboarded before the repo-config signal existed
+/// have `BootcRepoMeta.unified != Disabled` but NO repo key — so cstorage
+/// participation implies the binding.  The OR below is load-bearing.
+///
+/// On a native composefs system there is no ostree repo; `get_ostree()` errors
+/// and we treat the binding signal as absent.
+pub(crate) fn binding_state(store: &Storage) -> Result<BindingState> {
+    let cstorage = unified_storage_enabled(store)?;
+    let bound_cfg = match store.get_ostree() {
+        Ok(ostree) => ostree_composefs_bound(&ostree.repo())?,
+        Err(_) => false,
+    };
+    let bound = bound_cfg || cstorage;
+    Ok(classify_binding(bound, cstorage))
+}
+
+/// Full unified pipeline: containers-storage → composefs → ostree.
+///
+/// Stage 1: Pull the image into bootc-owned containers-storage.
+/// Stage 2: Zero-copy import from containers-storage into the composefs OCI repo.
+/// Stage 3: Synthesize an ostree commit from the composefs filesystem tree.
+///
+/// This is the implementation of `--experimental-unified-storage` for the ostree backend.
+pub(crate) async fn pull_via_composefs(
     repo: &ostree::Repo,
     imgref: &ImageReference,
-    target_imgref: Option<&OstreeImageReference>,
-    quiet: bool,
-    prog: ProgressWriter,
     store: &Storage,
-    booted_deployment: Option<&ostree::Deployment>,
+    local_fetch: composefs_ctl::composefs_oci::LocalFetchOpt,
+    cstorage: bool,
 ) -> Result<Box<ImageState>> {
-    match prepare_for_pull_unified(repo, imgref, target_imgref, store, booted_deployment).await? {
-        PreparedPullResult::AlreadyPresent(existing) => {
-            // Log that the image was already present (Debug level since it's not actionable)
-            const IMAGE_ALREADY_PRESENT_ID: &str = "5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9";
-            tracing::debug!(
-                message_id = IMAGE_ALREADY_PRESENT_ID,
-                bootc.image.reference = &imgref.image,
-                bootc.image.transport = &imgref.transport,
-                bootc.status = "already_present",
-                "Image already present: {}",
-                imgref
+    use composefs_ctl::composefs_oci;
+    use composefs_ctl::composefs_oci::oci_image::OciImage;
+    use composefs_ctl::composefs_oci::{LocalFetchOpt, PullOptions, tag_image};
+    use ostree_ext::container::composefs_import;
+    use ostree_ext::container::store::ref_for_image;
+
+    // Short-circuit if the image is already present and unchanged.
+    //
+    // This mirrors the classic (non-unified) pull path: cheaply resolve the
+    // remote manifest digest and compare it against the ostree ref for *this*
+    // image (the synthesized commit records its manifest digest). If unchanged
+    // we return the existing state immediately, avoiding a wasteful network
+    // re-pull, a redundant composefs re-import, and synthesizing a fresh ostree
+    // commit for an identical image. Comparing against this image's own ref
+    // (rather than the booted commit) keeps `switch` and first-time `install`
+    // correct: a never-seen image has no ref and falls through to a full pull.
+    //
+    // Skip this for the `containers-storage` transport: `prepare()` resolves the
+    // reference via the default host storage proxy, which cannot see images that
+    // live only in the bootc-owned store (e.g. one built with `bootc image cmd
+    // build`). Stage 1's `pull_from_containers_storage` already has its own cheap
+    // skip-if-present check against the bootc store, so the redundant-work guard
+    // is preserved there.
+    if imgref.transport != "containers-storage" {
+        let ostree_imgref = OstreeImageReference::from(imgref.clone().canonicalize()?);
+        let mut imp = new_importer(repo, &ostree_imgref, None).await?;
+        if let PrepareResult::AlreadyPresent(state) = imp.prepare().await? {
+            // Guard: only short-circuit when the existing commit was synthesized
+            // via the composefs→ostree path.  If it is a *classic* ostree commit
+            // (no META_COMPOSEFS_SYNTHESIZED flag), we must NOT skip the pipeline
+            // — the composefs repo has not been populated and the repo-config
+            // binding key has not been written.  This is the case on a system
+            // booted classically that runs `bootc image set-unified composefs`:
+            // prepare() resolves the ostree ref and returns AlreadyPresent, but
+            // the commit was imported the old way and must be re-synthesized.
+            let existing_commit = state.get_commit();
+            let commit_obj = repo.load_commit(existing_commit)?.0;
+            let commit_meta_variant = commit_obj.child_value(0);
+            let commit_meta = glib::VariantDict::new(Some(&commit_meta_variant));
+            let is_synthesized = commit_meta
+                .lookup::<bool>(META_COMPOSEFS_SYNTHESIZED)?
+                .unwrap_or(false);
+            if is_synthesized {
+                tracing::info!(
+                    "Composefs unified pull: synthesized image already present, skipping: {}",
+                    state.manifest_digest
+                );
+                // Ensure the repo-config binding key is set in case this is a
+                // Disabled→bind transition on an already-synthesized commit.
+                set_ostree_composefs_bound(repo)
+                    .context("Writing composefs binding to ostree repo config")?;
+                return Ok(Box::new((*state).into()));
+            }
+            tracing::info!(
+                "Composefs unified pull: existing commit is classic (non-synthesized), \
+                 falling through to full pipeline: {}",
+                state.manifest_digest
             );
-            Ok(existing)
-        }
-        PreparedPullResult::Ready(prepared_image_meta) => {
-            check_disk_space_unified(
-                store.get_ensure_composefs()?.as_ref(),
-                &prepared_image_meta,
-                imgref,
-            )?;
-            // To avoid duplicate success logs, pass a containers-storage imgref to the importer
-            let cs_imgref = ImageReference {
-                transport: "containers-storage".to_string(),
-                image: imgref.image.clone(),
-                signature: imgref.signature.clone(),
-            };
-            pull_from_prepared(&cs_imgref, quiet, prog, *prepared_image_meta).await
         }
     }
+
+    // Stage 1 (optional): pull into bootc-owned containers-storage.
+    //
+    // When `cstorage` is false we skip this entirely and pull directly from the
+    // source transport in Stage 2.  When `cstorage` is true we follow the
+    // existing three-store pipeline.
+    //
+    // The ensure_floating_c_storage_initialized() call must come first so that
+    // libpod's database is set up with the correct static_dir before any image
+    // operations (avoids code 125 mismatch on `podman image exists`).
+    if cstorage {
+        crate::podstorage::ensure_floating_c_storage_initialized();
+        let imgstore = store.get_ensure_imgstore()?;
+        let image_ref_str = imgref.to_transport_image()?;
+        tracing::info!(
+            "Composefs unified pull: staging {} into containers-storage",
+            imgref.image
+        );
+        if imgref.transport == "containers-storage" {
+            imgstore
+                .pull_from_containers_storage(&imgref.image)
+                .await
+                .context("Copying image from host containers-storage into bootc storage")?;
+        } else {
+            imgstore
+                .pull_with_progress(&image_ref_str)
+                .await
+                .context("Pulling image into bootc containers-storage")?;
+        }
+    }
+
+    // Stage 2: import the image into the composefs OCI repo.
+    let cfs_repo = store.get_ensure_composefs()?;
+    let pull_result = if cstorage {
+        // Zero-copy import from bootc-owned containers-storage.
+        let imgstore = store.get_ensure_imgstore()?;
+        let image_ref_str = imgref.to_transport_image()?;
+        let image_id = imgstore
+            .image_id(&image_ref_str)
+            .await
+            .context("Resolving containers-storage image id for composefs import")?;
+        let cstor_imgref_str = format!("containers-storage:{image_id}");
+        let storage_path = format!(
+            "{}/{}",
+            store.physical_root_path,
+            crate::podstorage::CStorage::subpath()
+        );
+        tracing::info!(
+            "Composefs unified pull: importing {} into composefs repo (zero-copy)",
+            cstor_imgref_str
+        );
+        let pull_opts = PullOptions {
+            local_fetch,
+            storage_root: Some(std::path::Path::new(&storage_path)),
+            ..Default::default()
+        };
+        composefs_oci::pull(&cfs_repo, &cstor_imgref_str, None, pull_opts)
+            .await
+            .context("Importing from containers-storage into composefs repo")?
+    } else {
+        // Bound-only: pull directly from the source transport into composefs.
+        // Use the typed containers_image_proxy::ImageReference so the resulting
+        // string includes the transport prefix (e.g. "docker://quay.io/…") that
+        // composefs_oci::pull requires.  Passing a bare registry hostname such as
+        // "quay.io/…" (which is what to_transport_image() returns for registry
+        // transport) causes composefs_oci::pull to split on ":" and interpret the
+        // hostname as a transport name → "Invalid transport: quay.io".
+        let proxy_ref = imgref.to_image_proxy_ref()?;
+        let imgref_str = proxy_ref.to_string();
+        tracing::info!(
+            "Composefs bound pull: fetching {} directly into composefs repo",
+            imgref.image
+        );
+        composefs_oci::pull(&cfs_repo, &imgref_str, None, PullOptions::default())
+            .await
+            .context("Pulling image directly into composefs repo")?
+    };
+
+    // Tag the manifest as a GC root in the composefs repo.
+    let tag = crate::bootc_composefs::repo::bootc_tag_for_manifest(
+        &pull_result.manifest_digest.to_string(),
+    );
+    tag_image(&*cfs_repo, &pull_result.manifest_digest, &tag)
+        .context("Tagging pulled image as bootc GC root in composefs repo")?;
+
+    // Open the OCI image to retrieve manifest + config for the ostree synthesis.
+    let oci_image = OciImage::open(&cfs_repo, &pull_result.manifest_digest, None)
+        .context("Opening OCI image from composefs repo")?;
+    let manifest = oci_image.manifest().clone();
+    let config = oci_image
+        .config()
+        .cloned()
+        .context("OCI image has no config (artifact, not a container image)")?;
+
+    let manifest_digest_str = pull_result.manifest_digest.to_string();
+
+    // Stage 3: synthesize ostree commit from composefs tree (blocking, CPU-bound).
+    tracing::info!(
+        "Composefs unified pull: synthesizing ostree commit from composefs tree (digest {})",
+        manifest_digest_str
+    );
+    let repo_clone = repo.clone();
+    let cfs_repo_clone = std::sync::Arc::clone(&cfs_repo);
+    let config_digest = pull_result.config_digest.clone();
+    let manifest_digest_str2 = manifest_digest_str.clone();
+    let ostree_commit = tokio::task::spawn_blocking(move || {
+        composefs_import::import_from_composefs_repo(
+            &repo_clone,
+            &cfs_repo_clone,
+            &config_digest,
+            &manifest_digest_str2,
+            &manifest,
+            &config,
+            local_fetch == LocalFetchOpt::ZeroCopy,
+        )
+    })
+    .await
+    .context("join error in composefs→ostree import task")?
+    .context("Synthesizing ostree commit from composefs tree")?;
+
+    // Write the ostree ref so the deployment machinery can find the commit.
+    {
+        let ostree_imgref = OstreeImageReference::from(imgref.clone());
+        let ostree_ref =
+            ref_for_image(&ostree_imgref.imgref).context("Computing ostree ref for image")?;
+        let txn = repo
+            .auto_transaction(gio::Cancellable::NONE)
+            .context("Beginning ostree transaction for ref write")?;
+        repo.transaction_set_ref(None, &ostree_ref, Some(ostree_commit.as_str()));
+        txn.commit(gio::Cancellable::NONE)
+            .context("Committing ostree ref transaction")?;
+    }
+
+    // Extract version from the config labels.
+    let version = oci_image
+        .config()
+        .and_then(|cfg| ostree_ext::container::version_for_config(cfg))
+        .map(|s| s.to_owned());
+
+    // Parse the manifest digest into the oci_spec::image::Digest type that
+    // ImageState expects.  The string is already in "sha256:..." format.
+    let manifest_digest: Digest = manifest_digest_str
+        .parse()
+        .with_context(|| format!("Parsing manifest digest {manifest_digest_str}"))?;
+
+    // Always set the [composefs] unified = true binding signal in the ostree
+    // repo config.  This records that the repo's commit objects are synthesized
+    // from the composefs tree, persisting the binding across future deploys.
+    set_ostree_composefs_bound(repo).context("Writing composefs binding to ostree repo config")?;
+
+    // Only write composefs/bootc.json when containers-storage is active.
+    // For bound-only pulls we must not touch (or create) this file — doing so
+    // would incorrectly signal cstorage participation on a system that has none,
+    // and would downgrade an existing Unified system if called in that path.
+    if cstorage {
+        crate::store::ensure_composefs_dir(&store.physical_root)?;
+        let mut meta = crate::store::BootcRepoMeta::read(&store.physical_root)?.unwrap_or_default();
+        meta.version = 1;
+        meta.unified = if local_fetch == LocalFetchOpt::ZeroCopy {
+            crate::spec::UnifiedStorageState::Enabled
+        } else {
+            crate::spec::UnifiedStorageState::EnabledWithCopy
+        };
+        meta.write(&store.physical_root)
+            .context("Writing unified-storage flag after composefs pull")?;
+    }
+
+    tracing::info!(
+        "Composefs unified pull complete: commit {} digest {}",
+        ostree_commit,
+        manifest_digest
+    );
+
+    Ok(Box::new(ImageState {
+        manifest_digest,
+        version,
+        ostree_commit,
+    }))
 }
 
 #[context("Pulling")]
@@ -821,6 +1004,107 @@ pub(crate) async fn wipe_ostree(sysroot: Sysroot) -> Result<()> {
     Ok(())
 }
 
+/// Prune composefs objects no longer referenced by any live deployment.
+///
+/// This is a no-op if unified storage is not enabled or the composefs
+/// repository doesn't exist yet.
+///
+/// On an ostree+unified-storage system every `bootc upgrade` tags the newly
+/// pulled manifest in the composefs repo (`localhost/bootc-sha256:<digest>`).
+/// After the ostree prune step those old tags are no longer anchored to any
+/// deployment.  This function:
+///
+/// 1. Collects the manifest digests of all current ostree deployments.
+/// 2. Untagges any composefs bootc-tag whose digest is not in that set.
+/// 3. Runs `repo.gc()` to drop orphaned splitstream objects.
+#[context("Pruning composefs store")]
+async fn prune_composefs_store(sysroot: &Storage) -> Result<()> {
+    // Prune applies to any system with an active composefs binding (BoundOnly or
+    // Unified); only skip on pure classic ostree (Disabled).
+    if matches!(binding_state(sysroot)?, BindingState::Disabled) {
+        return Ok(());
+    }
+    let cfs_repo = match sysroot.get_ensure_composefs() {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::debug!("Composefs repo not available, skipping prune: {e}");
+            return Ok(());
+        }
+    };
+
+    let ostree = match sysroot.get_ostree() {
+        Ok(o) => o,
+        Err(_) => return Ok(()),
+    };
+    let repo = ostree.repo();
+
+    // Collect manifest digests from all current ostree deployments.
+    // Deployments pulled via pull_via_composefs store META_MANIFEST_DIGEST
+    // (`ostree.manifest-digest`) in their commit metadata.
+    let mut live_digests: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for deployment in ostree.deployments() {
+        let commit_str = deployment.csum();
+        match repo.load_commit(commit_str.as_str()) {
+            Ok((commitv, _)) => {
+                match ostree_ext::container::store::manifest_digest_from_commit(&commitv) {
+                    Ok(digest) => {
+                        live_digests.insert(digest.to_string());
+                    }
+                    Err(e) => {
+                        // Not every deployment was pulled via composefs; skip gracefully.
+                        tracing::debug!("No manifest digest in commit {commit_str}: {e}");
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Failed to load commit {commit_str}: {e}");
+            }
+        }
+    }
+
+    // The composefs repository API is synchronous; move the work off the
+    // async executor thread.
+    let cfs_repo = std::sync::Arc::clone(&cfs_repo);
+    tokio::task::spawn_blocking(move || -> Result<()> {
+        use crate::composefs_consts::BOOTC_TAG_PREFIX;
+        use composefs_ctl::composefs_oci;
+
+        let all_tags =
+            composefs_oci::list_refs(&*cfs_repo).context("Listing composefs OCI refs")?;
+
+        let mut untagged = 0usize;
+        for (tag_name, _manifest_digest) in &all_tags {
+            if !tag_name.starts_with(BOOTC_TAG_PREFIX) {
+                // Not a bootc-owned tag; leave it for the user / other tools.
+                continue;
+            }
+            // The tag is `localhost/bootc-sha256:<hex>`.  Strip the prefix to
+            // recover the canonical digest string (`sha256:<hex>`).
+            let digest_str = tag_name
+                .strip_prefix(BOOTC_TAG_PREFIX)
+                .expect("checked above");
+            if !live_digests.contains(digest_str) {
+                tracing::debug!("Removing unreferenced composefs bootc tag: {tag_name}");
+                composefs_oci::untag_image(&*cfs_repo, tag_name)
+                    .with_context(|| format!("Removing composefs tag {tag_name}"))?;
+                untagged += 1;
+            }
+        }
+
+        if untagged > 0 {
+            tracing::info!("Removed {untagged} unreferenced composefs tag(s); running GC");
+            let gc_result = cfs_repo.gc(&[]).context("Running composefs GC")?;
+            tracing::debug!("Composefs GC result: {:?}", gc_result);
+        } else {
+            tracing::debug!("No unreferenced composefs tags; skipping GC");
+        }
+
+        Ok(())
+    })
+    .await
+    .context("composefs prune task join error")?
+}
+
 pub(crate) async fn cleanup(sysroot: &Storage) -> Result<()> {
     // Log the cleanup operation to systemd journal
     const CLEANUP_JOURNAL_ID: &str = "c0ce56c6c48e4055bca6a88e01b2b15d";
@@ -882,6 +1166,13 @@ pub(crate) async fn cleanup(sysroot: &Storage) -> Result<()> {
 
     // We run these in parallel mostly because we can.
     tokio::try_join!(repo_prune, bound_prune)?;
+
+    // After ostree prune, clean up any stale composefs tags and GC orphaned
+    // splitstream objects on unified-storage systems.
+    prune_composefs_store(sysroot)
+        .await
+        .context("Pruning composefs store")?;
+
     Ok(())
 }
 
@@ -1523,5 +1814,57 @@ UUID=6907-17CA          /boot/efi               vfat    umask=0077,shortname=win
         assert!(check_disk_space_inner(&*td, 1, u64::MAX, &imgref).is_err());
 
         Ok(())
+    }
+
+    /// Test the `optional_bool` semantics used by `ostree_composefs_bound`.
+    ///
+    /// We cannot construct a real `ostree::Repo` in a unit test (it requires
+    /// filesystem access), so we exercise the underlying `KeyFile` logic
+    /// directly — this is precisely the layer `ostree_composefs_bound` uses.
+    #[test]
+    fn test_composefs_bound_keyfile_semantics() {
+        let kf = glib::KeyFile::new();
+
+        // Key absent → optional_bool returns None → bound() would return false
+        let absent = kf
+            .optional_bool(COMPOSEFS_CONFIG_GROUP, COMPOSEFS_CONFIG_UNIFIED)
+            .expect("no error for absent key");
+        assert_eq!(absent, None);
+
+        // Key present and true → Some(true)
+        kf.set_boolean(COMPOSEFS_CONFIG_GROUP, COMPOSEFS_CONFIG_UNIFIED, true);
+        let present_true = kf
+            .optional_bool(COMPOSEFS_CONFIG_GROUP, COMPOSEFS_CONFIG_UNIFIED)
+            .expect("no error for present key");
+        assert_eq!(present_true, Some(true));
+
+        // Key present and false → Some(false)
+        kf.set_boolean(COMPOSEFS_CONFIG_GROUP, COMPOSEFS_CONFIG_UNIFIED, false);
+        let present_false = kf
+            .optional_bool(COMPOSEFS_CONFIG_GROUP, COMPOSEFS_CONFIG_UNIFIED)
+            .expect("no error for present false key");
+        assert_eq!(present_false, Some(false));
+    }
+
+    /// Test all (bound, cstorage) combinations for classify_binding.
+    ///
+    /// The back-compat case — cstorage=true, bound_cfg=false — must yield
+    /// Unified, because systems onboarded before the repo-config signal existed
+    /// have a cstorage flag but no repo key.  The OR in binding_state() ensures
+    /// that cstorage participation implies the binding.
+    #[test]
+    fn test_classify_binding() {
+        use BindingState::*;
+
+        // Neither signal → Disabled
+        assert_eq!(classify_binding(false, false), Disabled);
+
+        // bound_cfg set but no cstorage → BoundOnly
+        assert_eq!(classify_binding(true, false), BoundOnly);
+
+        // Back-compat: systems that have cstorage but no repo key.
+        // binding_state() computes: bound = bound_cfg || cstorage = false || true = true,
+        // then calls classify_binding(true, true) → Unified.
+        assert_eq!(classify_binding(true, true), Unified);
     }
 }

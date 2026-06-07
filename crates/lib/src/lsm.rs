@@ -432,7 +432,10 @@ pub(crate) fn ensure_dir_labeled_recurse(
             let metadata = component.entry.metadata()?;
 
             // Check if this entry should be skipped
-            let devino = (metadata.dev() as libc::dev_t, metadata.ino() as libc::ino64_t);
+            let devino = (
+                metadata.dev() as libc::dev_t,
+                metadata.ino() as libc::ino64_t,
+            );
             if skip.contains(&devino) {
                 tracing::debug!("Skipping dev={} inode={}", devino.0, devino.1);
                 // For directories, Break skips traversal into the directory

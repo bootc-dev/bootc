@@ -69,6 +69,16 @@
 //! stronger integrity guarantees via fs-verity and supports UKI (Unified Kernel
 //! Images) for measured boot scenarios.
 //!
+//! ### Unified Storage (Experimental)
+//!
+//! When [`InstallTargetOpts::unified_storage_exp`] is set (via `--experimental-unified-storage`
+//! or the `[install.storage] unified` config key), the ostree backend uses a three-stage
+//! pipeline: containers-storage → composefs OCI repo (zero-copy reflinks) → ostree commit
+//! synthesis. This keeps the image simultaneously visible in all three stores so that
+//! `podman`, the composefs overlay, and ostree all reference the same on-disk data.
+//!
+//! See [`crate::deploy::pull_via_composefs`] for the implementation.
+//!
 //! ## Discoverable Partitions Specification (DPS)
 //!
 //! As of bootc 1.11, partitions are created with DPS type GUIDs from the
@@ -113,20 +123,36 @@
 //!
 //! ## Configuration
 //!
-//! Installation is configured via TOML files loaded from multiple paths in
-//! systemd-style priority order:
+//! Installation is configured via TOML files loaded by [`config::load_config`]
+//! (via `liboverdrop::scan`) from the running container's filesystem. The standard
+//! location for image authors is `/usr/lib/bootc/install/`. All four conventional
+//! bases are scanned in order of increasing priority:
 //!
-//! - `/usr/lib/bootc/install/*.toml` - Distribution/image defaults
-//! - `/etc/bootc/install/*.toml` - Local overrides
+//! - `/usr/lib/bootc/install/*.toml`
+//! - `/usr/local/lib/bootc/install/*.toml`
+//! - `/etc/bootc/install/*.toml`
+//! - `/run/bootc/install/*.toml`
 //!
-//! Files are merged alphanumerically, with higher-numbered files taking precedence.
+//! Files are merged alphanumerically within each directory; later directories override
+//! earlier ones for scalar fields, and list fields (e.g. `kargs`) are appended.
 //! See [`config::InstallConfiguration`] for the schema.
+//!
+//! When `--source-imgref` is used, config is read from the **host** filesystem rather
+//! than the target image, since the image has not been fetched yet at config-load time.
 //!
 //! Key configurable options include:
 //! - Root filesystem type (xfs, ext4, btrfs)
 //! - Allowed block setups (direct, tpm2-luks)
 //! - Default kernel arguments
 //! - Architecture-specific overrides
+//! - Unified storage mode (see [`config::UnifiedStorage`])
+//!
+//! ## Install Source
+//!
+//! By default, `bootc install` must run inside a privileged container; it detects the
+//! running image via `/run/.containerenv`. When `--source-imgref` is given, installation
+//! can be driven from an external image reference (registry, OCI dir, etc.) without running
+//! inside a container.
 //!
 //! ## Submodules
 //!
@@ -277,8 +303,9 @@ pub(crate) struct InstallTargetOpts {
     #[serde(default)]
     pub(crate) run_fetch_check: bool,
 
-    /// Verify the image can be fetched from the bootc image. Updates may fail when the installation
-    /// host is authenticated with the registry but the pull secret is not in the bootc image.
+    /// Skip the fetch check (inverse of `--run-fetch-check`). When true, the pre-install
+    /// registry reachability probe is skipped. Useful when the caller has already verified
+    /// connectivity or when installing in an air-gapped environment.
     #[clap(long)]
     #[serde(default)]
     pub(crate) skip_fetch_check: bool,
@@ -291,6 +318,16 @@ pub(crate) struct InstallTargetOpts {
     #[clap(long = "experimental-unified-storage", hide = true)]
     #[serde(default)]
     pub(crate) unified_storage_exp: bool,
+
+    /// Use the ostree↔composefs binding without containers-storage participation (experimental).
+    ///
+    /// Like `--experimental-unified-storage`, the ostree commit is synthesized from
+    /// the composefs tree, but the image is NOT pulled into bootc's containers-storage,
+    /// so it is not visible to `podman run`. Sets `[composefs] unified = true` in the
+    /// ostree repo config.
+    #[clap(long = "experimental-ostree-composefs-unified", hide = true)]
+    #[serde(default)]
+    pub(crate) ostree_composefs_unified_exp: bool,
 }
 
 #[derive(clap::Args, Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -604,7 +641,9 @@ pub(crate) struct InstallPrintConfigurationOpts {
 /// Global state captured from the container.
 #[derive(Debug, Clone)]
 pub(crate) struct SourceInfo {
-    /// Image reference we'll pull from (today always containers-storage: type)
+    /// Image reference to pull from. In the default (self-install) case this is a
+    /// `containers-storage:` reference to the running container's image. When
+    /// `--source-imgref` is given it may be any OCI transport (registry, oci-archive, etc.).
     pub(crate) imageref: ostree_container::ImageReference,
     /// The digest to use for pulls
     pub(crate) digest: Option<String>,
@@ -614,7 +653,10 @@ pub(crate) struct SourceInfo {
     pub(crate) in_host_mountns: bool,
 }
 
-// Shared read-only global state
+/// Shared read-only state built during [`prepare_install`] and used throughout the install.
+///
+/// Holds the resolved source image reference, target image reference, install configuration,
+/// SELinux state, and various options. Immutable after construction.
 #[derive(Debug)]
 pub(crate) struct State {
     pub(crate) source: SourceInfo,
@@ -641,6 +683,10 @@ pub(crate) struct State {
 
     // If Some, then --composefs_native is passed
     pub(crate) composefs_options: InstallComposefsOpts,
+
+    /// Local fetch option for unified storage layer import into the composefs repo.
+    /// Only meaningful when `target_opts.unified_storage_exp` is true.
+    pub(crate) unified_storage_local_fetch: composefs_ctl::composefs_oci::LocalFetchOpt,
 }
 
 // Shared read-only global state
@@ -1019,6 +1065,12 @@ async fn initialize_ostree_root(state: &State, root_setup: &RootSetup) -> Result
     Ok((storage, has_ostree))
 }
 
+/// Pull the source image and create the initial ostree deployment.
+///
+/// This is the core installation step. It fetches the container image (either via the
+/// unified storage pipeline or the traditional ostree import path) and synthesizes an
+/// ostree deployment from it. The returned deployment and aleph record are used by the
+/// caller to write BLS/bootloader entries and finalize the install.
 #[context("Creating ostree deployment")]
 async fn install_container(
     state: &State,
@@ -1065,30 +1117,35 @@ async fn install_container(
     let repo = &sysroot.repo();
     repo.set_disable_fsync(true);
 
-    // Determine whether to use unified storage path.
-    // During install, we only use unified storage if explicitly requested.
-    // Auto-detection (None) is only appropriate for upgrade/switch on a running system.
+    // Determine whether to use the composefs→ostree pipeline for installation.
+    // During install, we only use these paths if explicitly requested.
+    // Auto-detection is only appropriate for upgrade/switch on a running system.
     let use_unified = state.target_opts.unified_storage_exp;
+    // bound-only: ostree↔composefs binding without containers-storage participation.
+    // Superseded by use_unified when both flags are set (treat unified as superset).
+    let use_bound_only = state.target_opts.ostree_composefs_unified_exp && !use_unified;
 
-    let prepared = if use_unified {
-        tracing::info!("Using unified storage path for installation");
-        crate::deploy::prepare_for_pull_unified(
+    let pulled_image = if use_unified || use_bound_only {
+        let cstorage = use_unified; // bound-only => cstorage=false
+        tracing::info!("Using composefs→ostree pipeline for installation (cstorage={cstorage})");
+        crate::deploy::pull_via_composefs(
             repo,
             &spec_imgref,
-            Some(&state.target_imgref),
             storage,
-            None,
+            state.unified_storage_local_fetch,
+            cstorage,
         )
         .await?
     } else {
-        prepare_for_pull(repo, &spec_imgref, Some(&state.target_imgref), None).await?
-    };
-
-    let pulled_image = match prepared {
-        PreparedPullResult::AlreadyPresent(existing) => existing,
-        PreparedPullResult::Ready(image_meta) => {
-            crate::deploy::check_disk_space_ostree(repo, &image_meta, &spec_imgref)?;
-            pull_from_prepared(&spec_imgref, false, ProgressWriter::default(), *image_meta).await?
+        let prepared =
+            prepare_for_pull(repo, &spec_imgref, Some(&state.target_imgref), None).await?;
+        match prepared {
+            PreparedPullResult::AlreadyPresent(existing) => existing,
+            PreparedPullResult::Ready(image_meta) => {
+                crate::deploy::check_disk_space_ostree(repo, &image_meta, &spec_imgref)?;
+                pull_from_prepared(&spec_imgref, false, ProgressWriter::default(), *image_meta)
+                    .await?
+            }
         }
     };
 
@@ -1537,7 +1594,12 @@ async fn verify_target_fetch(
     Ok(())
 }
 
-/// Preparation for an install; validates and prepares some (thereafter immutable) global state.
+/// Validate options and build the shared [`State`] used throughout the install.
+///
+/// Loads install configuration from TOML drop-ins (`/usr/lib/bootc/install/*.toml` and
+/// overrides), resolves the install source (either the running container or `--source-imgref`),
+/// and merges CLI flags with config-file values. The returned `State` is immutable for the
+/// rest of the install.
 async fn prepare_install(
     mut config_opts: InstallConfigOpts,
     source_opts: InstallSourceOpts,
@@ -1592,6 +1654,13 @@ async fn prepare_install(
     // Load install configuration from TOML drop-in files early, so that
     // config values are available when constructing the target image reference.
     let install_config = config::load_config()?;
+    if external_source {
+        tracing::warn!(
+            "install config loaded from host filesystem; \
+             image-embedded install config (e.g. storage.unified) is not consulted \
+             when --source-imgref is used"
+        );
+    }
     if let Some(ref config) = install_config {
         tracing::debug!("Loaded install configuration");
         // Merge config file values into config_opts (CLI takes precedence)
@@ -1611,6 +1680,14 @@ async fn prepare_install(
         if !target_opts.enforce_container_sigpolicy {
             target_opts.enforce_container_sigpolicy =
                 config.enforce_container_sigpolicy.unwrap_or(false);
+        }
+
+        if !target_opts.unified_storage_exp {
+            if let Some(unified) = config.storage.as_ref().and_then(|s| s.unified) {
+                if unified.is_enabled() {
+                    target_opts.unified_storage_exp = true;
+                }
+            }
         }
     } else {
         tracing::debug!("No install configuration found");
@@ -1783,6 +1860,21 @@ async fn prepare_install(
         .map(|p| std::fs::read_to_string(p).with_context(|| format!("Reading {p}")))
         .transpose()?;
 
+    // Resolve the local fetch option from the install config. The CLI flag
+    // (--experimental-unified-storage) maps to Enabled (strict reflinks); the
+    // config file can select EnabledWithCopy to allow a copy fallback.
+    let unified_storage_local_fetch = if target_opts.unified_storage_exp {
+        install_config
+            .as_ref()
+            .and_then(|c| c.storage.as_ref())
+            .and_then(|s| s.unified)
+            .map(|u| u.local_fetch_opt())
+            // CLI flag with no config file → default to strict (Enabled semantics)
+            .unwrap_or(composefs_ctl::composefs_oci::LocalFetchOpt::ZeroCopy)
+    } else {
+        composefs_ctl::composefs_oci::LocalFetchOpt::IfPossible
+    };
+
     // Create our global (read-only) state which gets wrapped in an Arc
     // so we can pass it to worker threads too. Right now this just
     // combines our command line options along with some bind mounts from the host.
@@ -1800,6 +1892,7 @@ async fn prepare_install(
         host_is_container,
         composefs_required,
         composefs_options,
+        unified_storage_local_fetch,
     });
 
     Ok(state)
@@ -1987,6 +2080,12 @@ async fn ostree_install(state: &State, rootfs: &RootSetup, cleanup: Cleanup) -> 
     Ok(())
 }
 
+/// Core implementation shared by all `bootc install` subcommands.
+///
+/// Called after the target filesystem is set up. Handles SELinux, mounts, kargs,
+/// bound images, and invokes [`install_container`] to pull and deploy the image.
+/// Delegates to either the unified storage pipeline or the traditional ostree path
+/// depending on [`State::target_opts`].
 async fn install_to_filesystem_impl(
     state: &State,
     rootfs: &mut RootSetup,
@@ -2042,6 +2141,7 @@ async fn install_to_filesystem_impl(
             rootfs,
             state.composefs_options.allow_missing_verity,
             state.target_opts.unified_storage_exp,
+            state.unified_storage_local_fetch,
         )
         .await?;
 
@@ -2099,18 +2199,40 @@ async fn install_to_filesystem_impl(
         // so skip each checkout by dev/ino.  We enumerate them via the ostree
         // sysroot API rather than raw filesystem iteration, and use
         // symlink_metadata() to avoid any TOCTOU issues.
+        //
+        // A native composefs install has no ostree repository (and hence no
+        // deployment checkouts to skip); loading the sysroot there would fail
+        // with `opendir(ostree/repo): No such file or directory`.  Probe for
+        // the repo directly rather than inferring it from the backend flag, so
+        // that `to-existing-root` installs onto a prior ostree system still
+        // skip the (immutable) pre-existing deployment checkouts.
         let mut skip: Vec<(libc::dev_t, libc::ino64_t)> = Vec::new();
-        let sysroot = ostree::Sysroot::new(Some(&gio::File::for_path(
-            &rootfs.physical_root_path,
-        )));
-        sysroot.load(gio::Cancellable::NONE)?;
-        for deployment in sysroot.deployments() {
-            let dirpath = sysroot.deployment_dirpath(&deployment);
-            if let Some(m) = rootfs
-                .physical_root
-                .symlink_metadata_optional(dirpath.as_str())?
-            {
-                skip.push((m.dev() as libc::dev_t, m.ino() as libc::ino64_t));
+        if rootfs.physical_root.try_exists("ostree/repo")? {
+            let sysroot =
+                ostree::Sysroot::new(Some(&gio::File::for_path(&rootfs.physical_root_path)));
+            match sysroot.load(gio::Cancellable::NONE) {
+                Ok(()) => {
+                    for deployment in sysroot.deployments() {
+                        let dirpath = sysroot.deployment_dirpath(&deployment);
+                        if let Some(m) = rootfs
+                            .physical_root
+                            .symlink_metadata_optional(dirpath.as_str())?
+                        {
+                            skip.push((m.dev() as libc::dev_t, m.ino() as libc::ino64_t));
+                        }
+                    }
+                }
+                // For an ostree-backend install we just created this repo, so a
+                // load failure is a real error.  For a native composefs install
+                // the repo is incidental (an older ostree layout left on the
+                // target); tolerate a corrupt/partial repo and simply relabel
+                // everything rather than aborting.
+                Err(e) if state.composefs_options.composefs_backend => {
+                    tracing::debug!(
+                        "Ignoring ostree sysroot load failure on composefs install: {e}"
+                    );
+                }
+                Err(e) => return Err(e.into()),
             }
         }
         crate::lsm::ensure_dir_labeled_recurse(&rootfs.physical_root, &mut path, &policy, &skip)
@@ -2746,6 +2868,11 @@ pub(crate) async fn install_to_filesystem(
     Ok(())
 }
 
+/// Implementation of the `bootc install to-existing-root` CLI command.
+///
+/// Converts the running host (or a mounted filesystem) into a bootc-managed system
+/// in-place. Unlike `to-disk`, the caller is responsible for setting up storage;
+/// this command installs into the ostree sysroot at the host root.
 pub(crate) async fn install_to_existing_root(opts: InstallToExistingRootOpts) -> Result<()> {
     // Log the existing root installation operation to systemd journal
     const INSTALL_EXISTING_ROOT_JOURNAL_ID: &str = "da5b42ce20314930b021a5e297c89bd4";

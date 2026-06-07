@@ -72,11 +72,6 @@ check:
   duration: 30m
   test: nu booted/test-soft-reboot-selinux-policy.nu
 
-/test-30-install-unified-flag:
-  summary: Test bootc install with experimental unified storage flag
-  duration: 30m
-  test: nu booted/test-install-unified-flag.nu
-
 /test-31-switch-mutate-in-place:
   summary: switch --mutate-in-place
   duration: 30m
@@ -173,3 +168,23 @@ check:
   summary: Test bootc-sysusers-shadow-sync removes orphaned gshadow entries before sysusers
   duration: 30m
   test: nu booted/test-44-shadow-fixup.nu
+
+/test-44-unified-storage:
+  summary: Readonly tests after onboarding to unified storage via set-unified
+  duration: 30m
+  test: nu booted/test-44-unified-storage.nu
+
+/test-45-install-unified-flag:
+  summary: Readonly tests after install with --experimental-unified-storage
+  duration: 30m
+  test: nu booted/test-45-install-unified-flag.nu
+
+/test-46-install-ostree-composefs-unified:
+  summary: Readonly tests after install with --experimental-ostree-composefs-unified (bound-only)
+  duration: 30m
+  test: nu booted/test-46-install-ostree-composefs-unified.nu
+
+/test-47-set-unified-composefs:
+  summary: Runtime set-unified composefs then verify persistence across reboot
+  duration: 30m
+  test: nu booted/test-set-unified-composefs.nu

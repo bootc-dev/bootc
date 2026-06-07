@@ -1,10 +1,11 @@
 //! The [`Storage`] type holds references to three different types of
 //! storage that together implement the unified storage model.
 //!
-//! # Planned three-store architecture
+//! # Three-store architecture
 //!
-//! The planned architecture for unified storage involves three content stores that
-//! share physical disk blocks on a reflink-capable filesystem (XFS, btrfs):
+//! Unified storage makes OS image data simultaneously visible in three
+//! content-addressed stores that share physical disk blocks on a reflink-capable
+//! filesystem (XFS, btrfs):
 //!
 //! 1. **bootc-owned containers-storage** at `/sysroot/ostree/bootc/storage`
 //!    (overlay driver) — the image is accessible to podman and shares layers
@@ -20,31 +21,35 @@
 //!
 //! Each `FICLONE` ioctl lets the kernel mark source and destination extents as
 //! copy-on-write siblings with no userspace data movement. On ext4 (no
-//! reflinks), each step falls back to a byte copy.
+//! reflinks), the `enabled-with-copy` storage config falls back to a byte copy.
 //!
-//! ## Implementation Plan
+//! ## Current implementation status
 //!
-//! The containers-storage → composefs step (arrow 1) is already implemented
-//! for the composefs boot backend in `crates/lib/src/bootc_composefs/repo.rs`
-//! via `pull_composefs_unified`.
+//! The containers-storage → composefs step (arrow 1→2) is implemented for the
+//! composefs boot backend in `crates/lib/src/bootc_composefs/repo.rs` via
+//! `pull_composefs_unified`.  The composefs → ostree step (arrow 2→3) is
+//! implemented via `import_from_composefs_repo`, wiring all three stores
+//! together for the ostree backend through `pull_via_composefs`.
 //!
-//! Wiring all three steps together for the ostree backend is the major planned work.
-//! The composefs → ostree step (arrow 2) was proven by the `composefs-to-ostree`
-//! spike branch. The planned implementation for the ostree backend will:
+//! A reconcile pass (`reconcile_unified_storage` in [`crate::image`]) runs
+//! after `set-unified full` and on demand via `bootc image sync`, to ensure all
+//! bootloader-pinned deployments (booted, rollback, staged) are present in
+//! containers-storage even if they were originally deployed before unified
+//! storage was enabled.  The reverse path (composefs → containers-storage) is
+//! taken in that case: each layer is exported byte-exactly from the composefs
+//! splitstreams and imported via skopeo into bootc's private overlay store.
 //!
-//! 1. Perform a lazy cached probe (`reflinks_supported`) at install time.
-//! 2. Pull into containers-storage first (Stage 1).
-//! 3. Use `composefs_oci::pull` with `LocalFetchOpt::ZeroCopy` to populate composefs (Stage 2).
-//! 4. Finally, synthesize the ostree commit by walking the composefs tree,
-//!    reading metadata, computing SELinux labels, computing the ostree checksum,
-//!    and `FICLONE`ing into the ostree bare repo (Stage 3).
+//! The remaining limitation is that the reverse-path export recompresses layer
+//! blobs rather than reflink-sharing them; a native splitfdstream-based writer
+//! will eliminate this in a future iteration.
 //!
 //! ## Long-term: Global composefs store
 //!
-//! The ultimate planned state (the "composefs-as-storage" plan) is to have podman's
-//! composefs backend natively write objects to `/sysroot/composefs` directly, bypassing
-//! even `containers-storage`. This would mean flatpak, podman, and bootc all share exactly
-//! one global pool of content-addressed, deduplicated files.
+//! The ultimate planned state (the "composefs-as-storage" plan) is to have
+//! podman's composefs backend natively write objects to `/sysroot/composefs`
+//! directly, bypassing even `containers-storage`. This would mean flatpak,
+//! podman, and bootc all share exactly one global pool of content-addressed,
+//! deduplicated files.
 //!
 //! ## Why composefs in the middle
 //!
@@ -91,6 +96,7 @@
 //! This lives in `/composefs` in the physical root.
 
 use std::cell::OnceCell;
+use std::collections::HashSet;
 use std::ops::Deref;
 use std::sync::Arc;
 
@@ -105,10 +111,11 @@ use cap_std_ext::dirext::CapStdExtDirExt;
 use fn_error_context::context;
 
 use ostree_ext::container_utils::ostree_booted;
+use ostree_ext::oci_spec::image::Digest;
 use ostree_ext::prelude::FileExt;
 use ostree_ext::sysroot::SysrootLock;
 use ostree_ext::{gio, ostree};
-use rustix::fs::Mode;
+use rustix::fs::{Mode, OFlags};
 
 use composefs::fsverity::Sha512HashValue;
 use composefs_ctl::composefs;
@@ -133,6 +140,67 @@ pub const COMPOSEFS: &str = "composefs";
 /// The mode for the composefs directory; this is intentionally restrictive
 /// to avoid leaking information.
 pub(crate) const COMPOSEFS_MODE: Mode = Mode::from_raw_mode(0o700);
+
+/// Path to bootc-specific metadata stored alongside the composefs `meta.json`.
+///
+/// This file records bootc-level configuration for the composefs repository,
+/// such as whether unified base-image storage is enabled.  Its absence means
+/// the system is not in unified-storage mode.  The path is relative to the
+/// physical system root.
+pub(crate) const BOOTC_REPO_META: &str = "composefs/bootc.json";
+
+/// bootc-specific metadata stored in `composefs/bootc.json`.
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) struct BootcRepoMeta {
+    /// Schema version; currently must be 1.
+    #[serde(default)]
+    pub version: u32,
+
+    /// Unified storage state for this system.  Matches the `storage.unified`
+    /// field in `bootc status --json` and the `[install.storage] unified`
+    /// install config.
+    ///
+    /// `disabled` (the default) means unified storage is not active.
+    /// `enabled` means images were imported with FICLONE (reflinks required).
+    /// `enabled-with-copy` means unified storage is active but byte-copy fallback
+    /// is allowed (e.g. `storage.unified = "enabled-with-copy"` or
+    /// onboarded via `bootc image set-unified full`).
+    #[serde(default)]
+    pub unified: crate::spec::UnifiedStorageState,
+}
+
+impl BootcRepoMeta {
+    /// Read `composefs/bootc.json` from the physical root, if it exists.
+    /// Returns `Ok(None)` when the file is absent (i.e. unified storage
+    /// has never been enabled on this system).
+    pub(crate) fn read(physical_root: &Dir) -> Result<Option<Self>> {
+        match physical_root.open(BOOTC_REPO_META) {
+            Ok(f) => {
+                let meta: Self = serde_json::from_reader(std::io::BufReader::new(f))
+                    .with_context(|| format!("Parsing {BOOTC_REPO_META}"))?;
+                Ok(Some(meta))
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e).with_context(|| format!("Opening {BOOTC_REPO_META}")),
+        }
+    }
+
+    /// Write `composefs/bootc.json` to the physical root, atomically.
+    /// The composefs directory must already exist.
+    pub(crate) fn write(&self, physical_root: &Dir) -> Result<()> {
+        let json = serde_json::to_string_pretty(self).context("Serializing BootcRepoMeta")?;
+        // Write atomically via a temp file.
+        let tmp = format!("{BOOTC_REPO_META}.tmp");
+        physical_root
+            .write(&tmp, json.as_bytes())
+            .with_context(|| format!("Writing {tmp}"))?;
+        physical_root
+            .rename(&tmp, physical_root, BOOTC_REPO_META)
+            .with_context(|| format!("Renaming {tmp} -> {BOOTC_REPO_META}"))?;
+        Ok(())
+    }
+}
 
 /// Ensure the composefs directory exists in the given physical root
 /// with the correct permissions (mode 0700).
@@ -348,6 +416,7 @@ impl BootedStorage {
                     ostree: Default::default(),
                     composefs: OnceCell::from(composefs.clone()),
                     imgstore: Default::default(),
+                    reflinks_supported: Default::default(),
                 };
 
                 // prepend_custom_prefix is idempotent: it checks has_prefix on each
@@ -384,6 +453,7 @@ impl BootedStorage {
                     ostree: OnceCell::from(sysroot),
                     composefs: Default::default(),
                     imgstore: Default::default(),
+                    reflinks_supported: Default::default(),
                 };
 
                 Some(Self { storage })
@@ -418,6 +488,17 @@ impl BootedStorage {
     }
 }
 
+/// True if `image_id` (a bare-hex containers-storage image ID) corresponds to
+/// one of the composefs config `digests`.
+///
+/// A containers-storage image ID is the bare encoded value (e.g. the hex of a
+/// sha256), whereas a [`Digest`] also carries an algorithm prefix. We compare
+/// against [`Digest::digest`], the algorithm-agnostic encoded value, rather
+/// than reconstructing an `algorithm:value` string by hand.
+pub(crate) fn cstorage_id_matches_digest(digests: &HashSet<Digest>, image_id: &str) -> bool {
+    digests.iter().any(|d| d.digest() == image_id)
+}
+
 /// A reference to a physical filesystem root, plus
 /// accessors for the different types of container storage.
 pub(crate) struct Storage {
@@ -445,6 +526,16 @@ pub(crate) struct Storage {
     composefs: OnceCell<Arc<ComposefsRepository>>,
     /// The containers-image storage used for LBIs
     imgstore: OnceCell<CStorage>,
+
+    /// Cached result of the FICLONE reflink probe on `physical_root`.
+    ///
+    /// `true`  → the filesystem hosting `physical_root` supports reflinks;
+    ///           determined by successfully cloning between two anonymous
+    ///           tmpfiles created inside `physical_root` itself.
+    /// `false` → FICLONE returned `EOPNOTSUPP`/`EXDEV` (e.g. ext4).
+    ///
+    /// Populated lazily on first call to [`Storage::reflinks_supported`].
+    reflinks_supported: OnceCell<bool>,
 }
 
 /// Cached image status data used for optimization.
@@ -500,6 +591,7 @@ impl Storage {
             ostree: ostree_cell,
             composefs: Default::default(),
             imgstore: Default::default(),
+            reflinks_supported: Default::default(),
         })
     }
 
@@ -593,6 +685,30 @@ impl Storage {
         Ok(self.imgstore.get_or_init(|| imgstore))
     }
 
+    /// Ensure (mode 0700) and return the absolute path of the OCI export
+    /// scratch directory on the persistent sysroot filesystem.
+    ///
+    /// Used when reconstructing OCI images for export into the bootc
+    /// containers-storage (reconcile, `fsck --repair`, push).  It lives inside
+    /// the store root so it is on the same filesystem as the destination
+    /// (reflinks work, no cross-device copy) and survives a volatile `/var` —
+    /// writing to `/var/tmp` overflows when `/var` is a small tmpfs.
+    ///
+    /// An absolute path is returned (rather than a handle) so callers can hand
+    /// a real filesystem path to skopeo, which — along with its forked helpers
+    /// — resolves it in bootc's mount namespace rather than relying on fd
+    /// inheritance.
+    pub(crate) fn oci_scratch_dir(&self) -> Result<Utf8PathBuf> {
+        const OCI_SCRATCH_SUBDIR: &str = "ostree/bootc/storage/tmp";
+        let mut db = DirBuilder::new();
+        db.recursive(true);
+        db.mode(0o700);
+        self.physical_root
+            .ensure_dir_with(OCI_SCRATCH_SUBDIR, &db)
+            .with_context(|| format!("Creating {OCI_SCRATCH_SUBDIR}"))?;
+        Ok(self.physical_root_path.join(OCI_SCRATCH_SUBDIR))
+    }
+
     /// Ensure the image storage is properly SELinux-labeled. This should be
     /// called after all image pulls are complete.
     pub(crate) fn ensure_imgstore_labeled(&self) -> Result<()> {
@@ -631,6 +747,132 @@ impl Storage {
         let composefs = Arc::new(composefs);
         let r = Arc::clone(self.composefs.get_or_init(|| composefs));
         Ok(r)
+    }
+
+    /// Return the set of OCI config digests for every composefs-tagged image
+    /// (tags prefixed with [`BOOTC_TAG_PREFIX`](crate::composefs_consts::BOOTC_TAG_PREFIX)).
+    ///
+    /// The config digest equals the containers-storage image ID and is stable
+    /// across layer recompression, which is why we cross-reference on it rather
+    /// than the manifest digest (which may change when layers are copied
+    /// between stores).
+    ///
+    /// Returns an empty set when the composefs repository cannot be opened
+    /// (e.g. an ostree-only / non-unified system); callers treat "no composefs"
+    /// as "nothing is composefs-backed".
+    pub(crate) fn composefs_config_digests(&self) -> Result<HashSet<Digest>> {
+        use composefs_ctl::composefs_oci::{self, OciImage};
+
+        let repo = match self.get_ensure_composefs() {
+            Ok(r) => r,
+            Err(_) => return Ok(HashSet::new()),
+        };
+        let digests = composefs_oci::list_refs(&*repo)
+            .context("Listing composefs OCI refs")?
+            .into_iter()
+            .filter(|(tag, _)| tag.starts_with(crate::composefs_consts::BOOTC_TAG_PREFIX))
+            .filter_map(|(_tag, manifest_digest)| {
+                OciImage::<Sha512HashValue>::open(&*repo, &manifest_digest, None)
+                    .ok()
+                    .map(|img| img.manifest().config().digest().clone())
+            })
+            .collect();
+        Ok(digests)
+    }
+
+    /// Return the set of containers-storage image *names* that must not be
+    /// pruned because a composefs splitstream depends on the underlying
+    /// containers-storage data.
+    ///
+    /// An image is protected when its containers-storage ID matches the config
+    /// digest of a composefs-tagged image (see [`Self::composefs_config_digests`]).
+    /// Names are returned (rather than IDs) because
+    /// [`CStorage::prune_except_roots`](crate::podstorage::CStorage::prune_except_roots)
+    /// matches prune roots by name.
+    ///
+    /// This is the reconciliation point for the boot-entry → image binding: the
+    /// bootloader/GC logic asks storage which images are still anchored rather
+    /// than reaching into the composefs repo itself.
+    pub(crate) async fn composefs_protected_image_names(&self) -> Result<HashSet<String>> {
+        let digests = self.composefs_config_digests()?;
+        // Fast path: no composefs-tagged images means nothing to protect, so
+        // avoid an unnecessary containers-storage listing.
+        if digests.is_empty() {
+            return Ok(HashSet::new());
+        }
+
+        let imgstore = self.get_ensure_imgstore()?;
+        let names: HashSet<String> = imgstore
+            .list_images()
+            .await?
+            .into_iter()
+            .filter(|entry| cstorage_id_matches_digest(&digests, &entry.id))
+            .flat_map(|entry| entry.names.into_iter().flatten())
+            .collect();
+        tracing::debug!("Composefs-protected containers-storage names: {names:?}");
+        Ok(names)
+    }
+
+    /// Probe whether the filesystem hosting `physical_root` supports reflinks
+    /// (FICLONE / copy-on-write extent sharing), caching the result.
+    ///
+    /// The probe creates two anonymous O_TMPFILE inodes inside `physical_root`
+    /// and attempts `ioctl(FICLONE)` between them.  Because both files live on
+    /// the same filesystem as the composefs and ostree repositories, a
+    /// successful probe guarantees that reflinks will work between those repos.
+    ///
+    /// Returns `true` on XFS / btrfs, `false` on ext4 and anything else that
+    /// returns `EOPNOTSUPP` / `EXDEV`.
+    pub(crate) fn reflinks_supported(&self) -> Result<bool> {
+        if let Some(&cached) = self.reflinks_supported.get() {
+            return Ok(cached);
+        }
+
+        // Open the physical root as a plain rustix fd so we can use openat.
+        let dir_fd = rustix::fs::open(
+            self.physical_root_path.as_str(),
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .context("Opening physical root for reflink probe")?;
+
+        // Source: an anonymous inode we write one byte into.
+        let src = rustix::fs::openat(
+            &dir_fd,
+            c".",
+            OFlags::RDWR | OFlags::TMPFILE | OFlags::CLOEXEC,
+            Mode::from_raw_mode(0o600),
+        )
+        .context("Creating source tmpfile for reflink probe")?;
+        rustix::io::write(&src, b"x").context("Writing probe byte")?;
+
+        // Destination: another anonymous inode to clone into.
+        let dst = rustix::fs::openat(
+            &dir_fd,
+            c".",
+            OFlags::RDWR | OFlags::TMPFILE | OFlags::CLOEXEC,
+            Mode::from_raw_mode(0o600),
+        )
+        .context("Creating dest tmpfile for reflink probe")?;
+
+        let supported = match rustix::fs::ioctl_ficlone(&dst, &src) {
+            Ok(()) => true,
+            Err(rustix::io::Errno::OPNOTSUPP) | Err(rustix::io::Errno::XDEV) => false,
+            Err(e) => {
+                // Any other error (e.g. EPERM) is unexpected; log and assume not supported.
+                tracing::warn!(
+                    "Unexpected error probing reflink support: {e}; assuming unsupported"
+                );
+                false
+            }
+        };
+
+        tracing::debug!(
+            "Reflink probe on {}: {}",
+            self.physical_root_path,
+            supported
+        );
+        Ok(*self.reflinks_supported.get_or_init(|| supported))
     }
 
     /// Update the mtime on the storage root directory.

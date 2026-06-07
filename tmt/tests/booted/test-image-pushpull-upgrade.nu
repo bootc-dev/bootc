@@ -11,6 +11,7 @@
 # Then another build, and reboot into verifying that
 use std assert
 use tap.nu
+use bootc_testlib.nu
 
 const kargsv0 = ["testarg=foo", "othertestkarg", "thirdkarg=bar"]
 const kargsv1 = ["testarg=foo", "thirdkarg=baz"]
@@ -141,6 +142,7 @@ def second_boot [] {
     # booted from the local container storage and image
     assert equal $booted.image.transport containers-storage
     assert equal $booted.image.image localhost/bootc-derived
+
     # We wrote this file
     let t = open /usr/share/blah.txt | str trim
     assert equal $t "test content"
@@ -191,6 +193,7 @@ def third_boot [] {
     print "verifying third boot"
     assert equal $booted.image.transport containers-storage
     assert equal $booted.image.image localhost/bootc-derived
+
     let t = open /usr/share/blah.txt | str trim
     assert equal $t "test content2"
 
@@ -218,6 +221,7 @@ def third_boot [] {
 }
 
 def main [] {
+    bootc_testlib initial_status_and_checks
     # See https://tmt.readthedocs.io/en/stable/stories/features.html#reboot-during-test
     match $env.TMT_REBOOT_COUNT? {
         null | "0" => initial_build,

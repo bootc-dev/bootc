@@ -158,6 +158,13 @@ jobs:
           # These tests may mutate the system live so we can't run in parallel
           sudo bootc-integration-tests system-reinstall localhost/bootc --test-threads=1
 
+          # Unified storage case
+          sudo podman build -t localhost/bootc-unified-storage -f ci/Containerfile.install-unified-storage
+          sudo podman run --privileged --pid=host localhost/bootc-unified-storage bootc install to-existing-root --stateroot=unified-storage --acknowledge-destructive --skip-fetch-check
+          # Verify unified storage was activated; composefs/bootc.json is written relative to
+          # the target physical root (/target bind-mounted to host /), so the file appears at /composefs/bootc.json
+          sudo test -f /composefs/bootc.json
+
           # And the fsverity case
           sudo podman run --privileged --pid=host localhost/bootc-fsverity bootc install to-existing-root --stateroot=other \
             --acknowledge-destructive --skip-fetch-check
