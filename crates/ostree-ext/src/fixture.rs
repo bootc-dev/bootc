@@ -23,10 +23,8 @@ use gvariant::aligned_bytes::TryAsAligned;
 use gvariant::{Marker, Structure};
 use io_lifetimes::AsFd;
 use ocidir::cap_std::fs::{DirBuilder, DirBuilderExt as _};
-use ocidir::oci_spec::image::ImageConfigurationBuilder;
 use regex::Regex;
 use std::borrow::Cow;
-use std::collections::HashMap;
 use std::ffi::CString;
 use std::fmt::Write as _;
 use std::io::{self, Write};
@@ -1007,37 +1005,20 @@ impl NonOstreeFixture {
             name: self.path.join(Self::SRCOCI).to_string(),
         };
 
-        let mut config = ImageConfigurationBuilder::default().build().unwrap();
-        let mut manifest = self.src_oci.new_empty_manifest()?.build().unwrap();
+        crate::integrationtest::build_fresh_oci_from_tar(
+            &self.src_oci,
+            |w| {
+                let mut bw = tar::Builder::new(w);
+                for def in FileDef::iter_from(CONTENTS_V0) {
+                    def?.append_tar(&mut bw)?;
+                }
+                bw.into_inner()?;
+                Ok(())
+            },
+            None,
+            None,
+        )?;
 
-        let bw = self.src_oci.create_gzip_layer(None)?;
-        let mut bw = tar::Builder::new(bw);
-        for def in FileDef::iter_from(CONTENTS_V0) {
-            let def = def.unwrap();
-            def.append_tar(&mut bw)?;
-        }
-        let bw = bw.into_inner()?;
-        let new_layer = bw.complete()?;
-
-        let created = config
-            .created()
-            .as_deref()
-            .and_then(bootc_utils::try_deserialize_timestamp)
-            .unwrap_or_default();
-
-        self.src_oci.push_layer_full(
-            &mut manifest,
-            &mut config,
-            new_layer,
-            None::<HashMap<String, String>>,
-            "root",
-            created,
-        );
-        let config = self.src_oci.write_config(config)?;
-
-        manifest.set_config(config);
-        self.src_oci
-            .replace_with_single_manifest(manifest, oci_image::Platform::default())?;
         let idx = self.src_oci.read_index()?;
         let descriptor = idx.manifests().first().unwrap();
 
