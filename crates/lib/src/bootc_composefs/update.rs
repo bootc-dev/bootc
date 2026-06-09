@@ -261,6 +261,8 @@ pub(crate) async fn do_upgrade(
         imgref,
         booted_cfs.cmdline.allow_missing_fsverity,
         opts.use_unified,
+        // Runtime upgrade: reflinks were proven at install time; allow copies as fallback.
+        composefs_ctl::composefs_oci::LocalFetchOpt::IfPossible,
     )
     .await?;
 
@@ -344,7 +346,7 @@ pub(crate) async fn upgrade_composefs(
     storage: &Storage,
     composefs: &BootedComposefs,
 ) -> Result<()> {
-    const COMPOSEFS_UPGRADE_JOURNAL_ID: &str = "9c8d7f6e5a4b3c2d1e0f9a8b7c6d5e4f3";
+    const COMPOSEFS_UPGRADE_JOURNAL_ID: &str = "01fcba11aadb493c9226158e896a069e";
 
     tracing::info!(
         message_id = COMPOSEFS_UPGRADE_JOURNAL_ID,
@@ -425,17 +427,17 @@ pub(crate) async fn upgrade_composefs(
     let imgref = derived_image.as_ref().or(current_image);
     let mut booted_imgref = imgref.ok_or_else(|| anyhow::anyhow!("No image source specified"))?;
 
-    // Auto-detect unified storage: use the unified path if the target image is
-    // already in bootc-owned containers-storage, OR if the booted image is —
-    // the latter means the user has opted into unified storage and all
-    // subsequent operations should use it.
-    let current_unified = if let Some(current) = current_image {
-        crate::deploy::image_exists_in_unified_storage(storage, current).await?
-    } else {
-        false
-    };
-    do_upgrade_opts.use_unified = current_unified
-        || crate::deploy::image_exists_in_unified_storage(storage, booted_imgref).await?;
+    // Use unified storage if the composefs/bootc.json marker says it is enabled
+    // on this system (written by `bootc image set-unified full` or by install with
+    // `--experimental-unified-storage`).
+    //
+    // Note: the native composefs backend intentionally reads the containers-storage
+    // *participation* signal (unified_storage_enabled) rather than the ostree-repo
+    // binding signal (binding_state).  On the native backend there is no ostree repo
+    // so binding_state would always return Disabled — we want to gate on whether the
+    // user has enabled cstorage participation, not on the ostree binding.
+    do_upgrade_opts.use_unified =
+        crate::deploy::unified_storage_enabled(storage).context("Checking unified storage flag")?;
 
     let repo = &*composefs.repo;
 

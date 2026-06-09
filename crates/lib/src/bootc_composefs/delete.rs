@@ -208,7 +208,7 @@ pub(crate) async fn delete_composefs_deployment(
     storage: &Storage,
     booted_cfs: &BootedComposefs,
 ) -> Result<()> {
-    const COMPOSEFS_DELETE_JOURNAL_ID: &str = "2a1f0e9d8c7b6a5f4e3d2c1b0a9f8e7d6";
+    const COMPOSEFS_DELETE_JOURNAL_ID: &str = "52b55a65303244158335bfd03007bbc4";
 
     tracing::info!(
         message_id = COMPOSEFS_DELETE_JOURNAL_ID,

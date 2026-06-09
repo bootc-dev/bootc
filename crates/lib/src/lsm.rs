@@ -391,13 +391,13 @@ pub(crate) fn relabel_recurse(
 /// Uses the `walk` API with `noxdev` and `skip_mountpoints` to avoid crossing
 /// mount point boundaries
 /// (e.g. into sysfs, procfs, etc.).
-/// The provided `skip` parameter is a device/inode pair that we will ignore
-/// (and not traverse into).
+/// The provided `skip` parameter is a list of device/inode pairs to ignore
+/// (and not traverse into).  Pass an empty slice to skip nothing.
 pub(crate) fn ensure_dir_labeled_recurse(
     root: &Dir,
     path: &mut Utf8PathBuf,
     policy: &ostree::SePolicy,
-    skip: Option<(libc::dev_t, libc::ino64_t)>,
+    skip: &[(libc::dev_t, libc::ino64_t)],
 ) -> Result<()> {
     use cap_std_ext::dirext::WalkConfiguration;
     use std::ops::ControlFlow;
@@ -432,18 +432,20 @@ pub(crate) fn ensure_dir_labeled_recurse(
             let metadata = component.entry.metadata()?;
 
             // Check if this entry should be skipped
-            if let Some((skip_dev, skip_ino)) = skip {
-                if (metadata.dev(), metadata.ino()) == (skip_dev, skip_ino) {
-                    tracing::debug!("Skipping dev={skip_dev} inode={skip_ino}");
-                    // For directories, Break skips traversal into the directory
-                    // but continues with the next sibling. For non-directories,
-                    // Break would skip all remaining siblings, so use Continue
-                    // to skip only this entry.
-                    if component.file_type.is_dir() {
-                        return Ok(ControlFlow::Break(()));
-                    } else {
-                        return Ok(ControlFlow::Continue(()));
-                    }
+            let devino = (
+                metadata.dev() as libc::dev_t,
+                metadata.ino() as libc::ino64_t,
+            );
+            if skip.contains(&devino) {
+                tracing::debug!("Skipping dev={} inode={}", devino.0, devino.1);
+                // For directories, Break skips traversal into the directory
+                // but continues with the next sibling. For non-directories,
+                // Break would skip all remaining siblings, so use Continue
+                // to skip only this entry.
+                if component.file_type.is_dir() {
+                    return Ok(ControlFlow::Break(()));
+                } else {
+                    return Ok(ControlFlow::Continue(()));
                 }
             }
 

@@ -9,7 +9,25 @@
 //! `/sysroot/composefs/bootc/storage` with a compatibility symlink
 //! at `ostree/bootc -> ../composefs/bootc`.
 //!
-//! At the current time, this is only used for Logically Bound Images.
+//! ## Uses
+//!
+//! This store is used for:
+//!
+//! - **Logically Bound Images**: non-OS container images that are fetched
+//!   alongside the OS image and available to podman at runtime.
+//! - **Unified storage**: when unified storage is enabled, the booted OS image
+//!   (and all rollback/staged images) are also present here, making the full
+//!   image available for `podman run` and layer sharing with Logically Bound
+//!   Images.
+//!
+//! ## Reconcile import path
+//!
+//! `import_from_oci_dir` implements the composefs → containers-storage
+//! direction used by the reconcile pass (`repair_image_to_containers_storage`
+//! in [`crate::image`]).  It runs skopeo inside a private mount namespace that
+//! bind-mounts the bootc store root to a stable alias path
+//! (`STORAGE_ALIAS_DIR`), so the skopeo child process always targets bootc's
+//! private overlay store rather than the host's default `/var/lib/containers`.
 
 use std::collections::HashSet;
 use std::io::{Seek, Write};
@@ -412,6 +430,21 @@ impl CStorage {
         Ok(garbage)
     }
 
+    /// Resolve the containers-storage image ID (config digest) for an image already
+    /// present in this storage. Used to build a digest-pinned `containers-storage:`
+    /// reference that bypasses composefs-storage's naive name matching (which
+    /// mishandles registry refs containing a port, e.g. `host:8000/foo`).
+    #[context("Resolving image id for {image}")]
+    pub(crate) async fn image_id(&self, image: &str) -> Result<String> {
+        let mut cmd = self.new_image_cmd()?;
+        cmd.stdin(Stdio::null());
+        cmd.args(["inspect", "--format", "{{.Id}}", image]);
+        let id = tokio::task::spawn_blocking(move || cmd.run_get_string()).await??;
+        let id = id.trim().to_owned();
+        anyhow::ensure!(!id.is_empty(), "podman image inspect returned empty ID");
+        Ok(id)
+    }
+
     /// Return true if the image exists in the storage.
     pub(crate) async fn exists(&self, image: &str) -> Result<bool> {
         // Sadly https://docs.rs/containers-image-proxy/latest/containers_image_proxy/struct.ImageProxy.html#method.open_image_optional
@@ -443,6 +476,38 @@ impl CStorage {
         Ok(true)
     }
 
+    /// Copy a `containers-storage:` image into this bootc-owned storage.
+    ///
+    /// If `STORAGE_OPTS=additionalimagestore=<path>` is set in the environment
+    /// (as injected by bcvk via systemd credentials), uses that path as the
+    /// explicit `--root` for podman — because podman does not search additional
+    /// image stores when resolving a push source.  Otherwise falls back to the
+    /// default `/var/lib/containers/storage`.
+    pub(crate) async fn pull_from_containers_storage(&self, image: &str) -> Result<()> {
+        // If the image is already in bootc's own containers-storage (e.g. built
+        // via `bootc image cmd build`), no copy is needed.
+        if self.exists(image).await.unwrap_or(false) {
+            tracing::debug!("Image {image} already in bootc storage; skipping copy");
+            return Ok(());
+        }
+
+        let ais = std::env::var("STORAGE_OPTS").ok().and_then(|v| {
+            v.split(',')
+                .find(|s| s.starts_with("additionalimagestore="))
+                .and_then(|s| s.strip_prefix("additionalimagestore="))
+                .map(str::to_owned)
+        });
+
+        if let Some(src_root) = ais {
+            tracing::debug!(
+                "STORAGE_OPTS has additionalimagestore={src_root}; using as source storage root"
+            );
+            self.pull_from_storage_root(&src_root, image).await
+        } else {
+            self.pull_from_host_storage(image).await
+        }
+    }
+
     /// Copy an image from the default container storage (/var/lib/containers/)
     /// to this storage.
     #[context("Pulling from host storage: {image}")]
@@ -462,6 +527,85 @@ impl CStorage {
         );
         cmd.args(["image", "push", "--remove-signatures", image])
             .arg(format!("{storage_dest}{image}"));
+        let mut cmd = AsyncCommand::from(cmd);
+        cmd.run().await?;
+        temp_runroot.close()?;
+        Ok(())
+    }
+
+    /// Copy an image from an additional image store into this bootc-owned storage.
+    ///
+    /// Used during install when the source image lives in a storage instance
+    /// advertised via `STORAGE_OPTS=additionalimagestore=<path>` (e.g. the bcvk
+    /// virtiofs mount) rather than in the default `/var/lib/containers/storage`.
+    ///
+    /// Uses `skopeo copy` with `STORAGE_OPTS=additionalimagestore=<src_root>` on
+    /// the subprocess.  Skopeo respects `STORAGE_OPTS` for source image lookup and
+    /// does not touch libpod state, which avoids two problems:
+    ///
+    /// - `podman --root <foreign-root>` triggers a libpod database mismatch when the
+    ///   foreign store was created by a different podman instance.
+    /// - `podman pull containers-storage:` with an AIS makes the image *visible* but
+    ///   does not materialize it into the destination root storage.
+    ///
+    /// The netavark/skopeo-first issue (containers/skopeo#658) does not apply here
+    /// because `CStorage::create` always runs `podman images` to initialize the
+    /// bootc-owned storage before this function is ever called.
+    #[context("Copying from additional image store at {src_root}: {image}")]
+    pub(crate) async fn pull_from_storage_root(&self, src_root: &str, image: &str) -> Result<()> {
+        let mut cmd = Command::new(bootc_utils::skopeo_bin());
+        cmd.stdin(Stdio::null());
+        cmd.stdout(Stdio::null());
+
+        let temp_runroot = TempDir::new(cap_std::ambient_authority())?;
+        let mut fds = CmdFds::new();
+        bind_storage_roots(&mut cmd, &mut fds, &self.storage_root, &temp_runroot)?;
+        cmd.take_fds(fds);
+
+        // Set the AIS on the skopeo subprocess so it can find the source image.
+        let storage_opt = format!("additionalimagestore={src_root}");
+        cmd.env("STORAGE_OPTS", &storage_opt);
+
+        let src = format!("containers-storage:{image}");
+        let dest = format!(
+            "containers-storage:[overlay@{STORAGE_ALIAS_DIR}+/proc/self/fd/{STORAGE_RUN_FD}]{image}"
+        );
+        // TODO: wire up structured progress reporting for this copy instead of
+        // suppressing output; for now --quiet avoids unstructured blob/layer spam.
+        cmd.args(["copy", "--quiet", "--remove-signatures", &src, &dest]);
+
+        let mut cmd = AsyncCommand::from(cmd);
+        cmd.run().await?;
+        temp_runroot.close()?;
+        Ok(())
+    }
+
+    /// Import an image from a local OCI directory into this bootc-owned (private
+    /// overlay) containers-storage, so fsck/list_images can see it.
+    ///
+    /// Used by `reconcile_unified_storage` and `fsck --repair` to restore a
+    /// composefs-backed image into the bootc private store (as opposed to the
+    /// host default `/var/lib/containers` store).  The `oci_path` argument must
+    /// be an absolute filesystem path visible to both the caller and the skopeo
+    /// child process (e.g. a path under the sysroot OCI export scratch, see
+    /// [`crate::store::Storage::oci_scratch_dir`]).
+    #[context("Importing OCI dir {oci_path} into bootc storage as {dest_name}")]
+    pub(crate) async fn import_from_oci_dir(&self, oci_path: &str, dest_name: &str) -> Result<()> {
+        let mut cmd = Command::new(bootc_utils::skopeo_bin());
+        cmd.stdin(Stdio::null());
+        cmd.stdout(Stdio::null());
+
+        let temp_runroot = TempDir::new(cap_std::ambient_authority())?;
+        let mut fds = CmdFds::new();
+        bind_storage_roots(&mut cmd, &mut fds, &self.storage_root, &temp_runroot)?;
+        cmd.take_fds(fds);
+
+        let src = format!("oci:{oci_path}");
+        let dest = format!(
+            "containers-storage:[overlay@{STORAGE_ALIAS_DIR}+/proc/self/fd/{STORAGE_RUN_FD}]{dest_name}"
+        );
+        cmd.args(["copy", "--quiet", "--remove-signatures", &src, &dest]);
+
         let mut cmd = AsyncCommand::from(cmd);
         cmd.run().await?;
         temp_runroot.close()?;

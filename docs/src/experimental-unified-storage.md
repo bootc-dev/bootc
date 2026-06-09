@@ -32,7 +32,7 @@ Currently supported:
 
 - Installation with `--experimental-unified-storage` flag
 - `bootc switch --experimental-unified-storage` to force the unified path
-- Onboarding running systems via `bootc image set-unified`
+- Onboarding running systems via `bootc image set-unified full`
 - Auto-detection during upgrade/switch when image exists in bootc storage
 
 ### Why this isn't the default yet
@@ -68,7 +68,7 @@ storage first, then import from there into ostree.
 To onboard an existing system to unified storage, use:
 
 ```bash
-bootc image set-unified
+bootc image set-unified full
 ```
 
 This re-pulls the currently booted image from its original source into the
@@ -91,7 +91,7 @@ With unified storage enabled:
 During `bootc upgrade` or `bootc switch`, bootc automatically checks if the
 target image already exists in the bootc container storage. If so, it uses
 the unified storage path without requiring any flags. This means once you've
-onboarded via `bootc image set-unified`, subsequent upgrades will automatically
+onboarded via `bootc image set-unified full`, subsequent upgrades will automatically
 use the unified path.
 
 ### Storage location
@@ -113,8 +113,8 @@ bootc image copy-to-storage
 # Switch to use containers-storage transport (enables unified path)
 bootc switch --transport containers-storage localhost/bootc
 
-# Onboard to unified storage
-bootc image set-unified
+    # Onboard to unified storage
+    bootc image set-unified full
 
 # Build a derived image directly into bootc storage
 bootc image cmd build -t localhost/my-custom .
@@ -131,21 +131,35 @@ Once unified storage is enabled, podman can access the booted image:
 podman --storage-opt=additionalimagestore=/usr/lib/bootc/storage run localhost/bootc
 ```
 
-## Relationship to composefs backend
+## Relationship to the composefs-first import pipeline
 
-Unified storage is complementary to the [composefs backend](experimental-composefs.md).
-While unified storage changes *how images are pulled* (using containers/storage),
-the composefs backend changes *how the filesystem is stored and verified*.
+This codebase implements a "composefs-first" (or "composefs-to-ostree") import pipeline that combines unified storage and composefs.
+In this three-store model, `containers/storage` pulls the image, composefs imports it via reflinks (`FICLONE`), and then ostree synthesizes its commit by `FICLONE`ing from the composefs objects.
 
-## Future plans: composefs-to-ostree
+This design eliminates tar serialization entirely, meaning only one physical copy of the image data exists on disk, shared across all three stores.
 
-These features will be combined in upcoming work to build a "composefs-first"
-import pipeline. In this planned model, containers/storage will pull the image,
-composefs will import it via reflinks (`FICLONE`), and then ostree will 
-synthesize its commit by `FICLONE`ing from the composefs objects.
+Specifically, the composefs-first path fetches the OCI image directly into the composefs OCI
+repository (under `/sysroot/ostree/repo/composefs`) and then synthesizes an ostree
+commit from that repository without a tar round-trip.  For each external regular
+file it uses `FICLONE` (reflink) to populate the corresponding ostree content object
+from the composefs object.  Because reflinks share underlying disk extents while
+keeping independent inodes, each ostree object can carry its own metadata (uid, gid,
+mode, SELinux label) even when two paths have identical bytes and share a single
+composefs object.  This is why reflink is used instead of hardlink: a single inode
+can hold only one `security.selinux` value, so hardlinking would corrupt one of the
+labels.
 
-This will eliminate tar serialization entirely, meaning only one physical copy
-of the image data will exist on disk, shared across all three stores.
+This design requires a reflink-capable filesystem.  On XFS or btrfs, FICLONE
+succeeds and the ostree and composefs repositories share disk blocks — no extra
+space is consumed for the ostree content objects.  On ext4, FICLONE fails with
+`EOPNOTSUPP` and the code falls back to a byte copy; installation works correctly
+but without block sharing between the two repositories.
+
+SELinux labels are applied in-memory (via `selabel()` from composefs-rs) before
+the ostree checksums are computed.  On a container host where SELinux is disabled,
+the `fsetxattr` call is a no-op; the kernel applies matching labels at first boot
+during auto-relabeling.  Because the checksums include the correct label values,
+`ostree fsck` passes after boot without any special handling at install time.
 
 ## Future plans: composefs-as-storage
 
@@ -170,7 +184,7 @@ unified storage model is documented in the rustdoc comments of the relevant sour
 - `crates/lib/src/store/mod.rs` — the target three-store architecture and reflink behavior
 - `crates/lib/src/bootc_composefs/repo.rs` — composefs unified pull path stages
 - `crates/lib/src/deploy.rs` — pull dispatch and ostree backend synthesis
-- `crates/lib/src/image.rs` — `bootc image set-unified` entrypoints
+- `crates/lib/src/image.rs` — `bootc image set-unified` entrypoints (`composefs` and `full` modes)
 
 ## Limitations
 

@@ -1,0 +1,3 @@
+summary: Readonly tests after install with --experimental-unified-storage
+test: nu booted/test-45-install-unified-flag.nu
+duration: 30m

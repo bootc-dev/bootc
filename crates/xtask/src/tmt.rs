@@ -19,6 +19,7 @@ const COMMON_INST_ARGS: &[&str] = &["--label=bootc.test=1"];
 
 // Metadata field names
 const FIELD_TRY_BIND_STORAGE: &str = "try_bind_storage";
+const FIELD_BOOTC_INSTALL_ARGS: &str = "bootc_install_args";
 const FIELD_SUMMARY: &str = "summary";
 const FIELD_ADJUST: &str = "adjust";
 
@@ -130,6 +131,18 @@ fn distro_supports_bind_storage_ro(distro: &str) -> bool {
     !distro.starts_with(DISTRO_CENTOS_9)
 }
 
+/// Whether the installed `bcvk` understands `bcvk libvirt run --install-arg`,
+/// which forwards extra arguments to `bootc install`. This landed upstream but
+/// is not yet in released bcvk, so plans that rely on it (via the
+/// `bootc_install_args` plan field) are skipped when it is unavailable.
+fn bcvk_supports_install_arg(sh: &Shell) -> bool {
+    cmd!(sh, "bcvk libvirt run --help")
+        .ignore_status()
+        .read()
+        .map(|help| help.contains("--install-arg"))
+        .unwrap_or(false)
+}
+
 /// Wait for a bcvk VM to be ready and return SSH connection info
 #[context("Waiting for VM to be ready")]
 fn wait_for_vm_ready(sh: &Shell, vm_name: &str) -> Result<(u16, String)> {
@@ -212,6 +225,7 @@ struct PlanMetadata {
     try_bind_storage: bool,
     skip_if_composefs: bool,
     skip_if_uki: bool,
+    bootc_install_args: Vec<String>,
 }
 
 /// Parse integration.fmf to extract extra-try_bind_storage for all plans
@@ -254,6 +268,7 @@ fn parse_plan_metadata(
                         try_bind_storage: b,
                         skip_if_uki: false,
                         skip_if_composefs: false,
+                        bootc_install_args: Vec::new(),
                     });
             }
         }
@@ -270,6 +285,7 @@ fn parse_plan_metadata(
                         skip_if_composefs: b,
                         skip_if_uki: false,
                         try_bind_storage: false,
+                        bootc_install_args: Vec::new(),
                     });
             }
         }
@@ -284,6 +300,25 @@ fn parse_plan_metadata(
                     .and_modify(|m| m.skip_if_uki = b)
                     .or_insert(PlanMetadata {
                         skip_if_uki: b,
+                        skip_if_composefs: false,
+                        try_bind_storage: false,
+                        bootc_install_args: Vec::new(),
+                    });
+            }
+        }
+
+        if let Some(install_args_val) = plan_data.get(&serde_yaml::Value::String(format!(
+            "extra-{}",
+            FIELD_BOOTC_INSTALL_ARGS
+        ))) {
+            if let Some(s) = install_args_val.as_str() {
+                let args: Vec<String> = s.split_whitespace().map(|a| a.to_string()).collect();
+                plan_metadata
+                    .entry(plan_name.to_string())
+                    .and_modify(|m| m.bootc_install_args = args.clone())
+                    .or_insert(PlanMetadata {
+                        bootc_install_args: args,
+                        skip_if_uki: false,
                         skip_if_composefs: false,
                         try_bind_storage: false,
                     });
@@ -403,6 +438,23 @@ pub(crate) fn run_tmt(sh: &Shell, args: &RunTmtArgs) -> Result<()> {
         });
     }
 
+    // Plans that pass extra `bootc install` args require a `bcvk` new enough to
+    // support `--install-arg`. Skip them when the installed bcvk lacks it rather
+    // than failing the VM launch with "unexpected argument '--install-arg'".
+    if !bcvk_supports_install_arg(sh) {
+        plans.retain(|plan| {
+            let needs_install_arg = plan_metadata
+                .iter()
+                .find(|(key, _)| plan.ends_with(key.as_str()))
+                .map(|(_, v)| !v.bootc_install_args.is_empty())
+                .unwrap_or(false);
+            if needs_install_arg {
+                println!("Note: skipping plan {plan} (installed bcvk lacks --install-arg support)");
+            }
+            !needs_install_arg
+        });
+    }
+
     if plans.len() < original_plans_count {
         println!(
             "Filtered from {} to {} plan(s) based on arguments: {:?}",
@@ -476,6 +528,17 @@ pub(crate) fn run_tmt(sh: &Shell, args: &RunTmtArgs) -> Result<()> {
                 if distro.starts_with("fedora") {
                     opts.push("--filesystem=xfs".to_string());
                 }
+            }
+
+            // Add per-plan bootc install args as --install-arg=<arg>
+            let bootc_install_args = plan_metadata
+                .iter()
+                .find(|(key, _)| plan.ends_with(key.as_str()))
+                .map(|(_, v)| v.bootc_install_args.clone())
+                .unwrap_or_default();
+
+            for arg in &bootc_install_args {
+                opts.push(format!("--install-arg={arg}"));
             }
 
             opts.extend(bcvk_opts.install_args());
@@ -908,6 +971,8 @@ struct TestDef {
     skip_if_composefs: bool,
     /// Whether to skip this test for images with UKI
     skip_if_uki: bool,
+    /// Extra bootc install args to pass via `--install-arg=<arg>`
+    bootc_install_args: Vec<String>,
     /// TMT fmf attributes to pass through (summary, duration, adjust, etc.)
     tmt: serde_yaml::Value,
 }
@@ -1082,6 +1147,18 @@ fn generate_integration() -> Result<(String, String)> {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
+        let bootc_install_args: Vec<String> = metadata
+            .extra
+            .as_mapping()
+            .and_then(|m| {
+                m.get(&serde_yaml::Value::String(
+                    FIELD_BOOTC_INSTALL_ARGS.to_string(),
+                ))
+            })
+            .and_then(|v| v.as_str())
+            .map(|s| s.split_whitespace().map(|a| a.to_string()).collect())
+            .unwrap_or_default();
+
         tests.push(TestDef {
             number: metadata.number,
             name: display_name,
@@ -1089,6 +1166,7 @@ fn generate_integration() -> Result<(String, String)> {
             try_bind_storage,
             skip_if_composefs,
             skip_if_uki,
+            bootc_install_args,
             tmt: metadata.tmt,
         });
     }
@@ -1215,6 +1293,13 @@ fn generate_integration() -> Result<(String, String)> {
             plan_value.insert(
                 serde_yaml::Value::String(format!("extra-{}", FIELD_FIXME_SKIP_IF_UKI)),
                 serde_yaml::Value::Bool(true),
+            );
+        }
+
+        if !test.bootc_install_args.is_empty() {
+            plan_value.insert(
+                serde_yaml::Value::String(format!("extra-{}", FIELD_BOOTC_INSTALL_ARGS)),
+                serde_yaml::Value::String(test.bootc_install_args.join(" ")),
             );
         }
 
@@ -1354,6 +1439,47 @@ set -eux
             Some(&serde_yaml::Value::String("45m".to_string()))
         );
         assert!(tmt.contains_key(&serde_yaml::Value::String("adjust".to_string())));
+    }
+
+    #[test]
+    fn test_parse_plan_metadata_bootc_install_args() {
+        // Simulate the integration.fmf content for plan-44
+        let fmf_content = r#"
+/plan-44-unified-storage:
+  summary: Run readonly tests after onboarding to unified storage
+  discover:
+    how: fmf
+    test:
+      - /tmt/tests/tests/test-44-unified-storage
+  extra-bootc_install_args: --experimental-unified-storage
+"#;
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), fmf_content).unwrap();
+        let path = camino::Utf8Path::from_path(tmp.path()).unwrap();
+
+        let metadata = parse_plan_metadata(path).unwrap();
+        let plan_meta = metadata.get("/plan-44-unified-storage").unwrap();
+        assert_eq!(
+            plan_meta.bootc_install_args,
+            vec!["--experimental-unified-storage"]
+        );
+        assert!(!plan_meta.try_bind_storage);
+
+        // Simulate the plan name lookup as done in the execution loop
+        let plan = "/tmt/plans/integration/plan-44-unified-storage";
+        let found = metadata
+            .iter()
+            .find(|(key, _)| plan.ends_with(key.as_str()))
+            .map(|(_, v)| v.bootc_install_args.clone())
+            .unwrap_or_default();
+        assert_eq!(found, vec!["--experimental-unified-storage"]);
+
+        // Verify the opts vec gets --install-arg= entries
+        let mut opts: Vec<String> = vec![];
+        for arg in &found {
+            opts.push(format!("--install-arg={arg}"));
+        }
+        assert_eq!(opts, vec!["--install-arg=--experimental-unified-storage"]);
     }
 
     #[test]

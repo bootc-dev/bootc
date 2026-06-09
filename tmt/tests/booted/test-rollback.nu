@@ -107,6 +107,7 @@ def fourth_boot_verify [] {
 }
 
 def main [] {
+    bootc_testlib initial_status_and_checks
     # See https://tmt.readthedocs.io/en/stable/stories/features.html#reboot-during-test
     match $env.TMT_REBOOT_COUNT? {
         null | "0" => initial_switch,

@@ -7,6 +7,7 @@
 #
 use std assert
 use tap.nu
+use bootc_testlib.nu
 
 # Multi-boot test: boot 0 onboards to unified storage and builds a derived image;
 # boot 1 verifies we booted into the derived image using containers-storage
@@ -17,6 +18,7 @@ let st = bootc status --json | from json
 let booted = $st.status.booted.image
 
 def main [] {
+  bootc_testlib initial_status_and_checks
   match $env.TMT_REBOOT_COUNT? {
     null | "0" => first_boot,
     "1" => second_boot,
@@ -38,9 +40,8 @@ def first_boot [] {
 }
 
 def second_boot [] {
-
   # Onboard to unified storage - this pulls the booted image into bootc storage
-  bootc image set-unified
+  bootc image set-unified full
 
   # Verify bootc-owned store has the image
   bootc image cmd list
@@ -49,6 +50,15 @@ def second_boot [] {
   let images = bootc image list --format json | from json
   let unified = $images | where image_type == "unified"
   assert (($unified | length) > 0) "Expected at least one image with type 'unified' after set-unified"
+
+  # Verify the unified storage marker was written
+  assert ("/sysroot/composefs/bootc.json" | path exists) \
+      "composefs/bootc.json must exist after set-unified"
+  print "# composefs/bootc.json exists ✓"
+
+  # Run fsck to verify internal consistency
+  print "# Verifying unified storage consistency"
+  bootc_testlib initial_status_and_checks
 
   podman --storage-opt=additionalimagestore=/usr/lib/bootc/storage images
 
@@ -84,6 +94,20 @@ def third_boot [] {
   assert ("/usr/share/unified-storage-test.txt" | path exists)
   let marker = open /usr/share/unified-storage-test.txt | str trim
   assert equal $marker "unified-storage-test-marker"
+
+  # Verify unified storage is still active after reboot into derived image
+  assert ("/sysroot/composefs/bootc.json" | path exists) \
+      "composefs/bootc.json must persist after switching to derived image"
+
+  # The derived image should also be unified
+  let images = bootc image list --format json | from json
+  let unified = ($images | where image_type == "unified")
+  assert (($unified | length) > 0) "Derived image must be unified after switch"
+  print $"# unified images in derived boot: ($unified | length) ✓"
+
+  # fsck must still pass on the derived image
+  print "# Verifying unified storage consistency on derived image"
+  bootc_testlib initial_status_and_checks
 
   # Verify that bootc storage is accessible
   print "Listing images in bootc storage:"

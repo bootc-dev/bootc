@@ -17,6 +17,7 @@
 
 use std assert
 use tap.nu
+use bootc_testlib.nu
 
 # This code runs on *each* boot.
 bootc status
@@ -110,6 +111,7 @@ def first_boot [] {
 
 def second_boot [] {
     print "verifying second boot after switch"
+
     assert equal $booted.image.transport containers-storage
     assert equal $booted.image.image localhost/bootc-bound
 
@@ -136,6 +138,7 @@ def second_boot [] {
 
 def third_boot [] {
     print "verifying third boot after upgrade"
+
     assert equal $booted.image.transport containers-storage
     assert equal $booted.image.image localhost/bootc-bound
 
@@ -154,6 +157,7 @@ def third_boot [] {
 }
 
 def main [] {
+    bootc_testlib initial_status_and_checks
     match $env.TMT_REBOOT_COUNT? {
         null | "0" => first_boot,
         "1" => second_boot,

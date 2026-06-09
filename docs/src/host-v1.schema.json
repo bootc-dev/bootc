@@ -345,6 +345,17 @@
             }
           ]
         },
+        "storage": {
+          "description": "Storage subsystem state.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StorageStatus"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "type": {
           "description": "The detected type of system",
           "anyOf": [
@@ -509,6 +520,24 @@
         }
       }
     },
+    "StorageStatus": {
+      "description": "Storage subsystem status.",
+      "type": "object",
+      "properties": {
+        "ostreeComposefsBound": {
+          "description": "Whether the ostree commit is synthesized from the composefs tree\n(`[composefs] unified` in the ostree repo config). True for both\n\"bound-only\" and full unified-storage systems.",
+          "type": "boolean",
+          "default": false
+        },
+        "unified": {
+          "description": "The state of unified block-sharing storage.",
+          "$ref": "#/$defs/UnifiedStorageState"
+        }
+      },
+      "required": [
+        "unified"
+      ]
+    },
     "Store": {
       "description": "The container storage backend",
       "oneOf": [
@@ -516,6 +545,26 @@
           "description": "Use the ostree-container storage backend.",
           "type": "string",
           "const": "ostreeContainer"
+        }
+      ]
+    },
+    "UnifiedStorageState": {
+      "description": "The state of unified storage (composefs+ostree shared block storage).\n\nSerialized as kebab-case strings (`\"disabled\"`, `\"enabled\"`, `\"enabled-with-copy\"`)\nto match the `[install.storage] unified` install config values.",
+      "oneOf": [
+        {
+          "description": "Unified storage is not enabled; composefs and ostree repos do not share blocks.",
+          "type": "string",
+          "const": "disabled"
+        },
+        {
+          "description": "Unified storage is enabled; images are stored via reflinks (zero physical copy).",
+          "type": "string",
+          "const": "enabled"
+        },
+        {
+          "description": "Unified storage is enabled but may use byte copies when reflinks are unavailable.\n\nCorresponds to `storage.unified = \"enabled-with-copy\"` in the install config,\nor to systems onboarded via `bootc image set-unified full` (which always allows\ncopies since it runs at runtime rather than at install time).",
+          "type": "string",
+          "const": "enabled-with-copy"
         }
       ]
     }

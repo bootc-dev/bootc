@@ -1,0 +1,8 @@
+# Enable unified storage (composefs+ostree) at install time via image-embedded config
+FROM localhost/bootc-install
+RUN <<EORUN
+set -xeuo pipefail
+mkdir -p /usr/lib/bootc/install
+printf '[install.storage]\nunified = "enabled-with-copy"\n' > /usr/lib/bootc/install/00-storage.toml
+bootc container lint
+EORUN

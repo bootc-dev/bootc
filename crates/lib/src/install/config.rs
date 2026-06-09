@@ -1,6 +1,48 @@
 //! # Configuration for `bootc install`
 //!
-//! This module handles the TOML configuration file for `bootc install`.
+//! Install-time configuration is read from TOML files embedded in the container image
+//! and merged in systemd-style priority order via [`liboverdrop::scan`]. All paths are
+//! resolved inside the **running container's** filesystem at install time.
+//!
+//! **Image authors should place configuration exclusively under `/usr/lib/bootc/install/`.**
+//! This is the standard, portable location and is part of the image's read-only content.
+//!
+//! The following directories are also scanned (in order of increasing priority), but
+//! should not be used in practice:
+//!
+//! - `/usr/lib/bootc/install/*.toml` ← **use this**
+//! - `/usr/local/lib/bootc/install/*.toml` — scanned for completeness; avoid
+//! - `/etc/bootc/install/*.toml` — scanned for completeness; avoid
+//! - `/run/bootc/install/*.toml` — scanned for completeness; avoid
+//!
+//! Within each directory, files are processed in alphanumeric order. Later entries
+//! override earlier ones for scalar fields; list fields such as `kargs` are appended.
+//!
+//! ## Format
+//!
+//! Each file contains a single `[install]` table. Example:
+//!
+//! ```toml
+//! [install]
+//! root-fs-type = "xfs"
+//! kargs = ["console=ttyS0,115200n8"]
+//!
+//! [install.storage]
+//! unified = "enabled-with-copy"
+//! ```
+//!
+//! ## Unified storage
+//!
+//! The `[install.storage]` section controls whether unified storage (composefs + ostree)
+//! is activated at install time. See [`UnifiedStorage`] for the three values:
+//! `disabled` (default), `enabled` (fail if reflinks unavailable), and
+//! `enabled-with-copy` (fall back to byte copies).
+//!
+//! ## Source-imageref limitation
+//!
+//! When `bootc install` is invoked with `--source-imgref`, configuration is loaded from
+//! the **host** filesystem before the target image is available. Image-embedded install
+//! config (including `storage.unified`) is therefore not consulted in that scenario.
 
 use crate::spec::Bootloader;
 use anyhow::{Context, Result};
@@ -51,6 +93,39 @@ impl Filesystem {
     }
 }
 
+/// Controls unified storage mode (composefs+ostree merged store) at install time.
+///
+/// Corresponds to the `[install.storage]` `unified` key in install config TOML files
+/// (e.g. `/usr/lib/bootc/install/00-storage.toml`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum UnifiedStorage {
+    /// No unified storage (default).
+    #[default]
+    Disabled,
+    /// Enable unified storage; fail hard if the filesystem does not support reflinks.
+    Enabled,
+    /// Enable unified storage; fall back to byte copies if reflinks are unavailable.
+    EnabledWithCopy,
+}
+
+impl UnifiedStorage {
+    /// Returns true if unified storage is active (either enabled variant).
+    pub(crate) fn is_enabled(self) -> bool {
+        !matches!(self, Self::Disabled)
+    }
+
+    /// Returns the local fetch option for layer import into the composefs repo:
+    /// `ZeroCopy` (fail if no reflinks) for `Enabled`, `IfPossible` (copy
+    /// fallback) for `EnabledWithCopy`.
+    pub(crate) fn local_fetch_opt(self) -> composefs_ctl::composefs_oci::LocalFetchOpt {
+        match self {
+            Self::Enabled => composefs_ctl::composefs_oci::LocalFetchOpt::ZeroCopy,
+            _ => composefs_ctl::composefs_oci::LocalFetchOpt::IfPossible,
+        }
+    }
+}
+
 /// The toplevel config entry for installation configs stored
 /// in bootc/install (e.g. /etc/bootc/install/05-custom.toml)
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -80,6 +155,14 @@ pub(crate) struct BasicFilesystems {
 
 /// Configuration for ostree repository
 pub(crate) type OstreeRepoOpts = ostree_ext::repo_options::RepoOptions;
+
+/// Configuration options for storage.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub(crate) struct StorageConfiguration {
+    /// Unified storage mode. See [`UnifiedStorage`] for the three variants.
+    pub(crate) unified: Option<UnifiedStorage>,
+}
 
 /// Configuration options for bootupd, responsible for setting up the bootloader.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -132,6 +215,8 @@ pub(crate) struct InstallConfiguration {
     /// Enforce that the containers-storage stack has a non-default
     /// (i.e. not `insecureAcceptAnything`) container image signature policy.
     pub(crate) enforce_container_sigpolicy: Option<bool>,
+    /// Storage configuration (unified store, etc.)
+    pub(crate) storage: Option<StorageConfiguration>,
 }
 
 fn merge_basic<T>(s: &mut Option<T>, o: Option<T>, _env: &EnvProperties) {
@@ -189,6 +274,13 @@ impl Mergeable for OstreeRepoOpts {
     }
 }
 
+impl Mergeable for StorageConfiguration {
+    /// Apply any values in other, overriding any existing values in `self`.
+    fn merge(&mut self, other: Self, env: &EnvProperties) {
+        merge_basic(&mut self.unified, other.unified, env)
+    }
+}
+
 impl Mergeable for Bootupd {
     /// Apply any values in other, overriding any existing values in `self`.
     fn merge(&mut self, other: Self, env: &EnvProperties) {
@@ -226,6 +318,7 @@ impl Mergeable for InstallConfiguration {
                 other.enforce_container_sigpolicy,
                 env,
             );
+            self.storage.merge(other.storage, env);
             if let Some(other_kargs) = other.kargs {
                 self.kargs
                     .get_or_insert_with(Default::default)
@@ -876,6 +969,48 @@ skip-boot-uuid = false
         install.merge(other, &env);
         // skip_boot_uuid should be overridden to true
         assert_eq!(install.bootupd.unwrap().skip_boot_uuid.unwrap(), true);
+    }
+
+    #[test]
+    fn test_parse_storage_unified() {
+        for (input, expected) in [
+            ("disabled", UnifiedStorage::Disabled),
+            ("enabled", UnifiedStorage::Enabled),
+            ("enabled-with-copy", UnifiedStorage::EnabledWithCopy),
+        ] {
+            let toml_str = format!("[install.storage]\nunified = \"{input}\"\n");
+            let c: InstallConfigurationToplevel = toml::from_str(&toml_str).unwrap();
+            assert_eq!(
+                c.install.unwrap().storage.unwrap().unified.unwrap(),
+                expected,
+                "input: {input}"
+            );
+        }
+
+        // Absent key → None
+        let c: InstallConfigurationToplevel =
+            toml::from_str("[install]\nroot-fs-type = \"xfs\"\n").unwrap();
+        assert!(c.install.unwrap().storage.is_none());
+    }
+
+    #[test]
+    fn test_merge_storage_unified() {
+        let env = EnvProperties {
+            sys_arch: "x86_64".to_string(),
+        };
+        let mut install: InstallConfiguration =
+            toml::from_str("[storage]\nunified = \"disabled\"\n").unwrap();
+        let other = InstallConfiguration {
+            storage: Some(StorageConfiguration {
+                unified: Some(UnifiedStorage::Enabled),
+            }),
+            ..Default::default()
+        };
+        install.merge(other, &env);
+        assert_eq!(
+            install.storage.unwrap().unified.unwrap(),
+            UnifiedStorage::Enabled
+        );
     }
 }
 

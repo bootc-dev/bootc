@@ -53,7 +53,7 @@ pub(crate) async fn composefs_backend_finalize(
     storage: &Storage,
     booted_cfs: &BootedComposefs,
 ) -> Result<()> {
-    const COMPOSEFS_FINALIZE_JOURNAL_ID: &str = "0e9d8c7b6a5f4e3d2c1b0a9f8e7d6c5b4";
+    const COMPOSEFS_FINALIZE_JOURNAL_ID: &str = "a0f2b2cf274c4239b4b2a8c0f278c2cf";
 
     tracing::info!(
         message_id = COMPOSEFS_FINALIZE_JOURNAL_ID,

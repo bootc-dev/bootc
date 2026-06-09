@@ -38,7 +38,7 @@ pub(crate) async fn switch_composefs(
         anyhow::bail!("Target image is undefined")
     };
 
-    const COMPOSEFS_SWITCH_JOURNAL_ID: &str = "7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d1";
+    const COMPOSEFS_SWITCH_JOURNAL_ID: &str = "087ccc03481a477b83c0f6ba62500724";
 
     tracing::info!(
         message_id = COMPOSEFS_SWITCH_JOURNAL_ID,
@@ -51,23 +51,16 @@ pub(crate) async fn switch_composefs(
     let repo = &*booted_cfs.repo;
     let (image, img_config) = is_image_pulled(repo, &target_imgref).await?;
 
-    // Use unified storage if explicitly requested, or auto-detect: either the
-    // target image is already in bootc-owned containers-storage, OR the booted
-    // image is — which means the user has opted into unified storage and all
-    // subsequent operations (including switch to a new image) should use it.
-    let use_unified = if opts.unified_storage_exp {
-        true
-    } else {
-        let booted_imgref = host.spec.image.as_ref();
-        let booted_unified = if let Some(booted) = booted_imgref {
-            crate::deploy::image_exists_in_unified_storage(storage, booted).await?
-        } else {
-            false
-        };
-        let target_unified =
-            crate::deploy::image_exists_in_unified_storage(storage, &target_imgref).await?;
-        booted_unified || target_unified
-    };
+    // Use unified storage if explicitly requested via flag, or if the
+    // composefs/bootc.json marker says unified storage is enabled on this system.
+    //
+    // Note: the native composefs backend intentionally reads the containers-storage
+    // participation signal (unified_storage_enabled) rather than binding_state().
+    // On the native backend there is no ostree repo so binding_state() would always
+    // return Disabled — we gate on cstorage participation, not the ostree binding.
+    let use_unified = opts.unified_storage_exp
+        || crate::deploy::unified_storage_enabled(storage)
+            .context("Checking unified storage flag")?;
 
     let do_upgrade_opts = DoUpgradeOpts {
         soft_reboot: opts.soft_reboot,

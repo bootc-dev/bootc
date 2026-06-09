@@ -28,7 +28,7 @@ use etc_merge::{compute_diff, print_diff};
 use fn_error_context::context;
 use indoc::indoc;
 use ostree::gio;
-use ostree_container::store::PrepareResult;
+use ostree_container::store::{META_COMPOSEFS_SYNTHESIZED, PrepareResult};
 use ostree_ext::container as ostree_container;
 
 use ostree_ext::keyfileext::KeyFileExt;
@@ -542,6 +542,28 @@ impl std::fmt::Display for ImageListFormat {
     }
 }
 
+/// The unified storage onboarding mode for `bootc image set-unified`.
+///
+/// Both modes require the system to have been installed with a composefs-capable
+/// kernel and filesystem.  On a **native composefs** system only `full` is
+/// applicable; `composefs` is a no-op with an explanatory message.
+#[derive(ValueEnum, Debug, Copy, Clone, PartialEq, Eq)]
+pub(crate) enum UnifiedMode {
+    /// Bind the ostree and composefs object stores without containers-storage
+    /// participation.  The image is synthesized into the composefs OCI repo and
+    /// the ostree repo config binding key is written, but the image is NOT
+    /// made visible to `podman run`.
+    ///
+    /// This is a no-op on native composefs systems (the binding is intrinsic).
+    /// Use `full` separately to also enable containers-storage participation.
+    Composefs,
+    /// Full unified storage: pull the booted image into bootc-owned
+    /// containers-storage so that it is visible to `podman run` and
+    /// participates in the three-store (containers-storage ↔ composefs ↔
+    /// ostree) pipeline for future upgrades.
+    Full,
+}
+
 /// Subcommands which operate on images.
 #[derive(Debug, clap::Subcommand, PartialEq, Eq)]
 pub(crate) enum ImageOpts {
@@ -583,16 +605,46 @@ pub(crate) enum ImageOpts {
         /// this will make the image accessible via e.g. `podman run localhost/bootc` and for builds.
         target: Option<String>,
     },
-    /// Re-pull the currently booted image into the bootc-owned container storage.
+    /// Onboard the currently booted image to unified storage.
     ///
-    /// This onboards the system to the unified storage path so that future
-    /// upgrade/switch operations can read from the bootc storage directly.
-    SetUnified,
+    /// A required MODE selects which aspect of unified storage to enable:
+    ///
+    /// - `composefs`: bind the ostree and composefs object stores (ostree↔composefs
+    ///   binding), without making the image visible to `podman run`.  This is a
+    ///   no-op on native composefs systems where the binding is intrinsic.
+    ///
+    /// - `full`: full unified storage — pull the booted image into bootc-owned
+    ///   containers-storage so that it is visible to `podman run` and participates
+    ///   in the three-store pipeline for future upgrades.  This is the mode to use
+    ///   on both ostree and native-composefs systems for complete onboarding.
+    ///
+    /// By default, FICLONE reflinks are required; the command will fail if the
+    /// underlying filesystem does not support them.  Pass `--enabled-with-copy` to
+    /// allow a byte-copy fallback on filesystems without reflink support.
+    SetUnified {
+        /// The onboarding mode: `composefs` (ostree↔composefs binding only, not
+        /// podman-visible) or `full` (complete unified storage with containers-storage
+        /// participation).
+        mode: UnifiedMode,
+        /// Allow byte-copy fallback when the filesystem does not support reflinks.
+        ///
+        /// When set, the system is onboarded with `storage.unified = "enabled-with-copy"`;
+        /// unified storage is still active but block sharing between the composefs
+        /// and ostree repos is not guaranteed.  Without this flag the command
+        /// fails hard if FICLONE is unavailable.
+        #[clap(long)]
+        enabled_with_copy: bool,
+    },
     /// Copy a container image from the default `containers-storage:` to the bootc-owned container storage.
     PullFromDefaultStorage {
         /// The image to pull
         image: String,
     },
+    /// Reconcile unified storage: ensure every live deployment's image is present
+    /// in both the composefs repo and bootc containers-storage.
+    ///
+    /// This is a no-op on systems that have not enabled unified storage.
+    Sync,
     /// Wrapper for selected `podman image` subcommands in bootc storage.
     #[clap(subcommand)]
     Cmd(ImageCmdOpts),
@@ -619,6 +671,28 @@ pub(crate) enum FsverityOpts {
     },
 }
 
+/// Subcommands for `bootc internals fsck`.
+#[derive(Debug, clap::Subcommand, PartialEq, Eq)]
+pub(crate) enum FsckCheck {
+    /// Check image store metadata consistency.
+    ///
+    /// Verifies that every image bootc has committed to (i.e. has a composefs
+    /// GC tag) is also present in bootc's containers-storage.  This is a
+    /// metadata-level check only — it does not walk composefs objects or verify
+    /// content integrity.  Exits non-zero if any image is partially imported.
+    ///
+    /// LBIs (logically bound images) are not subject to this check; only images
+    /// that went through the unified storage pipeline are checked.
+    Images {
+        /// Attempt to repair detected inconsistencies.
+        #[clap(long)]
+        repair: bool,
+        /// Output results as JSON.
+        #[clap(long)]
+        json: bool,
+    },
+}
+
 /// Hidden, internal only options
 #[derive(Debug, clap::Subcommand, PartialEq, Eq)]
 pub(crate) enum InternalsOpts {
@@ -641,7 +715,13 @@ pub(crate) enum InternalsOpts {
     #[clap(subcommand)]
     Fsverity(FsverityOpts),
     /// Perform consistency checking.
-    Fsck,
+    ///
+    /// Without a subcommand, runs all checks. Use a subcommand to run a
+    /// specific subset.
+    Fsck {
+        #[clap(subcommand)]
+        check: Option<FsckCheck>,
+    },
     /// Perform cleanup actions
     Cleanup,
     Relabel {
@@ -1215,10 +1295,9 @@ async fn upgrade(
         return Ok(());
     }
 
-    // Ensure the bootc storage directory is initialized; the --check path
-    // needs this for update_mtime() and the non-check path needs it for
-    // unified pull detection.
-    let use_unified = crate::deploy::image_exists_in_unified_storage(storage, imgref).await?;
+    // Derive the binding tri-state: route through composefs for both BoundOnly
+    // and Unified; only fall back to classic ostree pull when Disabled.
+    let state = crate::deploy::binding_state(storage)?;
 
     if opts.check {
         let ostree_imgref = imgref.clone().into();
@@ -1245,15 +1324,15 @@ async fn upgrade(
             }
         }
     } else {
-        let fetched = if use_unified {
-            crate::deploy::pull_unified(
+        let fetched = if state != crate::deploy::BindingState::Disabled {
+            // Route through composefs for both BoundOnly and Unified.
+            // cstorage=true only for Unified (BoundOnly intentionally skips cstorage).
+            crate::deploy::pull_via_composefs(
                 repo,
                 imgref,
-                None,
-                opts.quiet,
-                prog.clone(),
                 storage,
-                Some(&booted_ostree.deployment),
+                composefs_ctl::composefs_oci::LocalFetchOpt::IfPossible,
+                matches!(state, crate::deploy::BindingState::Unified),
             )
             .await?
         } else {
@@ -1275,10 +1354,36 @@ async fn upgrade(
             .as_ref()
             .map(|d| d == fetched_digest)
             .unwrap_or_default();
+
+        // On a bound system, a CLASSIC booted commit must still be re-staged even when
+        // the manifest digest is unchanged: the synthesized commit is a *different*
+        // ostree commit, and staging+reboot is what activates bound-only mode.  Without
+        // this, `bootc upgrade` after `set-unified composefs` would print "No update
+        // available." and the binding could never be activated.
+        let booted_is_synthesized = (|| -> bool {
+            let csum = booted_ostree.deployment.csum();
+            let commit_obj = match repo.load_commit(csum.as_str()) {
+                Ok((obj, _)) => obj,
+                Err(e) => {
+                    tracing::debug!(
+                        "Could not load booted commit {csum}: {e:#}; assuming not synthesized"
+                    );
+                    return false;
+                }
+            };
+            let commit_meta = ostree::glib::VariantDict::new(Some(&commit_obj.child_value(0)));
+            commit_meta
+                .lookup::<bool>(META_COMPOSEFS_SYNTHESIZED)
+                .unwrap_or(None)
+                .unwrap_or(false)
+        })();
+        tracing::debug!("booted_is_synthesized={booted_is_synthesized} binding_state={state:?}");
+
         let booted_unchanged = booted_image
             .as_ref()
             .map(|img| &img.manifest_digest == fetched_digest)
-            .unwrap_or_default();
+            .unwrap_or_default()
+            && (state == crate::deploy::BindingState::Disabled || booted_is_synthesized);
         if staged_unchanged {
             let staged_deployment = storage.get_ostree()?.staged_deployment();
             let mut download_only_changed = false;
@@ -1395,7 +1500,7 @@ async fn switch_ostree(
     }
 
     // Log the switch operation to systemd journal
-    const SWITCH_JOURNAL_ID: &str = "7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d1";
+    const SWITCH_JOURNAL_ID: &str = "62d26891bbd54962999b0530b8b62239";
     let old_image = host
         .spec
         .image
@@ -1415,24 +1520,24 @@ async fn switch_ostree(
 
     let new_spec = RequiredHostSpec::from_spec(&new_spec)?;
 
-    // Determine whether to use unified storage path.
-    // If explicitly requested via flag, use unified storage directly.
-    // Otherwise, auto-detect based on whether the image exists in bootc storage.
-    let use_unified = if opts.unified_storage_exp {
-        true
-    } else {
-        crate::deploy::image_exists_in_unified_storage(storage, &target).await?
-    };
+    // Determine whether to use the composefs path.
+    // --experimental-unified-storage forces full Unified (cstorage + composefs).
+    // Otherwise, derive from the binding tri-state: BoundOnly and Unified both
+    // route through composefs; Disabled uses the classic ostree pull.
+    let state = crate::deploy::binding_state(storage)?;
+    let use_composefs = opts.unified_storage_exp || state != crate::deploy::BindingState::Disabled;
+    // cstorage participation: explicit flag always enables it; otherwise only Unified.
+    let cstorage =
+        opts.unified_storage_exp || matches!(state, crate::deploy::BindingState::Unified);
 
-    let fetched = if use_unified {
-        crate::deploy::pull_unified(
+    let fetched = if use_composefs {
+        // Runtime switch: reflinks were proven at install time; allow copies as fallback.
+        crate::deploy::pull_via_composefs(
             repo,
             &target,
-            None,
-            opts.quiet,
-            prog.clone(),
             storage,
-            Some(&booted_ostree.deployment),
+            composefs_ctl::composefs_oci::LocalFetchOpt::IfPossible,
+            cstorage,
         )
         .await?
     } else {
@@ -1972,7 +2077,18 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
                     }
                 }
             }
-            ImageOpts::SetUnified => crate::image::set_unified_entrypoint().await,
+            ImageOpts::SetUnified {
+                mode,
+                enabled_with_copy,
+            } => match mode {
+                crate::cli::UnifiedMode::Composefs => {
+                    crate::image::bind_ostree_composefs_entrypoint(enabled_with_copy).await
+                }
+                crate::cli::UnifiedMode::Full => {
+                    crate::image::set_unified_entrypoint(enabled_with_copy).await
+                }
+            },
+            ImageOpts::Sync => crate::image::sync_entrypoint().await,
             ImageOpts::PullFromDefaultStorage { image } => {
                 let storage = get_storage().await?;
                 storage
@@ -2094,9 +2210,25 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
             },
             InternalsOpts::Cfs { args } => composefs_ctl::run_from_iter(args.iter()).await,
             InternalsOpts::Reboot => crate::reboot::reboot(),
-            InternalsOpts::Fsck => {
+            InternalsOpts::Fsck { check } => {
                 let storage = &get_storage().await?;
-                crate::fsck::fsck(&storage, std::io::stdout().lock()).await?;
+                match check {
+                    // `bootc internals fsck images [--repair] [--json]`
+                    Some(FsckCheck::Images { repair, json }) => {
+                        let ok = crate::fsck::fsck_images(storage, repair, json).await?;
+                        if !ok {
+                            std::process::exit(1);
+                        }
+                    }
+                    // `bootc internals fsck` with no subcommand — run everything.
+                    None => {
+                        crate::fsck::fsck(storage, std::io::stdout().lock()).await?;
+                        let ok = crate::fsck::fsck_images(storage, false, false).await?;
+                        if !ok {
+                            std::process::exit(1);
+                        }
+                    }
+                }
                 Ok(())
             }
             InternalsOpts::FixupEtcFstab => crate::deploy::fixup_etc_fstab(&root),

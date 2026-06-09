@@ -268,6 +268,19 @@ async fn check_fsverity_inner(storage: &Storage) -> FsckResult {
     fsck_err(err)
 }
 
+/// Check image store consistency. Delegates to [`crate::image::fsck_images`].
+///
+/// Returns `true` if all checks passed, `false` if any inconsistency was found.
+/// When `repair` is `true`, attempts to restore images that are in composefs
+/// but missing from containers-storage.
+pub(crate) async fn fsck_images(
+    storage: &Storage,
+    repair: bool,
+    json: bool,
+) -> anyhow::Result<bool> {
+    crate::image::fsck_images(storage, repair, json).await
+}
+
 pub(crate) async fn fsck(storage: &Storage, mut output: impl std::io::Write) -> anyhow::Result<()> {
     let mut checks = FSCK_CHECKS.static_slice().iter().collect::<Vec<_>>();
     checks.sort_by(|a, b| a.ordering.cmp(&b.ordering));

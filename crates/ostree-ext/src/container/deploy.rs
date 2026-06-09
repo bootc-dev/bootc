@@ -62,7 +62,7 @@ pub async fn deploy(
 ) -> Result<Box<LayeredImageState>> {
     // Log the deployment operation to systemd journal (Debug level since staging already logged the main info)
 
-    const DEPLOY_JOURNAL_ID: &str = "9e8d7c6b5a4f3e2d1c0b9a8f7e6d5c4b3";
+    const DEPLOY_JOURNAL_ID: &str = "b8c8e88cfabb4f8598c4c62b60d3f915";
 
     tracing::debug!(
         message_id = DEPLOY_JOURNAL_ID,

@@ -1,5 +1,6 @@
 //! Module used for integration tests; should not be public.
 
+use std::collections::HashMap;
 use std::path::Path;
 
 use crate::container_utils::{is_ostree_container, ostree_booted};
@@ -14,7 +15,7 @@ use gio::prelude::*;
 use oci_spec::image as oci_image;
 use ocidir::{
     LayerWriter,
-    oci_spec::image::{Arch, Platform},
+    oci_spec::image::{Arch, ImageConfigurationBuilder, Platform},
 };
 use ostree::gio;
 use xshell::cmd;
@@ -118,6 +119,86 @@ where
         src.insert_manifest(manifest, Some(tag), platform)?;
     } else {
         src.replace_with_single_manifest(manifest, platform)?;
+    }
+    Ok(())
+}
+
+/// Return a tar header for an empty directory entry (mode 0o755, uid/gid/mtime 0).
+pub fn tar_dir_header() -> tar::Header {
+    let mut h = tar::Header::new_ustar();
+    h.set_entry_type(tar::EntryType::Directory);
+    h.set_mode(0o755);
+    h.set_uid(0);
+    h.set_gid(0);
+    h.set_mtime(0);
+    h.set_size(0);
+    h
+}
+
+/// Return a tar header for a regular file of the given byte length (mode 0o644, uid/gid/mtime 0).
+pub fn tar_reg_header(len: u64) -> tar::Header {
+    let mut h = tar::Header::new_ustar();
+    h.set_entry_type(tar::EntryType::Regular);
+    h.set_mode(0o644);
+    h.set_uid(0);
+    h.set_gid(0);
+    h.set_mtime(0);
+    h.set_size(len);
+    h
+}
+
+/// Build a brand-new single-layer OCI image into `oci_dir` using the tar content
+/// produced by `f`.  Mirrors [`generate_derived_oci_from_tar`] but starts from an
+/// empty manifest/config rather than an existing image.
+///
+/// The closure receives a `&mut LayerWriter` so it has the same ergonomics as the
+/// derived helper: create a `tar::Builder::new(w)`, append entries, call
+/// `tb.finish()?` or `tb.into_inner()?`, and return `Ok(())`.
+///
+/// `tag` and `arch` behave identically to the derived variant.
+#[context("Building fresh oci")]
+pub fn build_fresh_oci_from_tar<F>(
+    oci_dir: &ocidir::OciDir,
+    f: F,
+    tag: Option<&str>,
+    arch: Option<Arch>,
+) -> Result<()>
+where
+    F: for<'a> FnOnce(&mut LayerWriter<'a, GzEncoder<ocidir::BlobWriter<'a>>>) -> Result<()>,
+{
+    let epoch = chrono::DateTime::UNIX_EPOCH;
+    let mut config = ImageConfigurationBuilder::default()
+        .created(epoch.to_rfc3339())
+        .build()?;
+    if let Some(arch) = arch.as_ref() {
+        config.set_architecture(arch.clone());
+    }
+    let mut manifest = oci_dir.new_empty_manifest()?.build()?;
+
+    let mut bw = oci_dir.create_gzip_layer(None)?;
+    f(&mut bw)?;
+    let layer = bw.complete()?;
+
+    oci_dir.push_layer_full(
+        &mut manifest,
+        &mut config,
+        layer,
+        None::<HashMap<String, String>>,
+        "test layer",
+        epoch,
+    );
+
+    let config_desc = oci_dir.write_config(config)?;
+    manifest.set_config(config_desc);
+
+    let mut platform = Platform::default();
+    if let Some(arch) = arch.as_ref() {
+        platform.set_architecture(arch.clone());
+    }
+    if let Some(tag) = tag {
+        oci_dir.insert_manifest(manifest, Some(tag), platform)?;
+    } else {
+        oci_dir.replace_with_single_manifest(manifest, platform)?;
     }
     Ok(())
 }

@@ -53,4 +53,17 @@ pub(crate) const UKI_NAME_PREFIX: &str = TYPE1_BOOT_DIR_PREFIX;
 /// Tags are created as `localhost/bootc-<manifest_digest>` to act as GC roots
 /// that keep the manifest, config, and layer splitstreams alive. This is
 /// analogous to how ostree uses `ostree/` refs.
+///
+/// Note: the `localhost/bootc-` prefix is a bootc internal convention and has
+/// nothing to do with the image's actual registry name. A production image from
+/// `quay.io/myorg/myos:latest` still gets tagged `localhost/bootc-sha256:...`.
+///
+/// # Future work
+///
+/// When unified storage expands to cover application container images (not just
+/// the OS deployment image), we will need a richer tag namespace to distinguish
+/// image kinds — e.g. `bootc:os/<digest>` vs `bootc:app/<digest>`. At that point
+/// we will also need to ensure that GC only prunes tags owned by bootc, and leaves
+/// refs created by other tools (e.g. cfsctl, or a future container runtime) intact.
+/// For now `localhost/bootc-` is sufficient and its on-disk format is stable.
 pub(crate) const BOOTC_TAG_PREFIX: &str = "localhost/bootc-";

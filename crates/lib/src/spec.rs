@@ -400,6 +400,49 @@ impl Display for FilesystemOverlay {
     }
 }
 
+/// The state of unified storage (composefs+ostree shared block storage).
+///
+/// Serialized as kebab-case strings (`"disabled"`, `"enabled"`, `"enabled-with-copy"`)
+/// to match the `[install.storage] unified` install config values.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum UnifiedStorageState {
+    /// Unified storage is not enabled; composefs and ostree repos do not share blocks.
+    #[default]
+    Disabled,
+    /// Unified storage is enabled; images are stored via reflinks (zero physical copy).
+    Enabled,
+    /// Unified storage is enabled but may use byte copies when reflinks are unavailable.
+    ///
+    /// Corresponds to `storage.unified = "enabled-with-copy"` in the install config,
+    /// or to systems onboarded via `bootc image set-unified full` (which always allows
+    /// copies since it runs at runtime rather than at install time).
+    EnabledWithCopy,
+}
+
+impl Display for UnifiedStorageState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            UnifiedStorageState::Disabled => write!(f, "disabled"),
+            UnifiedStorageState::Enabled => write!(f, "enabled"),
+            UnifiedStorageState::EnabledWithCopy => write!(f, "enabled-with-copy"),
+        }
+    }
+}
+
+/// Storage subsystem status.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct StorageStatus {
+    /// The state of unified block-sharing storage.
+    pub unified: UnifiedStorageState,
+    /// Whether the ostree commit is synthesized from the composefs tree
+    /// (`[composefs] unified` in the ostree repo config). True for both
+    /// "bound-only" and full unified-storage systems.
+    #[serde(default)]
+    pub ostree_composefs_bound: bool,
+}
+
 /// The status of the host system
 #[derive(Debug, Clone, Serialize, Default, Deserialize, PartialEq, Eq, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -424,6 +467,10 @@ pub struct HostStatus {
 
     /// The state of the overlay mounted on /usr
     pub usr_overlay: Option<FilesystemOverlay>,
+
+    /// Storage subsystem state.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub storage: Option<StorageStatus>,
 }
 
 pub(crate) struct DeploymentEntry<'a> {

@@ -11,21 +11,8 @@ if [ -z "${BASECONFIGS}" ]; then
   exit 0
 fi
 
-# setup-root-conf.toml is composefs-specific; ostree uses prepare-root.conf
-# which has a different (INI) format and different option names.
-case "${VARIANT}" in
-  composefs*)
-    TARGET="/usr/lib/composefs/setup-root-conf.toml"
-    ;;
-  *)
-    echo "inject-baseconfig: baseconfigs not supported for variant '${VARIANT}'" >&2
-    exit 1
-    ;;
-esac
-
-mkdir -p "$(dirname "${TARGET}")"
-
-# Split on commas and process each token
+# Split and process tokens; unified-storage is handled before the variant check
+# because it is backend-independent (works with both ostree and composefs).
 IFS=',' read -ra TOKENS <<< "${BASECONFIGS}"
 for raw_token in "${TOKENS[@]}"; do
   # Trim leading/trailing spaces
@@ -35,27 +22,50 @@ for raw_token in "${TOKENS[@]}"; do
   [ -z "${token}" ] && continue
 
   case "${token}" in
-    etc-transient)
-      printf '[etc]\ntransient = true\n' >> "${TARGET}"
-      ;;
-    root-transient)
-      printf '[root]\ntransient = true\n' >> "${TARGET}"
-      ;;
-    var-volatile)
-      # Mount /var as a fresh tmpfs on every boot via systemd.volatile=state.
-      # bootc-root-setup detects this karg in the initramfs and automatically
-      # skips the /var state bind-mount, leaving /var as an empty directory
-      # from the composefs image.  systemd-fstab-generator then mounts a fresh
-      # tmpfs there at local-fs.target.  Using a plain tmpfs avoids the
-      # overlayfs-on-overlayfs restriction that breaks tools like podman which
-      # use overlayfs under /var/lib/containers.
-      mkdir -p /usr/lib/bootc/kargs.d
-      printf 'kargs = ["systemd.volatile=state"]\n' \
-        > /usr/lib/bootc/kargs.d/50-var-volatile.toml
+    unified-storage)
+      # Write the bootc install config to enable unified storage at install time.
+      # This is backend-independent and works with both ostree and composefs variants.
+      mkdir -p /usr/lib/bootc/install
+      printf '[install.storage]\nunified = "enabled-with-copy"\n' \
+        > /usr/lib/bootc/install/00-storage.toml
       ;;
     *)
-      echo "Unknown baseconfig: ${token}" >&2
-      exit 1
+      # All other tokens require the composefs variant (they write to composefs-specific paths).
+      # Validate variant here, not at the top, so unified-storage can run on any variant.
+      case "${VARIANT}" in
+        composefs*)
+          TARGET="/usr/lib/composefs/setup-root-conf.toml"
+          mkdir -p "$(dirname "${TARGET}")"
+          ;;
+        *)
+          echo "inject-baseconfig: baseconfig '${token}' not supported for variant '${VARIANT}'" >&2
+          exit 1
+          ;;
+      esac
+      case "${token}" in
+        etc-transient)
+          printf '[etc]\ntransient = true\n' >> "${TARGET}"
+          ;;
+        root-transient)
+          printf '[root]\ntransient = true\n' >> "${TARGET}"
+          ;;
+        var-volatile)
+          # Mount /var as a fresh tmpfs on every boot via systemd.volatile=state.
+          # bootc-root-setup detects this karg in the initramfs and automatically
+          # skips the /var state bind-mount, leaving /var as an empty directory
+          # from the composefs image.  systemd-fstab-generator then mounts a fresh
+          # tmpfs there at local-fs.target.  Using a plain tmpfs avoids the
+          # overlayfs-on-overlayfs restriction that breaks tools like podman which
+          # use overlayfs under /var/lib/containers.
+          mkdir -p /usr/lib/bootc/kargs.d
+          printf 'kargs = ["systemd.volatile=state"]\n' \
+            > /usr/lib/bootc/kargs.d/50-var-volatile.toml
+          ;;
+        *)
+          echo "Unknown baseconfig: ${token}" >&2
+          exit 1
+          ;;
+      esac
       ;;
   esac
 done
