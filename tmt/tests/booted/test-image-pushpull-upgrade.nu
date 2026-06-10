@@ -168,6 +168,15 @@ def second_boot [] {
     let td = mktemp -d
     cd $td
 
+    if ($is_composefs and ("/boot/loader/entries" | path exists)) {
+        ("
+            title Test
+            version 1
+            sort-key 9
+            efi /EFI/boot/test.efi
+        ") | save /boot/loader/entries/entry.conf
+    }
+
     mkdir usr/lib/bootc/kargs.d
     { kargs: $kargsv1 } | to toml | save usr/lib/bootc/kargs.d/05-testkargs.toml
     let dockerfile = $"FROM localhost/bootc as base
@@ -181,6 +190,11 @@ RUN echo test content2 > /usr/share/blah.txt
     print $"booted_digest = ($booted_digest)"
     # We should already be fetching updates from container storage
     bootc upgrade
+
+    if ($is_composefs and ("/boot/loader/entries" | path exists)) {
+        assert ("/boot/loader/entries.staged/entry.conf" | path exists) "custom BLS entry must exist"
+    }
+
     # Verify we staged an update
     let st = bootc status --json | from json
     let staged_digest = $st.status.staged.image.imageDigest
@@ -215,6 +229,10 @@ def third_boot [] {
         print "Verifying quoted karg persistence after upgrade (ostree issue #3544)"
 	let cmdline = open /proc/cmdline
         assert ($quoted_karg in $cmdline) $"Expected quoted karg ($quoted_karg) not found in cmdline after upgrade"
+    }
+
+    if ($is_composefs and ("/boot/loader/entries" | path exists)) {
+        assert ("/boot/loader/entries/entry.conf" | path exists) "custom BLS entry must exist"
     }
 
     tap ok

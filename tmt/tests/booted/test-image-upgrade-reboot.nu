@@ -86,6 +86,15 @@ def initial_build [] {
     if $is_composefs {
         "true" | save /var/was-composefs
         $st.status.booted.composefs.verity | save /var/original-verity
+
+        if (("/boot/loader/entries" | path exists)) {
+            ("
+                title Test
+                version 1
+                sort-key 9
+                efi /EFI/boot/test.efi
+            ") | save /boot/loader/entries/entry.conf
+        }
     }
 
     # Now, switch into the new image. First stage it, then run switch --apply for
@@ -93,6 +102,11 @@ def initial_build [] {
     # staged deployments.
     print $"Staging ($imgsrc)"
     bootc switch --transport containers-storage ($imgsrc)
+
+    if ($is_composefs and ("/boot/loader/entries" | path exists)) {
+        assert ("/boot/loader/entries.staged/entry.conf" | path exists) "custom BLS entry must exist"
+    }
+
     print "Re-running with --apply (spec unchanged, should still reboot)"
     tmt-reboot -c $"bootc switch --apply --transport containers-storage ($imgsrc)"
 }
@@ -138,6 +152,9 @@ def second_boot [] {
             let efi_files = (glob $"($boot_dir)/*.efi")
             print $"EFI files: ($efi_files)"
             assert (($efi_files | length) >= 2) $"expected at least 2 UKIs on ESP, found ($efi_files | length)"
+        }
+        if (("/boot/loader/entries" | path exists)) {
+            assert ("/boot/loader/entries/entry.conf" | path exists) "custom BLS entry must exist"
         }
     }
 

@@ -3,9 +3,11 @@ use crate::{
         boot::{BOOTC_UKI_DIR, compute_boot_digest_uki, get_uki_name},
         state::update_boot_digest_in_origin,
     },
+    composefs_consts::BLS_ENTRY_PREFIX,
     store::Storage,
 };
 use anyhow::Result;
+use cap_std_ext::{cap_std::fs::Dir, dirext::CapStdExtDirExt};
 use composefs_ctl::composefs_boot;
 use fn_error_context::context;
 use linux_kernel_cmdline::utf8::Cmdline;
@@ -51,4 +53,20 @@ pub(crate) fn get_uki_cmdline(
     let cmdline = composefs_boot::uki::get_cmdline_buffered(&mut uki)?;
 
     return Ok(Cmdline::from(cmdline.to_owned()));
+}
+
+#[context("Staging non-managed BLS entry")]
+pub(crate) fn stage_non_manged_bls_entries(
+    original_entries: &Dir,
+    staged_entries: &Dir,
+) -> Result<()> {
+    for entry in original_entries.entries_utf8()? {
+        let entry = entry?;
+        let entry_name = entry.file_name()?;
+        if entry.file_type()?.is_file() && !entry_name.starts_with(BLS_ENTRY_PREFIX) {
+            let content = original_entries.read(&entry_name)?;
+            staged_entries.atomic_write(entry_name, content)?;
+        }
+    }
+    Ok(())
 }
