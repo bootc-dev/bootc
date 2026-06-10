@@ -96,7 +96,9 @@ use serde::{Deserialize, Serialize};
 use crate::bootc_composefs::state::{get_booted_bls, write_composefs_state};
 use crate::bootc_composefs::status::ComposefsCmdline;
 use crate::bootc_kargs::compute_new_kargs;
-use crate::composefs_consts::{TYPE1_BOOT_DIR_PREFIX, TYPE1_ENT_PATH, TYPE1_ENT_PATH_STAGED};
+use crate::composefs_consts::{
+    BLS_ENTRY_PREFIX, TYPE1_BOOT_DIR_PREFIX, TYPE1_ENT_PATH, TYPE1_ENT_PATH_STAGED,
+};
 use crate::parsers::bls_config::{BLSConfig, BLSConfigType, EFIKey};
 use crate::spec::BootloaderKind;
 use crate::task::Task;
@@ -1065,6 +1067,19 @@ fn write_systemd_uki_config(
         )?;
     }
 
+    if let BootSetupType::Upgrade(_) = setup_type {
+        let original_entries = esp_dir.open_dir(TYPE1_ENT_PATH)?;
+        for entry in original_entries.entries_utf8()? {
+            let entry = entry?;
+            let entry_name = entry.file_name()?;
+            if entry.file_type()?.is_file() && !entry_name.starts_with(BLS_ENTRY_PREFIX) {
+                original_entries
+                    .copy(entry_name.clone(), &entries_dir, entry_name)
+                    .context("Staging non-managed BLS entry")?;
+            }
+        }
+    }
+
     // Write the timeout for bootloader menu if not exists
     if !esp_dir.exists(SYSTEMD_LOADER_CONF_PATH) {
         esp_dir
@@ -1490,6 +1505,13 @@ pub(crate) async fn setup_composefs_boot(
 
 #[cfg(test)]
 mod tests {
+    use cap_std::fs::Dir;
+    use cap_std_ext::cap_std;
+    use ostree_ext::{ostree::SysrootBuilder, sysroot::SysrootLock};
+    use std::fs::File;
+
+    use crate::{bootc_composefs::digest::new_temp_composefs_repo, k8sapitypes::Resource};
+
     use super::*;
 
     #[test]
@@ -1602,5 +1624,99 @@ mod tests {
             rhel > fedora,
             "RHEL should sort before Fedora in descending order"
         );
+    }
+
+    #[tokio::test]
+    async fn test_write_systemd_uki_config() -> Result<()> {
+        let tempdir = cap_std_ext::cap_tempfile::tempdir(cap_std::ambient_authority())?;
+
+        let entry1 = r#"
+            title Fedora 42.20250623.3.1 (CoreOS)
+            version fedora-42.0
+            sort-key 1
+            linux /boot/7e11ac46e3e022053e7226a20104ac656bf72d1a84e3a398b7cce70e9df188b6/vmlinuz-5.14.10
+            initrd /boot/7e11ac46e3e022053e7226a20104ac656bf72d1a84e3a398b7cce70e9df188b6/initramfs-5.14.10.img
+            options root=UUID=abc123 rw composefs=7e11ac46e3e022053e7226a20104ac656bf72d1a84e3a398b7cce70e9df188b6
+        "#;
+        let entry2 = r#"
+            title Fedora 41.20250214.2.0 (CoreOS)
+            version fedora-42.0
+            sort-key 2
+            efi /EFI/Linux/f7415d75017a12a387a39d2281e033a288fc15775108250ef70a01dcadb93346.efi
+            options root=UUID=abc123 rw composefs=febdf62805de2ae7b6b597f2a9775d9c8a753ba1e5f09298fc8fbe0b0d13bf01
+        "#;
+        let entry3 = r#"
+            title Test
+            version 1
+            sort-key 9
+            efi /EFI/boot/test.efi
+        "#;
+
+        tempdir.create_dir_all("loader/entries")?;
+        tempdir.atomic_write("loader/entries/bootc_entry1.conf", entry1)?;
+        tempdir.atomic_write("loader/entries/bootc_entry2.conf", entry2)?;
+        tempdir.atomic_write("loader/entries/entry3.conf", entry3)?;
+
+        let sysroot_path = format!(
+            "{}/test_write_systemd_uki_config",
+            std::env::temp_dir().display()
+        );
+        std::fs::create_dir_all(&sysroot_path)?;
+        let dir = Dir::from_std_file(File::open(&sysroot_path)?);
+        let sysroot_dir = cap_std_ext::cap_tempfile::tempdir_in(&dir)?;
+        sysroot_dir.create_dir_all("ostree/repo")?;
+        sysroot_dir.atomic_write(
+            "ostree/repo/config",
+            r#"[core]
+                repo_version=1
+                mode=bare-split-xattrs
+                "#,
+        )?;
+
+        let sysroot = SysrootBuilder::new()
+            .path(Some(sysroot_path.into()))
+            .create(None)?;
+        let sysroot_lock = SysrootLock::new_from_sysroot(&sysroot).await?;
+        let storage = Storage::new_ostree(sysroot_lock, &sysroot_dir)?;
+        let cmdline = Box::new(ComposefsCmdline::new(Default::default()));
+        let (_repo_dir, repo) = new_temp_composefs_repo()?;
+        let booted_composefs = BootedComposefs {
+            repo: repo,
+            cmdline: Box::leak(cmdline),
+        };
+        let host = Host {
+            resource: Resource {
+                api_version: Default::default(),
+                kind: Default::default(),
+                metadata: Default::default(),
+            },
+            spec: Default::default(),
+            status: Default::default(),
+        };
+        let boot_setup_type = BootSetupType::Upgrade((&storage, &booted_composefs, &host));
+        let boot_label = UKIInfo {
+            boot_label: "label".to_string(),
+            version: None,
+            os_id: None,
+            boot_digest: "".to_string(),
+        };
+        let id = Sha512HashValue::EMPTY;
+        let bootloader = Bootloader::Systemd;
+
+        write_systemd_uki_config(&tempdir, &boot_setup_type, boot_label, &id, &bootloader)?;
+
+        assert!(tempdir.exists(SYSTEMD_LOADER_CONF_PATH));
+        assert!(tempdir.exists("loader/entries.staged"));
+        assert!(tempdir.exists("loader/entries.staged/bootc_bootc-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000-1.conf"));
+        assert!(tempdir.exists("loader/entries.staged/bootc_bootc-fedora-42.0-0.conf"));
+        assert!(!tempdir.exists("loader/entries.staged/bootc_bootc-fedora-42.0-1.conf"));
+        assert!(tempdir.exists("loader/entries.staged/entry3.conf"));
+
+        assert_eq!(
+            str::from_utf8(&tempdir.read("loader/entries.staged/entry3.conf")?[..])?,
+            entry3
+        );
+
+        Ok(())
     }
 }
