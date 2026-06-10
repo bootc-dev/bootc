@@ -291,7 +291,7 @@ dependencies = [
  "rustix",
  "serde",
  "serde_json",
- "shlex 2.0.0",
+ "shlex 2.0.1",
  "similar-asserts",
  "static_assertions",
  "tempfile",
@@ -3148,9 +3148,9 @@ checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 
 [[package]]
 name = "shlex"
-version = "2.0.0"
+version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7f70fe4c6ac787e57441913f82b210e668fb2033613bc7a76909cd8afce8bb1f"
+checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 
 [[package]]
 name = "signal-hook"
