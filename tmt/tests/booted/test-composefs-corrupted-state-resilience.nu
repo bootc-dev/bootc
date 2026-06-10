@@ -40,9 +40,9 @@ def first_boot [] {
     systemd-run -p MountFlags=slave -qdPG -- /bin/sh -c $"
         mount -orw,remount /sysroot
         cd ($entries_dir)
-        cp * new-entry.conf
-        
-        sed -i 's;($booted_verity);($missing_verity);' new-entry.conf
+        cp * bootc_new-entry.conf
+
+        sed -i 's;($booted_verity);($missing_verity);' bootc_new-entry.conf
     "
 
     # This should work but log a warning in journal
@@ -75,8 +75,8 @@ def first_boot [] {
 # Test the same thing but with an existing rollback deployment
 def second_boot [] {
     assert equal $booted.image.image "localhost/bootc-test-1"
-    
-    # Create another derived image  
+
+    # Create another derived image
     tap make_uki_containerfile $"
         FROM localhost/bootc as base
         RUN echo 'second-deployment' > /usr/share/deployment-marker
