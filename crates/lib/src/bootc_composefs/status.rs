@@ -329,8 +329,9 @@ fn get_sorted_type1_boot_entries_helper(
         let ord = match bootloader {
             // For systemd-boot sort by sort-key
             Bootloader::Systemd => a.config.cmp(&b.config),
-            // For grub, sort by filename in descending order
-            Bootloader::Grub => b.filename.cmp(&a.filename),
+            // For grub and grub-cc, sort by filename in descending order
+            // See: https://github.com/bootc-dev/bootc/issues/2221
+            Bootloader::Grub | Bootloader::GrubCC => b.filename.cmp(&a.filename),
             Bootloader::None => {
                 unreachable!("Bootloader checked during installation should not have been none")
             }
