@@ -49,11 +49,43 @@ impl Drop for MountGuard {
     }
 }
 
+/// Holds a tempdir with custom Drop impl
+#[derive(Debug)]
+pub struct MountpointTempdir(tempfile::TempDir);
+
+impl std::ops::Deref for MountpointTempdir {
+    type Target = tempfile::TempDir;
+    fn deref(&self) -> &tempfile::TempDir {
+        &self.0
+    }
+}
+
+impl MountpointTempdir {
+    fn new() -> Result<Self> {
+        let mut tmpdir = tempfile::TempDir::new()?;
+        tmpdir.disable_cleanup(true); // We will clean this ourselves
+        Ok(Self(tmpdir))
+    }
+}
+
+impl Drop for MountpointTempdir {
+    fn drop(&mut self) {
+        // Intentionally not using remove_dir_all so that we don't
+        // accidentally end up deleting anything mounted at this path
+        if let Err(e) = std::fs::remove_dir(self.path()) {
+            tracing::warn!(
+                "Failed to remove tmpdir at {}: {e:?}",
+                self.path().display()
+            )
+        }
+    }
+}
+
 /// RAII wrapper for a temporary mount that is automatically unmounted on drop.
 #[derive(Debug)]
 pub struct TempMount {
     /// The backing temporary directory.
-    pub dir: tempfile::TempDir,
+    pub dir: MountpointTempdir,
     /// An open handle to the mounted directory.
     pub fd: Dir,
 }
@@ -67,7 +99,7 @@ impl TempMount {
         flags: MountFlags,
         data: Option<&std::ffi::CStr>,
     ) -> Result<Self> {
-        let tempdir = tempfile::TempDir::new()?;
+        let tempdir = MountpointTempdir::new()?;
 
         let utf8path = Utf8Path::from_path(tempdir.path())
             .ok_or(anyhow::anyhow!("Failed to convert path to UTF-8 Path"))?;
@@ -81,7 +113,7 @@ impl TempMount {
             Ok(fd) => fd,
             Err(e) => {
                 unmount(tempdir.path(), UnmountFlags::DETACH)?;
-                Err(e)?
+                return Err(e)?;
             }
         };
 
@@ -91,7 +123,7 @@ impl TempMount {
     /// Mount and fd acquired with `open_tree` like syscall
     #[context("Mounting fd")]
     pub fn mount_fd(mnt_fd: impl AsFd) -> Result<Self> {
-        let tempdir = tempfile::TempDir::new()?;
+        let tempdir = MountpointTempdir::new()?;
 
         move_mount(
             mnt_fd.as_fd(),
@@ -109,7 +141,7 @@ impl TempMount {
             Ok(fd) => fd,
             Err(e) => {
                 unmount(tempdir.path(), UnmountFlags::DETACH)?;
-                Err(e)?
+                return Err(e)?;
             }
         };
 
