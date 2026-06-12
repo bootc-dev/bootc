@@ -34,7 +34,9 @@ accepted!
 - A development environment (toolbox or a host) with a Rust and C compiler, etc.
   While this isn't specific to bootc, you will find the experience of working on Rust
   is greatly aided with use of e.g. [rust-analyzer](https://github.com/rust-lang/rust-analyzer/).
-- Install [bcvk](https://github.com/bootc-dev/bcvk).
+- Install [bcvk](https://github.com/bootc-dev/bcvk). For running TMT
+  integration tests, also install `tmt` and `libvirt`
+  (e.g. `dnf install bcvk tmt libvirt`).
 
 ## Ensure you're familiar with a bootc system
 
