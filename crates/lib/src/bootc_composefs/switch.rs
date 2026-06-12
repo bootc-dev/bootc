@@ -31,6 +31,9 @@ pub(crate) async fn switch_composefs(
 
     if new_spec == host.spec {
         println!("Image specification is unchanged.");
+        if opts.apply && host.status.staged.is_some() {
+            crate::reboot::reboot()?;
+        }
         return Ok(());
     }
 

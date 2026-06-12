@@ -8,7 +8,8 @@
 # This test does:
 # bootc image copy-to-storage
 # podman build <from that image>
-# bootc switch <into that image> --apply
+# bootc switch <into that image> (stage only)
+# bootc switch --apply <same image> (spec unchanged, must still reboot)
 # Verify we boot into the new image
 #
 # For composefs builds, it additionally verifies that composefs is
@@ -65,10 +66,13 @@ def initial_build [] {
         $st.status.booted.composefs.verity | save /var/original-verity
     }
 
-    # Now, switch into the new image
-    print $"Applying ($imgsrc)"
+    # Now, switch into the new image. First stage it, then run switch --apply for
+    # the same target. This exercises the case where --apply must still reboot for
+    # staged deployments.
+    print $"Staging ($imgsrc)"
     bootc switch --transport containers-storage ($imgsrc)
-    tmt-reboot
+    print "Re-running with --apply (spec unchanged, should still reboot)"
+    tmt-reboot -c $"bootc switch --apply --transport containers-storage ($imgsrc)"
 }
 
 # Check we have the updated image
