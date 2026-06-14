@@ -33,6 +33,10 @@ const SYSTEMD_KEY_DIR: &str = "loader/keys";
 /// bootc does not use the entry-token at all.
 const KERNEL_INSTALL_CONF_ROOT: &str = "/tmp";
 
+/// First systemd release whose `bootctl install` accepts `--random-seed`.
+/// See: <https://www.freedesktop.org/software/systemd/man/latest/bootctl.html>
+const BOOTCTL_RANDOM_SEED_MIN_VERSION: u32 = 257;
+
 /// Mount the first ESP found among backing devices at /boot/efi.
 ///
 /// This is used by the install-alongside path to clean stale bootloader
@@ -256,7 +260,16 @@ pub(crate) fn install_systemd_boot(
     ];
 
     if configopts.generic_image {
-        bootctl_args.extend(["--random-seed", "no", "--no-variables"]);
+        bootctl_args.push("--no-variables");
+        // `--random-seed` was only added to `bootctl install` in systemd 257.
+        let systemd_version = bootctl_systemd_version()?;
+        if systemd_version >= BOOTCTL_RANDOM_SEED_MIN_VERSION {
+            bootctl_args.extend(["--random-seed", "no"]);
+        } else {
+            tracing::debug!(
+                "Skipping --random-seed: requires systemd >= {BOOTCTL_RANDOM_SEED_MIN_VERSION}, found {systemd_version}"
+            );
+        }
     }
 
     Command::new("bootctl")
@@ -310,6 +323,24 @@ pub(crate) fn install_systemd_boot(
     }
 
     Ok(())
+}
+
+#[context("Querying bootctl version")]
+fn bootctl_systemd_version() -> Result<u32> {
+    let out = Command::new("bootctl").arg("--version").run_get_string()?;
+    parse_systemd_version(&out)
+}
+
+/// Parse the systemd major version from `bootctl --version` output, whose first
+/// line looks like `systemd 259 (259.5-0ubuntu3)`.
+fn parse_systemd_version(output: &str) -> Result<u32> {
+    output
+        .split_whitespace()
+        .nth(1)
+        .and_then(|s| s.parse::<u32>().ok())
+        .ok_or_else(|| {
+            anyhow!("Could not parse systemd version from bootctl --version: {output:?}")
+        })
 }
 
 #[context("Installing bootloader using zipl")]
@@ -388,4 +419,32 @@ pub(crate) fn install_via_zipl(device: &bootc_blockdev::Device, boot_uuid: &str)
         .args(["--add-files", "--verbose"])
         .log_debug()
         .run_inherited_with_cmd_context()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_systemd_version() {
+        // The first line of `bootctl --version`. the trailing feature line is ignored.
+        let cases = [
+            ("systemd 259 (259.5-0ubuntu3)", 259),
+            ("systemd 257 (257-26.el10-g1d19ad5)", 257),
+            ("systemd 255 (255.4-1ubuntu8.16)", 255),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(
+                parse_systemd_version(input).unwrap(),
+                expected,
+                "input: {input:?}"
+            );
+        }
+        for bad in ["", "systemd", "not a version string"] {
+            assert!(
+                parse_systemd_version(bad).is_err(),
+                "should reject: {bad:?}"
+            );
+        }
+    }
 }
