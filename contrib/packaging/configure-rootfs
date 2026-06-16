@@ -3,10 +3,15 @@
 set -xeuo pipefail
 
 VARIANT="${1:-}"
-ROOTFS="${2:-}"
+
+# Where to write the config
+# Defaults to /
+BASE_DIR="${2:-/}"
+
+ROOTFS="${3:-}"
 
 # Support overriding the rootfs at build time
-CONFIG_DIR="/usr/lib/bootc/install"
+CONFIG_DIR="${BASE_DIR}/usr/lib/bootc/install"
 mkdir -p "${CONFIG_DIR}"
 
 kver=$(bootc container inspect --json | jq -re .kernel.version)
