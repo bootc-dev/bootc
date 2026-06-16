@@ -3,30 +3,24 @@
 set -xeuo pipefail
 
 RPM_DIR="${1:-/tmp}"
+INSTALL_ROOT="${2:-/}"
 
 # Install the RPM package
 # Use rpm -Uvh with --oldpackage to allow replacing with dev version
-rpm -Uvh --replacepkgs --oldpackage --nosignature "${RPM_DIR}"/*.rpm
+rpm -Uvh --root "${INSTALL_ROOT}" --nodeps --replacepkgs --oldpackage --nosignature "${RPM_DIR}"/*.rpm
 # Note: we don't need to clean up the source directory since it's a bind mount
-
-# Regenerate initramfs if we have initramfs-setup
-kver=$(cd /usr/lib/modules && echo *)
-# DRACUT_NO_XATTR=1 is the default in newer base images, and
-# we have --add bootc here until the change to add the module in base
-# images lands.
-env DRACUT_NO_XATTR=1 dracut --add bootc -vf /usr/lib/modules/$kver/initramfs.img $kver
 
 # Only in this containerfile, inject a file which signifies
 # this comes from this development image. This can be used in
 # tests to know we're doing upstream CI.
-touch /usr/lib/.bootc-dev-stamp
+touch "${INSTALL_ROOT}/usr/lib/.bootc-dev-stamp"
 
 # Fedora 43+ ships a GRUB with the BLI module, so enable DPS
 # auto-discovery for root.  This must run after our RPM is installed
 # since older bootc doesn't recognize the discoverable-partitions key.
 . /usr/lib/os-release
 if [ "${ID}" = "fedora" ] && [ "${VERSION_ID}" -ge 43 ] 2>/dev/null; then
-  cat > /usr/lib/bootc/install/20-discoverable-partitions.toml <<'EOF'
+  cat > "${INSTALL_ROOT}/usr/lib/bootc/install/20-discoverable-partitions.toml" <<'EOF'
 [install]
 discoverable-partitions = true
 EOF
