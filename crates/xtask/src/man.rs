@@ -55,6 +55,17 @@ pub struct CliPositional {
 /// Extract CLI structure by running the JSON dump command
 #[context("Extracting CLI")]
 pub fn extract_cli_json(sh: &Shell) -> Result<CliCommand> {
+    if let Ok(bootc_bin) = std::env::var("BOOTC_DOCGEN_BIN") {
+        let json_output = cmd!(sh, "{bootc_bin} internals dump-cli-json")
+            .read()
+            .context("Running CLI JSON dump command")?;
+
+        let cli_structure: CliCommand =
+            serde_json::from_str(&json_output).context("Parsing CLI JSON output")?;
+
+        return Ok(cli_structure);
+    }
+
     // If we have a release binary, assume that we should compile
     // in release mode as hopefully we'll have incremental compilation
     // enabled.

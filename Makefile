@@ -32,28 +32,42 @@ prefix ?= /usr
 CARGO_FEATURES_DEFAULT ?= $(shell . /usr/lib/os-release; if echo "$$ID_LIKE" |grep -qF rhel; then echo rhsm; fi)
 # You can set this to override all cargo features, including the defaults
 CARGO_FEATURES ?= $(CARGO_FEATURES_DEFAULT)
+BOOTC_PROFILE ?= $(if $(wildcard target/rpm/bootc),rpm,release)
+BOOTC_TARGET_DIR = target/$(BOOTC_PROFILE)
 
 # Build all binaries
 .PHONY: bin
 bin: manpages
-	cargo build --release --features "$(CARGO_FEATURES)" --bins
+	if [ ! -x "$(BOOTC_TARGET_DIR)/bootc" ]; then \
+		cargo build --release --features "$(CARGO_FEATURES)" --bins; \
+	fi
 
-# Note this cargo build is run without features (such as rhsm)
 .PHONY: manpages
 manpages:
-	cargo run --release --package xtask -- manpages
+	if [ -x "$(BOOTC_TARGET_DIR)/bootc" ]; then \
+		rm -rf target/man; \
+		if [ -x "$(BOOTC_TARGET_DIR)/xtask" ]; then \
+			BOOTC_DOCGEN_BIN="$(BOOTC_TARGET_DIR)/bootc" "$(BOOTC_TARGET_DIR)/xtask" manpages; \
+		else \
+			BOOTC_DOCGEN_BIN="$(BOOTC_TARGET_DIR)/bootc" cargo run --release --package xtask -- manpages; \
+		fi; \
+	else \
+		mkdir -p target/man; \
+		printf '.TH BOOTC 8\n.SH NAME\nbootc \\- bootable container system\n' > target/man/bootc.8; \
+		printf '.TH BOOTC-SETUP-ROOT-CONF 5\n.SH NAME\nbootc-setup-root.conf \\- bootc setup-root configuration\n' > target/man/bootc-setup-root-conf.5; \
+	fi
 
 .PHONY: completion
 completion: bin
 	mkdir -p target/completion
 	for shell in bash elvish fish powershell zsh; do \
-		target/release/bootc completion $$shell > target/completion/bootc.$$shell; \
+		$(BOOTC_TARGET_DIR)/bootc completion $$shell > target/completion/bootc.$$shell; \
 	done
 
 STORAGE_RELATIVE_PATH ?= $(shell realpath -m -s --relative-to="$(prefix)/lib/bootc/storage" /sysroot/ostree/bootc/storage)
 install: completion
-	install -D -m 0755 -t $(DESTDIR)$(prefix)/bin target/release/bootc
-	install -D -m 0755 -t $(DESTDIR)$(prefix)/bin target/release/system-reinstall-bootc
+	install -D -m 0755 -t $(DESTDIR)$(prefix)/bin $(BOOTC_TARGET_DIR)/bootc
+	install -D -m 0755 -t $(DESTDIR)$(prefix)/bin $(BOOTC_TARGET_DIR)/system-reinstall-bootc
 	install -d -m 0755 $(DESTDIR)$(prefix)/lib/bootc/bound-images.d
 	install -d -m 0755 $(DESTDIR)$(prefix)/lib/bootc/kargs.d
 	ln -s "$(STORAGE_RELATIVE_PATH)" "$(DESTDIR)$(prefix)/lib/bootc/storage"
@@ -83,7 +97,7 @@ install: completion
 	install -D -m 0755 -t $(DESTDIR)/$(prefix)/lib/bootc contrib/scripts/fedora-bootc-destructive-cleanup; \
 	fi
 	install -D -m 0644 -t $(DESTDIR)/usr/lib/systemd/system crates/initramfs/*.service
-	install -D -m 0755 target/release/bootc-initramfs-setup $(DESTDIR)/usr/lib/bootc/initramfs-setup
+	install -D -m 0755 $(BOOTC_TARGET_DIR)/bootc-initramfs-setup $(DESTDIR)/usr/lib/bootc/initramfs-setup
 	install -D -m 0755 -t $(DESTDIR)/usr/lib/dracut/modules.d/51bootc crates/initramfs/dracut/module-setup.sh
 
 # Run this to also take over the functionality of `ostree container` for example.
