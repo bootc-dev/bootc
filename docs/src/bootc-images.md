@@ -132,6 +132,18 @@ for handling the `security.selinux` extended attribute in tar
 streams; but this can only currently be done with a custom
 build process.
 
+#### Forcing relabeling
+
+Some distributions support a `/.autorelabel` file; this will not work
+on a bootc managed system where `/` is immutable state from the base
+image by default. The labels on the files under `/sysroot/ostree` are
+also managed by bootc/ostree and should not be changed by external
+tools.
+
+Most typically, you instead want to only relabel targeted subdirectories
+of `/etc` and `/var`. This can be done via a systemd unit, e.g.
+`ExecStart=restorecon -R -v /var/lib/mysql`.
+
 ### Toplevel directories
 
 In particular, a common problem is that inside a container image,
