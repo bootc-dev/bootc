@@ -13,7 +13,8 @@ use ocidir::oci_spec::distribution::Reference;
 use ocidir::oci_spec::image::{Arch, DigestAlgorithm};
 use ostree_ext::chunking::ObjectMetaSized;
 use ostree_ext::container::{
-    Config, ExportOpts, ImageReference, OstreeImageReference, SignatureSource, Transport,
+    Config, ExportOpts, ExportProgress, ImageReference, OstreeImageReference, SignatureSource,
+    Transport,
 };
 use ostree_ext::container::{ManifestDiff, OSTREE_COMMIT_LABEL, store};
 use ostree_ext::prelude::{Cast, FileExt};
@@ -532,6 +533,9 @@ async fn impl_test_container_import_export(chunked: bool) -> Result<()> {
     opts.max_layers = std::num::NonZeroU32::new(PKGS_V0_LEN as u32);
     opts.package_contentmeta = contentmeta.as_ref();
     opts.container_config = Some(container_config);
+    opts.jobs = std::num::NonZeroUsize::new(2);
+    let (progress_tx, progress_rx) = std::sync::mpsc::channel();
+    opts.progress = Some(progress_tx);
     let digest = ostree_ext::container::encapsulate(
         fixture.srcrepo(),
         fixture.testref(),
@@ -541,6 +545,7 @@ async fn impl_test_container_import_export(chunked: bool) -> Result<()> {
     )
     .await
     .context("exporting")?;
+    let progress_events: Vec<_> = progress_rx.try_iter().collect();
     assert!(srcoci_path.exists());
 
     let inspect = skopeo_inspect(&srcoci_imgref.to_string())?;
@@ -575,6 +580,13 @@ async fn impl_test_container_import_export(chunked: bool) -> Result<()> {
     let n_chunks = if chunked { LAYERS_V0_LEN } else { 1 };
     assert_eq!(cfg.rootfs().diff_ids().len(), n_chunks);
     assert_eq!(cfg.history().as_ref().unwrap().len(), n_chunks);
+    assert_eq!(
+        progress_events
+            .iter()
+            .filter(|event| matches!(event, ExportProgress::Finished { .. }))
+            .count(),
+        n_chunks
+    );
 
     // Verify exporting to ociarchive
     {
