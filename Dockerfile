@@ -53,8 +53,32 @@ RUN --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
     /run/packaging/enable-compose-repos
 RUN --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp /usr/libexec/bootc-base-imagectl build-rootfs --manifest=standard /target-rootfs
 
+# Get the latest GrubCC binary
+FROM quay.io/fedora/eln:latest AS grub-cc-download
+RUN --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp <<EOF
+set -eux
+
+# There isn't a generic grub2-efi-cc package that DNF can automatically resolve
+case "$(uname -m)" in
+    x86_64)
+        dnf download grub2-efi-x64-cc
+        ;;
+    aarch64)
+        dnf download grub2-efi-aa64-cc
+        ;;
+    *)
+        echo "Unsupported architecture: $(uname -m)" >&2
+        exit 1
+        ;;
+esac
+
+mv ./*.rpm grub-cc.rpm
+
+EOF
+
 FROM scratch as fetch
 COPY --from=target-base /target-rootfs/ /
+COPY --from=grub-cc-download /grub-cc.rpm /var/grub-cc.rpm
 # SKIP_CONFIGS=1 skips LBIs, test kargs, and install configs (for FCOS testing)
 ARG SKIP_CONFIGS
 ARG boot_type
@@ -91,19 +115,23 @@ RUN --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
         dnf install -y "${pkgs_to_install[@]}"
     fi
 
+    # Currently dnf installs grub-cc at /usr/lib/efi/grub2/1:2.12-60.eln156/EFI/eln/cc/grubx64-cc.efi
+    # which is less than ideal because: 
+    # - the "cc" subdirectory
+    # - no support for installing grub-cc in bootupd
+    #
+    # So we move the binary to /usr/lib/grub-cc/grub-cc.efi so we have a predictale location from which
+    # we can copy the EFI binary to the ESP
     if [[ "$bootloader" == "grub-cc" ]]; then
-        # We have this until we get grub-cc support in bootupd
-        arch=$(uname -m)
-        curl -L -o /var/grub-cc.rpm "https://kojipkgs.fedoraproject.org/packages/grub2/2.12/59.eln156/x86_64/grub2-efi-x64-cc-2.12-59.eln156.${arch}.rpm"
         mkdir /var/grub-cc
         rpm2archive /var/grub-cc.rpm | tar -xvz -C /var/grub-cc
         file=$(find /var/grub-cc -name '*.efi')
-        mkdir /usr/lib/grub-cc
-        cp $file /usr/lib/grub-cc
-        rm -rvf /var/grub-cc
-        rm -rvf /var/grub-cc.rpm
+        mkdir -p /usr/lib/grub-cc
+        cp "$file" /usr/lib/grub-cc/grub-cc.efi
     fi
 
+    rm -rvf /var/grub-cc
+    rm -rvf /var/grub-cc.rpm
 EOF
 
 # Note we don't do any customization here yet

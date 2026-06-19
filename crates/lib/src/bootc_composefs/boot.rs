@@ -1405,9 +1405,15 @@ pub(crate) async fn setup_composefs_boot(
                 .remove_file_optional("grub.cfg")
                 .context("Removing grub.cfg")?;
 
+            let final_name = match std::env::consts::ARCH {
+                "x86_64" => "grubx64.efi",
+                "aarch64" => "grubaa64-cc.efi",
+                arch => anyhow::bail!("GrubCC not supported for: {arch}"),
+            };
+
             mounted_root
                 .dir()
-                .copy("usr/lib/grub-cc/grubx64-cc.efi", &efis_dir, "grubx64.efi")
+                .copy("usr/lib/grub-cc/grub-cc.efi", &efis_dir, final_name)
                 .context("Copying grub-cc binary")?;
         }
     } else {
