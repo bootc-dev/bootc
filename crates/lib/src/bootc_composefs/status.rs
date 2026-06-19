@@ -890,7 +890,6 @@ async fn composefs_deployment_status_from(
         };
 
         if verity_digest == booted_composefs_digest.as_ref() {
-            host.spec.image = boot_entry.image.as_ref().map(|x| x.image.clone());
             host.status.booted = Some(boot_entry);
             continue;
         }
@@ -907,6 +906,15 @@ async fn composefs_deployment_status_from(
 
         extra_deployment_boot_entries.push(boot_entry);
     }
+
+    // see similar logic in the ostree-version of this
+    host.spec.image = host
+        .status
+        .staged
+        .as_ref()
+        .or(host.status.booted.as_ref())
+        .and_then(|entry| entry.image.as_ref())
+        .map(|img| img.image.clone());
 
     // Shouldn't really happen, but for sanity nonetheless
     let Some(boot_type) = boot_type else {
