@@ -190,9 +190,20 @@ async fn pull_composefs_direct(
     let imgref_str = imgref.to_string();
     tracing::info!("Direct pull: fetching {imgref_str} into composefs repository");
 
-    let pull_result = composefs_oci::pull(repo, &imgref_str, None, PullOptions::default())
-        .await
-        .context("Pulling image into composefs repository")?;
+    let mut config = crate::deploy::new_proxy_config();
+    ostree_ext::container::apply_container_proxy_opts_for_transport(&mut config, imgref.transport)?;
+
+    let pull_result = composefs_oci::pull(
+        repo,
+        &imgref_str,
+        None,
+        PullOptions {
+            img_proxy_config: Some(config),
+            ..Default::default()
+        },
+    )
+    .await
+    .context("Pulling image into composefs repository")?;
 
     Ok(pull_result)
 }
