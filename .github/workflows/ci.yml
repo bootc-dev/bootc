@@ -79,7 +79,7 @@ jobs:
   validate:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Bootc Ubuntu Setup
         uses: bootc-dev/actions/bootc-ubuntu-setup@main
       - name: Validate (default)
@@ -88,7 +88,7 @@ jobs:
   cargo-deny:
     runs-on: ubuntu-24.04
     steps:
-    - uses: actions/checkout@v6
+    - uses: actions/checkout@v7
     - uses: EmbarkStudios/cargo-deny-action@v2
       with:
         log-level: warn
@@ -104,7 +104,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
       - name: Bootc Ubuntu Setup
         uses: bootc-dev/actions/bootc-ubuntu-setup@main
       - name: Enable fsverity for /
@@ -169,7 +169,7 @@ jobs:
   docs:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Bootc Ubuntu Setup
         uses: bootc-dev/actions/bootc-ubuntu-setup@main
       - name: Build mdbook
@@ -186,7 +186,7 @@ jobs:
     runs-on: ubuntu-24.04
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Bootc Ubuntu Setup
         uses: bootc-dev/actions/bootc-ubuntu-setup@main
 
@@ -248,7 +248,7 @@ jobs:
     runs-on: ubuntu-24.04
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Bootc Ubuntu Setup
         uses: bootc-dev/actions/bootc-ubuntu-setup@main
         with:
@@ -340,7 +340,7 @@ jobs:
     runs-on: ubuntu-24.04
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Bootc Ubuntu Setup
         uses: bootc-dev/actions/bootc-ubuntu-setup@main
         with:
@@ -402,7 +402,7 @@ jobs:
     runs-on: ubuntu-24.04
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Bootc Ubuntu Setup
         uses: bootc-dev/actions/bootc-ubuntu-setup@main
         with:
@@ -468,7 +468,7 @@ jobs:
     runs-on: ubuntu-24.04
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Bootc Ubuntu Setup
         uses: bootc-dev/actions/bootc-ubuntu-setup@main
         with:
@@ -511,7 +511,7 @@ jobs:
     runs-on: ubuntu-24.04
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Bootc Ubuntu Setup
         uses: bootc-dev/actions/bootc-ubuntu-setup@main
         with:

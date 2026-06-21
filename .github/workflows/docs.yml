@@ -18,7 +18,7 @@ jobs:
   build:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Bootc Ubuntu Setup
         uses: bootc-dev/actions/bootc-ubuntu-setup@main
       - name: Build mdbook
