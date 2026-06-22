@@ -265,8 +265,9 @@ pub(crate) struct InstallTargetOpts {
     pub(crate) target_no_signature_verification: bool,
 
     /// This is the inverse of the previous `--target-no-signature-verification` (which is now
-    /// a no-op).  Enabling this option enforces that `/etc/containers/policy.json` includes a
-    /// default policy which requires signatures.
+    /// a no-op).  Enabling this option enforces that `containers-policy.json` (see `man
+    /// containers-policy.json` for the full search path) includes a default policy which
+    /// requires signatures.
     #[clap(long)]
     #[serde(default)]
     pub(crate) enforce_container_sigpolicy: bool,

@@ -40,7 +40,8 @@ The `install` section supports these subfields:
    needs the `bli` module (available in newer builds).  Defaults to `true`
    when using systemd-boot, `false` otherwise.
 - `enforce-container-sigpolicy`: A boolean that controls whether to enforce that
-   `/etc/containers/policy.json` includes a default policy which requires signatures.
+   `containers-policy.json` (see `man containers-policy.json` for the full search
+   path) includes a default policy which requires signatures.
    When `true`, image pulls will be rejected if the policy file specifies
    `insecureAcceptAnything` as the default. Defaults to `false`.
    This is equivalent to the `--enforce-container-sigpolicy` CLI flag.

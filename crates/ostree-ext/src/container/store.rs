@@ -302,6 +302,8 @@ struct LayerRef {
 #[derive(Debug)]
 pub struct ImageImporter {
     repo: ostree::Repo,
+    /// The root filesystem directory, used for policy lookups.
+    root: Dir,
     pub(crate) proxy: ImageProxy,
     imgref: OstreeImageReference,
     target_imgref: Option<OstreeImageReference>,
@@ -648,8 +650,11 @@ impl ImageImporter {
 
         let diffid_to_digest = Self::build_diffid_to_digest_map(&repo)?;
 
+        let root = Dir::open_ambient_dir("/", cap_std::ambient_authority())?;
+
         Ok(ImageImporter {
             repo,
+            root,
             proxy,
             target_imgref: None,
             no_imgref: false,
@@ -935,7 +940,9 @@ impl ImageImporter {
     #[context("Fetching manifest")]
     pub(crate) async fn prepare_internal(&mut self, verify_layers: bool) -> Result<PrepareResult> {
         match &self.imgref.sigverify {
-            SignatureSource::ContainerPolicy if skopeo::container_policy_is_default_insecure()? => {
+            SignatureSource::ContainerPolicy
+                if skopeo::container_policy_is_default_insecure(&self.root)? =>
+            {
                 return Err(anyhow!(
                     "containers-policy.json specifies a default of `insecureAcceptAnything`; refusing usage"
                 ));
@@ -1039,7 +1046,7 @@ impl ImageImporter {
     ) -> Result<()> {
         tracing::debug!("Fetching base");
         if matches!(self.imgref.sigverify, SignatureSource::ContainerPolicy)
-            && skopeo::container_policy_is_default_insecure()?
+            && skopeo::container_policy_is_default_insecure(&self.root)?
         {
             return Err(anyhow!(
                 "containers-policy.json specifies a default of `insecureAcceptAnything`; refusing usage"

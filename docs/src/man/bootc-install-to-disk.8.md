@@ -111,7 +111,7 @@ set `discoverable-partitions = true` in their install configuration
 
 **--enforce-container-sigpolicy**
 
-    This is the inverse of the previous `--target-no-signature-verification` (which is now a no-op).  Enabling this option enforces that `/etc/containers/policy.json` includes a default policy which requires signatures
+    This is the inverse of the previous `--target-no-signature-verification` (which is now a no-op).  Enabling this option enforces that `containers-policy.json` (see `man containers-policy.json` for the full search path) includes a default policy which requires signatures
 
 **--run-fetch-check**
 
