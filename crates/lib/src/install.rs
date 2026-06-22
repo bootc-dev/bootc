@@ -204,6 +204,7 @@ use crate::task::Task;
 use crate::utils::sigpolicy_from_opt;
 use bootc_kernel_cmdline::{INITRD_ARG_PREFIX, ROOTFLAGS, bytes, utf8};
 use bootc_mount::Filesystem;
+use composefs_ctl::composefs::repository::RepositoryConfig;
 
 /// The toplevel boot directory
 pub(crate) const BOOT: &str = "boot";
@@ -2020,11 +2021,13 @@ async fn install_to_filesystem_impl(
             let img_manifest_config = get_container_manifest_and_config(&imgref).await?;
             crate::store::ensure_composefs_dir(&rootfs.physical_root)?;
             // Use init_path since the repo may not exist yet during install
+            let config =
+                RepositoryConfig::new(composefs_ctl::composefs::fsverity::Algorithm::SHA512)
+                    .set_insecure();
             let (cfs_repo, _created) = crate::store::ComposefsRepository::init_path(
                 &rootfs.physical_root,
                 crate::store::COMPOSEFS,
-                composefs_ctl::composefs::fsverity::Algorithm::SHA512,
-                false,
+                config,
             )?;
             crate::deploy::check_disk_space_composefs(
                 &cfs_repo,

@@ -111,6 +111,7 @@ use ostree_ext::{gio, ostree};
 use rustix::fs::Mode;
 
 use composefs::fsverity::Sha512HashValue;
+use composefs::repository::RepositoryConfig;
 use composefs_ctl::composefs;
 
 use crate::bootc_composefs::backwards_compat::bcompat_boot::prepend_custom_prefix;
@@ -618,16 +619,14 @@ impl Storage {
         let ostree = self.get_ostree()?;
         let ostree_repo = &ostree.repo();
         let ostree_verity = ostree_ext::fsverity::is_verity_enabled(ostree_repo)?;
-        let (mut composefs, _created) = ComposefsRepository::init_path(
-            self.physical_root.open_dir(COMPOSEFS)?,
-            ".",
-            composefs::fsverity::Algorithm::SHA512,
-            ostree_verity.enabled,
-        )?;
-        if !ostree_verity.enabled {
-            tracing::debug!("Setting insecure mode for composefs repo");
-            composefs.set_insecure();
-        }
+        let config = RepositoryConfig::new(composefs::fsverity::Algorithm::SHA512);
+        let config = if ostree_verity.enabled {
+            config
+        } else {
+            config.set_insecure()
+        };
+        let (composefs, _created) =
+            ComposefsRepository::init_path(self.physical_root.open_dir(COMPOSEFS)?, ".", config)?;
         let composefs = Arc::new(composefs);
         let r = Arc::clone(self.composefs.get_or_init(|| composefs));
         Ok(r)

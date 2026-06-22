@@ -52,6 +52,7 @@ impl From<(&cap_std::fs::Metadata, Xattrs)> for MyStat {
             st_uid: value.0.uid(),
             st_gid: value.0.gid(),
             st_mtim_sec: value.0.mtime(),
+            st_mtim_nsec: value.0.mtime_nsec() as u32,
             xattrs: value.1,
         })
     }
