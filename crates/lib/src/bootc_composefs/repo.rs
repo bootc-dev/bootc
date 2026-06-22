@@ -41,6 +41,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 
 use composefs::fsverity::{FsVerityHashValue, Sha512HashValue};
+use composefs::repository::RepositoryConfig;
 use composefs_boot::bootloader::{BootEntry as ComposefsBootEntry, get_boot_resources};
 use composefs_ctl::composefs;
 use composefs_ctl::composefs_boot;
@@ -99,16 +100,24 @@ pub(crate) async fn initialize_composefs_repository(
 
     crate::store::ensure_composefs_dir(rootfs_dir)?;
 
-    let (mut repo, _created) = crate::store::ComposefsRepository::init_path(
-        rootfs_dir,
-        "composefs",
-        composefs::fsverity::Algorithm::SHA512,
-        !allow_missing_fsverity,
-    )
-    .context("Failed to initialize composefs repository")?;
-    if allow_missing_fsverity {
-        repo.set_insecure();
-    }
+    let mut config = {
+        let c = RepositoryConfig::new(composefs::fsverity::Algorithm::SHA512);
+        if allow_missing_fsverity {
+            c.set_insecure()
+        } else {
+            c
+        }
+    };
+    // Generate both V1 and V2 EROFS images so a deployment can be booted via
+    // either the composefs= legacy shorthand (V2) or composefs.digest= (V1/V2)
+    // karg.  This makes both digests available for any boot path.
+    config.erofs_formats = composefs::erofs::format::FormatConfig {
+        default: composefs::erofs::format::FormatVersion::V1,
+        extra: [composefs::erofs::format::FormatVersion::V2].into(),
+    };
+    let (repo, _created) =
+        crate::store::ComposefsRepository::init_path(rootfs_dir, "composefs", config)
+            .context("Failed to initialize composefs repository")?;
 
     let imgref: containers_image_proxy::ImageReference = state
         .source

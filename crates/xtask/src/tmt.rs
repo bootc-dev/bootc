@@ -475,8 +475,11 @@ pub(crate) fn run_tmt(sh: &Shell, args: &RunTmtArgs) -> Result<()> {
 
             let mut opts = Vec::new();
 
-            // If test wants bind storage and distro supports it, add --bind-storage-ro
-            if try_bind_storage && supports_bind_storage_ro {
+            // If test wants bind storage, the distro supports it, and it wasn't
+            // explicitly disabled, add --bind-storage-ro
+            let use_bind_storage =
+                try_bind_storage && supports_bind_storage_ro && !args.skip_bind_storage;
+            if use_bind_storage {
                 opts.push(BCVK_OPT_BIND_STORAGE_RO.to_string());
 
                 // If upgrade image is provided, set it as an environment variable for tmt
@@ -484,6 +487,10 @@ pub(crate) fn run_tmt(sh: &Shell, args: &RunTmtArgs) -> Result<()> {
                 if let Some(ref upgrade_img) = args.upgrade_image {
                     tmt_env_vars.push(format!("{}={}", ENV_BOOTC_UPGRADE_IMAGE, upgrade_img));
                 }
+            } else if try_bind_storage && args.skip_bind_storage {
+                println!(
+                    "Note: Test requests bind storage but --skip-bind-storage was set; running without host container-storage mount"
+                );
             } else if try_bind_storage && !supports_bind_storage_ro {
                 println!(
                     "Note: Test wants bind storage but skipping on {} (missing systemd.extra-unit.* support)",

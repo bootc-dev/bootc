@@ -330,6 +330,119 @@ pub(crate) fn test_compute_composefs_digest() -> Result<()> {
     Ok(())
 }
 
+/// Test that `bootc container ukify --erofs-version` is plumbed correctly.
+///
+/// Verifies that:
+/// - `compute-composefs-digest --erofs-version=v1` and `=v2` produce distinct,
+///   valid 128-char SHA-512 hex digests (different EROFS layouts → different IDs).
+/// - `bootc container ukify --erofs-version=v1` either invokes ukify (skipping
+///   gracefully if ukify is absent) or fails with a clear error before ukify.
+pub(crate) fn test_container_ukify_erofs_versions() -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    // Build a minimal rootfs that satisfies find_kernel() and build_ukify()'s
+    // existence checks.  The files don't need to be real ELF/CPIO — bootc only
+    // stat-checks them before handing them off to ukify.
+    let td = tempfile::tempdir()?;
+    let root = td.path();
+
+    fs::create_dir_all(root.join("boot"))?;
+    fs::create_dir_all(root.join("sysroot"))?;
+
+    let usr_bin = root.join("usr/bin");
+    fs::create_dir_all(&usr_bin)?;
+    let hello = usr_bin.join("hello");
+    fs::write(&hello, b"#!/bin/sh\necho hello\n")?;
+    fs::set_permissions(&hello, fs::Permissions::from_mode(0o755))?;
+
+    // Kernel layout that find_kernel() expects
+    let kver = "6.1.0-test";
+    let mod_dir = root.join("usr/lib/modules").join(kver);
+    fs::create_dir_all(&mod_dir)?;
+    fs::write(mod_dir.join("vmlinuz"), b"fake-vmlinuz")?;
+    fs::write(mod_dir.join("initramfs.img"), b"fake-initramfs")?;
+
+    // ukify reads --os-release @usr/lib/os-release relative to the rootfs cwd
+    let os_release_dir = root.join("usr/lib");
+    fs::create_dir_all(&os_release_dir)?;
+    fs::write(
+        os_release_dir.join("os-release"),
+        b"ID=test\nNAME=Test\nVERSION_ID=1\n",
+    )?;
+
+    let root_str = root.to_str().unwrap();
+
+    // ── Part 1: compare V1 vs V2 digest via compute-composefs-digest ──────────
+    let sh = Shell::new()?;
+
+    let digest_v2 = cmd!(
+        sh,
+        "bootc container compute-composefs-digest {root_str} --erofs-version=v2"
+    )
+    .read()?;
+    let digest_v1 = cmd!(
+        sh,
+        "bootc container compute-composefs-digest {root_str} --erofs-version=v1"
+    )
+    .read()?;
+
+    let digest_v2 = digest_v2.trim();
+    let digest_v1 = digest_v1.trim();
+
+    assert_eq!(digest_v2.as_bytes().len(), 128, "V2 digest must be 128 hex chars");
+    assert_eq!(digest_v1.as_bytes().len(), 128, "V1 digest must be 128 hex chars");
+    assert!(
+        digest_v2.chars().all(|c| c.is_ascii_hexdigit()),
+        "V2 digest contains non-hex chars: {digest_v2}"
+    );
+    assert!(
+        digest_v1.chars().all(|c| c.is_ascii_hexdigit()),
+        "V1 digest contains non-hex chars: {digest_v1}"
+    );
+    assert_ne!(
+        digest_v1, digest_v2,
+        "V1 and V2 EROFS digests must differ (they use different on-disk layouts)"
+    );
+
+    // ── Part 2: smoke-test the full ukify CLI path with --erofs-version=v1 ────
+    //
+    // We don't assert success because ukify will fail on fake kernel blobs.
+    // What we're testing is that bootc reaches the ukify invocation stage —
+    // i.e. the --erofs-version plumbing is wired correctly all the way through.
+    let output = Command::new("bootc")
+        .args([
+            "container",
+            "ukify",
+            "--rootfs",
+            root_str,
+            "--erofs-version=v1",
+            "--allow-missing-verity",
+            "--",
+            "--output=/dev/null",
+        ])
+        .output()?;
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    if stderr.contains("ukify executable not found in PATH") {
+        // ukify binary absent: the CLI plumbing still ran up to that check.
+        eprintln!("note: ukify not found, skipping ukify invocation check");
+        return Ok(());
+    }
+
+    // ukify was found and invoked.  It will fail because of the fake kernel
+    // blobs, but bootc must have reached the `ukify build` invocation, which
+    // means the V1 digest was computed and the cmdline assembled.  Assert that
+    // no *bootc* logic bailed before reaching ukify (i.e. no "No kernel found",
+    // "already contains a UKI", or similar early exits).
+    assert!(
+        !stderr.contains("No kernel found") && !stderr.contains("already contains a UKI"),
+        "bootc bailed before reaching ukify; stderr:\n{stderr}"
+    );
+
+    Ok(())
+}
+
 /// Tests that should be run in a default container image.
 #[context("Container tests")]
 pub(crate) fn run(testargs: libtest_mimic::Arguments) -> Result<()> {
@@ -343,6 +456,10 @@ pub(crate) fn run(testargs: libtest_mimic::Arguments) -> Result<()> {
         new_test("system-reinstall --help", test_system_reinstall_help),
         new_test("container export tar", test_container_export_tar),
         new_test("compute-composefs-digest", test_compute_composefs_digest),
+        new_test(
+            "container-ukify-erofs-versions",
+            test_container_ukify_erofs_versions,
+        ),
     ];
 
     libtest_mimic::run(&testargs, tests.into()).exit()

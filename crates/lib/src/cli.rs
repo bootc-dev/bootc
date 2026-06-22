@@ -17,6 +17,7 @@ use clap::CommandFactory;
 use clap::Parser;
 use clap::ValueEnum;
 use composefs::dumpfile;
+use composefs::erofs::format::FormatVersion;
 use composefs::fsverity;
 use composefs::fsverity::FsVerityHashValue;
 use composefs_ctl::composefs;
@@ -404,6 +405,13 @@ pub(crate) enum ContainerOpts {
         /// Additionally generate a dumpfile written to the target path
         #[clap(long)]
         write_dumpfile_to: Option<Utf8PathBuf>,
+
+        /// EROFS format version to use when computing the composefs digest.
+        ///
+        /// V1 produces a `composefs.digest=v1-sha256-12:<hex>` karg (C-tool compatible).
+        /// V2 produces the legacy `composefs=<hex>` karg (composefs-rs native).
+        #[clap(long, default_value = "v2")]
+        erofs_version: ErofsVersionArg,
     },
     /// Output the bootable composefs digest from container storage.
     #[clap(hide = true)]
@@ -437,6 +445,14 @@ pub(crate) enum ContainerOpts {
         /// Make fs-verity validation optional in case the filesystem doesn't support it
         #[clap(long)]
         allow_missing_verity: bool,
+
+        /// EROFS format version to use when computing the composefs digest.
+        ///
+        /// V1 produces a `composefs.digest=v1-sha256-12:<hex>` karg (C-tool compatible).
+        /// V2 produces the legacy `composefs=<hex>` karg (composefs-rs native).
+        /// Must match the format version used when images were committed to the repository.
+        #[clap(hide = true, long, default_value = "v2")]
+        erofs_version: ErofsVersionArg,
 
         /// Write a dumpfile to this path
         #[clap(long)]
@@ -482,6 +498,24 @@ pub(crate) enum ContainerOpts {
         /// Path to the container filesystem root
         target: Utf8PathBuf,
     },
+}
+
+/// EROFS format version for `bootc container ukify --erofs-version`.
+#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
+pub(crate) enum ErofsVersionArg {
+    /// V1 EROFS (C-tool compatible, `composefs.digest=v1-sha256-12:<hex>` karg).
+    V1,
+    /// V2 EROFS (composefs-rs native, `composefs=` karg).  Default.
+    V2,
+}
+
+impl From<ErofsVersionArg> for FormatVersion {
+    fn from(v: ErofsVersionArg) -> Self {
+        match v {
+            ErofsVersionArg::V1 => FormatVersion::V1,
+            ErofsVersionArg::V2 => FormatVersion::V2,
+        }
+    }
 }
 
 #[derive(Debug, Clone, ValueEnum, PartialEq, Eq)]
@@ -1840,8 +1874,14 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
             ContainerOpts::ComputeComposefsDigest {
                 path,
                 write_dumpfile_to,
+                erofs_version,
             } => {
-                let digest = compute_composefs_digest(&path, write_dumpfile_to.as_deref()).await?;
+                let digest = compute_composefs_digest(
+                    &path,
+                    erofs_version.into(),
+                    write_dumpfile_to.as_deref(),
+                )
+                .await?;
                 println!("{digest}");
                 Ok(())
             }
@@ -1849,7 +1889,7 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
                 write_dumpfile_to,
                 image,
             } => {
-                let (_td_guard, repo) = new_temp_composefs_repo()?;
+                let (_td_guard, repo) = new_temp_composefs_repo(FormatVersion::V2)?;
 
                 let mut proxycfg = crate::deploy::new_proxy_config();
 
@@ -1892,7 +1932,7 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
                 )
                 .context("Populating fs")?;
                 fs.transform_for_boot(&repo).context("Preparing for boot")?;
-                let id = fs.compute_image_id();
+                let id = fs.compute_image_id(repo.erofs_version());
                 println!("{}", id.to_hex());
 
                 if let Some(path) = write_dumpfile_to.as_deref() {
@@ -1908,6 +1948,7 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
                 rootfs,
                 kargs,
                 allow_missing_verity,
+                erofs_version,
                 write_dumpfile_to,
                 kernel_dir,
                 args,
@@ -1940,6 +1981,7 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
                     &args,
                     kernel,
                     allow_missing_verity,
+                    erofs_version.into(),
                     write_dumpfile_to.as_deref(),
                 )
                 .await

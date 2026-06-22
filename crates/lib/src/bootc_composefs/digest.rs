@@ -10,7 +10,9 @@ use camino::Utf8Path;
 use cap_std_ext::cap_std;
 use cap_std_ext::cap_std::fs::Dir;
 use composefs::dumpfile;
-use composefs::fsverity::{Algorithm, FsVerityHashValue};
+use composefs::erofs::format::FormatVersion;
+use composefs::fsverity::FsVerityHashValue;
+use composefs::repository::RepositoryConfig;
 use composefs_boot::BootOps as _;
 use composefs_ctl::composefs;
 use composefs_ctl::composefs_boot;
@@ -20,21 +22,27 @@ use crate::store::ComposefsRepository;
 
 /// Creates a temporary composefs repository for computing digests.
 ///
+/// The `erofs_version` controls which EROFS format the digest is computed for:
+/// use `FormatVersion::V1` to get a `composefs.digest=v1-sha256-12:<hex>` karg (V1 EROFS,
+/// C-tool compatible) or `FormatVersion::V2` for the legacy `composefs=<hex>` karg.
+///
 /// Returns the TempDir guard (must be kept alive for the repo to remain valid)
 /// and the repository wrapped in Arc.
 #[fn_error_context::context("Creating new temp composefs repo")]
-pub(crate) fn new_temp_composefs_repo() -> Result<(TempDir, Arc<ComposefsRepository>)> {
+pub(crate) fn new_temp_composefs_repo(
+    erofs_version: FormatVersion,
+) -> Result<(TempDir, Arc<ComposefsRepository>)> {
     let td_guard = tempfile::tempdir_in("/var/tmp")?;
     let td_path = td_guard.path();
     let td_dir = Dir::open_ambient_dir(td_path, cap_std::ambient_authority())?;
 
     td_dir.create_dir("repo")?;
     let repo_dir = td_dir.open_dir("repo")?;
-    let (mut repo, _created) =
-        ComposefsRepository::init_path(&repo_dir, ".", Algorithm::SHA512, false)
-            .context("Init cfs repo")?;
     // We don't need to hard require verity on the *host* system, we're just computing a checksum here
-    repo.set_insecure();
+    let mut config = RepositoryConfig::new(composefs::fsverity::Algorithm::SHA512).set_insecure();
+    config.erofs_formats = composefs::erofs::format::FormatConfig::single(erofs_version);
+    let (repo, _created) =
+        ComposefsRepository::init_path(&repo_dir, ".", config).context("Init cfs repo")?;
     Ok((td_guard, Arc::new(repo)))
 }
 
@@ -58,13 +66,14 @@ pub(crate) fn new_temp_composefs_repo() -> Result<(TempDir, Arc<ComposefsReposit
 #[fn_error_context::context("Computing composefs digest")]
 pub(crate) async fn compute_composefs_digest(
     path: &Utf8Path,
+    erofs_version: FormatVersion,
     write_dumpfile_to: Option<&Utf8Path>,
 ) -> Result<String> {
     if path.as_str() == "/" {
         anyhow::bail!("Cannot operate on active root filesystem; mount separate target instead");
     }
 
-    let (_td_guard, repo) = new_temp_composefs_repo()?;
+    let (_td_guard, repo) = new_temp_composefs_repo(erofs_version)?;
 
     // Read filesystem from path, transform for boot, compute digest
     let dirfd: OwnedFd = rustix::fs::open(
@@ -81,7 +90,7 @@ pub(crate) async fn compute_composefs_digest(
     .await
     .context("Reading container root")?;
     fs.transform_for_boot(&repo).context("Preparing for boot")?;
-    let id = fs.compute_image_id();
+    let id = fs.compute_image_id(erofs_version);
     let digest = id.to_hex();
 
     if let Some(dumpfile_path) = write_dumpfile_to {
@@ -135,7 +144,9 @@ mod tests {
 
         // Compute the digest
         let path = Utf8Path::from_path(td.path()).unwrap();
-        let digest = compute_composefs_digest(path, None).await.unwrap();
+        let digest = compute_composefs_digest(path, FormatVersion::V2, None)
+            .await
+            .unwrap();
 
         // Verify it's a valid hex string of expected length (SHA-512 = 128 hex chars)
         assert_eq!(
@@ -150,7 +161,9 @@ mod tests {
         );
 
         // Verify consistency - computing twice on the same filesystem produces the same result
-        let digest2 = compute_composefs_digest(path, None).await.unwrap();
+        let digest2 = compute_composefs_digest(path, FormatVersion::V2, None)
+            .await
+            .unwrap();
         assert_eq!(
             digest, digest2,
             "Digest should be consistent across multiple computations"
@@ -159,7 +172,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_compute_composefs_digest_rejects_root() {
-        let result = compute_composefs_digest(Utf8Path::new("/"), None).await;
+        let result = compute_composefs_digest(Utf8Path::new("/"), FormatVersion::V2, None).await;
         assert!(result.is_err());
         let err = result.unwrap_err();
         let found = err.chain().any(|e| {

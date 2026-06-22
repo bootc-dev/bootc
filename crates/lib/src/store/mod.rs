@@ -111,6 +111,7 @@ use ostree_ext::{gio, ostree};
 use rustix::fs::Mode;
 
 use composefs::fsverity::Sha512HashValue;
+use composefs::repository::{RepositoryConfig, RepositoryOpenError};
 use composefs_ctl::composefs;
 
 use crate::bootc_composefs::backwards_compat::bcompat_boot::prepend_custom_prefix;
@@ -618,16 +619,42 @@ impl Storage {
         let ostree = self.get_ostree()?;
         let ostree_repo = &ostree.repo();
         let ostree_verity = ostree_ext::fsverity::is_verity_enabled(ostree_repo)?;
-        let (mut composefs, _created) = ComposefsRepository::init_path(
-            self.physical_root.open_dir(COMPOSEFS)?,
-            ".",
-            composefs::fsverity::Algorithm::SHA512,
-            ostree_verity.enabled,
-        )?;
         if !ostree_verity.enabled {
             tracing::debug!("Setting insecure mode for composefs repo");
-            composefs.set_insecure();
         }
+
+        // This is a runtime open-or-create path: the repository was almost
+        // always already initialized at install time, with a format
+        // (V2_ONLY or BOTH) chosen then.  init_path() asserts that the
+        // requested config exactly matches the on-disk meta.json, so a
+        // static config here would fail to open repos created with the
+        // other format.  Prefer open_path(), which adopts whatever format
+        // is on disk, and only fall back to init_path() (with BOTH, to
+        // match the install path) when the repository does not yet exist.
+        let composefs_dir = self.physical_root.open_dir(COMPOSEFS)?;
+        let composefs = match ComposefsRepository::open_path(&composefs_dir, ".") {
+            Ok(mut repo) => {
+                if !ostree_verity.enabled {
+                    repo.set_insecure();
+                }
+                repo
+            }
+            Err(RepositoryOpenError::MetadataMissing) => {
+                let mut config = RepositoryConfig::new(composefs::fsverity::Algorithm::SHA512);
+                config.erofs_formats = composefs::erofs::format::FormatConfig {
+                    default: composefs::erofs::format::FormatVersion::V1,
+                    extra: [composefs::erofs::format::FormatVersion::V2].into(),
+                };
+                let config = if !ostree_verity.enabled {
+                    config.set_insecure()
+                } else {
+                    config
+                };
+                let (repo, _created) = ComposefsRepository::init_path(&composefs_dir, ".", config)?;
+                repo
+            }
+            Err(e) => return Err(e.into()),
+        };
         let composefs = Arc::new(composefs);
         let r = Arc::clone(self.composefs.get_or_init(|| composefs));
         Ok(r)

@@ -75,7 +75,16 @@ rm -vrf /usr/lib/bootc/bound-images.d
 "
 }
 
-export def make_uki_containerfile [containerfile: string] {
+# Append UKI-sealing stages to a Containerfile string.
+#
+# On non-composefs or non-UKI systems the input is returned unchanged.
+# erofs_version controls which EROFS format the composefs digest is computed
+# in: "v1" produces a composefs.digest=v1-sha256-12:<hex> karg (RHEL9-compatible),
+# "v2" (default) produces the legacy composefs=<hex> karg.
+export def make_uki_containerfile [
+    containerfile: string
+    --erofs-version: string = "v2"
+] {
     let is_cfs = (is_composefs)
 
     if not $is_cfs {
@@ -100,7 +109,7 @@ export def make_uki_containerfile [containerfile: string] {
         FROM base as sealed-uki
         RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \\
             --mount=type=bind,from=base-final,src=/,target=/run/target \\
-            /usr/bin/seal-uki /run/target /out /run/secrets ($allow_missing_verity) ($seal_state)
+            /usr/bin/seal-uki /run/target /out /run/secrets ($allow_missing_verity) ($seal_state) ($erofs_version)
 
         FROM base-final
 

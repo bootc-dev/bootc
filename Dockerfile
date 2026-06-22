@@ -277,6 +277,7 @@ ARG variant
 ARG filesystem
 ARG seal_state
 ARG boot_type
+ARG erofs_version=v2
 # Install our bootc package (only needed for the compute-composefs-digest command)
 RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
     --mount=type=bind,from=packages,src=/,target=/run/packages \
@@ -295,7 +296,7 @@ if [[ $filesystem == "xfs" ]]; then
 fi
 
 if test "${boot_type}" = "uki"; then
-  /run/packaging/seal-uki /run/target /out /run/secrets $allow_missing_verity $seal_state
+  /run/packaging/seal-uki /run/target /out /run/secrets $allow_missing_verity $seal_state $erofs_version
 fi
 EORUN
 

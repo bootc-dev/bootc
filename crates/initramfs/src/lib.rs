@@ -28,7 +28,7 @@ use composefs::{
     mountcompat::{overlayfs_set_fd, overlayfs_set_lower_and_data_fds, prepare_mount},
     repository::Repository,
 };
-use composefs_boot::cmdline::get_cmdline_composefs;
+use composefs_boot::cmdline::ComposefsCmdline;
 use composefs_ctl::composefs;
 use composefs_ctl::composefs_boot;
 
@@ -463,11 +463,17 @@ pub fn setup_root(args: Args) -> Result<()> {
         config
     };
 
-    let (image, insecure) = get_cmdline_composefs::<Sha512HashValue>(&cmdline)?;
+    let composefs_info = ComposefsCmdline::<Sha512HashValue>::from_cmdline(&cmdline)
+        .context("Failed to parse composefs cmdline")?
+        .ok_or_else(|| anyhow::anyhow!("No composefs image in cmdline"))?;
 
     let new_root = match &args.root_fs {
         Some(path) => open_root_fs(path).context("Failed to clone specified root fs")?,
-        None => mount_composefs_image(&sysroot, &image.to_hex(), insecure)?,
+        None => mount_composefs_image(
+            &sysroot,
+            &composefs_info.digest().to_hex(),
+            composefs_info.is_insecure(),
+        )?,
     };
 
     // we need to clone this before the next step to make sure we get the old one
@@ -497,7 +503,7 @@ pub fn setup_root(args: Args) -> Result<()> {
     let transient_overlay_fd: Option<OwnedFd> = if config.root.transient {
         let overlay_fd = overlay_transient(
             &new_root,
-            &format!("transient:composefs={}", image.to_hex()),
+            &format!("transient:composefs={}", composefs_info.digest().to_hex()),
             None,
         )?;
 
@@ -533,7 +539,10 @@ pub fn setup_root(args: Args) -> Result<()> {
     }
 
     // etc + var
-    let state = open_dir(open_dir(&sysroot, "state/deploy")?, image.to_hex())?;
+    let state = open_dir(
+        open_dir(&sysroot, "state/deploy")?,
+        composefs_info.digest().to_hex(),
+    )?;
     mount_subdir(visible_root, &state, "etc", config.etc, MountType::Bind)?;
     // /var is bind-mounted from the deployment state directory by default.
     // The systemd.volatile=state cmdline detection above (or an explicit

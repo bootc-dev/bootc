@@ -15,6 +15,9 @@ allow_missing_verity=$1
 shift
 seal_state=$1
 shift
+# EROFS format version to pass to bootc container ukify (optional, default: v2)
+erofs_version=${1:-v2}
+shift || true
 
 if [[ $seal_state == "sealed" && $allow_missing_verity == "true" ]]; then
     echo "Cannot have missing verity with sealed UKI" >&2
@@ -53,4 +56,4 @@ fi
 
 # Build the UKI using bootc container ukify
 # This computes the composefs digest, reads kargs from kargs.d, and invokes ukify
-bootc container ukify "${containerukifyargs[@]}" "${missing_verity[@]}" -- "${ukifyargs[@]}"
+bootc container ukify "${containerukifyargs[@]}" "${missing_verity[@]}" --erofs-version="${erofs_version}" -- "${ukifyargs[@]}"

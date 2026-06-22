@@ -3,7 +3,8 @@ use std::{io::Read, sync::OnceLock};
 use anyhow::{Context, Result};
 use bootc_kernel_cmdline::utf8::Cmdline;
 use bootc_mount::inspect_filesystem;
-use composefs_ctl::composefs::fsverity::Sha512HashValue;
+use composefs_ctl::composefs::fsverity::{FsVerityHashValue, Sha512HashValue};
+use composefs_ctl::composefs_boot::cmdline::ComposefsCmdline as BootComposefsCmdline;
 use composefs_ctl::composefs_oci;
 use composefs_oci::OciImage;
 use fn_error_context::context;
@@ -95,15 +96,16 @@ impl ComposefsCmdline {
         }
     }
 
-    /// Search for the `composefs=` parameter in the passed in kernel command line
+    /// Search for `composefs=` (V2) or `composefs.digest=` (V1) in the kernel
+    /// command line.  Delegates to the composefs-boot library which handles
+    /// both formats, extracting the raw hex hash in either case.
     pub(crate) fn find_in_cmdline(cmdline: &Cmdline) -> Option<Self> {
-        match cmdline.find(COMPOSEFS_CMDLINE) {
-            Some(param) => {
-                let value = param.value()?;
-                Some(Self::new(value))
-            }
-            None => None,
-        }
+        let parsed = BootComposefsCmdline::<Sha512HashValue>::from_cmdline(cmdline).ok()??;
+        Some(ComposefsCmdline {
+            allow_missing_fsverity: parsed.is_insecure(),
+            digest: parsed.digest().to_hex().into(),
+            is_transient: false,
+        })
     }
 }
 
@@ -149,18 +151,17 @@ pub(crate) struct BootloaderEntry {
     pub(crate) boot_artifact_name: String,
 }
 
-/// Detect if we have `composefs=<digest>` in `/proc/cmdline`
+/// Detect if we have `composefs=<digest>` or `composefs.digest=<tag>:<digest>`
+/// in `/proc/cmdline`.
 pub(crate) fn composefs_booted() -> Result<Option<&'static ComposefsCmdline>> {
     static CACHED_DIGEST_VALUE: OnceLock<Option<ComposefsCmdline>> = OnceLock::new();
     if let Some(v) = CACHED_DIGEST_VALUE.get() {
         return Ok(v.as_ref());
     }
     let cmdline = Cmdline::from_proc()?;
-    let Some(kv) = cmdline.find(COMPOSEFS_CMDLINE) else {
+    let Some(v) = ComposefsCmdline::find_in_cmdline(&cmdline) else {
         return Ok(None);
     };
-    let Some(v) = kv.value() else { return Ok(None) };
-    let v = ComposefsCmdline::new(v);
 
     // Find the source of / mountpoint as the cmdline doesn't change on soft-reboot
     let root_mnt = inspect_filesystem("/".into())?;
@@ -1172,7 +1173,8 @@ mod tests {
 
     #[test]
     fn test_find_in_cmdline() {
-        const DIGEST: &str = "8b7df143d91c716ecfa5fc1730022f6b421b05cedee8fd52b1fc65a96030ad52";
+        // Must be 128 hex chars (SHA-512) to match Sha512HashValue
+        const DIGEST: &str = "8b7df143d91c716ecfa5fc1730022f6b421b05cedee8fd52b1fc65a96030ad528b7df143d91c716ecfa5fc1730022f6b421b05cedee8fd52b1fc65a96030ad52";
 
         // Test case: cmdline contains composefs parameter
         let cmdline = Cmdline::from(format!("root=UUID=abc123 rw composefs={}", DIGEST));
