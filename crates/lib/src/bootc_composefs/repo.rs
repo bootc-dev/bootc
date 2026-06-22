@@ -41,6 +41,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 
 use composefs::fsverity::{FsVerityHashValue, Sha512HashValue};
+use composefs::repository::RepositoryConfig;
 use composefs_boot::bootloader::{BootEntry as ComposefsBootEntry, get_boot_resources};
 use composefs_ctl::composefs;
 use composefs_ctl::composefs_boot;
@@ -99,16 +100,15 @@ pub(crate) async fn initialize_composefs_repository(
 
     crate::store::ensure_composefs_dir(rootfs_dir)?;
 
-    let (mut repo, _created) = crate::store::ComposefsRepository::init_path(
-        rootfs_dir,
-        "composefs",
-        composefs::fsverity::Algorithm::SHA512,
-        !allow_missing_fsverity,
-    )
-    .context("Failed to initialize composefs repository")?;
-    if allow_missing_fsverity {
-        repo.set_insecure();
-    }
+    let config = RepositoryConfig::new(composefs::fsverity::Algorithm::SHA512);
+    let config = if allow_missing_fsverity {
+        config.set_insecure()
+    } else {
+        config
+    };
+    let (repo, _created) =
+        crate::store::ComposefsRepository::init_path(rootfs_dir, "composefs", config)
+            .context("Failed to initialize composefs repository")?;
 
     let imgref: containers_image_proxy::ImageReference = state
         .source
