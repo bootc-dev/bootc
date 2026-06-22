@@ -11,6 +11,7 @@ use cap_std_ext::cap_std;
 use cap_std_ext::cap_std::fs::Dir;
 use composefs::dumpfile;
 use composefs::fsverity::{Algorithm, FsVerityHashValue};
+use composefs::repository::RepositoryConfig;
 use composefs_boot::BootOps as _;
 use composefs_ctl::composefs;
 use composefs_ctl::composefs_boot;
@@ -30,11 +31,10 @@ pub(crate) fn new_temp_composefs_repo() -> Result<(TempDir, Arc<ComposefsReposit
 
     td_dir.create_dir("repo")?;
     let repo_dir = td_dir.open_dir("repo")?;
-    let (mut repo, _created) =
-        ComposefsRepository::init_path(&repo_dir, ".", Algorithm::SHA512, false)
-            .context("Init cfs repo")?;
     // We don't need to hard require verity on the *host* system, we're just computing a checksum here
-    repo.set_insecure();
+    let config = RepositoryConfig::new(Algorithm::SHA512).set_insecure();
+    let (repo, _created) =
+        ComposefsRepository::init_path(&repo_dir, ".", config).context("Init cfs repo")?;
     Ok((td_guard, Arc::new(repo)))
 }
 
@@ -81,7 +81,7 @@ pub(crate) async fn compute_composefs_digest(
     .await
     .context("Reading container root")?;
     fs.transform_for_boot(&repo).context("Preparing for boot")?;
-    let id = fs.compute_image_id();
+    let id = fs.compute_image_id(repo.erofs_version());
     let digest = id.to_hex();
 
     if let Some(dumpfile_path) = write_dumpfile_to {

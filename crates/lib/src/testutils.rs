@@ -10,6 +10,7 @@ use anyhow::{Context, Result};
 use cap_std_ext::cap_std::{self, fs::Dir};
 use cap_std_ext::cap_tempfile;
 use cap_std_ext::dirext::CapStdExtDirExt;
+use composefs_ctl::composefs::repository::RepositoryConfig;
 
 use crate::bootc_composefs::boot::{
     FILENAME_PRIORITY_PRIMARY, FILENAME_PRIORITY_SECONDARY, get_type1_dir_name, primary_sort_key,
@@ -164,14 +165,10 @@ impl TestRoot {
 
         // Initialize the composefs repo (creates meta.json)
         let repo_dir = root.open_dir("composefs")?;
-        let (mut repo, _created) = ComposefsRepository::init_path(
-            &repo_dir,
-            ".",
-            composefs_ctl::composefs::fsverity::Algorithm::SHA512,
-            false,
-        )
-        .context("Initializing composefs repo")?;
-        repo.set_insecure();
+        let config = RepositoryConfig::new(composefs_ctl::composefs::fsverity::Algorithm::SHA512)
+            .set_insecure();
+        let (repo, _created) = ComposefsRepository::init_path(&repo_dir, ".", config)
+            .context("Initializing composefs repo")?;
 
         let mut test_root = Self {
             root,

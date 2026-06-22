@@ -1896,7 +1896,7 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
                 )
                 .context("Populating fs")?;
                 fs.transform_for_boot(&repo).context("Preparing for boot")?;
-                let id = fs.compute_image_id();
+                let id = fs.compute_image_id(repo.erofs_version());
                 println!("{}", id.to_hex());
 
                 if let Some(path) = write_dumpfile_to.as_deref() {

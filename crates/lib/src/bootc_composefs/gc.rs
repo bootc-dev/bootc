@@ -402,7 +402,7 @@ pub(crate) async fn composefs_gc(
                         ref_digest,
                         None,
                     ) {
-                        if let Some(img_ref) = img.image_ref() {
+                        if let Some(img_ref) = img.image_ref(booted_cfs.repo.erofs_version()) {
                             if img_ref.to_hex() == *verity {
                                 tracing::info!(
                                     "Deployment {verity} has no manifest_digest in origin; \

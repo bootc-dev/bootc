@@ -82,7 +82,9 @@ use composefs_boot::bootloader::{
     BootEntry as ComposefsBootEntry, EFI_ADDON_DIR_EXT, EFI_ADDON_FILE_EXT, EFI_EXT, PEType,
     UsrLibModulesVmlinuz, get_boot_resources,
 };
-use composefs_boot::{cmdline::get_cmdline_composefs, os_release::OsReleaseInfo, uki};
+use composefs_boot::{
+    cmdline::ComposefsCmdline as ComposefsBootCmdline, os_release::OsReleaseInfo, uki,
+};
 use composefs_ctl::composefs;
 use composefs_ctl::composefs_boot;
 use composefs_ctl::composefs_oci;
@@ -810,8 +812,11 @@ fn write_pe_to_esp(
     if matches!(pe_type, PEType::Uki) {
         let cmdline = uki::get_cmdline_buffered(&mut uki_reader).context("Getting UKI cmdline")?;
 
-        let (composefs_cmdline, missing_verity_allowed_cmdline) =
-            get_cmdline_composefs::<Sha512HashValue>(&cmdline).context("Parsing composefs=")?;
+        let composefs_info = ComposefsBootCmdline::<Sha512HashValue>::from_cmdline(&cmdline)
+            .context("Parsing composefs=")?
+            .ok_or_else(|| anyhow::anyhow!("No composefs image in UKI cmdline"))?;
+        let composefs_cmdline = composefs_info.digest();
+        let missing_verity_allowed_cmdline = composefs_info.is_insecure();
 
         // If the UKI cmdline does not match what the user has passed as cmdline option
         // NOTE: This will only be checked for new installs and now upgrades/switches
@@ -829,7 +834,7 @@ fn write_pe_to_esp(
             _ => { /* no-op */ }
         }
 
-        if composefs_cmdline != *uki_id {
+        if *composefs_cmdline != *uki_id {
             anyhow::bail!(
                 "The UKI has the wrong composefs= parameter (is '{composefs_cmdline:?}', should be {uki_id:?})"
             );
