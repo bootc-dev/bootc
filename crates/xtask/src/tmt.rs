@@ -617,6 +617,9 @@ fn run_plan(
     // Log disk usage after each test run to help diagnose "no space left on device" failures
     println!("Disk usage after plan {}:", plan);
     let _ = cmd!(sh, "df -h").run();
+    let script = r#"find /var/tmp/tmt -type d -name target -exec rm -rf {} \;"#;
+    let _ = cmd!(sh, "sh -c {script}").run();
+    println!("==========================================");
 
     // Clean up VM regardless of test result (unless --preserve-vm is set)
     cleanup_vm();
