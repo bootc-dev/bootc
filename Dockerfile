@@ -156,6 +156,17 @@ RUN --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
     --mount=type=bind,from=packaging,src=/,target=/run/packaging \
     /run/packaging/initialize-sealing-tools
 
+# Build the Rust composefs C-API shared library from composefs-rs.
+# This replaces the C libcomposefs.so in the target container.
+FROM buildroot as composefs-capi
+RUN --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
+    --mount=type=cache,target=/composefs-rs/target --mount=type=cache,target=/var/roothome <<EORUN
+set -xeuo pipefail
+git clone --depth=1 -b cdynlib https://github.com/giuseppe/composefs-rs.git /composefs-rs/src
+cd /composefs-rs/src
+make install-capi DESTDIR=/out PREFIX=/usr LIBDIR=/usr/lib64
+EORUN
+
 # -------------
 # external dependency cutoff point:
 # NOTE: Every RUN instruction past this point should use `--network=none`; we want to ensure
@@ -304,6 +315,15 @@ RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp
     --mount=type=bind,from=packaging,src=/,target=/run/packaging \
     --mount=type=bind,from=packages,src=/,target=/run/packages \
     /run/packaging/install-rpm-and-setup /run/packages
+# Replace C libcomposefs.so with Rust composefs-capi
+RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
+    --mount=type=bind,from=composefs-capi,src=/out,target=/run/composefs-capi <<EORUN
+set -xeuo pipefail
+rm -f /usr/lib64/libcomposefs.so*
+cp -a /run/composefs-capi/usr/lib64/libcomposefs.so* /usr/lib64/
+ldconfig
+echo "Replaced C libcomposefs with Rust composefs-capi"
+EORUN
 RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
     --mount=type=bind,from=packaging,src=/usr-extras,target=/run/usr-extras \
     install -D -m 0644 -t /usr/lib/bootc/kargs.d /run/usr-extras/lib/bootc/kargs.d/*.toml
