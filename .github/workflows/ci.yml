@@ -184,6 +184,8 @@ jobs:
         test_os: ${{ fromJson(needs.compute-ci-level.outputs.package_os_matrix) }}
 
     runs-on: ubuntu-24.04
+    # Rawhide is best-effort; don't let it block merges
+    continue-on-error: ${{ matrix.test_os == 'fedora-45' }}
 
     steps:
       - uses: actions/checkout@v7
