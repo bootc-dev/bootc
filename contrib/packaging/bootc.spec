@@ -112,8 +112,13 @@ cat vendor-config.toml >> .cargo/config.toml
 rm vendor-config.toml
 %else
 # Container build: source already at _builddir (/src), nothing to extract
-# RPM's %mkbuilddir creates a subdirectory; symlink it back to the source
+# RPM's %mkbuilddir creates a subdirectory; symlink it back to the source.
+# F45+ RPM also creates rpmbuild.env in the subdir that %build will source,
+# so preserve it before replacing the directory with a symlink.
 cd ..
+if [ -f %{name}-%{version}-build/rpmbuild.env ]; then
+    mv %{name}-%{version}-build/rpmbuild.env .
+fi
 rm -rf %{name}-%{version}-build
 ln -s . %{name}-%{version}-build
 cd %{name}-%{version}-build
