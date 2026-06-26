@@ -29,7 +29,7 @@ use crate::bootc_composefs::boot::BootType;
 use crate::bootc_composefs::status::{
     ComposefsCmdline, StagedDeployment, get_sorted_type1_boot_entries,
 };
-use crate::parsers::bls_config::BLSConfigType;
+use crate::parsers::bls_config::{BLSConfigType, EFIKey};
 use crate::store::{BootedComposefs, Storage};
 use crate::{
     composefs_consts::{
@@ -69,8 +69,11 @@ pub(crate) fn get_booted_bls(boot_dir: &Dir, booted_cfs: &BootedComposefs) -> Re
 
     for entry in sorted_entries {
         match &entry.cfg_type {
-            BLSConfigType::EFI { efi } => {
-                if efi.as_str().contains(&*booted_cfs.cmdline.digest) {
+            BLSConfigType::EFI { key } => {
+                let path = match key {
+                    EFIKey::Efi(path) | EFIKey::Uki(path) => path,
+                };
+                if path.as_str().contains(&*booted_cfs.cmdline.digest) {
                     return Ok(entry);
                 }
             }

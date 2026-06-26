@@ -16,7 +16,7 @@ use crate::{
         ORIGIN_KEY_BOOT, ORIGIN_KEY_BOOT_TYPE, STATE_DIR_RELATIVE, TYPE1_BOOT_DIR_PREFIX,
         TYPE1_ENT_PATH_STAGED, UKI_NAME_PREFIX, USER_CFG_STAGED,
     },
-    parsers::bls_config::{BLSConfig, BLSConfigType},
+    parsers::bls_config::{BLSConfig, BLSConfigType, EFIKey},
     spec::BootloaderKind,
     store::Storage,
 };
@@ -214,12 +214,16 @@ fn stage_bls_entry_changes(
                     .collect();
             }
 
-            BLSConfigType::EFI { efi, .. } => {
+            BLSConfigType::EFI { key, .. } => {
                 // boot_dir in case of UKI is the ESP
                 plan_efi_binary_renames(&boot_dir, &digest, &mut rename_transaction)?;
-                *efi = Utf8PathBuf::from("/")
+                let new_path = Utf8PathBuf::from("/")
                     .join(BOOTC_UKI_DIR)
                     .join(get_uki_name(&digest));
+                *key = match key {
+                    EFIKey::Efi(_) => EFIKey::Efi(new_path),
+                    EFIKey::Uki(_) => EFIKey::Uki(new_path),
+                };
             }
 
             _ => anyhow::bail!("Unknown BLS config type"),

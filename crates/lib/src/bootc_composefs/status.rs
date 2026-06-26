@@ -22,7 +22,7 @@ use crate::{
     },
     install::EFI_LOADER_INFO,
     parsers::{
-        bls_config::{BLSConfig, BLSConfigType, parse_bls_config},
+        bls_config::{BLSConfig, BLSConfigType, EFIKey, parse_bls_config},
         grub_menuconfig::{MenuEntry, parse_grub_menuentry_file},
     },
     spec::{BootEntry, BootOrder, BootloaderKind, Host, HostSpec, ImageStatus},
@@ -980,8 +980,11 @@ async fn composefs_deployment_status_from(
 
             let is_rollback_queued = match &bls_config.cfg_type {
                 // For UKI boot
-                BLSConfigType::EFI { efi } => {
-                    efi.as_str().contains(booted_composefs_digest.as_ref())
+                BLSConfigType::EFI { key } => {
+                    let path = match key {
+                        EFIKey::Efi(path) | EFIKey::Uki(path) => path,
+                    };
+                    path.as_str().contains(booted_composefs_digest.as_ref())
                 }
 
                 // For boot entry Type1

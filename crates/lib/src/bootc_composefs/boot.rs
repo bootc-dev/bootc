@@ -95,7 +95,7 @@ use crate::bootc_composefs::state::{get_booted_bls, write_composefs_state};
 use crate::bootc_composefs::status::ComposefsCmdline;
 use crate::bootc_kargs::compute_new_kargs;
 use crate::composefs_consts::{TYPE1_BOOT_DIR_PREFIX, TYPE1_ENT_PATH, TYPE1_ENT_PATH_STAGED};
-use crate::parsers::bls_config::{BLSConfig, BLSConfigType};
+use crate::parsers::bls_config::{BLSConfig, BLSConfigType, EFIKey};
 use crate::spec::BootloaderKind;
 use crate::task::Task;
 use crate::{bootc_composefs::repo::open_composefs_repo, store::Storage};
@@ -997,6 +997,7 @@ fn write_systemd_uki_config(
     setup_type: &BootSetupType,
     boot_label: UKIInfo,
     id: &Sha512HashValue,
+    bootloader: &Bootloader,
 ) -> Result<()> {
     let os_id = boot_label.os_id.as_deref().unwrap_or("bootc");
     let primary_sort_key = primary_sort_key(os_id);
@@ -1005,7 +1006,10 @@ fn write_systemd_uki_config(
     bls_conf
         .with_title(boot_label.boot_label)
         .with_cfg(BLSConfigType::EFI {
-            efi: format!("/{BOOTC_UKI_DIR}/{}", get_uki_name(&id.to_hex())).into(),
+            key: EFIKey::for_bootloader(
+                format!("/{BOOTC_UKI_DIR}/{}", get_uki_name(&id.to_hex())).into(),
+                bootloader,
+            ),
         })
         .with_sort_key(primary_sort_key.clone())
         .with_version(boot_label.version.unwrap_or_else(|| id.to_hex()));
@@ -1169,7 +1173,7 @@ pub(crate) fn setup_composefs_uki_boot(
         }
 
         BootloaderKind::BLSCompatible => {
-            write_systemd_uki_config(&esp_mount.fd, &setup_type, uki_info, id)?
+            write_systemd_uki_config(&esp_mount.fd, &setup_type, uki_info, id, &bootloader)?
         }
     };
 

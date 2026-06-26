@@ -13,13 +13,46 @@ use std::fmt::Display;
 use uapi_version::Version;
 
 use crate::bootc_composefs::status::ComposefsCmdline;
+use crate::bootloader::bootctl_systemd_version;
 use crate::composefs_consts::{TYPE1_BOOT_DIR_PREFIX, UKI_NAME_PREFIX};
+use crate::spec::Bootloader;
+
+/// First systemd release that supports UKI without the `efi` prefix
+const SYSTEMD_UKI_MIN_VERSION: u32 = 258;
+
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub enum EFIKey {
+    /// Relates to 'efi' key in BLSConfig file
+    Efi(Utf8PathBuf),
+    /// Relates to 'uki' key in BLSConfig file
+    Uki(Utf8PathBuf),
+}
+
+impl EFIKey {
+    /// Create an EFIKey with the appropriate variant based on bootloader and systemd version
+    ///
+    /// For GrubCC: always use "uki"
+    /// For systemd version >= SYSTEMD_UKI_MIN_VERSION use "uki" otherwise uses "efi"
+    pub(crate) fn for_bootloader(path: Utf8PathBuf, bootloader: &Bootloader) -> EFIKey {
+        if *bootloader == Bootloader::GrubCC {
+            // GrubCC doesn't support 'uki' key right now
+            // See: https://github.com/bootc-dev/bootc/issues/2268
+            EFIKey::Efi(path)
+        } else {
+            // Check systemd version for non-GrubCC bootloaders
+            match bootctl_systemd_version() {
+                Ok(version) if version >= SYSTEMD_UKI_MIN_VERSION => EFIKey::Uki(path),
+                _ => EFIKey::Efi(path),
+            }
+        }
+    }
+}
 
 #[derive(Debug, PartialEq, Eq, Default, Clone)]
 pub enum BLSConfigType {
     EFI {
         /// The path to the EFI binary, usually a UKI
-        efi: Utf8PathBuf,
+        key: EFIKey,
     },
     NonEFI {
         /// The path to the linux kernel to boot.
@@ -102,9 +135,10 @@ impl Display for BLSConfig {
         writeln!(f, "version {}", self.version)?;
 
         match &self.cfg_type {
-            BLSConfigType::EFI { efi } => {
-                writeln!(f, "efi {}", efi)?;
-            }
+            BLSConfigType::EFI { key } => match key {
+                EFIKey::Efi(path) => writeln!(f, "efi {}", path)?,
+                EFIKey::Uki(path) => writeln!(f, "uki {}", path)?,
+            },
 
             BLSConfigType::NonEFI {
                 linux,
@@ -176,8 +210,11 @@ impl BLSConfig {
     /// For Non-EFI BLS entries, this returns the fs-verity digest in the "options" field
     pub(crate) fn get_verity(&self) -> Result<String> {
         match &self.cfg_type {
-            BLSConfigType::EFI { efi } => {
-                let name = efi
+            BLSConfigType::EFI { key } => {
+                let path = match key {
+                    EFIKey::Efi(path) | EFIKey::Uki(path) => path,
+                };
+                let name = path
                     .components()
                     .last()
                     .ok_or(anyhow::anyhow!("Empty efi field"))?
@@ -224,10 +261,13 @@ impl BLSConfig {
     /// The second value is a boolean indicating whether it found our custom prefix or not
     pub(crate) fn boot_artifact_info(&self) -> Result<(&str, bool)> {
         match &self.cfg_type {
-            BLSConfigType::EFI { efi } => {
-                let file_name = efi
+            BLSConfigType::EFI { key } => {
+                let path = match key {
+                    EFIKey::Efi(path) | EFIKey::Uki(path) => path,
+                };
+                let file_name = path
                     .file_name()
-                    .ok_or_else(|| anyhow::anyhow!("EFI path missing file name: {}", efi))?;
+                    .ok_or_else(|| anyhow::anyhow!("EFI path missing file name: {}", path))?;
 
                 let without_suffix = file_name.strip_suffix(EFI_EXT).ok_or_else(|| {
                     anyhow::anyhow!(
@@ -288,7 +328,7 @@ pub(crate) fn parse_bls_config(input: &str) -> Result<BLSConfig> {
     let mut title = None;
     let mut version = None;
     let mut linux = None;
-    let mut efi = None;
+    let mut efi_key = None;
     let mut initrd = Vec::new();
     let mut options = None;
     let mut machine_id = None;
@@ -311,7 +351,8 @@ pub(crate) fn parse_bls_config(input: &str) -> Result<BLSConfig> {
                 "options" => options = Some(CmdlineOwned::from(value)),
                 "machine-id" => machine_id = Some(value),
                 "sort-key" => sort_key = Some(value),
-                "efi" => efi = Some(Utf8PathBuf::from(value)),
+                "efi" => efi_key = Some(EFIKey::Efi(Utf8PathBuf::from(value))),
+                "uki" => efi_key = Some(EFIKey::Uki(Utf8PathBuf::from(value))),
                 _ => {
                     extra.insert(key.to_string(), value);
                 }
@@ -321,8 +362,8 @@ pub(crate) fn parse_bls_config(input: &str) -> Result<BLSConfig> {
 
     let version = version.ok_or_else(|| anyhow!("Missing 'version' value"))?;
 
-    let cfg_type = match (linux, efi) {
-        (None, Some(efi)) => BLSConfigType::EFI { efi },
+    let cfg_type = match (linux, efi_key) {
+        (None, Some(key)) => BLSConfigType::EFI { key },
 
         (Some(linux), None) => BLSConfigType::NonEFI {
             linux,
@@ -331,9 +372,9 @@ pub(crate) fn parse_bls_config(input: &str) -> Result<BLSConfig> {
         },
 
         // The spec makes no mention of whether both can be present or not
-        // Fow now, for us, we won't have both at the same time
-        (Some(_), Some(_)) => anyhow::bail!("'linux' and 'efi' values present"),
-        (None, None) => anyhow::bail!("Missing 'linux' or 'efi' value"),
+        // For now, for us, we won't have both at the same time
+        (Some(_), Some(_)) => anyhow::bail!("'linux' and 'efi'/'uki' values present"),
+        (None, None) => anyhow::bail!("Missing 'linux', 'efi', or 'uki' value"),
     };
 
     Ok(BLSConfig {
@@ -653,7 +694,9 @@ mod tests {
 
         let efi_path = Utf8PathBuf::from("bootc_composefs-abcd1234.efi");
         let config = BLSConfig {
-            cfg_type: BLSConfigType::EFI { efi: efi_path },
+            cfg_type: BLSConfigType::EFI {
+                key: EFIKey::Efi(efi_path),
+            },
             version: "1".to_string(),
             ..Default::default()
         };
@@ -689,7 +732,9 @@ mod tests {
 
         let efi_path = Utf8PathBuf::from("/EFI/Linux/abcd1234.efi");
         let config = BLSConfig {
-            cfg_type: BLSConfigType::EFI { efi: efi_path },
+            cfg_type: BLSConfigType::EFI {
+                key: EFIKey::Efi(efi_path),
+            },
             version: "1".to_string(),
             ..Default::default()
         };
@@ -706,7 +751,9 @@ mod tests {
 
         let efi_path = Utf8PathBuf::from("bootc_composefs-abcd1234");
         let config = BLSConfig {
-            cfg_type: BLSConfigType::EFI { efi: efi_path },
+            cfg_type: BLSConfigType::EFI {
+                key: EFIKey::Efi(efi_path),
+            },
             version: "1".to_string(),
             ..Default::default()
         };
@@ -727,7 +774,9 @@ mod tests {
 
         let efi_path = Utf8PathBuf::from("/");
         let config = BLSConfig {
-            cfg_type: BLSConfigType::EFI { efi: efi_path },
+            cfg_type: BLSConfigType::EFI {
+                key: EFIKey::Efi(efi_path),
+            },
             version: "1".to_string(),
             ..Default::default()
         };
@@ -763,7 +812,9 @@ mod tests {
     fn test_boot_artifact_name_efi_nested_path() -> Result<()> {
         let efi_path = Utf8PathBuf::from("/EFI/Linux/bootc/bootc_composefs-deadbeef01234567.efi");
         let config = BLSConfig {
-            cfg_type: BLSConfigType::EFI { efi: efi_path },
+            cfg_type: BLSConfigType::EFI {
+                key: EFIKey::Efi(efi_path),
+            },
             version: "1".to_string(),
             ..Default::default()
         };
@@ -795,6 +846,7 @@ mod tests {
     #[test]
     fn test_boot_artifact_name_from_parsed_efi_config() -> Result<()> {
         let digest = "f7415d75017a12a387a39d2281e033a288fc15775108250ef70a01dcadb93346";
+        // Test 'efi' key
         let input = format!(
             r#"
             title Fedora UKI
@@ -807,6 +859,12 @@ mod tests {
         let config = parse_bls_config(&input)?;
         assert_eq!(config.boot_artifact_name()?, digest);
         assert_eq!(config.get_verity()?, digest);
+
+        let uki_input = input.replace("efi ", "uki ");
+        let config = parse_bls_config(&uki_input)?;
+        assert_eq!(config.boot_artifact_name()?, digest);
+        assert_eq!(config.get_verity()?, digest);
+
         Ok(())
     }
 
@@ -825,5 +883,67 @@ mod tests {
 
         let result = config.boot_artifact_name();
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_efi_key_variants_and_display() -> Result<()> {
+        use camino::Utf8PathBuf;
+
+        // Test EFI variant displays "efi"
+        let efi_config = BLSConfig {
+            title: Some("Test EFI Entry".to_string()),
+            version: "1.0".to_string(),
+            cfg_type: BLSConfigType::EFI {
+                key: EFIKey::Efi(Utf8PathBuf::from("/EFI/Linux/test.efi")),
+            },
+            sort_key: Some("test-key".to_string()),
+            ..Default::default()
+        };
+
+        let result = efi_config.to_string();
+        assert!(result.contains("efi /EFI/Linux/test.efi"));
+        assert!(result.contains("title Test EFI Entry"));
+        assert!(result.contains("version 1.0"));
+        assert!(result.contains("sort-key test-key"));
+        assert!(!result.contains("uki"));
+
+        // Test UKI variant displays "uki"
+        let uki_config = BLSConfig {
+            title: Some("Test UKI Entry".to_string()),
+            version: "1.0".to_string(),
+            cfg_type: BLSConfigType::EFI {
+                key: EFIKey::Uki(Utf8PathBuf::from("/EFI/Linux/test.efi")),
+            },
+            sort_key: Some("test-key".to_string()),
+            ..Default::default()
+        };
+
+        let result = uki_config.to_string();
+        assert!(result.contains("uki /EFI/Linux/test.efi"));
+        assert!(result.contains("title Test UKI Entry"));
+        assert!(result.contains("version 1.0"));
+        assert!(result.contains("sort-key test-key"));
+        // Don't check for absence of "efi" since we're looking for the key, not anywhere in the path
+        assert!(!result.starts_with("efi ") && !result.contains("\nefi "));
+
+        // Test that Non-EFI config is unaffected
+        let non_efi_config = BLSConfig {
+            version: "1.0".to_string(),
+            cfg_type: BLSConfigType::NonEFI {
+                linux: Utf8PathBuf::from("/boot/vmlinuz"),
+                initrd: vec![Utf8PathBuf::from("/boot/initrd.img")],
+                options: Some("root=UUID=abc123".into()),
+            },
+            ..Default::default()
+        };
+
+        let result = non_efi_config.to_string();
+        assert!(result.contains("linux /boot/vmlinuz"));
+        assert!(result.contains("initrd /boot/initrd.img"));
+        assert!(result.contains("options root=UUID=abc123"));
+        assert!(!result.contains("efi"));
+        assert!(!result.contains("uki"));
+
+        Ok(())
     }
 }
