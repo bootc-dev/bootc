@@ -1,14 +1,23 @@
 [Unit]
 Description=Apply bootc updates
 Documentation=man:bootc(8)
+# TODO: Tweak this to more strongly conditionalize on using
+# bootc for host updates.
 ConditionPathExists=/run/ostree-booted
 
 [Timer]
+# This is copied from systemd-sysupdate.timer; it's just an arbitrary
+# starting point.
+#
+# Trigger the update 1 hour after boot, and then – on average – every 6h, but
+# randomly distributed in a 2h…6h interval. In addition trigger things
+# persistently once on each Saturday, to ensure that even on systems that are
+# never booted up for long we have a chance to do the update.
 OnBootSec=1h
-# This time is relatively arbitrary and obviously expected to be overridden/changed
-OnUnitInactiveSec=8h
-# When deploying a large number of systems, it may be beneficial to increase this value to help with load on the registry.
-RandomizedDelaySec=2h
+OnUnitActiveSec=2h
+OnCalendar=Sat
+RandomizedDelaySec=4h
+Persistent=yes
 
 [Install]
 WantedBy=timers.target
