@@ -73,6 +73,7 @@ gpgcheck=1
 enabled=1
 priority=1
 gpgkey=($gpgkey)
+exclude=kernel-debug* kernel-uki-virt*
 
 [compose-appstream]
 name=CentOS Stream $releasever Compose AppStream
@@ -81,6 +82,7 @@ gpgcheck=1
 enabled=1
 priority=1
 gpgkey=($gpgkey)
+exclude=kernel-debug* kernel-uki-virt*
 "
         $repo_content | save --force centos-compose.repo
 
