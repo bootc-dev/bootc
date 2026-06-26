@@ -326,7 +326,7 @@ pub(crate) fn install_systemd_boot(
 }
 
 #[context("Querying bootctl version")]
-fn bootctl_systemd_version() -> Result<u32> {
+pub(crate) fn bootctl_systemd_version() -> Result<u32> {
     let out = Command::new("bootctl").arg("--version").run_get_string()?;
     parse_systemd_version(&out)
 }

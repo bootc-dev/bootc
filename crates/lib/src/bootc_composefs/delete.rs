@@ -14,7 +14,7 @@ use crate::{
         COMPOSEFS_STAGED_DEPLOYMENT_FNAME, COMPOSEFS_TRANSIENT_STATE_DIR, STATE_DIR_RELATIVE,
         TYPE1_ENT_PATH, TYPE1_ENT_PATH_STAGED, USER_CFG_STAGED,
     },
-    parsers::bls_config::{BLSConfigType, parse_bls_config},
+    parsers::bls_config::{BLSConfigType, EFIKey, parse_bls_config},
     spec::{BootEntry, BootloaderKind, DeploymentEntry},
     status::Slot,
     store::{BootedComposefs, Storage},
@@ -54,8 +54,11 @@ fn delete_type1_conf_file(
         let bls_config = parse_bls_config(&cfg)?;
 
         match &bls_config.cfg_type {
-            BLSConfigType::EFI { efi } => {
-                if !efi.as_str().contains(&depl.deployment.verity) {
+            BLSConfigType::EFI { key } => {
+                let path = match key {
+                    EFIKey::Efi(path) | EFIKey::Uki(path) => path,
+                };
+                if !path.as_str().contains(&depl.deployment.verity) {
                     continue;
                 }
 
