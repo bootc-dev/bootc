@@ -27,6 +27,9 @@ gpgcheck=1
 enabled=1
 priority=1
 gpgkey=${gpgkey}
+# Workaround for compose repos pulling in unwanted kernel subpackages
+# xref https://github.com/bootc-dev/bootc/pull/2267#issuecomment-4809555535
+exclude=kernel-debug* kernel-uki-virt*
 
 [compose-appstream]
 name=CentOS Stream \$releasever Compose AppStream
@@ -35,6 +38,9 @@ gpgcheck=1
 enabled=1
 priority=1
 gpgkey=${gpgkey}
+# Workaround for compose repos pulling in unwanted kernel subpackages
+# xref https://github.com/bootc-dev/bootc/pull/2267#issuecomment-4809555535
+exclude=kernel-debug* kernel-uki-virt*
 EOF
     echo "Enabled CentOS Stream compose repos (gpgkey: ${gpgkey})"
     ;;
