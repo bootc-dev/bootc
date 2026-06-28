@@ -61,6 +61,7 @@
 //! - `ostree.manifest-digest`: The canonical manifest digest (e.g., `sha256:...`)
 //! - `ostree.manifest`: Complete OCI manifest as canonical JSON
 //! - `ostree.container.image-config`: OCI image configuration as canonical JSON
+//! - `version`: Version from the OCI image configuration, when available
 //!
 //! This metadata enables:
 //! - Detecting when updates are available
@@ -178,6 +179,8 @@ pub(crate) const META_MANIFEST_DIGEST: &str = "ostree.manifest-digest";
 const META_MANIFEST: &str = "ostree.manifest";
 /// The key injected into the merge commit with the image configuration serialized as JSON.
 const META_CONFIG: &str = "ostree.container.image-config";
+/// The ostree commit metadata key used by bootloader entries.
+const META_VERSION: &str = "version";
 /// The type used to store content filtering information.
 pub type MetaFilteredData = HashMap<String, HashMap<String, u32>>;
 
@@ -1462,6 +1465,7 @@ impl ImageImporter {
             .ostree_commit_layer
             .as_ref()
             .map(|c| c.commit.clone().unwrap());
+        let image_version = import.version().map(ToOwned::to_owned);
 
         let root_is_transient = if let Some(base) = base_commit.as_ref() {
             let rootf = self.repo.read_commit(&base, gio::Cancellable::NONE)?.0;
@@ -1578,6 +1582,9 @@ impl ImageImporter {
             META_CONFIG,
             import.config.to_canon_json_string()?.to_variant(),
         );
+        if let Some(version) = image_version {
+            metadata.insert(META_VERSION, version.to_variant());
+        }
         metadata.insert(
             "ostree.importer.version",
             env!("CARGO_PKG_VERSION").to_variant(),
