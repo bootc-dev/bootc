@@ -5,10 +5,26 @@ set -xeuo pipefail
 RPM_DIR="${1:-/tmp}"
 INSTALL_ROOT="${2:-/}"
 
-# Install the RPM package
-# Use rpm -Uvh with --oldpackage to allow replacing with dev version
-rpm -Uvh --root "${INSTALL_ROOT}" --nodeps --replacepkgs --oldpackage --nosignature "${RPM_DIR}"/*.rpm
-# Note: we don't need to clean up the source directory since it's a bind mount
+# We'll create a new dnf repo to install our newer stuff
+dnf install -y createrepo_c
+
+mkdir /tmp/localrepo
+cp "${RPM_DIR}"/*.rpm /tmp/localrepo/
+
+createrepo_c /tmp/localrepo
+
+# Create a .repo file with higher priority so that our newer
+# stuff is installed inside the target-rootfs
+cat <<EOF > /etc/yum.repos.d/local.repo
+[local]
+name=Local CI repo
+baseurl=file:///tmp/localrepo
+enabled=1
+gpgcheck=0
+priority=1
+EOF
+
+mkdir -p "${INSTALL_ROOT}/usr/lib/bootc/install"
 
 # Only in this containerfile, inject a file which signifies
 # this comes from this development image. This can be used in

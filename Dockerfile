@@ -79,11 +79,13 @@ RUN --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
 
     install -D -m 0644 -t /var/add-dir/usr/lib/bootc/kargs.d /run/usr-extras/lib/bootc/kargs.d/*.toml
 
-    /usr/libexec/bootc-base-imagectl build-rootfs --add-dir /var/add-dir/usr --manifest=standard /target-rootfs
+    /usr/libexec/bootc-base-imagectl build-rootfs \
+        --install bootc \
+        --install bootc-tests \
+        --install system-reinstall-bootc \
+        --add-dir /var/add-dir/usr \
+        --manifest=standard /target-rootfs
 EOF
-
-# Inject some other configuration
-COPY --from=packaging /usr-extras/ /target-rootfs/usr/
 
 RUN --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp <<EOF 
     set -eux
