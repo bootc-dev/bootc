@@ -1,5 +1,6 @@
 use std::fs::create_dir_all;
 use std::process::Command;
+use std::sync::OnceLock;
 
 use anyhow::{Context, Result, anyhow, bail};
 use bootc_utils::{ChrootCmd, CommandRunExt};
@@ -327,8 +328,18 @@ pub(crate) fn install_systemd_boot(
 
 #[context("Querying bootctl version")]
 pub(crate) fn bootctl_systemd_version() -> Result<u32> {
+    static VERSION: OnceLock<u32> = OnceLock::new();
+
+    if let Some(v) = VERSION.get() {
+        return Ok(*v);
+    };
+
     let out = Command::new("bootctl").arg("--version").run_get_string()?;
-    parse_systemd_version(&out)
+    let v = parse_systemd_version(&out).context("Failed to parse version to integer")?;
+
+    let version = VERSION.get_or_init(|| v);
+
+    Ok(*version)
 }
 
 /// Parse the systemd major version from `bootctl --version` output, whose first
