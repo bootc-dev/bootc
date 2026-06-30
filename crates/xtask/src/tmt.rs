@@ -130,6 +130,48 @@ fn distro_supports_bind_storage_ro(distro: &str) -> bool {
     !distro.starts_with(DISTRO_CENTOS_9)
 }
 
+/// Collect and print diagnostics useful for understanding host disk-space
+/// exhaustion. This is invoked when launching a VM fails, which we treat as an
+/// infrastructure failure (as opposed to a test failure). The most common cause
+/// of such failures in CI is the host filesystem running out of space, so we
+/// dump what is consuming it: container images, libvirt VMs/disks, the tmt log
+/// directory, and the runner's home directory.
+fn collect_infra_diagnostics(sh: &Shell, base_log_dir: &Utf8Path) {
+    println!("\n========================================");
+    println!("Infrastructure diagnostics (VM launch failed)");
+    println!("========================================");
+
+    // Overall filesystem usage.
+    println!("\n--- df -h ---");
+    let _ = cmd!(sh, "df -h").run();
+
+    // Container images are a frequent disk hog.
+    println!("\n--- podman images ---");
+    let _ = cmd!(sh, "podman images").ignore_status().run();
+
+    // Libvirt VMs and their backing disks (bcvk may leave these around).
+    println!("\n--- bcvk libvirt list ---");
+    let _ = cmd!(sh, "bcvk libvirt list").ignore_status().run();
+
+    // Per-VM log/console/journal captures under the tmt log directory.
+    println!("\n--- du -sh {base_log_dir} ---");
+    let _ = cmd!(sh, "du -sh {base_log_dir}").ignore_status().run();
+
+    // Broad view of the runner's home directory, where caches, the tmt
+    // workdir, and libvirt storage frequently accumulate. Use `du --max-depth=1`
+    // on $HOME directly rather than a `$HOME/*` glob: the latter silently skips
+    // hidden directories like ~/.cache and ~/.local, which is exactly where the
+    // worst offenders tend to live. Pipe through `sort -h` for readability;
+    // since xshell does not provide pipes, run it through a shell.
+    if let Ok(home) = std::env::var("HOME") {
+        println!("\n--- du -h --max-depth=1 {home} (sorted) ---");
+        let script = "du -h --max-depth=1 \"$1\" 2>/dev/null | sort -h";
+        let _ = cmd!(sh, "sh -c {script} sh {home}").ignore_status().run();
+    }
+
+    println!("========================================\n");
+}
+
 /// Wait for a bcvk VM to be ready and return SSH connection info
 #[context("Waiting for VM to be ready")]
 fn wait_for_vm_ready(sh: &Shell, vm_name: &str) -> Result<(u16, String)> {
@@ -523,10 +565,18 @@ pub(crate) fn run_tmt(sh: &Shell, args: &RunTmtArgs) -> Result<()> {
         .context("Launching VM with bcvk");
 
         if let Err(e) = launch_result {
+            // A failure to *launch* the VM (as opposed to a test failing inside
+            // a running VM) indicates an infrastructure problem on the host -
+            // most commonly the filesystem running out of space. Continuing to
+            // launch more VMs is pointless and only generates noise, so collect
+            // diagnostics and abort the entire run immediately.
             eprintln!("Failed to launch VM for plan {}: {:#}", plan, e);
-            all_passed = false;
             test_results.push((plan.to_string(), false, None));
-            continue;
+            collect_infra_diagnostics(sh, &base_log_dir);
+            anyhow::bail!(
+                "Aborting test run: failed to launch VM for plan {} (infrastructure failure); see diagnostics above",
+                plan
+            );
         }
 
         // Ensure VM cleanup happens even on error (unless --preserve-vm is set)
