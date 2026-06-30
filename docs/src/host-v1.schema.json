@@ -27,6 +27,7 @@
       "$ref": "#/$defs/HostStatus",
       "default": {
         "booted": null,
+        "readOnly": false,
         "rollback": null,
         "rollbackQueued": false,
         "staged": null,
@@ -322,6 +323,11 @@
           "items": {
             "$ref": "#/$defs/BootEntry"
           }
+        },
+        "readOnly": {
+          "description": "Set to true if the physical root (`/sysroot`) is on a read-only medium\n(e.g. a live ISO) and so cannot be mutated; commands that would change\nthe system (upgrade, switch, etc.) are not available.",
+          "type": "boolean",
+          "default": false
         },
         "rollback": {
           "description": "The previously booted image",

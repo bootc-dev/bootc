@@ -108,7 +108,7 @@ use ostree_ext::container_utils::ostree_booted;
 use ostree_ext::prelude::FileExt;
 use ostree_ext::sysroot::SysrootLock;
 use ostree_ext::{gio, ostree};
-use rustix::fs::Mode;
+use rustix::{fd::AsFd, fs::Mode, fs::StatVfsMountFlags};
 
 use composefs::fsverity::Sha512HashValue;
 use composefs::repository::RepositoryConfig;
@@ -302,15 +302,51 @@ pub(crate) enum BootedStorageKind<'a> {
 }
 
 /// Open the physical root (/sysroot) and /run directories for a booted system.
-fn get_physical_root_and_run() -> Result<(Dir, Dir)> {
-    let physical_root = {
-        let d = Dir::open_ambient_dir("/sysroot", cap_std::ambient_authority())
-            .context("Opening /sysroot")?;
-        open_dir_remount_rw(&d, ".".into())?
-    };
+///
+/// The returned boolean is `true` if `/sysroot` is on a physically read-only
+/// medium (e.g. a live ISO) that cannot be remounted writable.
+///
+/// Note that ostree mounts `/sysroot` read-only by default even on writable
+/// systems and remounts it writable on demand, so being read-only is not by
+/// itself meaningful: we only conclude the system is read-only if a remount
+/// attempt *fails* and the backing block device confirms it.
+fn get_physical_root_and_run() -> Result<(Dir, Dir, bool)> {
+    let d = Dir::open_ambient_dir("/sysroot", cap_std::ambient_authority())
+        .context("Opening /sysroot")?;
+    let is_ro = sysroot_is_read_only(&d)?;
+    let physical_root = d.open_dir(".").context("Opening /sysroot")?;
     let run =
         Dir::open_ambient_dir("/run", cap_std::ambient_authority()).context("Opening /run")?;
-    Ok((physical_root, run))
+    Ok((physical_root, run, is_ro))
+}
+
+/// Determine whether `/sysroot` (given as `d`) is on a physically read-only
+/// block device, remounting it read-write as a side effect when necessary.
+///
+/// ostree mounts `/sysroot` read-only by default even on writable systems and
+/// remounts it writable on demand, so the read-only mount flag alone is not
+/// meaningful. The authoritative signal is the backing block device's read-only
+/// flag, which is set for a live ISO (a read-only loop device over an immutable
+/// rootfs image) and propagates from a whole disk to its partitions. We check
+/// that first and avoid even attempting a remount that is bound to fail.
+fn sysroot_is_read_only(d: &Dir) -> Result<bool> {
+    let st = rustix::fs::fstatvfs(d.as_fd())?;
+    if !st.f_flag.contains(StatVfsMountFlags::RDONLY) {
+        // Already writable: the common case.
+        return Ok(false);
+    }
+
+    // The backing block device is physically read-only (e.g. a live ISO); there
+    // is no point attempting a remount, and write operations are not possible.
+    if matches!(bootc_blockdev::is_dir_backing_device_ro(d), Ok(Some(true))) {
+        return Ok(true);
+    }
+
+    // The mount is read-only but the device is writable: this is the normal
+    // ostree case where /sysroot is mounted read-only by default. Remount it
+    // writable on demand; a failure here is an unexpected error.
+    open_dir_remount_rw(d, ".".into())?;
+    Ok(false)
 }
 
 impl BootedStorage {
@@ -321,7 +357,7 @@ impl BootedStorage {
     pub(crate) async fn new(env: Environment) -> Result<Option<Self>> {
         let r = match &env {
             Environment::ComposefsBooted(cmdline) => {
-                let (physical_root, run) = get_physical_root_and_run()?;
+                let (physical_root, run, is_ro) = get_physical_root_and_run()?;
                 let mut composefs = ComposefsRepository::open_path(&physical_root, COMPOSEFS)?;
                 if cmdline.allow_missing_fsverity {
                     composefs.set_insecure();
@@ -346,6 +382,7 @@ impl BootedStorage {
                 let storage = Storage {
                     physical_root,
                     physical_root_path: Utf8PathBuf::from("/sysroot"),
+                    is_ro,
                     run,
                     boot_dir: Some(boot_dir),
                     esp: Some(esp_mount),
@@ -372,16 +409,25 @@ impl BootedStorage {
                 // remount /sysroot as writable, and we call set_mount_namespace_in_use()
                 // to indicate we're in a mount namespace. Without actually being in a
                 // mount namespace, this would leave the global /sysroot writable.
-                let (physical_root, run) = get_physical_root_and_run()?;
+                let (physical_root, run, is_ro) = get_physical_root_and_run()?;
 
                 let sysroot = ostree::Sysroot::new_default();
-                sysroot.set_mount_namespace_in_use();
-                let sysroot = ostree_ext::sysroot::SysrootLock::new_from_sysroot(&sysroot).await?;
+                // On a read-only sysroot (e.g. a live ISO) we must NOT mark the mount
+                // namespace as in-use, otherwise ostree will attempt to remount /sysroot
+                // read-write on write operations and fail. We also avoid taking the write
+                // lock (which would write a lockfile to the read-only filesystem).
+                let sysroot = if is_ro {
+                    ostree_ext::sysroot::SysrootLock::from_assumed_locked(&sysroot)
+                } else {
+                    sysroot.set_mount_namespace_in_use();
+                    ostree_ext::sysroot::SysrootLock::new_from_sysroot(&sysroot).await?
+                };
                 sysroot.load(gio::Cancellable::NONE)?;
 
                 let storage = Storage {
                     physical_root,
                     physical_root_path: Utf8PathBuf::from("/sysroot"),
+                    is_ro,
                     run,
                     boot_dir: None,
                     esp: None,
@@ -431,6 +477,10 @@ pub(crate) struct Storage {
     /// Absolute path to the physical root directory.
     /// This is `/sysroot` on a running system, or the target mount point during install.
     pub physical_root_path: Utf8PathBuf,
+
+    /// True if the physical root (`/sysroot`) is on a physically read-only
+    /// block device (e.g. a live ISO) and cannot be made writable.
+    pub(crate) is_ro: bool,
 
     /// The 'boot' directory, useful and `Some` only for composefs systems
     /// For grub booted systems, this points to `/sysroot/boot`
@@ -498,6 +548,7 @@ impl Storage {
         Ok(Self {
             physical_root,
             physical_root_path,
+            is_ro: false,
             run,
             boot_dir: None,
             esp: None,
@@ -505,6 +556,16 @@ impl Storage {
             composefs: Default::default(),
             imgstore: Default::default(),
         })
+    }
+
+    /// Ensure the storage is writable, erroring with a clear message if the
+    /// underlying `/sysroot` is on a read-only block device (e.g. a live ISO).
+    pub(crate) fn require_writable(&self) -> Result<()> {
+        anyhow::ensure!(
+            !self.is_ro,
+            "Cannot perform this operation: /sysroot is on a read-only block device (e.g. a live ISO)"
+        );
+        Ok(())
     }
 
     /// Returns `boot_dir` if it exists
