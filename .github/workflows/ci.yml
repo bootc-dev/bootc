@@ -558,14 +558,36 @@ jobs:
           name: container-export-test-${{ env.ARCH }}
           path: target/anaconda-test/*.log
 
-  # Sentinel job for required checks - configure this job name in repository settings.
-  # Accepts 'skipped' as success so that merge_group-only jobs don't block PRs.
-  required-checks:
-    if: always()
+  # Runs only in merge_group / workflow_dispatch and gates the full heavy suite.
+  # Skipped on PRs, so required-checks (below) sees it as 'skipped' == success there.
+  # Uses always() so it still reports a failure when an upstream heavy job failed,
+  # rather than being skipped along with it.
+  required-checks-merge:
+    if: ${{ always() && (github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch') }}
     needs: [compute-ci-level, cargo-deny, validate, install-tests, docs, package, test-integration, test-upgrade, test-baseconfigs, test-container-export]
     runs-on: ubuntu-latest
     steps:
       - name: Check all jobs
+        env:
+          NEEDS: ${{ toJson(needs) }}
+        run: |
+          FAILED=$(echo "$NEEDS" | jq -r 'to_entries[] | select(.value.result | IN("success","skipped") | not) | .key')
+          if [ -n "$FAILED" ]; then
+            echo "The following jobs did not succeed: $FAILED"
+            exit 1
+          fi
+
+  # Sentinel job — configure this single name in repo required-status-checks settings.
+  # On PRs: gates only the light always-run jobs; required-checks-merge is skipped
+  # (treated as success) so ci/merge heavy jobs run for feedback but don't block
+  # merge-queue entry — those jobs run again in the queue anyway with fresh artifacts.
+  # In merge_group: required-checks-merge has already verified the full suite above.
+  required-checks:
+    if: always()
+    needs: [compute-ci-level, validate, cargo-deny, docs, required-checks-merge]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check required jobs
         env:
           NEEDS: ${{ toJson(needs) }}
         run: |
