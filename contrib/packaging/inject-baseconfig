@@ -3,8 +3,12 @@
 # Arguments: $1=variant, $2=baseconfigs (comma-separated, may be empty)
 set -xeuo pipefail
 
-VARIANT="${1:-}"
-BASECONFIGS="${2:-}"
+# Where to write the config
+# Defaults to /
+BASE_DIR="${1:-/}"
+
+VARIANT="${2:-}"
+BASECONFIGS="${3:-}"
 
 # No-op if no baseconfigs specified
 if [ -z "${BASECONFIGS}" ]; then
@@ -15,7 +19,7 @@ fi
 # which has a different (INI) format and different option names.
 case "${VARIANT}" in
   composefs*)
-    TARGET="/usr/lib/composefs/setup-root-conf.toml"
+    TARGET="${BASE_DIR}/usr/lib/composefs/setup-root-conf.toml"
     ;;
   *)
     echo "inject-baseconfig: baseconfigs not supported for variant '${VARIANT}'" >&2
@@ -49,9 +53,9 @@ for raw_token in "${TOKENS[@]}"; do
       # tmpfs there at local-fs.target.  Using a plain tmpfs avoids the
       # overlayfs-on-overlayfs restriction that breaks tools like podman which
       # use overlayfs under /var/lib/containers.
-      mkdir -p /usr/lib/bootc/kargs.d
+      mkdir -p "${BASE_DIR}/usr/lib/bootc/kargs.d"
       printf 'kargs = ["systemd.volatile=state"]\n' \
-        > /usr/lib/bootc/kargs.d/50-var-volatile.toml
+        > "${BASE_DIR}/usr/lib/bootc/kargs.d/50-var-volatile.toml"
       ;;
     *)
       echo "Unknown baseconfig: ${token}" >&2

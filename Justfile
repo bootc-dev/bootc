@@ -102,7 +102,7 @@ build: package _keygen && _pull-lbi-images
 # The retry parameters can be overridden via environment variables:
 #   BOOTC_CI_RETRIES=10 BOOTC_CI_DELAY=60 just build-fetch
 [group('core')]
-build-fetch: _keygen
+build-fetch: _keygen package
     #!/bin/bash
     set -euo pipefail
     retries=${BOOTC_CI_RETRIES:-3}
@@ -131,12 +131,15 @@ build-fetch: _keygen
     for img in {{lbi_images}}; do
         retry podman pull -q "$img"
     done
+
+    pkg_path=$(realpath target/packages)
+
     # Build the network-heavy fetch stage of the main image.  If this
     # succeeds, `just build` will get a cache hit on the fetch layer and
     # run entirely offline.
     # Note: buildargs (not base_buildargs) is needed here because the
     # target-base stage requires --cap-add/--security-opt for bwrap.
-    retry podman build {{_nocache_arg}} --target=fetch {{buildargs}} .
+    retry podman build {{_nocache_arg}} --build-context "packages=${pkg_path}" --target=fetch {{buildargs}} .
     # Same for the upgrade-source image used by test-upgrade.
     retry podman build {{_nocache_arg}} --build-arg=base={{base}} \
         --target=fetch -f tmt/tests/Dockerfile.upgrade-source .

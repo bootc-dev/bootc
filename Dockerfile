@@ -46,12 +46,57 @@ RUN --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp --mount=type=c
 #       local sources. We'll override it later.
 # NOTE: All your base belong to me.
 FROM $base as target-base
+
+# SKIP_CONFIGS=1 skips LBIs, test kargs, and install configs (for FCOS testing)
+ARG boot_type
+ARG seal_state
+ARG variant
+ARG baseconfigs=""
+ARG rootfs=""
+
 # Handle version skew between base image and mirrors for CentOS Stream
 # xref https://gitlab.com/redhat/centos-stream/containers/bootc/-/issues/1174
 RUN --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
     --mount=type=bind,from=packaging,src=/,target=/run/packaging \
     /run/packaging/enable-compose-repos
-RUN --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp /usr/libexec/bootc-base-imagectl build-rootfs --manifest=standard /target-rootfs
+
+RUN --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
+    --mount=type=bind,from=packages,src=/,target=/run/packages \
+    --mount=type=bind,from=packaging,src=/,target=/run/packaging \
+    --mount=type=bind,from=packaging,src=/usr-extras,target=/run/usr-extras <<EOF
+    set -eux
+
+    mkdir -p /var/add-dir/usr
+
+    # Install our rpms in /var/add-dir
+    /run/packaging/install-rpm-and-setup /run/packages /var/add-dir
+
+    # Configure the rootfs
+    /run/packaging/configure-rootfs "${variant}" "/var/add-dir/usr" "${rootfs}"
+
+    # Inject base configuration (e.g. transient-etc, transient-root) before dracut runs
+    /run/packaging/inject-baseconfig "/var/add-dir/usr" "${variant}" "${baseconfigs}"
+
+    install -D -m 0644 -t /var/add-dir/usr/lib/bootc/kargs.d /run/usr-extras/lib/bootc/kargs.d/*.toml
+
+    /usr/libexec/bootc-base-imagectl build-rootfs \
+        --install bootc \
+        --install bootc-tests \
+        --install system-reinstall-bootc \
+        --add-dir /var/add-dir/usr \
+        --manifest=standard /target-rootfs
+EOF
+
+RUN --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp <<EOF 
+    set -eux
+
+    # create this regardless else bind mounts down the line fail for non-uki builds
+    mkdir -p /kernel
+
+    if [[ "${boot_type}" == "uki" ]]; then
+        /target-rootfs/usr/bin/bootc container split-kernel-and-rootfs --rootfs /target-rootfs --output /kernel
+    fi
+EOF
 
 # Get the latest GrubCC binary
 FROM quay.io/fedora/eln:latest AS grub-cc-download
@@ -178,7 +223,10 @@ ARG pkgversion
 ARG SOURCE_DATE_EPOCH
 ENV SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}
 # Build RPM directly from source, using cached target directory
-RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp --mount=type=cache,target=/src/target --mount=type=cache,target=/var/roothome RPM_VERSION="${pkgversion}" /src/contrib/packaging/build-rpm
+RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
+    --mount=type=cache,target=/src/target \
+    --mount=type=cache,target=/var/roothome \
+    RPM_VERSION="${pkgversion}" /src/contrib/packaging/build-rpm
 
 # Build a systemd-sysext containing just the bootc binary.
 # Skips RPM machinery entirely for fast incremental rebuilds.
@@ -290,27 +338,6 @@ rm -rf /var/cache
 rm -rf /run/rhsm
 
 EORUN
-# Configure the rootfs
-ARG rootfs=""
-RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
-    --mount=type=bind,from=packaging,src=/,target=/run/packaging \
-    /run/packaging/configure-rootfs "${variant}" "${rootfs}"
-# Inject base configuration (e.g. transient-etc, transient-root) before dracut runs
-RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
-    --mount=type=bind,from=packaging,src=/,target=/run/packaging \
-    /run/packaging/inject-baseconfig "${variant}" "${baseconfigs}"
-# Override with our built package
-RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
-    --mount=type=bind,from=packaging,src=/,target=/run/packaging \
-    --mount=type=bind,from=packages,src=/,target=/run/packages \
-    /run/packaging/install-rpm-and-setup /run/packages
-RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
-    --mount=type=bind,from=packaging,src=/usr-extras,target=/run/usr-extras \
-    install -D -m 0644 -t /usr/lib/bootc/kargs.d /run/usr-extras/lib/bootc/kargs.d/*.toml
-# Clean up package manager caches
-RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
-    --mount=type=bind,from=packaging,src=/,target=/run/packaging \
-    /run/packaging/cleanup
 
 # Generate the sealed UKI in a separate stage
 # This computes the composefs digest from base-penultimate and creates a signed UKI
@@ -327,18 +354,27 @@ RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp
 RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
     --mount=type=secret,id=secureboot_key \
     --mount=type=secret,id=secureboot_cert \
+    --mount=type=bind,from=target-base,src=/kernel,target=/run/kernel \
     --mount=type=bind,from=packaging,src=/,target=/run/packaging \
     --mount=type=bind,from=base-penultimate,src=/,target=/run/target <<EORUN
 set -xeuo pipefail
 
-allow_missing_verity=false
+allow_missing_verity=()
 
 if [[ $filesystem == "xfs" ]]; then
-    allow_missing_verity=true
+    allow_missing_verity=(--allow-missing-verity)
 fi
 
 if test "${boot_type}" = "uki"; then
-  /run/packaging/seal-uki /run/target /out /run/secrets $allow_missing_verity $seal_state
+  kver=$(ls /run/kernel)
+
+  /run/packaging/seal-uki \
+      --target /run/target \
+      --output /out \
+      --secrets /run/secrets \
+      "${allow_missing_verity[@]}" \
+      --kernel-dir "/run/kernel/$kver" \
+      --seal-state $seal_state
 fi
 EORUN
 
@@ -349,10 +385,13 @@ ARG boot_type
 # Copy the sealed UKI and finalize the image (remove raw kernel, create symlinks)
 RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
     --mount=type=bind,from=packaging,src=/,target=/run/packaging \
+    --mount=type=bind,from=target-base,src=/kernel,target=/run/kernel \
     --mount=type=bind,from=sealed-uki,src=/,target=/run/sealed-uki <<EORUN
 set -xeuo pipefail
+
 if test "${boot_type}" = "uki"; then
-  /run/packaging/finalize-uki /run/sealed-uki/out
+  kver=$(ls /run/kernel)
+  /run/packaging/finalize-uki /run/sealed-uki/out "$kver"
 fi
 EORUN
 # And finally, test our linting

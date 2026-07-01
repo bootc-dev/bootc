@@ -1,8 +1,10 @@
+use cap_std_ext::cap_std::ambient_authority;
+use cap_std_ext::cap_std::fs::Dir;
 use indoc::indoc;
 use scopeguard::defer;
 use serde::Deserialize;
-use std::fs;
 use std::process::Command;
+use std::{fs, path::Path};
 
 use anyhow::{Context, Result};
 use camino::Utf8Path;
@@ -72,6 +74,24 @@ pub(crate) fn test_bootc_container_inspect() -> Result<()> {
                 );
                 // Version should be non-empty after stripping extension
                 assert!(!version.is_empty(), "version should not be empty for UKI");
+
+                let target_root = Dir::open_ambient_dir(TARGET, ambient_authority())
+                    .with_context(|| format!("{TARGET} not found"))?;
+
+                // For UKI make sure vmlinuz + initrd don't exist
+                let usr_lib_mod = Path::new("usr/lib/modules").join(version);
+                assert!(
+                    target_root.exists(&usr_lib_mod),
+                    "'{usr_lib_mod:?}' does not exist"
+                );
+                assert!(
+                    !target_root.exists(usr_lib_mod.join("vmlinuz")),
+                    "vmlinuz should not exist for UKI"
+                );
+                assert!(
+                    !target_root.exists(usr_lib_mod.join("initramfs.img")),
+                    "initramfs should not exist for UKI"
+                );
             }
             o => eprintln!("notice: Unhandled variant for kernel check: {o:?}"),
         }
@@ -188,6 +208,8 @@ fn test_variant_base_crosscheck() -> Result<()> {
     Ok(())
 }
 
+const TARGET: &str = "/run/target";
+
 /// Verify exported tar has correct size/mode/content vs source.
 /// Checks all critical paths (kernel, boot) plus ~10% random sample.
 pub(crate) fn test_container_export_tar() -> Result<()> {
@@ -195,7 +217,6 @@ pub(crate) fn test_container_export_tar() -> Result<()> {
     use std::io::Read;
     use std::os::unix::fs::MetadataExt;
 
-    const TARGET: &str = "/run/target";
     const CRITICAL: &[&str] = &["usr/lib/modules/", "usr/lib/ostree-boot/", "boot/"];
 
     anyhow::ensure!(

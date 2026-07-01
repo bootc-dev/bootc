@@ -20,13 +20,8 @@ set -xeuo pipefail
 # Path to directory containing the generated UKI
 uki_src=$1
 shift
-
-# Find the kernel version from the current system
-kver=$(bootc container inspect --json | jq -r '.kernel.version')
-if [ -z "$kver" ] || [ "$kver" = "null" ]; then
-  echo "Error: No kernel found" >&2
-  exit 1
-fi
+kver=$1
+shift
 
 # Create the EFI directory structure
 mkdir -p /boot/EFI/Linux
@@ -35,12 +30,6 @@ mkdir -p /boot/EFI/Linux
 # because the UKI itself is signed and verified by Secure Boot
 target=/boot/EFI/Linux/${kver}.efi
 cp "${uki_src}/${kver}.efi" "${target}"
-
-# Remove the raw kernel and initramfs since we're using a UKI now.
-# NOTE: We intentionally keep these for now until bcvk is updated to extract
-# kernel/initramfs from UKIs in subdirectories. Once bcvk PR #144 is fixed
-# to look for .efi files in /usr/lib/modules/<kver>/, we can uncomment this.
-# rm -v "/usr/lib/modules/${kver}/vmlinuz" "/usr/lib/modules/${kver}/initramfs.img"
 
 # NOTE: We used to create a symlink from /usr/lib/modules/${kver}/${kver}.efi to the UKI
 # for tooling compatibility. However, composefs-boot's find_uki_components() doesn't
