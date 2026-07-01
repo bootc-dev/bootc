@@ -45,13 +45,23 @@ def cleanup [vg_name: string, loops: list<string>, mountpoint: string] {
     do { vgchange -an $vg_name } | complete | ignore
     do { vgremove -f $vg_name } | complete | ignore
 
-    # Remove PVs and detach loop devices
+    # Remove PVs from partitions and detach loop devices
     for loop in $loops {
         if ($loop | path exists) {
-            do { pvremove -f $loop } | complete | ignore
+            for i in [1, 2, 3] {
+                let part = $"($loop)p($i)"
+                if ($part | path exists) {
+                    do { pvremove -f $part } | complete | ignore
+                    do { wipefs -a $part } | complete | ignore
+                }
+            }
+            do { udevadm settle } | complete | ignore
+            do { partx -d $loop } | complete | ignore
             do { losetup -d $loop } | complete | ignore
         }
     }
+
+    rm -f /etc/lvm/devices/system.devices
 }
 
 # Create a disk with GPT, optional ESP, and LVM partition
@@ -72,9 +82,11 @@ def setup_disk_with_partitions [
         # GPT with ESP (512MB) + LVM partition
         $"label: gpt\nsize=512M, type=($ESP_TYPE)\ntype=($LVM_TYPE)\n" | sfdisk $loop
 
-        # Reload partition table (partx is part of util-linux)
-        partx -u $loop
-        sleep 1sec
+        # Remove stale partition entries then add new ones; -d may fail
+        # for busy partitions from a prior test, but -a still succeeds
+        do { partx -d $loop } | complete | ignore
+        partx -av $loop
+        udevadm settle
 
         # Format ESP
         mkfs.vfat -F 32 $"($loop)p1"
@@ -82,9 +94,9 @@ def setup_disk_with_partitions [
         # GPT with only LVM partition (full disk)
         $"label: gpt\ntype=($LVM_TYPE)\n" | sfdisk $loop
 
-        # Reload partition table (partx is part of util-linux)
-        partx -u $loop
-        sleep 1sec
+        do { partx -d $loop } | complete | ignore
+        partx -av $loop
+        udevadm settle
     }
 
     $loop
@@ -101,8 +113,9 @@ def setup_disk_with_root [
 
     # GPT with ESP (512MB) + root partition
     $"label: gpt\nsize=512M, type=($ESP_TYPE)\ntype=($ROOT_TYPE)\n" | sfdisk $loop
-    partx -u $loop
-    sleep 1sec
+    do { partx -d $loop } | complete | ignore
+    partx -av $loop
+    udevadm settle
 
     mkfs.vfat -F 32 $"($loop)p1"
     mkfs.ext4 -q $"($loop)p2"
