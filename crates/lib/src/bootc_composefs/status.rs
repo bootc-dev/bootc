@@ -19,6 +19,7 @@ use crate::{
     composefs_consts::{
         COMPOSEFS_CMDLINE, ORIGIN_KEY_BOOT_DIGEST, ORIGIN_KEY_IMAGE, ORIGIN_KEY_MANIFEST_DIGEST,
         TYPE1_ENT_PATH, TYPE1_ENT_PATH_STAGED, USER_CFG, USER_CFG_STAGED,
+        BLS_ENTRY_PREFIX,
     },
     install::EFI_LOADER_INFO,
     parsers::{
@@ -304,7 +305,7 @@ fn get_sorted_type1_boot_entries_helper(
             .to_str()
             .ok_or(anyhow::anyhow!("Found non UTF-8 characters in filename"))?;
 
-        if !file_name.ends_with(".conf") {
+        if !(file_name.starts_with(BLS_ENTRY_PREFIX) && file_name.ends_with(".conf")) {
             continue;
         }
 
@@ -1109,8 +1110,16 @@ mod tests {
             "loader/entries/random_file.txt",
             "Random file that we won't parse",
         )?;
-        tempdir.atomic_write("loader/entries/entry1.conf", entry1)?;
-        tempdir.atomic_write("loader/entries/entry2.conf", entry2)?;
+        tempdir.atomic_write(
+            "loader/entries/random_file.conf",
+            "Random file that we won't parse",
+        )?;
+        tempdir.atomic_write(
+            "loader/entries/bootc_random_file.txt",
+            "Random file that we won't parse",
+        )?;
+        tempdir.atomic_write("loader/entries/bootc_entry1.conf", entry1)?;
+        tempdir.atomic_write("loader/entries/bootc_entry2.conf", entry2)?;
 
         let result =
             get_sorted_type1_boot_entries_helper(&tempdir, true, false, Bootloader::Systemd)
@@ -1272,8 +1281,8 @@ mod tests {
 
         tempdir.create_dir_all("loader/entries")?;
         tempdir.create_dir_all("loader/entries.staged")?;
-        tempdir.atomic_write("loader/entries/active.conf", active_entry)?;
-        tempdir.atomic_write("loader/entries.staged/staged.conf", staged_entry)?;
+        tempdir.atomic_write("loader/entries/bootc_active.conf", active_entry)?;
+        tempdir.atomic_write("loader/entries.staged/bootc_staged.conf", staged_entry)?;
 
         let result = list_type1_entries(&tempdir)?;
         assert_eq!(result.len(), 2);
