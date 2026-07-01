@@ -1,3 +1,7 @@
+use std::sync::{Arc, Mutex, mpsc};
+use std::time::Duration;
+use std::usize;
+
 use anyhow::{Context, Result};
 use camino::{Utf8Path, Utf8PathBuf};
 use fn_error_context::context;
@@ -25,12 +29,46 @@ const FIELD_ADJUST: &str = "adjust";
 const FIELD_FIXME_SKIP_IF_COMPOSEFS: &str = "fixme_skip_if_composefs";
 const FIELD_FIXME_SKIP_IF_UKI: &str = "fixme_skip_if_uki";
 
+/// For tests that should only run for composefs systems
+/// Ex. composefs-gc
+const FIELD_SKIP_IF_OSTREE: &str = "skip_if_ostree";
+
 // bcvk options
 const BCVK_OPT_BIND_STORAGE_RO: &str = "--bind-storage-ro";
 const ENV_BOOTC_UPGRADE_IMAGE: &str = "BOOTC_upgrade_image";
 
 // Distro identifiers
 const DISTRO_CENTOS_9: &str = "centos-9";
+
+// Tests sorted by time taken (descending)
+const TESTS_SORTED_BY_TIME: [&str; 23] = [
+    // 10+ mins
+    "multi-device-esp",
+    "composefs-gc-uki",
+    "composefs-gc",
+    // 5+ mins
+    "loader-entries-source",
+    "download-only-upgrade",
+    "bib-build",
+    "rollback",
+    "logically-bound-switch",
+    "soft-reboot",
+    "switch-to-unified",
+    "image-pushpull-upgrade",
+    "install-no-boot-dir",
+    "upgrade-tag",
+    "custom-selinux-policy",
+    "factory-reset",
+    // 3+ mins
+    "upgrade-check-status",
+    "soft-reboot-selinux-policy",
+    "install-bootloader-none",
+    "install-outside-container",
+    "install-unified-flag",
+    "usroverlay",
+    "image-upgrade-reboot",
+    "install-karg-delete",
+];
 
 // Import the argument types from xtask.rs
 use crate::bcvk::BcvkInstallOpts;
@@ -207,10 +245,11 @@ fn verify_ssh_connectivity(sh: &Shell, port: u16, key_path: &Utf8Path) -> Result
     )
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 struct PlanMetadata {
     try_bind_storage: bool,
     skip_if_composefs: bool,
+    skip_if_ostree: bool,
     skip_if_uki: bool,
 }
 
@@ -252,8 +291,7 @@ fn parse_plan_metadata(
                     .and_modify(|m| m.try_bind_storage = b)
                     .or_insert(PlanMetadata {
                         try_bind_storage: b,
-                        skip_if_uki: false,
-                        skip_if_composefs: false,
+                        ..Default::default()
                     });
             }
         }
@@ -268,8 +306,7 @@ fn parse_plan_metadata(
                     .and_modify(|m| m.skip_if_composefs = b)
                     .or_insert(PlanMetadata {
                         skip_if_composefs: b,
-                        skip_if_uki: false,
-                        try_bind_storage: false,
+                        ..Default::default()
                     });
             }
         }
@@ -284,14 +321,488 @@ fn parse_plan_metadata(
                     .and_modify(|m| m.skip_if_uki = b)
                     .or_insert(PlanMetadata {
                         skip_if_uki: b,
-                        skip_if_composefs: false,
-                        try_bind_storage: false,
+                        ..Default::default()
+                    });
+            }
+        }
+
+        if let Some(skip_if_ostree) = plan_data.get(&serde_yaml::Value::String(format!(
+            "extra-{}",
+            FIELD_SKIP_IF_OSTREE
+        ))) {
+            if let Some(b) = skip_if_ostree.as_bool() {
+                plan_metadata
+                    .entry(plan_name.to_string())
+                    .and_modify(|m| m.skip_if_ostree = b)
+                    .or_insert(PlanMetadata {
+                        skip_if_ostree: b,
+                        ..Default::default()
                     });
             }
         }
     }
 
     Ok(plan_metadata)
+}
+
+struct RunPlanResult {
+    plan_name: String,
+    passed: bool,
+    time_taken: Option<Duration>,
+    run_id: Option<String>,
+}
+
+struct VmConfig {
+    cpu: String,
+    mem: String,
+    parallel_count: usize,
+    preserve: bool,
+}
+
+struct TestContext<'a> {
+    random_suffix: &'a str,
+    distro: &'a str,
+    image: &'a str,
+    upgrade_image: Option<&'a str>,
+}
+
+struct TmtConfig<'a> {
+    context: &'a [String],
+    user_env: &'a [String],
+}
+
+impl RunPlanResult {
+    fn new(
+        plan_name: String,
+        passed: bool,
+        time_taken: Option<Duration>,
+        run_id: Option<String>,
+    ) -> Self {
+        Self {
+            plan_name,
+            passed,
+            time_taken,
+            run_id,
+        }
+    }
+}
+
+fn run_plan(
+    plan: &str,
+    vm_name: &str,
+    image: &str,
+    plan_bcvk_opts: Vec<String>,
+    firmware_args: Vec<String>,
+    context: Vec<String>,
+    tmt_env_vars: Vec<String>,
+    arg_env: Vec<String>,
+    preserve_vm: bool,
+    vm_cpu: &str,
+    vm_mem_mb: &str,
+    base_log_dir: Utf8PathBuf,
+    bcvk_has_log_dir: bool,
+    libvirt_lock: Arc<Mutex<()>>,
+) -> RunPlanResult {
+    let sh = match Shell::new() {
+        Ok(sh) => sh,
+        Err(err) => {
+            eprintln!("Failed to create new shell instance: {err:?}");
+            return RunPlanResult::new(plan.to_string(), false, None, None);
+        }
+    };
+
+    // Set up per-VM log directory for journal + console capture (if bcvk supports it)
+    let vm_log_dir = base_log_dir.join(&vm_name);
+    let log_dir_args: Vec<String> = if bcvk_has_log_dir {
+        if let Err(e) = std::fs::create_dir_all(&vm_log_dir) {
+            eprintln!("Creating VM log directory {}: {e:?}", vm_log_dir);
+            return RunPlanResult::new(plan.to_string(), false, None, None);
+        }
+
+        println!("VM logs will be written to: {}", vm_log_dir);
+        vec![format!("--log-dir=journal,console={}", vm_log_dir)]
+    } else {
+        vec![]
+    };
+
+    // Launch VM with bcvk
+    let firmware_args_slice = firmware_args.as_slice();
+
+    let guard = match libvirt_lock.lock() {
+        Ok(g) => g,
+        Err(e) => {
+            eprintln!("Mutex lock failed for plan {plan}: {e:#}");
+            return RunPlanResult::new(plan.to_string(), false, None, None);
+        }
+    };
+
+    let launch_result = cmd!(
+            sh,
+            "bcvk libvirt run --name {vm_name} --memory {vm_mem_mb} --cpus {vm_cpu} --detach {firmware_args_slice...} {COMMON_INST_ARGS...} {plan_bcvk_opts...} {log_dir_args...} {image}"
+        )
+        .run()
+        .context("Launching VM with bcvk");
+
+    drop(guard);
+
+    if let Err(e) = launch_result {
+        eprintln!("Failed to launch VM for plan {}: {:#}", plan, e);
+        return RunPlanResult::new(plan.to_string(), false, None, None);
+    }
+
+    // Ensure VM cleanup happens even on error (unless --preserve-vm is set)
+    let cleanup_vm = || {
+        if preserve_vm {
+            return;
+        }
+        if let Err(e) = cmd!(sh, "bcvk libvirt rm --stop --force {vm_name}")
+            .ignore_stderr()
+            .ignore_status()
+            .run()
+        {
+            eprintln!("Warning: Failed to cleanup VM {}: {}", vm_name, e);
+        }
+    };
+
+    // Wait for VM to be ready and get SSH info
+    let vm_info = wait_for_vm_ready(&sh, &vm_name);
+    let (ssh_port, ssh_key) = match vm_info {
+        Ok((port, key)) => (port, key),
+        Err(e) => {
+            eprintln!("Failed to get VM info for plan {}: {:#}", plan, e);
+            cleanup_vm();
+            return RunPlanResult::new(plan.to_string(), false, None, None);
+        }
+    };
+
+    println!("VM ready, SSH port: {}", ssh_port);
+
+    // Save SSH private key to a temporary file
+    let key_file = tempfile::NamedTempFile::new().context("Creating temporary SSH key file");
+
+    let key_file = match key_file {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("Failed to create SSH key file for plan {}: {:#}", plan, e);
+            cleanup_vm();
+            return RunPlanResult::new(plan.to_string(), false, None, None);
+        }
+    };
+
+    let key_path = Utf8PathBuf::try_from(key_file.path().to_path_buf())
+        .context("Converting key path to UTF-8");
+
+    let key_path = match key_path {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("Failed to convert key path for plan {}: {:#}", plan, e);
+            cleanup_vm();
+            return RunPlanResult::new(plan.to_string(), false, None, None);
+        }
+    };
+
+    if let Err(e) = std::fs::write(&key_path, ssh_key) {
+        eprintln!("Failed to write SSH key for plan {}: {:#}", plan, e);
+        cleanup_vm();
+        return RunPlanResult::new(plan.to_string(), false, None, None);
+    }
+
+    // Set proper permissions on the key file (SSH requires 0600)
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = std::fs::Permissions::from_mode(0o600);
+        if let Err(e) = std::fs::set_permissions(&key_path, perms) {
+            eprintln!("Failed to set key permissions for plan {}: {:#}", plan, e);
+            cleanup_vm();
+            return RunPlanResult::new(plan.to_string(), false, None, None);
+        }
+    }
+
+    // Verify SSH connectivity
+    println!("Verifying SSH connectivity...");
+    if let Err(e) = verify_ssh_connectivity(&sh, ssh_port, &key_path) {
+        eprintln!("SSH verification failed for plan {}: {:#}", plan, e);
+        if bcvk_has_log_dir {
+            eprintln!(
+                "VM logs (journal + console) may be available at: {}",
+                vm_log_dir
+            );
+        }
+        cleanup_vm();
+        return RunPlanResult::new(plan.to_string(), false, None, None);
+    }
+
+    println!("SSH connectivity verified");
+
+    let ssh_port_str = ssh_port.to_string();
+
+    let time_start = std::time::Instant::now();
+
+    // Run tmt for this specific plan using connect provisioner
+    println!("Running tmt tests for plan {}...", plan);
+
+    // Generate a unique run ID for this test
+    // Use the VM name which already contains a random suffix for uniqueness
+    let run_id = vm_name;
+
+    // Run tmt for this specific plan
+    // Note: provision must come before plan for connect to work properly
+    let how = ["--how=connect", "--guest=localhost", "--user=root"];
+    let env = ["TMT_SCRIPTS_DIR=/var/lib/tmt/scripts", "BCVK_EXPORT=1"]
+        .into_iter()
+        .chain(arg_env.iter().map(|v| v.as_str()))
+        .chain(tmt_env_vars.iter().map(|v| v.as_str()))
+        .flat_map(|v| ["--environment", v]);
+    let test_result = cmd!(
+            sh,
+            "tmt {context...} run --id {run_id} --all {env...} provision {how...} --port {ssh_port_str} --key {key_path} plan --name {plan}"
+        )
+        .run();
+
+    let elapsed = time_start.elapsed();
+
+    // Log disk usage after each test run to help diagnose "no space left on device" failures
+    println!("Disk usage after plan {}:", plan);
+    let _ = cmd!(sh, "df -h").run();
+    let script = r#"find /var/tmp/tmt -type d -name target -exec rm -rf {} \;"#;
+    let _ = cmd!(sh, "sh -c {script}").run();
+    println!("==========================================");
+
+    // Clean up VM regardless of test result (unless --preserve-vm is set)
+    cleanup_vm();
+
+    let plan_result = match test_result {
+        Ok(_) => {
+            println!("Plan {} completed successfully", plan);
+            RunPlanResult::new(
+                plan.to_string(),
+                true,
+                Some(elapsed),
+                Some(run_id.to_string()),
+            )
+        }
+        Err(e) => {
+            eprintln!("Plan {} failed: {:#}", plan, e);
+            RunPlanResult::new(
+                plan.to_string(),
+                false,
+                Some(elapsed),
+                Some(run_id.to_string()),
+            )
+        }
+    };
+
+    // Print VM connection details if preserving
+    if preserve_vm {
+        // Copy SSH key to a persistent location
+        let persistent_key_path = Utf8Path::new("target").join(format!("{}.ssh-key", vm_name));
+        if let Err(e) = std::fs::copy(&key_path, &persistent_key_path) {
+            eprintln!("Warning: Failed to save persistent SSH key: {}", e);
+        } else {
+            println!("\n========================================");
+            println!("VM preserved for debugging:");
+            println!("========================================");
+            println!("VM name: {}", vm_name);
+            println!("SSH port: {}", ssh_port_str);
+            println!("SSH key: {}", persistent_key_path);
+            println!("\nTo connect via SSH:");
+            println!(
+                "  ssh -i {} -p {} -o IdentitiesOnly=yes root@localhost",
+                persistent_key_path, ssh_port_str
+            );
+            println!("\nTo cleanup:");
+            println!("  bcvk libvirt rm --stop --force {}", vm_name);
+            println!("========================================\n");
+        }
+    }
+
+    plan_result
+}
+
+fn run_plans(
+    sh: &Shell,
+    args: &RunTmtArgs,
+    plans: Vec<&str>,
+    plan_metadata: &std::collections::HashMap<String, PlanMetadata>,
+    bcvk_opts: &crate::bcvk::BcvkInstallOpts,
+    firmware_args: &[String],
+    vm_config: VmConfig,
+    test_context: TestContext,
+    tmt_config: &TmtConfig,
+    libvirt_lock: &Arc<Mutex<()>>,
+) -> Result<Vec<RunPlanResult>> {
+    // Determine base log directory: CLI flag > TMT_LOG_DIR env var > default.
+    // Filter out empty TMT_LOG_DIR (e.g. TMT_LOG_DIR="") to avoid creating
+    // log subdirectories in the current working directory.
+    let base_log_dir: Utf8PathBuf = if let Some(ref d) = args.log_dir {
+        d.clone()
+    } else if let Some(env_dir) = std::env::var("TMT_LOG_DIR").ok().filter(|s| !s.is_empty()) {
+        Utf8PathBuf::from(env_dir)
+    } else {
+        Utf8PathBuf::from("/var/tmp/tmt")
+    };
+
+    // Probe whether this bcvk supports --log-dir (added in bcvk 0.17).
+    // Older installs silently lack it; we skip the flag rather than hard-failing.
+    let bcvk_has_log_dir = cmd!(sh, "bcvk libvirt run --help")
+        .ignore_stderr()
+        .read()
+        .map(|help| help.contains("--log-dir"))
+        .unwrap_or(false);
+
+    let mut test_results: Vec<RunPlanResult> = Vec::new();
+    let mut active_threads = 0;
+    let (tx, rx) = mpsc::channel::<RunPlanResult>();
+
+    for plan in plans {
+        let plan_name = sanitize_plan_name(plan);
+        let vm_name = format!("bootc-tmt-{}-{}", test_context.random_suffix, plan_name);
+
+        println!("\n========================================");
+        println!("Running plan: {}", plan);
+        println!("VM name: {}", vm_name);
+        println!("========================================\n");
+
+        // Get bcvk-opts based on plan metadata and distro support
+        let (plan_bcvk_opts, env_vars) = {
+            let supports_bind_storage_ro = distro_supports_bind_storage_ro(test_context.distro);
+            let try_bind_storage = plan_metadata
+                .iter()
+                .find(|(key, _)| plan.ends_with(key.as_str()))
+                .map(|(_, v)| v.try_bind_storage)
+                .unwrap_or(false);
+
+            let mut opts = Vec::new();
+            let mut env_vars = Vec::new();
+
+            if try_bind_storage && supports_bind_storage_ro {
+                opts.push(BCVK_OPT_BIND_STORAGE_RO.to_string());
+                if let Some(upgrade_img) = test_context.upgrade_image {
+                    env_vars.push(format!("{}={}", ENV_BOOTC_UPGRADE_IMAGE, upgrade_img));
+                }
+            } else if try_bind_storage && !supports_bind_storage_ro {
+                println!(
+                    "Note: Test wants bind storage but skipping on {} (missing systemd.extra-unit.* support)",
+                    test_context.distro
+                );
+            }
+
+            opts.extend(bcvk_opts.install_args());
+
+            (opts, env_vars)
+        };
+
+        let firmware_args = firmware_args.to_vec();
+        let context = tmt_config.context.to_vec();
+        let user_env = tmt_config.user_env.to_vec();
+        let cloned_plan = plan.to_string();
+        let cloned_vm_name = vm_name.to_string();
+        let image = test_context.image.to_string();
+        let vm_mem = vm_config.mem.clone();
+        let vm_cpu = vm_config.cpu.clone();
+        let base_log_dir = base_log_dir.clone();
+        let libvirt_lock = libvirt_lock.clone();
+
+        let tx_clone = tx.clone();
+        std::thread::spawn(move || {
+            let result = run_plan(
+                &cloned_plan,
+                &cloned_vm_name,
+                &image,
+                plan_bcvk_opts,
+                firmware_args,
+                context,
+                env_vars,
+                user_env,
+                vm_config.preserve,
+                &vm_cpu,
+                &vm_mem,
+                base_log_dir,
+                bcvk_has_log_dir,
+                libvirt_lock,
+            );
+
+            if let Err(e) = tx_clone.send(result) {
+                eprintln!("Failed to send result through channel: {}", e);
+            }
+        });
+
+        active_threads += 1;
+
+        if active_threads >= vm_config.parallel_count {
+            match rx.recv() {
+                Ok(plan_result) => {
+                    test_results.push(plan_result);
+                    active_threads -= 1;
+                }
+                Err(e) => {
+                    eprintln!("Failed to receive result from channel: {}", e);
+                    active_threads -= 1;
+                }
+            }
+        }
+    }
+
+    drop(tx);
+
+    for _ in 0..active_threads {
+        match rx.recv() {
+            Ok(plan_result) => {
+                test_results.push(plan_result);
+            }
+            Err(e) => {
+                eprintln!("Failed to receive remaining result from channel: {}", e);
+            }
+        }
+    }
+
+    Ok(test_results)
+}
+
+fn print_error_reports(sh: &Shell, failed_tests: &Vec<&RunPlanResult>) {
+    println!("\n========================================");
+    println!("Detailed Error Reports");
+    println!("========================================\n");
+
+    for RunPlanResult {
+        plan_name: plan,
+        run_id,
+        ..
+    } in failed_tests
+    {
+        println!("----------------------------------------");
+        println!("Plan: {}", plan);
+        println!("----------------------------------------");
+
+        match run_id {
+            Some(id) => {
+                println!("Run ID: {}\n", id);
+
+                // Run tmt with the specific run ID and generate verbose report
+                let report_result = cmd!(sh, "tmt run -i {id} report -vvv")
+                    .ignore_status()
+                    .run();
+
+                match report_result {
+                    Ok(_) => {}
+                    Err(e) => {
+                        eprintln!(
+                            "Warning: Failed to generate detailed report for {}: {:#}",
+                            plan, e
+                        );
+                    }
+                }
+            }
+
+            None => {
+                println!("Run ID not available - cannot generate detailed report");
+            }
+        }
+
+        println!("\n");
+    }
+
+    println!("========================================\n");
 }
 
 /// Run TMT tests using bcvk for VM management
@@ -391,6 +902,14 @@ pub(crate) fn run_tmt(sh: &Shell, args: &RunTmtArgs) -> Result<()> {
                 .map(|(_, v)| v.skip_if_composefs)
                 .unwrap_or(false)
         });
+    } else {
+        plans.retain(|plan| {
+            !plan_metadata
+                .iter()
+                .find(|(key, _)| plan.ends_with(key.as_str()))
+                .map(|(_, v)| v.skip_if_ostree)
+                .unwrap_or(false)
+        });
     }
 
     if matches!(args.boot_type, crate::BootType::Uki) {
@@ -417,337 +936,205 @@ pub(crate) fn run_tmt(sh: &Shell, args: &RunTmtArgs) -> Result<()> {
         return Ok(());
     }
 
+    plans.sort_by_key(|full_plan_name| {
+        TESTS_SORTED_BY_TIME
+            .iter()
+            .position(|test_time| full_plan_name.contains(test_time))
+            .unwrap_or(usize::MAX)
+    });
+
     println!("Found {} test plan(s): {:?}", plans.len(), plans);
 
-    // Determine base log directory: CLI flag > TMT_LOG_DIR env var > default.
-    // Filter out empty TMT_LOG_DIR (e.g. TMT_LOG_DIR="") to avoid creating
-    // log subdirectories in the current working directory.
-    let base_log_dir: Utf8PathBuf = if let Some(ref d) = args.log_dir {
-        d.clone()
-    } else if let Some(env_dir) = std::env::var("TMT_LOG_DIR").ok().filter(|s| !s.is_empty()) {
-        Utf8PathBuf::from(env_dir)
-    } else {
-        Utf8PathBuf::from("/var/tmp/tmt")
-    };
+    let mut install_opts = Vec::new();
 
-    // Probe whether this bcvk supports --log-dir (added in bcvk 0.17).
-    // Older installs silently lack it; we skip the flag rather than hard-failing.
-    let bcvk_has_log_dir = cmd!(sh, "bcvk libvirt run --help")
-        .ignore_stderr()
-        .read()
-        .map(|help| help.contains("--log-dir"))
-        .unwrap_or(false);
+    // Add --filesystem=xfs by default on fedora-coreos
+    if variant_id == "coreos" {
+        if distro.starts_with("fedora") {
+            install_opts.push("--filesystem=xfs".to_string());
+        }
+    }
+
+    if args.composefs_backend {
+        let filesystem = args.filesystem.as_deref().unwrap_or("ext4");
+        install_opts.push(format!("--filesystem={}", filesystem));
+        install_opts.push("--composefs-backend".into());
+
+        if let Some(b) = &args.bootloader {
+            install_opts.push(format!("--bootloader={b}"));
+        }
+    }
+
+    for k in &args.karg {
+        install_opts.push(format!("--karg={k}"));
+    }
+
+    let start = std::time::Instant::now();
+
+    println!("Creating base disk...");
+    let opts = install_opts.clone();
+    cmd!(sh, "bcvk libvirt to-base-disk {opts...} localhost/bootc").run()?;
+
+    println!("Creating base disk took: {:#?}", start.elapsed());
 
     // Generate a random suffix for VM names
     let random_suffix = generate_random_suffix();
 
-    // Track overall success/failure
-    let mut all_passed = true;
-    let mut test_results: Vec<(String, bool, Option<String>)> = Vec::new();
+    let num_cpu = std::thread::available_parallelism()
+        .map(|c| c.get())
+        .unwrap_or(1);
 
-    // Environment variables to pass to tmt (in addition to args.env)
-    let mut tmt_env_vars = Vec::new();
+    println!("num_cpu: {num_cpu}");
 
-    // Run each plan in its own VM
-    for plan in plans {
-        let plan_name = sanitize_plan_name(plan);
-        let vm_name = format!("bootc-tmt-{}-{}", random_suffix, plan_name);
+    let (vm_cpu, vm_mem) = (1, 2048);
+    let avail_cpu = (num_cpu - 1).max(1);
+    let parallel_vms = (avail_cpu / vm_cpu).min(6);
 
-        println!("\n========================================");
-        println!("Running plan: {}", plan);
-        println!("VM name: {}", vm_name);
-        println!("========================================\n");
+    println!("parallel_vms: {parallel_vms}");
 
-        // Reset plan-specific environment variables
-        tmt_env_vars.clear();
+    let libvirt_lock = Arc::new(Mutex::new(()));
 
-        // Get bcvk-opts based on plan metadata and distro support
-        let plan_bcvk_opts = {
-            let supports_bind_storage_ro = distro_supports_bind_storage_ro(&distro);
+    let vm_config = VmConfig {
+        cpu: vm_cpu.to_string(),
+        mem: vm_mem.to_string(),
+        parallel_count: parallel_vms,
+        preserve: preserve_vm,
+    };
 
-            // Plan names from tmt are like /tmt/plans/integration/plan-01-readonly
-            // but metadata keys are like /plan-01-readonly, so match on suffix
-            let try_bind_storage = plan_metadata
-                .iter()
-                .find(|(key, _)| plan.ends_with(key.as_str()))
-                .map(|(_, v)| v.try_bind_storage)
-                .unwrap_or(false);
+    let test_context = TestContext {
+        random_suffix: &random_suffix,
+        distro: &distro,
+        image,
+        upgrade_image: args.upgrade_image.as_deref(),
+    };
 
-            let mut opts = Vec::new();
+    let tmt_config = TmtConfig {
+        context: &context,
+        user_env: &args.env,
+    };
 
-            // If test wants bind storage and distro supports it, add --bind-storage-ro
-            if try_bind_storage && supports_bind_storage_ro {
-                opts.push(BCVK_OPT_BIND_STORAGE_RO.to_string());
-
-                // If upgrade image is provided, set it as an environment variable for tmt
-                // (not bcvk, as bcvk doesn't support --env)
-                if let Some(ref upgrade_img) = args.upgrade_image {
-                    tmt_env_vars.push(format!("{}={}", ENV_BOOTC_UPGRADE_IMAGE, upgrade_img));
-                }
-            } else if try_bind_storage && !supports_bind_storage_ro {
-                println!(
-                    "Note: Test wants bind storage but skipping on {} (missing systemd.extra-unit.* support)",
-                    distro
-                );
-            }
-            // Add --filesystem=xfs by default on fedora-coreos
-            if variant_id == "coreos" {
-                if distro.starts_with("fedora") {
-                    opts.push("--filesystem=xfs".to_string());
-                }
-            }
-
-            opts.extend(bcvk_opts.install_args());
-
-            opts
-        };
-
-        // Set up per-VM log directory for journal + console capture (if bcvk supports it)
-        let vm_log_dir = base_log_dir.join(&vm_name);
-        let log_dir_args: Vec<String> = if bcvk_has_log_dir {
-            std::fs::create_dir_all(&vm_log_dir)
-                .with_context(|| format!("Creating VM log directory {}", vm_log_dir))?;
-            println!("VM logs will be written to: {}", vm_log_dir);
-            vec![format!("--log-dir=journal,console={}", vm_log_dir)]
-        } else {
-            vec![]
-        };
-
-        // Launch VM with bcvk
-        let firmware_args_slice = firmware_args.as_slice();
-        let launch_result = cmd!(
-            sh,
-            "bcvk libvirt run --name {vm_name} --detach {firmware_args_slice...} {COMMON_INST_ARGS...} {plan_bcvk_opts...} {log_dir_args...} {image}"
-        )
-        .run()
-        .context("Launching VM with bcvk");
-
-        if let Err(e) = launch_result {
-            eprintln!("Failed to launch VM for plan {}: {:#}", plan, e);
-            all_passed = false;
-            test_results.push((plan.to_string(), false, None));
-            continue;
-        }
-
-        // Ensure VM cleanup happens even on error (unless --preserve-vm is set)
-        let cleanup_vm = || {
-            if preserve_vm {
-                return;
-            }
-            if let Err(e) = cmd!(sh, "bcvk libvirt rm --stop --force {vm_name}")
-                .ignore_stderr()
-                .ignore_status()
-                .run()
-            {
-                eprintln!("Warning: Failed to cleanup VM {}: {}", vm_name, e);
-            }
-        };
-
-        // Wait for VM to be ready and get SSH info
-        let vm_info = wait_for_vm_ready(sh, &vm_name);
-        let (ssh_port, ssh_key) = match vm_info {
-            Ok((port, key)) => (port, key),
-            Err(e) => {
-                eprintln!("Failed to get VM info for plan {}: {:#}", plan, e);
-                cleanup_vm();
-                all_passed = false;
-                test_results.push((plan.to_string(), false, None));
-                continue;
-            }
-        };
-
-        println!("VM ready, SSH port: {}", ssh_port);
-
-        // Save SSH private key to a temporary file
-        let key_file = tempfile::NamedTempFile::new().context("Creating temporary SSH key file");
-
-        let key_file = match key_file {
-            Ok(f) => f,
-            Err(e) => {
-                eprintln!("Failed to create SSH key file for plan {}: {:#}", plan, e);
-                cleanup_vm();
-                all_passed = false;
-                test_results.push((plan.to_string(), false, None));
-                continue;
-            }
-        };
-
-        let key_path = Utf8PathBuf::try_from(key_file.path().to_path_buf())
-            .context("Converting key path to UTF-8");
-
-        let key_path = match key_path {
-            Ok(p) => p,
-            Err(e) => {
-                eprintln!("Failed to convert key path for plan {}: {:#}", plan, e);
-                cleanup_vm();
-                all_passed = false;
-                test_results.push((plan.to_string(), false, None));
-                continue;
-            }
-        };
-
-        if let Err(e) = std::fs::write(&key_path, ssh_key) {
-            eprintln!("Failed to write SSH key for plan {}: {:#}", plan, e);
-            cleanup_vm();
-            all_passed = false;
-            test_results.push((plan.to_string(), false, None));
-            continue;
-        }
-
-        // Set proper permissions on the key file (SSH requires 0600)
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let perms = std::fs::Permissions::from_mode(0o600);
-            if let Err(e) = std::fs::set_permissions(&key_path, perms) {
-                eprintln!("Failed to set key permissions for plan {}: {:#}", plan, e);
-                cleanup_vm();
-                all_passed = false;
-                test_results.push((plan.to_string(), false, None));
-                continue;
-            }
-        }
-
-        // Verify SSH connectivity
-        println!("Verifying SSH connectivity...");
-        if let Err(e) = verify_ssh_connectivity(sh, ssh_port, &key_path) {
-            eprintln!("SSH verification failed for plan {}: {:#}", plan, e);
-            if bcvk_has_log_dir {
-                eprintln!(
-                    "VM logs (journal + console) may be available at: {}",
-                    vm_log_dir
-                );
-            }
-            cleanup_vm();
-            all_passed = false;
-            test_results.push((plan.to_string(), false, None));
-            continue;
-        }
-
-        println!("SSH connectivity verified");
-
-        let ssh_port_str = ssh_port.to_string();
-
-        // Run tmt for this specific plan using connect provisioner
-        println!("Running tmt tests for plan {}...", plan);
-
-        // Generate a unique run ID for this test
-        // Use the VM name which already contains a random suffix for uniqueness
-        let run_id = vm_name.clone();
-
-        // Run tmt for this specific plan
-        // Note: provision must come before plan for connect to work properly
-        let context = context.clone();
-        let how = ["--how=connect", "--guest=localhost", "--user=root"];
-        let env = ["TMT_SCRIPTS_DIR=/var/lib/tmt/scripts", "BCVK_EXPORT=1"]
-            .into_iter()
-            .chain(args.env.iter().map(|v| v.as_str()))
-            .chain(tmt_env_vars.iter().map(|v| v.as_str()))
-            .flat_map(|v| ["--environment", v]);
-        let test_result = cmd!(
-            sh,
-            "tmt {context...} run --id {run_id} --all {env...} provision {how...} --port {ssh_port_str} --key {key_path} plan --name {plan}"
-        )
-        .run();
-
-        // Log disk usage after each test run to help diagnose "no space left on device" failures
-        println!("Disk usage after plan {}:", plan);
-        let _ = cmd!(sh, "df -h").run();
-
-        // Clean up VM regardless of test result (unless --preserve-vm is set)
-        cleanup_vm();
-
-        match test_result {
-            Ok(_) => {
-                println!("Plan {} completed successfully", plan);
-                test_results.push((plan.to_string(), true, Some(run_id)));
-            }
-            Err(e) => {
-                eprintln!("Plan {} failed: {:#}", plan, e);
-                all_passed = false;
-                test_results.push((plan.to_string(), false, Some(run_id)));
-            }
-        }
-
-        // Print VM connection details if preserving
-        if preserve_vm {
-            // Copy SSH key to a persistent location
-            let persistent_key_path = Utf8Path::new("target").join(format!("{}.ssh-key", vm_name));
-            if let Err(e) = std::fs::copy(&key_path, &persistent_key_path) {
-                eprintln!("Warning: Failed to save persistent SSH key: {}", e);
-            } else {
-                println!("\n========================================");
-                println!("VM preserved for debugging:");
-                println!("========================================");
-                println!("VM name: {}", vm_name);
-                println!("SSH port: {}", ssh_port_str);
-                println!("SSH key: {}", persistent_key_path);
-                println!("\nTo connect via SSH:");
-                println!(
-                    "  ssh -i {} -p {} -o IdentitiesOnly=yes root@localhost",
-                    persistent_key_path, ssh_port_str
-                );
-                println!("\nTo cleanup:");
-                println!("  bcvk libvirt rm --stop --force {}", vm_name);
-                println!("========================================\n");
-            }
-        }
-    }
+    // Run all plans
+    let mut test_results = run_plans(
+        sh,
+        args,
+        plans,
+        &plan_metadata,
+        &bcvk_opts,
+        &firmware_args,
+        vm_config,
+        test_context,
+        &tmt_config,
+        &libvirt_lock,
+    )?;
 
     // Print summary
     println!("\n========================================");
     println!("Test Summary");
     println!("========================================");
-    for (plan, passed, _) in &test_results {
+
+    test_results.sort_by(|a, b| b.time_taken.cmp(&a.time_taken));
+
+    for RunPlanResult {
+        plan_name: plan,
+        passed,
+        time_taken,
+        ..
+    } in &test_results
+    {
         let status = if *passed { "PASSED" } else { "FAILED" };
-        println!("{}: {}", plan, status);
+        println!(
+            "{}: {} ({:?})",
+            plan,
+            status,
+            time_taken.unwrap_or(Duration::from_secs(0))
+        );
     }
     println!("========================================\n");
 
     // Print detailed error reports for failed tests
     let failed_tests: Vec<_> = test_results
         .iter()
-        .filter(|(_, passed, _)| !passed)
+        .filter(|plan_res| !plan_res.passed)
         .collect();
 
-    if !failed_tests.is_empty() {
-        println!("\n========================================");
-        println!("Detailed Error Reports");
-        println!("========================================\n");
-
-        for (plan, _, run_id) in failed_tests {
-            println!("----------------------------------------");
-            println!("Plan: {}", plan);
-            println!("----------------------------------------");
-
-            if let Some(id) = run_id {
-                println!("Run ID: {}\n", id);
-
-                // Run tmt with the specific run ID and generate verbose report
-                let report_result = cmd!(sh, "tmt run -i {id} report -vvv")
-                    .ignore_status()
-                    .run();
-
-                match report_result {
-                    Ok(_) => {}
-                    Err(e) => {
-                        eprintln!(
-                            "Warning: Failed to generate detailed report for {}: {:#}",
-                            plan, e
-                        );
-                    }
-                }
-            } else {
-                println!("Run ID not available - cannot generate detailed report");
-            }
-
-            println!("\n");
-        }
-
-        println!("========================================\n");
+    if failed_tests.is_empty() {
+        println!("All tests passed");
+        return Ok(());
     }
 
-    if !all_passed {
-        anyhow::bail!("Some test plans failed");
+    print_error_reports(sh, &failed_tests);
+
+    // Rerun failed plans
+    println!("Rerunning failed plans...\n");
+
+    let failed_plan_names: Vec<&str> = failed_tests
+        .iter()
+        .map(|result| result.plan_name.as_str())
+        .collect();
+
+    let rerun_suffix = format!("{}-rerun", random_suffix);
+    let test_context_rerun = TestContext {
+        random_suffix: &rerun_suffix,
+        distro: &distro,
+        image,
+        upgrade_image: args.upgrade_image.as_deref(),
+    };
+
+    let vm_config_rerun = VmConfig {
+        cpu: vm_cpu.to_string(),
+        mem: vm_mem.to_string(),
+        parallel_count: parallel_vms,
+        preserve: preserve_vm,
+    };
+
+    let rerun_results = run_plans(
+        sh,
+        args,
+        failed_plan_names,
+        &plan_metadata,
+        &bcvk_opts,
+        &firmware_args,
+        vm_config_rerun,
+        test_context_rerun,
+        &tmt_config,
+        &libvirt_lock,
+    )?;
+
+    // Print rerun summary
+    println!("\n========================================");
+    println!("Rerun Summary");
+    println!("========================================");
+
+    let mut rerun_all_passed = true;
+    for RunPlanResult {
+        plan_name: plan,
+        passed,
+        time_taken,
+        ..
+    } in &rerun_results
+    {
+        let status = if *passed {
+            "PASSED"
+        } else {
+            rerun_all_passed = false;
+            "FAILED"
+        };
+        println!(
+            "{}: {} ({:?})",
+            plan,
+            status,
+            time_taken.unwrap_or(Duration::from_secs(0))
+        );
+    }
+    println!("========================================\n");
+
+    if !rerun_all_passed {
+        let failed_reran_tests: Vec<_> = rerun_results
+            .iter()
+            .filter(|plan_res| !plan_res.passed)
+            .collect();
+
+        print_error_reports(sh, &failed_reran_tests);
+        anyhow::bail!("Some test plans still failed after rerun");
     }
 
     Ok(())
@@ -942,6 +1329,8 @@ struct TestDef {
     try_bind_storage: bool,
     /// Whether to skip this test for composefs backend
     skip_if_composefs: bool,
+    /// Whether to skip this test for ostree backend
+    skip_if_ostree: bool,
     /// Whether to skip this test for images with UKI
     skip_if_uki: bool,
     /// TMT fmf attributes to pass through (summary, duration, adjust, etc.)
@@ -1107,6 +1496,13 @@ fn generate_integration() -> Result<(String, String)> {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
+        let skip_if_ostree = metadata
+            .extra
+            .as_mapping()
+            .and_then(|m| m.get(&serde_yaml::Value::String(FIELD_SKIP_IF_OSTREE.to_string())))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
         let skip_if_uki = metadata
             .extra
             .as_mapping()
@@ -1124,6 +1520,7 @@ fn generate_integration() -> Result<(String, String)> {
             test_command,
             try_bind_storage,
             skip_if_composefs,
+            skip_if_ostree,
             skip_if_uki,
             tmt: metadata.tmt,
         });
@@ -1243,6 +1640,13 @@ fn generate_integration() -> Result<(String, String)> {
         if test.skip_if_composefs {
             plan_value.insert(
                 serde_yaml::Value::String(format!("extra-{}", FIELD_FIXME_SKIP_IF_COMPOSEFS)),
+                serde_yaml::Value::Bool(true),
+            );
+        }
+
+        if test.skip_if_ostree {
+            plan_value.insert(
+                serde_yaml::Value::String(format!("extra-{}", FIELD_SKIP_IF_OSTREE)),
                 serde_yaml::Value::Bool(true),
             );
         }
