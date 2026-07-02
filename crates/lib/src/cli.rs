@@ -938,6 +938,7 @@ pub(crate) enum Opt {
     #[clap(subcommand)]
     #[clap(hide = true)]
     Internals(InternalsOpts),
+    #[clap(hide = true)]
     ComposefsFinalizeStaged,
     /// Diff current /etc configuration versus default
     #[clap(hide = true)]
