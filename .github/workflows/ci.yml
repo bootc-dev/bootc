@@ -317,6 +317,9 @@ jobs:
         if: matrix.boot_type == 'uki'
         run: just validate-composefs-digest
 
+      - name: Reclaim disk space before TMT
+        run: podman builder prune -af
+
       - name: Run TMT integration tests
         run: |
           if [[ "${{ matrix.variant }}" = composefs ]]; then
