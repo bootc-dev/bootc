@@ -307,7 +307,7 @@ jobs:
           test ${{ matrix.test_os }} = "${used_vid}"
 
       - name: Unit and container integration tests
-        run: just test-container
+        run: BOOTC_SKIP_PACKAGE=1 just test-container
 
       - name: Validate composefs digest (UKI only)
         if: matrix.boot_type == 'uki'
