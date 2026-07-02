@@ -23,6 +23,10 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # Disable incremental compilation in CI; it wastes disk in the container
+  # build cache (--mount=type=cache,target=/src/target) and doesn't help
+  # one-shot builds. Wired into container builds via Justfile --build-arg.
+  CARGO_INCREMENTAL: "0"
   # Something seems to be setting this in the default GHA runners, which breaks bcvk
   # as the default runner user doesn't have access
   LIBVIRT_DEFAULT_URI: "qemu:///session"
