@@ -65,7 +65,10 @@ fedora-coreos := "quay.io/fedora/fedora-coreos:testing-devel"
 generic_buildargs := ""
 _extra_src_args := if extra_src != "" { "-v " + extra_src + ":/run/extra-src:ro --security-opt=label=disable" } else { "" }
 # filesystem arg: required for bootc container ukify to allow missing fsverity
+# CARGO_INCREMENTAL is passed through as-is (CI sets it to 0); empty is a no-op,
+# leaving cargo's own profile defaults in effect in the Dockerfile.
 base_buildargs := generic_buildargs + " " + _extra_src_args \
+                  + " --build-arg=CARGO_INCREMENTAL=" + env("CARGO_INCREMENTAL", "") \
                   + " --build-arg=base=" + base \
                   + " --build-arg=variant=" + variant \
                   + " --build-arg=bootloader=" + bootloader \
