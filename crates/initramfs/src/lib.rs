@@ -419,8 +419,13 @@ pub fn gpt_workaround() -> Result<()> {
         major(rootdev.st_rdev),
         minor(rootdev.st_rdev)
     );
-    symlink(target, "/run/systemd/volatile-root")?;
-    Ok(())
+    // Handle the case where the symlink was already created before bootc
+    // runs, e.g. by ostree-prepare-root
+    // (https://github.com/ostreedev/ostree/pull/3608).
+    match symlink(target, "/run/systemd/volatile-root") {
+        Ok(()) | Err(Errno::EXIST) => Ok(()),
+        Err(err) => Err(err).context("Creating /run/systemd/volatile-root"),
+    }
 }
 
 /// Sets up /sysroot for switch-root
