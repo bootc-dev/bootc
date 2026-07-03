@@ -43,7 +43,7 @@ pub async fn export_repo_to_image(
 
     let depl_verity = depl_verity.ok_or_else(|| anyhow::anyhow!("Image {source} not found"))?;
 
-    let imginfo = get_imginfo(storage, &depl_verity)?;
+    let (imginfo, _) = get_imginfo(storage, &depl_verity)?;
 
     let config_digest = imginfo.manifest.config().digest().clone();
 
