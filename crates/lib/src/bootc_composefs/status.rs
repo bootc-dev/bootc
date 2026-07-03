@@ -7,6 +7,7 @@ use composefs_ctl::composefs::fsverity::Sha512HashValue;
 use composefs_ctl::composefs_oci;
 use composefs_oci::OciImage;
 use fn_error_context::context;
+use openssl::sha::Sha256;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -480,7 +481,10 @@ pub(crate) fn get_bootloader() -> Result<Bootloader> {
 /// Falls back to reading legacy `.imginfo` files for backwards compatibility
 /// with deployments created before the manifest digest was stored in `.origin`.
 #[context("Reading image info for deployment {deployment_id}")]
-pub(crate) fn get_imginfo(storage: &Storage, deployment_id: &str) -> Result<ImgConfigManifest> {
+pub(crate) fn get_imginfo(
+    storage: &Storage,
+    deployment_id: &str,
+) -> Result<(ImgConfigManifest, String)> {
     let ini = read_origin(&storage.physical_root, deployment_id)?
         .ok_or_else(|| anyhow::anyhow!("No origin file for deployment {deployment_id}"))?;
 
@@ -501,7 +505,7 @@ pub(crate) fn get_imginfo(storage: &Storage, deployment_id: &str) -> Result<ImgC
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("OCI image has no config (artifact?)"))?;
 
-        return Ok(ImgConfigManifest { config, manifest });
+        return Ok((ImgConfigManifest { config, manifest }, manifest_digest_str));
     }
 
     // Fallback: read legacy .imginfo file for deployments created before
@@ -528,7 +532,11 @@ pub(crate) fn get_imginfo(storage: &Storage, deployment_id: &str) -> Result<ImgC
     let img_conf = serde_json::from_str::<ImgConfigManifest>(&buffer)
         .context("Failed to parse .imginfo file as JSON")?;
 
-    Ok(img_conf)
+    // Compute the manifest digest
+    let mut hasher = Sha256::new();
+    hasher.update(&serde_json::to_vec(&img_conf.manifest).context("Serializing image manifest")?);
+    let manifest_digest_str = hex::encode(hasher.finish());
+    Ok((img_conf, manifest_digest_str))
 }
 
 #[context("Getting composefs deployment metadata")]
@@ -543,9 +551,8 @@ fn boot_entry_from_composefs_deployment(
             let ostree_img_ref = OstreeImageReference::from_str(&img_name_from_config)?;
             let img_ref = crate::spec::ImageReference::from(ostree_img_ref);
 
-            let img_conf = get_imginfo(storage, &verity)?;
+            let (img_conf, image_digest) = get_imginfo(storage, &verity)?;
 
-            let image_digest = img_conf.manifest.config().digest().to_string();
             let architecture = img_conf.config.architecture().to_string();
             let version = img_conf
                 .manifest
