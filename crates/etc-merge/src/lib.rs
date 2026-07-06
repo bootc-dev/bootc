@@ -794,7 +794,9 @@ pub fn merge(
     .context("Merging modified files")?;
 
     for removed in &diff.removed {
-        let stat = new_etc_fd.metadata_optional(&removed)?;
+        // Use symlink_metadata_optional so that symlinks that resolve to a path
+        // outside the new_etc_fd don't get followed
+        let stat = new_etc_fd.symlink_metadata_optional(&removed)?;
 
         let Some(stat) = stat else {
             // File/dir doesn't exist in new_etc
@@ -1071,6 +1073,12 @@ mod tests {
         n.create_dir_all("dir/perms")?;
         n.write("dir/perms/some-file", "Some-file")?;
 
+        // File exists in pristine and new_etc (as a symlink pointing outside the root),
+        // but was deleted in current_etc. The merge should remove it from new_etc
+        // without following the symlink.
+        p.write("ext-symlink", "pristine content")?;
+        symlinkat("/usr/bin/bash", &n, "ext-symlink")?;
+
         let (pristine_etc_files, current_etc_files, new_etc_files) =
             traverse_etc(&p, &c, Some(&n))?;
         let diff = compute_diff(
@@ -1127,6 +1135,9 @@ mod tests {
             n.metadata("dir/perms/wo/ro").unwrap().mode(),
             DIR_BITS | 0o775
         );
+
+        // External symlink should be removed without following it
+        assert!(!n.exists("ext-symlink"));
 
         Ok(())
     }
