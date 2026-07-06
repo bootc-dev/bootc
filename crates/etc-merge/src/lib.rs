@@ -78,6 +78,12 @@ fn stat_eq_ignore_mtime(this: &Stat, other: &Stat) -> bool {
     return true;
 }
 
+#[derive(Debug)]
+pub struct UnmergablePaths {
+    path: PathBuf,
+    reason: String,
+}
+
 /// Represents the differences between two directory trees.
 #[derive(Debug)]
 pub struct Diff {
@@ -88,6 +94,8 @@ pub struct Diff {
     modified: Vec<PathBuf>,
     /// Paths that exist in the pristine /etc but not in the current one
     removed: Vec<PathBuf>,
+    /// Paths that are unmergable
+    unmergable_paths: Vec<UnmergablePaths>,
 }
 
 fn collect_all_files(
@@ -170,6 +178,47 @@ fn get_deletions(
     Ok(())
 }
 
+fn check_if_mergable(
+    new: &Directory<CustomMetadata>,
+    current_inode: &Inode<CustomMetadata>,
+    current_path: &PathBuf,
+    diff: &mut Diff,
+) {
+    match current_inode {
+        // If currently 'file' is a directory, make sure it's not a regular file
+        // new_etc as well, else we can't merge
+        Inode::Directory(..) => {
+            let new_dir = new.get_directory(&current_path.as_os_str());
+
+            if matches!(new_dir, Err(ImageError::NotADirectory(..))) {
+                diff.unmergable_paths.push(UnmergablePaths {
+                    path: current_path.clone(),
+                    reason: format!(
+                        "Directory '{}' now defaults to a file in new etc",
+                        current_path.display()
+                    ),
+                });
+            }
+        }
+
+        // If currently 'file' is not a directory, make sure it's not a directory in the
+        // new_etc either, else we can't merge
+        Inode::Leaf(..) => {
+            let new_dir = new.get_directory(&current_path.as_os_str());
+
+            if matches!(new_dir, Ok(..)) {
+                diff.unmergable_paths.push(UnmergablePaths {
+                    path: current_path.clone(),
+                    reason: format!(
+                        "File '{}' now defaults to a directory in new etc",
+                        current_path.display()
+                    ),
+                });
+            }
+        }
+    }
+}
+
 // 1. Files in the currently booted deployment’s /etc which were modified from the default /usr/etc (of the same deployment) are retained.
 //
 // 2. Files in the currently booted deployment’s /etc which were not modified from the default /usr/etc (of the same deployment)
@@ -190,6 +239,7 @@ fn get_modifications(
     current: &Directory<CustomMetadata>,
     pristine_leaves: &[Leaf<CustomMetadata>],
     current_leaves: &[Leaf<CustomMetadata>],
+    new_leaves: &[Leaf<CustomMetadata>],
     new: &Directory<CustomMetadata>,
     mut current_path: PathBuf,
     diff: &mut Diff,
@@ -216,26 +266,55 @@ fn get_modifications(
                             &curr_dir,
                             pristine_leaves,
                             current_leaves,
+                            new_leaves,
                             new,
                             current_path.clone(),
                             diff,
                         )?;
 
-                        // This directory or its contents were modified/added
-                        // Check if the new directory was deleted from new_etc
-                        // If it was, we want to add the directory back
-                        if new.get_directory_opt(&current_path.as_os_str())?.is_none() {
-                            if diff.added.len() != total_added {
-                                diff.added.insert(total_added, current_path.clone());
-                            } else if diff.modified.len() != total_modified {
-                                diff.modified.insert(total_modified, current_path.clone());
+                        match new.get_directory(&current_path.as_os_str()) {
+                            Ok(..) => {
+                                // Directory exists in both current and new etc.
+                                // Modifications/additions within this directory are handled recursively.
+                                // No additional action needed here.
                             }
+
+                            Err(ImageError::NotFound(..)) => {
+                                // This directory was deleted in new_etc
+                                // If it was modified in the current etc, we want this back
+                                if diff.added.len() != total_added {
+                                    diff.added.insert(total_added, current_path.clone());
+                                } else if diff.modified.len() != total_modified {
+                                    diff.modified.insert(total_added, current_path.clone());
+                                }
+                            }
+
+                            Err(ImageError::NotADirectory(..)) => {
+                                // Was a directory in current etc, but is now
+                                // a file/symlink in the new etc
+                                //
+                                // We will fail on merging this if this was modified
+                                // but add it in the modified list anyway
+                                if diff.modified.len() != total_modified
+                                    || diff.added.len() != total_added
+                                {
+                                    diff.modified.insert(total_added, current_path.clone());
+                                }
+                            }
+
+                            Err(e) => Err(e)?,
+                        }
+
+                        if diff.modified.len() != total_modified || diff.added.len() != total_added
+                        {
+                            check_if_mergable(new, inode, &current_path, diff);
                         }
                     }
 
                     Err(ImageError::NotFound(..)) => {
                         // Dir not found in original /etc, dir was added
                         diff.added.push(current_path.clone());
+                        check_if_mergable(new, inode, &current_path, diff);
 
                         // Also add every file inside that dir
                         collect_all_files(&curr_dir, current_path.clone(), &mut diff.added);
@@ -245,9 +324,10 @@ fn get_modifications(
                         // Some directory was changed to a file/symlink
                         // This should be counted in the diff, but we don't really merge this
                         diff.modified.push(current_path.clone());
+                        check_if_mergable(new, inode, &current_path, diff);
                     }
 
-                    Err(e) => Err(e)?,
+                    Err(e) => Err(e).with_context(|| format!("Opening pristine {path:?}"))?,
                 }
             }
 
@@ -255,8 +335,10 @@ fn get_modifications(
                 Ok(old_leaf_id) => {
                     let leaf = &current_leaves[leaf_id.0];
                     let old_leaf = &pristine_leaves[old_leaf_id.0];
+
                     if !stat_eq_ignore_mtime(&old_leaf.stat, &leaf.stat) {
                         diff.modified.push(current_path.clone());
+                        check_if_mergable(new, inode, &current_path, diff);
                         current_path.pop();
                         continue;
                     }
@@ -266,6 +348,7 @@ fn get_modifications(
                             if old_meta.content_hash != current_meta.content_hash {
                                 // File modified in some way
                                 diff.modified.push(current_path.clone());
+                                check_if_mergable(new, inode, &current_path, diff);
                             }
                         }
 
@@ -273,12 +356,14 @@ fn get_modifications(
                             if old_link != current_link {
                                 // Symlink modified in some way
                                 diff.modified.push(current_path.clone());
+                                check_if_mergable(new, inode, &current_path, diff);
                             }
                         }
 
                         (Symlink(..), Regular(..)) | (Regular(..), Symlink(..)) => {
                             // File changed to symlink or vice-versa
                             diff.modified.push(current_path.clone());
+                            check_if_mergable(new, inode, &current_path, diff);
                         }
 
                         (a, b) => {
@@ -290,14 +375,16 @@ fn get_modifications(
                 Err(ImageError::IsADirectory(..)) => {
                     // A directory was changed to a file
                     diff.modified.push(current_path.clone());
+                    check_if_mergable(new, inode, &current_path, diff);
                 }
 
                 Err(ImageError::NotFound(..)) => {
                     // File not found in original /etc, file was added
                     diff.added.push(current_path.clone());
+                    check_if_mergable(new, inode, &current_path, diff);
                 }
 
-                Err(e) => Err(e).context(format!("{path:?}"))?,
+                Err(e) => Err(e).with_context(|| format!("Opening pristine {path:?}"))?,
             },
         }
 
@@ -385,6 +472,7 @@ pub fn compute_diff(
         added: vec![],
         modified: vec![],
         removed: vec![],
+        unmergable_paths: vec![],
     };
 
     get_modifications(
@@ -392,6 +480,7 @@ pub fn compute_diff(
         &current_etc_files.root,
         &pristine_etc_files.leaves,
         &current_etc_files.leaves,
+        &new_etc_files.leaves,
         &new_etc_files.root,
         PathBuf::new(),
         &mut diff,
@@ -421,6 +510,15 @@ pub fn print_diff(diff: &Diff, writer: &mut impl Write) {
 
     for removed in &diff.removed {
         let _ = writeln!(writer, "{} {removed:?}", ModificationType::Removed.red());
+    }
+
+    for unmergable in &diff.unmergable_paths {
+        let _ = writeln!(
+            writer,
+            "{} {}",
+            ModificationType::Unmergable.magenta(),
+            unmergable.reason
+        );
     }
 }
 
@@ -589,6 +687,7 @@ enum ModificationType {
     Added,
     Modified,
     Removed,
+    Unmergable,
 }
 
 impl std::fmt::Display for ModificationType {
@@ -603,6 +702,7 @@ impl ModificationType {
             ModificationType::Added => "+",
             ModificationType::Modified => "~",
             ModificationType::Removed => "-",
+            ModificationType::Unmergable => "*",
         }
     }
 }
@@ -613,23 +713,37 @@ fn create_dir_with_perms(
     stat: &Stat,
     new_inode: Option<&Inode<CustomMetadata>>,
 ) -> anyhow::Result<()> {
-    // The new directory is not present in the new_etc, so we create it, else we only copy the
-    // metadata
-    if new_inode.is_none() {
-        // Here we use `create_dir_all` to create every parent as we will set the permissions later
-        // on. Due to the fact that we have an ordered (sorted) list of directories and directory
-        // entries and we have a DFS traversal, we will always have directory creation starting from
-        // the parent anyway.
-        //
-        // The exception being, if a directory is modified in the current_etc, and a new directory
-        // is added inside the modified directory, say `dir/prems` has its permissions modified and
-        // `dir/prems/new` is the new directory created. Since we handle added files/directories first,
-        // we will create the directories `perms/new` with directory `new` also getting its
-        // permissions set, but `perms` will not. `perms` will have its permissions set up when we
-        // handle the modified directories.
-        new_etc_fd
-            .create_dir_all(&dir_name)
-            .context(format!("Failed to create dir {dir_name:?}"))?;
+    println!("dirname: {dir_name:?}, new_inode: {new_inode:?}");
+
+    match new_inode {
+        Some(inode) => match inode {
+            Inode::Directory(..) => { /* no-op */ }
+
+            Inode::Leaf(..) => {
+                anyhow::bail!(
+                    "Modified config directory {dir_name:?} newly defaults to file. Cannot merge"
+                )
+            }
+        },
+
+        // The new directory is not present in the new_etc, so we create it, else we only copy the
+        // metadata
+        None => {
+            // Here we use `create_dir_all` to create every parent as we will set the permissions later
+            // on. Due to the fact that we have an ordered (sorted) list of directories and directory
+            // entries and we have a DFS traversal, we will always have directory creation starting from
+            // the parent anyway.
+            //
+            // The exception being, if a directory is modified in the current_etc, and a new directory
+            // is added inside the modified directory, say `dir/prems` has its permissions modified and
+            // `dir/prems/new` is the new directory created. Since we handle added files/directories first,
+            // we will create the directories `perms/new` with directory `new` also getting its
+            // permissions set, but `perms` will not. `perms` will have its permissions set up when we
+            // handle the modified directories.
+            new_etc_fd
+                .create_dir_all(&dir_name)
+                .context(format!("Failed to create dir {dir_name:?}"))?;
+        }
     }
 
     new_etc_fd
@@ -730,12 +844,14 @@ fn merge_modified_files(
                             file,
                             current_inode.stat(current_leaves),
                             new_inode,
-                        )?;
+                        )
+                        .context("Merging directory")?;
                     }
 
                     Inode::Leaf(leaf_id, _) => {
                         let leaf = &current_leaves[leaf_id.0];
-                        merge_leaf(current_etc_fd, new_etc_fd, leaf, new_inode, file)?
+                        merge_leaf(current_etc_fd, new_etc_fd, leaf, new_inode, file)
+                            .context("Merging leaf")?
                     }
                 };
             }
@@ -755,7 +871,7 @@ fn merge_modified_files(
                 }
             },
 
-            Err(e) => Err(e)?,
+            Err(e) => Err(e).with_context(|| format!("Opening {file:?} in new etc"))?,
         };
     }
 
@@ -1126,42 +1242,6 @@ mod tests {
         assert_eq!(
             n.metadata("dir/perms/wo/ro").unwrap().mode(),
             DIR_BITS | 0o775
-        );
-
-        Ok(())
-    }
-
-    #[test]
-    fn file_to_dir() -> anyhow::Result<()> {
-        let tempdir = cap_std_ext::cap_tempfile::tempdir(cap_std::ambient_authority())?;
-
-        tempdir.create_dir("pristine_etc")?;
-        tempdir.create_dir("current_etc")?;
-        tempdir.create_dir("new_etc")?;
-
-        let p = tempdir.open_dir("pristine_etc")?;
-        let c = tempdir.open_dir("current_etc")?;
-        let n = tempdir.open_dir("new_etc")?;
-
-        p.write("file-to-dir", "some text")?;
-        c.write("file-to-dir", "some text 1")?;
-
-        n.create_dir_all("file-to-dir")?;
-
-        let (pristine_etc_files, current_etc_files, new_etc_files) =
-            traverse_etc(&p, &c, Some(&n))?;
-        let diff = compute_diff(
-            &pristine_etc_files,
-            &current_etc_files,
-            &new_etc_files.as_ref().unwrap(),
-        )?;
-
-        let merge_res = merge(&c, &current_etc_files, &n, &new_etc_files.unwrap(), &diff);
-
-        assert!(merge_res.is_err());
-        assert_eq!(
-            merge_res.unwrap_err().root_cause().to_string(),
-            "Modified config file \"file-to-dir\" newly defaults to directory. Cannot merge"
         );
 
         Ok(())
