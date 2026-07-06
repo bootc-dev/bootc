@@ -18,22 +18,25 @@ a signoff.
 
 ### Attribution and AI disclosure
 
-Do NOT add an `Assisted-by`, `Co-developed-by`, or similar commit
-trailer crediting an AI tool. Instead, disclose AI assistance in the
-**pull request description**. Examples:
+You SHOULD insert an `Assisted-by: AI` tag when the commit contains
+substantial assistance, and `Generated-by: AI` when the commit is
+effectively entirely generated.
 
-- "I used a LLM to generate just unit tests."
-- "This code was written in part with the assistance of generative AI."
-- "A LLM was used to generate almost all of the code, but I am knowledgeable in this problem domain and reviewed it carefully."
-- "This code is generated, I am only partially knowledgeable in this domain."
-- "Code is LLM generated; I don't know the programming language but it did fix the problem."
+Do NOT add `Co-developed-by`, and do NOT reference specific
+model names or tools because these can be considered a form of advertising.
 
-(The closer the commits are to being *entirely* AI, the more likely
- it is that you should submit the PR as a draft, or even file an
- issue first with a proposed design.)
+For new contributors, when using AI you SHOULD include in at least the pull
+request description a rough outline of the human's level of review and
+knowledge:
 
-If you're an agent generating a git commit, ensure your human sees
-this choice and preferably writes the text on their own.
+> Assisted-by: AI
+> Unit tests are LLM generated.
+
+> Generated-by: AI
+> I am knowledgeable in this problem domain and reviewed it carefully.
+
+> Generated-by: AI
+> I don't know Rust|Go|... well, but I did test this and it fixed the problem.
 
 ### Large changes
 
