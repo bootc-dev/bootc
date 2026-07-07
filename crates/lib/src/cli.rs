@@ -32,6 +32,7 @@ use ostree_container::store::PrepareResult;
 use ostree_ext::container as ostree_container;
 
 use ostree_ext::keyfileext::KeyFileExt;
+use ostree_ext::oci_spec::image::Digest;
 use ostree_ext::ostree;
 use ostree_ext::sysroot::SysrootLock;
 use schemars::schema_for;
@@ -124,6 +125,14 @@ pub(crate) struct UpgradeOpts {
     #[clap(long, conflicts_with_all = ["check", "download_only"])]
     pub(crate) from_downloaded: bool,
 
+    /// Require the update to have the given digest, and fail if the digest does not match.
+    ///
+    /// This can be useful if some external checks (such as provenance verification) have been done
+    /// on a specific version of the image, and one needs to ensure that the image being pulled is
+    /// the same version that was checked.
+    #[clap(long, value_name = "DIGEST")]
+    pub(crate) require_digest: Option<Digest>,
+
     /// Upgrade to a different tag of the currently booted image.
     ///
     /// This derives the target image by replacing the tag portion of the current
@@ -191,6 +200,14 @@ pub(crate) struct SwitchOpts {
 
     /// Target image to use for the next boot.
     pub(crate) target: String,
+
+    /// Require the update to have the given digest, and fail if the digest does not match.
+    ///
+    /// This can be useful if some external checks (such as provenance verification) have been done
+    /// on a specific version of the image, and one needs to ensure that the image being pulled is
+    /// the same version that was checked.
+    #[clap(long, conflicts_with = "mutate_in_place", value_name = "DIGEST")]
+    pub(crate) require_digest: Option<Digest>,
 
     #[clap(flatten)]
     pub(crate) progress: ProgressOptions,
@@ -1244,6 +1261,12 @@ async fn upgrade(
                     println!("  Version: {version}");
                 }
                 println!("  Digest: {}", r.manifest_digest);
+                if opts
+                    .require_digest
+                    .is_some_and(|digest| digest != r.manifest_digest)
+                {
+                    println!("  Warning: Manifest digest does not match provided digest!");
+                }
                 changed = true;
                 if let Some(previous_image) = booted_image.as_ref() {
                     let diff =
@@ -1279,6 +1302,13 @@ async fn upgrade(
         let fetched_digest = &fetched.manifest_digest;
         tracing::debug!("staged: {staged_digest:?}");
         tracing::debug!("fetched: {fetched_digest}");
+        if let Some(digest) = opts.require_digest.as_ref()
+            && fetched_digest != digest
+        {
+            anyhow::bail!(
+                "Fetched digest does not match required digest:\n  {fetched_digest} != {digest}"
+            );
+        }
         let staged_unchanged = staged_digest
             .as_ref()
             .map(|d| d == fetched_digest)
@@ -1457,6 +1487,15 @@ async fn switch_ostree(
         )
         .await?
     };
+    let fetched_digest = &fetched.manifest_digest;
+    tracing::debug!("fetched: {fetched_digest}");
+    if let Some(digest) = opts.require_digest.as_ref()
+        && fetched_digest != digest
+    {
+        anyhow::bail!(
+            "Fetched digest does not match required digest:\n  {fetched_digest} != {digest}"
+        );
+    }
 
     if !opts.retain {
         // By default, we prune the previous ostree ref so it will go away after later upgrades

@@ -48,6 +48,7 @@ pub(crate) async fn switch_composefs(
         bootc.operation = "switch",
         bootc.target_image = target_imgref.to_string(),
         bootc.apply_mode = opts.apply,
+        bootc.require_digest = opts.require_digest.as_ref().map(ToString::to_string),
         "Starting composefs switch operation",
     );
 
@@ -77,6 +78,7 @@ pub(crate) async fn switch_composefs(
         apply: opts.apply,
         download_only: false,
         use_unified,
+        require_digest: opts.require_digest,
     };
 
     if let Some(cfg_verity) = image {

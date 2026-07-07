@@ -10,6 +10,7 @@ use composefs_oci::image::create_filesystem;
 use fn_error_context::context;
 use ocidir::cap_std::ambient_authority;
 use ostree_ext::container::ManifestDiff;
+use ostree_ext::oci_spec::image::Digest;
 
 use crate::bootc_composefs::gc::GCOpts;
 use crate::spec::BootloaderKind;
@@ -210,6 +211,7 @@ pub(crate) struct DoUpgradeOpts {
     pub(crate) download_only: bool,
     /// Whether to use unified storage (containers-storage + composefs).
     pub(crate) use_unified: bool,
+    pub(crate) require_digest: Option<Digest>,
 }
 
 async fn apply_upgrade(
@@ -262,6 +264,14 @@ pub(crate) async fn do_upgrade(
         opts.use_unified,
     )
     .await?;
+
+    if let Some(digest) = opts.require_digest.as_ref()
+        && &manifest_digest.parse::<Digest>()? != digest
+    {
+        anyhow::bail!(
+            "Fetched digest does not match required digest:\n  {manifest_digest} != {digest}"
+        );
+    }
 
     // If the target image produces the same fs-verity digest as any existing
     // deployment (booted, staged, rollback, or pinned), error out.  Two images
@@ -351,6 +361,7 @@ pub(crate) async fn upgrade_composefs(
         bootc.apply_mode = opts.apply,
         bootc.download_only = opts.download_only,
         bootc.from_downloaded = opts.from_downloaded,
+        bootc.require_digest = opts.require_digest.as_ref().map(ToString::to_string),
         "Starting composefs upgrade operation"
     );
 
@@ -375,6 +386,7 @@ pub(crate) async fn upgrade_composefs(
         apply: opts.apply,
         download_only: opts.download_only,
         use_unified: false,
+        require_digest: opts.require_digest,
     };
 
     if opts.from_downloaded {
