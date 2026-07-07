@@ -285,4 +285,11 @@ execute:
     how: fmf
     test:
       - /tmt/tests/tests/test-45-composefs-corruped-state-resilience
+
+/plan-46-etc-merge-strategy:
+  summary: Test etc merge strategy (skip/replace/fail)
+  discover:
+    how: fmf
+    test:
+      - /tmt/tests/tests/test-46-etc-merge-strategy
 # END GENERATED PLANS
