@@ -77,6 +77,7 @@ pub(crate) async fn switch_composefs(
         apply: opts.apply,
         download_only: false,
         use_unified,
+        merge_strategy: opts.merge_strategy.merge_strategy,
     };
 
     if let Some(cfg_verity) = image {

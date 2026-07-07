@@ -54,3 +54,10 @@ pub(crate) const UKI_NAME_PREFIX: &str = TYPE1_BOOT_DIR_PREFIX;
 /// that keep the manifest, config, and layer splitstreams alive. This is
 /// analogous to how ostree uses `ostree/` refs.
 pub(crate) const BOOTC_TAG_PREFIX: &str = "localhost/bootc-";
+
+/// This is the file that stores configuration for deployment finalization
+/// ```toml
+/// # /etc merge strategy
+/// merge_strategy = "replace"
+/// ```
+pub(crate) const FINALIZE_CONF_FILE: &str = "usr/lib/bootc/finalize.toml";

@@ -73,6 +73,17 @@ Soft reboot allows faster system restart by avoiding full hardware reboot when p
 
     Upgrade to a different tag of the currently booted image
 
+**--merge-strategy**=*MERGE_STRATEGY*
+
+    The merge strategy to use when conflicts are found while performing three way etc merge
+
+    Possible values:
+    - fail
+    - skip
+    - replace
+
+    Default: fail
+
 <!-- END GENERATED OPTIONS -->
 
 # EXAMPLES

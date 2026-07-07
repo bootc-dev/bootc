@@ -178,3 +178,8 @@ check:
   summary: Test composefs backend resilience to state corruption
   duration: 30m
   test: nu booted/test-composefs-corruped-state-resilience.nu
+
+/test-46-etc-merge-strategy:
+  summary: Test etc merge strategy (skip/replace/fail)
+  duration: 30m
+  test: nu booted/test-etc-merge-strategy.nu
