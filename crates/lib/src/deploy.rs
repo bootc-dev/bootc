@@ -46,7 +46,7 @@
 
 use std::collections::HashSet;
 use std::io::{BufRead, Write};
-use std::os::fd::AsFd;
+use std::os::fd::{AsFd, AsRawFd};
 use std::process::Command;
 
 use anyhow::{Context, Result, anyhow};
@@ -1007,6 +1007,38 @@ impl MergeState {
     }
 }
 
+/// Pull the bound images referenced by an imported commit before staging it.
+#[context("Pulling bound images for ostree commit {commit}")]
+async fn pull_bound_images_for_commit(sysroot: &Storage, commit: &str) -> Result<()> {
+    let repo = sysroot.get_ostree()?.repo();
+    let repo_dir = Dir::reopen_dir(&repo.dfd_borrow())?;
+    let repo_tmp = repo_dir
+        .open_dir("tmp")
+        .context("Opening ostree repo tmp/")?;
+    let td = cap_std_ext::cap_tempfile::TempDir::new_in(&repo_tmp)?;
+    let checkout_mode = if repo.mode() == ostree::RepoMode::Bare {
+        ostree::RepoCheckoutMode::None
+    } else {
+        ostree::RepoCheckoutMode::User
+    };
+    let checkout_opts = ostree::RepoCheckoutAtOptions {
+        mode: checkout_mode,
+        ..Default::default()
+    };
+    let root_name = "root";
+    repo.checkout_at(
+        Some(&checkout_opts),
+        td.as_raw_fd(),
+        root_name,
+        commit,
+        gio::Cancellable::NONE,
+    )
+    .context("Checking out imported commit")?;
+    let root = td.open_dir(root_name)?;
+    let bound_images = crate::boundimage::query_bound_images(&root)?;
+    crate::boundimage::pull_images(sysroot, bound_images).await
+}
+
 /// Stage (queue deployment of) a fetched container image.
 #[context("Staging")]
 pub(crate) async fn stage(
@@ -1054,6 +1086,28 @@ pub(crate) async fn stage(
 
     subtask.completed = true;
     subtasks.push(subtask.clone());
+    subtask.subtask = "bound_images".into();
+    subtask.id = "bound_images".into();
+    subtask.description = "Pulling Bound Images".into();
+    subtask.completed = false;
+    prog.send(Event::ProgressSteps {
+        task: "staging".into(),
+        description: "Deploying Image".into(),
+        id: image.manifest_digest.clone().as_ref().into(),
+        steps_cached: 0,
+        steps: 1,
+        steps_total: 3,
+        subtasks: subtasks
+            .clone()
+            .into_iter()
+            .chain([subtask.clone()])
+            .collect(),
+    })
+    .await;
+    pull_bound_images_for_commit(sysroot, &image.ostree_commit).await?;
+
+    subtask.completed = true;
+    subtasks.push(subtask.clone());
     subtask.subtask = "deploying".into();
     subtask.id = "deploying".into();
     subtask.description = "Deploying Image".into();
@@ -1073,30 +1127,7 @@ pub(crate) async fn stage(
     })
     .await;
     let origin = origin_from_imageref(spec.image)?;
-    let deployment =
-        crate::deploy::deploy(sysroot, from, image, &origin, lock_finalization).await?;
-
-    subtask.completed = true;
-    subtasks.push(subtask.clone());
-    subtask.subtask = "bound_images".into();
-    subtask.id = "bound_images".into();
-    subtask.description = "Pulling Bound Images".into();
-    subtask.completed = false;
-    prog.send(Event::ProgressSteps {
-        task: "staging".into(),
-        description: "Deploying Image".into(),
-        id: image.manifest_digest.clone().as_ref().into(),
-        steps_cached: 0,
-        steps: 1,
-        steps_total: 3,
-        subtasks: subtasks
-            .clone()
-            .into_iter()
-            .chain([subtask.clone()])
-            .collect(),
-    })
-    .await;
-    crate::boundimage::pull_bound_images(sysroot, &deployment).await?;
+    crate::deploy::deploy(sysroot, from, image, &origin, lock_finalization).await?;
 
     subtask.completed = true;
     subtasks.push(subtask.clone());

@@ -130,9 +130,12 @@ def sanity_check_switch_progress_json [data] {
     assert equal $deploy.steps 3
     assert equal $deploy.stepsTotal 3
     let deploy_tasks = $deploy.subtasks
+    # Bound images are now pulled before staging (see deploy::stage), so
+    # the "bound_images" subtask now comes before "deploying" instead of
+    # after it.
     assert equal ($deploy_tasks | length) 5
     let deploy_names = $deploy_tasks | get subtask
-    assert equal $deploy_names ["merging", "deploying", "bound_images", "cleanup", "cleanup"]
+    assert equal $deploy_names ["merging", "bound_images", "deploying", "cleanup", "cleanup"]
 }
 
 # The second boot; verify we're in the derived image

@@ -1210,7 +1210,7 @@ struct ApplyFromDownloadedOpts {
     apply: bool,
 }
 
-fn apply_from_downloaded_ostree(
+async fn apply_from_downloaded_ostree(
     storage: &Storage,
     booted_ostree: &BootedOstree<'_>,
     host: &crate::spec::Host,
@@ -1222,6 +1222,7 @@ fn apply_from_downloaded_ostree(
         .ok_or_else(|| anyhow::anyhow!("No staged deployment found"))?;
 
     if staged_deployment.is_finalization_locked() {
+        crate::boundimage::pull_bound_images(storage, &staged_deployment).await?;
         ostree.change_finalization(&staged_deployment)?;
         println!("Staged deployment will now be applied on reboot");
     } else {
@@ -1298,7 +1299,8 @@ async fn upgrade(
                 soft_reboot: opts.soft_reboot,
                 apply: opts.apply,
             },
-        );
+        )
+        .await;
     }
 
     // Ensure the bootc storage directory is initialized; the --check path
@@ -1479,7 +1481,8 @@ async fn switch_ostree(
                 soft_reboot: opts.soft_reboot,
                 apply: opts.apply,
             },
-        );
+        )
+        .await;
     }
 
     let target = imgref_for_switch(&opts)?;
