@@ -83,6 +83,13 @@ impl TryFrom<ProgressOptions> for ProgressWriter {
     }
 }
 
+#[derive(Debug, Parser, PartialEq, Eq)]
+pub(crate) struct EtcMergeStrategyOpts {
+    /// The merge strategy to use when conflicts are found while performing three way etc merge
+    #[clap(long, default_value_t = MergeStrategy::Fail)]
+    pub(crate) merge_strategy: MergeStrategy,
+}
+
 /// Perform an upgrade operation
 #[derive(Debug, Parser, PartialEq, Eq)]
 pub(crate) struct UpgradeOpts {
@@ -133,6 +140,9 @@ pub(crate) struct UpgradeOpts {
 
     #[clap(flatten)]
     pub(crate) progress: ProgressOptions,
+
+    #[clap(flatten)]
+    pub(crate) merge_strategy: EtcMergeStrategyOpts,
 }
 
 /// Perform an switch operation
@@ -194,6 +204,9 @@ pub(crate) struct SwitchOpts {
 
     #[clap(flatten)]
     pub(crate) progress: ProgressOptions,
+
+    #[clap(flatten)]
+    pub(crate) merge_strategy: EtcMergeStrategyOpts,
 }
 
 /// Options controlling rollback
