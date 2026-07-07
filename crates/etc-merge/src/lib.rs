@@ -80,8 +80,8 @@ fn stat_eq_ignore_mtime(this: &Stat, other: &Stat) -> bool {
 
 #[derive(Debug)]
 pub struct UnmergablePaths {
-    path: PathBuf,
-    reason: String,
+    pub path: PathBuf,
+    pub reason: String,
 }
 
 /// Represents the differences between two directory trees.
@@ -95,7 +95,7 @@ pub struct Diff {
     /// Paths that exist in the pristine /etc but not in the current one
     removed: Vec<PathBuf>,
     /// Paths that are unmergable
-    unmergable_paths: Vec<UnmergablePaths>,
+    pub unmergable_paths: Vec<UnmergablePaths>,
 }
 
 fn collect_all_files(
@@ -178,6 +178,7 @@ fn get_deletions(
     Ok(())
 }
 
+#[context("Checking mergability: {current_path:?}")]
 fn check_if_mergable(
     new: &Directory<CustomMetadata>,
     current_inode: &Inode<CustomMetadata>,
@@ -224,7 +225,7 @@ fn check_if_mergable(
                         ),
                     });
                 }
-                Err(ImageError::NotFound(..)) => {},
+                Err(ImageError::NotFound(..)) | Err(ImageError::NotADirectory(..)) => {}
                 Err(e) => Err(e)?,
             }
         }
@@ -497,6 +498,19 @@ pub fn compute_diff(
     Ok(diff)
 }
 
+pub fn print_unmergable_paths(diff: &Diff, writer: &mut impl Write) {
+    use owo_colors::OwoColorize;
+
+    for unmergable in &diff.unmergable_paths {
+        let _ = writeln!(
+            writer,
+            "{} {}",
+            ModificationType::Unmergable.magenta(),
+            unmergable.reason
+        );
+    }
+}
+
 /// Prints a colorized summary of differences to standard output.
 pub fn print_diff(diff: &Diff, writer: &mut impl Write) {
     use owo_colors::OwoColorize;
@@ -513,14 +527,7 @@ pub fn print_diff(diff: &Diff, writer: &mut impl Write) {
         let _ = writeln!(writer, "{} {removed:?}", ModificationType::Removed.red());
     }
 
-    for unmergable in &diff.unmergable_paths {
-        let _ = writeln!(
-            writer,
-            "{} {}",
-            ModificationType::Unmergable.magenta(),
-            unmergable.reason
-        );
-    }
+    print_unmergable_paths(diff, writer);
 }
 
 #[context("Collecting xattrs")]

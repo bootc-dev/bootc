@@ -14,12 +14,16 @@ use cap_std_ext::cap_std::{ambient_authority, fs::Dir};
 use cap_std_ext::dirext::CapStdExtDirExt;
 use composefs::generic_tree::{FileSystem, Stat};
 use composefs_ctl::composefs;
-use etc_merge::{compute_diff, merge, print_diff, traverse_etc};
+use etc_merge::{Diff, compute_diff, merge, traverse_etc};
 use rustix::fs::fsync;
 
 use fn_error_context::context;
 
-pub(crate) async fn get_etc_diff(storage: &Storage, booted_cfs: &BootedComposefs) -> Result<()> {
+pub(crate) async fn get_etc_diff(
+    storage: &Storage,
+    booted_cfs: &BootedComposefs,
+    new_etc: Option<&Dir>,
+) -> Result<Diff> {
     let host = get_composefs_status(storage, booted_cfs).await?;
     let booted_composefs = host.require_composefs_booted()?;
 
@@ -37,16 +41,18 @@ pub(crate) async fn get_etc_diff(storage: &Storage, booted_cfs: &BootedComposefs
         Dir::open_ambient_dir(erofs_tmp_mnt.dir.path().join("etc"), ambient_authority())?;
     let current_etc = Dir::open_ambient_dir("/etc", ambient_authority())?;
 
-    let (pristine_files, current_files, _) = traverse_etc(&pristine_etc, &current_etc, None)?;
+    let (pristine_files, current_files, new_etc_files) =
+        traverse_etc(&pristine_etc, &current_etc, new_etc)?;
+
     let diff = compute_diff(
         &pristine_files,
         &current_files,
-        &FileSystem::new(Stat::uninitialized()),
+        &new_etc_files
+            .as_ref()
+            .unwrap_or(&FileSystem::new(Stat::uninitialized())),
     )?;
 
-    print_diff(&diff, &mut std::io::stdout());
-
-    Ok(())
+    Ok(diff)
 }
 
 pub(crate) async fn composefs_backend_finalize(

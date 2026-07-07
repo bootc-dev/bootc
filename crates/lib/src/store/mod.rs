@@ -249,7 +249,6 @@ impl<'a> BootedOstree<'a> {
 }
 
 /// Represents a composefs-based boot environment
-#[allow(dead_code)]
 pub struct BootedComposefs {
     pub repo: Arc<ComposefsRepository>,
     pub cmdline: &'static ComposefsCmdline,
