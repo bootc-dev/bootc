@@ -1422,6 +1422,7 @@ dependencies = [
  "anstream",
  "anyhow",
  "cap-std-ext 5.1.2",
+ "clap",
  "composefs-ctl",
  "fn-error-context",
  "hex",

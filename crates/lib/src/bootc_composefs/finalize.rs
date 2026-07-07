@@ -14,7 +14,7 @@ use cap_std_ext::cap_std::{ambient_authority, fs::Dir};
 use cap_std_ext::dirext::CapStdExtDirExt;
 use composefs::generic_tree::{FileSystem, Stat};
 use composefs_ctl::composefs;
-use etc_merge::{compute_diff, merge, print_diff, traverse_etc};
+use etc_merge::{MergeStrategy, compute_diff, merge, print_diff, traverse_etc};
 use rustix::fs::fsync;
 
 use fn_error_context::context;
@@ -113,11 +113,18 @@ pub(crate) async fn composefs_backend_finalize(
     let (pristine_files, current_files, new_files) =
         traverse_etc(&pristine_etc, &current_etc, Some(&new_etc))?;
 
-    let new_files =
+    let mut new_files =
         new_files.ok_or_else(|| anyhow::anyhow!("Failed to get dirtree for new etc"))?;
 
     let diff = compute_diff(&pristine_files, &current_files, &new_files)?;
-    merge(&current_etc, &current_files, &new_etc, &new_files, &diff)?;
+    merge(
+        &current_etc,
+        &current_files,
+        &new_etc,
+        &mut new_files,
+        &diff,
+        MergeStrategy::Fail,
+    )?;
 
     // Remove /etc/.updated from the new deployment so that ConditionNeedsUpdate=|/etc
     // services (systemd-sysusers, systemd-tmpfiles) run on the first boot, mirroring

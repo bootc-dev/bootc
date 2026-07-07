@@ -16,6 +16,7 @@ composefs-ctl = { workspace = true }
 fn-error-context = { workspace = true }
 owo-colors = { workspace = true }
 anstream = { workspace = true }
+clap = { workspace = true }
 
 [lints]
 workspace = true

@@ -24,7 +24,7 @@ use composefs_ctl::composefs_boot;
 use composefs_ctl::composefs_oci;
 
 use composefs_boot::BootOps as _;
-use etc_merge::{compute_diff, print_diff};
+use etc_merge::{MergeStrategy, compute_diff, print_diff};
 use fn_error_context::context;
 use indoc::indoc;
 use ostree::gio;
@@ -717,6 +717,8 @@ pub(crate) enum InternalsOpts {
         /// Whether to perform the three way merge or not
         #[clap(long)]
         merge: bool,
+        #[clap(long, requires = "merge", default_value_t = MergeStrategy::Fail)]
+        strategy: MergeStrategy,
     },
     #[cfg(feature = "docgen")]
     /// Dump CLI structure as JSON for documentation generation
@@ -2202,6 +2204,7 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
                 current_etc,
                 new_etc,
                 merge,
+                strategy: merge_strategy,
             } => {
                 let pristine_etc =
                     Dir::open_ambient_dir(pristine_etc, cap_std::ambient_authority())?;
@@ -2211,15 +2214,13 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
                 let (p, c, n) =
                     etc_merge::traverse_etc(&pristine_etc, &current_etc, Some(&new_etc))?;
 
-                let n = n
-                    .as_ref()
-                    .ok_or_else(|| anyhow::anyhow!("Failed to get new directory tree"))?;
+                let mut n = n.ok_or_else(|| anyhow::anyhow!("Failed to get new directory tree"))?;
 
                 let diff = compute_diff(&p, &c, &n)?;
                 print_diff(&diff, &mut std::io::stdout());
 
                 if merge {
-                    etc_merge::merge(&current_etc, &c, &new_etc, &n, &diff)?;
+                    etc_merge::merge(&current_etc, &c, &new_etc, &mut n, &diff, merge_strategy)?;
                 }
 
                 Ok(())
