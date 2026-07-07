@@ -44,14 +44,28 @@ def test_bootc_image_list [] {
 
 # Get just the type (foo_t) from a security context
 def get_file_selinux_type [p] {
-    getfattr --only-values -n security.selinux $p | split row ':' | get 2
+    if not ($p | path exists) {
+        error make {msg: $"Path ($p) does not exist"}
+    }
+    let context = (getfattr --only-values -n security.selinux $p)
+    if ($context | is-empty) {
+        error make {msg: $"SELinux context on ($p) is empty or missing"}
+    }
+    let parts = $context | split row ':'
+    if ($parts | length) < 3 {
+        error make {msg: $"SELinux context on ($p) is malformed: ($context)"}
+    }
+    $parts | get 2
 }
 
 # Verify that the SELinux labels on the main "containers-storage:" instance match ours.
 # See the relabeling we do in imgstorage.rs. We only verify types, because the role
 # may depend on the creating user.
 def test_storage_labels [] {
-    for v in [".", "overlay-images", "defaultNetworkBackend"] {
+    # Verify a representative set of storage paths. Note that
+    # "defaultNetworkBackend" was removed; Podman 5.0+ dropped CNI
+    # support and no longer creates that file.
+    for v in [".", "overlay-images"] {
         let base = (get_file_selinux_type $"/var/lib/containers/storage/($v)")
         let target = (get_file_selinux_type $"/usr/lib/bootc/storage/($v)")
         assert equal $base $target
