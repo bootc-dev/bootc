@@ -3,6 +3,7 @@
 #![allow(dead_code)]
 
 use fn_error_context::context;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::fmt::Display;
@@ -25,8 +26,9 @@ use rustix::fs::{
     AtFlags, Gid, Uid, XattrFlags, lgetxattr, llistxattr, lsetxattr, readlinkat, symlinkat,
 };
 
-#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[clap(rename_all = "lowercase")]
+#[serde(rename_all = "lowercase")]
 pub enum MergeStrategy {
     /// Fail if there is a merge conflict
     #[default]
@@ -43,6 +45,19 @@ impl Display for MergeStrategy {
             MergeStrategy::Fail => f.write_str("fail"),
             MergeStrategy::Skip => f.write_str("skip"),
             MergeStrategy::Replace => f.write_str("replace"),
+        }
+    }
+}
+
+impl TryFrom<&str> for MergeStrategy {
+    type Error = anyhow::Error;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "fail" => Ok(Self::Fail),
+            "skip" => Ok(Self::Skip),
+            "replace" => Ok(Self::Replace),
+            s => anyhow::bail!("Unknown strategy {s}"),
         }
     }
 }
@@ -119,7 +134,7 @@ pub struct Diff {
     /// Paths that exist in the pristine /etc but not in the current one
     removed: Vec<PathBuf>,
     /// Paths that are unmergable
-    unmergable_paths: Vec<UnmergablePaths>,
+    pub unmergable_paths: Vec<UnmergablePaths>,
 }
 
 fn collect_all_files(

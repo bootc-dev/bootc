@@ -7,11 +7,13 @@ use composefs_ctl::composefs;
 use composefs_ctl::composefs_boot;
 use composefs_ctl::composefs_oci;
 use composefs_oci::image::create_filesystem;
+use etc_merge::MergeStrategy;
 use fn_error_context::context;
 use ocidir::cap_std::ambient_authority;
 use ostree_ext::container::ManifestDiff;
 
 use crate::bootc_composefs::gc::GCOpts;
+use crate::bootc_composefs::status::StagedDeploymentState;
 use crate::spec::BootloaderKind;
 use crate::{
     bootc_composefs::{
@@ -210,6 +212,8 @@ pub(crate) struct DoUpgradeOpts {
     pub(crate) download_only: bool,
     /// Whether to use unified storage (containers-storage + composefs).
     pub(crate) use_unified: bool,
+    /// Merge strategy to use when we have a conflict when merging etc
+    pub(crate) merge_strategy: MergeStrategy,
 }
 
 async fn apply_upgrade(
@@ -307,14 +311,22 @@ pub(crate) async fn do_upgrade(
         )?,
     };
 
+    let staged_state = StagedDeploymentState {
+        storage,
+        booted_cfs,
+        mounted_staged_depl: &mounted_fs,
+        staged_depl: StagedDeployment {
+            depl_id: id.to_hex(),
+            finalization_locked: opts.download_only,
+            merge_strategy: opts.merge_strategy,
+        },
+    };
+
     write_composefs_state(
         &Utf8PathBuf::from("/sysroot"),
         &id,
         imgref,
-        Some(StagedDeployment {
-            depl_id: id.to_hex(),
-            finalization_locked: opts.download_only,
-        }),
+        Some(staged_state),
         boot_type,
         boot_digest,
         &manifest_digest,
@@ -375,6 +387,7 @@ pub(crate) async fn upgrade_composefs(
         apply: opts.apply,
         download_only: opts.download_only,
         use_unified: false,
+        merge_strategy: opts.merge_strategy.merge_strategy,
     };
 
     if opts.from_downloaded {
@@ -393,15 +406,19 @@ pub(crate) async fn upgrade_composefs(
 
         start_finalize_stated_svc()?;
 
-        // Make the staged deployment not download_only
-        let new_staged = StagedDeployment {
-            depl_id: staged.require_composefs()?.verity.clone(),
-            finalization_locked: false,
-        };
-
         let staged_depl_dir =
             Dir::open_ambient_dir(COMPOSEFS_TRANSIENT_STATE_DIR, ambient_authority())
                 .context("Opening transient state directory")?;
+
+        let current = staged_depl_dir
+            .read_to_string(COMPOSEFS_STAGED_DEPLOYMENT_FNAME)
+            .context("Reading staged file")?;
+
+        let mut new_staged: StagedDeployment =
+            serde_json::from_str(&current).context("Deserialzing staged file")?;
+
+        // Make the staged deployment not download_only
+        new_staged.finalization_locked = false;
 
         staged_depl_dir
             .atomic_replace_with(

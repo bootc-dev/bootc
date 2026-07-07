@@ -6,6 +6,7 @@ use bootc_mount::inspect_filesystem;
 use composefs_ctl::composefs::fsverity::Sha512HashValue;
 use composefs_ctl::composefs_oci;
 use composefs_oci::OciImage;
+use etc_merge::MergeStrategy;
 use fn_error_context::context;
 use serde::{Deserialize, Serialize};
 
@@ -26,7 +27,7 @@ use crate::{
         grub_menuconfig::{MenuEntry, parse_grub_menuentry_file},
     },
     spec::{BootEntry, BootOrder, BootloaderKind, Host, HostSpec, ImageStatus},
-    store::Storage,
+    store::{BootedComposefs, Storage},
     utils::{EfiError, read_uefi_var},
 };
 
@@ -127,6 +128,20 @@ pub(crate) struct StagedDeployment {
     /// Whether to finalize this staged deployment on reboot or not
     /// This also maps to `download_only` field in `BootEntry`
     pub(crate) finalization_locked: bool,
+    /// The merge strategy configured for three way etc merge
+    pub(crate) merge_strategy: MergeStrategy,
+}
+
+/// The state needed to write `/run/composefs/staged-deployment`
+pub(crate) struct StagedDeploymentState<'a> {
+    /// The JSON that's serialized into `/run/composefs/staged-deployment`
+    pub(crate) staged_depl: StagedDeployment,
+    /// Storage object
+    pub(crate) storage: &'a Storage,
+    /// The current booted composefs info
+    pub(crate) booted_cfs: &'a BootedComposefs,
+    /// Mounted staged EROFS fd
+    pub(crate) mounted_staged_depl: &'a Dir,
 }
 
 #[derive(Debug, PartialEq)]

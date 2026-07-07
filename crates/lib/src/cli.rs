@@ -2366,7 +2366,8 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
                     anyhow::bail!("ConfigDiff is only supported for composefs backend")
                 }
                 BootedStorageKind::Composefs(booted_cfs) => {
-                    get_etc_diff(storage, &booted_cfs).await
+                    get_etc_diff(storage, &booted_cfs, None, true).await?;
+                    Ok(())
                 }
             }
         }

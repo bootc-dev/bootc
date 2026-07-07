@@ -1,4 +1,4 @@
-use std::io::Write;
+use std::io::{Read, Write};
 use std::os::unix::fs::symlink;
 use std::path::Path;
 use std::{fs::create_dir_all, process::Command};
@@ -15,6 +15,7 @@ use cap_std_ext::cap_std::fs::{Dir, Permissions, PermissionsExt};
 use cap_std_ext::dirext::CapStdExtDirExt;
 use composefs::fsverity::{FsVerityHashValue, Sha512HashValue};
 use composefs_ctl::composefs;
+use etc_merge::MergeStrategy;
 use fn_error_context::context;
 
 use ostree_ext::container::deploy::ORIGIN_CONTAINER;
@@ -24,11 +25,14 @@ use rustix::{
     mount::MountAttrFlags,
     path::Arg,
 };
+use serde::{Deserialize, Serialize};
 
 use crate::bootc_composefs::boot::BootType;
+use crate::bootc_composefs::finalize::get_etc_diff;
 use crate::bootc_composefs::status::{
-    ComposefsCmdline, StagedDeployment, get_sorted_type1_boot_entries,
+    ComposefsCmdline, StagedDeploymentState, get_sorted_type1_boot_entries,
 };
+use crate::composefs_consts::FINALIZE_CONF_FILE;
 use crate::parsers::bls_config::{BLSConfigType, EFIKey};
 use crate::store::{BootedComposefs, Storage};
 use crate::{
@@ -42,6 +46,12 @@ use crate::{
     spec::{FilesystemOverlay, FilesystemOverlayAccessMode, FilesystemOverlayPersistence},
     utils::path_relative_to,
 };
+
+#[derive(Debug, Serialize, Deserialize)]
+struct FinalizeConfFile {
+    /// Merge strategy for etc
+    merge_strategy: Option<MergeStrategy>,
+}
 
 /// Read and parse the `.origin` INI file for a deployment.
 ///
@@ -245,7 +255,7 @@ pub(crate) async fn write_composefs_state(
     root_path: &Utf8PathBuf,
     deployment_id: &Sha512HashValue,
     target_imgref: &ImageReference,
-    staged: Option<StagedDeployment>,
+    staged: Option<StagedDeploymentState<'_>>,
     boot_type: BootType,
     boot_digest: String,
     manifest_digest: &str,
@@ -307,7 +317,50 @@ pub(crate) async fn write_composefs_state(
         )
         .context("Failed to write to .origin file")?;
 
-    if let Some(staged) = staged {
+    if let Some(mut staged_opts) = staged {
+        let diff = get_etc_diff(
+            staged_opts.storage,
+            staged_opts.booted_cfs,
+            Some(&deployment_id.to_hex()),
+            false,
+        )
+        .await?;
+
+        if !diff.unmergable_paths.is_empty()
+            && staged_opts.staged_depl.merge_strategy == MergeStrategy::Fail
+        {
+            let error = anyhow::anyhow!(
+                "Merge conflicts found in etc and current strategy is either to fail or is not configured. {}",
+                "Hint: use --merge-strategy or config file /usr/lib/bootc/finalize.toml to specify the strategy"
+            );
+
+            // The CLI default is Fail; check if the image ships a different default
+            let file = staged_opts
+                .mounted_staged_depl
+                .open_optional(FINALIZE_CONF_FILE)
+                .context("Opening finalize.toml")?;
+
+            let Some(mut file) = file else {
+                return Err(error);
+            };
+
+            let mut s = String::new();
+            file.read_to_string(&mut s)?;
+            let conf: FinalizeConfFile =
+                toml::from_str(&s).with_context(|| format!("Parsing {FINALIZE_CONF_FILE}"))?;
+
+            let Some(strategy) = conf.merge_strategy else {
+                return Err(error);
+            };
+
+            if strategy == MergeStrategy::Fail {
+                return Err(error);
+            }
+
+            // Store this in finalized file
+            staged_opts.staged_depl.merge_strategy = strategy;
+        }
+
         std::fs::create_dir_all(COMPOSEFS_TRANSIENT_STATE_DIR)
             .with_context(|| format!("Creating {COMPOSEFS_TRANSIENT_STATE_DIR}"))?;
 
@@ -318,7 +371,8 @@ pub(crate) async fn write_composefs_state(
         staged_depl_dir
             .atomic_write(
                 COMPOSEFS_STAGED_DEPLOYMENT_FNAME,
-                staged
+                staged_opts
+                    .staged_depl
                     .to_canon_json_vec()
                     .context("Failed to serialize staged deployment JSON")?,
             )

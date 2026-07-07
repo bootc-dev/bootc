@@ -17,6 +17,7 @@ fn-error-context = { workspace = true }
 owo-colors = { workspace = true }
 anstream = { workspace = true }
 clap = { workspace = true }
+serde = { workspace = true }
 
 [lints]
 workspace = true
