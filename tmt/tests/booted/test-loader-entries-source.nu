@@ -25,6 +25,13 @@
 use std assert
 use tap.nu
 
+let is_bad_version = ostree --version | lines | any {|l| $l | str contains "2026.2" }
+
+if $is_bad_version {
+    print "Found Ostree v2026.2, skipping test"
+    exit 0
+}
+
 def parse_cmdline [] {
     open /proc/cmdline | str trim | split row " "
 }
