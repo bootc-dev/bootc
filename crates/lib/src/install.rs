@@ -1868,14 +1868,16 @@ async fn install_with_sysroot(
     } else {
         match postfetch.detected_bootloader {
             Bootloader::Grub => {
+                let root_path = rootfs
+                    .target_root_path
+                    .clone()
+                    .unwrap_or(rootfs.physical_root_path.clone());
+                let chroot_target = root_path.join(deployment_path.as_str());
                 crate::bootloader::install_via_bootupd(
                     &rootfs.device_info,
-                    &rootfs
-                        .target_root_path
-                        .clone()
-                        .unwrap_or(rootfs.physical_root_path.clone()),
+                    &root_path,
                     &state.config_opts,
-                    Some(&deployment_path.as_str()),
+                    Some(chroot_target.as_path()),
                 )?;
             }
             Bootloader::Systemd | Bootloader::GrubCC => {

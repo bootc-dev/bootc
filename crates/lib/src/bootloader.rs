@@ -98,13 +98,12 @@ pub(crate) fn supports_bootupd(root: &Dir) -> Result<bool> {
 /// Check whether the target bootupd supports `--filesystem`.
 ///
 /// Runs `bootupctl backend install --help` and looks for `--filesystem` in the
-/// output. When `deployment_path` is set the command runs inside a chroot
+/// output. When `chroot_target` is set the command runs inside a chroot
 /// (via [`ChrootCmd`]) so we probe the binary from the target image.
-fn bootupd_supports_filesystem(rootfs: &Utf8Path, deployment_path: Option<&str>) -> Result<bool> {
+fn bootupd_supports_filesystem(chroot_target: Option<&Utf8Path>) -> Result<bool> {
     let help_args = ["bootupctl", "backend", "install", "--help"];
-    let output = if let Some(deploy) = deployment_path {
-        let target_root = rootfs.join(deploy);
-        ChrootCmd::new(&target_root)
+    let output = if let Some(target_root) = chroot_target {
+        ChrootCmd::new(target_root)
             .set_default_path()
             .run_get_string(help_args)?
     } else {
@@ -129,8 +128,9 @@ fn bootupd_supports_filesystem(rootfs: &Utf8Path, deployment_path: Option<&str>)
 ///
 /// When the target bootupd supports `--filesystem` we pass it pointing at a
 /// block-backed mount so that bootupd can resolve the backing device(s) itself
-/// via `lsblk`.  In the chroot path we bind-mount the physical root at
-/// `/sysroot` to give `lsblk` a real block-backed path.
+/// via `lsblk`.  When `chroot_target` is set, bootupctl is executed inside the
+/// given chroot root via [`ChrootCmd`], with the physical root bind-mounted at
+/// `/sysroot` so `lsblk` can resolve a real block-backed path.
 ///
 /// For older bootupd versions that lack `--filesystem` we fall back to the
 /// legacy `--device <device_path> <rootfs>` invocation.
@@ -139,7 +139,7 @@ pub(crate) fn install_via_bootupd(
     device: &bootc_blockdev::Device,
     rootfs: &Utf8Path,
     configopts: &crate::install::InstallConfigOpts,
-    deployment_path: Option<&str>,
+    chroot_target: Option<&Utf8Path>,
 ) -> Result<()> {
     let verbose = std::env::var_os("BOOTC_BOOTLOADER_DEBUG").map(|_| "-vvvv");
     // bootc defaults to only targeting the platform boot method.
@@ -150,7 +150,7 @@ pub(crate) fn install_via_bootupd(
     // This makes sure we use binaries from the target image rather than the buildroot.
     // In that case, the target rootfs is replaced with `/` because this is just used by
     // bootupd to find the backing device.
-    let rootfs_mount = if deployment_path.is_none() {
+    let rootfs_mount = if chroot_target.is_none() {
         rootfs.as_str()
     } else {
         "/"
@@ -179,7 +179,7 @@ pub(crate) fn install_via_bootupd(
     // parent via require_single_root().  (Older bootupd doesn't support
     // multiple backing devices anyway.)
     // Computed before building bootupd_args so the String lives long enough.
-    let root_device_path = if bootupd_supports_filesystem(rootfs, deployment_path)
+    let root_device_path = if bootupd_supports_filesystem(chroot_target)
         .context("Probing bootupd --filesystem support")?
     {
         None
@@ -200,8 +200,7 @@ pub(crate) fn install_via_bootupd(
     // namespace and the necessary API filesystems in the target
     // deployment, without requiring a user namespace (which fails under
     // qemu-user — see <https://github.com/bootc-dev/bootc/issues/2111>).
-    if let Some(deploy) = deployment_path {
-        let target_root = rootfs.join(deploy);
+    if let Some(target_root) = chroot_target {
         let boot_path = rootfs.join("boot");
         let rootfs_path = rootfs.to_path_buf();
 
@@ -212,7 +211,7 @@ pub(crate) fn install_via_bootupd(
         let mut chroot_args = vec!["bootupctl"];
         chroot_args.extend(bootupd_args);
 
-        let mut cmd = ChrootCmd::new(&target_root)
+        let mut cmd = ChrootCmd::new(target_root)
             // Bind mount /boot from the physical target root so bootupctl can find
             // the boot partition and install the bootloader there
             .bind(&boot_path, &"/boot");
