@@ -30,9 +30,9 @@ use super::RootSetup;
 use super::State;
 use super::config::Filesystem;
 use crate::task::Task;
-use bootc_kernel_cmdline::utf8::Cmdline;
 #[cfg(feature = "install-to-disk")]
 use bootc_mount::is_mounted_in_pid1_mountns;
+use linux_kernel_cmdline::utf8::Cmdline;
 
 /// Check whether DPS auto-discovery is enabled.  When `true`,
 /// `root=UUID=` is omitted and `systemd-gpt-auto-generator` discovers

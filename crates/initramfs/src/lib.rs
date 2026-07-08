@@ -34,7 +34,7 @@ use composefs_ctl::composefs_boot;
 
 use fn_error_context::context;
 
-use bootc_kernel_cmdline::utf8::Cmdline;
+use linux_kernel_cmdline::utf8::Cmdline;
 
 // mount_setattr syscall support
 const MOUNT_ATTR_RDONLY: u64 = 0x00000001;

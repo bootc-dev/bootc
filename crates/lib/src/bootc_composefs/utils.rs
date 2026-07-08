@@ -6,9 +6,9 @@ use crate::{
     store::Storage,
 };
 use anyhow::Result;
-use bootc_kernel_cmdline::utf8::Cmdline;
 use composefs_ctl::composefs_boot;
 use fn_error_context::context;
+use linux_kernel_cmdline::utf8::Cmdline;
 
 fn get_uki(storage: &Storage, deployment_verity: &str) -> Result<cap_std_ext::cap_std::fs::File> {
     let uki_dir = storage.require_esp()?.fd.open_dir(BOOTC_UKI_DIR)?;

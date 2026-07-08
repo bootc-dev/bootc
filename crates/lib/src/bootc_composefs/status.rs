@@ -1,12 +1,12 @@
 use std::{io::Read, sync::OnceLock};
 
 use anyhow::{Context, Result};
-use bootc_kernel_cmdline::utf8::Cmdline;
 use bootc_mount::inspect_filesystem;
 use composefs_ctl::composefs::fsverity::Sha512HashValue;
 use composefs_ctl::composefs_oci;
 use composefs_oci::OciImage;
 use fn_error_context::context;
+use linux_kernel_cmdline::utf8::Cmdline;
 use openssl::sha::Sha256;
 use serde::{Deserialize, Serialize};
 

@@ -15,7 +15,7 @@ include = ["/src", "LICENSE-APACHE", "LICENSE-MIT"]
 [dependencies]
 # Internal crates
 bootc-blockdev = { package = "bootc-internal-blockdev", path = "../blockdev", version = "1.16.3" }
-bootc-kernel-cmdline = { path = "../kernel_cmdline", version = "0.0.0" }
+linux-kernel-cmdline = { workspace = true }
 bootc-mount = { package = "bootc-internal-mount", path = "../mount", version = "1.16.3" }
 bootc-sysusers = { path = "../sysusers" }
 bootc-tmpfiles = { path = "../tmpfiles" }

@@ -16,7 +16,7 @@ composefs-ctl.workspace = true
 toml.workspace = true
 tracing.workspace = true
 fn-error-context.workspace = true
-bootc-kernel-cmdline =  { path = "../kernel_cmdline", version = "0.0.0" }
+linux-kernel-cmdline = { workspace = true }
 
 [lints]
 workspace = true

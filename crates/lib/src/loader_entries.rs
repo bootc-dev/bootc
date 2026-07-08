@@ -10,8 +10,8 @@
 //! See <https://github.com/bootc-dev/bootc/issues/899>
 
 use anyhow::{Context, Result, ensure};
-use bootc_kernel_cmdline::utf8::{Cmdline, CmdlineOwned};
 use fn_error_context::context;
+use linux_kernel_cmdline::utf8::{Cmdline, CmdlineOwned};
 use ostree::{gio, glib};
 use ostree_ext::ostree;
 use std::collections::BTreeMap;

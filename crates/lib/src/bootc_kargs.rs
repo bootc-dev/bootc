@@ -1,11 +1,11 @@
 //! This module handles the bootc-owned kernel argument lists in `/usr/lib/bootc/kargs.d`.
 use anyhow::{Context, Result};
-use bootc_kernel_cmdline::utf8::{Cmdline, CmdlineOwned};
 use camino::Utf8Path;
 use cap_std_ext::cap_std::fs::Dir;
 use cap_std_ext::cap_std::fs_utf8::Dir as DirUtf8;
 use cap_std_ext::dirext::CapStdExtDirExt;
 use cap_std_ext::dirext::CapStdExtDirExtUtf8;
+use linux_kernel_cmdline::utf8::{Cmdline, CmdlineOwned};
 use ostree::gio;
 use ostree_ext::ostree;
 use ostree_ext::ostree::Deployment;

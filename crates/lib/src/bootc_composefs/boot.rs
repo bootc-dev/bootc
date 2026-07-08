@@ -67,7 +67,6 @@ use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow, bail};
-use bootc_kernel_cmdline::utf8::{Cmdline, Parameter};
 use bootc_mount::tempmount::TempMount;
 use camino::{Utf8Path, Utf8PathBuf};
 use cap_std_ext::{
@@ -89,6 +88,7 @@ use composefs_ctl::composefs;
 use composefs_ctl::composefs_boot;
 use composefs_ctl::composefs_oci;
 use fn_error_context::context;
+use linux_kernel_cmdline::utf8::{Cmdline, Parameter};
 use rustix::{mount::MountFlags, path::Arg};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
