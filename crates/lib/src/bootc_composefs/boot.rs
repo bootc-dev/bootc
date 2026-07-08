@@ -61,6 +61,7 @@
 //! 1. **Primary**: New/upgraded deployment (default boot target)
 //! 2. **Secondary**: Currently booted deployment (rollback option)
 
+use std::cell::Cell;
 use std::fs::create_dir_all;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
@@ -1201,11 +1202,28 @@ pub(crate) fn setup_composefs_uki_boot(
 /// `<tmpdir>/tmp` to provide a writable scratch area for tools invoked with
 /// `--root`.
 ///
-/// Drop order matters: the ESP and tmpfs guards are declared before `composefs`
-/// so they are unmounted (and flushed) before the composefs root is detached.
+/// Drop order matters: the tmpfs guard is declared before `composefs` so it
+/// is unmounted (and flushed) before the composefs root is detached.
 pub(crate) struct MountedImageRoot {
-    // Unmounted before `composefs` on drop; ESP before tmp (inner before outer).
-    _esp: bootc_mount::tempmount::MountGuard,
+    // The ESP's device path. The ESP is intentionally *not* mounted here for
+    // our whole lifetime; it's mounted on demand via `with_esp()` instead.
+    // That's because `install_via_bootupd` runs bootupd's install tooling
+    // inside a `ChrootCmd`, which unshares the mount namespace and
+    // recursively self-binds the chroot directory (our `root_path()`) onto
+    // itself. If the ESP were already mounted at `<root_path>/boot` when
+    // that happens, the self-bind would duplicate it into an
+    // orphaned/shadowed mountinfo entry that's still visible to naive
+    // `findmnt`-based scans (like bootupd's), causing it to pick the wrong
+    // filesystem UUID.
+    esp_device: Utf8PathBuf,
+    // Tracks whether the ESP is currently mounted, i.e. whether we're
+    // inside a call to `with_esp()`. Guards `open_esp_dir()` against
+    // returning the wrong thing: without this, calling it while the ESP
+    // isn't mounted would silently open the empty `esp_subdir` directory
+    // that already exists directly in the composefs image, rather than
+    // failing.
+    esp_mounted: Cell<bool>,
+    // Unmounted before `composefs` on drop.
     _tmp: bootc_mount::tempmount::MountGuard,
     composefs: TempMount,
     pub(crate) esp_subdir: &'static str,
@@ -1241,10 +1259,6 @@ impl MountedImageRoot {
         // unconditionally mount the ESP at /boot for now.
         let esp_subdir = "boot";
 
-        let esp_path = composefs.dir.path().join(esp_subdir);
-        let esp =
-            mount_esp_at(&esp_part.path(), esp_path).context("Mounting ESP into composefs root")?;
-
         // Mount a tmpfs over /tmp so that tools invoked with --root have a
         // writable scratch area without touching the read-only EROFS root.
         let tmp_path = composefs.dir.path().join("tmp");
@@ -1258,7 +1272,8 @@ impl MountedImageRoot {
         .context("Mounting tmpfs into composefs root")?;
 
         Ok(Self {
-            _esp: esp,
+            esp_device: esp_part.path().into(),
+            esp_mounted: Cell::new(false),
             _tmp: tmp,
             composefs,
             esp_subdir,
@@ -1276,11 +1291,46 @@ impl MountedImageRoot {
     }
 
     /// Open the mounted ESP as a capability-safe directory.
+    ///
+    /// Fails unless called from within a call to [`Self::with_esp`]: the ESP
+    /// is only actually mounted for the duration of that call, and
+    /// `esp_subdir` otherwise refers to an ordinary (empty) directory that
+    /// already exists directly in the composefs image.
     pub(crate) fn open_esp_dir(&self) -> Result<Dir> {
+        if !self.esp_mounted.get() {
+            bail!("BUG: attempted to open the ESP directory while it is not mounted");
+        }
         self.composefs
             .fd
             .open_dir(self.esp_subdir)
             .with_context(|| format!("Opening ESP at /{}", self.esp_subdir))
+    }
+
+    /// Mount the ESP at `<tmpdir>/<esp_subdir>` for the duration of `f`, then
+    /// unmount it again. Nothing is mounted there outside of calls to this
+    /// method, so callers that need to invoke bootloader-install tooling
+    /// that itself creates a private mount namespace (e.g. via `ChrootCmd`)
+    /// can safely do so without risking this mount being shadowed/duplicated
+    /// by that tooling's own mount-namespace setup.
+    pub(crate) fn with_esp<T>(&self, f: impl FnOnce(&Dir) -> Result<T>) -> Result<T> {
+        let esp_path = self.root_path().join(self.esp_subdir);
+        let _guard = mount_esp_at(self.esp_device.as_str(), esp_path)
+            .context("Mounting ESP into composefs root")?;
+
+        self.esp_mounted.set(true);
+        // Reset `esp_mounted` when we return, including via `?` or panic,
+        // so a later `with_esp()` call (or a stray `open_esp_dir()` call
+        // after this one returns) doesn't see a stale "mounted" state.
+        struct ResetOnDrop<'a>(&'a Cell<bool>);
+        impl Drop for ResetOnDrop<'_> {
+            fn drop(&mut self) {
+                self.0.set(false);
+            }
+        }
+        let _reset = ResetOnDrop(&self.esp_mounted);
+
+        let dir = self.open_esp_dir()?;
+        f(&dir)
     }
 }
 
@@ -1386,56 +1436,75 @@ pub(crate) async fn setup_composefs_boot(
         postfetch.detected_bootloader,
         Bootloader::Grub | Bootloader::GrubCC
     ) {
+        let chroot_target = Utf8Path::from_path(mounted_root.root_path())
+            .ok_or_else(|| anyhow!("composefs tmpdir path is not valid UTF-8"))?;
+        // Like the ostree backend, bind the physical root's real /boot (an
+        // ordinary ext4/xfs/... directory, not yet populated with kernels at
+        // this point) into the chroot. This gives bootupd both a correct
+        // filesystem to inspect for `--write-uuid` (rather than the ESP,
+        // which is otherwise mounted at the composefs root's own /boot) and
+        // an empty `boot/efi` directory for its EFI component to discover
+        // and mount the real ESP into, exactly as it would on ostree.
+        let bind_boot_path = root_setup.physical_root_path.join("boot");
         crate::bootloader::install_via_bootupd(
             &root_setup.device_info,
             &root_setup.physical_root_path,
             &state.config_opts,
-            None,
+            Some(chroot_target),
+            Some(bind_boot_path.as_path()),
         )?;
 
         // FIXME: Remove this hack once we have support in bootupd
         if matches!(postfetch.detected_bootloader, Bootloader::GrubCC) {
+            // bootupctl wrote this under the physical root's real /boot (via
+            // the bind mount above), not under the composefs root.
             root_setup
                 .physical_root
-                .remove_dir_all("boot/grub2")
+                .remove_all_optional("boot/grub2")
                 .context("removing grub2")?;
 
-            let (os_id, ..) = parse_os_release(mounted_root.dir())?
-                .ok_or_else(|| anyhow::anyhow!("Failed to parse os-release"))?;
+            // install_via_bootupd above has already returned, so it's safe
+            // to mount the ESP here for the duration of this cleanup.
+            mounted_root.with_esp(|esp_dir| {
+                let (os_id, ..) = parse_os_release(mounted_root.dir())?
+                    .ok_or_else(|| anyhow::anyhow!("Failed to parse os-release"))?;
 
-            let dir = format!("EFI/{os_id}");
+                let dir = format!("EFI/{os_id}");
 
-            // Files are in EFI/<os-name>/
-            let efis_dir = mounted_root
-                .open_esp_dir()
-                .context("opening esp")?
-                .open_dir(&dir)
-                .with_context(|| format!("Opening {dir}"))?;
+                // Files are in EFI/<os-name>/
+                let efis_dir = esp_dir
+                    .open_dir(&dir)
+                    .with_context(|| format!("Opening {dir}"))?;
 
-            efis_dir
-                .remove_file_optional("bootuuid.cfg")
-                .context("Removing bootuuid.cfg")?;
-            efis_dir
-                .remove_file_optional("grub.cfg")
-                .context("Removing grub.cfg")?;
+                efis_dir
+                    .remove_file_optional("bootuuid.cfg")
+                    .context("Removing bootuuid.cfg")?;
+                efis_dir
+                    .remove_file_optional("grub.cfg")
+                    .context("Removing grub.cfg")?;
 
-            let final_name = match std::env::consts::ARCH {
-                "x86_64" => "grubx64.efi",
-                "aarch64" => "grubaa64-cc.efi",
-                arch => anyhow::bail!("GrubCC not supported for: {arch}"),
-            };
+                let final_name = match std::env::consts::ARCH {
+                    "x86_64" => "grubx64.efi",
+                    "aarch64" => "grubaa64-cc.efi",
+                    arch => anyhow::bail!("GrubCC not supported for: {arch}"),
+                };
 
-            mounted_root
-                .dir()
-                .copy("usr/lib/grub-cc/grub-cc.efi", &efis_dir, final_name)
-                .context("Copying grub-cc binary")?;
+                mounted_root
+                    .dir()
+                    .copy("usr/lib/grub-cc/grub-cc.efi", &efis_dir, final_name)
+                    .context("Copying grub-cc binary")?;
+
+                Ok(())
+            })?;
         }
     } else {
-        crate::bootloader::install_systemd_boot(
-            &mounted_root,
-            &state.config_opts,
-            get_secureboot_keys(mounted_root.dir(), BOOTC_AUTOENROLL_PATH)?,
-        )?;
+        mounted_root.with_esp(|_esp_dir| {
+            crate::bootloader::install_systemd_boot(
+                &mounted_root,
+                &state.config_opts,
+                get_secureboot_keys(mounted_root.dir(), BOOTC_AUTOENROLL_PATH)?,
+            )
+        })?;
     }
 
     let Some(entry) = entries.iter().next() else {
