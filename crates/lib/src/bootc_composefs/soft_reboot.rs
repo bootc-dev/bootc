@@ -8,13 +8,13 @@ use crate::{
 };
 use anyhow::{Context, Result};
 use bootc_initramfs_setup::setup_root;
-use bootc_kernel_cmdline::utf8::Cmdline;
 use bootc_mount::{PID1, bind_mount_from_pidns};
 use camino::Utf8Path;
 use cap_std_ext::cap_std::ambient_authority;
 use cap_std_ext::cap_std::fs::Dir;
 use cap_std_ext::dirext::CapStdExtDirExt;
 use fn_error_context::context;
+use linux_kernel_cmdline::utf8::Cmdline;
 use ostree_ext::systemd_has_soft_reboot;
 use rustix::mount::{UnmountFlags, unmount};
 use std::{fs::create_dir_all, os::unix::process::CommandExt, path::PathBuf, process::Command};

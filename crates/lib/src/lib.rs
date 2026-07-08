@@ -60,7 +60,7 @@
 //!
 //! - [`ostree-ext`](../ostree_ext/index.html) - OCI/ostree bridging
 //! - [`bootc-internal-mount`](../bootc_mount/index.html) - Mount utilities
-//! - [`bootc-kernel-cmdline`](../bootc_kernel_cmdline/index.html) - Cmdline parsing
+//! - [`linux-kernel-cmdline`](../linux_kernel_cmdline/index.html) - Cmdline parsing
 //! - [`etc-merge`](../etc_merge/index.html) - `/etc` three-way merge
 
 mod bootc_composefs;

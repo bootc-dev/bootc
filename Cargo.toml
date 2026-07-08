@@ -75,6 +75,7 @@ tracing = "0.1.40"
 tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 tracing-journald = "0.3.1"
 uzers = "0.12"
+linux-kernel-cmdline = { version = "0.1.1", features = ["serde"] }
 xshell = "0.2.6"
 
 # See https://github.com/coreos/cargo-vendor-filterer

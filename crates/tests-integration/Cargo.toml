@@ -23,7 +23,7 @@ serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
 xshell = { workspace = true }
-bootc-kernel-cmdline = { path = "../kernel_cmdline", version = "0.0.0" }
+linux-kernel-cmdline = { workspace = true }
 
 # Crate-specific dependencies
 # bcvk-qemu: QEMU/virtiofsd management from the bcvk project.

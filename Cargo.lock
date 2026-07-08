@@ -272,12 +272,12 @@ name = "bootc-initramfs-setup"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "bootc-kernel-cmdline",
  "cap-std-ext 5.1.2",
  "clap",
  "composefs-ctl",
  "fn-error-context",
  "libc",
+ "linux-kernel-cmdline",
  "rustix",
  "serde",
  "toml 1.1.2+spec-1.1.0",
@@ -344,16 +344,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "bootc-kernel-cmdline"
-version = "0.0.0"
-dependencies = [
- "anyhow",
- "serde",
- "similar-asserts",
- "static_assertions",
-]
-
-[[package]]
 name = "bootc-lib"
 version = "1.16.3"
 dependencies = [
@@ -364,7 +354,6 @@ dependencies = [
  "bootc-internal-blockdev",
  "bootc-internal-mount",
  "bootc-internal-utils",
- "bootc-kernel-cmdline",
  "bootc-sysusers",
  "bootc-tmpfiles",
  "camino",
@@ -390,6 +379,7 @@ dependencies = [
  "liboverdrop",
  "libsystemd",
  "linkme",
+ "linux-kernel-cmdline",
  "nom",
  "ocidir",
  "openssl",
@@ -2513,6 +2503,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "linux-kernel-cmdline"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d18193117ee846e8400539a7e565ce7382bcf5913dff47395c1094bd1d918d04"
+dependencies = [
+ "anyhow",
+ "serde",
+]
+
+[[package]]
 name = "linux-raw-sys"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4008,7 +4008,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bcvk-qemu",
- "bootc-kernel-cmdline",
  "camino",
  "cap-std-ext 5.1.2",
  "clap",
@@ -4017,6 +4016,7 @@ dependencies = [
  "indicatif 0.18.4",
  "indoc",
  "libtest-mimic",
+ "linux-kernel-cmdline",
  "oci-spec 0.10.0",
  "rand 0.10.1",
  "rexpect",

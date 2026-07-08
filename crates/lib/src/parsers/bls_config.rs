@@ -3,11 +3,11 @@
 //! This module parses the config files for the spec.
 
 use anyhow::{Result, anyhow};
-use bootc_kernel_cmdline::utf8::{Cmdline, CmdlineOwned};
 use camino::Utf8PathBuf;
 use composefs_boot::bootloader::EFI_EXT;
 use composefs_ctl::composefs_boot;
 use core::fmt;
+use linux_kernel_cmdline::utf8::{Cmdline, CmdlineOwned};
 use std::collections::HashMap;
 use std::fmt::Display;
 use uapi_version::Version;

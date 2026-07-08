@@ -50,12 +50,12 @@ use std::os::fd::AsFd;
 use std::process::Command;
 
 use anyhow::{Context, Result, anyhow};
-use bootc_kernel_cmdline::utf8::CmdlineOwned;
 use bootc_utils::skopeo_bin;
 use cap_std::fs::{Dir, MetadataExt};
 use cap_std_ext::cap_std;
 use cap_std_ext::dirext::CapStdExtDirExt;
 use fn_error_context::context;
+use linux_kernel_cmdline::utf8::CmdlineOwned;
 use ostree::{gio, glib};
 use ostree_container::OstreeImageReference;
 use ostree_ext::container as ostree_container;

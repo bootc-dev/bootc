@@ -5,7 +5,6 @@ use std::{fs::create_dir_all, process::Command};
 
 use anyhow::{Context, Result};
 use bootc_initramfs_setup::{mount_at_wrapper, overlay_transient};
-use bootc_kernel_cmdline::utf8::Cmdline;
 use bootc_mount::tempmount::TempMount;
 use bootc_utils::CommandRunExt;
 use camino::Utf8PathBuf;
@@ -16,6 +15,7 @@ use cap_std_ext::dirext::CapStdExtDirExt;
 use composefs::fsverity::{FsVerityHashValue, Sha512HashValue};
 use composefs_ctl::composefs;
 use fn_error_context::context;
+use linux_kernel_cmdline::utf8::Cmdline;
 
 use ostree_ext::container::deploy::ORIGIN_CONTAINER;
 use rustix::{

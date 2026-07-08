@@ -160,7 +160,6 @@ use std::time::Duration;
 
 use aleph::InstallAleph;
 use anyhow::{Context, Result, anyhow, ensure};
-use bootc_kernel_cmdline::utf8::{Cmdline, CmdlineOwned};
 use bootc_utils::CommandRunExt;
 use camino::Utf8Path;
 use camino::Utf8PathBuf;
@@ -174,6 +173,7 @@ use cap_std_ext::cmdext::CapStdExtCommandExt;
 use cap_std_ext::prelude::CapStdExtDirExt;
 use clap::ValueEnum;
 use fn_error_context::context;
+use linux_kernel_cmdline::utf8::{Cmdline, CmdlineOwned};
 use ostree::gio;
 use ostree_ext::ostree;
 use ostree_ext::ostree_prepareroot::{ComposefsState, Tristate};
@@ -192,6 +192,7 @@ use crate::bootc_composefs::{
     boot::setup_composefs_boot, repo::initialize_composefs_repository,
     status::get_container_manifest_and_config,
 };
+use crate::bootc_kargs::{INITRD_ARG_PREFIX, ROOTFLAGS_KEY};
 use crate::boundimage::{BoundImage, ResolvedBoundImage};
 use crate::containerenv::ContainerExecutionInfo;
 use crate::deploy::{MergeState, PreparedPullResult, prepare_for_pull, pull_from_prepared};
@@ -202,9 +203,9 @@ use crate::spec::{Bootloader, ImageReference};
 use crate::store::Storage;
 use crate::task::Task;
 use crate::utils::sigpolicy_from_opt;
-use bootc_kernel_cmdline::{INITRD_ARG_PREFIX, ROOTFLAGS, bytes, utf8};
 use bootc_mount::Filesystem;
 use composefs_ctl::composefs::repository::RepositoryConfig;
+use linux_kernel_cmdline::{bytes, utf8};
 
 /// The toplevel boot directory
 pub(crate) const BOOT: &str = "boot";
@@ -2389,7 +2390,7 @@ fn find_root_args_to_inherit(
         .find_utf8("root")?
         .and_then(|p| p.value().map(|p| p.to_string()));
     let (mount_spec, kargs) = if let Some(root) = root {
-        let rootflags = cmdline.find(ROOTFLAGS);
+        let rootflags = cmdline.find(ROOTFLAGS_KEY);
         let inherit_kargs = cmdline.find_all_starting_with(INITRD_ARG_PREFIX);
         (
             root,

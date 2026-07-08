@@ -7,11 +7,11 @@ use std::ffi::OsString;
 use std::process::Command;
 
 use anyhow::{Context, Result};
-use bootc_kernel_cmdline::utf8::Cmdline;
 use bootc_utils::CommandRunExt;
 use camino::Utf8Path;
 use cap_std_ext::cap_std::fs::Dir;
 use fn_error_context::context;
+use linux_kernel_cmdline::utf8::Cmdline;
 
 use crate::bootc_composefs::digest::compute_composefs_digest;
 use crate::bootc_composefs::status::ComposefsCmdline;
