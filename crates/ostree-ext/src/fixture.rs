@@ -22,6 +22,7 @@ use fn_error_context::context;
 use gvariant::aligned_bytes::TryAsAligned;
 use gvariant::{Marker, Structure};
 use io_lifetimes::AsFd;
+use ocidir::OciRead;
 use ocidir::cap_std::fs::{DirBuilder, DirBuilderExt as _};
 use ocidir::oci_spec::image::ImageConfigurationBuilder;
 use regex::Regex;
