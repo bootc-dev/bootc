@@ -1873,11 +1873,13 @@ async fn install_with_sysroot(
                     .clone()
                     .unwrap_or(rootfs.physical_root_path.clone());
                 let chroot_target = root_path.join(deployment_path.as_str());
+                let bind_boot_path = root_path.join("boot");
                 crate::bootloader::install_via_bootupd(
                     &rootfs.device_info,
                     &root_path,
                     &state.config_opts,
                     Some(chroot_target.as_path()),
+                    Some(bind_boot_path.as_path()),
                 )?;
             }
             Bootloader::Systemd | Bootloader::GrubCC => {
