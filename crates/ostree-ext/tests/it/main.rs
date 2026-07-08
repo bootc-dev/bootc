@@ -9,6 +9,7 @@ use gvariant::aligned_bytes::TryAsAligned;
 use gvariant::{Marker, Structure};
 use oci_image::ImageManifest;
 use oci_spec::image as oci_image;
+use ocidir::OciRead;
 use ocidir::oci_spec::distribution::Reference;
 use ocidir::oci_spec::image::{Arch, DigestAlgorithm};
 use ostree_ext::chunking::ObjectMetaSized;

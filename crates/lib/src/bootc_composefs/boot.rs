@@ -802,7 +802,12 @@ fn write_pe_to_esp(
             // UKI/Addons would always be large enough to be an external object
             anyhow::bail!("File too small to be UKI/Addon")
         }
-        RegularFile::External(id, ..) => std::fs::File::from(repo.open_object(id)?),
+        RegularFile::External(id, ..) | RegularFile::ExternalNoVerity(id, ..) => {
+            std::fs::File::from(repo.open_object(id)?)
+        }
+        RegularFile::Sparse(..) => {
+            anyhow::bail!("Sparse file cannot be a UKI/Addon")
+        }
     };
 
     let mut boot_label: Option<UKIInfo> = None;

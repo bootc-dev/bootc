@@ -6,6 +6,7 @@ use camino::Utf8Path;
 use cap_std::fs::Dir;
 use cap_std_ext::cap_std;
 use containers_image_proxy::oci_spec::image as oci_image;
+use ocidir::OciRead;
 use std::io::{BufReader, BufWriter};
 
 /// Given an OSTree container image reference, update the detached metadata (e.g. GPG signature)

@@ -13,7 +13,7 @@ use fn_error_context::context;
 use gio::prelude::*;
 use oci_spec::image as oci_image;
 use ocidir::{
-    LayerWriter,
+    LayerWriter, OciRead,
     oci_spec::image::{Arch, Platform},
 };
 use ostree::gio;
