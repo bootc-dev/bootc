@@ -6,6 +6,9 @@ This governance explains how the project is run.
 - [Values](#values)
 - [Maintainers](#maintainers)
 - [Becoming a Maintainer](#becoming-a-maintainer)
+- [Members](#members)
+- [Reviewers](#reviewers)
+- [Committers](#committers)
 - [Meetings](#meetings)
 - [CNCF Resources](#cncf-resources)
 - [Code of Conduct Enforcement](#code-of-conduct)
@@ -37,7 +40,10 @@ The Bootc and its leadership embrace the following values:
 
 ## Maintainers
 
-Bootc Maintainers have "gated" write access to the [project GitHub repository](https://github.com/bootc-dev/bootc).
+There are different levels of maintainership in the Bootc project, each with
+different responsibilities and expectations. The contributor ladder is:
+[Members](#members), [Reviewers](#reviewers), and [Committers](#committers).
+
 The current maintainers can be found in [MAINTAINERS.md](./MAINTAINERS.md).
 
 Direct pushes to the code is never allowed. All pull requests require review by a maintainer
@@ -56,25 +62,28 @@ follow through to fix issues (in code or tests).
 A maintainer is a contributor to the project's success and a citizen helping
 the project succeed.
 
-The collective team of all Maintainers is known as the Maintainer Council, which
+The collective team of all Committers is known as the Maintainer Council, which
 is the governing body for the project.
 
 ### Becoming a Maintainer
 
-To become a Maintainer you need to demonstrate the following:
+The path to maintainership follows the contributor ladder:
 
-  * commitment to the project:
-    * participate in discussions, contributions, code and documentation reviews for 6 months or more,
-    * perform reviews for 20 non-trivial pull requests,
-    * contribute 10 non-trivial pull requests and have them merged,
-  * ability to write quality code and/or documentation,
-  * ability to collaborate with the team,
-  * understanding of how the team works (policies, processes for testing and code review, etc),
-  * understanding of the project's code base and coding and documentation style.
+  * **Member**: Sponsored by a reviewer or committer. Approval requires a
+    simple majority of current committers.
+  * **Reviewer**: Proposed by an existing maintainer. Approval requires a
+    simple majority of current committers.
+  * **Committer**: Proposed by an existing maintainer. Approval requires a
+    simple majority of current committers.
 
-A new Maintainer must be proposed by an existing maintainer by opening a PR against the [MAINTAINERS.md](./MAINTAINERS.md), which will prompt a [gitvote](https://github.com/cncf/gitvote). A simple majority vote of existing Maintainers
-approves the application.  Maintainers nominations will be evaluated without prejudice
-to employer or demographics.
+See the [Members](#members), [Reviewers](#reviewers), and
+[Committers](#committers) sections for specific requirements and
+responsibilities of each role.
+
+A new maintainer must be proposed by opening a PR against the
+[MAINTAINERS.md](./MAINTAINERS.md), which will prompt a
+[gitvote](https://github.com/cncf/gitvote). Maintainer nominations will be
+evaluated without prejudice to employer or demographics.
 
 Maintainers who are selected will be granted the necessary GitHub rights.
 
@@ -89,12 +98,61 @@ Inactivity is defined as a period of very low or no activity in the project
 for a year or more, with no definite schedule to return to full Maintainer 
 activity.
 
-A Maintainer may be removed at any time by a 2/3 vote of the remaining maintainers.
+A Maintainer may be removed at any time by a 2/3 vote of the remaining committers.
 
 Depending on the reason for removal, a Maintainer may be converted to Emeritus
 status.  Emeritus Maintainers will still be consulted on some project matters,
 and can be rapidly returned to Maintainer status if their availability changes.
 This requires two votes from active maintainers.
+
+## Members
+
+A member is an active participant in the community who has shown consistent
+involvement in the project. Members attend community meetings, help answer
+questions in discussion forums, assist with issue triage, help organize events
+or community activities, and contribute to the overall health of the project.
+
+Members are part of the organization but do not have write access or code
+review responsibilities. Membership recognizes sustained community engagement
+and is the first step on the contributor ladder. Members are not required to
+have made code contributions, though they may have. Becoming a member is a
+core aspect in the journey to becoming a reviewer.
+
+A new member must be sponsored by an existing reviewer or committer. The
+sponsor will open a pull request to the [MAINTAINERS.md](./MAINTAINERS.md)
+file adding the candidate. Approval requires a simple majority of current
+committers.
+
+## Reviewers
+
+A reviewer is a core maintainer within the project. They share in reviewing
+issues and pull requests, and their LGTM counts towards the required LGTM count
+to merge a code change into the project.
+
+Reviewers are part of the organization but do not have write access. Becoming a
+reviewer is a core aspect in the journey to becoming a committer.
+
+## Committers
+
+A committer is a core maintainer who is responsible for the overall quality and
+stewardship of the project. They share the same reviewing responsibilities as
+reviewers, but are also responsible for upholding the project bylaws as well as
+participating in project level votes.
+
+Committers are part of the organization with write access to all repositories.
+Committers are expected to remain actively involved in the project and
+participate in voting and discussing of proposed project level changes.
+
+To become a Committer you need to demonstrate the following:
+
+  * commitment to the project:
+    * participate in discussions, contributions, code and documentation reviews for 6 months or more,
+    * perform reviews for 20 non-trivial pull requests,
+    * contribute 10 non-trivial pull requests and have them merged,
+  * ability to write quality code and/or documentation,
+  * ability to collaborate with the team,
+  * understanding of how the team works (policies, processes for testing and code review, etc),
+  * understanding of the project's code base and coding and documentation style.
 
 ## Meetings
 

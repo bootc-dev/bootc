@@ -1,15 +1,28 @@
 # Maintainers
 
-The current Maintainers Group for the bootc Project consists of:
+See [GOVERNANCE.md](./GOVERNANCE.md) for a description of the Member, Reviewer
+and Committer roles.
 
-| Name              | GitHub ID                                                            | Employer        | Responsibilities |
-| ----              | ----                                                                 | ----            | ----             |
-| Chris Kyrouac     | [ckyrouac](https://github.com/orgs/bootc-dev/people/ckyrouac)        | Red Hat         | Approver         |
-| Colin Walters     | [cgwalters](https://github.com/orgs/bootc-dev/people/cgwalters)      | Red Hat         | Approver         |
-| John Eckersberg   | [jeckersb](https://github.com/orgs/bootc-dev/people/jeckersb)        | Red Hat         | Approver         |
-| Xiaofeng Wang     | [henrywang](https://github.com/orgs/bootc-dev/people/henrywang)      | Red Hat         | Approver         |
-| Gursewak Mangat   | [gursewak1997](https://github.com/orgs/bootc-dev/people/gursewak1997)| Red Hat         | Approver         |
-| Joseph Marrero    | [jmarrero](https://github.com/orgs/bootc-dev/people/jmarrero)        | Red Hat         | Approver         |
+## Committers
+
+| Name              | GitHub ID                                                            | Employer        |
+| ----              | ----                                                                 | ----            |
+| Chris Kyrouac     | [ckyrouac](https://github.com/orgs/bootc-dev/people/ckyrouac)        | Red Hat         |
+| Colin Walters     | [cgwalters](https://github.com/orgs/bootc-dev/people/cgwalters)      | Red Hat         |
+| John Eckersberg   | [jeckersb](https://github.com/orgs/bootc-dev/people/jeckersb)        | Red Hat         |
+| Xiaofeng Wang     | [henrywang](https://github.com/orgs/bootc-dev/people/henrywang)      | Red Hat         |
+| Gursewak Mangat   | [gursewak1997](https://github.com/orgs/bootc-dev/people/gursewak1997)| Red Hat         |
+| Joseph Marrero    | [jmarrero](https://github.com/orgs/bootc-dev/people/jmarrero)        | Red Hat         |
+
+## Reviewers
+
+| Name              | GitHub ID                                                            | Employer        |
+| ----              | ----                                                                 | ----            |
+
+## Members
+
+| Name              | GitHub ID                                                            | Employer        |
+| ----              | ----                                                                 | ----            |
 
 # Community Managers
 
