@@ -44,7 +44,7 @@ clap_mangen = { version = "0.3.0" }
 #   [patch."https://github.com/composefs/composefs-rs"]
 #   composefs-ctl = { path = "/path/to/composefs-rs/crates/composefs-ctl" }
 # The Justfile will auto-detect these and bind-mount them into container builds.
-composefs-ctl = { git = "https://github.com/composefs/composefs-rs", rev = "679a342db28c536d3bfa79a6225a888484a9742e" }
+composefs-ctl = { git = "https://github.com/composefs/composefs-rs", rev = "b54d72e8530475d59fd25211c05e6540ef47a9f2" }
 fn-error-context = "0.2.1"
 futures-util = "0.3"
 hex = "0.4.3"
