@@ -285,4 +285,11 @@ execute:
     how: fmf
     test:
       - /tmt/tests/tests/test-45-composefs-corruped-state-resilience
+
+/plan-46-etc-merge-conflict:
+  summary: Verify etc merge conflicts are caught during upgrade, not finalization
+  discover:
+    how: fmf
+    test:
+      - /tmt/tests/tests/test-46-etc-merge-conflict
 # END GENERATED PLANS
