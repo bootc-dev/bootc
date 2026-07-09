@@ -471,7 +471,11 @@ pub fn merge_default_container_proxy_opts_with_isolation(
         if let Some(authfile) = config.authfile.take() {
             config.auth_data = Some(std::fs::File::open(authfile)?);
         }
-        let cmd = crate::isolation::unprivileged_subprocess(bootc_utils::skopeo_bin(), user);
+        // When passing auth via fd, skopeo needs to re-open /proc/self/fd/N,
+        // which requires CAP_DAC_READ_SEARCH. Keep this capability when auth is present.
+        let keep_dac = config.auth_data.is_some();
+        let cmd =
+            crate::isolation::unprivileged_subprocess(bootc_utils::skopeo_bin(), user, keep_dac);
         config.skopeo_cmd = Some(cmd);
     }
     Ok(())

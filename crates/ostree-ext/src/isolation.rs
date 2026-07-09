@@ -19,7 +19,15 @@ pub(crate) fn running_in_systemd() -> bool {
 /// Return a prepared subprocess configuration that will run as an unprivileged user if possible.
 ///
 /// This currently only drops privileges when run under systemd with DynamicUser.
-pub(crate) fn unprivileged_subprocess(binary: &str, user: &str) -> Command {
+///
+/// If `keep_dac_read_search` is true, the CAP_DAC_READ_SEARCH capability is retained.
+/// This is needed when passing file descriptors via /proc/self/fd that the subprocess
+/// needs to re-open (e.g., auth files for skopeo).
+pub(crate) fn unprivileged_subprocess(
+    binary: &str,
+    user: &str,
+    keep_dac_read_search: bool,
+) -> Command {
     // TODO: if we detect we're running in a container as uid 0, perhaps at least switch to the
     // "bin" user if we can?
     if !running_in_systemd() {
@@ -31,13 +39,21 @@ pub(crate) fn unprivileged_subprocess(binary: &str, user: &str) -> Command {
     cmd.env_remove("HOME");
     cmd.env_remove("XDG_DATA_DIR");
     cmd.env_remove("USER");
+
+    // Determine which capabilities to keep
+    let cap_set = if keep_dac_read_search {
+        "-all,+dac_read_search"
+    } else {
+        "-all"
+    };
+
     cmd.args([
         "--no-new-privs",
         "--init-groups",
         "--reuid",
         user,
         "--bounding-set",
-        "-all",
+        cap_set,
         "--pdeathsig",
         "TERM",
         "--",
