@@ -2,7 +2,9 @@ use std::{io::Read, sync::OnceLock};
 
 use anyhow::{Context, Result};
 use bootc_mount::inspect_filesystem;
-use composefs_ctl::composefs::fsverity::Sha512HashValue;
+use composefs_ctl::composefs::erofs::format::FormatVersion;
+use composefs_ctl::composefs::fsverity::{FsVerityHashValue, Sha512HashValue};
+use composefs_ctl::composefs_boot::cmdline::ComposefsCmdline as BootComposefsCmdline;
 use composefs_ctl::composefs_oci;
 use composefs_oci::OciImage;
 use fn_error_context::context;
@@ -18,8 +20,9 @@ use crate::{
         utils::{compute_store_boot_digest_for_uki, get_uki_cmdline},
     },
     composefs_consts::{
-        COMPOSEFS_CMDLINE, ORIGIN_KEY_BOOT_DIGEST, ORIGIN_KEY_IMAGE, ORIGIN_KEY_MANIFEST_DIGEST,
-        TYPE1_ENT_PATH, TYPE1_ENT_PATH_STAGED, USER_CFG, USER_CFG_STAGED,
+        COMPOSEFS_CMDLINE, COMPOSEFS_DIGEST_CMDLINE, ORIGIN_KEY_BOOT_DIGEST, ORIGIN_KEY_IMAGE,
+        ORIGIN_KEY_MANIFEST_DIGEST, TYPE1_ENT_PATH, TYPE1_ENT_PATH_STAGED, USER_CFG,
+        USER_CFG_STAGED,
     },
     install::EFI_LOADER_INFO,
     parsers::{
@@ -88,23 +91,16 @@ impl ComposefsCmdline {
         }
     }
 
-    pub(crate) fn build(digest: &str, allow_missing_fsverity: bool) -> Self {
-        ComposefsCmdline {
-            allow_missing_fsverity,
-            digest: digest.into(),
-            is_transient: false,
-        }
-    }
-
-    /// Search for the `composefs=` parameter in the passed in kernel command line
+    /// Search for `composefs=` (V2) or `composefs.digest=` (V1) in the kernel
+    /// command line.  Delegates to the composefs-boot library which handles
+    /// both formats, extracting the raw hex hash in either case.
     pub(crate) fn find_in_cmdline(cmdline: &Cmdline) -> Option<Self> {
-        match cmdline.find(COMPOSEFS_CMDLINE) {
-            Some(param) => {
-                let value = param.value()?;
-                Some(Self::new(value))
-            }
-            None => None,
-        }
+        let parsed = BootComposefsCmdline::<Sha512HashValue>::from_cmdline(cmdline).ok()??;
+        Some(ComposefsCmdline {
+            allow_missing_fsverity: parsed.is_insecure(),
+            digest: parsed.digest().to_hex().into(),
+            is_transient: false,
+        })
     }
 }
 
@@ -117,6 +113,37 @@ impl std::fmt::Display for ComposefsCmdline {
             COMPOSEFS_CMDLINE, allow_missing_fsverity, self.digest
         )
     }
+}
+
+/// Render a *new* composefs kernel command line argument for `digest`.
+///
+/// Unlike [`ComposefsCmdline`] (which only represents an already-parsed
+/// digest and has no notion of which EROFS format produced it), this uses
+/// the upstream `composefs-boot` cmdline types so the karg is correctly
+/// self-described:
+///
+/// - [`FormatVersion::V0`] and [`FormatVersion::V1`] share the same on-disk
+///   EROFS layout (`composefs::erofs::format::FormatEpoch::Epoch1`) and
+///   both produce `composefs.digest=v1-<hash>-<lg>:<hex>`, required on
+///   kernels without V2 EROFS support (e.g. RHEL9/CentOS-9).  This matches
+///   upstream `composefs-ctl`'s own mapping.
+/// - [`FormatVersion::V2`] produces the legacy `composefs=<hex>` shorthand.
+///
+/// Every caller that writes a new composefs karg (install, upgrade, sealing
+/// a UKI, soft-reboot) must go through this so the tag always matches the
+/// actual on-disk EROFS format of `digest`.
+pub(crate) fn build_composefs_karg(
+    digest: Sha512HashValue,
+    format_version: FormatVersion,
+    allow_missing_fsverity: bool,
+) -> String {
+    match format_version {
+        FormatVersion::V0 | FormatVersion::V1 => {
+            BootComposefsCmdline::new_v1(digest, allow_missing_fsverity)
+        }
+        FormatVersion::V2 => BootComposefsCmdline::new_v2(digest, allow_missing_fsverity),
+    }
+    .to_cmdline_arg()
 }
 
 /// The JSON schema for staged deployment information
@@ -150,18 +177,17 @@ pub(crate) struct BootloaderEntry {
     pub(crate) boot_artifact_name: String,
 }
 
-/// Detect if we have `composefs=<digest>` in `/proc/cmdline`
+/// Detect if we have `composefs=<digest>` or `composefs.digest=<tag>:<digest>`
+/// in `/proc/cmdline`.
 pub(crate) fn composefs_booted() -> Result<Option<&'static ComposefsCmdline>> {
     static CACHED_DIGEST_VALUE: OnceLock<Option<ComposefsCmdline>> = OnceLock::new();
     if let Some(v) = CACHED_DIGEST_VALUE.get() {
         return Ok(v.as_ref());
     }
     let cmdline = Cmdline::from_proc()?;
-    let Some(kv) = cmdline.find(COMPOSEFS_CMDLINE) else {
+    let Some(v) = ComposefsCmdline::find_in_cmdline(&cmdline) else {
         return Ok(None);
     };
-    let Some(v) = kv.value() else { return Ok(None) };
-    let v = ComposefsCmdline::new(v);
 
     // Find the source of / mountpoint as the cmdline doesn't change on soft-reboot
     let root_mnt = inspect_filesystem("/".into())?;
@@ -656,10 +682,15 @@ fn find_bls_entry<'a>(
     Ok(None)
 }
 
-/// Compares cmdline `first` and `second` skipping `composefs=`
+/// Compares cmdline `first` and `second` skipping composefs kargs.
+///
+/// Both V2 (`composefs=`) and V1 (`composefs.digest=`) karg keys are
+/// skipped, since the composefs digest is expected to differ between
+/// deployments and is compared separately.
 fn compare_cmdline_skip_cfs(first: &Cmdline<'_>, second: &Cmdline<'_>) -> bool {
     for param in first {
-        if param.key() == COMPOSEFS_CMDLINE.into() {
+        let key = param.key();
+        if key == COMPOSEFS_CMDLINE.into() || key == COMPOSEFS_DIGEST_CMDLINE.into() {
             continue;
         }
 
@@ -1090,6 +1121,36 @@ mod tests {
     }
 
     #[test]
+    fn test_build_composefs_karg() {
+        let hex = "ab".repeat(64);
+        let digest = || Sha512HashValue::from_hex(&hex).unwrap();
+
+        // V2 uses the legacy `composefs=` shorthand.
+        assert_eq!(
+            build_composefs_karg(digest(), FormatVersion::V2, false),
+            format!("composefs={hex}")
+        );
+        assert_eq!(
+            build_composefs_karg(digest(), FormatVersion::V2, true),
+            format!("composefs=?{hex}")
+        );
+
+        // V1 and V0 (same on-disk EROFS layout, see `FormatEpoch::Epoch1`) both
+        // use the self-describing `composefs.digest=` form, required for
+        // kernels without V2 EROFS support (e.g. RHEL9/CentOS-9).
+        for v1_like in [FormatVersion::V1, FormatVersion::V0] {
+            assert_eq!(
+                build_composefs_karg(digest(), v1_like, false),
+                format!("composefs.digest=v1-sha512-12:{hex}")
+            );
+            assert_eq!(
+                build_composefs_karg(digest(), v1_like, true),
+                format!("composefs.digest=?v1-sha512-12:{hex}")
+            );
+        }
+    }
+
+    #[test]
     fn test_sorted_bls_boot_entries() -> Result<()> {
         let tempdir = cap_std_ext::cap_tempfile::tempdir(cap_std::ambient_authority())?;
 
@@ -1194,7 +1255,8 @@ mod tests {
 
     #[test]
     fn test_find_in_cmdline() {
-        const DIGEST: &str = "8b7df143d91c716ecfa5fc1730022f6b421b05cedee8fd52b1fc65a96030ad52";
+        // Must be 128 hex chars (SHA-512) to match Sha512HashValue
+        const DIGEST: &str = "8b7df143d91c716ecfa5fc1730022f6b421b05cedee8fd52b1fc65a96030ad528b7df143d91c716ecfa5fc1730022f6b421b05cedee8fd52b1fc65a96030ad52";
 
         // Test case: cmdline contains composefs parameter
         let cmdline = Cmdline::from(format!("root=UUID=abc123 rw composefs={}", DIGEST));

@@ -225,9 +225,14 @@ jobs:
         seal_state: ["sealed", "unsealed"]
 
         exclude:
-          # https://github.com/bootc-dev/bootc/issues/1812
+          # centos-9 composefs: only sealed UKI is supported (V1 EROFS).
+          # BLS and unsealed modes require newer dracut/systemd features.
           - test_os: centos-9
             variant: composefs
+            boot_type: bls
+          - test_os: centos-9
+            variant: composefs
+            seal_state: unsealed
           - seal_state: "sealed"
             boot_type: bls
           - seal_state: "sealed"

@@ -25,16 +25,16 @@ use crate::store::ComposefsRepository;
 
 use ostree_ext::container::deploy::ORIGIN_CONTAINER;
 
-/// Return a deterministic SHA-256 hex digest for a test build version.
+/// Return a deterministic SHA-512 hex digest for a test build version.
 ///
-/// Computes `sha256("build-{n}")`, producing a realistic 64-char hex digest
+/// Computes `sha512("build-{n}")`, producing a realistic 128-char hex digest
 /// that is stable across runs.
 pub(crate) fn fake_digest_version(n: u32) -> String {
     let hash = openssl::hash::hash(
-        openssl::hash::MessageDigest::sha256(),
+        openssl::hash::MessageDigest::sha512(),
         format!("build-{n}").as_bytes(),
     )
-    .expect("sha256");
+    .expect("sha512");
     hex::encode(hash)
 }
 
@@ -499,10 +499,10 @@ impl TestRoot {
                     }
                 }
                 LayoutMode::Legacy => {
-                    // Legacy dirs are just the raw hex digest (64 chars).
+                    // Legacy dirs are just the raw hex digest (128 chars for SHA-512).
                     // Only include entries that look like hex digests to
                     // avoid accidentally counting "loader" or other dirs.
-                    if name.len() == 64 && name.chars().all(|c| c.is_ascii_hexdigit()) {
+                    if name.len() == 128 && name.chars().all(|c| c.is_ascii_hexdigit()) {
                         names.push(name);
                     }
                 }
@@ -542,7 +542,7 @@ impl TestRoot {
             // compared to the real migration in PR #2128 which also
             // handles UKI PE files and GRUB configs.
             if !name.starts_with(TYPE1_BOOT_DIR_PREFIX)
-                && name.len() == 64
+                && name.len() == 128
                 && name.chars().all(|c| c.is_ascii_hexdigit())
             {
                 to_rename.push(name);

@@ -2,7 +2,8 @@
 Description=bootc setup root
 Documentation=man:bootc(1)
 DefaultDependencies=no
-ConditionKernelCommandLine=composefs
+ConditionKernelCommandLine=|composefs
+ConditionKernelCommandLine=|composefs.digest
 ConditionPathExists=/etc/initrd-release
 After=sysroot.mount
 After=ostree-prepare-root.service
