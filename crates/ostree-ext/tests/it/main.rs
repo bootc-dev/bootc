@@ -2365,3 +2365,221 @@ async fn test_diff_id_reuse_across_compression() -> Result<()> {
 
     Ok(())
 }
+
+/// Build a minimal OCI image (single gzip layer) into the given OCI directory.
+///
+/// The tar layer explicitly includes parent directory entries before files, so
+/// that composefs's strict layer importer does not choke on missing parents.
+/// /etc is included at the image root and must be remapped to usr/etc during
+/// ostree import.
+fn build_test_oci(oci_dir: &ocidir::OciDir) -> Result<()> {
+    use ostree_ext::integrationtest::{build_fresh_oci_from_tar, tar_dir_header, tar_reg_header};
+
+    build_fresh_oci_from_tar(
+        oci_dir,
+        |w| {
+            let mut tb = tar::Builder::new(w);
+
+            // Parent directories must come before their children.
+            tb.append_data(&mut tar_dir_header(), "usr/", std::io::empty())?;
+            tb.append_data(&mut tar_dir_header(), "usr/bin/", std::io::empty())?;
+            tb.append_data(&mut tar_dir_header(), "usr/lib/", std::io::empty())?;
+
+            let bash_data = b"#!/bin/bash\n";
+            tb.append_data(
+                &mut tar_reg_header(bash_data.len() as u64),
+                "usr/bin/bash",
+                std::io::Cursor::new(bash_data),
+            )?;
+
+            let config_data = b"# test config\n";
+            tb.append_data(
+                &mut tar_reg_header(config_data.len() as u64),
+                "usr/lib/test.conf",
+                std::io::Cursor::new(config_data),
+            )?;
+
+            // /etc at the OCI image root — remapped to usr/etc during ostree import.
+            tb.append_data(&mut tar_dir_header(), "etc/", std::io::empty())?;
+
+            let hostname_data = b"testhost\n";
+            tb.append_data(
+                &mut tar_reg_header(hostname_data.len() as u64),
+                "etc/hostname",
+                std::io::Cursor::new(hostname_data),
+            )?;
+
+            tb.into_inner()?;
+            Ok(())
+        },
+        None,
+        None,
+    )
+}
+
+/// Test that we can synthesize an ostree commit from a composefs repository.
+///
+/// The flow is:
+///   1. Build a minimal OCI image into a local OCI directory
+///   2. Pull it into a fresh composefs repository
+///   3. Call `composefs_import::import_from_composefs_repo`
+///   4. Verify the resulting ostree commit has the expected OCI metadata and files
+#[tokio::test]
+async fn test_composefs_import_to_ostree() -> Result<()> {
+    use composefs_ctl::composefs::fsverity::{Algorithm, DEFAULT_LG_BLOCKSIZE, Sha512HashValue};
+    use composefs_ctl::composefs::repository::{Repository, RepositoryConfig};
+    use composefs_ctl::composefs_oci;
+    use composefs_ctl::composefs_oci::oci_image::OciImage;
+    use ostree_ext::container::composefs_import;
+    use ostree_ext::container::store::{META_CONFIG, META_MANIFEST, META_MANIFEST_DIGEST};
+    use std::sync::Arc;
+
+    if !check_skopeo() {
+        eprintln!("Skipping test_composefs_import_to_ostree: skopeo not available");
+        return Ok(());
+    }
+
+    let tempdir = tempfile::tempdir_in("/var/tmp")?;
+    let path: &camino::Utf8Path = tempdir.path().try_into().unwrap();
+
+    // Step 1: build a minimal OCI image
+    let oci_path = path.join("test.oci");
+    std::fs::create_dir(&oci_path)?;
+    let oci_cap_dir = cap_std::fs::Dir::open_ambient_dir(&oci_path, cap_std::ambient_authority())?;
+    let oci_dir = ocidir::OciDir::ensure(oci_cap_dir)?;
+    build_test_oci(&oci_dir)?;
+
+    // Step 2: create a composefs repository and pull the OCI image into it
+    let cfs_path = path.join("composefs-repo");
+    std::fs::create_dir(&cfs_path)?;
+    let cfs_dirfd = cap_std::fs::Dir::open_ambient_dir(&cfs_path, cap_std::ambient_authority())?;
+    let algo = Algorithm::Sha512 {
+        lg_blocksize: DEFAULT_LG_BLOCKSIZE,
+    };
+    // fs-verity is not required here: tests run against arbitrary temp filesystems
+    // (e.g. tmpfs, overlayfs) that may not support it. This matches the old
+    // `enable_verity: bool` parameter of `init_path`, which was passed `false`.
+    let config = RepositoryConfig::new(algo).set_insecure();
+    let (cfs_repo, _) = Repository::<Sha512HashValue>::init_path(cfs_dirfd, ".", config)
+        .context("Initializing composefs repository")?;
+    let cfs_repo = Arc::new(cfs_repo);
+
+    let oci_imgref = format!("oci:{}", oci_path);
+    let pull_result = composefs_oci::pull(&cfs_repo, &oci_imgref, None, Default::default())
+        .await
+        .context("Pulling OCI image into composefs repo")?;
+
+    // Step 3: get manifest + config from the composefs repo
+    let oci_image = OciImage::open(&cfs_repo, &pull_result.manifest_digest, None)
+        .context("Opening OCI image from composefs repo")?;
+    let manifest = oci_image.manifest().clone();
+    let config = oci_image
+        .config()
+        .cloned()
+        .context("OCI image has no config")?;
+
+    // Step 4: create a destination ostree repo and run the import
+    let ost_repo = ostree::Repo::new(&gio::File::for_path(path.join("ostree-repo")));
+    ost_repo
+        .create(ostree::RepoMode::BareUser, gio::Cancellable::NONE)
+        .context("Creating destination ostree repo")?;
+
+    let manifest_digest_str = pull_result.manifest_digest.to_string();
+    let commit = composefs_import::import_from_composefs_repo(
+        &ost_repo,
+        &cfs_repo,
+        &pull_result.config_digest,
+        &manifest_digest_str,
+        &manifest,
+        &config,
+        false,
+    )
+    .context("Importing composefs repo into ostree")?;
+
+    // Step 5: idempotency — a second import of the same image must yield the
+    // same commit checksum.  This is only guaranteed when the OCI image carries
+    // a fixed creation timestamp (which build_fresh_oci_from_tar sets to the
+    // Unix epoch) so that timestamp_of_manifest_or_config returns a stable value
+    // rather than falling back to Utc::now().
+    let commit2 = composefs_import::import_from_composefs_repo(
+        &ost_repo,
+        &cfs_repo,
+        &pull_result.config_digest,
+        &manifest_digest_str,
+        &manifest,
+        &config,
+        false,
+    )
+    .context("Second import")?;
+    assert_eq!(commit, commit2, "re-import should produce identical commit");
+
+    // Step 6: verify
+    assert!(!commit.is_empty(), "commit checksum should be non-empty");
+
+    let (commitv, state) = ost_repo.load_commit(&commit)?;
+    assert_eq!(state, ostree::RepoCommitState::NORMAL);
+
+    // Commit metadata should contain the three OCI keys
+    let commit_meta = commitv.child_value(0);
+    let commitmeta = glib::VariantDict::new(Some(&commit_meta));
+    assert!(
+        commitmeta
+            .lookup_value(META_MANIFEST_DIGEST, None)
+            .is_some(),
+        "commit should have manifest-digest metadata"
+    );
+    assert!(
+        commitmeta.lookup_value(META_MANIFEST, None).is_some(),
+        "commit should have manifest metadata"
+    );
+    assert!(
+        commitmeta.lookup_value(META_CONFIG, None).is_some(),
+        "commit should have config metadata"
+    );
+    // The stored digest should round-trip
+    let stored_digest = commitmeta
+        .lookup::<String>(META_MANIFEST_DIGEST)?
+        .expect("manifest-digest key");
+    assert_eq!(stored_digest, manifest_digest_str);
+
+    // The file tree should have the files we put in the layer
+    let (root, _) = ost_repo.read_commit(&commit, gio::Cancellable::NONE)?;
+    for path in ["usr", "usr/bin", "usr/bin/bash", "usr/lib/test.conf"] {
+        let node = root.resolve_relative_path(path);
+        assert!(
+            node.query_exists(gio::Cancellable::NONE),
+            "expected {path} to exist in the ostree commit"
+        );
+    }
+
+    // Verify /etc was remapped to usr/etc (not left at the root as etc/)
+    let usr_etc_hostname = root.resolve_relative_path("usr/etc/hostname");
+    assert!(
+        usr_etc_hostname.query_exists(gio::Cancellable::NONE),
+        "expected usr/etc/hostname to exist (remapped from /etc/hostname)"
+    );
+
+    // Verify there is NO top-level etc/ — it should have been remapped
+    let root_etc = root.resolve_relative_path("etc");
+    assert!(
+        !root_etc.query_exists(gio::Cancellable::NONE),
+        "top-level etc/ should not exist; it should be remapped to usr/etc/"
+    );
+
+    // Run `ostree fsck` against the repo to verify all objects pass integrity
+    // checks — in particular that file content checksums match, that
+    // user.ostreemeta xattrs are present and well-formed, and that no
+    // object is corrupted.
+    let ostree_repo_path = path.join("ostree-repo");
+    let st = std::process::Command::new("ostree")
+        .args(["fsck", "--repo"])
+        .arg(&ostree_repo_path)
+        .status()
+        .context("running `ostree fsck`")?;
+    assert!(
+        st.success(),
+        "`ostree fsck` failed on the composefs-imported repo"
+    );
+
+    Ok(())
+}
