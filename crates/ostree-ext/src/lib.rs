@@ -40,8 +40,6 @@ type Result<T> = anyhow::Result<T>;
 // Import global functions.
 pub mod globals;
 
-mod isolation;
-
 pub mod bootabletree;
 pub mod cli;
 pub mod container;

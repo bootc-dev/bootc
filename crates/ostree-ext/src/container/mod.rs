@@ -428,23 +428,17 @@ impl ManifestDiff<'_> {
 
 /// Apply default configuration for container image pulls to an existing configuration.
 /// For example, if `authfile` is not set, and `auth_anonymous` is `false`, and a global configuration file exists, it will be used.
-///
-/// If there is no configured explicit subprocess for skopeo, and the process is running
-/// as root, then a default isolation of running the process via `nobody` will be applied.
 pub fn merge_default_container_proxy_opts(
     config: &mut containers_image_proxy::ImageProxyConfig,
 ) -> Result<()> {
-    let user = rustix::process::getuid()
-        .is_root()
-        .then_some(isolation::DEFAULT_UNPRIVILEGED_USER);
-    merge_default_container_proxy_opts_with_isolation(config, user)
+    merge_default_container_proxy_opts_with_isolation(config, None)
 }
 
 /// Apply default configuration for container image pulls, with optional support
 /// for isolation as an unprivileged user.
 pub fn merge_default_container_proxy_opts_with_isolation(
     config: &mut containers_image_proxy::ImageProxyConfig,
-    isolation_user: Option<&str>,
+    _isolation_user: Option<&str>,
 ) -> Result<()> {
     let auth_specified =
         config.auth_anonymous || config.authfile.is_some() || config.auth_data.is_some();
@@ -457,22 +451,6 @@ pub fn merge_default_container_proxy_opts_with_isolation(
         if config.auth_data.is_none() {
             config.auth_anonymous = true;
         }
-    }
-    // By default, drop privileges, unless the higher level code
-    // has configured the skopeo command explicitly.
-    let isolation_user = config
-        .skopeo_cmd
-        .is_none()
-        .then_some(isolation_user.as_ref())
-        .flatten();
-    if let Some(user) = isolation_user {
-        // Read the default authfile if it exists and pass it via file descriptor
-        // which will ensure it's readable when we drop privileges.
-        if let Some(authfile) = config.authfile.take() {
-            config.auth_data = Some(std::fs::File::open(authfile)?);
-        }
-        let cmd = crate::isolation::unprivileged_subprocess(bootc_utils::skopeo_bin(), user);
-        config.skopeo_cmd = Some(cmd);
     }
     Ok(())
 }
@@ -519,8 +497,6 @@ pub mod skopeo;
 pub mod store;
 mod update_detachedmeta;
 pub use update_detachedmeta::*;
-
-use crate::isolation;
 
 #[cfg(test)]
 mod tests {
