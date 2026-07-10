@@ -505,6 +505,12 @@ pub(crate) fn setup_composefs_bls_boot(
 
             cmdline_options.extend(&root_setup.kargs);
 
+            if let Some(user_kargs) = &state.config_opts.karg {
+                for karg in user_kargs {
+                    cmdline_options.extend(karg);
+                }
+            }
+
             let composefs_cmdline =
                 ComposefsCmdline::build(&id_hex, state.composefs_options.allow_missing_verity);
             cmdline_options.extend(&Cmdline::from(&composefs_cmdline.to_string()));
