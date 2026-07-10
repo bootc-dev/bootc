@@ -81,7 +81,7 @@ jobs:
 
   # Run basic validation checks (linting, formatting, etc)
   validate:
-    runs-on: ubuntu-24.04
+    runs-on: cncf-ubuntu-8-32-x86
     steps:
       - uses: actions/checkout@v7
       - name: Bootc Ubuntu Setup
@@ -105,7 +105,7 @@ jobs:
     name: "Test install"
     if: needs.compute-ci-level.outputs.run_heavy == 'true'
     needs: compute-ci-level
-    runs-on: ubuntu-24.04
+    runs-on: cncf-ubuntu-8-32-x86
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -171,7 +171,7 @@ jobs:
           done
   # Test that we can build documentation
   docs:
-    runs-on: ubuntu-24.04
+    runs-on: cncf-ubuntu-8-32-x86
     steps:
       - uses: actions/checkout@v7
       - name: Bootc Ubuntu Setup
@@ -187,7 +187,7 @@ jobs:
       matrix:
         test_os: ${{ fromJson(needs.compute-ci-level.outputs.package_os_matrix) }}
 
-    runs-on: ubuntu-24.04
+    runs-on: cncf-ubuntu-8-32-x86
     # Rawhide is best-effort; don't let it block merges
     continue-on-error: ${{ matrix.test_os == 'fedora-45' }}
 
@@ -269,7 +269,7 @@ jobs:
           - bootloader: grub-cc
             seal_state: sealed
 
-    runs-on: ubuntu-24.04
+    runs-on: cncf-ubuntu-8-32-x86
 
     steps:
       - uses: actions/checkout@v7
@@ -364,7 +364,7 @@ jobs:
         test_os: ${{ fromJson(needs.compute-ci-level.outputs.upgrade_os_matrix) }}
         variant: [ostree, composefs]
 
-    runs-on: ubuntu-24.04
+    runs-on: cncf-ubuntu-8-32-x86
 
     steps:
       - uses: actions/checkout@v7
@@ -426,7 +426,7 @@ jobs:
           # centos-9 ships an older dracut that lacks the auto-install of setup-root-conf.toml
           - test_os: centos-9
 
-    runs-on: ubuntu-24.04
+    runs-on: cncf-ubuntu-8-32-x86
 
     steps:
       - uses: actions/checkout@v7
@@ -492,7 +492,7 @@ jobs:
     # We need to change to use coreos-assembler.
     if: false
     needs: [compute-ci-level, package]
-    runs-on: ubuntu-24.04
+    runs-on: cncf-ubuntu-8-32-x86
 
     steps:
       - uses: actions/checkout@v7
@@ -535,7 +535,7 @@ jobs:
   test-container-export:
     if: needs.compute-ci-level.outputs.run_heavy == 'true'
     needs: [compute-ci-level, package]
-    runs-on: ubuntu-24.04
+    runs-on: cncf-ubuntu-8-32-x86
 
     steps:
       - uses: actions/checkout@v7
