@@ -637,7 +637,7 @@ impl ImageImporter {
         imgref: &OstreeImageReference,
         mut config: ImageProxyConfig,
     ) -> Result<Self> {
-        apply_container_proxy_opts_for_transport(&mut config, imgref.imgref.transport)?;
+        merge_default_container_proxy_opts(&mut config)?;
         let proxy = ImageProxy::new_with_config(config).await?;
 
         system_repo_journal_print(

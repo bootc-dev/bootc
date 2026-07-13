@@ -431,15 +431,6 @@ impl ManifestDiff<'_> {
 pub fn merge_default_container_proxy_opts(
     config: &mut containers_image_proxy::ImageProxyConfig,
 ) -> Result<()> {
-    merge_default_container_proxy_opts_with_isolation(config, None)
-}
-
-/// Apply default configuration for container image pulls, with optional support
-/// for isolation as an unprivileged user.
-pub fn merge_default_container_proxy_opts_with_isolation(
-    config: &mut containers_image_proxy::ImageProxyConfig,
-    _isolation_user: Option<&str>,
-) -> Result<()> {
     let auth_specified =
         config.auth_anonymous || config.authfile.is_some() || config.auth_data.is_some();
     if !auth_specified {
@@ -472,20 +463,6 @@ pub fn version_for_config(config: &oci_spec::image::ImageConfiguration) -> Optio
         }
     }
     None
-}
-
-/// Apply appropriate container proxy options based on transport type
-pub fn apply_container_proxy_opts_for_transport(
-    config: &mut containers_image_proxy::ImageProxyConfig,
-    transport: Transport,
-) -> Result<()> {
-    if transport == Transport::ContainerStorage {
-        // Fetching from containers-storage, may require privileges to read files
-        merge_default_container_proxy_opts_with_isolation(config, None)
-    } else {
-        // Apply our defaults to the proxy config
-        merge_default_container_proxy_opts(config)
-    }
 }
 
 pub mod deploy;
@@ -638,21 +615,21 @@ mod tests {
         let mut c = ImageProxyConfig::default();
         let authf = std::fs::File::open("/dev/null").unwrap();
         c.auth_data = Some(authf);
-        super::merge_default_container_proxy_opts_with_isolation(&mut c, None).unwrap();
+        super::merge_default_container_proxy_opts(&mut c).unwrap();
         assert!(!c.auth_anonymous);
         assert!(c.authfile.is_none());
         assert!(c.auth_data.is_some());
         assert!(c.skopeo_cmd.is_none());
-        super::merge_default_container_proxy_opts_with_isolation(&mut c, None).unwrap();
+        super::merge_default_container_proxy_opts(&mut c).unwrap();
         assert!(!c.auth_anonymous);
         assert!(c.authfile.is_none());
         assert!(c.auth_data.is_some());
         assert!(c.skopeo_cmd.is_none());
 
-        // Verify interaction with explicit isolation
+        // Verify interaction with explicit skopeo command
         let mut c = ImageProxyConfig::default();
         c.skopeo_cmd = Some(Command::new("skopeo"));
-        super::merge_default_container_proxy_opts_with_isolation(&mut c, Some("foo")).unwrap();
+        super::merge_default_container_proxy_opts(&mut c).unwrap();
         assert_eq!(c.skopeo_cmd.unwrap().get_program(), "skopeo");
     }
 }
