@@ -190,17 +190,12 @@ Pre-releases are **not production-ready** and should only be used for testing.
 
 ## Security Releases
 
-<!-- OPEN QUESTION: What's the process for security releases? -->
-<!-- - Are they fast-tracked outside the weekly cycle? -->
-<!-- - Private disclosure period? -->
-<!-- - Coordination with downstream consumers? -->
-
 For security vulnerabilities:
 
 1. Follow the [Security Policy](./SECURITY.md) to report issues privately
 2. Security Response Team assesses severity and impact
 3. Fix developed in private
-4. <!-- PLACEHOLDER: Document if security releases are expedited or wait for weekly cycle -->
+4. **Critical vulnerabilities are fast-tracked** and released immediately (not waiting for weekly cycle)
 5. Coordinated disclosure after fix is available
 
 ## GPG Signing
@@ -240,14 +235,9 @@ View all releases at: https://github.com/bootc-dev/bootc/releases
 
 ## Breaking Changes
 
-<!-- OPEN QUESTION: How are breaking changes handled? -->
-<!-- - Advance notice period? -->
-<!-- - Deprecation warnings? -->
-<!-- - Migration guides? -->
-
 When breaking changes are necessary:
 
-1. <!-- PLACEHOLDER: Deprecation warning in N releases before removal? -->
+1. Deprecation warnings announced at least **2 releases in advance**
 2. Migration documentation provided
 3. Clear upgrade path documented in release notes
 4. Major version bump (x.0.0)
