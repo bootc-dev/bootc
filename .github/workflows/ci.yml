@@ -211,6 +211,13 @@ jobs:
           path: target/packages/*.rpm
           retention-days: 1
 
+      # Unit tests don't depend on the variant/filesystem/bootloader/boot_type/seal_state
+      # axes used by the test-integration matrix below, so we run them once per OS here
+      # (reusing the BuildKit cache already warmed by `just check-buildsys` above) instead
+      # of once per matrix leg.
+      - name: Unit tests
+        run: just unit-tests
+
   # Build bootc from source into a container image FROM each specified base `test_os`
   # running unit and integration tests (using TMT, leveraging the support for nested virtualization
   # in the GHA runners)
@@ -310,8 +317,8 @@ jobs:
           used_vid=$(podman run --rm localhost/bootc bash -c '. /usr/lib/os-release && echo ${ID}-${VERSION_ID}')
           test ${{ matrix.test_os }} = "${used_vid}"
 
-      - name: Unit and container integration tests
-        run: BOOTC_SKIP_PACKAGE=1 just test-container
+      - name: Container integration tests
+        run: BOOTC_SKIP_PACKAGE=1 just test-container-integration
 
       - name: Validate composefs digest (UKI only)
         if: matrix.boot_type == 'uki'
