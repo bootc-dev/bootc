@@ -418,7 +418,7 @@ pub(crate) async fn get_container_manifest_and_config(
 ) -> Result<ImgConfigManifest> {
     let mut config = crate::deploy::new_proxy_config();
 
-    ostree_ext::container::apply_container_proxy_opts_for_transport(&mut config, imgref.transport)?;
+    ostree_ext::container::merge_default_container_proxy_opts(&mut config)?;
 
     let proxy = ImageProxy::new_with_config(config).await?;
 
