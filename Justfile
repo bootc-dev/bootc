@@ -188,11 +188,24 @@ test-tmt *ARGS: build
     @just _build-upgrade-image
     @just test-tmt-nobuild {{ARGS}}
 
+# Split out from `test-container` because, unlike the container integration tests,
+# unit tests don't depend on variant/filesystem/bootloader/boot_type/seal_state, so
+# CI runs this once per OS (in the `package` job) instead of once per test-integration
+# matrix leg.
+# Run the unit test suite in a container (needs e.g. ostree/composefs shared libs)
+[group('core')]
+unit-tests: build-units
+    podman run --rm --read-only localhost/bootc-units /usr/bin/bootc-units
+
+# Used by CI's test-integration matrix, where unit tests already ran once per OS.
+# Run the container integration tests only (no unit tests)
+[group('core')]
+test-container-integration: build
+    podman run --rm --env=BOOTC_variant={{variant}} --env=BOOTC_base={{base}} --env=BOOTC_boot_type={{boot_type}} --mount=type=image,source={{base_img}},target=/run/target {{base_img}} bootc-integration-tests container
+
 # Run containerized unit and integration tests
 [group('core')]
-test-container: build build-units
-    podman run --rm --read-only localhost/bootc-units /usr/bin/bootc-units
-    podman run --rm --env=BOOTC_variant={{variant}} --env=BOOTC_base={{base}} --env=BOOTC_boot_type={{boot_type}} --mount=type=image,source={{base_img}},target=/run/target {{base_img}} bootc-integration-tests container
+test-container: unit-tests test-container-integration
 
 [group('core')]
 test-composefs bootloader filesystem boot_type seal_state *ARGS:
