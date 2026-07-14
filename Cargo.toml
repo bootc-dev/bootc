@@ -48,7 +48,7 @@ clap_mangen = { version = "0.3.0" }
 # pulls), which drags in rustls-webpki/untrusted/webpki-root-certs whose
 # licenses aren't in our cargo-deny allow list. Re-enable once that's sorted.
 # See: https://github.com/bootc-dev/bootc/pull/2295
-composefs-ctl = { git = "https://github.com/composefs/composefs-rs", rev = "6a34615fcbf9db6845949044be7543ef79a08f0a", default-features = false, features = [
+composefs-ctl = { git = "https://github.com/composefs/composefs-rs", rev = "a29622c53e4027901620dfe761b14b0310ce7edb", default-features = false, features = [
     "pre-6.15",
     "pre-6.16",
     "oci",
