@@ -80,8 +80,21 @@ def second_boot_rollback [] {
     # A freshly booted deployment has no rollback queued
     assert_rollback_queued false
 
+    if (("/boot/loader/entries" | path exists)) {
+        ("
+            title Test
+            version 1
+            sort-key 9
+            efi /EFI/boot/test.efi
+        ") | save /boot/loader/entries/entry.conf
+    }
+
     print "Performing bootc rollback..."
     bootc rollback
+
+    if (("/boot/loader/entries" | path exists)) {
+        assert ("/boot/loader/entries/entry.conf" | path exists) "custom BLS entry must exist"
+    }
 
     # ...and a real queued rollback must be reported as one
     assert_rollback_queued true
