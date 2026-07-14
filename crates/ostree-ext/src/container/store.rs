@@ -61,6 +61,7 @@
 //! - `ostree.manifest-digest`: The canonical manifest digest (e.g., `sha256:...`)
 //! - `ostree.manifest`: Complete OCI manifest as canonical JSON
 //! - `ostree.container.image-config`: OCI image configuration as canonical JSON
+//! - `version`: Version from the OCI image configuration, when available
 //!
 //! This metadata enables:
 //! - Detecting when updates are available
@@ -178,6 +179,8 @@ pub(crate) const META_MANIFEST_DIGEST: &str = "ostree.manifest-digest";
 const META_MANIFEST: &str = "ostree.manifest";
 /// The key injected into the merge commit with the image configuration serialized as JSON.
 const META_CONFIG: &str = "ostree.container.image-config";
+/// The ostree commit metadata key used by bootloader entries.
+const META_VERSION: &str = "version";
 /// The type used to store content filtering information.
 pub type MetaFilteredData = HashMap<String, HashMap<String, u32>>;
 
@@ -1220,6 +1223,44 @@ impl ImageImporter {
 
         let txn = repo.auto_transaction(cancellable)?;
 
+        if !have_derived_layers {
+            let Some(base) = base_commit.as_ref() else {
+                panic!("Unexpected state: no derived layers and no base")
+            };
+            debug_assert!(layer_commits.is_empty());
+
+            tracing::debug!("Writing metadata-only merge commit from base {base}");
+            let merged_root = repo
+                .read_commit(base, cancellable)
+                .context("Reading base commit")?
+                .0
+                .downcast::<ostree::RepoFile>()
+                .unwrap();
+            let merged_commit = repo
+                .write_commit_with_time(
+                    Some(base),
+                    None,
+                    None,
+                    Some(&metadata),
+                    &merged_root,
+                    timestamp,
+                    cancellable,
+                )
+                .context("Writing metadata-only merge commit")?;
+            if !no_imgref {
+                repo.transaction_set_ref(None, ostree_ref, Some(merged_commit.as_str()));
+            }
+            txn.commit(cancellable)?;
+
+            if !disable_gc {
+                let n: u32 = gc_image_layers_impl(repo, cancellable)?;
+                tracing::debug!("pruned {n} layers");
+            }
+
+            let state = query_image_commit(repo, &merged_commit)?;
+            return Ok(state);
+        }
+
         let devino = ostree::RepoDevInoCache::new();
         let repodir = Dir::reopen_dir(&repo.dfd_borrow())?;
         let repo_tmp = repodir.open_dir("tmp")?;
@@ -1462,6 +1503,7 @@ impl ImageImporter {
             .ostree_commit_layer
             .as_ref()
             .map(|c| c.commit.clone().unwrap());
+        let image_version = import.version().map(ToOwned::to_owned);
 
         let root_is_transient = if let Some(base) = base_commit.as_ref() {
             let rootf = self.repo.read_commit(&base, gio::Cancellable::NONE)?.0;
@@ -1578,6 +1620,9 @@ impl ImageImporter {
             META_CONFIG,
             import.config.to_canon_json_string()?.to_variant(),
         );
+        if let Some(version) = image_version {
+            metadata.insert(META_VERSION, version.to_variant());
+        }
         metadata.insert(
             "ostree.importer.version",
             env!("CARGO_PKG_VERSION").to_variant(),

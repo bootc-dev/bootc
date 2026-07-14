@@ -21,16 +21,17 @@ use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Write};
-use std::num::NonZeroU32;
+use std::num::{NonZeroU32, NonZeroUsize};
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::mpsc;
 use tokio::sync::mpsc::Receiver;
 
 use crate::chunking::{ObjectMetaSized, ObjectSourceMetaSized};
 use crate::commit::container_commit;
 use crate::container::store::{ExportToOCIOpts, ImportProgress, LayerProgress, PreparedImport};
 use crate::container::{self as ostree_container, ManifestDiff};
-use crate::container::{Config, ImageReference, OstreeImageReference};
+use crate::container::{Config, ExportProgress, ImageReference, OstreeImageReference};
 use crate::objectsource::ObjectSourceMeta;
 use crate::sysroot::SysrootLock;
 use ostree_container::store::{ImageImporter, PrepareResult};
@@ -171,6 +172,14 @@ pub(crate) enum ContainerOpts {
         /// Compress at the fastest level (e.g. gzip level 1)
         #[clap(long)]
         compression_fast: bool,
+
+        /// Number of parallel layer export workers
+        #[clap(long)]
+        jobs: Option<NonZeroUsize>,
+
+        /// Don't display progress
+        #[clap(long)]
+        quiet: bool,
 
         /// Path to a JSON-formatted content meta object.
         #[clap(long)]
@@ -575,6 +584,50 @@ impl Into<ostree_container::store::ImageProxyConfig> for ContainerProxyOpts {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_container_encapsulate_jobs() {
+        let opt = Opt::parse_from([
+            "ostree-ext",
+            "container",
+            "encapsulate",
+            "--repo",
+            "/repo",
+            "--jobs",
+            "2",
+            "exampleos",
+            "oci:/tmp/exampleos:latest",
+        ]);
+        let Opt::Container(ContainerOpts::Encapsulate { jobs, quiet, .. }) = opt else {
+            panic!("expected container encapsulate");
+        };
+        assert_eq!(jobs, NonZeroUsize::new(2));
+        assert!(!quiet);
+    }
+
+    #[test]
+    fn parse_container_encapsulate_quiet() {
+        let opt = Opt::parse_from([
+            "ostree-ext",
+            "container",
+            "encapsulate",
+            "--repo",
+            "/repo",
+            "--quiet",
+            "exampleos",
+            "oci:/tmp/exampleos:latest",
+        ]);
+        let Opt::Container(ContainerOpts::Encapsulate { jobs, quiet, .. }) = opt else {
+            panic!("expected container encapsulate");
+        };
+        assert_eq!(jobs, None);
+        assert!(quiet);
+    }
+}
+
 /// Import a tar archive containing an ostree commit.
 async fn tar_import(opts: &ImportOpts) -> Result<()> {
     let repo = parse_repo(&opts.repo)?;
@@ -769,6 +822,8 @@ async fn container_export(
     container_config: Option<Utf8PathBuf>,
     cmd: Option<Vec<String>>,
     compression_fast: bool,
+    jobs: Option<NonZeroUsize>,
+    quiet: bool,
     package_contentmeta: Option<Utf8PathBuf>,
 ) -> Result<()> {
     let container_config = if let Some(container_config) = container_config {
@@ -839,6 +894,16 @@ async fn container_export(
         cmd,
     };
 
+    let (progress, progress_thread) = if quiet {
+        (None, None)
+    } else {
+        let (tx, rx) = mpsc::channel();
+        (
+            Some(tx),
+            Some(std::thread::spawn(move || print_export_progress(rx))),
+        )
+    };
+
     let opts = crate::container::ExportOpts {
         copy_meta_keys,
         copy_meta_opt_keys,
@@ -848,11 +913,27 @@ async fn container_export(
         package_contentmeta: contentmeta_data.as_ref(),
         max_layers,
         created,
+        jobs,
+        progress,
         ..Default::default()
     };
-    let pushed = crate::container::encapsulate(repo, rev, &config, Some(opts), imgref).await?;
+    let pushed = crate::container::encapsulate(repo, rev, &config, Some(opts), imgref).await;
+    if let Some(progress_thread) = progress_thread {
+        progress_thread
+            .join()
+            .map_err(|_| anyhow::anyhow!("export progress thread panicked"))?;
+    }
+    let pushed = pushed?;
     println!("{pushed}");
     Ok(())
+}
+
+fn print_export_progress(rx: mpsc::Receiver<ExportProgress>) {
+    for event in rx {
+        if let ExportProgress::Finished { index, total, name } = event {
+            eprintln!("Exported OCI layer {index}/{total}: {name}");
+        }
+    }
 }
 
 /// Load metadata for a container image with an encapsulated ostree commit.
@@ -1071,6 +1152,8 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
                 config,
                 cmd,
                 compression_fast,
+                jobs,
+                quiet,
                 contentmeta,
             } => {
                 let labels: Result<BTreeMap<_, _>> = labels
@@ -1094,6 +1177,8 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
                     config,
                     cmd,
                     compression_fast,
+                    jobs,
+                    quiet,
                     contentmeta,
                 )
                 .await

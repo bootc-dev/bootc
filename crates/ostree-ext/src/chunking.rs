@@ -748,11 +748,7 @@ fn basic_packing<'a>(
     // If there are fewer packages/components than there are bins, then we don't need to do
     // any "bin packing" at all; just assign a single component to each and we're done.
     if before_processing_pkgs_len < bin_size.get() as usize {
-        let mut r = components.iter().map(|pkg| vec![pkg]).collect::<Vec<_>>();
-        if before_processing_pkgs_len > 0 {
-            let new_pkgs_bin: Vec<&ObjectSourceMetaSized> = Vec::new();
-            r.push(new_pkgs_bin);
-        }
+        let r = components.iter().map(|pkg| vec![pkg]).collect::<Vec<_>>();
         return Ok(r);
     }
 
@@ -855,8 +851,6 @@ fn basic_packing<'a>(
         r.push(max_freq_components);
     }
 
-    // Allocate an empty bin for new packages
-    r.push(Vec::new());
     let after_processing_pkgs_len = r.iter().map(|b| b.len()).sum::<usize>();
     assert_eq!(after_processing_pkgs_len, before_processing_pkgs_len);
     assert!(r.len() <= bin_size.get() as usize);
