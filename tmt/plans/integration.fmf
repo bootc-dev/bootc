@@ -292,4 +292,11 @@ execute:
     how: fmf
     test:
       - /tmt/tests/tests/test-46-etc-merge-conflict
+
+/plan-48-composefs-uki-dumpfile:
+  summary: Test composefs garbage collection for UKI
+  discover:
+    how: fmf
+    test:
+      - /tmt/tests/tests/test-48-composefs-uki-dumpfile
 # END GENERATED PLANS

@@ -111,13 +111,18 @@ export def make_uki_containerfile [containerfile: string] {
         FROM base as sealed-uki
         RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \\
             --mount=type=bind,from=base-final,src=/,target=/run/target \\
-            --mount=type=bind,from=kernel,src=/,target=/run/kernel \\
+            --mount=type=bind,from=kernel,src=/,target=/run/kernel <<-EOF
+
+              kver=$\(bootc container inspect --rootfs /run/kernel --json | jq -r '.kernel.version'\)
+
               /usr/bin/seal-uki \\
                   --target /run/target \\
                   --output /out \\
                   --secrets /run/secrets ($allow_missing_verity) \\
-                  --kernel-dir /run/kernel/boot/$\(bootc container inspect --rootfs /run/kernel --json | jq -r '.kernel.version'\) \\
+                  --kernel-dir /run/kernel/boot/${kver} \\
+                  --write-dumpfile-to /out/${kver}.dump \\
                   --seal-state ($seal_state)
+        EOF
 
         FROM base-final
 
