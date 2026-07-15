@@ -33,6 +33,7 @@ use crate::{
         COMPOSEFS_STAGED_DEPLOYMENT_FNAME, COMPOSEFS_TRANSIENT_STATE_DIR, STATE_DIR_RELATIVE,
         TYPE1_ENT_PATH_STAGED, USER_CFG_STAGED,
     },
+    progress_jsonl::ProgressWriter,
     spec::{Host, ImageReference},
     store::{BootedComposefs, ComposefsRepository, Storage},
 };
@@ -212,6 +213,10 @@ pub(crate) struct DoUpgradeOpts {
     pub(crate) download_only: bool,
     /// Whether to use unified storage (containers-storage + composefs).
     pub(crate) use_unified: bool,
+    /// Suppress interactive progress output.
+    pub(crate) quiet: bool,
+    /// Structured (JSON-Lines) progress sink; see `--progress-fd`.
+    pub(crate) prog: ProgressWriter,
 }
 
 async fn apply_upgrade(
@@ -262,6 +267,8 @@ pub(crate) async fn do_upgrade(
         imgref,
         booted_cfs.cmdline.allow_missing_fsverity,
         opts.use_unified,
+        opts.quiet,
+        opts.prog.clone(),
     )
     .await?;
 
@@ -386,11 +393,15 @@ pub(crate) async fn upgrade_composefs(
         None
     };
 
+    let prog: ProgressWriter = opts.progress.try_into()?;
+
     let mut do_upgrade_opts = DoUpgradeOpts {
         soft_reboot: opts.soft_reboot,
         apply: opts.apply,
         download_only: opts.download_only,
         use_unified: false,
+        quiet: opts.quiet,
+        prog,
     };
 
     if opts.from_downloaded {

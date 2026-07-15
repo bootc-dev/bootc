@@ -7,6 +7,7 @@ use crate::{
         update::{DoUpgradeOpts, UpdateAction, do_upgrade, is_image_pulled, validate_update},
     },
     cli::{SwitchOpts, imgref_for_switch},
+    progress_jsonl::ProgressWriter,
     store::{BootedComposefs, Storage},
 };
 
@@ -72,11 +73,15 @@ pub(crate) async fn switch_composefs(
         booted_unified || target_unified
     };
 
+    let prog: ProgressWriter = opts.progress.try_into()?;
+
     let do_upgrade_opts = DoUpgradeOpts {
         soft_reboot: opts.soft_reboot,
         apply: opts.apply,
         download_only: false,
         use_unified,
+        quiet: opts.quiet,
+        prog,
     };
 
     if let Some(cfg_verity) = image {

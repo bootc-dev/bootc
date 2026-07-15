@@ -55,10 +55,12 @@ use ostree_ext::containers_image_proxy;
 
 use cap_std_ext::cap_std::{ambient_authority, fs::Dir};
 
+use crate::bootc_composefs::progress;
 use crate::composefs_consts::BOOTC_TAG_PREFIX;
 use crate::install::{RootSetup, State};
 use crate::lsm;
 use crate::podstorage::CStorage;
+use crate::progress_jsonl::ProgressWriter;
 
 /// Create a composefs OCI tag name for the given manifest digest.
 ///
@@ -136,7 +138,17 @@ pub(crate) async fn initialize_composefs_repository(
         let imgstore = CStorage::create(rootfs_dir, &run, sepolicy.as_ref())?;
         let storage_path = root_setup.physical_root_path.join(CStorage::subpath());
 
-        let r = pull_composefs_unified(&imgstore, storage_path.as_str(), &repo, &imgref).await?;
+        // `bootc install` does not yet plumb `--quiet`/`--progress-fd` down to
+        // this path; use defaults for now (terminal progress still renders).
+        let r = pull_composefs_unified(
+            &imgstore,
+            storage_path.as_str(),
+            &repo,
+            &imgref,
+            false,
+            ProgressWriter::default(),
+        )
+        .await?;
 
         // SELinux-label the containers-storage now that all pulls are done.
         imgstore
@@ -146,7 +158,7 @@ pub(crate) async fn initialize_composefs_repository(
     } else {
         // Direct path: pull directly into composefs via skopeo, without
         // containers-storage as intermediary.
-        pull_composefs_direct(&repo, &imgref).await?
+        pull_composefs_direct(&repo, &imgref, false, ProgressWriter::default()).await?
     };
 
     // Tag the manifest as a bootc-owned GC root.
@@ -186,6 +198,8 @@ pub(crate) struct PullRepoResult {
 async fn pull_composefs_direct(
     repo: &Arc<crate::store::ComposefsRepository>,
     imgref: &containers_image_proxy::ImageReference,
+    quiet: bool,
+    prog: ProgressWriter,
 ) -> Result<PullResult<Sha512HashValue>> {
     let imgref_str = imgref.to_string();
     tracing::info!("Direct pull: fetching {imgref_str} into composefs repository");
@@ -193,19 +207,28 @@ async fn pull_composefs_direct(
     let mut config = crate::deploy::new_proxy_config();
     ostree_ext::container::merge_default_container_proxy_opts(&mut config)?;
 
+    let (reporter, prog_task) = progress::spawn(quiet, prog);
+
     let pull_result = composefs_oci::pull(
         repo,
         &imgref_str,
         None,
         PullOptions {
             img_proxy_config: Some(config),
+            progress: Some(reporter),
             ..Default::default()
         },
     )
-    .await
-    .context("Pulling image into composefs repository")?;
+    .await;
 
-    Ok(pull_result)
+    // Awaiting the progress task after the pull future completes ensures the
+    // reporter's `Arc` (and hence the channel it feeds) has been dropped, so
+    // the background task drains its queue and exits rather than hanging.
+    prog_task
+        .await
+        .context("Composefs progress task panicked")?;
+
+    pull_result.context("Pulling image into composefs repository")
 }
 
 /// Pull an image via unified storage: first into bootc-owned containers-storage,
@@ -227,6 +250,8 @@ async fn pull_composefs_unified(
     storage_path: &str,
     repo: &Arc<crate::store::ComposefsRepository>,
     imgref: &containers_image_proxy::ImageReference,
+    quiet: bool,
+    prog: ProgressWriter,
 ) -> Result<PullResult<Sha512HashValue>> {
     let image = &imgref.name;
 
@@ -256,6 +281,7 @@ async fn pull_composefs_unified(
     tracing::info!("Unified pull: importing from {cstor_imgref_str} (zero-copy)");
 
     let storage = std::path::Path::new(storage_path);
+    let (reporter, prog_task) = progress::spawn(quiet, prog);
     let pull_opts = PullOptions {
         // The image is already in bootc-owned containers-storage at this point
         // (placed there by Stage 1 of the unified pull). Use ZeroCopy so we
@@ -264,11 +290,16 @@ async fn pull_composefs_unified(
         // are on different filesystems or the storage root is wrong.
         local_fetch: LocalFetchOpt::ZeroCopy,
         storage_root: Some(storage),
+        progress: Some(reporter),
         ..Default::default()
     };
-    let pull_result = composefs_oci::pull(repo, &cstor_imgref_str, None, pull_opts)
+    let pull_result = composefs_oci::pull(repo, &cstor_imgref_str, None, pull_opts).await;
+
+    prog_task
         .await
-        .context("Importing from containers-storage into composefs")?;
+        .context("Composefs progress task panicked")?;
+
+    let pull_result = pull_result.context("Importing from containers-storage into composefs")?;
 
     Ok(pull_result)
 }
@@ -288,6 +319,8 @@ pub(crate) async fn pull_composefs_repo(
     spec_imgref: &crate::spec::ImageReference,
     allow_missing_fsverity: bool,
     use_unified: bool,
+    quiet: bool,
+    prog: ProgressWriter,
 ) -> Result<PullRepoResult> {
     const COMPOSEFS_PULL_JOURNAL_ID: &str = "4c3b2a1f0e9d8c7b6a5f4e3d2c1b0a9f8";
 
@@ -338,9 +371,9 @@ pub(crate) async fn pull_composefs_repo(
         let imgstore = CStorage::create(&rootfs_dir, &run, sepolicy.as_ref())?;
         let storage_path = format!("/sysroot/{}", CStorage::subpath());
 
-        pull_composefs_unified(&imgstore, &storage_path, &repo, &imgref).await?
+        pull_composefs_unified(&imgstore, &storage_path, &repo, &imgref, quiet, prog).await?
     } else {
-        pull_composefs_direct(&repo, &imgref).await?
+        pull_composefs_direct(&repo, &imgref, quiet, prog).await?
     };
 
     // Tag the manifest as a bootc-owned GC root.
