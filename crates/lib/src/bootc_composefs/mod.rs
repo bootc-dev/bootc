@@ -5,6 +5,7 @@ pub(crate) mod digest;
 pub(crate) mod export;
 pub(crate) mod finalize;
 pub(crate) mod gc;
+pub(crate) mod progress;
 pub(crate) mod repo;
 pub(crate) mod rollback;
 pub(crate) mod selinux;
