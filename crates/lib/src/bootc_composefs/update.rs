@@ -314,7 +314,7 @@ pub(crate) async fn do_upgrade(
     let boot_digest = match boot_type {
         BootType::Bls => setup_composefs_bls_boot(
             BootSetupType::Upgrade((storage, booted_cfs, &host)),
-            repo,
+            &repo,
             &id,
             entry,
             &mounted_fs,
@@ -322,7 +322,7 @@ pub(crate) async fn do_upgrade(
 
         BootType::Uki => setup_composefs_uki_boot(
             BootSetupType::Upgrade((storage, booted_cfs, &host)),
-            repo,
+            &repo,
             &id,
             entries,
         )?,
