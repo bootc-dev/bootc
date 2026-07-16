@@ -125,7 +125,8 @@ impl<'a> SshdConfig<'a> {
         let config = sshd_output
             .lines()
             .filter_map(|line| line.split_once(' '))
-            .collect::<BTreeMap<&str, &str>>();
+            .map(|(k, v)| (k.to_ascii_lowercase(), v))
+            .collect::<BTreeMap<String, &str>>();
 
         let authorized_keys_files: Vec<&str> = config
             .get("authorizedkeysfile")
@@ -258,6 +259,20 @@ pub(crate) fn get_all_users_keys() -> Result<Vec<UserKeys>> {
 #[cfg(test)]
 mod test {
     use super::*;
+
+    #[test]
+    fn test_parse_sshd_config_lowercase() {
+        let input = "authorizedkeysfile .ssh/authorized_keys";
+        let config = SshdConfig::parse(input).unwrap();
+        assert_eq!(config.authorized_keys_files, vec![".ssh/authorized_keys"]);
+    }
+
+    #[test]
+    fn test_parse_sshd_config_mixedcase() {
+        let input = "AuthorizedKeysFile .ssh/authorized_keys";
+        let config = SshdConfig::parse(input).unwrap();
+        assert_eq!(config.authorized_keys_files, vec![".ssh/authorized_keys"]);
+    }
 
     #[test]
     pub(crate) fn test_parse_lsblk() {
