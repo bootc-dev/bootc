@@ -30,6 +30,8 @@ pub(crate) fn reinstall_command(
     ssh_key_file: &str,
     has_clean: bool,
 ) -> Result<Command> {
+    // NOTE: We mount /sys/firmware/efi/efivars during installation setup in
+    // [`bootc_lib::prepare_install`] so we don't explicitly need it here
     let mut podman_command_and_args = [
         // We use podman to run the bootc container. This might change in the future to remove the
         // podman dependency.
