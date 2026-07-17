@@ -286,6 +286,15 @@ check:
   duration: 30m
   test: nu booted/test-install-shared-propagation.nu
 
+/test-64-system-reinstall-composefs:
+  summary: Test system-reinstall with composefs backend and bootloader compatibility
+  duration: 30m
+  adjust:
+  - when: distro != fedora
+    enabled: false
+    because: we don't have new enough bootupd in centos
+  test: nu booted/test-system-reinstall-composefs.nu
+
 /test-66-encrypted-swap-ordering:
   summary: Verify a random-key encrypted swap boots without an ordering cycle
   duration: 30m
