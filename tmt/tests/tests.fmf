@@ -229,3 +229,8 @@ check:
   summary: Test that composefs-native images default to the composefs backend
   duration: 45m
   test: nu booted/test-install-composefs-native.nu
+
+/test-61-system-reinstall-composefs:
+  summary: Test system-reinstall with composefs backend and bootloader compatibility
+  duration: 30m
+  test: nu booted/test-system-reinstall-composefs.nu
