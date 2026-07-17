@@ -50,7 +50,9 @@ pub(crate) fn reinstall_command(
         "--security-opt",
         "label=type:unconfined_t",
         "-v",
-        "/:/target",
+        // systemd gpt-auto-generator has boot.mount autofs mounted on /boot
+        // We want to propage that inside the container
+        "/:/target:rslave",
     ]
     .map(String::from)
     .to_vec();
