@@ -2297,12 +2297,14 @@ fn remove_all_in_dir_no_xdev(d: &Dir, mount_err: bool) -> Result<()> {
         if etype == FileType::dir() {
             if let Some(subdir) = d.open_dir_noxdev(&name)? {
                 remove_all_in_dir_no_xdev(&subdir, mount_err)?;
-                d.remove_dir(&name)?;
+                d.remove_dir(&name)
+                    .with_context(|| format!("Removing dir {name:?}"))?;
             } else if mount_err {
                 anyhow::bail!("Found unexpected mount point {name:?}");
             }
         } else {
-            d.remove_file_optional(&name)?;
+            d.remove_file_optional(&name)
+                .with_context(|| format!("Removing {name:?}"))?;
         }
     }
     anyhow::Ok(())

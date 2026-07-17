@@ -1,6 +1,6 @@
 use std::future::Future;
 use std::io::Write;
-use std::os::fd::BorrowedFd;
+use std::os::fd::{AsFd, BorrowedFd};
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
@@ -17,6 +17,7 @@ use libsystemd::logging::journal_print;
 use ostree::glib;
 use ostree_ext::container::SignatureSource;
 use ostree_ext::ostree;
+use rustix::fs::StatVfsMountFlags;
 
 /// Try to look for keys injected by e.g. rpm-ostree requesting machine-local
 /// changes; if any are present, return `true`.
@@ -83,7 +84,16 @@ pub fn have_executable(name: &str) -> Result<bool> {
 /// Given a target directory, if it's a read-only mount, then remount it writable
 #[context("Opening {target} with writable mount")]
 pub(crate) fn open_dir_remount_rw(root: &Dir, target: &Utf8Path) -> Result<Dir> {
-    if matches!(root.is_mountpoint(target), Ok(Some(true))) {
+    let target_dir = root.open_dir(target).with_context(|| format!("Opening {target}"))?;
+
+    if matches!(target_dir.is_mountpoint("."), Ok(Some(true))) {
+        let st = rustix::fs::fstatvfs(target_dir.as_fd())
+            .with_context(|| format!("Getting filesystem info for {target}"))?;
+
+        if !st.f_flag.contains(StatVfsMountFlags::RDONLY) {
+            return Ok(target_dir);
+        };
+
         tracing::debug!("Target {target} is a mountpoint, remounting rw");
         let st = Command::new("mount")
             .args(["-o", "remount,rw", target.as_str()])
@@ -92,7 +102,8 @@ pub(crate) fn open_dir_remount_rw(root: &Dir, target: &Utf8Path) -> Result<Dir> 
 
         anyhow::ensure!(st.success(), "Failed to remount: {st:?}");
     }
-    root.open_dir(target).map_err(anyhow::Error::new)
+
+    Ok(target_dir)
 }
 
 /// Given a target path, remove its immutability if present
