@@ -187,7 +187,7 @@ use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "install-to-disk")]
 use self::baseline::InstallBlockDeviceOpts;
-use crate::bootc_composefs::status::ComposefsCmdline;
+use crate::bootc_composefs::status::{ComposefsCmdline, get_bootloader};
 use crate::bootc_composefs::{
     boot::setup_composefs_boot, repo::initialize_composefs_repository,
     status::get_container_manifest_and_config,
@@ -1542,12 +1542,21 @@ async fn verify_target_fetch(
 }
 
 /// Preparation for an install; validates and prepares some (thereafter immutable) global state.
+///
+/// # Parameters
+/// - `config_opts`: Installation configuration options (root user setup, generic image, etc.)
+/// - `source_opts`: Source image reference; if `None`, assumes running inside a container
+/// - `target_opts`: Target image reference and root path options
+/// - `composefs_options`: composefs-related settings for the installation
+/// - `target_fs`: Target filesystem type; used for `install to-filesystem`
+/// - `replace_mode`: If `Some`, indicates an `install to-filesystem` or `install to-existing-root` with the given replacement mode
 async fn prepare_install(
     mut config_opts: InstallConfigOpts,
     source_opts: InstallSourceOpts,
     mut target_opts: InstallTargetOpts,
     mut composefs_options: InstallComposefsOpts,
     target_fs: Option<FilesystemEnum>,
+    replace_mode: Option<ReplaceMode>,
 ) -> Result<Arc<State>> {
     tracing::trace!("Preparing install");
     let rootfs = cap_std::fs::Dir::open_ambient_dir("/", cap_std::ambient_authority())
@@ -1697,6 +1706,12 @@ async fn prepare_install(
     }
 
     setup_sys_mount("efivarfs", EFIVARFS)?;
+
+    // Read efivars to get the bootloader
+    // Only if the operation is to replace the existing installation
+    if let Some(..) = replace_mode {
+        config_opts.bootloader = Some(get_bootloader().context("Determining existing bootloader")?)
+    };
 
     // Now, deal with SELinux state.
     let selinux_state = reexecute_self_for_selinux_if_needed(&source, config_opts.disable_selinux)?;
@@ -2171,6 +2186,7 @@ pub(crate) async fn install_to_disk(mut opts: InstallToDiskOpts) -> Result<()> {
         opts.target_opts,
         opts.composefs_opts,
         block_opts.filesystem,
+        None,
     )
     .await?;
 
@@ -2560,6 +2576,7 @@ pub(crate) async fn install_to_filesystem(
         opts.target_opts,
         opts.composefs_opts,
         Some(inspect.fstype.as_str().try_into()?),
+        fsopts.replace,
     )
     .await?;
 
@@ -2633,18 +2650,22 @@ pub(crate) async fn install_to_filesystem(
             false
         }
     };
+
     // Find the UUID of /boot because we need it for GRUB.
-    let boot_uuid = if boot_is_mount {
-        let boot_path = target_root_path.join(BOOT);
-        tracing::debug!("boot_path={boot_path}");
-        let u = bootc_mount::inspect_filesystem(&boot_path)
-            .with_context(|| format!("Inspecting /{BOOT}"))?
-            .uuid
-            .ok_or_else(|| anyhow!("No UUID found for /{BOOT}"))?;
-        Some(u)
-    } else {
-        None
+    let boot_uuid = match state.config_opts.bootloader {
+        Some(Bootloader::Grub) | None if boot_is_mount => {
+            let boot_path = target_root_path.join(BOOT);
+            tracing::debug!("boot_path={boot_path}");
+            let u = bootc_mount::inspect_filesystem(&boot_path)
+                .with_context(|| format!("Inspecting /{BOOT}"))?
+                .uuid
+                .ok_or_else(|| anyhow!("No UUID found for /{BOOT}"))?;
+            Some(u)
+        }
+
+        _ => None,
     };
+
     tracing::debug!("boot UUID: {boot_uuid:?}");
 
     // Find the real underlying backing device for the root.  This is currently just required
