@@ -204,12 +204,12 @@ use crate::deploy::{
     retry_pull_operation,
 };
 use crate::install::config::Filesystem as FilesystemEnum;
-use crate::lsm;
 use crate::progress_jsonl::ProgressWriter;
 use crate::spec::{Bootloader, ImageReference};
 use crate::store::Storage;
 use crate::task::Task;
 use crate::utils::sigpolicy_from_opt;
+use crate::{lsm, utils};
 use bootc_mount::Filesystem;
 use linux_kernel_cmdline::{bytes, utf8};
 
@@ -761,12 +761,16 @@ pub(crate) struct State {
     #[allow(dead_code)]
     pub(crate) composefs_required: bool,
 
-    // If Some, then --composefs_native is passed
+    /// If Some, then --composefs-backend is passed
     pub(crate) composefs_options: InstallComposefsOpts,
     pub(crate) composefs_fsverity_supported: bool,
     pub(crate) allow_missing_verity_explicit: bool,
     #[cfg(feature = "install-to-disk")]
     pub(crate) aboot_disk_layout: Option<AbootDiskLayout>,
+
+    /// The bootloader on the host (determined by reading LoaderInfo from efivars)
+    /// Only Some when bootc is invoked with `install to-existing-root`
+    pub(crate) host_bootloader: Option<Bootloader>,
 }
 
 // Shared read-only global state
@@ -1966,8 +1970,13 @@ async fn prepare_install(
 
     // Read efivars to get the bootloader
     // Only if the operation is to replace the existing installation
-    if let Some(..) = replace_mode {
-        config_opts.bootloader = Some(get_bootloader().context("Determining existing bootloader")?)
+    let host_bootloader = match replace_mode {
+        Some(..) => {
+            let host_bootloader = get_bootloader().context("Determining existing bootloader")?;
+            println!("Detected bootloader on host: {host_bootloader}");
+            Some(host_bootloader)
+        }
+        None => None,
     };
 
     // Now, deal with SELinux state.
@@ -2074,6 +2083,7 @@ async fn prepare_install(
         allow_missing_verity_explicit,
         #[cfg(feature = "install-to-disk")]
         aboot_disk_layout,
+        host_bootloader,
     });
 
     Ok(state)
@@ -2089,6 +2099,37 @@ impl PostFetchState {
         // Priority: user-specified > image-required > bootupd availability > systemd-boot fallback
         let detected_bootloader =
             select_bootloader(state.config_opts.bootloader, image_bootloader, d)?;
+
+        // If this exists it means we're replacing the current root
+        // or installing alongside it. The new image may or may not have
+        // the same bootloader as the host
+        //
+        // We could simply throw an error here, but at this point we'd have
+        // already nuked the boot or ESP so we should try our best to figure
+        // out what to install
+        let detected_bootloader = match state.host_bootloader {
+            Some(b) => match b {
+                Bootloader::Grub | Bootloader::GrubCC => {
+                    if crate::bootloader::supports_bootupd(d)? {
+                        b
+                    } else {
+                        Bootloader::Systemd
+                    }
+                }
+                Bootloader::Systemd => match utils::have_executable("bootupctl") {
+                    Ok(_) => Bootloader::Systemd,
+                    Err(_) => {
+                        println!("Could not find bootctl, defaulting to Grub");
+                        Bootloader::Grub
+                    }
+                },
+                Bootloader::Ukiboot => Bootloader::Ukiboot,
+                Bootloader::None => Bootloader::None,
+            },
+
+            None => detected_bootloader,
+        };
+
         println!("Bootloader: {detected_bootloader}");
         let r = Self {
             detected_bootloader,
@@ -2959,20 +3000,30 @@ pub(crate) async fn install_to_filesystem(
         }
     };
 
+    let mut boot_uuid = None;
+
+    let get_boot_uuid = || -> Result<Option<String>> {
+        let boot_path = target_root_path.join(BOOT);
+        tracing::debug!("boot_path={boot_path}");
+        let u = bootc_mount::inspect_filesystem(&boot_path)
+            .with_context(|| format!("Inspecting /{BOOT}"))?
+            .uuid
+            .ok_or_else(|| anyhow!("No UUID found for /{BOOT}"))?;
+
+        Ok(Some(u))
+    };
+
     // Find the UUID of /boot because we need it for GRUB.
-    let boot_uuid = match state.config_opts.bootloader {
-        Some(Bootloader::Grub) | None if boot_is_mount => {
-            let boot_path = target_root_path.join(BOOT);
-            tracing::debug!("boot_path={boot_path}");
-            let u = bootc_mount::inspect_filesystem(&boot_path)
-                .with_context(|| format!("Inspecting /{BOOT}"))?
-                .uuid
-                .ok_or_else(|| anyhow!("No UUID found for /{BOOT}"))?;
-            Some(u)
+    if boot_is_mount {
+        if matches!(state.host_bootloader, Some(Bootloader::Grub)) {
+            boot_uuid = get_boot_uuid().context("Getting boot uuid")?;
         }
 
-        _ => None,
-    };
+        // If not set by `host_bootloader`
+        if boot_uuid.is_none() && matches!(state.config_opts.bootloader, Some(Bootloader::Grub)) {
+            boot_uuid = get_boot_uuid().context("Getting boot uuid")?;
+        }
+    }
 
     tracing::debug!("boot UUID: {boot_uuid:?}");
 
