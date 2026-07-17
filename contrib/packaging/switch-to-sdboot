@@ -27,7 +27,6 @@ done
 if [ "${#pkgs_to_remove[@]}" -gt 0 ]; then
   rpm -e "${pkgs_to_remove[@]}"
 fi
-rm -vrf /usr/lib/bootupd/updates
 
 # First install the unsigned systemd-boot RPM to get the package in place
 rpm -Uvh --replacepkgs "${src}"/*.rpm
