@@ -2496,7 +2496,8 @@ fn remove_all_in_dir_no_xdev(d: &Dir, mount_err: bool) -> Result<()> {
         if etype == FileType::dir() {
             remove_dir_no_xdev(d, &name, mount_err)?;
         } else {
-            d.remove_file_optional(&name)?;
+            d.remove_file_optional(&name)
+                .with_context(|| format!("Removing {name:?}"))?;
         }
     }
     anyhow::Ok(())
