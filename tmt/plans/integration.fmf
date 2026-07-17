@@ -292,4 +292,11 @@ execute:
     how: fmf
     test:
       - /tmt/tests/tests/test-46-etc-merge-conflict
+
+/plan-47-system-reinstall-composefs:
+  summary: Test system-reinstall with composefs backend and bootloader compatibility
+  discover:
+    how: fmf
+    test:
+      - /tmt/tests/tests/test-47-system-reinstall-composefs
 # END GENERATED PLANS
