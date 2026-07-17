@@ -84,7 +84,9 @@ pub fn have_executable(name: &str) -> Result<bool> {
 /// Given a target directory, if it's a read-only mount, then remount it writable
 #[context("Opening {target} with writable mount")]
 pub(crate) fn open_dir_remount_rw(root: &Dir, target: &Utf8Path) -> Result<Dir> {
-    let target_dir = root.open_dir(target).with_context(|| format!("Opening {target}"))?;
+    let target_dir = root
+        .open_dir(target)
+        .with_context(|| format!("Opening {target}"))?;
 
     if matches!(target_dir.is_mountpoint("."), Ok(Some(true))) {
         let st = rustix::fs::fstatvfs(target_dir.as_fd())
