@@ -26,6 +26,7 @@ fn run() -> Result<()> {
     // tokio::task::spawn_blocking to create a new OS thread explicitly.
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
+        .thread_name("bootc")
         .build()
         .expect("Failed to build tokio runtime");
     // And invoke the async_main
