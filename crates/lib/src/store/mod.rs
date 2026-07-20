@@ -111,7 +111,7 @@ use ostree_ext::{gio, ostree};
 use rustix::fs::Mode;
 
 use composefs::fsverity::Sha512HashValue;
-use composefs::repository::RepositoryConfig;
+use composefs::repository::{RepositoryConfig, RepositoryOpenError};
 use composefs_ctl::composefs;
 
 use crate::bootc_composefs::backwards_compat::bcompat_boot::prepend_custom_prefix;
@@ -608,6 +608,11 @@ impl Storage {
     ///
     /// This lazily opens the composefs repository, creating the directory if needed
     /// and bootstrapping verity settings from the ostree configuration.
+    ///
+    /// If the repository already exists on disk, it is opened as-is, preserving
+    /// whatever EROFS format version it was created with (e.g. V2 from an older
+    /// composefs-rs).  A fresh repository is only initialized when no `meta.json`
+    /// is found, using the current default format version from composefs-rs.
     pub(crate) fn get_ensure_composefs(&self) -> Result<Arc<ComposefsRepository>> {
         if let Some(composefs) = self.composefs.get() {
             return Ok(Arc::clone(composefs));
@@ -620,14 +625,45 @@ impl Storage {
         let ostree = self.get_ostree()?;
         let ostree_repo = &ostree.repo();
         let ostree_verity = ostree_ext::fsverity::is_verity_enabled(ostree_repo)?;
-        let config = RepositoryConfig::new(composefs::fsverity::Algorithm::SHA512);
-        let config = if ostree_verity.enabled {
-            config
-        } else {
-            config.set_insecure()
+
+        // First, try to open an existing repository.  This respects whatever
+        // EROFS format version (V1 or V2) was persisted in meta.json, avoiding
+        // the "already initialized with different configuration" error that
+        // occurs when the composefs-rs default format version changes between
+        // bootc builds (e.g. V2 → V1 after composefs-rs PR #330).
+        let composefs_dir = self.physical_root.open_dir(COMPOSEFS)?;
+        let composefs = match ComposefsRepository::open_path(&composefs_dir, ".") {
+            Ok(mut repo) => {
+                if !ostree_verity.enabled {
+                    repo.set_insecure();
+                }
+                repo
+            }
+            Err(RepositoryOpenError::MetadataMissing) => {
+                // No meta.json — this is a fresh directory.  Initialize a new
+                // repository with the current defaults.
+                let config = RepositoryConfig::new(composefs::fsverity::Algorithm::SHA512);
+                let config = if ostree_verity.enabled {
+                    config
+                } else {
+                    config.set_insecure()
+                };
+                let (repo, _created) = ComposefsRepository::init_path(composefs_dir, ".", config)?;
+                repo
+            }
+            Err(RepositoryOpenError::OldFormatRepository) => {
+                // Pre-meta.json repository — use the upgrade path that infers
+                // the algorithm and writes meta.json.
+                let (mut repo, _upgraded) = ComposefsRepository::open_upgrade(&composefs_dir, ".")?;
+                if !ostree_verity.enabled {
+                    repo.set_insecure();
+                }
+                repo
+            }
+            Err(e) => {
+                return Err(anyhow::Error::new(e).context("Opening composefs repository"));
+            }
         };
-        let (composefs, _created) =
-            ComposefsRepository::init_path(self.physical_root.open_dir(COMPOSEFS)?, ".", config)?;
         let composefs = Arc::new(composefs);
         let r = Arc::clone(self.composefs.get_or_init(|| composefs));
         Ok(r)
