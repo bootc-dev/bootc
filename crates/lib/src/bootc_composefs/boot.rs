@@ -61,10 +61,9 @@
 //! 1. **Primary**: New/upgraded deployment (default boot target)
 //! 2. **Secondary**: Currently booted deployment (rollback option)
 
-use std::ffi::OsStr;
 use std::fs::create_dir_all;
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -1491,10 +1490,6 @@ pub(crate) async fn setup_composefs_boot(
                 Ok(boot_digest) => boot_digest,
                 Err(e) => match e.downcast::<UKIDigestMismatch>() {
                     Ok(mismatch) => {
-                        // We expect dumpfile in /boot as that's the only directory that gets
-                        // masked
-                        let boot_dir = fs.root.get_directory(OsStr::new("boot"))?;
-
                         // We expect the dumpfile to be named the same as the UKI
                         // Ex. UKI      - 6.19.14-108.fc42.x86_64.efi
                         //     Dumpfile - 6.19.14-108.fc42.x86_64.dump
@@ -1504,18 +1499,27 @@ pub(crate) async fn setup_composefs_boot(
                             .and_then(|x| x.strip_suffix(EFI_EXT).map(|x| format!("{x}.dump")));
 
                         let Some(dumpfile_name) = &dumpfile_name else {
-                            tracing::warn!("Dumpfile not found for diff");
                             return Err(mismatch.into());
                         };
 
-                        let dumpfile = boot_dir
-                            .get_file_opt(OsStr::new(&dumpfile_name), &fs.leaves)?
-                            .map(|df| read_file(&df, &repo))
-                            .transpose()
-                            .context("Reading dumpfile")?;
+                        let dump = composefs_ctl::dump_files(
+                            &repo,
+                            &id.to_hex(),
+                            &vec![PathBuf::from(dumpfile_name)],
+                            true,
+                        );
 
-                        let Some(embedded) = dumpfile else {
-                            tracing::warn!("Dumpfile not found for diff");
+                        let Ok(dump) = dump else {
+                            tracing::debug!("Dumpfile not found for diff");
+                            return Err(mismatch.into());
+                        };
+
+                        // SAFETY: This output is always UTF-8 compatible as it's of the form
+                        // <file-name> <object-path>
+                        let text = std::str::from_utf8(&dump)?;
+                        let obj_path = text.split_whitespace().nth(1);
+
+                        let Some(obj_path) = obj_path else {
                             return Err(mismatch.into());
                         };
 
@@ -1523,18 +1527,18 @@ pub(crate) async fn setup_composefs_boot(
                         let path = tempdir.path();
                         let tempdir = Dir::open_ambient_dir(path, ambient_authority())?;
 
-                        // TODO: This can use the `dump_files` API once we have
-                        // https://github.com/composefs/composefs-rs/pull/359
-                        let mut original = tempdir.create("original")?;
-                        original.write_all(&embedded)?;
-
                         let mut tmpfile = tempdir.create("current")?;
                         dumpfile::write_dumpfile(&mut tmpfile, &fs).context("Writing dumpfile")?;
 
                         let mut cmd = std::process::Command::new("diff");
                         let out = cmd
                             .arg("--color=auto")
-                            .arg(format!("{}/original", path.display()))
+                            .arg(
+                                root_setup
+                                    .physical_root_path
+                                    .join("sysroot/composefs/objects")
+                                    .join(obj_path),
+                            )
                             .arg(format!("{}/current", path.display()))
                             .status();
 
