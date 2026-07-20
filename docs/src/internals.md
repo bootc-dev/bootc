@@ -55,6 +55,69 @@ Key paths:
 
 Implementation: `bootc_composefs` module in `bootc-lib`.
 
+#### Deployment identification
+
+Each composefs deployment is identified by the SHA-512 fsverity digest
+of its EROFS image. This digest appears in the kernel command line as
+`composefs=<digest>` and is used throughout the codebase to distinguish
+deployments.
+
+The status detection logic (`composefs_deployment_status_from()` in
+`status.rs`) classifies deployments using two independent mechanisms:
+
+- **Booted**: the verity digest from each boot loader entry is compared
+  against the root filesystem's actual mount source (`composefs:<digest>`).
+  This is read from the mount table, not `/proc/cmdline`, so it remains
+  correct after a soft-reboot.
+- **Staged**: compared against the `depl_id` field in
+  `/run/composefs/staged-deployment` (see below).
+- **Rollback**: anything that is neither booted nor staged.
+
+#### Staging and finalization
+
+Unlike the ostree backend (which uses `ostree_sysroot_stage_tree_with_options()`
+and the `ostree-finalize-staged.service`), the composefs backend manages
+its own staging pipeline. The ostree sysroot is not initialized on
+composefs-booted systems, so ostree staging APIs are not available.
+
+When `bootc upgrade` or `bootc switch` stages a new deployment, two
+things happen:
+
+1. **Boot loader entries** are written to a staging directory rather than
+   the live directory. For BLS entries this is `loader/entries.staged/`
+   (alongside the live `loader/entries/`). For GRUB UKI configurations,
+   `user.cfg.staged` is written next to `user.cfg`. The staging directory
+   contains entries for both the new deployment and the current booted
+   deployment (for rollback).
+
+2. **A transient state file** is written to
+   `/run/composefs/staged-deployment` as JSON. This records the staged
+   deployment's verity digest (`depl_id`) and whether finalization is
+   locked (`finalization_locked`, set by `bootc upgrade --download-only`).
+   Because this is under `/run`, it does not survive
+   reboot — if the system reboots before finalization, the staged
+   deployment is effectively abandoned.
+
+**Finalization** happens at shutdown via `bootc-finalize-staged.service`
+(an `ExecStop` action). The process is:
+
+1. Read `/run/composefs/staged-deployment`. If absent or marked
+   download-only, exit with no action.
+2. Perform a three-way `/etc` merge: pristine `/etc` from the booted
+   EROFS image, the running system's `/etc`, and the new deployment's
+   `/etc`.
+3. Atomically swap boot entries using `renameat2(RENAME_EXCHANGE)`:
+   `loader/entries.staged` ↔ `loader/entries`, then remove the old
+   staged directory. For UKI entries, the `.staged` suffix is removed
+   from files on the ESP.
+
+After finalization, the next boot picks up the new entries. If
+finalization fails, the live entries are untouched and the system
+boots the previous deployment.
+
+See also: [bootc-finalize-staged.service(5)](man/bootc-finalize-staged.service.5.md),
+[Boot failure detection](boot-failure-detection.md).
+
 ## Key Modules
 
 ### The Store Module
