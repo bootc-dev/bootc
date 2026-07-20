@@ -1876,6 +1876,7 @@ async fn install_with_sysroot(
                         .unwrap_or(rootfs.physical_root_path.clone()),
                     &state.config_opts,
                     Some(&deployment_path.as_str()),
+                    None,
                 )?;
             }
             Bootloader::Systemd | Bootloader::GrubCC => {
