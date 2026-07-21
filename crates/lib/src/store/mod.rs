@@ -137,7 +137,13 @@ pub(crate) const COMPOSEFS_MODE: Mode = Mode::from_raw_mode(0o700);
 
 /// Ensure the composefs directory exists in the given physical root
 /// with the correct permissions (mode 0700).
+#[context("Ensuring composefs directory")]
 pub(crate) fn ensure_composefs_dir(physical_root: &Dir) -> Result<()> {
+    // Usually the case with bootc install to-existing-root
+    if matches!(physical_root.is_mountpoint("."), Ok(Some(true))) {
+        crate::utils::open_dir_remount_rw(physical_root, ".".into())?;
+    }
+
     let mut db = DirBuilder::new();
     db.mode(COMPOSEFS_MODE.as_raw_mode());
     physical_root
@@ -608,6 +614,7 @@ impl Storage {
     ///
     /// This lazily opens the composefs repository, creating the directory if needed
     /// and bootstrapping verity settings from the ostree configuration.
+    #[context("Ensuring composefs")]
     pub(crate) fn get_ensure_composefs(&self) -> Result<Arc<ComposefsRepository>> {
         if let Some(composefs) = self.composefs.get() {
             return Ok(Arc::clone(composefs));

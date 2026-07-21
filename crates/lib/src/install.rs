@@ -187,7 +187,7 @@ use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "install-to-disk")]
 use self::baseline::InstallBlockDeviceOpts;
-use crate::bootc_composefs::status::ComposefsCmdline;
+use crate::bootc_composefs::status::{ComposefsCmdline, get_bootloader};
 use crate::bootc_composefs::{
     boot::setup_composefs_boot, repo::initialize_composefs_repository,
     status::get_container_manifest_and_config,
@@ -642,8 +642,12 @@ pub(crate) struct State {
     #[allow(dead_code)]
     pub(crate) composefs_required: bool,
 
-    // If Some, then --composefs_native is passed
+    /// If Some, then --composefs-backend is passed
     pub(crate) composefs_options: InstallComposefsOpts,
+
+    /// The bootloader on the host (determined by reading LoaderInfo from efivars)
+    /// Only Some when bootc is invoked with `install to-existing-root`
+    pub(crate) host_bootloader: Option<Bootloader>,
 }
 
 // Shared read-only global state
@@ -1542,12 +1546,21 @@ async fn verify_target_fetch(
 }
 
 /// Preparation for an install; validates and prepares some (thereafter immutable) global state.
+///
+/// # Parameters
+/// - `config_opts`: Installation configuration options (root user setup, generic image, etc.)
+/// - `source_opts`: Source image reference; if `None`, assumes running inside a container
+/// - `target_opts`: Target image reference and root path options
+/// - `composefs_options`: composefs-related settings for the installation
+/// - `target_fs`: Target filesystem type; used for `install to-filesystem`
+/// - `replace_mode`: If `Some`, indicates an `install to-filesystem` or `install to-existing-root` with the given replacement mode
 async fn prepare_install(
     mut config_opts: InstallConfigOpts,
     source_opts: InstallSourceOpts,
     mut target_opts: InstallTargetOpts,
     mut composefs_options: InstallComposefsOpts,
     target_fs: Option<FilesystemEnum>,
+    replace_mode: Option<ReplaceMode>,
 ) -> Result<Arc<State>> {
     tracing::trace!("Preparing install");
     let rootfs = cap_std::fs::Dir::open_ambient_dir("/", cap_std::ambient_authority())
@@ -1698,6 +1711,17 @@ async fn prepare_install(
 
     setup_sys_mount("efivarfs", EFIVARFS)?;
 
+    // Read efivars to get the bootloader
+    // Only if the operation is to replace the existing installation
+    let host_bootloader = match replace_mode {
+        Some(..) => {
+            let host_bootloader = get_bootloader().context("Determining existing bootloader")?;
+            println!("Detected bootloader on host: {host_bootloader}");
+            Some(host_bootloader)
+        }
+        None => None,
+    };
+
     // Now, deal with SELinux state.
     let selinux_state = reexecute_self_for_selinux_if_needed(&source, config_opts.disable_selinux)?;
     tracing::debug!("SELinux state: {selinux_state:?}");
@@ -1804,6 +1828,7 @@ async fn prepare_install(
         host_is_container,
         composefs_required,
         composefs_options,
+        host_bootloader,
     });
 
     Ok(state)
@@ -1811,19 +1836,52 @@ async fn prepare_install(
 
 impl PostFetchState {
     pub(crate) fn new(state: &State, d: &Dir) -> Result<Self> {
+        let supports_bootupd = crate::bootloader::supports_bootupd(d)?;
+
         // Determine bootloader type for the target system
         // Priority: user-specified > bootupd availability > systemd-boot fallback
         let detected_bootloader = {
             if let Some(bootloader) = state.config_opts.bootloader.clone() {
                 bootloader
             } else {
-                if crate::bootloader::supports_bootupd(d)? {
+                // TODO(Johan-Liebert1): The new release of bootupd would support all
+                if supports_bootupd {
                     crate::spec::Bootloader::Grub
                 } else {
                     crate::spec::Bootloader::Systemd
                 }
             }
         };
+
+        // If this exists it means we're replacing the current root
+        // or installing alongside it. The new image may or may not have
+        // the same bootloader as the host
+        //
+        // We could simply throw an error here, but at this point we'd have
+        // already nuked the boot or ESP so we should try our best to figure
+        // out what to install
+        let detected_bootloader = match state.host_bootloader {
+            Some(b) => match b {
+                Bootloader::Grub | Bootloader::GrubCC => {
+                    if supports_bootupd {
+                        b
+                    } else {
+                        Bootloader::Systemd
+                    }
+                }
+                Bootloader::Systemd => match crate::bootloader::bootctl_systemd_version() {
+                    Ok(_) => Bootloader::Systemd,
+                    Err(_) => {
+                        println!("Could not find bootctl, defaulting to Grub");
+                        Bootloader::Grub
+                    }
+                },
+                Bootloader::None => Bootloader::None,
+            },
+
+            None => detected_bootloader,
+        };
+
         println!("Bootloader: {detected_bootloader}");
         let r = Self {
             detected_bootloader,
@@ -2171,6 +2229,7 @@ pub(crate) async fn install_to_disk(mut opts: InstallToDiskOpts) -> Result<()> {
         opts.target_opts,
         opts.composefs_opts,
         block_opts.filesystem,
+        None,
     )
     .await?;
 
@@ -2297,12 +2356,14 @@ fn remove_all_in_dir_no_xdev(d: &Dir, mount_err: bool) -> Result<()> {
         if etype == FileType::dir() {
             if let Some(subdir) = d.open_dir_noxdev(&name)? {
                 remove_all_in_dir_no_xdev(&subdir, mount_err)?;
-                d.remove_dir(&name)?;
+                d.remove_dir(&name)
+                    .with_context(|| format!("Removing dir {name:?}"))?;
             } else if mount_err {
                 anyhow::bail!("Found unexpected mount point {name:?}");
             }
         } else {
-            d.remove_file_optional(&name)?;
+            d.remove_file_optional(&name)
+                .with_context(|| format!("Removing {name:?}"))?;
         }
     }
     anyhow::Ok(())
@@ -2558,6 +2619,7 @@ pub(crate) async fn install_to_filesystem(
         opts.target_opts,
         opts.composefs_opts,
         Some(inspect.fstype.as_str().try_into()?),
+        fsopts.replace,
     )
     .await?;
 
@@ -2631,18 +2693,32 @@ pub(crate) async fn install_to_filesystem(
             false
         }
     };
-    // Find the UUID of /boot because we need it for GRUB.
-    let boot_uuid = if boot_is_mount {
+
+    let mut boot_uuid = None;
+
+    let get_boot_uuid = || -> Result<Option<String>> {
         let boot_path = target_root_path.join(BOOT);
         tracing::debug!("boot_path={boot_path}");
         let u = bootc_mount::inspect_filesystem(&boot_path)
             .with_context(|| format!("Inspecting /{BOOT}"))?
             .uuid
             .ok_or_else(|| anyhow!("No UUID found for /{BOOT}"))?;
-        Some(u)
-    } else {
-        None
+
+        Ok(Some(u))
     };
+
+    // Find the UUID of /boot because we need it for GRUB.
+    if boot_is_mount {
+        if matches!(state.host_bootloader, Some(Bootloader::Grub)) {
+            boot_uuid = get_boot_uuid().context("Getting boot uuid")?;
+        }
+
+        // If not set by `host_bootloader`
+        if boot_uuid.is_none() && matches!(state.config_opts.bootloader, Some(Bootloader::Grub)) {
+            boot_uuid = get_boot_uuid().context("Getting boot uuid")?;
+        }
+    }
+
     tracing::debug!("boot UUID: {boot_uuid:?}");
 
     // Find the real underlying backing device for the root.  This is currently just required
