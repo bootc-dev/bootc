@@ -194,6 +194,7 @@ use crate::bootc_composefs::{
 };
 use crate::bootc_kargs::{INITRD_ARG_PREFIX, ROOTFLAGS_KEY};
 use crate::boundimage::{BoundImage, ResolvedBoundImage};
+use crate::composefs_consts::COMPOSEFS_CMDLINE;
 use crate::containerenv::ContainerExecutionInfo;
 use crate::deploy::{MergeState, PreparedPullResult, prepare_for_pull, pull_from_prepared};
 use crate::install::config::Filesystem as FilesystemEnum;
@@ -203,7 +204,7 @@ use crate::spec::{Bootloader, ImageReference};
 use crate::store::Storage;
 use crate::task::Task;
 use crate::utils::sigpolicy_from_opt;
-use bootc_mount::Filesystem;
+use bootc_mount::{Filesystem, run_findmnt};
 use composefs_ctl::composefs::repository::RepositoryConfig;
 use linux_kernel_cmdline::{bytes, utf8};
 
@@ -2373,8 +2374,8 @@ fn remove_all_in_dir_no_xdev(d: &Dir, mount_err: bool) -> Result<()> {
     anyhow::Ok(())
 }
 
-#[context("Removing boot directory content except loader dir on ostree")]
-fn remove_all_except_loader_dirs(bootdir: &Dir, is_ostree: bool) -> Result<()> {
+#[context("Removing boot directory content except loader dir")]
+fn remove_all_except_loader_dirs(bootdir: &Dir, remove_loader_dir: bool) -> Result<()> {
     let entries = bootdir
         .entries()
         .context("Reading boot directory entries")?;
@@ -2391,7 +2392,7 @@ fn remove_all_except_loader_dirs(bootdir: &Dir, is_ostree: bool) -> Result<()> {
         // TODO: Preserve basically everything (including the bootloader entries
         // on non-ostree) by default until the very end of the install. And ideally
         // make the "commit" phase an optional step after.
-        if is_ostree && file_name.starts_with("loader") {
+        if !remove_loader_dir && file_name.starts_with("loader") {
             continue;
         }
 
@@ -2413,7 +2414,12 @@ fn remove_all_except_loader_dirs(bootdir: &Dir, is_ostree: bool) -> Result<()> {
 }
 
 #[context("Removing boot directory content")]
-fn clean_boot_directories(rootfs: &Dir, rootfs_path: &Utf8Path, is_ostree: bool) -> Result<()> {
+fn clean_boot_directories(
+    rootfs: &Dir,
+    rootfs_path: &Utf8Path,
+    is_ostree: bool,
+    is_composefs: bool,
+) -> Result<()> {
     let bootdir =
         crate::utils::open_dir_remount_rw(rootfs, BOOT.into()).context("Opening /boot")?;
 
@@ -2424,7 +2430,7 @@ fn clean_boot_directories(rootfs: &Dir, rootfs_path: &Utf8Path, is_ostree: bool)
     }
 
     // This should not remove /boot/efi note.
-    remove_all_except_loader_dirs(&bootdir, is_ostree).context("Emptying /boot")?;
+    remove_all_except_loader_dirs(&bootdir, is_ostree || is_composefs).context("Emptying /boot")?;
 
     // TODO: we should also support not wiping the ESP.
     if ARCH_USES_EFI {
@@ -2435,6 +2441,25 @@ fn clean_boot_directories(rootfs: &Dir, rootfs_path: &Utf8Path, is_ostree: bool)
             remove_all_in_dir_no_xdev(&efidir, false).context("Emptying EFI system partition")?;
         }
     }
+
+    // If the system is a composefs system, also wipe /sysroot/boot
+    if is_composefs {
+        // This might or not might not have stuff depending upon Grub or SystemdBoot/GrubCC
+        // respectively
+        let bootdir = rootfs
+            .open_dir_optional("sysroot/boot")
+            .context("Opening /boot")?;
+
+        let Some(bootdir) = bootdir else {
+            return Ok(());
+        };
+
+        crate::utils::open_dir_remount_rw(rootfs, &Utf8Path::new("sysroot"))
+            .context("Re-opening sysroot as rw")?;
+
+        remove_all_except_loader_dirs(&bootdir, is_ostree || is_composefs)
+            .context("Emptying sysroot/boot")?;
+    };
 
     Ok(())
 }
@@ -2584,17 +2609,36 @@ pub(crate) async fn install_to_filesystem(
     // the deployment root.
     let possible_physical_root = fsopts.root_path.join("sysroot");
     let possible_ostree_dir = possible_physical_root.join("ostree");
-    let is_already_ostree = possible_ostree_dir.exists();
-    if is_already_ostree {
+    let mut is_already_ostree = possible_ostree_dir.exists();
+
+    let is_already_composefs = {
+        let cmdline = Cmdline::from_proc().context("Generating cmdline from /proc/cmdline")?;
+        cmdline
+            .find(COMPOSEFS_CMDLINE)
+            .is_some_and(|kv| kv.value().is_some())
+    };
+
+    // These two mostly serve the same purpose, i.e. using /sysroot as the rootfs instead
+    // of '/', but we have some difference when it comes to handling /boot and /sysroot/boot
+    if is_already_composefs {
+        is_already_ostree = false;
+    }
+
+    if is_already_ostree || is_already_composefs {
         tracing::debug!(
-            "ostree detected in {possible_ostree_dir}, assuming target is a deployment root and using {possible_physical_root}"
+            "{} detected, assuming target is a deployment root and using {possible_physical_root}",
+            if is_already_ostree {
+                "ostree"
+            } else {
+                "composefs"
+            }
         );
         fsopts.root_path = possible_physical_root;
     };
 
     // Get a file descriptor for the root path
     // It will be /target/sysroot on ostree OS, or will be /target
-    let rootfs_fd = if is_already_ostree {
+    let rootfs_fd = if is_already_ostree || is_already_composefs {
         let root_path = &fsopts.root_path;
         let rootfs_fd = Dir::open_ambient_dir(&fsopts.root_path, cap_std::ambient_authority())
             .with_context(|| format!("Opening target root directory {root_path}"))?;
@@ -2639,9 +2683,12 @@ pub(crate) async fn install_to_filesystem(
             tokio::task::spawn_blocking(move || remove_all_in_dir_no_xdev(&rootfs_fd, true))
                 .await??;
         }
-        Some(ReplaceMode::Alongside) => {
-            clean_boot_directories(&target_rootfs_fd, &target_root_path, is_already_ostree)?
-        }
+        Some(ReplaceMode::Alongside) => clean_boot_directories(
+            &target_rootfs_fd,
+            &target_root_path,
+            is_already_ostree,
+            is_already_composefs,
+        )?,
         None => require_empty_rootdir(&rootfs_fd)?,
     }
 
@@ -2703,8 +2750,27 @@ pub(crate) async fn install_to_filesystem(
     let get_boot_uuid = || -> Result<Option<String>> {
         let boot_path = target_root_path.join(BOOT);
         tracing::debug!("boot_path={boot_path}");
-        let u = bootc_mount::inspect_filesystem(&boot_path)
-            .with_context(|| format!("Inspecting /{BOOT}"))?
+
+        let filesystems =
+            run_findmnt(&["--mountpoint"], None, Some(boot_path.as_str()))?.filesystems;
+
+        let is_systemd_automount = filesystems
+            .iter()
+            .any(|fs| fs.source.contains("systemd") && fs.fstype == "autofs");
+        let is_boot_esp = filesystems.iter().any(|fs| fs.fstype == "vfat");
+
+        // /boot is mounted as ESP manually, or via systemd's boot.automount
+        if is_systemd_automount || is_boot_esp {
+            tracing::debug!(
+                "Boot is systemd_automount: {is_systemd_automount}, is ESP: {is_boot_esp}"
+            );
+            return Ok(None);
+        }
+
+        let u = filesystems
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow!("findmnt returned no data for {boot_path}"))?
             .uuid
             .ok_or_else(|| anyhow!("No UUID found for /{BOOT}"))?;
 
