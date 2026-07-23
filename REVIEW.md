@@ -26,9 +26,10 @@ easy to generate a *lot* of code for unit tests unnecessarily).
 ### Separating Parsing from I/O
 
 A recurring theme is structuring code for testability. Split parsers from data
-reading: have the parser accept a `&str`, then have a separate function that
-reads from disk and calls the parser. This makes unit testing straightforward
-without filesystem dependencies.
+reading: have the parser accept the raw data (e.g. a string), then have a
+separate function that reads from disk and calls the parser. This makes unit
+testing straightforward without filesystem dependencies. See the
+language-specific review guides for concrete examples.
 
 ### Test Assertions
 
@@ -48,9 +49,7 @@ or `sed`.
 
 Try to avoid having shell script longer than 50 lines. This commonly occurs
 in build system and tests. For the build system, usually there's higher
-level ways to structure things (Justfile e.g.) and several of our projects
-use the `cargo xtask` pattern to put arbitrary "glue" code in Rust using
-the `xshell` crate to keep it easy to run external commands.
+level ways to structure things (Justfile e.g.).
 
 ### Constants and Magic Values
 
@@ -64,10 +63,10 @@ value was chosen.
 
 ### Don't ignore (swallow) errors
 
-Avoid the `if let Ok(v) = ... { }` in Rust, or `foo 2>/dev/null || true`
-pattern in shell script by default. Most errors should be propagated by
-default. If not, it's usually appropriate to at least log error messages
-at a `tracing::debug!` or equivalent level.
+Avoid swallowing errors (e.g. `foo 2>/dev/null || true` in shell script).
+Most errors should be propagated by default. If not, it's usually appropriate
+to at least log error messages at a debug level. See the language-specific
+review guides for concrete anti-patterns.
 
 Handle edge cases explicitly: missing data, malformed input, offline systems.
 Error messages should provide clear context for diagnosis.
@@ -192,21 +191,17 @@ functionality, ensure equivalent coverage exists.
 
 When multiple contributors co-author a PR, bring in an independent reviewer.
 
-## Rust-Specific Guidance
+## Dependencies
 
-Prefer rustix over `libc`. All `unsafe` code must be very carefully
-justified.
+New dependencies should be justified. Consider alternatives: "I'm curious if
+you did any comparative analysis at all with alternatives?"
 
-### Dependencies
+Prefer well-maintained libraries with active communities. Glance at existing
+reverse dependencies to gauge adoption (e.g. on crates.io for Rust, or
+pkg.go.dev for Go). Consider project-level dependency policies (e.g.
+`cargo deny` for Rust).
 
-New dependencies should be justified. Glance at existing reverse dependencies
-on crates.io to see if a crate is widely used. Consider alternatives: "I'm
-curious if you did any comparative analysis at all with alternatives?"
-
-Prefer well-maintained crates with active communities. Consider `cargo deny`
-policies when adding dependencies.
-
-### API Design
+## API Design
 
 When adding new commands or options, think about machine-readable output early.
 JSON is generally preferred for that.
@@ -214,3 +209,10 @@ JSON is generally preferred for that.
 Keep helper functions in appropriate modules. Move command output formatting
 close to the CLI layer, keeping core logic functions focused on their primary
 purpose.
+
+## Language-Specific Guidance
+
+The following guides cover language-specific review expectations:
+
+- [REVIEW_RUST.md](REVIEW_RUST.md) — Rust projects
+- [REVIEW_GOLANG.md](REVIEW_GOLANG.md) — Go projects
