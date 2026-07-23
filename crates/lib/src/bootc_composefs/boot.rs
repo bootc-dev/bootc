@@ -96,6 +96,7 @@ use serde::{Deserialize, Serialize};
 use crate::bootc_composefs::state::{get_booted_bls, write_composefs_state};
 use crate::bootc_composefs::status::ComposefsCmdline;
 use crate::bootc_kargs::compute_new_kargs;
+use crate::bootloader::bootupd_supports_bootloader_flag;
 use crate::composefs_consts::{TYPE1_BOOT_DIR_PREFIX, TYPE1_ENT_PATH, TYPE1_ENT_PATH_STAGED};
 use crate::parsers::bls_config::{BLSConfig, BLSConfigType, EFIKey};
 use crate::spec::BootloaderKind;
@@ -1388,6 +1389,16 @@ pub(crate) async fn setup_composefs_boot(
             &root_setup.device_info.require_single_root()?,
             boot_uuid,
         )?;
+    } else if bootupd_supports_bootloader_flag(&root_setup.physical_root_path, None)
+        .is_ok_and(|v| v)
+    {
+        crate::bootloader::install_via_bootupd(
+            &root_setup.device_info,
+            &root_setup.physical_root_path,
+            &state.config_opts,
+            None,
+            Some(postfetch.detected_bootloader),
+        )?;
     } else if matches!(
         postfetch.detected_bootloader,
         Bootloader::Grub | Bootloader::GrubCC
@@ -1396,6 +1407,7 @@ pub(crate) async fn setup_composefs_boot(
             &root_setup.device_info,
             &root_setup.physical_root_path,
             &state.config_opts,
+            None,
             None,
         )?;
 
