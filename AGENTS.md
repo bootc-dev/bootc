@@ -57,7 +57,10 @@ the commit message text.
 ## Code guidelines
 
 The [REVIEW.md](REVIEW.md) file describes expectations around
-testing, code quality, commit messages, commit organization, etc. If you're
+testing, code quality, commit messages, commit organization, etc.
+Language-specific guidelines are in
+[REVIEW_RUST.md](REVIEW_RUST.md) and
+[REVIEW_GOLANG.md](REVIEW_GOLANG.md). If you're
 creating a change, it is strongly encouraged after each 
 commit and especially when the agent thinks a task is complete
 to spawn a subagent to perform a review using guidelines (alongside
