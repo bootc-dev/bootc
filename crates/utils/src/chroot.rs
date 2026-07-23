@@ -9,11 +9,27 @@ use std::process::Command;
 
 use anyhow::{Context, Result};
 use cap_std_ext::camino::Utf8Path;
-use rustix::mount::{MountFlags, MountPropagationFlags, mount, mount_bind_recursive, mount_change};
+use rustix::mount::{
+    MountFlags, MountPropagationFlags, mount, mount_bind, mount_bind_recursive, mount_change,
+};
 use rustix::process::{chdir, chroot};
 use rustix::thread::{UnshareFlags, unshare_unsafe};
 
 use crate::CommandRunExt;
+
+/// Whether a [`ChrootCmd::bind`] mount also carries over mounts nested
+/// under its source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BindMode {
+    /// A plain bind mount: only `source` itself is bound. Mounts nested
+    /// under `source` on the host (e.g. an ESP mounted under a `/boot`
+    /// source) are *not* carried over, leaving the corresponding
+    /// mountpoint directories under `target` empty.
+    Default,
+    /// A recursive bind mount: mounts nested under `source` on the host
+    /// are also visible under `target` inside the chroot.
+    Recursive,
+}
 
 /// Builder for running commands inside a target directory using a
 /// mount namespace + chroot.
@@ -21,8 +37,8 @@ use crate::CommandRunExt;
 pub struct ChrootCmd<'a> {
     /// The target directory to use as root for the chroot.
     chroot_path: Cow<'a, Utf8Path>,
-    /// Bind mounts in format (host source, chroot-relative target).
-    bind_mounts: Vec<(&'a str, &'a str)>,
+    /// Bind mounts in format (host source, chroot-relative target, mode).
+    bind_mounts: Vec<(&'a str, &'a str, BindMode)>,
     /// Environment variables to set on the spawned command.
     env_vars: Vec<(&'a str, &'a str)>,
 }
@@ -38,14 +54,16 @@ impl<'a> ChrootCmd<'a> {
     }
 
     /// Add a bind mount from `source` (on the host) to `target` (a path
-    /// inside the chroot, e.g. `/boot`).
+    /// inside the chroot, e.g. `/sysroot`). See [`BindMode`] for the
+    /// difference between recursive and non-recursive bind mounts.
     pub fn bind(
         mut self,
         source: &'a impl AsRef<Utf8Path>,
         target: &'a impl AsRef<Utf8Path>,
+        mode: BindMode,
     ) -> Self {
         self.bind_mounts
-            .push((source.as_ref().as_str(), target.as_ref().as_str()));
+            .push((source.as_ref().as_str(), target.as_ref().as_str(), mode));
         self
     }
 
@@ -91,14 +109,18 @@ impl<'a> ChrootCmd<'a> {
         let sys_target = CString::new(sys_target.as_str())?;
         let run_target = CString::new(run_target.as_str())?;
 
-        let user_binds: Vec<(CString, CString)> = self
+        let user_binds: Vec<(CString, CString, BindMode)> = self
             .bind_mounts
             .iter()
-            .map(|(src, tgt)| -> Result<_> {
+            .map(|(src, tgt, mode)| -> Result<_> {
                 let tgt_in_chroot = self.chroot_path.join(tgt.trim_start_matches('/'));
                 create_dir_all(&tgt_in_chroot)
                     .with_context(|| format!("Creating bind target {tgt_in_chroot}"))?;
-                Ok((CString::new(*src)?, CString::new(tgt_in_chroot.as_str())?))
+                Ok((
+                    CString::new(*src)?,
+                    CString::new(tgt_in_chroot.as_str())?,
+                    *mode,
+                ))
             })
             .collect::<Result<_>>()?;
 
@@ -150,8 +172,13 @@ impl<'a> ChrootCmd<'a> {
                 // properties.
                 mount_bind_recursive(c"/run", run_target.as_c_str())?;
 
-                for (src, tgt) in &user_binds {
-                    mount_bind_recursive(src.as_c_str(), tgt.as_c_str())?;
+                for (src, tgt, mode) in &user_binds {
+                    match mode {
+                        BindMode::Recursive => {
+                            mount_bind_recursive(src.as_c_str(), tgt.as_c_str())?
+                        }
+                        BindMode::Default => mount_bind(src.as_c_str(), tgt.as_c_str())?,
+                    }
                 }
 
                 chroot(chroot_cstr.as_c_str())?;
@@ -198,12 +225,21 @@ mod tests {
     fn builder_accumulates_binds_and_env() {
         let (_keep, root) = tmp_root();
         let src = root.join("src");
+        let non_recursive_src = root.join("non-recursive-src");
         let cmd = ChrootCmd::new(&root)
-            .bind(&src, &"/boot")
+            .bind(&src, &"/boot", BindMode::Recursive)
+            .bind(&non_recursive_src, &"/sysroot", BindMode::Default)
             .setenv("FOO", "bar")
             .set_default_path();
-        assert_eq!(cmd.bind_mounts.len(), 1);
-        assert_eq!(cmd.bind_mounts[0].1, "/boot");
+        assert_eq!(cmd.bind_mounts.len(), 2);
+        assert_eq!(
+            cmd.bind_mounts[0],
+            (src.as_str(), "/boot", BindMode::Recursive)
+        );
+        assert_eq!(
+            cmd.bind_mounts[1],
+            (non_recursive_src.as_str(), "/sysroot", BindMode::Default)
+        );
         // setenv + set_default_path
         assert_eq!(cmd.env_vars.len(), 2);
         assert!(cmd.env_vars.iter().any(|(k, _)| *k == "PATH"));
@@ -229,7 +265,7 @@ mod tests {
         let (_keep, root) = tmp_root();
         let (_keep2, src_root) = tmp_root();
         ChrootCmd::new(&root)
-            .bind(&src_root, &"/sysroot")
+            .bind(&src_root, &"/sysroot", BindMode::Recursive)
             .build_command(["/bin/true"])
             .unwrap();
         assert!(root.join("sysroot").is_dir());

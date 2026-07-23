@@ -3,7 +3,7 @@ use std::process::Command;
 use std::sync::OnceLock;
 
 use anyhow::{Context, Result, anyhow, bail};
-use bootc_utils::{ChrootCmd, CommandRunExt};
+use bootc_utils::{BindMode, ChrootCmd, CommandRunExt};
 use camino::Utf8Path;
 use cap_std_ext::cap_std::fs::Dir;
 use cap_std_ext::dirext::CapStdExtDirExt;
@@ -98,13 +98,12 @@ pub(crate) fn supports_bootupd(root: &Dir) -> Result<bool> {
 /// Check whether the target bootupd supports `--filesystem`.
 ///
 /// Runs `bootupctl backend install --help` and looks for `--filesystem` in the
-/// output. When `deployment_path` is set the command runs inside a chroot
+/// output. When `chroot_target` is set the command runs inside a chroot
 /// (via [`ChrootCmd`]) so we probe the binary from the target image.
-fn bootupd_supports_filesystem(rootfs: &Utf8Path, deployment_path: Option<&str>) -> Result<bool> {
+fn bootupd_supports_filesystem(chroot_target: Option<&Utf8Path>) -> Result<bool> {
     let help_args = ["bootupctl", "backend", "install", "--help"];
-    let output = if let Some(deploy) = deployment_path {
-        let target_root = rootfs.join(deploy);
-        ChrootCmd::new(&target_root)
+    let output = if let Some(target_root) = chroot_target {
+        ChrootCmd::new(target_root)
             .set_default_path()
             .run_get_string(help_args)?
     } else {
@@ -129,17 +128,29 @@ fn bootupd_supports_filesystem(rootfs: &Utf8Path, deployment_path: Option<&str>)
 ///
 /// When the target bootupd supports `--filesystem` we pass it pointing at a
 /// block-backed mount so that bootupd can resolve the backing device(s) itself
-/// via `lsblk`.  In the chroot path we bind-mount the physical root at
-/// `/sysroot` to give `lsblk` a real block-backed path.
+/// via `lsblk`.  When `chroot_target` is set, bootupctl is executed inside the
+/// given chroot root via [`ChrootCmd`], with the physical root bind-mounted at
+/// `/sysroot` so `lsblk` can resolve a real block-backed path.
 ///
 /// For older bootupd versions that lack `--filesystem` we fall back to the
 /// legacy `--device <device_path> <rootfs>` invocation.
+///
+/// If `bind_boot_path` is set, the given host path is bind-mounted onto
+/// `/boot` inside the chroot.  Both the ostree and composefs backends use
+/// this to expose the physical root's real `/boot` inside their respective
+/// chroots, since neither chroot target (an ostree deployment, or a mounted
+/// composefs image) has a `/boot` backed by the real root filesystem on its
+/// own.  This matters because bootupd derives the UUID it writes for
+/// `--write-uuid` from whatever filesystem is mounted at `<chroot>/boot`,
+/// and looks for an empty `boot/efi` directory there to discover and mount
+/// the real ESP into.
 #[context("Installing bootloader")]
 pub(crate) fn install_via_bootupd(
     device: &bootc_blockdev::Device,
     rootfs: &Utf8Path,
     configopts: &crate::install::InstallConfigOpts,
-    deployment_path: Option<&str>,
+    chroot_target: Option<&Utf8Path>,
+    bind_boot_path: Option<&Utf8Path>,
 ) -> Result<()> {
     let verbose = std::env::var_os("BOOTC_BOOTLOADER_DEBUG").map(|_| "-vvvv");
     // bootc defaults to only targeting the platform boot method.
@@ -150,7 +161,7 @@ pub(crate) fn install_via_bootupd(
     // This makes sure we use binaries from the target image rather than the buildroot.
     // In that case, the target rootfs is replaced with `/` because this is just used by
     // bootupd to find the backing device.
-    let rootfs_mount = if deployment_path.is_none() {
+    let rootfs_mount = if chroot_target.is_none() {
         rootfs.as_str()
     } else {
         "/"
@@ -179,7 +190,7 @@ pub(crate) fn install_via_bootupd(
     // parent via require_single_root().  (Older bootupd doesn't support
     // multiple backing devices anyway.)
     // Computed before building bootupd_args so the String lives long enough.
-    let root_device_path = if bootupd_supports_filesystem(rootfs, deployment_path)
+    let root_device_path = if bootupd_supports_filesystem(chroot_target)
         .context("Probing bootupd --filesystem support")?
     {
         None
@@ -192,7 +203,16 @@ pub(crate) fn install_via_bootupd(
         bootupd_args.push(rootfs_mount);
     } else {
         tracing::debug!("bootupd supports --filesystem");
-        bootupd_args.extend(["--filesystem", rootfs_mount]);
+        // Inside a chroot the physical root is bind-mounted at /sysroot (see
+        // below) so bootupd's own device resolution (via lsblk) sees a real
+        // block-backed path. This matters for composefs, where the chroot's
+        // own "/" is a virtual composefs mount with no backing block device.
+        let filesystem_path = if chroot_target.is_some() {
+            "/sysroot"
+        } else {
+            rootfs_mount
+        };
+        bootupd_args.extend(["--filesystem", filesystem_path]);
         bootupd_args.push(rootfs_mount);
     }
 
@@ -200,9 +220,7 @@ pub(crate) fn install_via_bootupd(
     // namespace and the necessary API filesystems in the target
     // deployment, without requiring a user namespace (which fails under
     // qemu-user — see <https://github.com/bootc-dev/bootc/issues/2111>).
-    if let Some(deploy) = deployment_path {
-        let target_root = rootfs.join(deploy);
-        let boot_path = rootfs.join("boot");
+    if let Some(target_root) = chroot_target {
         let rootfs_path = rootfs.to_path_buf();
 
         tracing::debug!("Running bootupctl via chroot in {}", target_root);
@@ -212,15 +230,24 @@ pub(crate) fn install_via_bootupd(
         let mut chroot_args = vec!["bootupctl"];
         chroot_args.extend(bootupd_args);
 
-        let mut cmd = ChrootCmd::new(&target_root)
-            // Bind mount /boot from the physical target root so bootupctl can find
-            // the boot partition and install the bootloader there
-            .bind(&boot_path, &"/boot");
+        let mut cmd = ChrootCmd::new(target_root);
+        // Bind mount /boot from the physical target root so bootupctl can find
+        // the boot partition and install the bootloader there. This is a
+        // non-recursive bind: the physical root's /boot may itself have the
+        // ESP mounted at boot/efi (see clean_boot_directories()), and we
+        // don't want that mount to be dragged along, since bootupd's own EFI
+        // component expects to find an empty boot/efi directory to mount the
+        // real ESP onto itself (see MountedImageRoot::with_esp()). A stray
+        // nested ESP mount there has also been observed to confuse grub-probe
+        // into embedding the wrong root device in the BIOS boot prefix.
+        if let Some(boot_path) = &bind_boot_path {
+            cmd = cmd.bind(boot_path, &"/boot", BindMode::Default);
+        }
 
         // Only bind mount the physical root at /sysroot when using --filesystem;
         // bootupd needs it to resolve backing block devices via lsblk.
         if root_device_path.is_none() {
-            cmd = cmd.bind(&rootfs_path, &"/sysroot");
+            cmd = cmd.bind(&rootfs_path, &"/sysroot", BindMode::Recursive);
         }
 
         // ChrootCmd starts the child with a cleared environment, so we
