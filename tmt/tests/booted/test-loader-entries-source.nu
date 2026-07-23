@@ -18,9 +18,14 @@
 # 9. --options "" (empty string) clears kargs without removing the source
 # 10. Staged deployment interaction (bootc switch + set-options-for-source
 #     preserves the pending image switch)
+# 11. Cross-consumer staging (bootc stages source kargs, then rpm-ostree
+#     re-stages on the same boot via kargs --append; x-options-source-*
+#     keys must survive in the replacement staged deployment via the
+#     "previously-staged fallback" path in ostree_sysroot_stage_tree_with_options)
 #
 # Requires ostree with bootconfig-extra support (>= 2026.1).
 # See: https://github.com/ostreedev/ostree/pull/3570
+# See: https://github.com/ostreedev/ostree/pull/3611
 # See: https://github.com/bootc-dev/bootc/issues/899
 use std assert
 use tap.nu
@@ -191,23 +196,71 @@ def fourth_boot [] {
     # Then remove it with no --options
     bootc loader-entries set-options-for-source --source dracut
 
+    # -- Cross-consumer staging --
+    # Simulate the scenario where bootc stages source-tracked kargs and
+    # then rpm-ostree re-stages on the same boot (e.g., appending an
+    # unrelated karg). The replacement staged deployment created by
+    # rpm-ostree must inherit the x-options-source-* keys from the
+    # previously-staged deployment via ostree's fallback path.
+    bootc loader-entries set-options-for-source --source crosstest --options "cross1=a cross2=b"
+    let st = bootc status --json | from json
+    assert ($st.status.staged != null) "crosstest should stage a deployment"
+
+    # Now rpm-ostree appends an unrelated karg, creating a NEW staged
+    # deployment that replaces the one bootc just created.
+    rpm-ostree kargs --append=rpmarg=yes
+
+    # A staged deployment should still exist after rpm-ostree re-staged
+    let st = bootc status --json | from json
+    assert ($st.status.staged != null) "deployment should still be staged after rpm-ostree kargs"
+    print "ok: cross-consumer staging set up (bootc then rpm-ostree)"
+
     tmt-reboot
 }
 
 def fifth_boot [] {
-    # Verify dracut cleared, tuned preserved
+    # -- Verify cross-consumer staging results --
+    # After fourth_boot: bootc staged crosstest source kargs, then
+    # rpm-ostree re-staged with --append=rpmarg=yes. Both the
+    # source-tracked kargs AND the rpm-ostree karg must be present.
     let cmdline = parse_cmdline
+    assert ("cross1=a" in $cmdline) "crosstest cross1=a should survive rpm-ostree re-staging"
+    assert ("cross2=b" in $cmdline) "crosstest cross2=b should survive rpm-ostree re-staging"
+    assert ("rpmarg=yes" in $cmdline) "rpm-ostree rpmarg=yes should be present"
+
+    # Verify the crosstest source key exists in BLS
+    let source_keys = read_bls_source_keys
+    let crosstest_keys = $source_keys | where { |line| $line starts-with "x-options-source-crosstest" }
+    assert (($crosstest_keys | length) > 0) "x-options-source-crosstest BLS key must survive rpm-ostree re-staging"
+    let crosstest_line = $crosstest_keys | first
+    assert ($crosstest_line | str contains "cross1=a") "crosstest source key should contain cross1=a"
+    assert ($crosstest_line | str contains "cross2=b") "crosstest source key should contain cross2=b"
+
+    # Verify tuned source also survived the cross-consumer staging
+    assert ("nohz=on" in $cmdline) "tuned nohz=on should survive cross-consumer staging"
+    assert ("rcu_nocbs=2-7" in $cmdline) "tuned rcu_nocbs=2-7 should survive cross-consumer staging"
+    print "ok: cross-consumer staging preserved all source kargs and rpm-ostree karg"
+
+    # Verify dracut cleared (from fourth_boot removal)
     assert ("rd.driver.pre=vfio-pci" not-in $cmdline) "dracut karg should be gone"
-    assert ("nohz=on" in $cmdline) "tuned nohz=on should still be present"
-    assert ("rcu_nocbs=2-7" in $cmdline) "tuned rcu_nocbs=2-7 should still be present"
     print "ok: source clear persisted"
 
     # -- Idempotent: same kargs again should be a no-op --
+    # Note: crosstest and rpmarg are still present in the booted deployment,
+    # but the idempotent check is only about the tuned source. Since tuned
+    # already has "nohz=on rcu_nocbs=2-7", bootc should detect no change
+    # and not stage a new deployment.
     bootc loader-entries set-options-for-source --source tuned --options "nohz=on rcu_nocbs=2-7"
     # Should not stage a new deployment (idempotent)
     let st = bootc status --json | from json
     assert ($st.status.staged == null) "idempotent call should not stage a deployment"
     print "ok: idempotent operation"
+
+    # Clean up cross-consumer kargs now that the idempotent test has passed.
+    # These operations will stage a deployment, but that's fine because the
+    # staged deployment interaction test below also stages.
+    bootc loader-entries set-options-for-source --source crosstest
+    rpm-ostree kargs --delete=rpmarg=yes
 
     # -- Staged deployment interaction --
     # Build a derived image and switch to it (this stages a deployment).
@@ -246,10 +299,17 @@ def sixth_boot [] {
     assert ("rcu_nocbs=2-7" in $cmdline) "tuned rcu_nocbs=2-7 should be present"
     assert ("skew_tick=1" in $cmdline) "tuned skew_tick=1 should be present"
 
+    # Verify cross-consumer kargs were cleaned up in fifth_boot
+    assert ("cross1=a" not-in $cmdline) "crosstest kargs should be gone after cleanup"
+    assert ("cross2=b" not-in $cmdline) "crosstest kargs should be gone after cleanup"
+    assert ("rpmarg=yes" not-in $cmdline) "rpm-ostree rpmarg should be gone after cleanup"
+
     # Verify source key in BLS
     let source_keys = read_bls_source_keys
     let tuned_key = $source_keys | where { |line| $line starts-with "x-options-source-tuned" }
     assert (($tuned_key | length) > 0) "tuned source key should exist after staged interaction"
+    let crosstest_keys = $source_keys | where { |line| $line starts-with "x-options-source-crosstest" }
+    assert (($crosstest_keys | length) == 0) "crosstest source key should be gone after cleanup"
     print "ok: staged deployment interaction preserved both image and source kargs"
 
     # Verify system kargs still intact
