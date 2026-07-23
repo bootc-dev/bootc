@@ -1007,6 +1007,82 @@ impl MergeState {
     }
 }
 
+/// Mount an ostree commit as a composefs filesystem, returning a read-only
+/// directory handle.
+///
+/// This uses `checkout_composefs` to generate an erofs metadata image from
+/// the commit, then mounts it via composefs with the ostree repo objects
+/// as the backing data store.  The returned `Dir` is a detached mount —
+/// it stays alive as long as the fd is open.
+///
+/// The erofs image is written into the ostree repo's own `tmp/` directory
+/// (which lives on the real root filesystem) because erofs file-backed
+/// mounts require a non-stacked backing filesystem.
+#[context("Mounting ostree commit {commit}")]
+pub(crate) fn mount_ostree_commit(repo: &ostree::Repo, commit: &str) -> Result<Dir> {
+    use composefs_ctl::composefs::mount::{MountOptions, composefs_fsmount};
+    use std::os::fd::AsRawFd;
+
+    // Write the erofs image into the ostree repo's tmp/ directory so it
+    // lives on the real (non-stacked) filesystem.
+    let repo_dir = Dir::reopen_dir(&repo.dfd_borrow())?;
+    let repo_tmp = repo_dir
+        .open_dir("tmp")
+        .context("Opening ostree repo tmp/")?;
+    let td = cap_std_ext::cap_tempfile::TempDir::new_in(&repo_tmp)?;
+    let image_name = "image.cfs";
+
+    // Call checkout_composefs via FFI directly; the high-level ostree
+    // crate (0.20.x) has a broken feature ladder that omits v2024_7.
+    #[allow(unsafe_code)]
+    {
+        use glib::translate::*;
+        use std::ffi::CString;
+        let c_path = CString::new(image_name).unwrap();
+        let c_commit = CString::new(commit).context("Invalid commit string")?;
+        let mut error = std::ptr::null_mut();
+        // SAFETY: all pointers are valid; the repo, path, and commit are
+        // borrowed for the duration of the call.
+        let ok = unsafe {
+            ostree::ffi::ostree_repo_checkout_composefs(
+                repo.to_glib_none().0,
+                std::ptr::null_mut(),
+                td.as_raw_fd(),
+                c_path.as_ptr(),
+                c_commit.as_ptr(),
+                std::ptr::null_mut(),
+                &mut error,
+            )
+        };
+        if ok == glib::ffi::GFALSE {
+            // SAFETY: on failure, error is set by the C function.
+            return Err(unsafe { glib::Error::from_glib_full(error) })
+                .context("checkout_composefs");
+        }
+    }
+
+    // Open the erofs image and the ostree objects directory.
+    let image_fd = td
+        .open(image_name)
+        .context("Opening composefs image")?
+        .into();
+    let objects_fd = repo_dir
+        .open_dir("objects")
+        .context("Opening ostree objects dir")?;
+
+    // Mount via composefs: erofs metadata + ostree objects as data store.
+    let mount_fd = composefs_fsmount(
+        image_fd,
+        commit,
+        objects_fd,
+        false, // no fsverity requirement for read-only inspection
+        &MountOptions::default(),
+    )
+    .context("composefs_fsmount")?;
+
+    Dir::reopen_dir(&mount_fd).context("Reopening composefs mount as Dir")
+}
+
 /// Stage (queue deployment of) a fetched container image.
 #[context("Staging")]
 pub(crate) async fn stage(
@@ -1054,6 +1130,35 @@ pub(crate) async fn stage(
 
     subtask.completed = true;
     subtasks.push(subtask.clone());
+    subtask.subtask = "bound_images".into();
+    subtask.id = "bound_images".into();
+    subtask.description = "Pulling Bound Images".into();
+    subtask.completed = false;
+    prog.send(Event::ProgressSteps {
+        task: "staging".into(),
+        description: "Deploying Image".into(),
+        id: image.manifest_digest.clone().as_ref().into(),
+        steps_cached: 0,
+        steps: 1,
+        steps_total: 3,
+        subtasks: subtasks
+            .clone()
+            .into_iter()
+            .chain([subtask.clone()])
+            .collect(),
+    })
+    .await;
+    // Pull bound images *before* staging by mounting the ostree commit
+    // as a composefs filesystem to read the image specs.  This way a pull
+    // failure never results in a staged deployment at all.
+    let repo = sysroot.get_ostree()?.repo();
+    let commit_root = mount_ostree_commit(&repo, &image.ostree_commit)?;
+    let bound_images = crate::boundimage::query_bound_images(&commit_root)?;
+    drop(commit_root);
+    crate::boundimage::pull_images(sysroot, bound_images).await?;
+
+    subtask.completed = true;
+    subtasks.push(subtask.clone());
     subtask.subtask = "deploying".into();
     subtask.id = "deploying".into();
     subtask.description = "Deploying Image".into();
@@ -1073,30 +1178,8 @@ pub(crate) async fn stage(
     })
     .await;
     let origin = origin_from_imageref(spec.image)?;
-    let deployment =
+    let _deployment =
         crate::deploy::deploy(sysroot, from, image, &origin, lock_finalization).await?;
-
-    subtask.completed = true;
-    subtasks.push(subtask.clone());
-    subtask.subtask = "bound_images".into();
-    subtask.id = "bound_images".into();
-    subtask.description = "Pulling Bound Images".into();
-    subtask.completed = false;
-    prog.send(Event::ProgressSteps {
-        task: "staging".into(),
-        description: "Deploying Image".into(),
-        id: image.manifest_digest.clone().as_ref().into(),
-        steps_cached: 0,
-        steps: 1,
-        steps_total: 3,
-        subtasks: subtasks
-            .clone()
-            .into_iter()
-            .chain([subtask.clone()])
-            .collect(),
-    })
-    .await;
-    crate::boundimage::pull_bound_images(sysroot, &deployment).await?;
 
     subtask.completed = true;
     subtasks.push(subtask.clone());
