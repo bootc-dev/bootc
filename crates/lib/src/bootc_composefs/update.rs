@@ -378,6 +378,59 @@ pub(crate) async fn do_upgrade(
     apply_upgrade(storage, booted_cfs, &id.to_hex(), opts).await
 }
 
+#[context("Applying downloaded upgrade")]
+pub(crate) async fn apply_upgrade_from_downloaded(
+    storage: &Storage,
+    composefs: &BootedComposefs,
+    host: &Host,
+    do_upgrade_opts: &DoUpgradeOpts,
+) -> Result<()> {
+    let staged = host
+        .status
+        .staged
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("No staged deployment found"))?;
+
+    // Staged deployment exists, but it will be finalized
+    if !staged.download_only {
+        println!("Staged deployment is present and not in download only mode.");
+        println!("Use `bootc update --apply` to apply the update.");
+        return Ok(());
+    }
+
+    start_finalize_stated_svc()?;
+
+    let staged_depl_dir = Dir::open_ambient_dir(COMPOSEFS_TRANSIENT_STATE_DIR, ambient_authority())
+        .context("Opening transient state directory")?;
+
+    let current = staged_depl_dir
+        .read_to_string(COMPOSEFS_STAGED_DEPLOYMENT_FNAME)
+        .context("Reading staged file")?;
+
+    let mut new_staged: StagedDeployment =
+        serde_json::from_str(&current).context("Deserialzing staged file")?;
+
+    // Make the staged deployment not download_only
+    new_staged.finalization_locked = false;
+
+    staged_depl_dir
+        .atomic_replace_with(
+            COMPOSEFS_STAGED_DEPLOYMENT_FNAME,
+            |f| -> std::io::Result<()> {
+                serde_json::to_writer(f, &new_staged).map_err(std::io::Error::from)
+            },
+        )
+        .context("Writing staged file")?;
+
+    return apply_upgrade(
+        storage,
+        composefs,
+        &staged.require_composefs()?.verity,
+        &do_upgrade_opts,
+    )
+    .await;
+}
+
 #[context("Upgrading composefs")]
 pub(crate) async fn upgrade_composefs(
     opts: UpgradeOpts,
@@ -423,51 +476,7 @@ pub(crate) async fn upgrade_composefs(
     };
 
     if opts.download_opts.from_downloaded {
-        let staged = host
-            .status
-            .staged
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("No staged deployment found"))?;
-
-        // Staged deployment exists, but it will be finalized
-        if !staged.download_only {
-            println!("Staged deployment is present and not in download only mode.");
-            println!("Use `bootc update --apply` to apply the update.");
-            return Ok(());
-        }
-
-        start_finalize_stated_svc()?;
-
-        let staged_depl_dir =
-            Dir::open_ambient_dir(COMPOSEFS_TRANSIENT_STATE_DIR, ambient_authority())
-                .context("Opening transient state directory")?;
-
-        let current = staged_depl_dir
-            .read_to_string(COMPOSEFS_STAGED_DEPLOYMENT_FNAME)
-            .context("Reading staged file")?;
-
-        let mut new_staged: StagedDeployment =
-            serde_json::from_str(&current).context("Deserialzing staged file")?;
-
-        // Make the staged deployment not download_only
-        new_staged.finalization_locked = false;
-
-        staged_depl_dir
-            .atomic_replace_with(
-                COMPOSEFS_STAGED_DEPLOYMENT_FNAME,
-                |f| -> std::io::Result<()> {
-                    serde_json::to_writer(f, &new_staged).map_err(std::io::Error::from)
-                },
-            )
-            .context("Writing staged file")?;
-
-        return apply_upgrade(
-            storage,
-            composefs,
-            &staged.require_composefs()?.verity,
-            &do_upgrade_opts,
-        )
-        .await;
+        return apply_upgrade_from_downloaded(storage, composefs, &host, &do_upgrade_opts).await;
     }
 
     let imgref = derived_image.as_ref().or(current_image);
