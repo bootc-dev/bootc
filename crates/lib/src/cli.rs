@@ -62,7 +62,7 @@ use crate::utils::sigpolicy_from_opt;
 use crate::{bootc_composefs, lints};
 
 /// Shared progress options
-#[derive(Debug, Parser, PartialEq, Eq)]
+#[derive(Clone, Debug, Parser, PartialEq, Eq)]
 pub(crate) struct ProgressOptions {
     /// File descriptor number which must refer to an open pipe.
     ///
@@ -200,6 +200,10 @@ pub(crate) struct SwitchOpts {
     pub(crate) unified_storage_exp: bool,
 
     /// Target image to use for the next boot.
+    #[clap(
+        required_unless_present = "from_downloaded",
+        conflicts_with = "from-downloaded"
+    )]
     pub(crate) target: String,
 
     #[clap(flatten)]
