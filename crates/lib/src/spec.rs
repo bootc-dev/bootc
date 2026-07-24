@@ -450,6 +450,12 @@ pub struct HostStatus {
 
     /// The state of the overlay mounted on /usr
     pub usr_overlay: Option<FilesystemOverlay>,
+
+    /// Set to true if the physical root (`/sysroot`) is on a read-only medium
+    /// (e.g. a live ISO) and so cannot be mutated; commands that would change
+    /// the system (upgrade, switch, etc.) are not available.
+    #[serde(default)]
+    pub read_only: bool,
 }
 
 pub(crate) struct DeploymentEntry<'a> {

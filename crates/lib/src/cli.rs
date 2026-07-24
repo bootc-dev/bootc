@@ -1033,6 +1033,7 @@ pub(crate) async fn get_storage() -> Result<crate::store::BootedStorage> {
     let r = BootedStorage::new(env)
         .await?
         .ok_or_else(|| anyhow!("System not booted via bootc"))?;
+    r.require_writable()?;
     Ok(r)
 }
 

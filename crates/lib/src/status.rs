@@ -437,6 +437,8 @@ pub(crate) fn get_status(
         rollback_queued,
         ty,
         usr_overlay,
+        // Set by callers that have storage context (e.g. get_host).
+        read_only: false,
     };
     Ok((deployments, host))
 }
@@ -452,7 +454,7 @@ pub(crate) async fn get_host() -> Result<Host> {
         return Ok(Host::default());
     };
 
-    let host = match storage.kind() {
+    let mut host = match storage.kind() {
         Ok(kind) => match kind {
             BootedStorageKind::Ostree(booted_ostree) => {
                 let (_deployments, host) = get_status(&booted_ostree)?;
@@ -468,6 +470,10 @@ pub(crate) async fn get_host() -> Result<Host> {
             Host::default()
         }
     };
+
+    // Surface whether the physical root is on a read-only medium (e.g. a live
+    // ISO), so consumers know mutating operations are unavailable.
+    host.status.read_only = storage.is_ro;
 
     Ok(host)
 }

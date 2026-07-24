@@ -113,6 +113,9 @@ pub struct Device {
     pub path: Option<String>,
     /// Partition table type (e.g., "gpt", "dos"). Only present on whole disk devices.
     pub pttype: Option<String>,
+    /// Whether the device is read-only (e.g. a loopback over an immutable
+    /// rootfs image on a live ISO). `None` if not reported by `lsblk`.
+    pub ro: Option<bool>,
 }
 
 impl Device {
@@ -504,6 +507,30 @@ pub fn list_dev_by_dir(dir: &Dir) -> Result<Device> {
     list_dev(&Utf8PathBuf::from(source))
 }
 
+/// Determine whether the block device backing the filesystem mounted at the
+/// given directory is physically read-only.
+///
+/// This is the case for e.g. a live ISO, where `/sysroot` is a loopback device
+/// over an immutable rootfs image and the kernel will reject any attempt to
+/// remount it read-write.
+///
+/// Returns `Ok(None)` when the backing device cannot be determined (for example
+/// when the filesystem source is not a real block device, such as an overlay),
+/// leaving the decision to the caller.
+pub fn is_dir_backing_device_ro(dir: &Dir) -> Result<Option<bool>> {
+    let fsinfo = bootc_mount::inspect_filesystem_of_dir(dir)?;
+    let source = &fsinfo.source;
+    // Only real block device nodes can be queried via lsblk; sources like
+    // "overlay" or a ZFS dataset are not physical devices we can interrogate
+    // for a read-only flag here.
+    if !source.starts_with("/dev/") {
+        tracing::debug!("Filesystem source {source} is not a block device node");
+        return Ok(None);
+    }
+    let dev = list_dev(&Utf8PathBuf::from(source))?;
+    Ok(dev.ro)
+}
+
 pub struct LoopbackDevice {
     pub dev: Option<Utf8PathBuf>,
     // Handle to the cleanup helper process
@@ -854,6 +881,7 @@ mod test {
             uuid: None,
             path: Some("/dev/vda".into()),
             pttype: Some("dos".into()),
+            ro: None,
             children: Some(
                 parttypes
                     .iter()
@@ -874,6 +902,7 @@ mod test {
                         uuid: None,
                         path: None,
                         pttype: Some("dos".into()),
+                        ro: None,
                         children: None,
                     })
                     .collect(),
