@@ -31,6 +31,10 @@ mkdir -p /boot/EFI/Linux
 target=/boot/EFI/Linux/${kver}.efi
 cp "${uki_src}/${kver}.efi" "${target}"
 
+if [[ -f "${uki_src}/${kver}.dump" ]]; then
+    cp "${uki_src}/${kver}.dump" /boot
+fi
+
 # NOTE: We used to create a symlink from /usr/lib/modules/${kver}/${kver}.efi to the UKI
 # for tooling compatibility. However, composefs-boot's find_uki_components() doesn't
 # handle symlinks correctly and fails with "is not a regular file". The UKI is already

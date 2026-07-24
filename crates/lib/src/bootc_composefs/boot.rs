@@ -63,7 +63,7 @@
 
 use std::fs::create_dir_all;
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -89,6 +89,7 @@ use composefs_ctl::composefs_boot;
 use composefs_ctl::composefs_oci;
 use fn_error_context::context;
 use linux_kernel_cmdline::utf8::{Cmdline, Parameter};
+use ostree_ext::composefs::dumpfile;
 use rustix::{mount::MountFlags, path::Arg};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -133,6 +134,14 @@ const AUTH_EXT: &str = "auth";
 /// our config files and not show the actual UKIs in the bootloader menu
 /// This is relative to the ESP
 pub(crate) const BOOTC_UKI_DIR: &str = "EFI/Linux/bootc";
+
+#[derive(thiserror::Error, Debug)]
+#[error("The UKI has the wrong composefs= parameter (is '{actual}', should be '{expected}')")]
+pub(crate) struct UKIDigestMismatch {
+    pub actual: String,
+    pub expected: String,
+    pub uki_name: Option<String>,
+}
 
 pub(crate) enum BootSetupType<'a> {
     /// For initial setup, i.e. install to-disk
@@ -491,7 +500,7 @@ struct BLSEntryPath {
 #[context("Setting up BLS boot")]
 pub(crate) fn setup_composefs_bls_boot(
     setup_type: BootSetupType,
-    repo: crate::store::ComposefsRepository,
+    repo: &crate::store::ComposefsRepository,
     id: &Sha512HashValue,
     entry: &ComposefsBootEntry<Sha512HashValue>,
     mounted_erofs: &Dir,
@@ -845,10 +854,15 @@ fn write_pe_to_esp(
             _ => { /* no-op */ }
         }
 
+        let file_name = file_path.file_name();
+
         if *composefs_cmdline != *uki_id {
-            anyhow::bail!(
-                "The UKI has the wrong composefs= parameter (is '{composefs_cmdline:?}', should be {uki_id:?})"
-            );
+            return Err(UKIDigestMismatch {
+                actual: composefs_cmdline.to_hex(),
+                expected: uki_id.to_hex(),
+                uki_name: file_name.map(|x| x.to_string()),
+            }
+            .into());
         }
 
         uki_reader.seek(SeekFrom::Start(0))?;
@@ -1083,7 +1097,7 @@ fn write_systemd_uki_config(
 #[context("Setting up UKI boot")]
 pub(crate) fn setup_composefs_uki_boot(
     setup_type: BootSetupType,
-    repo: crate::store::ComposefsRepository,
+    repo: &crate::store::ComposefsRepository,
     id: &Sha512HashValue,
     entries: Vec<ComposefsBootEntry<Sha512HashValue>>,
 ) -> Result<String> {
@@ -1450,7 +1464,6 @@ pub(crate) async fn setup_composefs_boot(
 
     let boot_type = BootType::from(entry);
 
-    // Unwrap Arc to pass owned repo to boot setup functions.
     let repo = Arc::try_unwrap(repo).map_err(|_| {
         anyhow::anyhow!(
             "BUG: Arc<Repository> still has other references after boot image generation"
@@ -1460,17 +1473,87 @@ pub(crate) async fn setup_composefs_boot(
     let boot_digest = match boot_type {
         BootType::Bls => setup_composefs_bls_boot(
             BootSetupType::Setup((&root_setup, &state, &postfetch)),
-            repo,
+            &repo,
             &id,
             entry,
             mounted_root.dir(),
         )?,
-        BootType::Uki => setup_composefs_uki_boot(
-            BootSetupType::Setup((&root_setup, &state, &postfetch)),
-            repo,
-            &id,
-            entries,
-        )?,
+        BootType::Uki => {
+            let uki_setup_result = setup_composefs_uki_boot(
+                BootSetupType::Setup((&root_setup, &state, &postfetch)),
+                &repo,
+                &id,
+                entries,
+            );
+
+            match uki_setup_result {
+                Ok(boot_digest) => boot_digest,
+                Err(e) => match e.downcast::<UKIDigestMismatch>() {
+                    Ok(mismatch) => {
+                        // We expect the dumpfile to be named the same as the UKI
+                        // Ex. UKI      - 6.19.14-108.fc42.x86_64.efi
+                        //     Dumpfile - 6.19.14-108.fc42.x86_64.dump
+                        let dumpfile_name = mismatch
+                            .uki_name
+                            .as_ref()
+                            .and_then(|x| x.strip_suffix(EFI_EXT).map(|x| format!("{x}.dump")));
+
+                        let Some(dumpfile_name) = &dumpfile_name else {
+                            return Err(mismatch.into());
+                        };
+
+                        let dump = composefs_ctl::dump_files(
+                            &repo,
+                            &id.to_hex(),
+                            &vec![PathBuf::from(dumpfile_name)],
+                            true,
+                        );
+
+                        let Ok(dump) = dump else {
+                            tracing::debug!("Dumpfile not found for diff");
+                            return Err(mismatch.into());
+                        };
+
+                        // SAFETY: This output is always UTF-8 compatible as it's of the form
+                        // <file-name> <object-path>
+                        let text = std::str::from_utf8(&dump)?;
+                        let obj_path = text.split_whitespace().nth(1);
+
+                        let Some(obj_path) = obj_path else {
+                            return Err(mismatch.into());
+                        };
+
+                        let tempdir = tempfile::tempdir()?;
+                        let path = tempdir.path();
+                        let tempdir = Dir::open_ambient_dir(path, ambient_authority())?;
+
+                        let mut tmpfile = tempdir.create("current")?;
+                        dumpfile::write_dumpfile(&mut tmpfile, &fs).context("Writing dumpfile")?;
+
+                        let mut cmd = std::process::Command::new("diff");
+                        let out = cmd
+                            .arg("--color=auto")
+                            .arg(
+                                root_setup
+                                    .physical_root_path
+                                    .join("sysroot/composefs/objects")
+                                    .join(obj_path),
+                            )
+                            .arg(format!("{}/current", path.display()))
+                            .status();
+
+                        // Intentionally not short-circuiting here as the real error is digest
+                        // mismtach
+                        if let Err(e) = out {
+                            tracing::warn!("diffing dumpfiles failed with Err: {e:?}");
+                        };
+
+                        return Err(mismatch.into());
+                    }
+                    Err(e) => Err(e)?,
+                },
+            }
+        }
     };
 
     write_composefs_state(
