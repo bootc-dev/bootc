@@ -84,6 +84,25 @@ impl TryFrom<ProgressOptions> for ProgressWriter {
     }
 }
 
+#[derive(Debug, Parser, PartialEq, Eq)]
+pub(crate) struct DownloadOnlyOpts {
+    /// Download and stage the update without applying it.
+    ///
+    /// Download the image and ensure it's retained on disk for the lifetime of this system boot,
+    /// but it will not be applied on reboot. If the system is rebooted without applying the update,
+    /// the image will be eligible for garbage collection again.
+    #[clap(long, conflicts_with_all = ["check", "apply"])]
+    pub(crate) download_only: bool,
+
+    /// Apply a staged deployment that was previously downloaded with --download-only.
+    ///
+    /// This unlocks the staged deployment without fetching updates from the container image source.
+    /// The deployment will be applied on the next shutdown or reboot. Use with --apply to
+    /// reboot immediately.
+    #[clap(long, conflicts_with_all = ["check", "download_only"])]
+    pub(crate) from_downloaded: bool,
+}
+
 /// Perform an upgrade operation
 #[derive(Debug, Parser, PartialEq, Eq)]
 pub(crate) struct UpgradeOpts {
@@ -109,21 +128,8 @@ pub(crate) struct UpgradeOpts {
     #[clap(long = "soft-reboot", conflicts_with = "check")]
     pub(crate) soft_reboot: Option<SoftRebootMode>,
 
-    /// Download and stage the update without applying it.
-    ///
-    /// Download the update and ensure it's retained on disk for the lifetime of this system boot,
-    /// but it will not be applied on reboot. If the system is rebooted without applying the update,
-    /// the image will be eligible for garbage collection again.
-    #[clap(long, conflicts_with_all = ["check", "apply"])]
-    pub(crate) download_only: bool,
-
-    /// Apply a staged deployment that was previously downloaded with --download-only.
-    ///
-    /// This unlocks the staged deployment without fetching updates from the container image source.
-    /// The deployment will be applied on the next shutdown or reboot. Use with --apply to
-    /// reboot immediately.
-    #[clap(long, conflicts_with_all = ["check", "download_only"])]
-    pub(crate) from_downloaded: bool,
+    #[clap(flatten)]
+    pub(crate) download_opts: DownloadOnlyOpts,
 
     /// Upgrade to a different tag of the currently booted image.
     ///
@@ -158,6 +164,9 @@ pub(crate) struct SwitchOpts {
     /// The transport; e.g. registry, oci, oci-archive, docker-daemon, containers-storage.  Defaults to `registry`.
     #[clap(long, default_value = "registry")]
     pub(crate) transport: String,
+
+    #[clap(flatten)]
+    pub(crate) download_opts: DownloadOnlyOpts,
 
     /// This argument is deprecated and does nothing.
     #[clap(long, hide = true)]
@@ -1238,7 +1247,7 @@ async fn upgrade(
     let mut changed = false;
 
     // Handle --from-downloaded: unlock existing staged deployment without fetching from image source
-    if opts.from_downloaded {
+    if opts.download_opts.from_downloaded {
         let ostree = storage.get_ostree()?;
         let staged_deployment = ostree
             .staged_deployment()
@@ -1328,7 +1337,7 @@ async fn upgrade(
 
             if let Some(staged) = staged_deployment {
                 // Handle download-only mode based on flags
-                if opts.download_only {
+                if opts.download_opts.download_only {
                     // --download-only: set download-only mode
                     if !staged.is_finalization_locked() {
                         storage.get_ostree()?.change_finalization(&staged)?;
@@ -1344,7 +1353,7 @@ async fn upgrade(
                         download_only_changed = true;
                     }
                 }
-            } else if opts.download_only || opts.apply {
+            } else if opts.download_opts.download_only || opts.apply {
                 anyhow::bail!("No staged deployment found");
             }
 
@@ -1367,7 +1376,7 @@ async fn upgrade(
                 &fetched,
                 &spec,
                 prog.clone(),
-                opts.download_only,
+                opts.download_opts.download_only,
             )
             .await?;
             changed = true;
