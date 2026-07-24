@@ -65,6 +65,14 @@ Soft reboot allows faster system restart by avoiding full hardware reboot when p
 
     Default: registry
 
+**--download-only**
+
+    Download and stage the update without applying it
+
+**--from-downloaded**
+
+    Apply a staged deployment that was previously downloaded with --download-only
+
 **--enforce-container-sigpolicy**
 
     This is the inverse of the previous `--target-no-signature-verification` (which is now a no-op)

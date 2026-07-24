@@ -390,8 +390,8 @@ pub(crate) async fn upgrade_composefs(
         message_id = COMPOSEFS_UPGRADE_JOURNAL_ID,
         bootc.operation = "upgrade",
         bootc.apply_mode = opts.apply,
-        bootc.download_only = opts.download_only,
-        bootc.from_downloaded = opts.from_downloaded,
+        bootc.download_only = opts.download_opts.download_only,
+        bootc.from_downloaded = opts.download_opts.from_downloaded,
         "Starting composefs upgrade operation"
     );
 
@@ -416,13 +416,13 @@ pub(crate) async fn upgrade_composefs(
     let mut do_upgrade_opts = DoUpgradeOpts {
         soft_reboot: opts.soft_reboot,
         apply: opts.apply,
-        download_only: opts.download_only,
+        download_only: opts.download_opts.download_only,
         use_unified: false,
         quiet: opts.quiet,
         prog,
     };
 
-    if opts.from_downloaded {
+    if opts.download_opts.from_downloaded {
         let staged = host
             .status
             .staged
