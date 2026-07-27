@@ -544,3 +544,5 @@ filesystem (`.bootc-aleph.json`) containing installation provenance information:
 
 This file is useful for auditing and understanding how a system was provisioned.
 From the booted system, this file is accessible at `/sysroot/.bootc-aleph.json`.
+A compatibility symlink `.aleph-version.json` is also created, pointing to
+`.bootc-aleph.json`.
