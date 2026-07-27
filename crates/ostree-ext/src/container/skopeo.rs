@@ -2,6 +2,7 @@
 
 use super::ImageReference;
 use anyhow::{Context, Result};
+use cap_std_ext::RootDir;
 use cap_std_ext::cap_std;
 use cap_std_ext::cmdext::{CapStdExtCommandExt, CmdFds};
 use containers_image_proxy::oci_spec::image as oci_image;
@@ -46,12 +47,14 @@ const USER_POLICY_SUFFIX: &str = "containers/policy.json";
 /// Absolute paths (from env vars) have their leading `/` stripped so they
 /// resolve under `root`. Passing `root` opened on `/` gives normal behaviour;
 /// tests can pass a cap-std `Dir` backed by a temporary directory.
+///
+/// We use `RootDir` to handle absolute symlinks
 fn resolve_policy_path(
-    root: &cap_std::fs::Dir,
+    root: &RootDir,
     env_override: Option<&Path>,
     xdg_config_home: Option<&Path>,
     home: Option<&Path>,
-) -> Result<cap_std::fs::File> {
+) -> Result<std::fs::File> {
     // Helper: strip a leading `/` so the path is relative to root.
     fn strip_abs(p: &Path) -> &Path {
         p.strip_prefix("/").unwrap_or(p)
@@ -84,9 +87,15 @@ fn resolve_policy_path(
 
     // 3–4. System paths.
     for candidate in SYSTEM_POLICY_PATHS {
-        if let Ok(f) = root.open(candidate) {
-            tracing::debug!("Using system policy path: {candidate}");
-            return Ok(f);
+        match root.open(candidate) {
+            Ok(f) => {
+                tracing::debug!("Using system policy path: {candidate}");
+                return Ok(f);
+            }
+            Err(e) => {
+                tracing::debug!("Opening {candidate}: {e:?}");
+                continue;
+            }
         }
     }
 
@@ -120,6 +129,7 @@ impl ContainerPolicy {
 }
 
 pub(crate) fn container_policy_is_default_insecure(root: &cap_std::fs::Dir) -> Result<bool> {
+    let root = &RootDir::new(root, ".").context("Opening RootDir")?;
     let f = resolve_policy_path(
         root,
         std::env::var_os(POLICY_ENV_VAR).as_deref().map(Path::new),
@@ -254,25 +264,30 @@ mod tests {
         (m.dev(), m.ino())
     }
 
-    /// Return (dev, ino) for an open cap-std file.
-    fn file_id(f: &cap_std::fs::File) -> (u64, u64) {
-        use cap_std::fs::MetadataExt;
+    /// Return (dev, ino) for an open file.
+    fn file_id(f: &std::fs::File) -> (u64, u64) {
+        use std::os::unix::fs::MetadataExt;
         let m = f.metadata().unwrap();
         (m.dev(), m.ino())
+    }
+
+    fn to_root_dir(dir: &cap_std::fs::Dir) -> RootDir {
+        RootDir::new(dir, ".").unwrap()
     }
 
     #[test]
     fn resolve_policy_path_cases() -> Result<()> {
         let td = cap_tempfile::TempDir::new(cap_std::ambient_authority())?;
+        let root = to_root_dir(&td);
 
         let etc_id = touch(&td, "etc/containers/policy.json");
         let _usr_id = touch(&td, "usr/share/containers/policy.json");
 
         // Env var override wins (trusted — errors if file missing)
         let custom = Path::new("/custom/policy.json");
-        assert!(resolve_policy_path(&td, Some(custom), None, None).is_err());
+        assert!(resolve_policy_path(&root, Some(custom), None, None).is_err());
         let custom_id = touch(&td, "custom/policy.json");
-        let f = resolve_policy_path(&td, Some(custom), None, None)?;
+        let f = resolve_policy_path(&root, Some(custom), None, None)?;
         assert_eq!(
             file_id(&f),
             custom_id,
@@ -280,7 +295,7 @@ mod tests {
         );
 
         // Empty env var is ignored, falls through to /etc
-        let f = resolve_policy_path(&td, Some(Path::new("")), None, None)?;
+        let f = resolve_policy_path(&root, Some(Path::new("")), None, None)?;
         assert_eq!(
             file_id(&f),
             etc_id,
@@ -289,20 +304,20 @@ mod tests {
 
         // XDG_CONFIG_HOME wins when file exists
         let xdg_id = touch(&td, "xdg/containers/policy.json");
-        let f = resolve_policy_path(&td, None, Some(Path::new("/xdg")), None)?;
+        let f = resolve_policy_path(&root, None, Some(Path::new("/xdg")), None)?;
         assert_eq!(file_id(&f), xdg_id, "XDG_CONFIG_HOME should win");
 
         // XDG_CONFIG_HOME skipped when file missing, falls through to /etc
-        let f = resolve_policy_path(&td, None, Some(Path::new("/xdg-empty")), None)?;
+        let f = resolve_policy_path(&root, None, Some(Path::new("/xdg-empty")), None)?;
         assert_eq!(file_id(&f), etc_id, "missing XDG dir should fall through");
 
         // HOME/.config fallback when XDG unset
         let home_id = touch(&td, "home/.config/containers/policy.json");
-        let f = resolve_policy_path(&td, None, None, Some(Path::new("/home")))?;
+        let f = resolve_policy_path(&root, None, None, Some(Path::new("/home")))?;
         assert_eq!(file_id(&f), home_id, "HOME fallback should work");
 
         // /etc preferred over /usr/share
-        let f = resolve_policy_path(&td, None, None, None)?;
+        let f = resolve_policy_path(&root, None, None, None)?;
         assert_eq!(
             file_id(&f),
             etc_id,
@@ -311,13 +326,65 @@ mod tests {
 
         // Falls through to /usr/share when /etc missing
         let td2 = cap_tempfile::TempDir::new(cap_std::ambient_authority())?;
+        let root2 = to_root_dir(&td2);
         let usr2_id = touch(&td2, "usr/share/containers/policy.json");
-        let f = resolve_policy_path(&td2, None, None, None)?;
+        let f = resolve_policy_path(&root2, None, None, None)?;
         assert_eq!(file_id(&f), usr2_id, "should fall through to /usr/share");
 
         // Nothing found returns error
         let td3 = cap_tempfile::TempDir::new(cap_std::ambient_authority())?;
-        assert!(resolve_policy_path(&td3, None, None, None).is_err());
+        let root3 = to_root_dir(&td3);
+        assert!(resolve_policy_path(&root3, None, None, None).is_err());
+
+        Ok(())
+    }
+
+    /// Create an absolute symlink inside a cap-std Dir. We need to go via
+    /// procfs because cap-std (by design) refuses to create symlinks with
+    /// absolute targets.
+    fn symlink_absolute(dir: &cap_std::fs::Dir, target: &str, link: &str) {
+        use std::os::fd::AsRawFd;
+        let real_dir = format!("/proc/self/fd/{}", dir.as_raw_fd());
+        let link_path = std::path::PathBuf::from(real_dir).join(link);
+        std::os::unix::fs::symlink(target, &link_path).unwrap();
+    }
+
+    #[test]
+    fn resolve_policy_path_absolute_symlink() -> Result<()> {
+        let td = cap_tempfile::TempDir::new(cap_std::ambient_authority())?;
+        let root = to_root_dir(&td);
+
+        // Create the real file at a different location
+        let real_id = touch(&td, "real/policy.json");
+
+        // RootDir uses RESOLVE_IN_ROOT, so absolute symlinks are followed
+        // within the root automatically.
+        td.create_dir_all("etc/containers")?;
+        symlink_absolute(&td, "/real/policy.json", "etc/containers/policy.json");
+
+        let f = resolve_policy_path(&root, None, None, None)?;
+        assert_eq!(
+            file_id(&f),
+            real_id,
+            "absolute symlink should be resolved relative to root"
+        );
+
+        // Symlink whose target doesn't exist should fall through
+        let td2 = cap_tempfile::TempDir::new(cap_std::ambient_authority())?;
+        let root2 = to_root_dir(&td2);
+        td2.create_dir_all("etc/containers")?;
+        symlink_absolute(
+            &td2,
+            "/nonexistent/policy.json",
+            "etc/containers/policy.json",
+        );
+        let fallback_id = touch(&td2, "usr/share/containers/policy.json");
+        let f = resolve_policy_path(&root2, None, None, None)?;
+        assert_eq!(
+            file_id(&f),
+            fallback_id,
+            "broken symlink should fall through to next candidate"
+        );
 
         Ok(())
     }
