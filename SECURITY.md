@@ -1,5 +1,9 @@
 # Security Policy
 
+## Understanding what is and is not a vulnerability
+
+Please read our [security and threat model](https://bootc.dev/bootc/security.html) documentation first.
+
 ## Reporting a Vulnerability
 
 If you find a potential security vulnerability in bootc, please report it by following these steps:

@@ -56,6 +56,10 @@
 - [Container storage](filesystem-storage.md)
 - [Bootloader](bootloaders.md)
 
+# Security
+
+- [Security and threat model](security.md)
+
 # Experimental features
 
 - [bootc image](experimental-bootc-image.md)
