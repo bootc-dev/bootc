@@ -200,11 +200,12 @@ pub(crate) struct SwitchOpts {
     pub(crate) unified_storage_exp: bool,
 
     /// Target image to use for the next boot.
+    /// Required unless `--from-downloaded` is present.
     #[clap(
-        required_unless_present = "from-downloaded",
-        conflicts_with = "from-downloaded"
+        required_unless_present = "from_downloaded",
+        conflicts_with = "from_downloaded"
     )]
-    pub(crate) target: String,
+    pub(crate) target: Option<String>,
 
     #[clap(flatten)]
     pub(crate) progress: ProgressOptions,
@@ -1434,11 +1435,17 @@ async fn upgrade(
 
     Ok(())
 }
+
+#[context("Getting imgref for switch")]
 pub(crate) fn imgref_for_switch(opts: &SwitchOpts) -> Result<ImageReference> {
     let transport = ostree_container::Transport::try_from(opts.transport.as_str())?;
     let imgref = ostree_container::ImageReference {
         transport,
-        name: opts.target.to_string(),
+        name: opts
+            .target
+            .as_ref()
+            .ok_or_else(|| anyhow!("Target image not found"))?
+            .to_string(),
     };
     let sigverify = sigpolicy_from_opt(opts.enforce_container_sigpolicy);
     let target = ostree_container::OstreeImageReference { sigverify, imgref };
