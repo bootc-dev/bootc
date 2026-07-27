@@ -201,7 +201,7 @@ pub(crate) struct SwitchOpts {
 
     /// Target image to use for the next boot.
     #[clap(
-        required_unless_present = "from_downloaded",
+        required_unless_present = "from-downloaded",
         conflicts_with = "from-downloaded"
     )]
     pub(crate) target: String,
@@ -1197,6 +1197,36 @@ pub(crate) fn prepare_for_write() -> Result<()> {
     Ok(())
 }
 
+struct ApplyFromDownloadedOpts {
+    soft_reboot: Option<SoftRebootMode>,
+    apply: bool,
+}
+
+fn apply_from_downloaded_ostree(
+    storage: &Storage,
+    booted_ostree: &BootedOstree<'_>,
+    host: &crate::spec::Host,
+    opts: &ApplyFromDownloadedOpts,
+) -> Result<()> {
+    let ostree = storage.get_ostree()?;
+    let staged_deployment = ostree
+        .staged_deployment()
+        .ok_or_else(|| anyhow::anyhow!("No staged deployment found"))?;
+
+    if staged_deployment.is_finalization_locked() {
+        ostree.change_finalization(&staged_deployment)?;
+        println!("Staged deployment will now be applied on reboot");
+    } else {
+        println!("Staged deployment is already set to apply on reboot");
+    }
+
+    handle_staged_soft_reboot(booted_ostree, opts.soft_reboot, &host)?;
+    if opts.apply {
+        crate::reboot::reboot()?;
+    }
+    return Ok(());
+}
+
 /// Implementation of the `bootc upgrade` CLI command.
 #[context("Upgrading")]
 async fn upgrade(
@@ -1252,23 +1282,15 @@ async fn upgrade(
 
     // Handle --from-downloaded: unlock existing staged deployment without fetching from image source
     if opts.download_opts.from_downloaded {
-        let ostree = storage.get_ostree()?;
-        let staged_deployment = ostree
-            .staged_deployment()
-            .ok_or_else(|| anyhow::anyhow!("No staged deployment found"))?;
-
-        if staged_deployment.is_finalization_locked() {
-            ostree.change_finalization(&staged_deployment)?;
-            println!("Staged deployment will now be applied on reboot");
-        } else {
-            println!("Staged deployment is already set to apply on reboot");
-        }
-
-        handle_staged_soft_reboot(booted_ostree, opts.soft_reboot, &host)?;
-        if opts.apply {
-            crate::reboot::reboot()?;
-        }
-        return Ok(());
+        return apply_from_downloaded_ostree(
+            storage,
+            booted_ostree,
+            &host,
+            &ApplyFromDownloadedOpts {
+                soft_reboot: opts.soft_reboot,
+                apply: opts.apply,
+            },
+        );
     }
 
     // Ensure the bootc storage directory is initialized; the --check path
@@ -1432,12 +1454,25 @@ async fn switch_ostree(
     storage: &Storage,
     booted_ostree: &BootedOstree<'_>,
 ) -> Result<()> {
+    let (_, host) = crate::status::get_status(booted_ostree)?;
+
+    if opts.download_opts.from_downloaded {
+        return apply_from_downloaded_ostree(
+            storage,
+            booted_ostree,
+            &host,
+            &ApplyFromDownloadedOpts {
+                soft_reboot: opts.soft_reboot,
+                apply: opts.apply,
+            },
+        );
+    }
+
     let target = imgref_for_switch(&opts)?;
     let prog: ProgressWriter = opts.progress.try_into()?;
     let cancellable = gio::Cancellable::NONE;
 
     let repo = &booted_ostree.repo();
-    let (_, host) = crate::status::get_status(booted_ostree)?;
 
     let new_spec = {
         let mut new_spec = host.spec.clone();
@@ -1519,9 +1554,21 @@ async fn switch_ostree(
 
     let stateroot = booted_ostree.stateroot();
     let from = MergeState::from_stateroot(storage, &stateroot)?;
-    crate::deploy::stage(storage, from, &fetched, &new_spec, prog.clone(), false).await?;
+    crate::deploy::stage(
+        storage,
+        from,
+        &fetched,
+        &new_spec,
+        prog.clone(),
+        opts.download_opts.download_only,
+    )
+    .await?;
 
     storage.update_mtime()?;
+
+    if opts.download_opts.download_only {
+        return Ok(());
+    }
 
     if opts.soft_reboot.is_some() {
         // At this point we have staged the deployment and the host definition has changed.
@@ -1530,6 +1577,8 @@ async fn switch_ostree(
         handle_staged_soft_reboot(booted_ostree, opts.soft_reboot, &updated_host)?;
     }
 
+    // `--apply` cannot be passed along with `--download-only` (handled by clap)
+    // but for sanity nonetheless
     if opts.apply {
         crate::reboot::reboot()?;
     }
