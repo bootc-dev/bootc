@@ -39,9 +39,7 @@ Soft reboot allows faster system restart by avoiding full hardware reboot when p
 <!-- BEGIN GENERATED OPTIONS -->
 **TARGET**
 
-    Target image to use for the next boot
-
-    This argument is required.
+    Target image to use for the next boot. Required unless `--from-downloaded` is present
 
 **--quiet**
 
