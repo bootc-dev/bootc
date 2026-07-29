@@ -193,10 +193,12 @@ pub(crate) fn udev_settle() -> Result<()> {
 }
 
 /// Partition numbers resulting from partitioning, used to look up devices after.
+#[derive(Debug)]
 struct PartitionLayout {
     esp_partno: Option<u32>,
     boot_partno: Option<u32>,
     rootpn: u32,
+    /// Whether systemd-repart created the ESP/boot partitions (skip mkfs for those)
     used_repart: bool,
 }
 
@@ -209,11 +211,18 @@ struct RepartPartition {
     partition_type: String,
     /// 0-indexed partition number
     partno: u32,
+    /// Path to the repart.d definition file that created this partition
+    #[serde(default)]
+    file: Option<String>,
 }
 
 /// Create partitions using systemd-repart (if available)
 /// Returns Ok(None) if systemd-repart or repart.d are not present
-fn systemd_repart(device: &Device) -> Result<Option<PartitionLayout>> {
+fn systemd_repart(
+    device: &Device,
+    root_size: Option<u64>,
+    rootfs: Option<Filesystem>,
+) -> Result<Option<PartitionLayout>> {
     if Command::new("systemd-repart")
         .arg("--help")
         .stdout(Stdio::null())
@@ -242,29 +251,115 @@ fn systemd_repart(device: &Device) -> Result<Option<PartitionLayout>> {
         return Ok(None);
     }
 
-    let output = Command::new("systemd-repart")
-        .arg("--dry-run=no")
-        .arg("--empty=allow")
-        .arg("--no-pager")
-        .arg("--json=pretty")
-        .arg("--root=/")
-        .arg(device.path())
-        .output()
-        .context("Failed to run systemd-repart")?;
+    // Dry-run to check what partitions would be created
+    let dry_partitions = systemd_repart_run(device, None, true)?;
+
+    if dry_partitions.is_empty() {
+        return Ok(None);
+    }
+
+    let has_root = dry_partitions
+        .iter()
+        .any(|p| p.partition_type.starts_with("root-"));
+
+    if has_root {
+        // Root partition is defined in repart.d config, run for real
+        let partitions = systemd_repart_run(device, None, false)?;
+        let layout = parse_repart_layout(&partitions)?;
+        return Ok(Some(layout));
+    }
+
+    // Root partition is not defined, create defintion for the root part
+    let tmp_dir = tempfile::tempdir().context("Creating temp dir for repart definitions")?;
+
+    for part in &dry_partitions {
+        let Some(ref file) = part.file else {
+            continue;
+        };
+        if matches!(part.partition_type.as_str(), "esp" | "xbootldr") {
+            let src = Path::new(file);
+            if let Some(name) = src.file_name() {
+                std::fs::copy(src, tmp_dir.path().join(name))
+                    .with_context(|| format!("Copying repart config {file}"))?;
+            }
+        }
+    }
+
+    let mut root_conf = String::from("[Partition]\nType=root\n");
+    if let Some(size_mib) = root_size {
+        writeln!(root_conf, "SizeMinBytes={size_mib}M")?;
+        writeln!(root_conf, "SizeMaxBytes={size_mib}M")?;
+    }
+    match rootfs {
+        Some(fs) => writeln!(root_conf, "Format={fs}")?,
+        // Default to xfs, same as sfdisk
+        None => writeln!(root_conf, "Format=xfs")?,
+    }
+
+    std::fs::write(tmp_dir.path().join("50-root.conf"), &root_conf)
+        .context("Writing root repart config")?;
+
+    let partitions = systemd_repart_run(device, Some(tmp_dir.path()), false)?;
+    let layout = parse_repart_layout(&partitions)?;
+    Ok(Some(layout))
+}
+
+/// Run systemd-repart on the device and return the parsed JSON output.
+/// `dry_run`: if true, no changes are written to disk.
+/// `definitions`: if set, uses `--definitions=` and `--empty=allow`;
+/// otherwise uses the default config search paths with `--empty=force`.
+fn systemd_repart_run(
+    device: &Device,
+    definitions: Option<&Path>,
+    dry_run: bool,
+) -> Result<Vec<RepartPartition>> {
+    let mut cmd = Command::new("systemd-repart");
+
+    // Enable fsverity for ext4
+    // btrfs has fsverity enabled out of the box
+    cmd.env("SYSTEMD_REPART_MKFS_OPTIONS_EXT4", "-O verity");
+
+    let dry_run_arg = if dry_run {
+        "--dry-run=yes"
+    } else {
+        "--dry-run=no"
+    };
+    cmd.args([
+        dry_run_arg,
+        "--no-pager",
+        "--json=pretty",
+        "--empty=force",
+        "--root=/",
+    ]);
+
+    if let Some(defs) = definitions {
+        cmd.arg(format!("--definitions={}", defs.display()));
+    }
+
+    cmd.arg(device.path());
+
+    let output = cmd.output().context("Failed to run systemd-repart")?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         anyhow::bail!("systemd-repart failed: {stderr}");
     }
 
-    let partitions: Vec<RepartPartition> = serde_json::from_slice(&output.stdout)
-        .context("Failed to deserialize systemd-repart output")?;
+    serde_json::from_slice(&output.stdout).with_context(|| {
+        format!(
+            "Failed to deserialize systemd-repart output: {}",
+            String::from_utf8_lossy(&output.stdout)
+        )
+    })
+}
 
+/// Parse partition layout from systemd-repart JSON output.
+fn parse_repart_layout(partitions: &[RepartPartition]) -> Result<PartitionLayout> {
     let mut esp_partno = None;
     let mut boot_partno = None;
     let mut rootpn = None;
 
-    for part in &partitions {
+    for part in partitions {
         // repart partno is 0-indexed, lsblk/sfdisk use 1-indexed
         let partno = part.partno + 1;
 
@@ -279,12 +374,12 @@ fn systemd_repart(device: &Device) -> Result<Option<PartitionLayout>> {
     let rootpn =
         rootpn.ok_or_else(|| anyhow::anyhow!("systemd-repart output missing root partition"))?;
 
-    Ok(Some(PartitionLayout {
+    Ok(PartitionLayout {
         esp_partno,
         boot_partno,
         rootpn,
         used_repart: true,
-    }))
+    })
 }
 
 /// Use sfdisk to create partitions
@@ -468,7 +563,7 @@ pub(crate) fn install_create_rootfs(
     let bootfs = mntdir.join("boot");
     std::fs::create_dir_all(bootfs)?;
 
-    let layout = match systemd_repart(&device)? {
+    let layout = match systemd_repart(&device, root_size, opts.filesystem)? {
         Some(layout) => layout,
         None => sfdisk(
             &device,
@@ -478,7 +573,14 @@ pub(crate) fn install_create_rootfs(
         )?,
     };
 
-    tracing::debug!("Created partition table");
+    tracing::debug!(
+        "Created partition table using {}",
+        if layout.used_repart {
+            "systemd-repart"
+        } else {
+            "sfdisk"
+        }
+    );
 
     // Full udev sync; it'd obviously be better to await just the devices
     // we're targeting, but this is a simple coarse hammer.
