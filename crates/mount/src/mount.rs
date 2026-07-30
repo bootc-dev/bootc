@@ -111,14 +111,54 @@ pub fn inspect_filesystem_by_uuid(uuid: &str) -> Result<Filesystem> {
     findmnt_filesystem(&["--source"], None, &(format!("UUID={uuid}")))
 }
 
+/// Return the list of mounts visible in pid 1's mount namespace, as reported by findmnt.
+fn pid1_mounts() -> Result<Findmnt> {
+    run_findmnt(&["-N"], None, Some("1"))
+}
+
 /// Check if a specified device contains an already mounted filesystem
 /// in the root mount namespace.
 pub fn is_mounted_in_pid1_mountns(path: &str) -> Result<bool> {
-    let o = run_findmnt(&["-N"], None, Some("1"))?;
+    let o = pid1_mounts()?;
 
     let mounted = o.filesystems.iter().any(|fs| is_source_mounted(path, fs));
 
     Ok(mounted)
+}
+
+/// Find the mount target of a given source device in the root mount
+/// namespace. Returns `Ok(None)` if the device is not mounted.
+///
+/// Used by callers that want to gracefully handle the case where a
+/// device they intended to mount is already mounted somewhere else
+/// (which would cause a fresh `mount(2)` to return `EBUSY`). Combined
+/// with `TempMount::clone_existing_mount`, this lets read-only callers
+/// like `bootc status` reuse an existing mount without disturbing it.
+pub fn find_mount_target_by_source(dev: &str) -> Result<Option<camino::Utf8PathBuf>> {
+    let o = pid1_mounts()?;
+    let found = find_source_mount_target(dev, &o.filesystems);
+    if found.is_none() {
+        tracing::debug!(
+            "find_mount_target_by_source: no mount found for source {dev}; \
+             note that findmnt may report by-uuid or by-partuuid paths instead \
+             of the block device path in some environments"
+        );
+    }
+    Ok(found)
+}
+
+fn find_source_mount_target(dev: &str, mounts: &[Filesystem]) -> Option<camino::Utf8PathBuf> {
+    for m in mounts {
+        if m.source == dev {
+            return Some(camino::Utf8PathBuf::from(&m.target));
+        }
+        if let Some(children) = &m.children {
+            if let Some(t) = find_source_mount_target(dev, children) {
+                return Some(t);
+            }
+        }
+    }
+    None
 }
 
 /// Recursively check a given filesystem to see if it contains an already mounted source.
@@ -319,4 +359,68 @@ pub fn ensure_mirrored_host_mount(path: impl AsRef<Utf8Path>) -> Result<()> {
     }
     tracing::debug!("Propagating host mount: {path}");
     bind_mount_from_pidns(PID1, path, path, true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use camino::Utf8PathBuf;
+
+    fn mk_fs(source: &str, target: &str, children: Vec<Filesystem>) -> Filesystem {
+        Filesystem {
+            source: source.into(),
+            target: target.into(),
+            maj_min: "0:0".into(),
+            fstype: "ext4".into(),
+            options: "rw".into(),
+            uuid: None,
+            children: if children.is_empty() {
+                None
+            } else {
+                Some(children)
+            },
+        }
+    }
+
+    #[test]
+    fn find_source_mount_target_cases() {
+        let top_level = vec![
+            mk_fs("/dev/vda2", "/sysroot", vec![]),
+            mk_fs("/dev/vda1", "/boot", vec![]),
+        ];
+        // /boot as a child mount nested under /sysroot — the shape findmnt -J
+        // returns when /boot is under sysroot.
+        let nested = vec![mk_fs(
+            "/dev/vda2",
+            "/sysroot",
+            vec![mk_fs("/dev/vda1", "/sysroot/boot", vec![])],
+        )];
+        // A real composefs + LUKS-/var shape: /dev/vda2 appears twice (as
+        // sysroot and as its /var overlay parent), and /dev/mapper/var is
+        // nested a further level down. Guards against a naive walk that
+        // would stop at the first /dev/vda2 match instead of recursing.
+        let deep = vec![mk_fs(
+            "/dev/vda2",
+            "/sysroot",
+            vec![mk_fs(
+                "/dev/vda2",
+                "/var",
+                vec![mk_fs("/dev/mapper/var", "/var", vec![])],
+            )],
+        )];
+
+        let cases: &[(&str, &str, &[Filesystem], Option<&str>)] = &[
+            ("top-level match", "/dev/vda1", &top_level, Some("/boot")),
+            ("nested match", "/dev/vda1", &nested, Some("/sysroot/boot")),
+            ("not found", "/dev/vda1", &top_level[..1], None),
+            ("empty tree", "/dev/vda1", &[], None),
+            ("deep nesting", "/dev/mapper/var", &deep, Some("/var")),
+        ];
+
+        for (name, dev, tree, expected) in cases {
+            let got = find_source_mount_target(dev, tree);
+            let want = expected.map(Utf8PathBuf::from);
+            assert_eq!(got, want, "case: {name}");
+        }
+    }
 }

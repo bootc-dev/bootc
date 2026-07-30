@@ -1030,7 +1030,7 @@ pub(crate) async fn get_storage() -> Result<crate::store::BootedStorage> {
     // Always call prepare_for_write() for write operations - it checks
     // for container, root privileges, mount namespace setup, etc.
     prepare_for_write()?;
-    let r = BootedStorage::new(env)
+    let r = BootedStorage::new(env, crate::store::EspAccess::ReadWrite)
         .await?
         .ok_or_else(|| anyhow!("System not booted via bootc"))?;
     r.require_writable()?;

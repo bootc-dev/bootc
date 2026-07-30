@@ -115,7 +115,7 @@ use composefs::repository::{RepositoryConfig, RepositoryOpenError};
 use composefs_ctl::composefs;
 
 use crate::bootc_composefs::backwards_compat::bcompat_boot::prepend_custom_prefix;
-use crate::bootc_composefs::boot::{EFI_LINUX, mount_esp};
+use crate::bootc_composefs::boot::{EFI_LINUX, mount_esp_readonly, mount_esp_writable};
 use crate::bootc_composefs::status::{ComposefsCmdline, composefs_booted, get_bootloader};
 use crate::lsm;
 use crate::podstorage::CStorage;
@@ -268,6 +268,19 @@ pub(crate) enum Environment {
     Other,
 }
 
+/// Whether a `BootedStorage` caller intends to write to the ESP.
+///
+/// Only meaningful for `Environment::ComposefsBooted`; ignored elsewhere.
+/// Read-only callers (e.g. `bootc status`) pass `ReadOnly` so a pre-mounted
+/// ro ESP can be cloned as-is; write callers (e.g. `bootc upgrade`) pass
+/// `ReadWrite` so a pre-mounted ro ESP is remounted rw in the private
+/// mount namespace.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EspAccess {
+    ReadOnly,
+    ReadWrite,
+}
+
 impl Environment {
     /// Detect the current runtime environment.
     pub(crate) fn detect() -> Result<Self> {
@@ -352,8 +365,9 @@ impl BootedStorage {
     /// Create a new booted storage accessor for the given environment.
     ///
     /// The caller must have already called `prepare_for_write()` if
-    /// `env.needs_mount_namespace()` is true.
-    pub(crate) async fn new(env: Environment) -> Result<Option<Self>> {
+    /// `env.needs_mount_namespace()` is true. `esp_access` selects how the
+    /// ESP mount is acquired on composefs systems (see [`EspAccess`]).
+    pub(crate) async fn new(env: Environment, esp_access: EspAccess) -> Result<Option<Self>> {
         let r = match &env {
             Environment::ComposefsBooted(cmdline) => {
                 let (physical_root, run, is_ro) = get_physical_root_and_run()?;
@@ -363,10 +377,17 @@ impl BootedStorage {
                 }
                 let composefs = Arc::new(composefs);
 
-                // Locate ESP by walking up to the root disk(s)
+                // Locate ESP by walking up to the root disk(s). Both mount
+                // variants transparently reuse an already-mounted ESP when
+                // present (e.g. auto-mounted at /boot ro via
+                // `systemd.mount-extra` in the deployment cmdline).
                 let root_dev = bootc_blockdev::list_dev_by_dir(&physical_root)?;
                 let esp_dev = root_dev.find_first_colocated_esp()?;
-                let esp_mount = mount_esp(&esp_dev.path())?;
+                let esp_path = esp_dev.path();
+                let esp_mount = match esp_access {
+                    EspAccess::ReadOnly => mount_esp_readonly(&esp_path)?,
+                    EspAccess::ReadWrite => mount_esp_writable(&esp_path)?,
+                };
 
                 let boot_dir = match get_bootloader()?.kind()? {
                     BootloaderKind::GRUBClassic => {

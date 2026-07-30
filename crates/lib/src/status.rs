@@ -449,7 +449,7 @@ pub(crate) async fn get_host() -> Result<Host> {
         crate::cli::prepare_for_write()?;
     }
 
-    let Some(storage) = BootedStorage::new(env).await? else {
+    let Some(storage) = BootedStorage::new(env, crate::store::EspAccess::ReadOnly).await? else {
         // If we're not booted, then return a default.
         return Ok(Host::default());
     };
