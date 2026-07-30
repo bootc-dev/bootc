@@ -205,9 +205,62 @@ const ESP_MOUNT_FLAGS: MountFlags =
 /// FAT mount options: owner-only permissions on files (0600) and dirs (0700).
 const ESP_MOUNT_DATA: &std::ffi::CStr = c"fmask=0177,dmask=0077";
 
-/// Mount the ESP from the provided device into a temporary directory.
-pub fn mount_esp(device: &str) -> Result<TempMount> {
+/// Fresh `mount(2)` of the ESP into a tempdir. Returns EBUSY if the device
+/// is already mounted in the current mount namespace; callers should use
+/// [`mount_esp_readonly`] or [`mount_esp_writable`] instead of this primitive
+/// so that pre-existing mounts are handled.
+fn mount_esp(device: &str) -> Result<TempMount> {
     TempMount::mount_dev(device, "vfat", ESP_MOUNT_FLAGS, Some(ESP_MOUNT_DATA))
+}
+
+/// Get a read-only view of the ESP for the provided device, gracefully
+/// handling the case where the ESP is already mounted in the root mount
+/// namespace (e.g. via `systemd.mount-extra=UUID=<ESP>:/boot:auto:ro`).
+/// If the ESP is already mounted, that mount is cloned privately into a
+/// tempdir; otherwise a fresh read-write mount is performed. The returned
+/// mount may be rw or ro; callers must not write through it.
+pub fn mount_esp_readonly(device: &str) -> Result<TempMount> {
+    if let Some(existing) = bootc_mount::find_mount_target_by_source(device)? {
+        return TempMount::clone_existing_mount(&existing);
+    }
+    mount_esp(device)
+}
+
+/// Get a read-write view of the ESP for the provided device, gracefully
+/// handling the case where the ESP is already mounted (possibly read-only)
+/// in the root mount namespace.
+///
+/// If the ESP is already mounted, that mount is cloned privately into a
+/// tempdir; if the clone came in read-only (e.g. because
+/// `systemd.mount-extra=UUID=...:/boot:auto:ro` was in the deployment
+/// cmdline), it is remounted rw on the private clone only. This is safe
+/// because bootc always runs in an unshared mount namespace (see
+/// `cli::ensure_self_unshared_mount_namespace`), so the remount does not
+/// affect the host's view. If the ESP is not already mounted, a fresh
+/// read-write mount is performed.
+pub fn mount_esp_writable(device: &str) -> Result<TempMount> {
+    let Some(existing) = bootc_mount::find_mount_target_by_source(device)? else {
+        return mount_esp(device);
+    };
+    let mount = TempMount::clone_existing_mount(&existing)?;
+    let target = mount.dir.path();
+    let st =
+        rustix::fs::statvfs(target).with_context(|| format!("statvfs {}", target.display()))?;
+    if st.f_flag.contains(rustix::fs::StatVfsMountFlags::RDONLY) {
+        rustix::mount::mount_remount(target, MountFlags::BIND | ESP_MOUNT_FLAGS, "").with_context(
+            || {
+                format!(
+                    "Remounting cloned ESP mount at {} read-write",
+                    target.display()
+                )
+            },
+        )?;
+        tracing::debug!(
+            "Cloned ESP mount at {} was read-only; remounted rw in private namespace",
+            target.display()
+        );
+    }
+    Ok(mount)
 }
 
 /// Mount the ESP from `device` at the given path and return a guard that
@@ -618,7 +671,7 @@ pub(crate) fn setup_composefs_bls_boot(
         }
 
         BootloaderKind::BLSCompatible => {
-            let efi_mount = mount_esp(&esp_device).context("Mounting ESP")?;
+            let efi_mount = mount_esp_writable(&esp_device).context("Mounting ESP")?;
 
             let mounted_efi = Utf8PathBuf::from(efi_mount.dir.path().as_str()?);
             let efi_linux_dir = mounted_efi.join(EFI_LINUX);
@@ -1123,7 +1176,7 @@ pub(crate) fn setup_composefs_uki_boot(
         }
     };
 
-    let esp_mount = mount_esp(&esp_device).context("Mounting ESP")?;
+    let esp_mount = mount_esp_writable(&esp_device).context("Mounting ESP")?;
 
     let mut uki_info: Option<UKIInfo> = None;
 

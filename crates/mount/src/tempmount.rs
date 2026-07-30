@@ -6,7 +6,9 @@ use anyhow::{Context, Result};
 use camino::Utf8Path;
 use cap_std_ext::cap_std::{ambient_authority, fs::Dir};
 use fn_error_context::context;
-use rustix::mount::{MountFlags, MoveMountFlags, UnmountFlags, move_mount, unmount};
+use rustix::mount::{
+    MountFlags, MoveMountFlags, OpenTreeFlags, UnmountFlags, move_mount, open_tree, unmount,
+};
 
 /// RAII guard that synchronously unmounts a path on drop, flushing all writes.
 ///
@@ -105,6 +107,49 @@ impl TempMount {
             .ok_or(anyhow::anyhow!("Failed to convert path to UTF-8 Path"))?;
 
         rustix::mount::mount(dev, utf8path.as_std_path(), fstype, flags, data)?;
+
+        let fd = Dir::open_ambient_dir(tempdir.path(), ambient_authority())
+            .with_context(|| format!("Opening {:?}", tempdir.path()));
+
+        let fd = match fd {
+            Ok(fd) => fd,
+            Err(e) => {
+                unmount(tempdir.path(), UnmountFlags::DETACH)?;
+                return Err(e)?;
+            }
+        };
+
+        Ok(Self { dir: tempdir, fd })
+    }
+
+    /// Clone an existing mount into a tempdir via `open_tree(OPEN_TREE_CLONE)`
+    /// + `move_mount(MOVE_MOUNT_F_EMPTY_PATH)`. The returned `TempMount`
+    /// is a private view of the same filesystem — the source mount at
+    /// `source_target` is untouched and remains visible to other processes.
+    ///
+    /// The clone inherits the source mount's attributes (rw/ro, nosuid,
+    /// nodev, fmask/dmask, etc.). Callers that require specific mount
+    /// options should use `mount_dev` and treat `EBUSY` as unrecoverable
+    /// — this function is intended for read-only callers that can accept
+    /// whatever the current mount happens to expose.
+    #[context("Cloning existing mount at {source_target}")]
+    pub fn clone_existing_mount(source_target: &Utf8Path) -> Result<Self> {
+        let tempdir = MountpointTempdir::new()?;
+
+        let cloned = open_tree(
+            rustix::fs::CWD,
+            source_target.as_std_path(),
+            OpenTreeFlags::OPEN_TREE_CLOEXEC | OpenTreeFlags::OPEN_TREE_CLONE,
+        )
+        .with_context(|| format!("open_tree({source_target})"))?;
+        move_mount(
+            cloned.as_fd(),
+            "",
+            rustix::fs::CWD,
+            tempdir.path(),
+            MoveMountFlags::MOVE_MOUNT_F_EMPTY_PATH,
+        )
+        .context("move_mount")?;
 
         let fd = Dir::open_ambient_dir(tempdir.path(), ambient_authority())
             .with_context(|| format!("Opening {:?}", tempdir.path()));
