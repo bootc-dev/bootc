@@ -262,7 +262,17 @@ pub(crate) fn has_security_selinux(root: &Dir, path: &Utf8Path) -> Result<SELinu
     let mut buf = [0u8; 2048];
     let fdpath = format!("/proc/self/fd/{}/{path}", root.as_raw_fd());
     match rustix::fs::lgetxattr(fdpath, "security.selinux", &mut buf) {
-        Ok(_) => Ok(SELinuxLabelState::Labeled),
+        Ok(len) => {
+            // Check if the label is unlabeled_t - treat it as unlabeled.
+            // This can happen when files are created with SELinux in permissive mode,
+            // where the kernel doesn't apply type transitions and assigns unlabeled_t.
+            let label = std::str::from_utf8(&buf[..len]).unwrap_or("");
+            if label.contains(":unlabeled_t:") {
+                Ok(SELinuxLabelState::Unlabeled)
+            } else {
+                Ok(SELinuxLabelState::Labeled)
+            }
+        }
         Err(rustix::io::Errno::OPNOTSUPP) => Ok(SELinuxLabelState::Unsupported),
         Err(rustix::io::Errno::NODATA) => Ok(SELinuxLabelState::Unlabeled),
         Err(e) => Err(e).with_context(|| format!("Failed to look up context for {path:?}")),
