@@ -285,7 +285,7 @@ jobs:
         with:
           libvirt: true
       - name: Install tmt
-        run: pip install --user "tmt[provision-virtual]"
+        uses: ./.github/actions/install-tmt
 
       - name: Setup env
         run: |
@@ -380,7 +380,7 @@ jobs:
         with:
           libvirt: true
       - name: Install tmt
-        run: pip install --user "tmt[provision-virtual]"
+        uses: ./.github/actions/install-tmt
 
       - name: Setup env
         run: |
@@ -442,7 +442,7 @@ jobs:
         with:
           libvirt: true
       - name: Install tmt
-        run: pip install --user "tmt[provision-virtual]"
+        uses: ./.github/actions/install-tmt
 
       - name: Setup env
         run: |
@@ -508,7 +508,7 @@ jobs:
         with:
           libvirt: true
       - name: Install tmt
-        run: pip install --user "tmt[provision-virtual]"
+        uses: ./.github/actions/install-tmt
 
       - name: Setup env
         run: |

@@ -1,0 +1,15 @@
+name: 'Install tmt'
+description: 'Install a pinned version of tmt (Test Management Tool)'
+runs:
+  using: 'composite'
+  steps:
+    - name: Install tmt
+      shell: bash
+      run: |
+        set -xeuo pipefail
+        # Pinned because tmt releases have repeatedly regressed reboot
+        # handling for the `connect` provisioner we use here (e.g.
+        # https://github.com/teemtee/tmt/issues/5068); bump deliberately.
+        # renovate: datasource=pypi depName=tmt
+        export VERSION=1.74.0
+        pip install --user "tmt[provision-virtual]==${VERSION}"
