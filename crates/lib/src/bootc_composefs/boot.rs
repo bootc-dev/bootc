@@ -924,6 +924,122 @@ fn write_pe_to_esp(
     Ok(boot_label)
 }
 
+/// Scans `entries` for the primary UKI (`PEType::Uki`, not an addon) and
+/// extracts the `composefs=` digest embedded in its kernel cmdline.
+///
+/// Returns `Ok(None)` if there is no UKI entry (e.g. a BLS-only boot setup) —
+/// there's nothing to validate against in that case.
+///
+/// This mirrors the lookup [`write_pe_to_esp`] already does when writing the
+/// UKI to the ESP; it's factored out here so callers can validate (and
+/// repair) the freshly-generated boot image digest *before* it's used for
+/// mounting, well before `write_pe_to_esp`'s own (too-late-to-repair) check
+/// of the same thing runs.
+fn find_expected_composefs_digest(
+    repo: &crate::store::ComposefsRepository,
+    entries: &[ComposefsBootEntry<Sha512HashValue>],
+) -> Result<Option<Sha512HashValue>> {
+    for entry in entries {
+        let ComposefsBootEntry::Type2(entry) = entry else {
+            continue;
+        };
+        if !matches!(entry.pe_type, PEType::Uki) {
+            continue;
+        }
+        let mut uki_reader = match &entry.file {
+            RegularFile::External(id, ..) | RegularFile::ExternalNoVerity(id, ..) => {
+                std::fs::File::from(repo.open_object(id)?)
+            }
+            RegularFile::Inline(..) | RegularFile::Sparse(..) => {
+                anyhow::bail!("UKI file is not a regular external object")
+            }
+        };
+        let cmdline = uki::get_cmdline_buffered(&mut uki_reader).context("Getting UKI cmdline")?;
+        let composefs_info = ComposefsBootCmdline::<Sha512HashValue>::from_cmdline(&cmdline)
+            .context("Parsing composefs=")?
+            .ok_or_else(|| anyhow::anyhow!("No composefs image in UKI cmdline"))?;
+        return Ok(Some(composefs_info.digest().clone()));
+    }
+    Ok(None)
+}
+
+/// Validates that the freshly-generated boot image digest `computed_id`
+/// matches what's embedded in the UKI (if any), and if not, searches for an
+/// [`composefs_oci::XattrFiltering`] mode whose boot image digest does match
+/// via [`composefs_oci::find_matching_boot_image`], before giving up.
+///
+/// This handles images built with older (or newer) composefs-rs tooling
+/// that computed their embedded UKI `composefs=` digest using a different
+/// default xattr filtering mode than the one bootc's own build used.
+#[context("Verifying composefs digest against UKI")]
+pub(crate) fn ensure_correct_composefs_digest(
+    repo: &Arc<crate::store::ComposefsRepository>,
+    manifest_digest: &composefs_oci::OciDigest,
+    computed_id: Sha512HashValue,
+    entries: &[ComposefsBootEntry<Sha512HashValue>],
+) -> Result<Sha512HashValue> {
+    let Some(expected) =
+        find_expected_composefs_digest(repo, entries).context("Checking UKI composefs digest")?
+    else {
+        // No UKI (e.g. a BLS-only setup); nothing to cross-check.
+        return Ok(computed_id);
+    };
+    if expected == computed_id {
+        // The UKI's expected digest already matches; no repair needed.
+        return Ok(computed_id);
+    }
+    // The UKI was built with a different xattr filtering mode and/or EROFS
+    // format version than the one bootc's own build used. Search for one
+    // whose boot image digest does match, for backward compatibility with
+    // older or newer image tooling.
+    tracing::info!(
+        "Freshly computed composefs digest ({computed_id:?}) doesn't match the digest \
+         embedded in the UKI ({expected:?}); searching for an xattr filtering mode and/or \
+         EROFS format version whose boot image matches, for backward compatibility with \
+         older or newer image tooling"
+    );
+    resolve_boot_image_match(
+        expected.clone(),
+        composefs_oci::find_matching_boot_image(repo, manifest_digest, &expected),
+    )
+}
+
+/// Interprets the result of searching for a boot image whose digest matches
+/// `expected` (see [`composefs_oci::find_matching_boot_image`]): uses the
+/// matching mode's digest if one was found, or fails with an error listing
+/// every combination tried if not.
+///
+/// Factored out from [`ensure_correct_composefs_digest`] purely so this
+/// decision logic can be unit tested without a real repo or UKI fixture.
+fn resolve_boot_image_match(
+    expected: Sha512HashValue,
+    find_matching_result: Result<composefs_oci::BootImageMatch<Sha512HashValue>>,
+) -> Result<Sha512HashValue> {
+    match find_matching_result.context(
+        "Searching for a boot image xattr filtering mode/format version matching the UKI digest",
+    )? {
+        composefs_oci::BootImageMatch::Found {
+            mode,
+            version,
+            digest,
+        } => {
+            tracing::info!(
+                "Boot image built with {mode:?} xattr filtering (EROFS {version:?}) matches \
+                 the UKI; using it"
+            );
+            Ok(digest)
+        }
+        composefs_oci::BootImageMatch::NotFound(tried) => {
+            anyhow::bail!(
+                "The UKI's embedded composefs= digest ({expected:?}) doesn't match any of \
+                 {tried} supported xattr filtering mode/EROFS format version combinations. \
+                 The image may be corrupt, or was built with an incompatible composefs-rs \
+                 version."
+            );
+        }
+    }
+}
+
 #[context("Writing Grub menuentry")]
 fn write_grub_uki_menuentry(
     root_path: Utf8PathBuf,
@@ -1411,14 +1527,33 @@ pub(crate) async fn setup_composefs_boot(
     let repo = Arc::new(repo);
 
     // Generate the bootable EROFS image (idempotent).
-    let id = composefs_oci::generate_boot_image(&repo, &pull_result.manifest_digest)
-        .context("Generating bootable EROFS image")?;
+    let generated_id = composefs_oci::generate_boot_image(
+        &repo,
+        &pull_result.manifest_digest,
+        &composefs_oci::OciTransformOptions::default(),
+    )
+    .context("Generating bootable EROFS image")?;
 
     // Reconstruct the OCI filesystem to discover boot entries (kernel, initramfs, etc.).
-    let fs = composefs_oci::image::create_filesystem(&*repo, &pull_result.config_digest, None)
-        .context("Creating composefs filesystem for boot entry discovery")?;
+    let fs = composefs_oci::image::create_filesystem(
+        &*repo,
+        &pull_result.config_digest,
+        None,
+        &composefs_oci::OciTransformOptions::default(),
+    )
+    .context("Creating composefs filesystem for boot entry discovery")?;
     let entries =
         get_boot_resources(&fs, &*repo).context("Extracting boot entries from OCI image")?;
+
+    // If the UKI was built by tooling using a different xattr filtering
+    // mode, find the mode whose boot image matches the digest embedded in
+    // the UKI.
+    let id = ensure_correct_composefs_digest(
+        &repo,
+        &pull_result.manifest_digest,
+        generated_id,
+        &entries,
+    )?;
 
     let composefs_mnt_fd = repo
         .mount(&id.to_hex())
@@ -1560,6 +1695,7 @@ pub(crate) async fn setup_composefs_boot(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use composefs::erofs::format::FormatVersion;
 
     #[test]
     fn test_type1_filename_generation() {
@@ -1671,5 +1807,73 @@ mod tests {
             rhel > fedora,
             "RHEL should sort before Fedora in descending order"
         );
+    }
+
+    /// A distinct, non-`EMPTY` digest to use as "the other" digest in
+    /// `resolve_boot_image_match` tests.
+    fn other_digest() -> Sha512HashValue {
+        Sha512HashValue::from_hex("aa".repeat(64)).unwrap()
+    }
+
+    #[test]
+    fn test_resolve_boot_image_match_found() {
+        let expected = other_digest();
+        // A non-default mode, to make the test case meaningful.
+        let found_mode = composefs_oci::XattrFiltering::KeepUserXattrs;
+
+        let result = resolve_boot_image_match(
+            expected.clone(),
+            Ok(composefs_oci::BootImageMatch::Found {
+                mode: found_mode,
+                version: FormatVersion::V2,
+                digest: expected.clone(),
+            }),
+        );
+        assert_eq!(result.unwrap(), expected);
+    }
+
+    #[test]
+    fn test_resolve_boot_image_match_error_paths() {
+        let expected = other_digest();
+        // 2 xattr filtering modes x 2 EROFS format versions.
+        let combinations_tried = 4;
+
+        enum FindMatching {
+            /// Succeeds, but no combination's digest matches `expected`.
+            NotFound,
+            /// The search itself fails.
+            Errors,
+        }
+
+        // (find_matching behavior, substrings that must appear in the resulting error)
+        let cases = [
+            (
+                FindMatching::NotFound,
+                vec![format!("{expected:?}"), format!("{combinations_tried}")],
+            ),
+            (
+                FindMatching::Errors,
+                vec![
+                    "search blew up".to_string(),
+                    "Searching for a boot image xattr filtering mode/format version matching \
+                     the UKI digest"
+                        .to_string(),
+                ],
+            ),
+        ];
+
+        for (find_matching, want_substrings) in cases {
+            let find_matching_result = match find_matching {
+                FindMatching::NotFound => {
+                    Ok(composefs_oci::BootImageMatch::NotFound(combinations_tried))
+                }
+                FindMatching::Errors => Err(anyhow::anyhow!("search blew up")),
+            };
+            let result = resolve_boot_image_match(expected.clone(), find_matching_result);
+            let msg = format!("{:#}", result.unwrap_err());
+            for want in &want_substrings {
+                assert!(msg.contains(want), "expected {msg:?} to contain {want:?}");
+            }
+        }
     }
 }

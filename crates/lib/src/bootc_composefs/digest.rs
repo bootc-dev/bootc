@@ -77,6 +77,7 @@ pub(crate) async fn compute_composefs_digest(
         dirfd,
         std::path::PathBuf::from("."),
         Some(repo.clone()),
+        &composefs::generic_tree::OciTransformOptions::default(),
     )
     .await
     .context("Reading container root")?;

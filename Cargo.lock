@@ -192,9 +192,9 @@ checksum = "9d297deb1925b89f2ccc13d7635fa0714f12c87adce1c75356b39ca9b7178567"
 
 [[package]]
 name = "base64"
-version = "0.22.1"
+version = "0.23.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
+checksum = "b25655df2c3cdd83c5e5b293b88acd880332b2ddadd7c30ac43144fdc0033da9"
 
 [[package]]
 name = "bcvk-qemu"
@@ -739,7 +739,7 @@ checksum = "55b672471b4e9f9e95499ea597ff64941a309b2cdbffcc46f2cc5e2d971fd335"
 [[package]]
 name = "composefs"
 version = "0.7.0"
-source = "git+https://github.com/composefs/composefs-rs?rev=0a819c351951864071aa9ec23d6594710bf3173f#0a819c351951864071aa9ec23d6594710bf3173f"
+source = "git+https://github.com/composefs/composefs-rs?rev=0fbc853325ff92dbb842e715611bed7ddf9fe169#0fbc853325ff92dbb842e715611bed7ddf9fe169"
 dependencies = [
  "anyhow",
  "composefs-ioctls",
@@ -766,7 +766,7 @@ dependencies = [
 [[package]]
 name = "composefs-boot"
 version = "0.7.0"
-source = "git+https://github.com/composefs/composefs-rs?rev=0a819c351951864071aa9ec23d6594710bf3173f#0a819c351951864071aa9ec23d6594710bf3173f"
+source = "git+https://github.com/composefs/composefs-rs?rev=0fbc853325ff92dbb842e715611bed7ddf9fe169#0fbc853325ff92dbb842e715611bed7ddf9fe169"
 dependencies = [
  "anyhow",
  "composefs",
@@ -782,7 +782,7 @@ dependencies = [
 [[package]]
 name = "composefs-ctl"
 version = "0.7.0"
-source = "git+https://github.com/composefs/composefs-rs?rev=0a819c351951864071aa9ec23d6594710bf3173f#0a819c351951864071aa9ec23d6594710bf3173f"
+source = "git+https://github.com/composefs/composefs-rs?rev=0fbc853325ff92dbb842e715611bed7ddf9fe169#0fbc853325ff92dbb842e715611bed7ddf9fe169"
 dependencies = [
  "anyhow",
  "cap-std-ext",
@@ -811,7 +811,7 @@ dependencies = [
 [[package]]
 name = "composefs-fuse"
 version = "0.7.0"
-source = "git+https://github.com/composefs/composefs-rs?rev=0a819c351951864071aa9ec23d6594710bf3173f#0a819c351951864071aa9ec23d6594710bf3173f"
+source = "git+https://github.com/composefs/composefs-rs?rev=0fbc853325ff92dbb842e715611bed7ddf9fe169#0fbc853325ff92dbb842e715611bed7ddf9fe169"
 dependencies = [
  "anyhow",
  "composefs",
@@ -826,7 +826,7 @@ dependencies = [
 [[package]]
 name = "composefs-ioctls"
 version = "0.7.0"
-source = "git+https://github.com/composefs/composefs-rs?rev=0a819c351951864071aa9ec23d6594710bf3173f#0a819c351951864071aa9ec23d6594710bf3173f"
+source = "git+https://github.com/composefs/composefs-rs?rev=0fbc853325ff92dbb842e715611bed7ddf9fe169#0fbc853325ff92dbb842e715611bed7ddf9fe169"
 dependencies = [
  "rustix",
  "thiserror 2.0.18",
@@ -835,11 +835,11 @@ dependencies = [
 [[package]]
 name = "composefs-oci"
 version = "0.7.0"
-source = "git+https://github.com/composefs/composefs-rs?rev=0a819c351951864071aa9ec23d6594710bf3173f#0a819c351951864071aa9ec23d6594710bf3173f"
+source = "git+https://github.com/composefs/composefs-rs?rev=0fbc853325ff92dbb842e715611bed7ddf9fe169#0fbc853325ff92dbb842e715611bed7ddf9fe169"
 dependencies = [
  "anyhow",
  "async-compression",
- "base64 0.22.1",
+ "base64 0.23.0",
  "bytes",
  "cap-std-ext",
  "composefs",
@@ -869,7 +869,7 @@ dependencies = [
 [[package]]
 name = "composefs-splitdirfdstream"
 version = "0.7.0"
-source = "git+https://github.com/composefs/composefs-rs?rev=0a819c351951864071aa9ec23d6594710bf3173f#0a819c351951864071aa9ec23d6594710bf3173f"
+source = "git+https://github.com/composefs/composefs-rs?rev=0fbc853325ff92dbb842e715611bed7ddf9fe169#0fbc853325ff92dbb842e715611bed7ddf9fe169"
 dependencies = [
  "rand 0.10.2",
  "rand_pcg",
@@ -882,10 +882,10 @@ dependencies = [
 [[package]]
 name = "composefs-storage"
 version = "0.7.0"
-source = "git+https://github.com/composefs/composefs-rs?rev=0a819c351951864071aa9ec23d6594710bf3173f#0a819c351951864071aa9ec23d6594710bf3173f"
+source = "git+https://github.com/composefs/composefs-rs?rev=0fbc853325ff92dbb842e715611bed7ddf9fe169#0fbc853325ff92dbb842e715611bed7ddf9fe169"
 dependencies = [
  "anyhow",
- "base64 0.22.1",
+ "base64 0.23.0",
  "cap-std",
  "cap-std-ext",
  "composefs-splitdirfdstream",
@@ -1436,15 +1436,15 @@ dependencies = [
 
 [[package]]
 name = "fuser"
-version = "0.17.0"
+version = "0.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "80a5eca878900c2e39e9e52fd797954b7fc39eeefc8558257114bfea6a698fcf"
+checksum = "b82b6597d216503555ead6b358f341ef748869bf5c6fbae6a0cb9dd231baecfd"
 dependencies = [
  "bitflags 2.11.1",
  "libc",
  "log",
  "memchr",
- "nix 0.30.1",
+ "nix 0.31.2",
  "num_enum",
  "page_size",
  "parking_lot",
@@ -2229,19 +2229,6 @@ dependencies = [
 
 [[package]]
 name = "nix"
-version = "0.30.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "74523f3a35e05aba87a1d978330aef40f67b0304ac79c1c00b294c9830543db6"
-dependencies = [
- "bitflags 2.11.1",
- "cfg-if",
- "cfg_aliases",
- "libc",
- "memoffset",
-]
-
-[[package]]
-name = "nix"
 version = "0.31.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5d6d0705320c1e6ba1d912b5e37cf18071b6c2e9b7fa8215a1e8a7651966f5d3"
@@ -2250,6 +2237,7 @@ dependencies = [
  "cfg-if",
  "cfg_aliases",
  "libc",
+ "memoffset",
 ]
 
 [[package]]
@@ -3492,7 +3480,7 @@ dependencies = [
  "toml_datetime",
  "toml_parser",
  "toml_writer",
- "winnow",
+ "winnow 1.0.2",
 ]
 
 [[package]]
@@ -3513,7 +3501,7 @@ dependencies = [
  "indexmap",
  "toml_datetime",
  "toml_parser",
- "winnow",
+ "winnow 1.0.2",
 ]
 
 [[package]]
@@ -3522,7 +3510,7 @@ version = "1.1.2+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2abe9b86193656635d2411dc43050282ca48aa31c2451210f4202550afb7526"
 dependencies = [
- "winnow",
+ "winnow 1.0.2",
 ]
 
 [[package]]
@@ -4105,6 +4093,12 @@ checksum = "d6bbff5f0aada427a1e5a6da5f1f98158182f26556f345ac9e04d36d0ebed650"
 
 [[package]]
 name = "winnow"
+version = "0.7.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df79d97927682d2fd8adb29682d1140b343be4ac0f08fd68b7765d9c059d3945"
+
+[[package]]
+name = "winnow"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2ee1708bef14716a11bae175f579062d4554d95be2c6829f518df847b7b3fdd0"
@@ -4299,19 +4293,20 @@ checksum = "b97154e67e32c85465826e8bcc1c59429aaaf107c1e4a9e53c8d8ccd5eff88d0"
 
 [[package]]
 name = "zlink"
-version = "0.6.0"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0799145a2e15a8ea97e44771916f8630c870ee302c178a313269fc8e3b6f9736"
+checksum = "dd5961645cac87b613e8b3c6fb1743a567e6459bc8c1d00f7bf9884020fc98d4"
 dependencies = [
+ "zlink-core",
  "zlink-smol",
  "zlink-tokio",
 ]
 
 [[package]]
 name = "zlink-core"
-version = "0.6.0"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d2526043182746855a331d62e03c19964c7e1a714259ebe4764d1f5ce330ef01"
+checksum = "0314bb8bc5a5693f4625a6ea9681731a5f4bcc0a952bfca28184f268db15dcc2"
 dependencies = [
  "futures-util",
  "itoa",
@@ -4322,25 +4317,36 @@ dependencies = [
  "serde",
  "serde_json",
  "tracing",
+ "zlink-idl",
  "zlink-macros",
 ]
 
 [[package]]
-name = "zlink-macros"
-version = "0.6.0"
+name = "zlink-idl"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "34cc16c0526f6721144e1cfeb37fec13e2058993f435015527ec27bf00c2234e"
+checksum = "a7990f15bd88a2b37d55c5fc13a1dd662ee98674ec9c6ac904fe46066523932a"
+dependencies = [
+ "winnow 0.7.15",
+]
+
+[[package]]
+name = "zlink-macros"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2fc623b8323797bf2d48333e7633e143077dd92cc66d9cca170014b66c43b1b5"
 dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
+ "zlink-idl",
 ]
 
 [[package]]
 name = "zlink-smol"
-version = "0.6.0"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ce083a1715cabf50e1af55e7444d7fe04c912cd2dc27cef0fe378e78d6158699"
+checksum = "4bc4150b8af92eb0ae7007e0ced3eb2bcf8a7fa49457de2f30b11752ea538f46"
 dependencies = [
  "async-broadcast",
  "async-channel",
@@ -4353,9 +4359,9 @@ dependencies = [
 
 [[package]]
 name = "zlink-tokio"
-version = "0.6.0"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "228414d41219fb9c8a02b6bd71a677ed8b585c461670101b5da09c06a0dd3f56"
+checksum = "4c4fe0f232dd656bcb0594e9646b86c69f6257e3d5194f28715a044c4d10c8fa"
 dependencies = [
  "futures-util",
  "pin-project-lite",

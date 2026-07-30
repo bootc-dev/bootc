@@ -55,6 +55,7 @@ use ostree_ext::containers_image_proxy;
 
 use cap_std_ext::cap_std::{ambient_authority, fs::Dir};
 
+use crate::bootc_composefs::boot::ensure_correct_composefs_digest;
 use crate::bootc_composefs::progress;
 use crate::composefs_consts::BOOTC_TAG_PREFIX;
 use crate::install::{RootSetup, State};
@@ -393,14 +394,33 @@ pub(crate) async fn pull_composefs_repo(
     );
 
     // Generate the bootable EROFS image (idempotent).
-    let id = composefs_oci::generate_boot_image(&repo, &pull_result.manifest_digest)
-        .context("Generating bootable EROFS image")?;
+    let generated_id = composefs_oci::generate_boot_image(
+        &repo,
+        &pull_result.manifest_digest,
+        &composefs_oci::OciTransformOptions::default(),
+    )
+    .context("Generating bootable EROFS image")?;
 
     // Get boot entries from the OCI filesystem (untransformed).
-    let fs = create_composefs_filesystem(&*repo, &pull_result.config_digest, None)
-        .context("Creating composefs filesystem for boot entry discovery")?;
+    let fs = create_composefs_filesystem(
+        &*repo,
+        &pull_result.config_digest,
+        None,
+        &composefs_oci::OciTransformOptions::default(),
+    )
+    .context("Creating composefs filesystem for boot entry discovery")?;
     let entries =
         get_boot_resources(&fs, &*repo).context("Extracting boot entries from OCI image")?;
+
+    // If the UKI was built by tooling using a different xattr filtering
+    // mode, find the mode whose boot image matches the digest embedded in
+    // the UKI.
+    let id = ensure_correct_composefs_digest(
+        &repo,
+        &pull_result.manifest_digest,
+        generated_id,
+        &entries,
+    )?;
 
     // Unwrap the Arc to get the owned repo back.
     let mut repo = Arc::try_unwrap(repo).map_err(|_| {
