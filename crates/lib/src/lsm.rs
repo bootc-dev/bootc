@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::ffi::CString;
 use std::io::Write;
 use std::os::fd::AsRawFd;
 use std::os::unix::process::CommandExt;
@@ -23,7 +24,16 @@ use rustix::fd::AsFd;
 const SELINUXFS: &str = "/sys/fs/selinux";
 /// The SELinux xattr
 const SELINUX_XATTR: &[u8] = b"security.selinux\0";
+/// The kernel initial SID used for objects without a label.
+const SELINUX_INITIAL_SID_UNLABELED: &str = "unlabeled";
 const SELF_CURRENT: &str = "/proc/self/attr/current";
+
+fn unlabeled_type() -> Result<CString> {
+    let context =
+        selinux::SecurityContext::of_initial_kernel_context(SELINUX_INITIAL_SID_UNLABELED, true)
+            .context("Querying the SELinux unlabeled initial context")?;
+    context_type(context.as_bytes())
+}
 
 #[context("Querying selinux availability")]
 pub(crate) fn selinux_enabled() -> Result<bool> {
@@ -250,19 +260,55 @@ pub(crate) fn set_security_selinux(fd: std::os::fd::BorrowedFd, label: &[u8]) ->
 
 /// The labeling state; "unsupported" is distinct as we need to handle
 /// cases like the ESP which don't support labeling.
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) enum SELinuxLabelState {
     Unlabeled,
     Unsupported,
     Labeled,
 }
 
+fn context_type(context: &[u8]) -> Result<CString> {
+    // security.selinux xattrs may include a trailing NUL terminator.
+    let context = context.strip_suffix(b"\0").unwrap_or(context);
+    let context = CString::new(context).context("SELinux context contains an interior NUL")?;
+    context
+        .to_str()
+        .context("SELinux context is not valid UTF-8")?;
+    selinux::OpaqueSecurityContext::from_c_str(&context)
+        .context("Parsing SELinux context")?
+        .the_type()
+        .context("Reading SELinux context type")
+}
+
 /// Query the SELinux labeling for a particular path
 pub(crate) fn has_security_selinux(root: &Dir, path: &Utf8Path) -> Result<SELinuxLabelState> {
+    let unlabeled_type = unlabeled_type()?;
+    has_security_selinux_inner(root, path, Some(&unlabeled_type))
+}
+
+fn has_security_selinux_inner(
+    root: &Dir,
+    path: &Utf8Path,
+    unlabeled_type: Option<&CString>,
+) -> Result<SELinuxLabelState> {
     // TODO: avoid hardcoding a max size here
     let mut buf = [0u8; 2048];
     let fdpath = format!("/proc/self/fd/{}/{path}", root.as_raw_fd());
     match rustix::fs::lgetxattr(fdpath, "security.selinux", &mut buf) {
-        Ok(_) => Ok(SELinuxLabelState::Labeled),
+        Ok(len) => {
+            // Installation can relabel a target while its host has SELinux disabled.
+            // In that case, retain the conservative xattr-presence behavior.
+            let Some(unlabeled_type) = unlabeled_type else {
+                return Ok(SELinuxLabelState::Labeled);
+            };
+            let label_type = context_type(&buf[..len])
+                .with_context(|| format!("Parsing SELinux context for {path:?}"))?;
+            if label_type.as_c_str() == unlabeled_type.as_c_str() {
+                Ok(SELinuxLabelState::Unlabeled)
+            } else {
+                Ok(SELinuxLabelState::Labeled)
+            }
+        }
         Err(rustix::io::Errno::OPNOTSUPP) => Ok(SELinuxLabelState::Unsupported),
         Err(rustix::io::Errno::NODATA) => Ok(SELinuxLabelState::Unlabeled),
         Err(e) => Err(e).with_context(|| format!("Failed to look up context for {path:?}")),
@@ -285,16 +331,14 @@ pub(crate) fn set_security_selinux_path(root: &Dir, path: &Utf8Path, label: &[u8
     Ok(())
 }
 
-/// Given a policy, ensure the target file path has a security.selinux label.
-/// If the path already is labeled, this function is a no-op, even if
-/// the policy would default to a different label.
-pub(crate) fn ensure_labeled(
+fn ensure_labeled_inner(
     root: &Dir,
     path: &Utf8Path,
     metadata: &Metadata,
     policy: &ostree::SePolicy,
+    unlabeled_type: Option<&CString>,
 ) -> Result<SELinuxLabelState> {
-    let r = has_security_selinux(root, path)?;
+    let r = has_security_selinux_inner(root, path, unlabeled_type)?;
     if matches!(r, SELinuxLabelState::Unlabeled) {
         relabel(root, metadata, path, None, policy)?;
     }
@@ -402,6 +446,7 @@ pub(crate) fn ensure_dir_labeled_recurse(
     use cap_std_ext::dirext::WalkConfiguration;
     use std::ops::ControlFlow;
 
+    let unlabeled_type = selinux_enabled()?.then(unlabeled_type).transpose()?;
     // Juggle the cap-std requirement for relative paths vs the libselinux
     // requirement for absolute paths by special casing the empty string "" as "."
     // just for the initial directory enumeration.
@@ -415,7 +460,7 @@ pub(crate) fn ensure_dir_labeled_recurse(
 
     // Label the starting directory itself; the walk API only visits children.
     let metadata = root.symlink_metadata(path_for_read)?;
-    match ensure_labeled(root, path, &metadata, policy)? {
+    match ensure_labeled_inner(root, path, &metadata, policy, unlabeled_type.as_ref())? {
         SELinuxLabelState::Unlabeled => {
             n += 1;
         }
@@ -450,7 +495,7 @@ pub(crate) fn ensure_dir_labeled_recurse(
             let path = Utf8Path::from_path(component.path)
                 .ok_or_else(|| anyhow::anyhow!("Invalid non-UTF-8 path: {:?}", component.path))?;
 
-            match ensure_labeled(root, path, &metadata, policy)? {
+            match ensure_labeled_inner(root, path, &metadata, policy, unlabeled_type.as_ref())? {
                 SELinuxLabelState::Unlabeled => {
                     n += 1;
                 }
@@ -572,5 +617,32 @@ mod tests {
         }
         let found: &[(&[u8], &[u8])] = &[(b"foo", b"bar"), (SELINUX_XATTR, b"foo_t")];
         assert!(xattrs_have_selinux(&Variant::from(found)));
+    }
+
+    #[test]
+    fn test_context_type() {
+        let cases: &[(&[u8], Option<&str>)] = &[
+            (b"system_u:object_r:unlabeled_t:s0", Some("unlabeled_t")),
+            (b"system_u:object_r:unlabeled_t:s0\0", Some("unlabeled_t")),
+            (
+                b"system_u:object_r:unlabeled_t:s0:c0.c1023",
+                Some("unlabeled_t"),
+            ),
+            (b"system_u:object_r:var_t:s0", Some("var_t")),
+            (b"system_u:object_r", None),
+            (b"system_u:object_r:var_t:s0\0\0", None),
+            (b"system_u:object_r:var_t\0:s0", None),
+            (b"system_u:object_r:unlabeled_t:\xff", None),
+        ];
+
+        for (context, expected_type) in cases {
+            assert_eq!(
+                context_type(context)
+                    .ok()
+                    .and_then(|context_type| context_type.into_string().ok())
+                    .as_deref(),
+                *expected_type
+            );
+        }
     }
 }

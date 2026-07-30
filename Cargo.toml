@@ -73,6 +73,7 @@ regex = "1.10.4"
 rustix = { "version" = "1", features = ["use-libc", "thread", "net", "fs", "system", "process", "mount"] }
 serde = "1.0.199"
 serde_json = "1.0.116"
+selinux = "=0.5.0"
 shlex = "2.0"
 similar-asserts = "2.0.0"
 static_assertions = "1.1.0"
