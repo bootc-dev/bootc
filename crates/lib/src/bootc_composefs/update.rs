@@ -142,7 +142,7 @@ pub(crate) fn validate_update(
     let oci_digest: composefs_oci::OciDigest = img_digest
         .parse()
         .with_context(|| format!("Parsing config digest {img_digest}"))?;
-    let mut fs = create_filesystem(repo, &oci_digest, Some(config_verity))?;
+    let mut fs = create_filesystem(repo, &oci_digest, Some(config_verity), &Default::default())?;
     fs.transform_for_boot(&repo)?;
 
     let image_id = fs.compute_image_id(repo.erofs_version());

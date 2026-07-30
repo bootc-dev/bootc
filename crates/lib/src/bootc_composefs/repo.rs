@@ -393,12 +393,21 @@ pub(crate) async fn pull_composefs_repo(
     );
 
     // Generate the bootable EROFS image (idempotent).
-    let id = composefs_oci::generate_boot_image(&repo, &pull_result.manifest_digest)
-        .context("Generating bootable EROFS image")?;
+    let id = composefs_oci::generate_boot_image(
+        &repo,
+        &pull_result.manifest_digest,
+        &Default::default(),
+    )
+    .context("Generating bootable EROFS image")?;
 
     // Get boot entries from the OCI filesystem (untransformed).
-    let fs = create_composefs_filesystem(&*repo, &pull_result.config_digest, None)
-        .context("Creating composefs filesystem for boot entry discovery")?;
+    let fs = create_composefs_filesystem(
+        &*repo,
+        &pull_result.config_digest,
+        None,
+        &Default::default(),
+    )
+    .context("Creating composefs filesystem for boot entry discovery")?;
     let entries =
         get_boot_resources(&fs, &*repo).context("Extracting boot entries from OCI image")?;
 

@@ -77,6 +77,7 @@ pub(crate) async fn compute_composefs_digest(
         dirfd,
         std::path::PathBuf::from("."),
         Some(repo.clone()),
+        &Default::default(),
     )
     .await
     .context("Reading container root")?;

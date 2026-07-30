@@ -1411,12 +1411,21 @@ pub(crate) async fn setup_composefs_boot(
     let repo = Arc::new(repo);
 
     // Generate the bootable EROFS image (idempotent).
-    let id = composefs_oci::generate_boot_image(&repo, &pull_result.manifest_digest)
-        .context("Generating bootable EROFS image")?;
+    let id = composefs_oci::generate_boot_image(
+        &repo,
+        &pull_result.manifest_digest,
+        &Default::default(),
+    )
+    .context("Generating bootable EROFS image")?;
 
     // Reconstruct the OCI filesystem to discover boot entries (kernel, initramfs, etc.).
-    let fs = composefs_oci::image::create_filesystem(&*repo, &pull_result.config_digest, None)
-        .context("Creating composefs filesystem for boot entry discovery")?;
+    let fs = composefs_oci::image::create_filesystem(
+        &*repo,
+        &pull_result.config_digest,
+        None,
+        &Default::default(),
+    )
+    .context("Creating composefs filesystem for boot entry discovery")?;
     let entries =
         get_boot_resources(&fs, &*repo).context("Extracting boot entries from OCI image")?;
 
