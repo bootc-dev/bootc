@@ -2,7 +2,7 @@
 allow = ["Apache-2.0", "Apache-2.0 WITH LLVM-exception", "MIT",
          "BSD-3-Clause", "BSD-2-Clause", "Zlib",
          "Unlicense", "CC0-1.0", "BSL-1.0",
-         "Unicode-DFS-2016", "Unicode-3.0"]
+         "Unicode-DFS-2016", "Unicode-3.0", "ISC"]
 private = { ignore = true }
 
 [[bans.deny]]

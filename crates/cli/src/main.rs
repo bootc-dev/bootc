@@ -12,7 +12,10 @@ async fn async_main() -> Result<()> {
 
     // As you can see, the role of this file is mostly to just be a shim
     // to call into the code that lives in the internal shared library.
-    bootc_lib::cli::run_from_iter(std::env::args()).await
+    match bootc_lib::cli::run_from_iter(std::env::args()).await? {
+        bootc_lib::cli::CliExitStatus::Success => Ok(()),
+        bootc_lib::cli::CliExitStatus::PredicateFalse => std::process::exit(1),
+    }
 }
 
 /// Perform process global initialization, then create an async runtime

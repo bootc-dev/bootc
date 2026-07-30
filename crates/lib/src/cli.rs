@@ -672,6 +672,26 @@ pub(crate) enum UkiSubcommands {
     },
 }
 
+/// Subcommands for `bootc internals selinux`.
+#[derive(Debug, clap::Subcommand, PartialEq, Eq)]
+pub(crate) enum SelinuxOpts {
+    /// Exit successfully when PATH is unlabeled; otherwise exit with status 1.
+    IsUnlabeled {
+        /// Absolute path to inspect without following a final symbolic link.
+        #[arg(value_parser = parse_absolute_path)]
+        path: Utf8PathBuf,
+    },
+}
+
+fn parse_absolute_path(value: &str) -> std::result::Result<Utf8PathBuf, String> {
+    let path = Utf8PathBuf::from(value);
+    if path.is_absolute() {
+        Ok(path)
+    } else {
+        Err("path must be absolute".to_string())
+    }
+}
+
 /// Hidden, internal only options
 #[derive(Debug, clap::Subcommand, PartialEq, Eq)]
 pub(crate) enum InternalsOpts {
@@ -693,6 +713,8 @@ pub(crate) enum InternalsOpts {
     },
     #[clap(subcommand)]
     Fsverity(FsverityOpts),
+    #[clap(subcommand)]
+    Selinux(SelinuxOpts),
     /// Perform consistency checking.
     Fsck,
     /// Perform cleanup actions
@@ -1819,9 +1841,29 @@ pub fn global_init() -> Result<()> {
     Ok(())
 }
 
+/// The outcome of executing the CLI.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CliExitStatus {
+    Success,
+    PredicateFalse,
+}
+
+fn is_unlabeled_exit_status(
+    state: crate::lsm::SELinuxLabelState,
+    path: &Utf8Path,
+) -> Result<CliExitStatus> {
+    match state {
+        crate::lsm::SELinuxLabelState::Unlabeled => Ok(CliExitStatus::Success),
+        crate::lsm::SELinuxLabelState::Labeled => Ok(CliExitStatus::PredicateFalse),
+        crate::lsm::SELinuxLabelState::Unsupported => {
+            anyhow::bail!("SELinux labeling is unsupported for {path}")
+        }
+    }
+}
+
 /// Parse the provided arguments and execute.
 /// Calls [`clap::Error::exit`] on failure, printing the error message and aborting the program.
-pub async fn run_from_iter<I>(args: I) -> Result<()>
+pub async fn run_from_iter<I>(args: I) -> Result<CliExitStatus>
 where
     I: IntoIterator,
     I::Item: Into<OsString> + Clone,
@@ -1876,9 +1918,9 @@ impl Opt {
 }
 
 /// Internal (non-generic/monomorphized) primary CLI entrypoint
-async fn run_from_opt(opt: Opt) -> Result<()> {
+async fn run_from_opt(opt: Opt) -> Result<CliExitStatus> {
     let root = &Dir::open_ambient_dir("/", cap_std::ambient_authority())?;
-    match opt {
+    let result = match opt {
         Opt::Upgrade(opts) => {
             let storage = &get_storage().await?;
             match storage.kind()? {
@@ -1927,7 +1969,8 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
                 no_truncate,
             } => {
                 if list {
-                    return lints::lint_list(std::io::stdout().lock());
+                    return lints::lint_list(std::io::stdout().lock())
+                        .map(|()| CliExitStatus::Success);
                 }
                 let warnings = if fatal_warnings {
                     lints::WarningDisposition::FatalWarnings
@@ -2274,6 +2317,21 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
                     Ok(())
                 }
             },
+            InternalsOpts::Selinux(SelinuxOpts::IsUnlabeled { path }) => {
+                ensure!(crate::lsm::selinux_enabled()?, "SELinux is not enabled");
+                let path = path
+                    .strip_prefix("/")
+                    .expect("absolute paths have a root prefix");
+                match is_unlabeled_exit_status(
+                    crate::lsm::has_security_selinux(&root, path)?,
+                    path,
+                )? {
+                    CliExitStatus::Success => Ok(()),
+                    CliExitStatus::PredicateFalse => {
+                        return Ok(CliExitStatus::PredicateFalse);
+                    }
+                }
+            }
             InternalsOpts::Cfs { args } => composefs_ctl::run_from_iter(args.iter()).await,
             InternalsOpts::Reboot => crate::reboot::reboot(),
             InternalsOpts::Fsck => {
@@ -2386,7 +2444,7 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
 
                     BootedStorageKind::Composefs(booted_cfs) => {
                         if reset {
-                            return reset_soft_reboot();
+                            return reset_soft_reboot().map(|()| CliExitStatus::Success);
                         }
 
                         prepare_soft_reboot_composefs(
@@ -2551,7 +2609,8 @@ async fn run_from_opt(opt: Opt) -> Result<()> {
                 }
             }
         }
-    }
+    };
+    result.map(|()| CliExitStatus::Success)
 }
 
 #[cfg(test)]
@@ -2648,6 +2707,51 @@ mod tests {
             Opt::parse_including_static(["bootc", "status", "-v"]),
             Opt::Status(StatusOpts { verbose: true, .. })
         ));
+    }
+
+    #[test]
+    fn test_parse_selinux_is_unlabeled() {
+        let opt = Opt::try_parse_from([
+            "bootc",
+            "internals",
+            "selinux",
+            "is-unlabeled",
+            "/var/lib/probe",
+        ])
+        .unwrap();
+        assert!(matches!(
+            opt,
+            Opt::Internals(InternalsOpts::Selinux(SelinuxOpts::IsUnlabeled { path }))
+                if path == "/var/lib/probe"
+        ));
+        assert!(
+            Opt::try_parse_from(["bootc", "internals", "selinux", "is-unlabeled", "relative",])
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn test_is_unlabeled_exit_status() {
+        let path = Utf8Path::new("probe");
+        let cases = [
+            (
+                crate::lsm::SELinuxLabelState::Unlabeled,
+                CliExitStatus::Success,
+            ),
+            (
+                crate::lsm::SELinuxLabelState::Labeled,
+                CliExitStatus::PredicateFalse,
+            ),
+        ];
+        for (state, expected) in cases {
+            assert_eq!(is_unlabeled_exit_status(state, path).unwrap(), expected);
+        }
+        assert!(
+            is_unlabeled_exit_status(crate::lsm::SELinuxLabelState::Unsupported, path)
+                .unwrap_err()
+                .to_string()
+                .contains("unsupported")
+        );
     }
 
     #[test]
