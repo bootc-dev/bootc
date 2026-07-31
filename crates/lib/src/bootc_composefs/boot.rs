@@ -228,47 +228,44 @@ pub fn mount_esp_readonly(device: &str) -> Result<TempMount> {
 
 /// Get a read-write view of the ESP for the provided device, gracefully
 /// handling the case where the ESP is already mounted (possibly read-only)
-/// in the root mount namespace.
+/// in the current mount namespace.
 ///
-/// If the ESP is already mounted, that mount is cloned privately into a
-/// tempdir; if the clone came in read-only (e.g. because
-/// `systemd.mount-extra=UUID=...:/boot:auto:ro` was in the deployment
-/// cmdline), it is remounted rw on the private clone only. This is safe
-/// because bootc always runs in an unshared mount namespace (see
-/// `cli::ensure_self_unshared_mount_namespace`), so the remount does not
-/// affect the host's view. If the ESP is not already mounted, a fresh
-/// read-write mount is performed.
+/// If the ESP's device is already mounted, that mount is unconditionally
+/// remounted read-write *in place* first -- the same approach already
+/// used for `/sysroot` in `open_dir_remount_rw`, which likewise doesn't
+/// bother checking whether it's already writable before remounting.
+/// This matters because our own fresh `mount(2)` below would otherwise
+/// get `EBUSY` from the kernel's `get_tree_bdev_flags()` if the existing
+/// mount's `MS_RDONLY` state doesn't match what we're requesting (e.g.
+/// via a `systemd.mount-extra=UUID=...:/boot:auto:ro` cmdline karg
+/// written by `bootc install to-filesystem`). Note remounting a private
+/// *clone* of the existing mount would not be sufficient here: that only
+/// clears the clone's own mount-level read-only flag, not the shared
+/// superblock's, so writes through it would still fail with `EROFS`.
+/// Remounting the existing mount directly is safe because bootc always
+/// runs in its own unshared mount namespace (see
+/// `cli::ensure_self_unshared_mount_namespace`).
 pub fn mount_esp_writable(device: &str) -> Result<TempMount> {
-    let Some(existing) = bootc_mount::find_mount_target_by_source(device)? else {
-        return mount_esp(device);
-    };
-    let mount = TempMount::clone_existing_mount(&existing)?;
-    let target = mount.dir.path();
-    let st =
-        rustix::fs::statvfs(target).with_context(|| format!("statvfs {}", target.display()))?;
-    if st.f_flag.contains(rustix::fs::StatVfsMountFlags::RDONLY) {
-        rustix::mount::mount_remount(target, MountFlags::BIND | ESP_MOUNT_FLAGS, "").with_context(
-            || {
-                format!(
-                    "Remounting cloned ESP mount at {} read-write",
-                    target.display()
-                )
-            },
-        )?;
-        tracing::debug!(
-            "Cloned ESP mount at {} was read-only; remounted rw in private namespace",
-            target.display()
-        );
+    if let Some(existing) = bootc_mount::find_mount_target_by_source(device)? {
+        rustix::mount::mount_remount(existing.as_str(), ESP_MOUNT_FLAGS, "")
+            .with_context(|| format!("Remounting {existing} read-write"))?;
     }
-    Ok(mount)
+    mount_esp(device)
 }
 
 /// Mount the ESP from `device` at the given path and return a guard that
 /// synchronously unmounts (and flushes) it on drop.
+///
+/// Applies the same pre-emptive remount as `mount_esp_writable`; see
+/// there for details and caveats.
 pub(crate) fn mount_esp_at(
     device: &str,
     path: std::path::PathBuf,
 ) -> Result<bootc_mount::tempmount::MountGuard> {
+    if let Some(existing) = bootc_mount::find_mount_target_by_source(device)? {
+        rustix::mount::mount_remount(existing.as_str(), ESP_MOUNT_FLAGS, "")
+            .with_context(|| format!("Remounting {existing} read-write"))?;
+    }
     bootc_mount::tempmount::MountGuard::mount(
         device,
         path,
