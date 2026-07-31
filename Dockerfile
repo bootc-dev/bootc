@@ -260,8 +260,11 @@ RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp
 set -xeuo pipefail
 
 # Extract the unsigned systemd-boot binary from the downloaded RPM
+# Work around https://github.com/bootc-dev/bootc/issues/1896
 cd /tmp
-rpm2cpio /out/*.rpm | cpio -idmv
+rpm2cpio /out/*.rpm > pkg.cpio
+cpio -idmv < pkg.cpio
+rm pkg.cpio
 # Find the extracted unsigned binary
 sdboot_unsigned=$(ls ./usr/lib/systemd/boot/efi/systemd-boot*.efi)
 sdboot_bn=$(basename ${sdboot_unsigned})

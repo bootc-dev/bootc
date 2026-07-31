@@ -28,7 +28,8 @@ prepare:
     order: 98
     script:
       - mkdir -p bootc && cp /var/share/test-artifacts/*.src.rpm bootc
-      - cd bootc && rpm2cpio *.src.rpm | cpio -idmv && rm -f *-vendor.tar.zstd && zstd -d *.tar.zstd && tar -xvf *.tar -C . --strip-components=1 && ls -al
+      # Work around https://github.com/bootc-dev/bootc/issues/1896
+      - cd bootc && rpm2cpio *.src.rpm > pkg.cpio && cpio -idmv < pkg.cpio && rm pkg.cpio && rm -f *-vendor.tar.zstd && zstd -d *.tar.zstd && tar -xvf *.tar -C . --strip-components=1 && ls -al
       - pwd && ls -al && cd bootc/hack && ./provision-packit.sh
     when: running_env != image_mode
   # tmt-reboot and reboot do not work in this case
