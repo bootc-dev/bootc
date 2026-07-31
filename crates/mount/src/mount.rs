@@ -126,16 +126,21 @@ pub fn is_mounted_in_pid1_mountns(path: &str) -> Result<bool> {
     Ok(mounted)
 }
 
-/// Find the mount target of a given source device in the root mount
+/// Find the mount target of a given source device in the *current* mount
 /// namespace. Returns `Ok(None)` if the device is not mounted.
 ///
 /// Used by callers that want to gracefully handle the case where a
 /// device they intended to mount is already mounted somewhere else
-/// (which would cause a fresh `mount(2)` to return `EBUSY`). Combined
-/// with `TempMount::clone_existing_mount`, this lets read-only callers
-/// like `bootc status` reuse an existing mount without disturbing it.
+/// (which would cause a fresh `mount(2)` to return `EBUSY`). Note this
+/// intentionally queries the caller's own mount namespace, not pid 1's
+/// (unlike `is_mounted_in_pid1_mountns`, which exists to answer a
+/// different question: whether the *host* already has something
+/// mounted before bootc unshares its own namespace). Callers of this
+/// function are expected to have already unshared their own mount
+/// namespace and are looking up a mount they intend to operate on
+/// directly (e.g. remount) in that same namespace.
 pub fn find_mount_target_by_source(dev: &str) -> Result<Option<camino::Utf8PathBuf>> {
-    let o = pid1_mounts()?;
+    let o = run_findmnt(&[], None, None)?;
     let found = find_source_mount_target(dev, &o.filesystems);
     if found.is_none() {
         tracing::debug!(
