@@ -80,6 +80,29 @@ pub fn have_executable(name: &str) -> Result<bool> {
     Ok(false)
 }
 
+/// Idempotently ensure a symlink `link` -> `target` exists in `dir`.
+///
+/// If the symlink already exists and points to the expected target, this is a
+/// no-op.  If it exists but points elsewhere, it is replaced.
+pub(crate) fn symlink_idempotent(dir: &Dir, target: &str, link: &str) -> Result<()> {
+    match dir.symlink(target, link) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            let existing = dir
+                .read_link(link)
+                .with_context(|| format!("Reading existing symlink {link}"))?;
+            if existing == std::path::Path::new(target) {
+                return Ok(());
+            }
+            dir.remove_file(link)
+                .with_context(|| format!("Removing stale symlink {link}"))?;
+            dir.symlink(target, link)
+                .with_context(|| format!("Creating symlink {link} -> {target}"))
+        }
+        Err(e) => Err(e).with_context(|| format!("Creating symlink {link} -> {target}")),
+    }
+}
+
 /// Given a target directory, if it's a read-only mount, then remount it writable
 #[context("Opening {target} with writable mount")]
 pub(crate) fn open_dir_remount_rw(root: &Dir, target: &Utf8Path) -> Result<Dir> {
@@ -335,5 +358,24 @@ mod tests {
     fn test_have_executable() {
         assert!(have_executable("true").unwrap());
         assert!(!have_executable("someexethatdoesnotexist").unwrap());
+    }
+
+    #[test]
+    fn test_symlink_idempotent() {
+        let td = cap_std_ext::cap_tempfile::TempDir::new(
+            cap_std_ext::cap_std::ambient_authority(),
+        )
+        .unwrap();
+        // First call creates the symlink
+        symlink_idempotent(&td, "target-a", "link").unwrap();
+        assert_eq!(td.read_link("link").unwrap(), Path::new("target-a"));
+
+        // Second call with the same target is a no-op
+        symlink_idempotent(&td, "target-a", "link").unwrap();
+        assert_eq!(td.read_link("link").unwrap(), Path::new("target-a"));
+
+        // Call with a different target replaces the symlink
+        symlink_idempotent(&td, "target-b", "link").unwrap();
+        assert_eq!(td.read_link("link").unwrap(), Path::new("target-b"));
     }
 }
