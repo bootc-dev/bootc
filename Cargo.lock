@@ -199,14 +199,14 @@ checksum = "b25655df2c3cdd83c5e5b293b88acd880332b2ddadd7c30ac43144fdc0033da9"
 [[package]]
 name = "bcvk-qemu"
 version = "0.1.0"
-source = "git+https://github.com/bootc-dev/bcvk?rev=74d5039c50b70326874a3bced72204a0f97e49b9#74d5039c50b70326874a3bced72204a0f97e49b9"
+source = "git+https://github.com/bootc-dev/bcvk?rev=0954cb338a65a460d297cba93b42f7917e921df1#0954cb338a65a460d297cba93b42f7917e921df1"
 dependencies = [
  "camino",
  "cap-std-ext",
  "color-eyre",
  "data-encoding",
  "libc",
- "nix 0.29.0",
+ "nix 0.31.2",
  "rustix",
  "tokio",
  "tracing",
@@ -3714,12 +3714,12 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "vsock"
-version = "0.5.1"
+version = "0.5.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4e8b4d00e672f147fc86a09738fadb1445bd1c0a40542378dfb82909deeee688"
+checksum = "6ba782755fc073877e567c2253c0be48e4aa9a254c232d36d3985dfae0bd5205"
 dependencies = [
  "libc",
- "nix 0.29.0",
+ "nix 0.31.2",
 ]
 
 [[package]]
