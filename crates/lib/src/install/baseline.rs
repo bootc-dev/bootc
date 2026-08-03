@@ -214,15 +214,11 @@ struct RepartPartition {
     /// Path to the repart.d definition file that created this partition
     #[serde(default)]
     file: Option<String>,
+    #[allow(dead_code)]
+    fs: Option<String>,
 }
 
-/// Create partitions using systemd-repart (if available)
-/// Returns Ok(None) if systemd-repart or repart.d are not present
-fn systemd_repart(
-    device: &Device,
-    root_size: Option<u64>,
-    rootfs: Option<Filesystem>,
-) -> Result<Option<PartitionLayout>> {
+fn can_use_systemd_repart() -> bool {
     if Command::new("systemd-repart")
         .arg("--help")
         .stdout(Stdio::null())
@@ -230,7 +226,7 @@ fn systemd_repart(
         .status()
         .is_err()
     {
-        return Ok(None);
+        return false;
     }
 
     let repart_config_dirs = [
@@ -247,15 +243,22 @@ fn systemd_repart(
                 .is_some_and(|mut entries| entries.next().is_some())
     });
 
-    if !has_config {
-        return Ok(None);
-    }
+    return has_config;
+}
 
+/// Create partitions using systemd-repart
+/// Assumes we have systemd-repart definitions
+#[context("Running systemd-repart")]
+fn systemd_repart(
+    device: &Device,
+    root_size: Option<u64>,
+    rootfs: Option<Filesystem>,
+) -> Result<PartitionLayout> {
     // Dry-run to check what partitions would be created
     let dry_partitions = systemd_repart_run(device, None, true)?;
 
     if dry_partitions.is_empty() {
-        return Ok(None);
+        anyhow::bail!("systemd-repart returned empty partitions");
     }
 
     let has_root = dry_partitions
@@ -266,7 +269,7 @@ fn systemd_repart(
         // Root partition is defined in repart.d config, run for real
         let partitions = systemd_repart_run(device, None, false)?;
         let layout = parse_repart_layout(&partitions)?;
-        return Ok(Some(layout));
+        return Ok(layout);
     }
 
     // Root partition is not defined, create defintion for the root part
@@ -292,8 +295,9 @@ fn systemd_repart(
     }
     match rootfs {
         Some(fs) => writeln!(root_conf, "Format={fs}")?,
-        // Default to xfs, same as sfdisk
-        None => writeln!(root_conf, "Format=xfs")?,
+        None => {
+            anyhow::bail!("Rootfs not specified")
+        }
     }
 
     std::fs::write(tmp_dir.path().join("50-root.conf"), &root_conf)
@@ -301,7 +305,7 @@ fn systemd_repart(
 
     let partitions = systemd_repart_run(device, Some(tmp_dir.path()), false)?;
     let layout = parse_repart_layout(&partitions)?;
-    Ok(Some(layout))
+    Ok(layout)
 }
 
 /// Run systemd-repart on the device and return the parsed JSON output.
@@ -383,6 +387,7 @@ fn parse_repart_layout(partitions: &[RepartPartition]) -> Result<PartitionLayout
 }
 
 /// Use sfdisk to create partitions
+#[context("Running sfdisk")]
 fn sfdisk(
     device: &Device,
     root_size: Option<u64>,
@@ -482,13 +487,6 @@ pub(crate) fn install_create_rootfs(
 ) -> Result<RootSetup> {
     let install_config = state.install_config.as_ref();
     let luks_name = "root";
-    // Ensure we have a root filesystem upfront
-    let root_filesystem = opts
-        .filesystem
-        .or(install_config
-            .and_then(|c| c.filesystem_root())
-            .and_then(|r| r.fstype))
-        .ok_or_else(|| anyhow::anyhow!("No root filesystem specified"))?;
     // Verify that the target is empty (if not already wiped in particular, but it's
     // also good to verify that the wipe worked)
     let mut device = bootc_blockdev::list_dev(&opts.device)?;
@@ -521,10 +519,12 @@ pub(crate) fn install_create_rootfs(
         std::fs::remove_dir_all(&mntdir)?;
     }
 
+    let use_systemd_repart = can_use_systemd_repart();
+
     // Use the install configuration to find the block setup, if we have one
     let block_setup = if let Some(config) = install_config {
         config.get_block_setup(opts.block_setup.as_ref().copied())?
-    } else if opts.filesystem.is_some() {
+    } else if opts.filesystem.is_some() || use_systemd_repart {
         // Otherwise, if a filesystem is specified then we default to whatever was
         // specified via --block-setup, or the default
         opts.block_setup.unwrap_or_default()
@@ -563,14 +563,15 @@ pub(crate) fn install_create_rootfs(
     let bootfs = mntdir.join("boot");
     std::fs::create_dir_all(bootfs)?;
 
-    let layout = match systemd_repart(&device, root_size, opts.filesystem)? {
-        Some(layout) => layout,
-        None => sfdisk(
+    let layout = if use_systemd_repart {
+        systemd_repart(&device, root_size, opts.filesystem)?
+    } else {
+        sfdisk(
             &device,
             root_size,
             state.composefs_options.composefs_backend,
             block_setup.requires_bootpart(),
-        )?,
+        )?
     };
 
     tracing::debug!(
@@ -588,6 +589,23 @@ pub(crate) fn install_create_rootfs(
 
     // Re-read partition table to get updated children
     device.refresh()?;
+
+    // Ensure we have a root filesystem
+    let root_filesystem = if layout.used_repart {
+        let root = device.find_device_by_partno(layout.rootpn)?;
+        root.fstype
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("repart: Root filesystem type not defined"))?
+    } else {
+        let root_filesystem = opts
+            .filesystem
+            .or(install_config
+                .and_then(|c| c.filesystem_root())
+                .and_then(|r| r.fstype))
+            .ok_or_else(|| anyhow::anyhow!("No root filesystem specified"))?;
+
+        &root_filesystem.to_string()
+    };
 
     let root_device = device.find_device_by_partno(layout.rootpn)?;
 
@@ -661,8 +679,14 @@ pub(crate) fn install_create_rootfs(
                 u.parse::<uuid::Uuid>()
                     .with_context(|| format!("Parsing bootdev UUID {u}"))?
             } else {
-                mkfs(&bootdev.path(), root_filesystem, "boot", opts.wipe, [])
-                    .context("Initializing /boot")?
+                mkfs(
+                    &bootdev.path(),
+                    root_filesystem.as_str().try_into()?,
+                    "boot",
+                    opts.wipe,
+                    [],
+                )
+                .context("Initializing /boot")?
             };
 
             Some(u)
@@ -679,15 +703,17 @@ pub(crate) fn install_create_rootfs(
         u.parse::<uuid::Uuid>()
             .with_context(|| format!("Parsing root fs UUID {u}"))?
     } else {
+        let rootfs: Filesystem = root_filesystem.as_str().try_into()?;
+
         // Unconditionally enable fsverity for ext4
-        let mkfs_options = match root_filesystem {
+        let mkfs_options = match rootfs {
             Filesystem::Ext4 => ["-O", "verity"].as_slice(),
             _ => [].as_slice(),
         };
 
         mkfs(
             &rootdev_path,
-            root_filesystem,
+            rootfs,
             "root",
             opts.wipe,
             mkfs_options.iter().copied(),

@@ -1769,13 +1769,12 @@ async fn prepare_install(
         println!("Digest: {digest}");
     }
 
-    let root_filesystem = target_fs
-        .or(install_config
-            .as_ref()
-            .and_then(|c| c.filesystem_root())
-            .and_then(|r| r.fstype))
-        .ok_or_else(|| anyhow::anyhow!("No root filesystem specified"))?;
-    let composefs_fsverity_supported = root_filesystem.supports_fsverity();
+    // Don't error out if a filesystem is not passed in via cli as we could have
+    // repart.d definitions available
+    let root_filesystem = target_fs.or(install_config
+        .as_ref()
+        .and_then(|c| c.filesystem_root())
+        .and_then(|r| r.fstype));
 
     let mut is_uki = false;
 
@@ -1786,39 +1785,46 @@ async fn prepare_install(
     // we hard require it in that particular case
     //
     // NOTE: This isn't really 100% accurate 100% of the time as the cmdline can be in an addon
-    match kernel {
-        Some(k) => match k.k_type {
-            crate::kernel::KernelType::Uki { cmdline, .. } => {
-                let allow_missing_fsverity = if let Some(cmdline) = cmdline {
-                    ComposefsCmdline::find_in_cmdline(&cmdline)?
-                        .is_some_and(|cfs_cmdline| cfs_cmdline.allow_missing_fsverity)
-                } else {
-                    false
-                };
+    if let Some(root_filesystem) = root_filesystem {
+        match kernel {
+            Some(k) => match k.k_type {
+                crate::kernel::KernelType::Uki { cmdline, .. } => {
+                    let allow_missing_fsverity = if let Some(cmdline) = cmdline {
+                        ComposefsCmdline::find_in_cmdline(&cmdline)?
+                            .is_some_and(|cfs_cmdline| cfs_cmdline.allow_missing_fsverity)
+                    } else {
+                        false
+                    };
+                    // >>>>>>> 626befdf (install: Handle root filesystem)
 
-                if !allow_missing_fsverity {
-                    anyhow::ensure!(
-                        root_filesystem.supports_fsverity(),
-                        "Specified filesystem {root_filesystem} does not support fs-verity"
-                    );
+                    if !allow_missing_fsverity {
+                        anyhow::ensure!(
+                            root_filesystem.supports_fsverity(),
+                            "Specified filesystem {root_filesystem} does not support fs-verity"
+                        );
+                    }
+
+                    composefs_options.allow_missing_verity = allow_missing_fsverity;
+                    is_uki = true;
                 }
 
-                composefs_options.allow_missing_verity = allow_missing_fsverity;
-                is_uki = true;
-            }
+                crate::kernel::KernelType::Vmlinuz { .. } => {}
+            },
 
-            crate::kernel::KernelType::Vmlinuz { .. } => {}
-        },
+            None => {}
+        }
 
-        None => {}
-    }
-
-    // If `--allow-missing-verity` is already passed via CLI, don't modify
-    if composefs_options.composefs_backend && !composefs_options.allow_missing_verity && !is_uki {
-        composefs_options.allow_missing_verity = !root_filesystem.supports_fsverity();
+        // If `--allow-missing-verity` is already passed via CLI, don't modify
+        if composefs_options.composefs_backend && !composefs_options.allow_missing_verity && !is_uki
+        {
+            composefs_options.allow_missing_verity = !root_filesystem.supports_fsverity();
+        }
     }
 
     tracing::info!(
+        root_filesystem = root_filesystem
+            .map(|f| f.to_string())
+            .unwrap_or("None".into()),
         allow_missing_fsverity = composefs_options.allow_missing_verity,
         uki = is_uki,
         "ComposeFS install prep",
@@ -1869,7 +1875,10 @@ async fn prepare_install(
         host_is_container,
         composefs_required,
         composefs_options,
-        composefs_fsverity_supported,
+        // assume fs-verity is supported as that's the safer option
+        composefs_fsverity_supported: root_filesystem
+            .map(|fs| fs.supports_fsverity())
+            .unwrap_or(true),
         allow_missing_verity_explicit,
     });
 
