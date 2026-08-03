@@ -193,3 +193,8 @@ check:
   summary: Test composefs UKI dumpfile diff print
   duration: 30m
   test: nu booted/test-composefs-uki-dumpfile.nu
+
+/test-49-install-repart:
+  summary: Test bootc install to-disk with systemd-repart partitioning
+  duration: 30m
+  test: nu booted/test-install-repart.nu
