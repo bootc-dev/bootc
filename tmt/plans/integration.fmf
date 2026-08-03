@@ -294,6 +294,13 @@ execute:
     test:
       - /tmt/tests/tests/test-46-etc-merge-conflict
 
+/plan-47-install-repart:
+  summary: Test bootc install to-disk with systemd-repart partitioning
+  discover:
+    how: fmf
+    test:
+      - /tmt/tests/tests/test-47-install-repart
+
 /plan-48-composefs-uki-dumpfile:
   summary: Test composefs garbage collection for UKI
   discover:
