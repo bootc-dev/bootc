@@ -206,3 +206,8 @@ check:
   - when: composefs_bridge == true
     enabled: true
   test: nu booted/test-49-composefs-1-16-bridge.nu
+
+/test-51-install-repart:
+  summary: Test bootc install to-disk with systemd-repart partitioning
+  duration: 30m
+  test: nu booted/test-install-repart.nu
