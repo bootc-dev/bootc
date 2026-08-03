@@ -211,3 +211,8 @@ check:
   summary: Switch to an image with zstd:chunked compressed layers
   duration: 30m
   test: nu booted/test-switch-zstd-chunked.nu
+
+/test-52-install-repart:
+  summary: Test bootc install to-disk with systemd-repart partitioning
+  duration: 30m
+  test: nu booted/test-install-repart.nu
