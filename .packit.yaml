@@ -149,3 +149,7 @@ jobs:
     dist_git_branches:
       # Fedora rawhide updates are created automatically
       - fedora-branched
+    # Our 1 week releases conflict with Fedora's default 1 week auto-shipping;
+    # Requiring 3 human identities to gate doesn't make sense when we have CI.
+    bodhi_extra_params:
+      stable_karma: 1
