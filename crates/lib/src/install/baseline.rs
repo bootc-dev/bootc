@@ -211,9 +211,6 @@ struct RepartPartition {
     partition_type: String,
     /// 0-indexed partition number
     partno: u32,
-    /// Path to the repart.d definition file that created this partition
-    #[serde(default)]
-    file: Option<String>,
     #[allow(dead_code)]
     fs: Option<String>,
 }
@@ -255,7 +252,7 @@ fn systemd_repart(
     rootfs: Option<Filesystem>,
 ) -> Result<PartitionLayout> {
     // Dry-run to check what partitions would be created
-    let dry_partitions = systemd_repart_run(device, None, true)?;
+    let dry_partitions = systemd_repart_run(device, true)?;
 
     if dry_partitions.is_empty() {
         anyhow::bail!("systemd-repart returned empty partitions");
@@ -267,27 +264,12 @@ fn systemd_repart(
 
     if has_root {
         // Root partition is defined in repart.d config, run for real
-        let partitions = systemd_repart_run(device, None, false)?;
+        let partitions = systemd_repart_run(device, false)?;
         let layout = parse_repart_layout(&partitions)?;
         return Ok(layout);
     }
 
     // Root partition is not defined, create defintion for the root part
-    let tmp_dir = tempfile::tempdir().context("Creating temp dir for repart definitions")?;
-
-    for part in &dry_partitions {
-        let Some(ref file) = part.file else {
-            continue;
-        };
-        if matches!(part.partition_type.as_str(), "esp" | "xbootldr") {
-            let src = Path::new(file);
-            if let Some(name) = src.file_name() {
-                std::fs::copy(src, tmp_dir.path().join(name))
-                    .with_context(|| format!("Copying repart config {file}"))?;
-            }
-        }
-    }
-
     let mut root_conf = String::from("[Partition]\nType=root\n");
     if let Some(size_mib) = root_size {
         writeln!(root_conf, "SizeMinBytes={size_mib}M")?;
@@ -300,10 +282,11 @@ fn systemd_repart(
         }
     }
 
-    std::fs::write(tmp_dir.path().join("50-root.conf"), &root_conf)
+    std::fs::create_dir_all("/run/repart.d").context("Creating /run/repart.d")?;
+    std::fs::write("/run/repart.d/50-root.conf", &root_conf)
         .context("Writing root repart config")?;
 
-    let partitions = systemd_repart_run(device, Some(tmp_dir.path()), false)?;
+    let partitions = systemd_repart_run(device, false)?;
     let layout = parse_repart_layout(&partitions)?;
     Ok(layout)
 }
@@ -312,11 +295,7 @@ fn systemd_repart(
 /// `dry_run`: if true, no changes are written to disk.
 /// `definitions`: if set, uses `--definitions=` and `--empty=allow`;
 /// otherwise uses the default config search paths with `--empty=force`.
-fn systemd_repart_run(
-    device: &Device,
-    definitions: Option<&Path>,
-    dry_run: bool,
-) -> Result<Vec<RepartPartition>> {
+fn systemd_repart_run(device: &Device, dry_run: bool) -> Result<Vec<RepartPartition>> {
     let mut cmd = Command::new("systemd-repart");
 
     // Enable fsverity for ext4
@@ -335,10 +314,6 @@ fn systemd_repart_run(
         "--empty=force",
         "--root=/",
     ]);
-
-    if let Some(defs) = definitions {
-        cmd.arg(format!("--definitions={}", defs.display()));
-    }
 
     cmd.arg(device.path());
 
