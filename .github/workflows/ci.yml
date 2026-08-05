@@ -236,9 +236,6 @@ jobs:
         seal_state: ["sealed", "unsealed"]
 
         exclude:
-          # https://github.com/bootc-dev/bootc/issues/1812
-          - test_os: centos-9
-            variant: composefs
           - seal_state: "sealed"
             boot_type: bls
           - seal_state: "sealed"
