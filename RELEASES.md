@@ -264,9 +264,6 @@ The bootc API is considered stable. Changes to the API follow these guidelines:
 <!-- OPEN QUESTION: Any planned changes to the release process? -->
 
 As bootc continues to mature, we may introduce:
-
-- Long-term support (LTS) releases
-- Extended support periods for specific versions
 - More formal release branch strategy
 - Pre-release testing programs
 
