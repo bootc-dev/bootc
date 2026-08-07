@@ -42,6 +42,7 @@ use anyhow::{Context, Result};
 
 use composefs::fsverity::{FsVerityHashValue, Sha512HashValue};
 use composefs::repository::RepositoryConfig;
+use composefs::tree::FileSystem;
 use composefs_boot::bootloader::{BootEntry as ComposefsBootEntry, get_boot_resources};
 use composefs_ctl::composefs;
 use composefs_ctl::composefs_boot;
@@ -188,6 +189,8 @@ pub(crate) struct PullRepoResult {
     pub(crate) id: Sha512HashValue,
     /// The OCI manifest content digest (e.g. "sha256:abc...")
     pub(crate) manifest_digest: String,
+    /// The untransformed OCI filesystem (still has /boot, /sysroot, etc.)
+    pub(crate) fs: FileSystem<Sha512HashValue>,
 }
 
 /// Pull an image directly into the composefs repository via skopeo.
@@ -424,6 +427,7 @@ pub(crate) async fn pull_composefs_repo(
         entries,
         id,
         manifest_digest: pull_result.manifest_digest.to_string(),
+        fs,
     })
 }
 
