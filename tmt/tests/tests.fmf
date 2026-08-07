@@ -188,3 +188,8 @@ check:
   summary: Test composefs garbage collection for UKI
   duration: 30m
   test: nu booted/test-composefs-uki-dumpfile.nu
+
+/test-49-system-reinstall-composefs:
+  summary: Test system-reinstall with composefs backend and bootloader compatibility
+  duration: 60m
+  test: nu booted/test-system-reinstall-composefs.nu
