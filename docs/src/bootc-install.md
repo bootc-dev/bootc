@@ -424,6 +424,114 @@ If you're building tooling that uses `bootc install to-filesystem`, you should:
    over `/etc/fstab` for root mount options, as this works better with composefs
    and DPS auto-discovery.
 
+## systemd-repart
+
+When `systemd-repart` is available and repart.d definitions are present in the
+container image, `bootc install to-disk` uses systemd-repart instead of sfdisk
+to partition the target disk.
+
+### How definitions are discovered
+
+Definitions are searched in the standard systemd-repart locations relative
+to the container root:
+
+- `/etc/repart.d/*.conf`
+- `/run/repart.d/*.conf`
+- `/usr/local/lib/repart.d/*.conf`
+- `/usr/lib/repart.d/*.conf`
+
+If `systemd-repart` is not installed or no `.conf` files exist in any of these
+directories, bootc falls back to its built-in sfdisk partitioning.
+
+### Root partition handling
+
+All repart.d definitions are passed to systemd-repart together so that it can
+plan a correct layout with proper space allocation across all partitions.
+
+If the image's repart.d definitions do **not** include a root partition
+(`Type=root`), bootc automatically injects one into `/run/repart.d/` before
+invoking systemd-repart.  The generated root partition definition:
+
+- Uses `Type=root` (architecture-specific DPS GUID is resolved by systemd-repart)
+- Applies `Format=<fs>` from the configured root filesystem type
+- Honours `--root-size` if specified (via `SizeMinBytes`/`SizeMaxBytes`)
+- Otherwise takes all remaining space on the disk
+
+This means images can ship repart.d definitions for additional partitions
+(e.g. `/home`, swap, `/var`) without needing to also define root.
+All definitions run at install time so that systemd-repart can plan the
+layout with correct space allocation across all partitions.  This is
+important because the root filesystem is mounted read-only on bootc
+systems (`/sysroot` is ro), so systemd-repart cannot resize it after
+installation.
+
+**Important:** A root filesystem type is always required. It can come from
+any of these sources (checked in order):
+
+1. `--filesystem` CLI argument
+2. `install.filesystem.root.type` in the install configuration
+3. `Format=` in the repart.d root partition definition
+
+If none of these provide a filesystem type, the installation will fail.
+
+### Firstboot definitions
+
+Images may include repart.d definitions for partitions beyond root, ESP,
+and xbootldr, for example `/home`, swap, or `/var`.  Because all definitions
+run at install time, systemd-repart allocates space for all of them during
+installation.
+
+### DPS auto-mount and symlinked directories
+
+`systemd-gpt-auto-generator` maps DPS partition types to fixed mount points
+(e.g. `Type=home` mounts at `/home`).  If the mount point is a symlink
+as is common in ostree-based systems where `/home -> /var/home`, the
+auto-generated mount unit will fail.
+
+For this to work, the container image must ensure that `/home` is a real
+directory, not a symlink.  Alternatively, use `Type=linux-generic` with a
+partition label and mount it explicitly via a `systemd.mount-extra` kernel
+argument:
+
+```
+systemd.mount-extra=PARTLABEL=home:/var/home:ext4
+```
+
+### Filesystem creation
+
+When systemd-repart creates partitions, it also creates filesystems according
+to the `Format=` directive in each definition.  In this case bootc reads
+the filesystem UUIDs assigned by systemd-repart rather than running `mkfs`
+itself.
+
+### LUKS (tpm2-luks)
+
+systemd-repart integration is not supported with `--block-setup tpm2-luks`.
+When LUKS is configured, bootc always falls back to sfdisk partitioning.
+This is because LUKS needs to format the root partition with `cryptsetup
+luksFormat` after partitioning, which conflicts with systemd-repart having
+already created a filesystem on that partition.
+
+### Examples
+
+For the full definition file format, see
+[repart.d(5)](https://www.freedesktop.org/software/systemd/man/latest/repart.d.html).
+
+#### Minimal: let bootc handle root
+
+An image that only wants a custom ESP size:
+
+```ini
+# /usr/lib/repart.d/00-esp.conf
+[Partition]
+Type=esp
+Format=vfat
+SizeMinBytes=2G
+SizeMaxBytes=2G
+```
+
+bootc will inject a root partition definition automatically.
+
 ## Finding and configuring the physical root filesystem
 
 On a bootc system, the "physical root" is different from
