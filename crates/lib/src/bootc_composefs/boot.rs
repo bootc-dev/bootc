@@ -98,6 +98,7 @@ use serde::{Deserialize, Serialize};
 use crate::bootc_composefs::state::{get_booted_bls, write_composefs_state};
 use crate::bootc_composefs::status::ComposefsCmdline;
 use crate::bootc_kargs::compute_new_kargs;
+use crate::bootloader::bootupd_supports_bootloader_flag;
 use crate::composefs_consts::{TYPE1_BOOT_DIR_PREFIX, TYPE1_ENT_PATH, TYPE1_ENT_PATH_STAGED};
 use crate::parsers::bls_config::{BLSConfig, BLSConfigType, EFIKey};
 use crate::spec::BootloaderKind;
@@ -1505,32 +1506,44 @@ pub(crate) async fn setup_composefs_boot(
         .or(root_setup.rootfs_uuid.as_deref())
         .ok_or_else(|| anyhow!("No uuid for boot/root"))?;
 
+    let bootupd_chroot_target = Utf8Path::from_path(mounted_root.root_path())
+        .ok_or_else(|| anyhow!("composefs tmpdir path is not valid UTF-8"))?;
+
+    // Like the ostree backend, bind the physical root's real /boot (an
+    // ordinary ext4/xfs/... directory, not yet populated with kernels at
+    // this point) into the chroot. This gives bootupd both a correct
+    // filesystem to inspect for `--write-uuid` (rather than the ESP,
+    // which is otherwise mounted at the composefs root's own /boot) and
+    // an empty `boot/efi` directory for its EFI component to discover
+    // and mount the real ESP into, exactly as it would on ostree.
+    let bind_boot_path = root_setup.physical_root_path.join("boot");
+
     if cfg!(target_arch = "s390x") {
         // TODO: Integrate s390x support into install_via_bootupd
         crate::bootloader::install_via_zipl(
             &root_setup.device_info.require_single_root()?,
             boot_uuid,
         )?;
-    } else if matches!(
-        postfetch.detected_bootloader,
-        Bootloader::Grub | Bootloader::GrubCC
-    ) {
-        let chroot_target = Utf8Path::from_path(mounted_root.root_path())
-            .ok_or_else(|| anyhow!("composefs tmpdir path is not valid UTF-8"))?;
-        // Like the ostree backend, bind the physical root's real /boot (an
-        // ordinary ext4/xfs/... directory, not yet populated with kernels at
-        // this point) into the chroot. This gives bootupd both a correct
-        // filesystem to inspect for `--write-uuid` (rather than the ESP,
-        // which is otherwise mounted at the composefs root's own /boot) and
-        // an empty `boot/efi` directory for its EFI component to discover
-        // and mount the real ESP into, exactly as it would on ostree.
-        let bind_boot_path = root_setup.physical_root_path.join("boot");
+    } else if bootupd_supports_bootloader_flag(Some(bootupd_chroot_target))? {
         crate::bootloader::install_via_bootupd(
             &root_setup.device_info,
             &root_setup.physical_root_path,
             &state.config_opts,
-            Some(chroot_target),
+            Some(bootupd_chroot_target),
             Some(bind_boot_path.as_path()),
+            Some(postfetch.detected_bootloader),
+        )?;
+    } else if matches!(
+        postfetch.detected_bootloader,
+        Bootloader::Grub | Bootloader::GrubCC
+    ) {
+        crate::bootloader::install_via_bootupd(
+            &root_setup.device_info,
+            &root_setup.physical_root_path,
+            &state.config_opts,
+            Some(bootupd_chroot_target),
+            Some(bind_boot_path.as_path()),
+            None,
         )?;
 
         // FIXME: Remove this hack once we have support in bootupd
