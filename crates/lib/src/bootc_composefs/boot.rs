@@ -64,7 +64,8 @@
 use std::cell::Cell;
 use std::fs::create_dir_all;
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::path::{Path, PathBuf};
+use std::os::fd::AsFd;
+use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -77,7 +78,7 @@ use cap_std_ext::{
 use clap::ValueEnum;
 use composefs::fs::read_file;
 use composefs::fsverity::{FsVerityHashValue, Sha512HashValue};
-use composefs::tree::RegularFile;
+use composefs::tree::{FileSystem, RegularFile};
 use composefs_boot::bootloader::{
     BootEntry as ComposefsBootEntry, EFI_ADDON_DIR_EXT, EFI_ADDON_FILE_EXT, EFI_EXT, PEType,
     UsrLibModulesVmlinuz, get_boot_resources,
@@ -102,7 +103,10 @@ use crate::composefs_consts::{TYPE1_BOOT_DIR_PREFIX, TYPE1_ENT_PATH, TYPE1_ENT_P
 use crate::parsers::bls_config::{BLSConfig, BLSConfigType, EFIKey};
 use crate::spec::BootloaderKind;
 use crate::task::Task;
-use crate::{bootc_composefs::repo::open_composefs_repo, store::Storage};
+use crate::{
+    bootc_composefs::repo::open_composefs_repo,
+    store::{ComposefsRepository, Storage},
+};
 use crate::{bootc_composefs::status::get_sorted_grub_uki_boot_entries, install::PostFetchState};
 use crate::{
     composefs_consts::{
@@ -142,6 +146,98 @@ pub(crate) struct UKIDigestMismatch {
     pub actual: String,
     pub expected: String,
     pub uki_name: Option<String>,
+}
+
+pub(crate) fn print_uki_dumpfile_diff(
+    mismatch: &UKIDigestMismatch,
+    repo: &ComposefsRepository,
+    fs: &FileSystem<Sha512HashValue>,
+) {
+    let dumpfile_name = mismatch
+        .uki_name
+        .as_ref()
+        .and_then(|x| x.strip_suffix(EFI_EXT).map(|x| format!("{x}.dump")));
+
+    let Some(dumpfile_name) = &dumpfile_name else {
+        return;
+    };
+
+    let Some(stored_content) = read_dumpfile_from_fs(fs, dumpfile_name, repo) else {
+        tracing::debug!("Dumpfile {dumpfile_name} not found in filesystem");
+        return;
+    };
+
+    let Ok(tempdir) = tempfile::tempdir() else {
+        tracing::debug!("Creating tempdir failed");
+        return;
+    };
+    let path = tempdir.path();
+    let Ok(tempdir_cap) = Dir::open_ambient_dir(path, ambient_authority()) else {
+        tracing::debug!("Opening tempdir failed");
+        return;
+    };
+
+    let Ok(mut stored_file) = tempdir_cap.create("stored") else {
+        tracing::debug!("Creating 'stored' tmpfile failed");
+        return;
+    };
+    if stored_file.write_all(&stored_content).is_err() {
+        tracing::debug!("Writing to tmpfile failed");
+        return;
+    }
+
+    let Ok(mut current_file) = tempdir_cap.create("current") else {
+        tracing::debug!("Creating 'current' tmpfile failed");
+        return;
+    };
+    if let Err(e) = dumpfile::write_dumpfile(&mut current_file, fs) {
+        tracing::debug!("Writing dumpfile failed: {e}");
+        return;
+    }
+
+    let mut cmd = std::process::Command::new("diff");
+    cmd.arg("--color=auto")
+        .arg(format!("{}/stored", path.display()))
+        .arg(format!("{}/current", path.display()));
+
+    // Redirect stdout to stderr since this is diagnostic output
+    if let Ok(fd) = std::io::stderr().as_fd().try_clone_to_owned() {
+        cmd.stdout(fd);
+    }
+
+    if let Err(e) = cmd.status() {
+        tracing::warn!("diffing dumpfiles failed with Err: {e:?}");
+    }
+}
+
+fn read_regular_file(
+    file: &RegularFile<Sha512HashValue>,
+    repo: &ComposefsRepository,
+) -> Option<Vec<u8>> {
+    match file {
+        RegularFile::External(object_id, _) | RegularFile::ExternalNoVerity(object_id, _) => {
+            repo.read_object(object_id).ok()
+        }
+        RegularFile::Inline(data) => Some(data.to_vec()),
+        RegularFile::Sparse(_) => None,
+    }
+}
+
+fn read_dumpfile_from_fs(
+    fs: &FileSystem<Sha512HashValue>,
+    dumpfile_name: &str,
+    repo: &ComposefsRepository,
+) -> Option<Vec<u8>> {
+    let root = fs.as_dir();
+    let dumpfile_os = std::ffi::OsStr::new(dumpfile_name);
+
+    if let Ok(boot_dir) = root.get_directory_ref("boot".as_ref()) {
+        if let Ok(file) = boot_dir.get_file(dumpfile_os) {
+            return read_regular_file(file, repo);
+        }
+    }
+
+    None
 }
 
 pub(crate) enum BootSetupType<'a> {
@@ -1618,64 +1714,7 @@ pub(crate) async fn setup_composefs_boot(
                 Ok(boot_digest) => boot_digest,
                 Err(e) => match e.downcast::<UKIDigestMismatch>() {
                     Ok(mismatch) => {
-                        // We expect the dumpfile to be named the same as the UKI
-                        // Ex. UKI      - 6.19.14-108.fc42.x86_64.efi
-                        //     Dumpfile - 6.19.14-108.fc42.x86_64.dump
-                        let dumpfile_name = mismatch
-                            .uki_name
-                            .as_ref()
-                            .and_then(|x| x.strip_suffix(EFI_EXT).map(|x| format!("{x}.dump")));
-
-                        let Some(dumpfile_name) = &dumpfile_name else {
-                            return Err(mismatch.into());
-                        };
-
-                        let dump = composefs_ctl::dump_files(
-                            &repo,
-                            &id.to_hex(),
-                            &vec![PathBuf::from(dumpfile_name)],
-                            true,
-                        );
-
-                        let Ok(dump) = dump else {
-                            tracing::debug!("Dumpfile not found for diff");
-                            return Err(mismatch.into());
-                        };
-
-                        // SAFETY: This output is always UTF-8 compatible as it's of the form
-                        // <file-name> <object-path>
-                        let text = std::str::from_utf8(&dump)?;
-                        let obj_path = text.split_whitespace().nth(1);
-
-                        let Some(obj_path) = obj_path else {
-                            return Err(mismatch.into());
-                        };
-
-                        let tempdir = tempfile::tempdir()?;
-                        let path = tempdir.path();
-                        let tempdir = Dir::open_ambient_dir(path, ambient_authority())?;
-
-                        let mut tmpfile = tempdir.create("current")?;
-                        dumpfile::write_dumpfile(&mut tmpfile, &fs).context("Writing dumpfile")?;
-
-                        let mut cmd = std::process::Command::new("diff");
-                        let out = cmd
-                            .arg("--color=auto")
-                            .arg(
-                                root_setup
-                                    .physical_root_path
-                                    .join("sysroot/composefs/objects")
-                                    .join(obj_path),
-                            )
-                            .arg(format!("{}/current", path.display()))
-                            .status();
-
-                        // Intentionally not short-circuiting here as the real error is digest
-                        // mismtach
-                        if let Err(e) = out {
-                            tracing::warn!("diffing dumpfiles failed with Err: {e:?}");
-                        };
-
+                        print_uki_dumpfile_diff(&mismatch, &repo, &fs);
                         return Err(mismatch.into());
                     }
                     Err(e) => Err(e)?,

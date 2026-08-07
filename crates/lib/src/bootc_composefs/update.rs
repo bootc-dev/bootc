@@ -17,7 +17,10 @@ use crate::bootc_composefs::gc::GCOpts;
 use crate::spec::BootloaderKind;
 use crate::{
     bootc_composefs::{
-        boot::{BootSetupType, BootType, setup_composefs_bls_boot, setup_composefs_uki_boot},
+        boot::{
+            BootSetupType, BootType, UKIDigestMismatch, print_uki_dumpfile_diff,
+            setup_composefs_bls_boot, setup_composefs_uki_boot,
+        },
         gc::composefs_gc,
         repo::pull_composefs_repo,
         service::start_finalize_stated_svc,
@@ -263,6 +266,7 @@ pub(crate) async fn do_upgrade(
         entries,
         id,
         manifest_digest,
+        fs: oci_fs,
     } = pull_composefs_repo(
         imgref,
         booted_cfs.cmdline.allow_missing_fsverity,
@@ -320,12 +324,25 @@ pub(crate) async fn do_upgrade(
             &mounted_fs,
         )?,
 
-        BootType::Uki => setup_composefs_uki_boot(
-            BootSetupType::Upgrade((storage, booted_cfs, &host)),
-            &repo,
-            &id,
-            entries,
-        )?,
+        BootType::Uki => {
+            let uki_setup_result = setup_composefs_uki_boot(
+                BootSetupType::Upgrade((storage, booted_cfs, &host)),
+                &repo,
+                &id,
+                entries,
+            );
+
+            match uki_setup_result {
+                Ok(boot_digest) => boot_digest,
+                Err(e) => match e.downcast::<UKIDigestMismatch>() {
+                    Ok(mismatch) => {
+                        print_uki_dumpfile_diff(&mismatch, &repo, &oci_fs);
+                        return Err(mismatch.into());
+                    }
+                    Err(e) => Err(e)?,
+                },
+            }
+        }
     };
 
     // `repo` holds its own flock(LOCK_SH) on /sysroot/composefs, taken out by
