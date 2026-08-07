@@ -185,6 +185,6 @@ check:
   test: nu booted/test-etc-merge-conflict.nu
 
 /test-48-composefs-uki-dumpfile:
-  summary: Test composefs garbage collection for UKI
+  summary: Test composefs UKI dumpfile diff print
   duration: 30m
   test: nu booted/test-composefs-uki-dumpfile.nu

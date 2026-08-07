@@ -1,13 +1,14 @@
 # number: 48
 # tmt:
-#   summary: Test composefs garbage collection for UKI
+#   summary: Test composefs UKI dumpfile diff print
 #   duration: 30m
 
 use std assert
 use tap.nu
 
-# FIXME(Johan-Liebert1): This job is disabled for now
-exit 0
+if not (tap is_composefs) {
+    exit 0
+}
 
 # bootc status
 let st = bootc status --json | from json
@@ -37,7 +38,7 @@ def first_boot [] {
 
     let result = do { bootc switch --transport containers-storage localhost/dump-diff } | complete
 
-    let actual_digest = bootc internals cfs oci compute-id $"@(podman images --no-trunc | grep dump-diff | awk '{print $3}')"
+    let actual_digest = bootc internals cfs oci compute-id --bootable $"@(podman images --no-trunc | grep dump-diff | awk '{print $3}')"
 
     assert ($result.exit_code != 0) "bootc switch should fail"
 

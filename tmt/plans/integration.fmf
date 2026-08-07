@@ -295,7 +295,7 @@ execute:
       - /tmt/tests/tests/test-46-etc-merge-conflict
 
 /plan-48-composefs-uki-dumpfile:
-  summary: Test composefs garbage collection for UKI
+  summary: Test composefs UKI dumpfile diff print
   discover:
     how: fmf
     test:
