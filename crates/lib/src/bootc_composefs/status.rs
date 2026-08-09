@@ -440,6 +440,55 @@ pub(crate) async fn get_container_manifest_and_config(
     Ok(ImgConfigManifest { manifest, config })
 }
 
+/// Directory where systemd-boot / BLS-compatible bootloaders expect Type 1
+/// boot entries. Its presence is used as a signal that a non-EFI system
+/// nevertheless uses the BLS layout (see [`classify_bootloader`]).
+const BLS_ENTRIES_DIR: &str = "/boot/loader/entries";
+
+/// Pure classifier for the bootloader kind, split from I/O for testability.
+///
+/// - When `EFI_LOADER_INFO` is present, its content selects between systemd-
+///   boot, GRUB Confidential Compute, and generic GRUB (existing behavior).
+/// - When there are no EFI variables to inspect (`SystemNotUEFI` /
+///   `MissingVar`), fall back to a filesystem probe: many non-EFI systems
+///   still lay down the BLS Type 1 entry layout at `/boot/loader/entries/`
+///   (Raspberry Pi with direct-kernel boot from Pi firmware, U-Boot with
+///   the extlinux/BLS loader, coreboot with a linux payload, various
+///   ARM/embedded boards). Treat those as BLS-compatible so `storage::new`
+///   picks the ESP mount as `boot_dir` rather than `/sysroot/boot/`. Only
+///   fall back to GRUB when neither an EFI system nor a BLS layout is
+///   present.
+/// - Other EFI read errors propagate.
+fn classify_bootloader(
+    efi_loader_info: Result<String, EfiError>,
+    bls_entries_dir_present: bool,
+) -> Result<Bootloader> {
+    match efi_loader_info {
+        Ok(loader) => {
+            let loader = loader.to_lowercase();
+            if loader.contains("systemd-boot") {
+                Ok(Bootloader::Systemd)
+            } else if loader.contains("grub cc") {
+                Ok(Bootloader::GrubCC)
+            } else {
+                Ok(Bootloader::Grub)
+            }
+        }
+        Err(EfiError::SystemNotUEFI) | Err(EfiError::MissingVar) => {
+            if bls_entries_dir_present {
+                tracing::debug!(
+                    "No EFI vars but {BLS_ENTRIES_DIR} is a directory; \
+                     treating bootloader as BLS-compatible (systemd-boot)"
+                );
+                Ok(Bootloader::Systemd)
+            } else {
+                Ok(Bootloader::Grub)
+            }
+        }
+        Err(e) => anyhow::bail!("Failed to read EfiLoaderInfo: {e:?}"),
+    }
+}
+
 #[context("Getting bootloader")]
 pub(crate) fn get_bootloader() -> Result<Bootloader> {
     static BOOTLOADER: OnceLock<Bootloader> = OnceLock::new();
@@ -448,28 +497,28 @@ pub(crate) fn get_bootloader() -> Result<Bootloader> {
         return Ok(*bootloader);
     }
 
-    let bootloader = match read_uefi_var(EFI_LOADER_INFO) {
-        Ok(loader) => {
-            if loader.to_lowercase().contains("systemd-boot") {
-                return Ok(Bootloader::Systemd);
-            }
+    let efi_result = read_uefi_var(EFI_LOADER_INFO);
+    // Non-EFI systems have a stable filesystem-based classification, so we
+    // can cache. EFI systems are left uncached to preserve the pre-existing
+    // behavior of re-reading `EFI_LOADER_INFO` on every call — some tests
+    // observe bootloader-info changes over the course of a run.
+    let non_efi = matches!(
+        &efi_result,
+        Err(EfiError::SystemNotUEFI) | Err(EfiError::MissingVar),
+    );
 
-            if loader.to_lowercase().contains("grub cc") {
-                return Ok(Bootloader::GrubCC);
-            }
+    let bootloader = classify_bootloader(
+        efi_result,
+        // The FS probe is only consulted in the non-EFI classification
+        // branch; skip the `stat(2)` on EFI systems.
+        non_efi && std::path::Path::new(BLS_ENTRIES_DIR).is_dir(),
+    )?;
 
-            return Ok(Bootloader::Grub);
-        }
+    if non_efi {
+        BOOTLOADER.get_or_init(|| bootloader);
+    }
 
-        Err(efi_error) => match efi_error {
-            EfiError::SystemNotUEFI | EfiError::MissingVar => Bootloader::Grub,
-            e => anyhow::bail!("Failed to read EfiLoaderInfo: {e:?}"),
-        },
-    };
-
-    BOOTLOADER.get_or_init(|| bootloader);
-
-    return Ok(bootloader);
+    Ok(bootloader)
 }
 
 /// Retrieves the OCI manifest and config for a deployment from the composefs repository.
@@ -1087,6 +1136,74 @@ mod tests {
         let v = ComposefsCmdline::new(&format!("?{}", DIGEST));
         assert!(v.allow_missing_fsverity);
         assert_eq!(v.digest.as_ref(), DIGEST);
+    }
+
+    #[test]
+    fn classify_bootloader_cases() {
+        struct Case {
+            desc: &'static str,
+            efi: Result<String, EfiError>,
+            bls: bool,
+            expected: Bootloader,
+        }
+        let cases = [
+            Case {
+                desc: "UEFI, EFI_LOADER_INFO advertises systemd-boot",
+                efi: Ok("systemd-boot 261.2".into()),
+                bls: false,
+                expected: Bootloader::Systemd,
+            },
+            Case {
+                desc: "UEFI, EFI_LOADER_INFO advertises GRUB CC",
+                efi: Ok("GRUB CC 2.12".into()),
+                bls: false,
+                expected: Bootloader::GrubCC,
+            },
+            Case {
+                desc: "UEFI, EFI_LOADER_INFO advertises unknown; default GRUB",
+                efi: Ok("something else 1.0".into()),
+                bls: false,
+                expected: Bootloader::Grub,
+            },
+            Case {
+                desc: "Non-EFI + BLS layout present: BLS (regression fix)",
+                efi: Err(EfiError::SystemNotUEFI),
+                bls: true,
+                expected: Bootloader::Systemd,
+            },
+            Case {
+                desc: "Non-EFI + no BLS layout: fall back to GRUB",
+                efi: Err(EfiError::SystemNotUEFI),
+                bls: false,
+                expected: Bootloader::Grub,
+            },
+            Case {
+                desc: "EFI mounted but EFI_LOADER_INFO missing, BLS present",
+                efi: Err(EfiError::MissingVar),
+                bls: true,
+                expected: Bootloader::Systemd,
+            },
+            Case {
+                desc: "EFI mounted but EFI_LOADER_INFO missing, no BLS: GRUB",
+                efi: Err(EfiError::MissingVar),
+                bls: false,
+                expected: Bootloader::Grub,
+            },
+        ];
+        for case in cases {
+            let got = classify_bootloader(case.efi, case.bls)
+                .unwrap_or_else(|e| panic!("{}: {e}", case.desc));
+            assert_eq!(got, case.expected, "{}", case.desc);
+        }
+    }
+
+    #[test]
+    fn classify_bootloader_propagates_other_efi_errors() {
+        let result = classify_bootloader(
+            Err(EfiError::InvalidData("test-only synthetic error")),
+            false,
+        );
+        assert!(result.is_err(), "InvalidData should propagate as an error");
     }
 
     #[test]
