@@ -12,6 +12,7 @@ use fn_error_context::context;
 use ocidir::cap_std::ambient_authority;
 use ostree_ext::container::ManifestDiff;
 
+use crate::bootc_composefs::boot::save_boot_dir_erofs;
 use crate::bootc_composefs::finalize::get_etc_diff;
 use crate::bootc_composefs::gc::GCOpts;
 use crate::spec::BootloaderKind;
@@ -263,6 +264,7 @@ pub(crate) async fn do_upgrade(
         entries,
         id,
         manifest_digest,
+        fs,
     } = pull_composefs_repo(
         imgref,
         booted_cfs.cmdline.allow_missing_fsverity,
@@ -310,6 +312,11 @@ pub(crate) async fn do_upgrade(
     }
 
     let boot_type = BootType::from(entry);
+
+    // Save /boot for UKI images
+    if boot_type == BootType::Uki {
+        save_boot_dir_erofs(&repo, &fs, &id)?;
+    }
 
     let boot_digest = match boot_type {
         BootType::Bls => setup_composefs_bls_boot(

@@ -36,6 +36,7 @@
 //!   backend.
 
 use fn_error_context::context;
+use ostree_ext::composefs::tree::FileSystem;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -188,6 +189,8 @@ pub(crate) struct PullRepoResult {
     pub(crate) id: Sha512HashValue,
     /// The OCI manifest content digest (e.g. "sha256:abc...")
     pub(crate) manifest_digest: String,
+    /// The untransformed OCI filesystem (still has /boot, /sysroot, etc.)
+    pub(crate) fs: FileSystem<Sha512HashValue>,
 }
 
 /// Pull an image directly into the composefs repository via skopeo.
@@ -424,6 +427,7 @@ pub(crate) async fn pull_composefs_repo(
         entries,
         id,
         manifest_digest: pull_result.manifest_digest.to_string(),
+        fs,
     })
 }
 

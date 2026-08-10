@@ -62,6 +62,7 @@
 //! 2. **Secondary**: Currently booted deployment (rollback option)
 
 use std::cell::Cell;
+use std::collections::HashMap;
 use std::fs::create_dir_all;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -91,6 +92,10 @@ use composefs_ctl::composefs_oci;
 use fn_error_context::context;
 use linux_kernel_cmdline::utf8::{Cmdline, Parameter};
 use ostree_ext::composefs::dumpfile;
+use ostree_ext::composefs::erofs::format::FormatVersion;
+use ostree_ext::composefs::erofs::writer::{ValidatedFileSystem, mkfs_erofs_versioned};
+use ostree_ext::composefs::generic_tree::{Directory, FileSystem, Inode, Leaf, LeafId};
+use ostree_ext::composefs::repository::Repository;
 use rustix::{mount::MountFlags, path::Arg};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -351,6 +356,11 @@ pub(crate) fn get_uki_addon_dir_name(depl_verity: &str) -> String {
 /// Returns the name of a UKI Addon given verity digest
 pub(crate) fn get_uki_addon_file_name(depl_verity: &str) -> String {
     format!("{UKI_NAME_PREFIX}{depl_verity}{EFI_ADDON_FILE_EXT}")
+}
+
+/// Returns the name of the saved /boot directory EROFS
+pub(crate) fn get_boot_erofs_name(depl_verity: &str) -> String {
+    format!("{depl_verity}.boot")
 }
 
 /// Compute SHA256Sum of VMlinuz + Initrd
@@ -1450,6 +1460,66 @@ fn get_secureboot_keys(fs: &Dir, p: &str) -> Result<Option<SecurebootKeys>> {
     }));
 }
 
+fn copy_inode(
+    inode: &Inode<RegularFile<Sha512HashValue>>,
+    src_leaves: &[Leaf<RegularFile<Sha512HashValue>>],
+    dst: &mut FileSystem<RegularFile<Sha512HashValue>>,
+    id_map: &mut HashMap<LeafId, LeafId>,
+) -> Inode<RegularFile<Sha512HashValue>> {
+    match inode {
+        Inode::Directory(dir) => {
+            let mut new_dir = Directory::new(dir.stat.clone());
+            for (name, child) in dir.entries() {
+                let new_child = copy_inode(child, src_leaves, dst, id_map);
+                new_dir.insert(name, new_child);
+            }
+            Inode::Directory(Box::new(new_dir))
+        }
+        Inode::Leaf(id, _) => {
+            let new_id = *id_map.entry(*id).or_insert_with(|| {
+                let leaf = &src_leaves[id.0];
+                dst.push_leaf(leaf.stat.clone(), leaf.content.clone())
+            });
+            Inode::leaf(new_id)
+        }
+    }
+}
+
+/// Accepts a filesystem, find the `/boot` directory, clones the `/boot` directory
+/// into a new filesystem, validates the filesystem then returns the raw bytes for
+/// the EROFS image corresponding to the newly created filesystem
+#[context("Saving EROFS for /boot")]
+pub(crate) fn save_boot_dir_erofs(
+    repo: &Repository<Sha512HashValue>,
+    fs: &FileSystem<RegularFile<Sha512HashValue>>,
+    depl_id: &Sha512HashValue,
+) -> Result<()> {
+    for (name, inode) in fs.root.entries() {
+        if name.as_str() != Ok("boot") {
+            continue;
+        }
+
+        let Inode::Directory(..) = inode else {
+            anyhow::bail!("/boot is a file");
+        };
+
+        let mut new_fs: FileSystem<RegularFile<Sha512HashValue>> =
+            FileSystem::new(fs.root.stat.clone());
+        let mut id_map = HashMap::new();
+
+        let new_inode = copy_inode(inode, &fs.leaves, &mut new_fs, &mut id_map);
+        new_fs.root.insert(name, new_inode);
+
+        let validated_boot = ValidatedFileSystem::new(new_fs)?;
+        let erofs_bytes = mkfs_erofs_versioned(&validated_boot, FormatVersion::V1);
+        // NOTE: <depl_id>.boot is actually saved in refs
+        // The actual EROFS is still in composefs/images
+        repo.write_image(Some(&get_boot_erofs_name(&depl_id.to_hex())), &erofs_bytes)?;
+    }
+
+    Ok(())
+}
+
 #[context("Setting up composefs boot")]
 pub(crate) async fn setup_composefs_boot(
     root_setup: &RootSetup,
@@ -1597,6 +1667,11 @@ pub(crate) async fn setup_composefs_boot(
             "BUG: Arc<Repository> still has other references after boot image generation"
         )
     })?;
+
+    // Save /boot for UKI images
+    if boot_type == BootType::Uki {
+        save_boot_dir_erofs(&repo, &fs, &id)?;
+    }
 
     let boot_digest = match boot_type {
         BootType::Bls => setup_composefs_bls_boot(
