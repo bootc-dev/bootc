@@ -12,7 +12,12 @@ use composefs_boot::bootloader::EFI_EXT;
 use composefs_ctl::composefs;
 use composefs_ctl::composefs_boot;
 use composefs_ctl::composefs_oci;
+use ostree_ext::composefs::ImageNotFound;
+use rustix::fs::AtFlags;
+use rustix::fs::readlinkat;
+use rustix::fs::{statat, unlinkat};
 
+use crate::bootc_composefs::boot::get_boot_erofs_name;
 use crate::{
     bootc_composefs::{
         boot::{BOOTC_UKI_DIR, BootType, get_type1_dir_name, get_uki_addon_dir_name, get_uki_name},
@@ -346,7 +351,7 @@ pub(crate) async fn composefs_gc(
 
     // Collect the set of manifest digests referenced by live deployments,
     // and track EROFS image verities as fallback additional_roots for
-    // deployments that predate the manifest→image link.
+    // deployments that predate the manifest -> image link.
     let mut live_manifest_digests: Vec<composefs_oci::OciDigest> = Vec::new();
     let mut additional_roots = Vec::new();
     // Container image names for containers-storage pruning.
@@ -366,7 +371,7 @@ pub(crate) async fn composefs_gc(
         }
 
         // Keep the EROFS image as an additional root until all deployments
-        // have manifest→image refs. Once a deployment is pulled with the
+        // have manifest -> image refs. Once a deployment is pulled with the
         // new code, its EROFS image is reachable from the manifest and
         // this entry becomes redundant (but harmless).
         additional_roots.push(verity.clone());
@@ -492,11 +497,90 @@ pub(crate) async fn composefs_gc(
     // first action. Callers must ensure no other `Repository` handle on that
     // same underlying file is still alive when this runs, or it will deadlock
     // (see update.rs's do_upgrade() for an example of getting this wrong).
-    let gc_result = if gc_opts.dry_run {
+    let mut gc_result = if gc_opts.dry_run {
         booted_cfs.repo.gc_dry_run(&additional_roots)?
     } else {
         booted_cfs.repo.gc(&additional_roots)?
     };
+
+    // Now GC the UKI/UKI Addons from `.boot` EROFS if we have them
+    // These won't be GC'd by the above `repo.gc` as the EROFS have
+    // `/boot` masked
+    for verity in all_orphans {
+        let boot_img_name = get_boot_erofs_name(verity);
+
+        let objects = match booted_cfs.repo.objects_for_image(&boot_img_name) {
+            Ok(objects) => objects,
+            Err(e) => match e.downcast::<ImageNotFound>() {
+                Ok(_) => continue,
+                Err(e) => Err(e)?,
+            },
+        };
+
+        let objects_dir = booted_cfs
+            .repo
+            .objects_dir()
+            .context("Opening objects dir")?;
+
+        for object_sha in objects {
+            let path = object_sha.to_object_pathname();
+
+            tracing::debug!(
+                "{}: objects/{path}",
+                if gc_opts.dry_run {
+                    "would remove"
+                } else {
+                    "removing"
+                },
+            );
+
+            if gc_opts.dry_run {
+                continue;
+            }
+
+            // Get file size before removing
+            if let Ok(stat) = statat(&objects_dir, &path, AtFlags::empty()) {
+                gc_result.objects_bytes += stat.st_size as u64;
+            }
+
+            gc_result.objects_removed += 1;
+
+            unlinkat(&objects_dir, &path, AtFlags::empty())
+                .with_context(|| format!("Unlinking object {path}"))?;
+        }
+
+        let boot_img_path = format!("images/refs/{boot_img_name}");
+
+        // Delete the image now
+        let repo_fd = booted_cfs.repo.repo_fd();
+        let linked_img =
+            readlinkat(repo_fd, &boot_img_path, &[]).context("Reading boot image link")?;
+        let linked_img = linked_img.to_str().context("Converting link to str")?;
+
+        tracing::debug!("Boot image: {boot_img_name} -> {linked_img:?}");
+
+        // The link is realtive, we need the image name itself
+        let Some(linked_img) = linked_img.rsplit("/").next() else {
+            anyhow::bail!("{linked_img} is not a proper relative symlink to an image");
+        };
+
+        if gc_opts.dry_run {
+            continue;
+        }
+
+        let img_path = format!("images/{linked_img}");
+
+        if let Ok(stat) = statat(booted_cfs.repo.repo_fd(), &img_path, AtFlags::empty()) {
+            gc_result.objects_bytes += stat.st_size as u64;
+        }
+
+        unlinkat(booted_cfs.repo.repo_fd(), &img_path, AtFlags::empty())
+            .context("Removing boot image")?;
+        gc_result.images_pruned += 1;
+
+        unlinkat(booted_cfs.repo.repo_fd(), &boot_img_path, AtFlags::empty())
+            .context("Removing boot image symlink")?;
+    }
 
     Ok(gc_result)
 }
