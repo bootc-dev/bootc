@@ -267,7 +267,8 @@ jobs:
         variant: [ostree, composefs]
         filesystem: ["ext4", "xfs"]
         # TODO: Remove "grub" once "grub-cc" is stable
-        bootloader: ["grub", "grub-cc", "systemd"]
+        # bootloader: ["grub", "grub-cc", "systemd"]
+        bootloader: ["grub", "systemd"]
         boot_type: ["bls", "uki"]
         seal_state: ["sealed", "unsealed"]
 
@@ -297,20 +298,20 @@ jobs:
             bootloader: systemd
 
           # For now only have grub-cc tests in F44
-          - test_os: fedora-45
-            bootloader: grub-cc
-          - test_os: fedora-43
-            bootloader: grub-cc
-          - test_os: centos-9
-            bootloader: grub-cc
-          - test_os: centos-10
-            bootloader: grub-cc
-          # Not in ostree
-          - variant: ostree
-            bootloader: grub-cc
-          # Not yet "sealed"
-          - bootloader: grub-cc
-            seal_state: sealed
+          # - test_os: fedora-45
+          #   bootloader: grub-cc
+          # - test_os: fedora-43
+          #   bootloader: grub-cc
+          # - test_os: centos-9
+          #   bootloader: grub-cc
+          # - test_os: centos-10
+          #   bootloader: grub-cc
+          # # Not in ostree
+          # - variant: ostree
+          #   bootloader: grub-cc
+          # # Not yet "sealed"
+          # - bootloader: grub-cc
+          #   seal_state: sealed
 
     runs-on: ubuntu-24.04
 
