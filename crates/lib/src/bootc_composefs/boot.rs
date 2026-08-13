@@ -976,7 +976,7 @@ fn write_pe_to_esp(
 
     let pe_name = match pe_type {
         PEType::Uki => &get_uki_name(&uki_id.to_hex()),
-        PEType::UkiAddon => file_path
+        PEType::UkiAddon | PEType::GlobalUkiAddon => file_path
             .components()
             .last()
             .ok_or_else(|| anyhow::anyhow!("Failed to get UKI Addon file name"))?
@@ -1545,21 +1545,28 @@ pub(crate) async fn setup_composefs_boot(
     let repo = Arc::new(repo);
 
     // Generate the bootable EROFS image (idempotent).
-    let id = composefs_oci::generate_boot_image(
+    let (id, mut fs) = composefs_oci::generate_boot_image_get_fs(
         &repo,
         &pull_result.manifest_digest,
         &Default::default(),
     )
     .context("Generating bootable EROFS image")?;
 
-    // Reconstruct the OCI filesystem to discover boot entries (kernel, initramfs, etc.).
-    let fs = composefs_oci::image::create_filesystem(
-        &*repo,
-        &pull_result.config_digest,
-        None,
-        &Default::default(),
-    )
-    .context("Creating composefs filesystem for boot entry discovery")?;
+    if fs.is_none() {
+        // Reconstruct the OCI filesystem to discover boot entries (kernel, initramfs, etc.).
+        fs = Some(
+            composefs_oci::image::create_filesystem(
+                &*repo,
+                &pull_result.config_digest,
+                Some(&pull_result.config_verity),
+                &Default::default(),
+            )
+            .context("Creating composefs filesystem for boot entry discovery")?,
+        );
+    }
+
+    let fs = fs.ok_or_else(|| anyhow::anyhow!("Failed to get composefs filesystem"))?;
+
     let entries =
         get_boot_resources(&fs, &*repo).context("Extracting boot entries from OCI image")?;
 
