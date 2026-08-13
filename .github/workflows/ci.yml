@@ -407,6 +407,10 @@ jobs:
       matrix:
         test_os: ${{ fromJson(needs.compute-ci-level.outputs.upgrade_os_matrix) }}
         variant: [ostree, composefs]
+        # TODO: Re-enable this after 1.16.8 is released
+        exclude:
+          - test_os: fedora-44
+            variant: composefs
 
     runs-on: ubuntu-24.04
 
