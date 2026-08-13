@@ -38,12 +38,30 @@ def first_boot [] {
 
     bootc switch --transport containers-storage localhost/bootc-first
 
+    # Make sure we have the .boot EROFS
+    let st = bootc status --json | from json
+    let staged_verity = $st.status.staged.composefs.verity
+    let booted_verity = $st.status.booted.composefs.verity
+
+    assert ($"/sysroot/composefs/images/refs/($staged_verity).boot" | path exists)
+    assert ($"/sysroot/composefs/images/refs/($booted_verity).boot" | path exists)
+
     # Find the large file's verity and save it
     let new_st = bootc status --json | from json
     let path = bootc internals cfs dump-files $new_st.status.staged.composefs.verity /usr/share/large-test-file --backing-path-only | awk '{print $2}'
     echo $"/sysroot/composefs/objects/($path)" | save /var/large-file-marker-objpath
 
+    mkdir /var/tmp/efi
+    mount /dev/disk/by-partlabel/EFI-SYSTEM /var/tmp/efi
+
+    # Find the UKI in the objects directory
+    # Intentionally not using the dump-files API here
+    # min/max depth = 1 to not include addons (for now)
+    let uki_sha = sha512sum $"/var/tmp/efi/EFI/Linux/bootc/($uki_prefix)($st.status.booted.composefs.verity).efi" | awk '{print $1}'
+    let uki_in_objs = ^find /sysroot/composefs/objects -type f -exec sha512sum {} + | grep ($uki_sha) | awk '{print $2}'
+
     echo $st.status.booted.composefs.verity | save /var/boot0-verity
+    echo $uki_in_objs | save /var/boot0-uki-in-objs
 
     tmt-reboot
 }
@@ -99,6 +117,11 @@ def third_boot [] {
     echo $containerfile | podman build -t localhost/bootc-third . -f -
 
     bootc switch --transport containers-storage localhost/bootc-third
+
+    # Make sure the .boot image is removed
+    assert (not ($"/sysroot/composefs/images/refs/(cat /var/boot0-verity).boot" | path exists))
+    # Now also make sure the UKI doesn't exist in the objects directory either
+    assert (not (cat /var/boot0-uki-in-objs | path exists))
 
     tmt-reboot
 }
