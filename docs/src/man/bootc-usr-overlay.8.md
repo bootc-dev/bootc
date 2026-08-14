@@ -19,6 +19,23 @@ A common pattern is wanting to use tracing/debugging tools, such as
 such as `apt` or `dnf` can apply changes into this transient overlay
 that will be discarded on reboot.
 
+## STORAGE AND MEMORY REQUIREMENTS
+
+The transient overlay is backed by a `tmpfs` filesystem, which means all
+data written to the overlay (i.e. installed packages) is stored in
+**system memory (RAM)**, not on persistent disk.  By default the kernel
+sizes this `tmpfs` at 50% of physical RAM.
+
+On systems with limited memory, installing large packages into the
+overlay can exhaust available RAM and result in `ENOSPC` ("No space left
+on device") errors.  There is currently no pre-flight space check and no
+early warning before the `tmpfs` is full.
+
+Keep this in mind when using transient overlays in memory-constrained
+environments such as CI runners or small virtual machines.  If the
+combined size of the packages being installed approaches half of the
+system's RAM, consider increasing the VM's memory allocation instead.
+
 ## /ETC AND /VAR
 
 However, this command has no effect on `/etc` and `/var` - changes
