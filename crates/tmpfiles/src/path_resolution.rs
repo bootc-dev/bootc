@@ -110,10 +110,12 @@ impl PathResolver {
             return Ok(Some(PathIdentity::new(self.root_dev, self.root_ino, leaf)));
         }
 
-        let Some(parent_file) = self.root_dir.open_optional(parent).map_err(to_err)? else {
-            // Some component of the parent doesn't exist: see the docs above
-            // on why `None` is correct here.
-            return Ok(None);
+        let parent_file = match self.root_dir.open_optional(parent) {
+            Ok(Some(f)) => f,
+            Ok(None) => return Ok(None),
+            // Tolerate inaccessible paths (EACCES in rootless containers).
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => return Ok(None),
+            Err(e) => return Err(to_err(e)),
         };
         let parent_meta = parent_file.metadata().map_err(to_err)?;
         Ok(Some(PathIdentity::new(
@@ -126,6 +128,8 @@ impl PathResolver {
 
 #[cfg(test)]
 mod tests {
+    use cap_std::fs::PermissionsExt as _;
+
     use super::*;
 
     fn newroot() -> Result<cap_std_ext::cap_tempfile::TempDir> {
@@ -264,6 +268,23 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err, Error::PathIo { .. }), "{err:?}");
 
+        Ok(())
+    }
+
+    #[test]
+    fn test_resolve_parent_identity_permission_denied() -> anyhow::Result<()> {
+        if rustix::process::getuid().is_root() {
+            return Ok(());
+        }
+        let rootfs = &newroot()?;
+        rootfs.create_dir("noaccess")?;
+        rootfs.set_permissions("noaccess", cap_std::fs::Permissions::from_mode(0o000))?;
+        let resolver = PathResolver::new(rootfs)?;
+        let resolved = resolver.resolve_parent_identity(Path::new("/noaccess/child/leaf"))?;
+        assert_eq!(resolved, None, "EACCES parent should resolve to None");
+
+        // Restore permissions so the temp dir can be cleaned up.
+        rootfs.set_permissions("noaccess", cap_std::fs::Permissions::from_mode(0o755))?;
         Ok(())
     }
 
