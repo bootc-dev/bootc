@@ -445,6 +445,14 @@ pub(crate) async fn get_container_manifest_and_config(
 /// nevertheless uses the BLS layout (see [`classify_bootloader`]).
 const BLS_ENTRIES_DIR: &str = "/boot/loader/entries";
 
+/// Directories where GRUB keeps its own configuration and modules. Their
+/// presence means GRUB owns the boot flow even if BLS Type 1 entries also
+/// exist, because GRUB can consume those entries itself via the `blscfg`
+/// module — Fedora and RHEL enable exactly that with
+/// `GRUB_ENABLE_BLSCFG=true`. `/boot/grub2` is the Fedora/RHEL path,
+/// `/boot/grub` the Debian/Ubuntu one.
+const GRUB_DIRS: [&str; 2] = ["/boot/grub2", "/boot/grub"];
+
 /// Pure classifier for the bootloader kind, split from I/O for testability.
 ///
 /// - When `EFI_LOADER_INFO` is present, its content selects between systemd-
@@ -458,10 +466,18 @@ const BLS_ENTRIES_DIR: &str = "/boot/loader/entries";
 ///   picks the ESP mount as `boot_dir` rather than `/sysroot/boot/`. Only
 ///   fall back to GRUB when neither an EFI system nor a BLS layout is
 ///   present.
+///
+///   A BLS entries directory alone is not sufficient evidence, because GRUB
+///   with `blscfg` reads the same directory. So GRUB's own directory wins
+///   when both are present: a legacy-BIOS Fedora/RHEL install has
+///   `/boot/grub2/` *and* `/boot/loader/entries/`, and is unambiguously
+///   GRUB. Only a BLS layout with no GRUB directory implies a BLS-native
+///   bootloader.
 /// - Other EFI read errors propagate.
 fn classify_bootloader(
     efi_loader_info: Result<String, EfiError>,
     bls_entries_dir_present: bool,
+    grub_dir_present: bool,
 ) -> Result<Bootloader> {
     match efi_loader_info {
         Ok(loader) => {
@@ -475,10 +491,18 @@ fn classify_bootloader(
             }
         }
         Err(EfiError::SystemNotUEFI) | Err(EfiError::MissingVar) => {
-            if bls_entries_dir_present {
+            if grub_dir_present {
                 tracing::debug!(
-                    "No EFI vars but {BLS_ENTRIES_DIR} is a directory; \
-                     treating bootloader as BLS-compatible (systemd-boot)"
+                    "No EFI vars and a GRUB directory is present; treating \
+                     bootloader as GRUB even if BLS entries also exist \
+                     (GRUB reads them via blscfg)"
+                );
+                Ok(Bootloader::Grub)
+            } else if bls_entries_dir_present {
+                tracing::debug!(
+                    "No EFI vars, no GRUB directory, and {BLS_ENTRIES_DIR} is \
+                     a directory; treating bootloader as BLS-compatible \
+                     (systemd-boot)"
                 );
                 Ok(Bootloader::Systemd)
             } else {
@@ -509,9 +533,10 @@ pub(crate) fn get_bootloader() -> Result<Bootloader> {
 
     let bootloader = classify_bootloader(
         efi_result,
-        // The FS probe is only consulted in the non-EFI classification
-        // branch; skip the `stat(2)` on EFI systems.
+        // The FS probes are only consulted in the non-EFI classification
+        // branch; skip the `stat(2)`s on EFI systems.
         non_efi && std::path::Path::new(BLS_ENTRIES_DIR).is_dir(),
+        non_efi && GRUB_DIRS.iter().any(|d| std::path::Path::new(d).is_dir()),
     )?;
 
     if non_efi {
@@ -1144,6 +1169,7 @@ mod tests {
             desc: &'static str,
             efi: Result<String, EfiError>,
             bls: bool,
+            grub_dir: bool,
             expected: Bootloader,
         }
         let cases = [
@@ -1151,47 +1177,96 @@ mod tests {
                 desc: "UEFI, EFI_LOADER_INFO advertises systemd-boot",
                 efi: Ok("systemd-boot 261.2".into()),
                 bls: false,
+                grub_dir: false,
                 expected: Bootloader::Systemd,
             },
             Case {
                 desc: "UEFI, EFI_LOADER_INFO advertises GRUB CC",
                 efi: Ok("GRUB CC 2.12".into()),
                 bls: false,
+                grub_dir: false,
                 expected: Bootloader::GrubCC,
             },
             Case {
                 desc: "UEFI, EFI_LOADER_INFO advertises unknown; default GRUB",
                 efi: Ok("something else 1.0".into()),
                 bls: false,
+                grub_dir: false,
                 expected: Bootloader::Grub,
             },
             Case {
                 desc: "Non-EFI + BLS layout present: BLS (regression fix)",
                 efi: Err(EfiError::SystemNotUEFI),
                 bls: true,
+                grub_dir: false,
                 expected: Bootloader::Systemd,
             },
             Case {
                 desc: "Non-EFI + no BLS layout: fall back to GRUB",
                 efi: Err(EfiError::SystemNotUEFI),
                 bls: false,
+                grub_dir: false,
                 expected: Bootloader::Grub,
             },
             Case {
                 desc: "EFI mounted but EFI_LOADER_INFO missing, BLS present",
                 efi: Err(EfiError::MissingVar),
                 bls: true,
+                grub_dir: false,
                 expected: Bootloader::Systemd,
             },
             Case {
                 desc: "EFI mounted but EFI_LOADER_INFO missing, no BLS: GRUB",
                 efi: Err(EfiError::MissingVar),
                 bls: false,
+                grub_dir: false,
                 expected: Bootloader::Grub,
+            },
+            // A legacy-BIOS Fedora/RHEL install with GRUB_ENABLE_BLSCFG=true
+            // has both directories and is unambiguously GRUB. Without the
+            // GRUB probe this case returned Systemd, which is the
+            // misclassification raised in review on #2376.
+            Case {
+                desc: "Non-EFI + BLS layout + GRUB dir: GRUB wins (blscfg)",
+                efi: Err(EfiError::SystemNotUEFI),
+                bls: true,
+                grub_dir: true,
+                expected: Bootloader::Grub,
+            },
+            Case {
+                desc: "Non-EFI + GRUB dir, no BLS: GRUB",
+                efi: Err(EfiError::SystemNotUEFI),
+                bls: false,
+                grub_dir: true,
+                expected: Bootloader::Grub,
+            },
+            Case {
+                desc: "EFI_LOADER_INFO missing + BLS + GRUB dir: GRUB wins",
+                efi: Err(EfiError::MissingVar),
+                bls: true,
+                grub_dir: true,
+                expected: Bootloader::Grub,
+            },
+            // The regression this PR fixes must survive the new probe: a
+            // BLS layout with no GRUB directory is still BLS-native.
+            Case {
+                desc: "Non-EFI + BLS, no GRUB dir: still BLS (Pi 5, U-Boot)",
+                efi: Err(EfiError::SystemNotUEFI),
+                bls: true,
+                grub_dir: false,
+                expected: Bootloader::Systemd,
+            },
+            // UEFI classification must ignore both probes entirely.
+            Case {
+                desc: "UEFI systemd-boot with a stray GRUB dir: still systemd",
+                efi: Ok("systemd-boot 261.2".into()),
+                bls: true,
+                grub_dir: true,
+                expected: Bootloader::Systemd,
             },
         ];
         for case in cases {
-            let got = classify_bootloader(case.efi, case.bls)
+            let got = classify_bootloader(case.efi, case.bls, case.grub_dir)
                 .unwrap_or_else(|e| panic!("{}: {e}", case.desc));
             assert_eq!(got, case.expected, "{}", case.desc);
         }
@@ -1201,6 +1276,7 @@ mod tests {
     fn classify_bootloader_propagates_other_efi_errors() {
         let result = classify_bootloader(
             Err(EfiError::InvalidData("test-only synthetic error")),
+            false,
             false,
         );
         assert!(result.is_err(), "InvalidData should propagate as an error");
