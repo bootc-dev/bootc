@@ -61,7 +61,7 @@ xshell = { workspace = true, optional = true }
 
 # Crate-specific dependencies
 anstyle = "1.0.6"
-comfy-table = "7.1.1"
+comfy-table = "8.0.0"
 liboverdrop = "0.1.0"
 unicode-width = "0.2"
 libsystemd = "0.7"
