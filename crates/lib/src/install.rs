@@ -144,6 +144,7 @@ mod aleph;
 pub(crate) mod baseline;
 pub(crate) mod completion;
 pub(crate) mod config;
+pub(crate) mod migrate;
 mod osbuild;
 pub(crate) mod osconfig;
 
@@ -549,6 +550,52 @@ pub(crate) struct InstallToExistingRootOpts {
 
     #[clap(flatten)]
     pub(crate) composefs_opts: InstallComposefsOpts,
+
+    /// Preserve the running system's `/var` data into the new bootc deployment.
+    ///
+    /// After a plain `bootc install to-existing-root`, the new deployment's
+    /// `/var` is initially empty (ostree bind-mounts it from a fresh directory).
+    /// Passing this flag performs the following additional steps **after** the
+    /// core install completes:
+    ///
+    ///   1. `/var` content is copied into the new deployment:
+    ///      - **Reflink copy** (btrfs / XFS): `cp --reflink=always` performs an
+    ///        instantaneous copy-on-write clone — no extra disk space consumed.
+    ///      - **Full copy** (filesystems without reflinks): data is copied into
+    ///        the deployment's writable `/var` directory.
+    ///   2. Paths listed with `--preserve-var-skip` (or in install configuration)
+    ///      are excluded. Rollback preservation is intentionally independent.
+    ///
+    /// The running system's `root_path` must be mounted (e.g. `-v /:/target`).
+    #[clap(long)]
+    pub(crate) preserve_var: bool,
+
+    /// Relative paths below `/var` to leave out while preserving `/var`.
+    #[clap(long = "preserve-var-skip", value_name = "PATH")]
+    pub(crate) preserve_var_skip: Vec<String>,
+
+    /// Merge the running system's `/etc` customisations into the new deployment.
+    ///
+    /// Plain `bootc install to-existing-root` populates the new deployment's
+    /// `/etc` directly from the image.  The running admin's customisations
+    /// (NIC profiles, SSH host keys, secrets, custom CA certificates, etc.)
+    /// remain at `<root>/etc` but are not applied to the new deployment.
+    ///
+    /// Passing this flag runs a 3-way merge using the `etc-merge` algorithm
+    /// after the core install completes:
+    ///
+    ///   A (pristine baseline) = `<deploy>/usr/etc`  — image's shipped defaults
+    ///   B (current live)      = `<root>/etc`        — running system's `/etc`
+    ///   C (new deployment)    = `<deploy>/etc`      — deploy target
+    ///
+    /// The diff A→B captures every file the admin changed relative to the image
+    /// defaults and applies those changes onto C.  This is the same algorithm
+    /// bootc uses during `bootc upgrade`, applied at install time rather than
+    /// only at upgrade time.
+    ///
+    /// The running system's `root_path` must be mounted (e.g. `-v /:/target`).
+    #[clap(long)]
+    pub(crate) merge_etc: bool,
 }
 
 #[derive(Debug, clap::Parser, PartialEq, Eq)]
@@ -1843,7 +1890,7 @@ async fn install_with_sysroot(
     boot_uuid: &str,
     bound_images: BoundImages,
     has_ostree: bool,
-) -> Result<()> {
+) -> Result<camino::Utf8PathBuf> {
     let ostree = storage.get_ostree()?;
     let c_storage = storage.get_ensure_imgstore()?;
 
@@ -1910,7 +1957,7 @@ async fn install_with_sysroot(
         }
     }
 
-    Ok(())
+    Ok(camino::Utf8PathBuf::from(deployment_path.to_string()))
 }
 
 enum BoundImages {
@@ -1949,7 +1996,11 @@ impl BoundImages {
     }
 }
 
-async fn ostree_install(state: &State, rootfs: &RootSetup, cleanup: Cleanup) -> Result<()> {
+async fn ostree_install(
+    state: &State,
+    rootfs: &RootSetup,
+    cleanup: Cleanup,
+) -> Result<camino::Utf8PathBuf> {
     // We verify this upfront because it's currently required by bootupd
     let boot_uuid = rootfs
         .get_boot_uuid()?
@@ -1961,10 +2012,10 @@ async fn ostree_install(state: &State, rootfs: &RootSetup, cleanup: Cleanup) -> 
 
     // Initialize the ostree sysroot (repo, stateroot, etc.)
 
-    {
+    let deployment_path = {
         let (sysroot, has_ostree) = initialize_ostree_root(state, rootfs).await?;
 
-        install_with_sysroot(
+        let deployment_path = install_with_sysroot(
             state,
             rootfs,
             &sysroot,
@@ -1987,19 +2038,20 @@ async fn ostree_install(state: &State, rootfs: &RootSetup, cleanup: Cleanup) -> 
 
         // We must drop the sysroot here in order to close any open file
         // descriptors.
+        deployment_path
     };
 
     // Run this on every install as the penultimate step
     install_finalize(&rootfs.physical_root_path).await?;
 
-    Ok(())
+    Ok(deployment_path)
 }
 
 async fn install_to_filesystem_impl(
     state: &State,
     rootfs: &mut RootSetup,
     cleanup: Cleanup,
-) -> Result<()> {
+) -> Result<Option<camino::Utf8PathBuf>> {
     if matches!(state.selinux_state, SELinuxFinalState::ForceTargetDisabled) {
         rootfs.kargs.extend(&Cmdline::from("selinux=0"));
     }
@@ -2021,7 +2073,7 @@ async fn install_to_filesystem_impl(
         }
     }
 
-    if state.composefs_options.composefs_backend {
+    let deployment_path = if state.composefs_options.composefs_backend {
         // Pre-flight disk space check for native composefs install path.
         {
             let imgref = &state.source.imageref;
@@ -2074,8 +2126,9 @@ async fn install_to_filesystem_impl(
             )
             .context("SELinux labeling of composefs objects")?;
         }
+        None
     } else {
-        ostree_install(state, rootfs, cleanup).await?;
+        let deployment_path = ostree_install(state, rootfs, cleanup).await?;
 
         // For s390x, we set zipl as the bootloader
         // this needs to be done after the ostree commit is deployed,
@@ -2094,7 +2147,8 @@ async fn install_to_filesystem_impl(
                 .run_capture_stderr()
                 .context("Setting bootloader config to zipl")?;
         }
-    }
+        Some(deployment_path)
+    };
 
     // As the very last step before filesystem finalization, do a full SELinux
     // relabel of the physical root filesystem.  Any files that are already
@@ -2116,7 +2170,7 @@ async fn install_to_filesystem_impl(
         }
     }
 
-    Ok(())
+    Ok(deployment_path)
 }
 
 fn installation_complete() {
@@ -2454,7 +2508,7 @@ pub(crate) async fn install_to_filesystem(
     opts: InstallToFilesystemOpts,
     targeting_host_root: bool,
     cleanup: Cleanup,
-) -> Result<()> {
+) -> Result<Option<camino::Utf8PathBuf>> {
     // Log the installation operation to systemd journal
     const INSTALL_FILESYSTEM_JOURNAL_ID: &str = "9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3";
     let source_image = opts
@@ -2725,14 +2779,14 @@ pub(crate) async fn install_to_filesystem(
         skip_finalize,
     };
 
-    install_to_filesystem_impl(&state, &mut rootfs, cleanup).await?;
+    let deployment_path = install_to_filesystem_impl(&state, &mut rootfs, cleanup).await?;
 
     // Drop all data about the root except the path to ensure any file descriptors etc. are closed.
     drop(rootfs);
 
     installation_complete();
 
-    Ok(())
+    Ok(deployment_path)
 }
 
 pub(crate) async fn install_to_existing_root(opts: InstallToExistingRootOpts) -> Result<()> {
@@ -2765,7 +2819,22 @@ pub(crate) async fn install_to_existing_root(opts: InstallToExistingRootOpts) ->
         false => Cleanup::Skip,
     };
 
-    let opts = InstallToFilesystemOpts {
+    // Extract migration flags before opts is consumed.
+    let preserve_var = opts.preserve_var;
+    let merge_etc = opts.merge_etc;
+    let root_path = std::path::PathBuf::from(opts.root_path.as_str());
+    let mut preserve_var_skip = opts.preserve_var_skip;
+    if let Some(config) = config::load_config()? {
+        if let Some(config_skip) = config.preserve_var_skip {
+            preserve_var_skip.extend(config_skip);
+        }
+    }
+    let preserve_var_skip = migrate::validate_exclusions(&preserve_var_skip)?;
+    if (preserve_var || merge_etc) && opts.composefs_opts.composefs_backend {
+        anyhow::bail!("--preserve-var and --merge-etc require the ostree backend");
+    }
+
+    let fs_opts = InstallToFilesystemOpts {
         filesystem_opts: InstallTargetFilesystemOpts {
             root_path: opts.root_path,
             root_mount_spec: None,
@@ -2780,7 +2849,42 @@ pub(crate) async fn install_to_existing_root(opts: InstallToExistingRootOpts) ->
         composefs_opts: opts.composefs_opts,
     };
 
-    install_to_filesystem(opts, true, cleanup).await
+    let deployment_path = install_to_filesystem(fs_opts, true, cleanup).await?;
+
+    // Post-install migration steps (run after the ostree deploy is complete).
+    if preserve_var {
+        println!();
+        println!("Preserving /var...");
+        let deployment_path = deployment_path
+            .as_ref()
+            .context("Install did not produce an ostree deployment")?;
+        let physical_root = if root_path.join("sysroot/ostree").exists() {
+            root_path.join("sysroot")
+        } else {
+            root_path.clone()
+        };
+        let deploy_dir = physical_root.join(deployment_path);
+        let new_var = migrate::deployment_var_path(&deploy_dir)?;
+        migrate::preserve_var(&root_path.join("var"), &new_var, &preserve_var_skip)
+            .context("Post-install /var preservation")?;
+    }
+
+    if merge_etc {
+        println!();
+        println!("Merging running /etc into new deployment...");
+        let deployment_path = deployment_path
+            .as_ref()
+            .context("Install did not produce an ostree deployment")?;
+        let physical_root = if root_path.join("sysroot/ostree").exists() {
+            root_path.join("sysroot")
+        } else {
+            root_path.clone()
+        };
+        migrate::merge_etc_into_deployment(&root_path, &physical_root.join(deployment_path))
+            .context("Post-install /etc merge")?;
+    }
+
+    Ok(())
 }
 
 /// Read the /boot entry from /etc/fstab, if it exists

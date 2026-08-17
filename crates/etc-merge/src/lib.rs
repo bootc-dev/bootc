@@ -795,27 +795,31 @@ fn merge_leaf(
         return Ok(());
     };
 
-    // If a new file with the same path exists, we delete it
-    new_etc_fd
-        .remove_all_optional(&file)
-        .context(format!("Deleting {file:?}"))?;
-
     if let Some(target) = symlink {
+        new_etc_fd
+            .remove_all_optional(&file)
+            .context(format!("Deleting {file:?}"))?;
         // Using rustix's symlinkat here as we might have absolute symlinks which clash with ambient_authority
         symlinkat(&**target, new_etc_fd, file).context(format!("Creating symlink {file:?}"))?;
     } else {
+        // `Dir::copy` truncates an existing regular file, so do not remove the
+        // image version first. If opening a path through an absolute symlink
+        // fails, the image version remains intact.
         let copy_result = current_etc_fd
             .copy(&file, new_etc_fd, &file)
             .with_context(|| format!("Copying file {file:?}"));
-        // If a path component in the current /etc leads through an absolute symlink that
-        // escapes the cap-std root (e.g. /etc/alternatives symlinks), cap-std raises
-        // "a path led outside of the filesystem".  Warn and skip rather than aborting the
-        // whole merge; the image's existing content wins for that path.
-        if let Err(ref e) = copy_result {
-            if e.to_string().contains("a path led outside of the filesystem") {
+        if let Err(error) = &copy_result {
+            let sandbox_escape = error.chain().any(|cause| {
+                cause
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|io_error| {
+                        io_error.kind() == std::io::ErrorKind::PermissionDenied
+                            && io_error.raw_os_error().is_none()
+                    })
+            });
+            if sandbox_escape {
                 tracing::warn!(
-                    "Skipping {file:?}: path escapes /etc sandbox (absolute symlink component); \
-                     keeping image's version"
+                    "Skipping {file:?}: current path escapes the /etc sandbox; keeping image version"
                 );
                 return Ok(());
             }
@@ -1310,7 +1314,11 @@ mod tests {
         let merge_res = merge(&c, &current_etc_files, &n, &new_etc_files.unwrap(), &diff);
 
         // The image's directory wins over the host's modified file; merge succeeds with a warning.
-        assert!(merge_res.is_ok(), "Expected merge to succeed: {:?}", merge_res);
+        assert!(
+            merge_res.is_ok(),
+            "Expected merge to succeed: {:?}",
+            merge_res
+        );
         // The directory should still exist in new_etc (image's directory wins)
         assert!(n.metadata("file-to-dir").unwrap().is_dir());
 
