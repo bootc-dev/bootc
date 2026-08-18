@@ -290,6 +290,14 @@ impl CStorage {
         sepolicy: Option<&ostree::SePolicy>,
     ) -> Result<Self> {
         Self::init_globals()?;
+
+        let bin = bootc_utils::podman_bin();
+        if !crate::utils::have_executable(bin)? {
+            anyhow::bail!(
+                "{bin} executable not found in PATH; it is required for container image storage operations"
+            );
+        }
+
         let subpath = &Self::subpath();
 
         // SAFETY: We know there's a parent
