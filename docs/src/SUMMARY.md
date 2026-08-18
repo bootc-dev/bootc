@@ -55,6 +55,7 @@
 - [Filesystem: sysroot](filesystem-sysroot.md)
 - [Container storage](filesystem-storage.md)
 - [Bootloader](bootloaders.md)
+- [Disk encryption (e.g. LUKS)](filesystem-encryption.md)
 
 # Security
 

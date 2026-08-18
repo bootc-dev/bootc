@@ -139,6 +139,9 @@ The `bootc install to-disk` command is effectively:
 There may be a bit more involved here; for example configuring
 `--block-setup tpm2-luks` will configure the root filesystem
 with LUKS bound to the TPM2 chip, currently via [systemd-cryptenroll](https://www.freedesktop.org/software/systemd/man/systemd-cryptenroll.html#).
+**We don't recommend this for new deployments**; see [Disk encryption (e.g. LUKS)](filesystem-encryption.md)
+for why, and for the recommended approach of setting up encryption
+independently of bootc via `systemd-cryptsetup` or Ignition.
 
 Some OS/distributions may not want to enable it at all; it
 can be configured off at build time via Cargo features.
@@ -156,8 +159,8 @@ Note that if a separate `/boot` is needed (e.g. for LUKS) you will also need to 
 The `bootc install to-filesystem` command allows an operating
 system or distribution to ship a separate installer that creates more complex block
 storage or filesystem setups, but reuses the "top half" of the logic.
-For example, a goal is to change [Anaconda](https://github.com/rhinstaller/anaconda/)
-to use this.
+For example, [Anaconda](https://github.com/rhinstaller/anaconda/) has
+a `bootc` kickstart command that drives `to-filesystem` this way.
 
 #### Postprocessing after to-filesystem
 
