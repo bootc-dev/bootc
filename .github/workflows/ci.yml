@@ -57,7 +57,23 @@ jobs:
       upgrade_os_matrix: ${{ steps.matrix.outputs.upgrade_os_matrix }}
       run_heavy: ${{ steps.matrix.outputs.run_heavy }}
       merge_queue_enabled: ${{ steps.merge-queue.outputs.enabled }}
+      docs_only: ${{ steps.docs-check.outputs.docs_only }}
     steps:
+      # On pull requests, check whether only documentation/governance files
+      # (.md) changed.  When that is the case the heavy test jobs are skipped,
+      # saving runner time for process-only PRs (e.g. releases.md, roadmap.md).
+      - name: Check for docs-only changes
+        id: docs-check
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh pr diff "${{ github.event.pull_request.number }}" --name-only | grep -qvE '\.md$'; then
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "docs_only=true" >> "$GITHUB_OUTPUT"
+          fi
+
       # Detect at runtime whether `main` is currently protected by a GitHub
       # merge queue (see https://github.com/bootc-dev/bootc/issues/2177).
       # The tiered CI below only makes sense with a queue: it lets heavy jobs
@@ -92,23 +108,24 @@ jobs:
           LABELS='${{ toJson(github.event.pull_request.labels.*.name) }}'
           EVENT='${{ github.event_name }}'
           MERGE_QUEUE_ENABLED='${{ steps.merge-queue.outputs.enabled }}'
+          DOCS_ONLY='${{ steps.docs-check.outputs.docs_only }}'
 
-          if [[ "$EVENT" == "merge_group" || "$EVENT" == "workflow_dispatch" ]] \
+          if [[ "$DOCS_ONLY" != "true" ]] && { [[ "$EVENT" == "merge_group" || "$EVENT" == "workflow_dispatch" ]] \
               || [[ "$EVENT" == "pull_request" && "$MERGE_QUEUE_ENABLED" != "true" ]] \
-              || echo "$LABELS" | jq -e 'index("ci/merge")' > /dev/null; then
+              || echo "$LABELS" | jq -e 'index("ci/merge")' > /dev/null; }; then
             # Full suite: all OSes
             echo 'package_os_matrix=["fedora-43","fedora-44","fedora-45","centos-9","centos-10"]' >> "$GITHUB_OUTPUT"
             echo 'integration_os_matrix=["fedora-43","fedora-44","centos-9","centos-10"]' >> "$GITHUB_OUTPUT"
             echo 'upgrade_os_matrix=["fedora-44","centos-10"]' >> "$GITHUB_OUTPUT"
             echo 'run_heavy=true' >> "$GITHUB_OUTPUT"
-          elif echo "$LABELS" | jq -e 'index("ci/tier-1")' > /dev/null; then
+          elif [[ "$DOCS_ONLY" != "true" ]] && echo "$LABELS" | jq -e 'index("ci/tier-1")' > /dev/null; then
             # Tier-1 only: centos-10
             echo 'package_os_matrix=["centos-10"]' >> "$GITHUB_OUTPUT"
             echo 'integration_os_matrix=["centos-10"]' >> "$GITHUB_OUTPUT"
             echo 'upgrade_os_matrix=["centos-10"]' >> "$GITHUB_OUTPUT"
             echo 'run_heavy=true' >> "$GITHUB_OUTPUT"
           else
-            # Plain PR: skip heavy jobs entirely
+            # Plain PR or docs-only: skip heavy jobs entirely
             echo 'package_os_matrix=[]' >> "$GITHUB_OUTPUT"
             echo 'integration_os_matrix=[]' >> "$GITHUB_OUTPUT"
             echo 'upgrade_os_matrix=[]' >> "$GITHUB_OUTPUT"
