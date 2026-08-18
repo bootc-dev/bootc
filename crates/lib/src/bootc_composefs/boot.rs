@@ -966,7 +966,7 @@ fn write_pe_to_esp(
 
     let pe_name = match pe_type {
         PEType::Uki => &get_uki_name(&uki_id.to_hex()),
-        PEType::UkiAddon => file_path
+        PEType::UkiAddon | PEType::GlobalUkiAddon => file_path
             .components()
             .last()
             .ok_or_else(|| anyhow::anyhow!("Failed to get UKI Addon file name"))?
@@ -1200,7 +1200,7 @@ pub(crate) fn setup_composefs_uki_boot(
 
             ComposefsBootEntry::Type2(entry) => {
                 // If --uki-addon is not passed, we don't install any addon
-                if matches!(entry.pe_type, PEType::UkiAddon) {
+                if matches!(entry.pe_type, PEType::UkiAddon | PEType::GlobalUkiAddon) {
                     let Some(addons) = uki_addons else {
                         continue;
                     };
