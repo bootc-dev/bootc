@@ -138,8 +138,9 @@ fn delete_kernel_initrd(storage: &Storage, dir_to_delete: &str, dry_run: bool) -
 fn delete_uki(storage: &Storage, uki_id: &str, dry_run: bool) -> Result<()> {
     let esp_mnt = storage.require_esp()?;
 
-    // NOTE: We don't delete global addons here
-    // Which is fine as global addons don't belong to any single deployment
+    // NOTE: We don't delete global addons here (see `GLOBAL_UKI_ADDONS_DIR`)
+    // Which is fine as global addons don't belong to any single deployment, but it also
+    // means they're never cleaned up at all: see the TODO on `GLOBAL_UKI_ADDONS_DIR`.
     let uki_dir = esp_mnt.fd.open_dir(BOOTC_UKI_DIR)?;
 
     for entry in uki_dir.entries_utf8()? {

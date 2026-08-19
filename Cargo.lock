@@ -738,8 +738,8 @@ checksum = "55b672471b4e9f9e95499ea597ff64941a309b2cdbffcc46f2cc5e2d971fd335"
 
 [[package]]
 name = "composefs"
-version = "0.7.0"
-source = "git+https://github.com/composefs/composefs-rs?rev=0fbc853325ff92dbb842e715611bed7ddf9fe169#0fbc853325ff92dbb842e715611bed7ddf9fe169"
+version = "0.9.0"
+source = "git+https://github.com/composefs/composefs-rs?tag=v0.9.0#90f30e8abbcb5af60421b6b749cbf189b2a8895e"
 dependencies = [
  "anyhow",
  "composefs-ioctls",
@@ -747,12 +747,12 @@ dependencies = [
  "hex",
  "log",
  "once_cell",
+ "openssl",
  "rand 0.10.2",
  "rustix",
  "serde",
  "serde_json",
  "serde_repr",
- "sha2 0.11.0",
  "tempfile",
  "thiserror 2.0.19",
  "tokio",
@@ -765,8 +765,8 @@ dependencies = [
 
 [[package]]
 name = "composefs-boot"
-version = "0.7.0"
-source = "git+https://github.com/composefs/composefs-rs?rev=0fbc853325ff92dbb842e715611bed7ddf9fe169#0fbc853325ff92dbb842e715611bed7ddf9fe169"
+version = "0.9.0"
+source = "git+https://github.com/composefs/composefs-rs?tag=v0.9.0#90f30e8abbcb5af60421b6b749cbf189b2a8895e"
 dependencies = [
  "anyhow",
  "composefs",
@@ -781,8 +781,8 @@ dependencies = [
 
 [[package]]
 name = "composefs-ctl"
-version = "0.7.0"
-source = "git+https://github.com/composefs/composefs-rs?rev=0fbc853325ff92dbb842e715611bed7ddf9fe169#0fbc853325ff92dbb842e715611bed7ddf9fe169"
+version = "0.9.0"
+source = "git+https://github.com/composefs/composefs-rs?tag=v0.9.0#90f30e8abbcb5af60421b6b749cbf189b2a8895e"
 dependencies = [
  "anyhow",
  "cap-std-ext",
@@ -810,8 +810,8 @@ dependencies = [
 
 [[package]]
 name = "composefs-fuse"
-version = "0.7.0"
-source = "git+https://github.com/composefs/composefs-rs?rev=0fbc853325ff92dbb842e715611bed7ddf9fe169#0fbc853325ff92dbb842e715611bed7ddf9fe169"
+version = "0.9.0"
+source = "git+https://github.com/composefs/composefs-rs?tag=v0.9.0#90f30e8abbcb5af60421b6b749cbf189b2a8895e"
 dependencies = [
  "anyhow",
  "composefs",
@@ -825,8 +825,8 @@ dependencies = [
 
 [[package]]
 name = "composefs-ioctls"
-version = "0.7.0"
-source = "git+https://github.com/composefs/composefs-rs?rev=0fbc853325ff92dbb842e715611bed7ddf9fe169#0fbc853325ff92dbb842e715611bed7ddf9fe169"
+version = "0.9.0"
+source = "git+https://github.com/composefs/composefs-rs?tag=v0.9.0#90f30e8abbcb5af60421b6b749cbf189b2a8895e"
 dependencies = [
  "rustix",
  "thiserror 2.0.19",
@@ -834,8 +834,8 @@ dependencies = [
 
 [[package]]
 name = "composefs-oci"
-version = "0.7.0"
-source = "git+https://github.com/composefs/composefs-rs?rev=0fbc853325ff92dbb842e715611bed7ddf9fe169#0fbc853325ff92dbb842e715611bed7ddf9fe169"
+version = "0.9.0"
+source = "git+https://github.com/composefs/composefs-rs?tag=v0.9.0#90f30e8abbcb5af60421b6b749cbf189b2a8895e"
 dependencies = [
  "anyhow",
  "async-compression",
@@ -855,7 +855,6 @@ dependencies = [
  "rustix",
  "serde",
  "serde_json",
- "sha2 0.11.0",
  "tar-core",
  "thiserror 2.0.19",
  "tokio",
@@ -868,21 +867,21 @@ dependencies = [
 
 [[package]]
 name = "composefs-splitdirfdstream"
-version = "0.7.0"
-source = "git+https://github.com/composefs/composefs-rs?rev=0fbc853325ff92dbb842e715611bed7ddf9fe169#0fbc853325ff92dbb842e715611bed7ddf9fe169"
+version = "0.9.0"
+source = "git+https://github.com/composefs/composefs-rs?tag=v0.9.0#90f30e8abbcb5af60421b6b749cbf189b2a8895e"
 dependencies = [
+ "openssl",
  "rand 0.10.2",
  "rand_pcg",
  "rustix",
- "sha2 0.11.0",
  "thiserror 2.0.19",
  "tokio",
 ]
 
 [[package]]
 name = "composefs-storage"
-version = "0.7.0"
-source = "git+https://github.com/composefs/composefs-rs?rev=0fbc853325ff92dbb842e715611bed7ddf9fe169#0fbc853325ff92dbb842e715611bed7ddf9fe169"
+version = "0.9.0"
+source = "git+https://github.com/composefs/composefs-rs?tag=v0.9.0#90f30e8abbcb5af60421b6b749cbf189b2a8895e"
 dependencies = [
  "anyhow",
  "base64 0.23.0",
@@ -1295,7 +1294,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1937,7 +1936,7 @@ version = "1.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "82cb6a9f675da968c63b6208c641b9dca58fc0133ae53375736b1767b0cab8bd"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2255,7 +2254,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2881,7 +2880,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3315,10 +3314,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.2",
  "once_cell",
  "rustix",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3328,7 +3327,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "230a1b821ccbd75b185820a1f1ff7b14d21da1e442e22c0863ea5f08771a8874"
 dependencies = [
  "rustix",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
