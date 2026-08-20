@@ -9,7 +9,8 @@
     "fedora-42": "quay.io/fedora/fedora-bootc:42",
     "fedora-43": "quay.io/fedora/fedora-bootc:43",
     "fedora-44": "quay.io/fedora/fedora-bootc:44",
-    "fedora-45": "quay.io/fedora/fedora-bootc:45"
+    "fedora-45": "quay.io/fedora/fedora-bootc:45",
+    "fedora-46": "quay.io/fedora/fedora-bootc:46"
   },
   "buildroot-base": {
     "centos-9": "quay.io/centos/centos:stream9",
@@ -17,6 +18,7 @@
     "fedora-42": "quay.io/fedora/fedora:42",
     "fedora-43": "quay.io/fedora/fedora:43",
     "fedora-44": "quay.io/fedora/fedora:44",
-    "fedora-45": "quay.io/fedora/fedora:45"
+    "fedora-45": "quay.io/fedora/fedora:45",
+    "fedora-46": "quay.io/fedora/fedora:46"
   }
 }
