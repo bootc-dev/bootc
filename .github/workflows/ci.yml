@@ -162,7 +162,10 @@ jobs:
   # this could be a proper matrix)
   install-tests:
     name: "Test install"
-    if: needs.compute-ci-level.outputs.run_heavy == 'true'
+    # Disabled: this job is hanging in the chunkah/podman step even after
+    # switching to native overlay (see "test-install: Fix chunkah hang").
+    # Re-enable once the underlying hang is root-caused.
+    if: false && needs.compute-ci-level.outputs.run_heavy == 'true'
     needs: compute-ci-level
     runs-on: ubuntu-24.04
     steps:
