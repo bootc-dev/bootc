@@ -160,7 +160,7 @@ ostree container image prune-images --full --sysroot="${sysroot}"
 # See also https://github.com/coreos/chunkah?tab=readme-ov-file#compatibility-with-bootable-bootc-images
 nonostree_archive=/var/tmp/nonostree.ociarchive
 chunkah_config="$(podman inspect ${image})"
-podman run --rm \
+podman --log-level=debug run --rm \
     --mount=type=image,src=${image},dst=/chunkah \
     -v /var/tmp:/output:z \
     -e CHUNKAH_CONFIG_STR="${chunkah_config}" \
