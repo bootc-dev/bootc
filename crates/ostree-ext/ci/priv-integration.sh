@@ -91,6 +91,16 @@ if ! grep 'layers already present: ' logs.txt; then
     exit 1
 fi
 
+# The check above requires /run/systemd (bind-mounted from the host) to be
+# present: ostree_ext's structured logging silently skips writing to the
+# journal otherwise. But leaving it mounted for the rest of the script
+# breaks cgroup delegation for the nested `podman run`/`podman build`
+# invocations below (each of which creates its own container) -- podman's
+# cgroup-manager auto-detection only produces a working, fully delegated
+# cgroupfs setup when it can't see a live systemd socket at all. Drop it
+# now that the journal check is done; nothing after this point needs it.
+umount /run/systemd
+
 podman pull ${image}
 ostree --repo="${sysroot}/ostree/repo" init --mode=bare-user
 ostree container image pull ${sysroot}/ostree/repo ostree-unverified-image:containers-storage:${image}
@@ -106,11 +116,11 @@ cat >Dockerfile << EOF
 FROM ${image}
 RUN touch /usr/share/somefile
 EOF
-systemd-run -dP --wait podman build -t localhost/fcos-derived .
+podman build -t localhost/fcos-derived .
 derived_img=oci:/var/tmp/derived.oci
 derived_img_dir=dir:/var/tmp/derived.dir
-systemd-run -dP --wait skopeo copy containers-storage:localhost/fcos-derived "${derived_img}"
-systemd-run -dP --wait skopeo copy "${derived_img}" "${derived_img_dir}"
+skopeo copy containers-storage:localhost/fcos-derived "${derived_img}"
+skopeo copy "${derived_img}" "${derived_img_dir}"
 
 # Prune to reset state
 ostree --repo="${repo}" refs ostree/container/image --delete
@@ -150,10 +160,8 @@ ostree container image prune-images --full --sysroot="${sysroot}"
 # See also https://github.com/coreos/chunkah?tab=readme-ov-file#compatibility-with-bootable-bootc-images
 nonostree_archive=/var/tmp/nonostree.ociarchive
 chunkah_config="$(podman inspect ${image})"
-systemd-run -dP --wait podman info
-systemd-run -dP --wait skopeo copy containers-storage:${image} oci:/var/tmp/fcos-oci:latest
-systemd-run -dP --wait podman --log-level=debug run --rm --network=none \
-    -v /var/tmp/fcos-oci:/chunkah:ro \
+podman run --rm \
+    --mount=type=image,src=${image},dst=/chunkah \
     -v /var/tmp:/output:z \
     -e CHUNKAH_CONFIG_STR="${chunkah_config}" \
     -e RUST_LOG=chunkah=debug \
@@ -162,7 +170,6 @@ systemd-run -dP --wait podman --log-level=debug run --rm --network=none \
     --label ostree.commit- \
     --label ostree.final-diffid- \
     -o /output/nonostree.ociarchive
-rm -rf /var/tmp/fcos-oci
 
 # Deploy the non-ostree image with debug logging to capture relabeling messages
 RUST_LOG=ostree_ext=debug ostree container image deploy \
