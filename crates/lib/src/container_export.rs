@@ -126,8 +126,13 @@ fn tar_header_dir_root() -> tar::Header {
 }
 
 /// Paths that should be skipped during export.
-/// These are bootc/ostree-specific paths that shouldn't be in the exported tarball.
-const SKIP_PATHS: &[&str] = &["sysroot/ostree"];
+/// - `sysroot/ostree` is bootc/ostree-specific and shouldn't be in the exported tarball.
+/// - `tmp` and `var/tmp` are meant to hold only ephemeral, runtime-created content (the
+///   same paths `ostree-ext::commit` always cleans before committing). They can end up
+///   containing arbitrary files dropped by package post-install scripts (e.g. `rhc`)
+///   that the SELinux policy has no file-context entry for, which would otherwise turn
+///   into a hard failure when computing labels for the tar entries.
+const SKIP_PATHS: &[&str] = &["sysroot/ostree", "tmp", "var/tmp"];
 
 fn export_filesystem_walk<W: Write>(
     tar_builder: &mut tar::Builder<W>,
@@ -411,4 +416,63 @@ fn add_selinux_pax_extension<W: Write>(
         .append_pax_extensions([("SCHILY.xattr.security.selinux", selinux_context.as_bytes())])
         .context("Failed to add SELinux PAX extension")?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cap_std_ext::cap_std::{ambient_authority, fs::Dir};
+
+    /// Walk `root` (with SELinux labeling disabled) and return the set of
+    /// relative paths that ended up in the resulting tar archive.
+    fn exported_paths(root: &std::path::Path) -> Result<std::collections::BTreeSet<String>> {
+        let dir = Dir::open_ambient_dir(root, ambient_authority())?;
+        let mut buf = Vec::new();
+        {
+            let mut tar_builder = tar::Builder::new(&mut buf);
+            export_filesystem_walk(&mut tar_builder, &dir, None)?;
+            tar_builder.finish()?;
+        }
+        tar::Archive::new(buf.as_slice())
+            .entries()?
+            .map(|e| Ok(e?.path()?.to_string_lossy().into_owned()))
+            .collect()
+    }
+
+    #[test]
+    fn test_export_skips_tmp_and_var_tmp() -> Result<()> {
+        let tmpdir = tempfile::tempdir()?;
+        let root = tmpdir.path();
+
+        // Content that must be skipped, including a stand-in for the
+        // `/var/tmp/rhc` file dropped by package post-install scripts that
+        // the SELinux policy has no file-context entry for.
+        std::fs::create_dir_all(root.join("tmp/nested"))?;
+        std::fs::write(root.join("tmp/nested/junk"), b"junk")?;
+        std::fs::create_dir_all(root.join("var/tmp"))?;
+        std::fs::write(root.join("var/tmp/rhc"), b"rhc-state")?;
+
+        // Content that must be preserved.
+        std::fs::create_dir_all(root.join("usr/bin"))?;
+        std::fs::write(root.join("usr/bin/keep-me"), b"binary")?;
+        std::fs::create_dir_all(root.join("var/lib"))?;
+        std::fs::write(root.join("var/lib/keep-me-too"), b"state")?;
+
+        let paths = exported_paths(root)?;
+
+        assert!(paths.contains("usr/bin/keep-me"));
+        assert!(paths.contains("var/lib/keep-me-too"));
+        assert!(
+            !paths.iter().any(|p| p == "tmp" || p.starts_with("tmp/")),
+            "expected no /tmp entries, got: {paths:?}"
+        );
+        assert!(
+            !paths
+                .iter()
+                .any(|p| p == "var/tmp" || p.starts_with("var/tmp/")),
+            "expected no /var/tmp entries, got: {paths:?}"
+        );
+
+        Ok(())
+    }
 }
