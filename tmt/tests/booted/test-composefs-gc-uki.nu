@@ -2,6 +2,8 @@
 # tmt:
 #   summary: Test composefs garbage collection for UKI
 #   duration: 30m
+# extra:
+#   skip_if_ostree: true
 
 use std assert
 use tap.nu
