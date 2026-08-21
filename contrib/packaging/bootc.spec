@@ -54,6 +54,7 @@ BuildRequires: rust-toolset
 BuildRequires: cargo-rpm-macros >= 25
 %endif
 BuildRequires: systemd
+BuildRequires: checkpolicy policycoreutils
 # For tests
 BuildRequires: skopeo ostree
 
@@ -128,6 +129,7 @@ cd %{name}-%{version}-build
 export SYSTEM_REINSTALL_BOOTC_INSTALL_PODMAN_PATH=%{system_reinstall_bootc_install_podman_path}
 # Build this first to avoid feature skew
 make manpages
+make selinux
 
 # Build all binaries
 %if 0%{?container_build}
@@ -182,6 +184,14 @@ else
 fi
 %endif
 
+%post
+semodule -i %{_datadir}/selinux/packages/bootc.pp 2>/dev/null || :
+
+%postun
+if [ $1 -eq 0 ]; then
+    semodule -r bootc 2>/dev/null || :
+fi
+
 %files -f bootcdoclist.txt
 %license LICENSE-MIT
 %license LICENSE-APACHE
@@ -199,6 +209,7 @@ fi
 %endif
 %{_unitdir}/*
 %{_mandir}/man*/*bootc*
+%{_datadir}/selinux/packages/bootc.pp
 %if 0%{?rhel} && 0%{?rhel} <= 9
 %{_datadir}/bash-completion/completions/bootc
 %{_datadir}/zsh/site-functions/_bootc
