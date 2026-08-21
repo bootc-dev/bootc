@@ -36,6 +36,7 @@
 //!   backend.
 
 use fn_error_context::context;
+use ostree_ext::composefs::tree::FileSystem;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -188,6 +189,8 @@ pub(crate) struct PullRepoResult {
     pub(crate) id: Sha512HashValue,
     /// The OCI manifest content digest (e.g. "sha256:abc...")
     pub(crate) manifest_digest: String,
+    /// The untransformed OCI filesystem (still has /boot, /sysroot, etc.)
+    pub(crate) fs: FileSystem<Sha512HashValue>,
 }
 
 /// Pull an image directly into the composefs repository via skopeo.
@@ -393,21 +396,28 @@ pub(crate) async fn pull_composefs_repo(
     );
 
     // Generate the bootable EROFS image (idempotent).
-    let id = composefs_oci::generate_boot_image(
+    let (id, mut fs) = composefs_oci::generate_boot_image_get_fs(
         &repo,
         &pull_result.manifest_digest,
         &Default::default(),
     )
     .context("Generating bootable EROFS image")?;
 
-    // Get boot entries from the OCI filesystem (untransformed).
-    let fs = create_composefs_filesystem(
-        &*repo,
-        &pull_result.config_digest,
-        None,
-        &Default::default(),
-    )
-    .context("Creating composefs filesystem for boot entry discovery")?;
+    if fs.is_none() {
+        // Get boot entries from the OCI filesystem (untransformed).
+        fs = Some(
+            create_composefs_filesystem(
+                &*repo,
+                &pull_result.config_digest,
+                Some(&pull_result.config_verity),
+                &Default::default(),
+            )
+            .context("Creating composefs filesystem for boot entry discovery")?,
+        );
+    }
+
+    let fs = fs.ok_or_else(|| anyhow::anyhow!("Failed to get composefs filesystem"))?;
+
     let entries =
         get_boot_resources(&fs, &*repo).context("Extracting boot entries from OCI image")?;
 
@@ -424,6 +434,7 @@ pub(crate) async fn pull_composefs_repo(
         entries,
         id,
         manifest_digest: pull_result.manifest_digest.to_string(),
+        fs,
     })
 }
 
