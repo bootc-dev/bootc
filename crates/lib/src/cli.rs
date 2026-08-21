@@ -41,6 +41,7 @@ use serde::{Deserialize, Serialize};
 use crate::bootc_composefs::delete::delete_composefs_deployment;
 use crate::bootc_composefs::gc::{GCOpts, composefs_gc};
 use crate::bootc_composefs::soft_reboot::{prepare_soft_reboot_composefs, reset_soft_reboot};
+use crate::bootc_composefs::state::get_usr_overlay_status;
 use crate::bootc_composefs::{
     digest::{compute_composefs_digest, new_temp_composefs_repo},
     finalize::{composefs_backend_finalize, get_etc_diff},
@@ -1664,6 +1665,12 @@ async fn edit(opts: EditOpts) -> Result<()> {
 
 /// Implementation of `bootc usroverlay`
 async fn usroverlay(access_mode: FilesystemOverlayAccessMode) -> Result<()> {
+    let status = get_usr_overlay_status()?;
+    if status.is_some() {
+        println!("An overlayfs is already mounted on /usr");
+        return Ok(());
+    }
+
     // This is just a pass-through today.  At some point we may make this a libostree API
     // or even oxidize it.
     let args = match access_mode {
