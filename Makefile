@@ -29,7 +29,15 @@ prefix ?= /usr
 # We may in the future also want to include Fedora+derivatives as
 # the code is really tiny.
 # (Note we should also make installation of the units conditional on the rhsm feature)
-CARGO_FEATURES_DEFAULT ?= $(shell . /usr/lib/os-release; if echo "$$ID_LIKE" |grep -qF rhel; then echo rhsm; fi)
+#
+# Enable the rhel9 feature on RHEL/CentOS Stream 9, which runs kernel 5.14.
+# That kernel cannot mount an erofs image directly from a file descriptor;
+# composefs-ctl's rhel9 feature activates a loopback-device fallback instead.
+CARGO_FEATURES_DEFAULT ?= $(shell . /usr/lib/os-release; \
+  features=""; \
+  if echo "$$ID_LIKE" | grep -qF rhel; then features="$$features rhsm"; fi; \
+  if echo "$$ID_LIKE" | grep -qF rhel && [ "$$VERSION_ID" = "9" ]; then features="$$features rhel9"; fi; \
+  echo $$features)
 # You can set this to override all cargo features, including the defaults
 CARGO_FEATURES ?= $(CARGO_FEATURES_DEFAULT)
 

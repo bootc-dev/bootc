@@ -12,6 +12,14 @@
     %bcond_with rhsm
 %endif
 
+# kernel 5.14 (RHEL/CentOS 9) cannot mount an erofs image directly from a file
+# descriptor; composefs-ctl's rhel9 feature enables a loopback-device fallback.
+%if 0%{?rhel} == 9
+    %bcond_without rhel9
+%else
+    %bcond_with rhel9
+%endif
+
 %global rust_minor %(rustc --version | cut -f2 -d" " | cut -f2 -d".")
 
 # https://github.com/bootc-dev/bootc/issues/1640
@@ -132,13 +140,16 @@ make manpages
 # Build all binaries
 %if 0%{?container_build}
 # Container build: use cargo directly with cached dependencies to avoid RPM macro overhead
-cargo build -j%{_smp_build_ncpus} --release %{?with_rhsm:--features rhsm} --bins
+cargo build -j%{_smp_build_ncpus} --release %{?with_rhsm:--features rhsm} %{?with_rhel9:--features rhel9} --bins
 %else
 # Non-container build: use RPM macros for proper dependency tracking
 %if %new_cargo_macros
-    %cargo_build %{?with_rhsm:-f rhsm} -- --bins
+    # Note: %%cargo_build's own -f option only accepts a single value, so a
+    # second -f would silently clobber the first; pass extra features as
+    # plain --features args after -- instead, which cargo unions correctly.
+    %cargo_build -- %{?with_rhsm:--features rhsm} %{?with_rhel9:--features rhel9} --bins
 %else
-    %cargo_build %{?with_rhsm:--features rhsm} -- --bins
+    %cargo_build %{?with_rhsm:--features rhsm} %{?with_rhel9:--features rhel9} -- --bins
 %endif
 %endif
 
@@ -152,7 +163,7 @@ sed -i -e '/https:\/\//d' cargo-vendor.txt
 
 %install
 # Pass CARGO_FEATURES explicitly to prevent auto-detection rebuild in install environment
-%make_install INSTALL="install -p -c" CARGO_FEATURES="%{?with_rhsm:rhsm}"
+%make_install INSTALL="install -p -c" CARGO_FEATURES="%{?with_rhsm:rhsm} %{?with_rhel9:rhel9}"
 %if %{with ostree_ext}
 make install-ostree-hooks DESTDIR=%{?buildroot}
 %endif
