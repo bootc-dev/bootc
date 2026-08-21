@@ -62,7 +62,7 @@ use crate::utils::sigpolicy_from_opt;
 use crate::{bootc_composefs, lints};
 
 /// Shared progress options
-#[derive(Debug, Parser, PartialEq, Eq)]
+#[derive(Clone, Debug, Parser, PartialEq, Eq)]
 pub(crate) struct ProgressOptions {
     /// File descriptor number which must refer to an open pipe.
     ///
@@ -84,6 +84,25 @@ impl TryFrom<ProgressOptions> for ProgressWriter {
     }
 }
 
+#[derive(Debug, Parser, PartialEq, Eq)]
+pub(crate) struct DownloadOnlyOpts {
+    /// Download and stage the update without applying it.
+    ///
+    /// Download the image and ensure it's retained on disk for the lifetime of this system boot,
+    /// but it will not be applied on reboot. If the system is rebooted without applying the update,
+    /// the image will be eligible for garbage collection again.
+    #[clap(long, conflicts_with = "apply")]
+    pub(crate) download_only: bool,
+
+    /// Apply a staged deployment that was previously downloaded with --download-only.
+    ///
+    /// This unlocks the staged deployment without fetching updates from the container image source.
+    /// The deployment will be applied on the next shutdown or reboot. Use with --apply to
+    /// reboot immediately.
+    #[clap(long, conflicts_with = "download_only")]
+    pub(crate) from_downloaded: bool,
+}
+
 /// Perform an upgrade operation
 #[derive(Debug, Parser, PartialEq, Eq)]
 pub(crate) struct UpgradeOpts {
@@ -94,7 +113,7 @@ pub(crate) struct UpgradeOpts {
     /// Check if an update is available without applying it.
     ///
     /// This only downloads updated metadata, not the full image layers.
-    #[clap(long, conflicts_with = "apply")]
+    #[clap(long, conflicts_with_all = ["apply", "download_only", "from_downloaded"])]
     pub(crate) check: bool,
 
     /// Restart or reboot into the new target image.
@@ -109,21 +128,8 @@ pub(crate) struct UpgradeOpts {
     #[clap(long = "soft-reboot", conflicts_with = "check")]
     pub(crate) soft_reboot: Option<SoftRebootMode>,
 
-    /// Download and stage the update without applying it.
-    ///
-    /// Download the update and ensure it's retained on disk for the lifetime of this system boot,
-    /// but it will not be applied on reboot. If the system is rebooted without applying the update,
-    /// the image will be eligible for garbage collection again.
-    #[clap(long, conflicts_with_all = ["check", "apply"])]
-    pub(crate) download_only: bool,
-
-    /// Apply a staged deployment that was previously downloaded with --download-only.
-    ///
-    /// This unlocks the staged deployment without fetching updates from the container image source.
-    /// The deployment will be applied on the next shutdown or reboot. Use with --apply to
-    /// reboot immediately.
-    #[clap(long, conflicts_with_all = ["check", "download_only"])]
-    pub(crate) from_downloaded: bool,
+    #[clap(flatten)]
+    pub(crate) download_opts: DownloadOnlyOpts,
 
     /// Upgrade to a different tag of the currently booted image.
     ///
@@ -159,6 +165,9 @@ pub(crate) struct SwitchOpts {
     #[clap(long, default_value = "registry")]
     pub(crate) transport: String,
 
+    #[clap(flatten)]
+    pub(crate) download_opts: DownloadOnlyOpts,
+
     /// This argument is deprecated and does nothing.
     #[clap(long, hide = true)]
     pub(crate) no_signature_verification: bool,
@@ -191,7 +200,12 @@ pub(crate) struct SwitchOpts {
     pub(crate) unified_storage_exp: bool,
 
     /// Target image to use for the next boot.
-    pub(crate) target: String,
+    /// Required unless `--from-downloaded` is present.
+    #[clap(
+        required_unless_present = "from_downloaded",
+        conflicts_with = "from_downloaded"
+    )]
+    pub(crate) target: Option<String>,
 
     #[clap(flatten)]
     pub(crate) progress: ProgressOptions,
@@ -1184,6 +1198,36 @@ pub(crate) fn prepare_for_write() -> Result<()> {
     Ok(())
 }
 
+struct ApplyFromDownloadedOpts {
+    soft_reboot: Option<SoftRebootMode>,
+    apply: bool,
+}
+
+fn apply_from_downloaded_ostree(
+    storage: &Storage,
+    booted_ostree: &BootedOstree<'_>,
+    host: &crate::spec::Host,
+    opts: &ApplyFromDownloadedOpts,
+) -> Result<()> {
+    let ostree = storage.get_ostree()?;
+    let staged_deployment = ostree
+        .staged_deployment()
+        .ok_or_else(|| anyhow::anyhow!("No staged deployment found"))?;
+
+    if staged_deployment.is_finalization_locked() {
+        ostree.change_finalization(&staged_deployment)?;
+        println!("Staged deployment will now be applied on reboot");
+    } else {
+        println!("Staged deployment is already set to apply on reboot");
+    }
+
+    handle_staged_soft_reboot(booted_ostree, opts.soft_reboot, &host)?;
+    if opts.apply {
+        crate::reboot::reboot()?;
+    }
+    return Ok(());
+}
+
 /// Implementation of the `bootc upgrade` CLI command.
 #[context("Upgrading")]
 async fn upgrade(
@@ -1238,24 +1282,16 @@ async fn upgrade(
     let mut changed = false;
 
     // Handle --from-downloaded: unlock existing staged deployment without fetching from image source
-    if opts.from_downloaded {
-        let ostree = storage.get_ostree()?;
-        let staged_deployment = ostree
-            .staged_deployment()
-            .ok_or_else(|| anyhow::anyhow!("No staged deployment found"))?;
-
-        if staged_deployment.is_finalization_locked() {
-            ostree.change_finalization(&staged_deployment)?;
-            println!("Staged deployment will now be applied on reboot");
-        } else {
-            println!("Staged deployment is already set to apply on reboot");
-        }
-
-        handle_staged_soft_reboot(booted_ostree, opts.soft_reboot, &host)?;
-        if opts.apply {
-            crate::reboot::reboot()?;
-        }
-        return Ok(());
+    if opts.download_opts.from_downloaded {
+        return apply_from_downloaded_ostree(
+            storage,
+            booted_ostree,
+            &host,
+            &ApplyFromDownloadedOpts {
+                soft_reboot: opts.soft_reboot,
+                apply: opts.apply,
+            },
+        );
     }
 
     // Ensure the bootc storage directory is initialized; the --check path
@@ -1328,7 +1364,7 @@ async fn upgrade(
 
             if let Some(staged) = staged_deployment {
                 // Handle download-only mode based on flags
-                if opts.download_only {
+                if opts.download_opts.download_only {
                     // --download-only: set download-only mode
                     if !staged.is_finalization_locked() {
                         storage.get_ostree()?.change_finalization(&staged)?;
@@ -1344,7 +1380,7 @@ async fn upgrade(
                         download_only_changed = true;
                     }
                 }
-            } else if opts.download_only || opts.apply {
+            } else if opts.download_opts.download_only || opts.apply {
                 anyhow::bail!("No staged deployment found");
             }
 
@@ -1367,7 +1403,7 @@ async fn upgrade(
                 &fetched,
                 &spec,
                 prog.clone(),
-                opts.download_only,
+                opts.download_opts.download_only,
             )
             .await?;
             changed = true;
@@ -1399,11 +1435,17 @@ async fn upgrade(
 
     Ok(())
 }
+
+#[context("Getting imgref for switch")]
 pub(crate) fn imgref_for_switch(opts: &SwitchOpts) -> Result<ImageReference> {
     let transport = ostree_container::Transport::try_from(opts.transport.as_str())?;
     let imgref = ostree_container::ImageReference {
         transport,
-        name: opts.target.to_string(),
+        name: opts
+            .target
+            .as_ref()
+            .ok_or_else(|| anyhow!("Target image not found"))?
+            .to_string(),
     };
     let sigverify = sigpolicy_from_opt(opts.enforce_container_sigpolicy);
     let target = ostree_container::OstreeImageReference { sigverify, imgref };
@@ -1419,12 +1461,25 @@ async fn switch_ostree(
     storage: &Storage,
     booted_ostree: &BootedOstree<'_>,
 ) -> Result<()> {
+    let (_, host) = crate::status::get_status(booted_ostree)?;
+
+    if opts.download_opts.from_downloaded {
+        return apply_from_downloaded_ostree(
+            storage,
+            booted_ostree,
+            &host,
+            &ApplyFromDownloadedOpts {
+                soft_reboot: opts.soft_reboot,
+                apply: opts.apply,
+            },
+        );
+    }
+
     let target = imgref_for_switch(&opts)?;
     let prog: ProgressWriter = opts.progress.try_into()?;
     let cancellable = gio::Cancellable::NONE;
 
     let repo = &booted_ostree.repo();
-    let (_, host) = crate::status::get_status(booted_ostree)?;
 
     let new_spec = {
         let mut new_spec = host.spec.clone();
@@ -1506,9 +1561,21 @@ async fn switch_ostree(
 
     let stateroot = booted_ostree.stateroot();
     let from = MergeState::from_stateroot(storage, &stateroot)?;
-    crate::deploy::stage(storage, from, &fetched, &new_spec, prog.clone(), false).await?;
+    crate::deploy::stage(
+        storage,
+        from,
+        &fetched,
+        &new_spec,
+        prog.clone(),
+        opts.download_opts.download_only,
+    )
+    .await?;
 
     storage.update_mtime()?;
+
+    if opts.download_opts.download_only {
+        return Ok(());
+    }
 
     if opts.soft_reboot.is_some() {
         // At this point we have staged the deployment and the host definition has changed.
@@ -1517,6 +1584,8 @@ async fn switch_ostree(
         handle_staged_soft_reboot(booted_ostree, opts.soft_reboot, &updated_host)?;
     }
 
+    // `--apply` cannot be passed along with `--download-only` (handled by clap)
+    // but for sanity nonetheless
     if opts.apply {
         crate::reboot::reboot()?;
     }

@@ -39,9 +39,7 @@ Soft reboot allows faster system restart by avoiding full hardware reboot when p
 <!-- BEGIN GENERATED OPTIONS -->
 **TARGET**
 
-    Target image to use for the next boot
-
-    This argument is required.
+    Target image to use for the next boot. Required unless `--from-downloaded` is present
 
 **--quiet**
 
@@ -64,6 +62,14 @@ Soft reboot allows faster system restart by avoiding full hardware reboot when p
     The transport; e.g. registry, oci, oci-archive, docker-daemon, containers-storage.  Defaults to `registry`
 
     Default: registry
+
+**--download-only**
+
+    Download and stage the update without applying it
+
+**--from-downloaded**
+
+    Apply a staged deployment that was previously downloaded with --download-only
 
 **--enforce-container-sigpolicy**
 

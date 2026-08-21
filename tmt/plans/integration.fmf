@@ -294,6 +294,13 @@ execute:
     test:
       - /tmt/tests/tests/test-46-etc-merge-conflict
 
+/plan-47-download-only-switch:
+  summary: Execute download-only switch tests
+  discover:
+    how: fmf
+    test:
+      - /tmt/tests/tests/test-47-download-only-switch
+
 /plan-48-composefs-uki-dumpfile:
   summary: Test composefs garbage collection for UKI
   discover:

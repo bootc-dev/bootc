@@ -1119,7 +1119,13 @@ pub(crate) async fn stage(
     })
     .await;
     crate::deploy::cleanup(sysroot).await?;
-    println!("Queued for next boot: {:#}", spec.image);
+
+    if !lock_finalization {
+        println!("Queued for next boot: {:#}", spec.image);
+    } else {
+        println!("Staged but not queued for next boot: {:#}", spec.image);
+    }
+
     if let Some(version) = image.version.as_deref() {
         println!("  Version: {version}");
     }
