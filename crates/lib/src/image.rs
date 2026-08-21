@@ -167,7 +167,7 @@ pub(crate) async fn list_entrypoint(
             let mut table = Table::new();
 
             table
-                .load_preset(NOTHING)
+                .load_style(NOTHING)
                 .set_content_arrangement(comfy_table::ContentArrangement::Dynamic)
                 .set_header(["REPOSITORY", "TYPE"]);
 

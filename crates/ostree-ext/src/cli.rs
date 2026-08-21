@@ -937,7 +937,7 @@ async fn container_history(repo: &ostree::Repo, imgref: &ImageReference) -> Resu
         .ok_or_else(|| anyhow::anyhow!("No such image: {}", imgref))?;
     let mut table = comfy_table::Table::new();
     table
-        .load_preset(comfy_table::presets::NOTHING)
+        .load_style(comfy_table::presets::NOTHING)
         .set_content_arrangement(comfy_table::ContentArrangement::Dynamic)
         .set_header(["ID", "SIZE", "CRCEATED BY"]);
 
