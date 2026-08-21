@@ -28,7 +28,13 @@ if $is_composefs {
 } else {
 
     let aleph_path = "/sysroot/.bootc-aleph.json"
+    let symlink_path = "/sysroot/.aleph-version.json"
     let aleph = open $aleph_path
+
+    # Verify that the compatibility symlink exists and points to the aleph file
+    assert (($symlink_path | path exists)) "aleph symlink should exist"
+    let aleph_via_symlink = open $symlink_path
+    assert equal $aleph $aleph_via_symlink "symlink content should match aleph file"
 
     # Verify required fields exist and are non-empty
     assert ($aleph.kernel | is-not-empty) "kernel field should be non-empty"

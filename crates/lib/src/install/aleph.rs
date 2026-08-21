@@ -8,9 +8,15 @@ use ostree_ext::{container as ostree_container, oci_spec};
 use serde::Serialize;
 
 use super::SELinuxFinalState;
+use crate::utils::symlink_idempotent;
 
 /// Path to initially deployed version information
 pub(crate) const BOOTC_ALEPH_PATH: &str = ".bootc-aleph.json";
+/// Compatibility symlink target.
+/// Legacy from coreOS and osbuild where the
+/// aleph data is accessible at this expected path.
+/// See <https://github.com/coreos/fedora-coreos-tracker/issues/2187>
+const ALEPH_SYMLINK: &str = ".aleph-version.json";
 
 /// The "aleph" version information is injected into /root/.bootc-aleph.json
 /// and contains the image ID that was initially used to install.  This can
@@ -80,11 +86,16 @@ impl InstallAleph {
         Ok(r)
     }
 
-    /// Serialize to a file in the target root.
+    /// Serialize to a file in the target root, and create a compatibility symlink.
     pub(crate) fn write_to(&self, root: &Dir) -> Result<()> {
         root.atomic_replace_with(BOOTC_ALEPH_PATH, |f| {
             anyhow::Ok(self.to_canon_json_writer(f)?)
         })
-        .context("Writing aleph version")
+        .context("Writing aleph version")?;
+        // Create a symlink so the aleph data is also accessible at the
+        // legacy path.
+        symlink_idempotent(root, BOOTC_ALEPH_PATH, ALEPH_SYMLINK)
+            .context("Creating aleph symlink")?;
+        Ok(())
     }
 }
