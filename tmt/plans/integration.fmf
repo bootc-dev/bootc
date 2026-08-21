@@ -31,13 +31,14 @@ prepare:
       # Work around https://github.com/bootc-dev/bootc/issues/1896
       - cd bootc && rpm2cpio *.src.rpm > pkg.cpio && cpio -idmv < pkg.cpio && rm pkg.cpio && rm -f *-vendor.tar.zstd && zstd -d *.tar.zstd && tar -xvf *.tar -C . --strip-components=1 && ls -al
       - pwd && ls -al && cd bootc/hack && ./provision-packit.sh
+      - cp bootc/hack/packit-reboot.yml /tmp/packit-reboot.yml
     when: running_env != image_mode
   # tmt-reboot and reboot do not work in this case
   # reboot in ansible is the only way to reboot in tmt prepare
   - how: ansible
     order: 99
     playbook:
-      - https://github.com/bootc-dev/bootc/raw/refs/heads/main/hack/packit-reboot.yml
+      - /tmp/packit-reboot.yml
     when: running_env != image_mode
 execute:
   how: tmt
@@ -64,6 +65,7 @@ execute:
     how: fmf
     test:
       - /tmt/tests/tests/test-21-logically-bound-switch
+  extra-try_bind_storage: true
   extra-fixme_skip_if_composefs: true
 
 /plan-22-logically-bound-install:
@@ -136,6 +138,7 @@ execute:
     how: fmf
     test:
       - /tmt/tests/tests/test-29-soft-reboot-selinux-policy
+  extra-try_bind_storage: true
   extra-fixme_skip_if_uki: true
 
 /plan-30-install-unified-flag:
@@ -144,6 +147,7 @@ execute:
     how: fmf
     test:
       - /tmt/tests/tests/test-30-install-unified-flag
+  extra-try_bind_storage: true
   extra-fixme_skip_if_composefs: true
 
 /plan-31-switch-mutate-in-place:
@@ -182,6 +186,7 @@ execute:
     how: fmf
     test:
       - /tmt/tests/tests/test-33-bib-build
+  extra-try_bind_storage: true
   extra-fixme_skip_if_composefs: true
 
 /plan-34-user-agent:
@@ -249,6 +254,7 @@ execute:
     how: fmf
     test:
       - /tmt/tests/tests/test-40-install-karg-delete
+  extra-try_bind_storage: true
   extra-fixme_skip_if_composefs: true
 
 /plan-41-composefs-gc-uki:

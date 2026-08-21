@@ -13,3 +13,5 @@ dosfstools
 e2fsprogs
 # Required by  bib-build test
 qemu-img
+# Required by 030-test-composefs.nu (pre-fetches busybox OCI image during build)
+skopeo

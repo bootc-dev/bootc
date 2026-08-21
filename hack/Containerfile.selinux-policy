@@ -1,0 +1,45 @@
+# Pre-built derived image used by test-29 (soft-reboot-selinux-policy).
+#
+# Building this in the CI build phase (network-allowed) avoids a live dnf
+# install inside the test VM, which would be a network access mid-test.
+#
+# What this does:
+#   1. Installs SELinux policy build tools into localhost/bootc
+#   2. Compiles and installs a minimal custom policy module, which changes
+#      the compiled policy checksum relative to the base image
+#   3. Cleans up build artifacts so the image passes standard lint checks
+#
+# The resulting image is exposed to the test VM via --bind-storage-ro and
+# pulled into bootc storage before the switch/soft-reboot attempt.
+FROM localhost/bootc
+
+# Install tools needed to build and install SELinux policy modules.
+# The packages are available from the base image's own repos (no extra
+# repo file needed: localhost/bootc is derived from a centos/fedora/rhel
+# base that ships these in standard repositories).
+RUN dnf install -y selinux-policy-devel checkpolicy policycoreutils \
+    && dnf clean all \
+    && rm -rf /var/log/dnf* /var/log/hawkey.log /var/log/rhsm \
+               /var/cache/dnf /var/lib/dnf /var/lib/rhsm
+
+# Create a minimal SELinux policy module and install it.
+# Installing a module changes the compiled policy checksum, which is exactly
+# what test-29 needs to verify that soft-reboot is blocked when policies differ.
+RUN <<EORUN
+set -eux
+mkdir -p /tmp/bootc-test-policy
+cd /tmp/bootc-test-policy
+cat > bootc_test_policy.te <<'EOF'
+module bootc_test_policy 1.0;
+require {
+    type unconfined_t;
+    class file { read write };
+}
+type bootc_test_t;
+EOF
+checkmodule -M -m -o bootc_test_policy.mod bootc_test_policy.te
+semodule_package -o bootc_test_policy.pp -m bootc_test_policy.mod
+semodule -i bootc_test_policy.pp
+rm -rf /tmp/bootc-test-policy
+rm -rf /var/lib/sepolgen /var/cache/ldconfig
+EORUN

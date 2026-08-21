@@ -39,7 +39,7 @@ export def get_target_image [] {
 
     # If map not found, use default centos-9 image
     if not ($map_path | path exists) {
-        return "docker://quay.io/centos-bootc/centos-bootc:stream9"
+        return "containers-storage:quay.io/centos-bootc/centos-bootc:stream9"
     }
 
     let image_map = (open $map_path)
@@ -47,9 +47,9 @@ export def get_target_image [] {
     let image = $image_map.base | get -i $key
     if ($image | is-empty) {
         # Fallback to centos-9 if key not found
-        $"docker://($image_map.base.centos-9)"
+        $"containers-storage:($image_map.base.centos-9)"
     } else {
-        $"docker://($image)"
+        $"containers-storage:($image)"
     }
 }
 

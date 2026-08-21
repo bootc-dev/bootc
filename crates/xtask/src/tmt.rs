@@ -27,6 +27,7 @@ const FIELD_FIXME_SKIP_IF_UKI: &str = "fixme_skip_if_uki";
 
 // bcvk options
 const BCVK_OPT_BIND_STORAGE_RO: &str = "--bind-storage-ro";
+const BCVK_OPT_RESTRICT_NETWORK: &str = "--restrict-network";
 const ENV_BOOTC_UPGRADE_IMAGE: &str = "BOOTC_upgrade_image";
 
 // Distro identifiers
@@ -516,6 +517,10 @@ pub(crate) fn run_tmt(sh: &Shell, args: &RunTmtArgs) -> Result<()> {
                 .unwrap_or(false);
 
             let mut opts = Vec::new();
+
+            // Block outbound internet from the VM during test execution.
+            // Inbound SSH port-forward still works so tmt can reach the VM.
+            opts.push(BCVK_OPT_RESTRICT_NETWORK.to_string());
 
             // If test wants bind storage and distro supports it, add --bind-storage-ro
             if try_bind_storage && supports_bind_storage_ro {
