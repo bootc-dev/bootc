@@ -73,6 +73,10 @@ jobs:
       - fedora-44-aarch64
       # s390x disabled: https://github.com/fedora-copr/copr/issues/4219
       # - fedora-44-s390x
+      - fedora-45-x86_64
+      - fedora-45-aarch64
+      # s390x disabled: https://github.com/fedora-copr/copr/issues/4219
+      # - fedora-45-s390x
       - fedora-rawhide-x86_64
       - fedora-rawhide-aarch64
       # Temporarily disabled due to too old Rust...reenable post 9.6
@@ -125,6 +129,8 @@ jobs:
       - fedora-43-aarch64
       - fedora-44-x86_64
       - fedora-44-aarch64
+      - fedora-45-x86_64
+      - fedora-45-aarch64
       - fedora-rawhide-x86_64
       - fedora-rawhide-aarch64
     tmt_plan: /tmt/plans/integration

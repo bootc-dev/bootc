@@ -120,7 +120,7 @@ jobs:
               || [[ "$EVENT" == "pull_request" && "$MERGE_QUEUE_ENABLED" != "true" ]] \
               || echo "$LABELS" | jq -e 'index("ci/merge")' > /dev/null; }; then
             # Full suite: all OSes
-            echo 'package_os_matrix=["fedora-43","fedora-44","fedora-45","centos-9","centos-10"]' >> "$GITHUB_OUTPUT"
+            echo 'package_os_matrix=["fedora-43","fedora-44","fedora-45","fedora-46","centos-9","centos-10"]' >> "$GITHUB_OUTPUT"
             echo 'integration_os_matrix=["fedora-43","fedora-44","centos-9","centos-10"]' >> "$GITHUB_OUTPUT"
             echo 'upgrade_os_matrix=["fedora-44","centos-10"]' >> "$GITHUB_OUTPUT"
             echo 'run_heavy=true' >> "$GITHUB_OUTPUT"
@@ -254,7 +254,7 @@ jobs:
 
     runs-on: ubuntu-24.04
     # Rawhide is best-effort; don't let it block merges
-    continue-on-error: ${{ matrix.test_os == 'fedora-45' }}
+    continue-on-error: ${{ matrix.test_os == 'fedora-46' }}
 
     steps:
       - uses: actions/checkout@v7
