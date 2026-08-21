@@ -76,6 +76,7 @@ pub(crate) fn open_composefs_repo(rootfs_dir: &Dir) -> Result<crate::store::Comp
         .context("Failed to open composefs repository")
 }
 
+#[context("Initializing composefs repository")]
 pub(crate) async fn initialize_composefs_repository(
     state: &State,
     root_setup: &RootSetup,
