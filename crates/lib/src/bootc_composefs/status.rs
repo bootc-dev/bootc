@@ -14,7 +14,7 @@ use crate::{
     bootc_composefs::{
         boot::BootType,
         selinux::are_selinux_policies_compatible,
-        state::{get_composefs_usr_overlay_status, read_origin},
+        state::{get_usr_overlay_status, read_origin},
         utils::{compute_store_boot_digest_for_uki, get_uki_cmdline},
     },
     composefs_consts::{
@@ -1059,7 +1059,7 @@ async fn composefs_deployment_status_from(
         host.spec.boot_order = BootOrder::Rollback
     };
 
-    host.status.usr_overlay = get_composefs_usr_overlay_status().ok().flatten();
+    host.status.usr_overlay = get_usr_overlay_status().ok().flatten();
 
     set_soft_reboot_capability(storage, &mut host, sorted_bls_config, cmdline)?;
 
