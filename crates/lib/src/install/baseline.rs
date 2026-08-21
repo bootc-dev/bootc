@@ -9,11 +9,13 @@ use std::borrow::Cow;
 use std::fmt::Display;
 use std::fmt::Write as _;
 use std::io::Write;
+use std::path::Path;
 use std::process::Command;
 use std::process::Stdio;
 
 use anyhow::Ok;
 use anyhow::{Context, Result};
+use bootc_blockdev::Device;
 use bootc_utils::CommandRunExt;
 use camino::Utf8Path;
 use camino::Utf8PathBuf;
@@ -65,7 +67,7 @@ pub(crate) const EFIPN_SIZE_MB: u32 = 512;
 /// EFI Partition size for composefs installations
 /// We need more space than ostree as we have UKIs and UKI addons
 /// We might also need to store UKIs for pinned deployments
-pub(crate) const CFS_EFIPN_SIZE_MB: u32 = 1024;
+pub(crate) const CFS_EFIPN_SIZE_MB: u32 = 2048;
 #[cfg(feature = "install-to-disk")]
 pub(crate) const PREPBOOT_GUID: &str = "9E1A2D38-C612-4316-AA26-8B49521E5A8B";
 #[cfg(feature = "install-to-disk")]
@@ -190,6 +192,263 @@ pub(crate) fn udev_settle() -> Result<()> {
     Ok(())
 }
 
+/// Partition numbers resulting from partitioning, used to look up devices after.
+#[derive(Debug)]
+struct PartitionLayout {
+    esp_partno: Option<u32>,
+    boot_partno: Option<u32>,
+    rootpn: u32,
+    /// Whether systemd-repart created the ESP/boot partitions (skip mkfs for those)
+    used_repart: bool,
+}
+
+/// The json output for systemd-repart
+#[derive(Debug, Deserialize)]
+struct RepartPartition {
+    /// Human readable partition name
+    /// Ex. "esp", "root-x86_64"
+    #[serde(rename = "type")]
+    partition_type: String,
+    /// 0-indexed partition number
+    partno: u32,
+    #[allow(dead_code)]
+    fs: Option<String>,
+}
+
+fn can_use_systemd_repart() -> bool {
+    if Command::new("systemd-repart")
+        .arg("--help")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_err()
+    {
+        return false;
+    }
+
+    let repart_config_dirs = [
+        Path::new("/etc/repart.d"),
+        Path::new("/run/repart.d"),
+        Path::new("/usr/local/lib/repart.d"),
+        Path::new("/usr/lib/repart.d"),
+    ];
+
+    let has_config = repart_config_dirs.iter().any(|d| {
+        d.is_dir()
+            && d.read_dir()
+                .ok()
+                .is_some_and(|mut entries| entries.next().is_some())
+    });
+
+    return has_config;
+}
+
+/// Create partitions using systemd-repart
+/// Assumes we have systemd-repart definitions
+#[context("Running systemd-repart")]
+fn systemd_repart(
+    device: &Device,
+    root_size: Option<u64>,
+    rootfs: Option<Filesystem>,
+) -> Result<PartitionLayout> {
+    // Dry-run to check what partitions would be created
+    let dry_partitions = systemd_repart_run(device, true)?;
+
+    if dry_partitions.is_empty() {
+        anyhow::bail!("systemd-repart returned empty partitions");
+    }
+
+    let has_root = dry_partitions
+        .iter()
+        .any(|p| p.partition_type.starts_with("root-"));
+
+    if has_root {
+        // Root partition is defined in repart.d config, run for real
+        let partitions = systemd_repart_run(device, false)?;
+        let layout = parse_repart_layout(&partitions)?;
+        return Ok(layout);
+    }
+
+    // Root partition is not defined, create defintion for the root part
+    let mut root_conf = String::from("[Partition]\nType=root\n");
+    if let Some(size_mib) = root_size {
+        writeln!(root_conf, "SizeMinBytes={size_mib}M")?;
+        writeln!(root_conf, "SizeMaxBytes={size_mib}M")?;
+    }
+    match rootfs {
+        Some(fs) => writeln!(root_conf, "Format={fs}")?,
+        None => {
+            anyhow::bail!("Rootfs not specified")
+        }
+    }
+
+    std::fs::create_dir_all("/run/repart.d").context("Creating /run/repart.d")?;
+    std::fs::write("/run/repart.d/50-root.conf", &root_conf)
+        .context("Writing root repart config")?;
+
+    let partitions = systemd_repart_run(device, false)?;
+    let layout = parse_repart_layout(&partitions)?;
+    Ok(layout)
+}
+
+/// Run systemd-repart on the device and return the parsed JSON output.
+/// `dry_run`: if true, no changes are written to disk.
+/// `definitions`: if set, uses `--definitions=` and `--empty=allow`;
+/// otherwise uses the default config search paths with `--empty=force`.
+fn systemd_repart_run(device: &Device, dry_run: bool) -> Result<Vec<RepartPartition>> {
+    let mut cmd = Command::new("systemd-repart");
+
+    // Enable fsverity for ext4
+    // btrfs has fsverity enabled out of the box
+    cmd.env("SYSTEMD_REPART_MKFS_OPTIONS_EXT4", "-O verity");
+
+    let dry_run_arg = if dry_run {
+        "--dry-run=yes"
+    } else {
+        "--dry-run=no"
+    };
+    cmd.args([
+        dry_run_arg,
+        "--no-pager",
+        "--json=pretty",
+        "--empty=force",
+        "--root=/",
+    ]);
+
+    cmd.arg(device.path());
+
+    let output = cmd.output().context("Failed to run systemd-repart")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("systemd-repart failed: {stderr}");
+    }
+
+    serde_json::from_slice(&output.stdout).context("Failed to deserialize systemd-repart output")
+}
+
+/// Parse partition layout from systemd-repart JSON output.
+fn parse_repart_layout(partitions: &[RepartPartition]) -> Result<PartitionLayout> {
+    let mut esp_partno = None;
+    let mut boot_partno = None;
+    let mut rootpn = None;
+
+    for part in partitions {
+        // repart partno is 0-indexed, lsblk/sfdisk use 1-indexed
+        let partno = part.partno + 1;
+
+        match part.partition_type.as_str() {
+            "esp" => esp_partno = Some(partno),
+            "xbootldr" => boot_partno = Some(partno),
+            t if t.starts_with("root-") => rootpn = Some(partno),
+            _ => {}
+        }
+    }
+
+    let rootpn =
+        rootpn.ok_or_else(|| anyhow::anyhow!("systemd-repart output missing root partition"))?;
+
+    Ok(PartitionLayout {
+        esp_partno,
+        boot_partno,
+        rootpn,
+        used_repart: true,
+    })
+}
+
+/// Use sfdisk to create partitions
+#[context("Running sfdisk")]
+fn sfdisk(
+    device: &Device,
+    root_size: Option<u64>,
+    composefs_backend: bool,
+    requires_bootpart: bool,
+) -> Result<PartitionLayout> {
+    // Generate partitioning spec as input to sfdisk
+    let mut partno = 0;
+    let mut partitioning_buf = String::new();
+    writeln!(partitioning_buf, "label: gpt")?;
+    let random_label = uuid::Uuid::new_v4();
+    writeln!(&mut partitioning_buf, "label-id: {random_label}")?;
+    if cfg!(target_arch = "x86_64") {
+        partno += 1;
+        writeln!(
+            &mut partitioning_buf,
+            r#"size=1MiB, bootable, type=21686148-6449-6E6F-744E-656564454649, name="BIOS-BOOT""#
+        )?;
+    } else if cfg!(target_arch = "powerpc64") {
+        // PowerPC-PReP-boot
+        partno += 1;
+        let label = PREPBOOT_LABEL;
+        let uuid = PREPBOOT_GUID;
+        writeln!(
+            &mut partitioning_buf,
+            r#"size=4MiB, bootable, type={uuid}, name="{label}""#
+        )?;
+    } else if cfg!(any(target_arch = "aarch64", target_arch = "s390x")) {
+        // No bootloader partition is necessary
+    } else {
+        anyhow::bail!("Unsupported architecture: {}", std::env::consts::ARCH);
+    }
+
+    let esp_partno = if super::ARCH_USES_EFI {
+        let esp_guid = crate::discoverable_partition_specification::ESP;
+        partno += 1;
+
+        let esp_size = if composefs_backend {
+            CFS_EFIPN_SIZE_MB
+        } else {
+            EFIPN_SIZE_MB
+        };
+
+        writeln!(
+            &mut partitioning_buf,
+            r#"size={esp_size}MiB, type={esp_guid}, name="EFI-SYSTEM""#
+        )?;
+        Some(partno)
+    } else {
+        None
+    };
+
+    // Initialize the /boot filesystem.  Note that in the future, we may match
+    // what systemd/uapi-group encourages and make /boot be FAT32 as well, as
+    // it would aid systemd-boot.
+    let boot_partno = if requires_bootpart {
+        partno += 1;
+        writeln!(
+            &mut partitioning_buf,
+            r#"size={BOOTPN_SIZE_MB}MiB, name="boot""#
+        )?;
+        Some(partno)
+    } else {
+        None
+    };
+    let rootpn = partno + 1;
+    let root_size = root_size
+        .map(|v| Cow::Owned(format!("size={v}MiB, ")))
+        .unwrap_or_else(|| Cow::Borrowed(""));
+    let rootpart_uuid =
+        uuid::Uuid::parse_str(crate::discoverable_partition_specification::this_arch_root())?;
+    writeln!(
+        &mut partitioning_buf,
+        r#"{root_size}type={rootpart_uuid}, name="root""#
+    )?;
+    tracing::debug!("Partitioning: {partitioning_buf}");
+    Task::new("Initializing partitions", "sfdisk")
+        .arg("--wipe=always")
+        .arg(device.path())
+        .quiet()
+        .run_with_stdin_buf(Some(partitioning_buf.as_bytes()))
+        .context("Failed to run sfdisk")?;
+
+    Ok(PartitionLayout {
+        esp_partno,
+        boot_partno,
+        rootpn,
+        used_repart: false,
+    })
+}
+
 #[context("Creating rootfs")]
 #[cfg(feature = "install-to-disk")]
 pub(crate) fn install_create_rootfs(
@@ -198,13 +457,6 @@ pub(crate) fn install_create_rootfs(
 ) -> Result<RootSetup> {
     let install_config = state.install_config.as_ref();
     let luks_name = "root";
-    // Ensure we have a root filesystem upfront
-    let root_filesystem = opts
-        .filesystem
-        .or(install_config
-            .and_then(|c| c.filesystem_root())
-            .and_then(|r| r.fstype))
-        .ok_or_else(|| anyhow::anyhow!("No root filesystem specified"))?;
     // Verify that the target is empty (if not already wiped in particular, but it's
     // also good to verify that the wipe worked)
     let mut device = bootc_blockdev::list_dev(&opts.device)?;
@@ -237,10 +489,12 @@ pub(crate) fn install_create_rootfs(
         std::fs::remove_dir_all(&mntdir)?;
     }
 
+    let use_systemd_repart = can_use_systemd_repart();
+
     // Use the install configuration to find the block setup, if we have one
     let block_setup = if let Some(config) = install_config {
         config.get_block_setup(opts.block_setup.as_ref().copied())?
-    } else if opts.filesystem.is_some() {
+    } else if opts.filesystem.is_some() || use_systemd_repart {
         // Otherwise, if a filesystem is specified then we default to whatever was
         // specified via --block-setup, or the default
         opts.block_setup.unwrap_or_default()
@@ -279,83 +533,25 @@ pub(crate) fn install_create_rootfs(
     let bootfs = mntdir.join("boot");
     std::fs::create_dir_all(bootfs)?;
 
-    // Generate partitioning spec as input to sfdisk
-    let mut partno = 0;
-    let mut partitioning_buf = String::new();
-    writeln!(partitioning_buf, "label: gpt")?;
-    let random_label = uuid::Uuid::new_v4();
-    writeln!(&mut partitioning_buf, "label-id: {random_label}")?;
-    if cfg!(target_arch = "x86_64") {
-        partno += 1;
-        writeln!(
-            &mut partitioning_buf,
-            r#"size=1MiB, bootable, type=21686148-6449-6E6F-744E-656564454649, name="BIOS-BOOT""#
-        )?;
-    } else if cfg!(target_arch = "powerpc64") {
-        // PowerPC-PReP-boot
-        partno += 1;
-        let label = PREPBOOT_LABEL;
-        let uuid = PREPBOOT_GUID;
-        writeln!(
-            &mut partitioning_buf,
-            r#"size=4MiB, bootable, type={uuid}, name="{label}""#
-        )?;
-    } else if cfg!(any(target_arch = "aarch64", target_arch = "s390x")) {
-        // No bootloader partition is necessary
+    let layout = if use_systemd_repart {
+        systemd_repart(&device, root_size, opts.filesystem)?
     } else {
-        anyhow::bail!("Unsupported architecture: {}", std::env::consts::ARCH);
-    }
+        sfdisk(
+            &device,
+            root_size,
+            state.composefs_options.composefs_backend,
+            block_setup.requires_bootpart(),
+        )?
+    };
 
-    let esp_partno = if super::ARCH_USES_EFI {
-        let esp_guid = crate::discoverable_partition_specification::ESP;
-        partno += 1;
-
-        let esp_size = if state.composefs_options.composefs_backend {
-            CFS_EFIPN_SIZE_MB
+    tracing::debug!(
+        "Created partition table using {}",
+        if layout.used_repart {
+            "systemd-repart"
         } else {
-            EFIPN_SIZE_MB
-        };
-
-        writeln!(
-            &mut partitioning_buf,
-            r#"size={esp_size}MiB, type={esp_guid}, name="EFI-SYSTEM""#
-        )?;
-        Some(partno)
-    } else {
-        None
-    };
-
-    // Initialize the /boot filesystem.  Note that in the future, we may match
-    // what systemd/uapi-group encourages and make /boot be FAT32 as well, as
-    // it would aid systemd-boot.
-    let boot_partno = if block_setup.requires_bootpart() {
-        partno += 1;
-        writeln!(
-            &mut partitioning_buf,
-            r#"size={BOOTPN_SIZE_MB}MiB, name="boot""#
-        )?;
-        Some(partno)
-    } else {
-        None
-    };
-    let rootpn = partno + 1;
-    let root_size = root_size
-        .map(|v| Cow::Owned(format!("size={v}MiB, ")))
-        .unwrap_or_else(|| Cow::Borrowed(""));
-    let rootpart_uuid =
-        uuid::Uuid::parse_str(crate::discoverable_partition_specification::this_arch_root())?;
-    writeln!(
-        &mut partitioning_buf,
-        r#"{root_size}type={rootpart_uuid}, name="root""#
-    )?;
-    tracing::debug!("Partitioning: {partitioning_buf}");
-    Task::new("Initializing partitions", "sfdisk")
-        .arg("--wipe=always")
-        .arg(device.path())
-        .quiet()
-        .run_with_stdin_buf(Some(partitioning_buf.as_bytes()))
-        .context("Failed to run sfdisk")?;
-    tracing::debug!("Created partition table");
+            "sfdisk"
+        }
+    );
 
     // Full udev sync; it'd obviously be better to await just the devices
     // we're targeting, but this is a simple coarse hammer.
@@ -364,7 +560,25 @@ pub(crate) fn install_create_rootfs(
     // Re-read partition table to get updated children
     device.refresh()?;
 
-    let root_device = device.find_device_by_partno(rootpn)?;
+    // Ensure we have a root filesystem
+    let root_filesystem = if layout.used_repart {
+        let root = device.find_device_by_partno(layout.rootpn)?;
+        root.fstype
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("repart: Root filesystem type not defined"))?
+    } else {
+        let root_filesystem = opts
+            .filesystem
+            .or(install_config
+                .and_then(|c| c.filesystem_root())
+                .and_then(|r| r.fstype))
+            .ok_or_else(|| anyhow::anyhow!("No root filesystem specified"))?;
+
+        &root_filesystem.to_string()
+    };
+
+    let root_device = device.find_device_by_partno(layout.rootpn)?;
+
     // Verify the partition type matches the DPS root partition type for this architecture
     let expected_parttype = crate::discoverable_partition_specification::this_arch_root();
     if !root_device
@@ -373,7 +587,8 @@ pub(crate) fn install_create_rootfs(
         .is_some_and(|pt| pt.eq_ignore_ascii_case(expected_parttype))
     {
         anyhow::bail!(
-            "root partition {rootpn} has type {}; expected {expected_parttype}",
+            "root partition {} has type {}; expected {expected_parttype}",
+            layout.rootpn,
             root_device.parttype.as_deref().unwrap_or("<none>")
         );
     }
@@ -417,34 +632,63 @@ pub(crate) fn install_create_rootfs(
     };
 
     // Initialize the /boot filesystem
-    let bootdev = if let Some(bootpn) = boot_partno {
+    let bootdev = if let Some(bootpn) = layout.boot_partno {
         Some(device.find_device_by_partno(bootpn)?)
     } else {
         None
     };
-    let boot_uuid = if let Some(bootdev) = bootdev {
-        Some(
-            mkfs(&bootdev.path(), root_filesystem, "boot", opts.wipe, [])
-                .context("Initializing /boot")?,
-        )
+
+    let boot_uuid = match bootdev {
+        Some(bootdev) => {
+            let u = if layout.used_repart {
+                let u = bootdev
+                    .uuid
+                    .as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("bootdev UUID not found"))?;
+
+                u.parse::<uuid::Uuid>()
+                    .with_context(|| format!("Parsing bootdev UUID {u}"))?
+            } else {
+                mkfs(
+                    &bootdev.path(),
+                    root_filesystem.as_str().try_into()?,
+                    "boot",
+                    opts.wipe,
+                    [],
+                )
+                .context("Initializing /boot")?
+            };
+
+            Some(u)
+        }
+        None => None,
+    };
+
+    let root_uuid = if layout.used_repart {
+        // systemd-repart creates filesystem, just read the UUID it assigned
+        let u = root_device.uuid.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("Root device created by repart has no filesystem UUID")
+        })?;
+
+        u.parse::<uuid::Uuid>()
+            .with_context(|| format!("Parsing root fs UUID {u}"))?
     } else {
-        None
-    };
+        let rootfs: Filesystem = root_filesystem.as_str().try_into()?;
 
-    // Unconditionally enable fsverity for ext4
-    let mkfs_options = match root_filesystem {
-        Filesystem::Ext4 => ["-O", "verity"].as_slice(),
-        _ => [].as_slice(),
-    };
+        // Unconditionally enable fsverity for ext4
+        let mkfs_options = match rootfs {
+            Filesystem::Ext4 => ["-O", "verity"].as_slice(),
+            _ => [].as_slice(),
+        };
 
-    // Initialize rootfs
-    let root_uuid = mkfs(
-        &rootdev_path,
-        root_filesystem,
-        "root",
-        opts.wipe,
-        mkfs_options.iter().copied(),
-    )?;
+        mkfs(
+            &rootdev_path,
+            rootfs,
+            "root",
+            opts.wipe,
+            mkfs_options.iter().copied(),
+        )?
+    };
     let bootsrc = boot_uuid.as_ref().map(|uuid| format!("UUID={uuid}"));
     let bootarg = bootsrc.as_deref().map(|bootsrc| format!("boot={bootsrc}"));
     let boot = bootsrc.map(|bootsrc| MountSpec {
@@ -499,13 +743,15 @@ pub(crate) fn install_create_rootfs(
     crate::lsm::ensure_dir_labeled(&target_rootfs, "boot", None, 0o755.into(), sepolicy)?;
 
     // Create the EFI system partition, if applicable
-    if let Some(esp_partno) = esp_partno {
+    if let Some(esp_partno) = layout.esp_partno {
         let espdev = device.find_device_by_partno(esp_partno)?;
-        Task::new("Creating ESP filesystem", "mkfs.fat")
-            .args([&espdev.path(), "-n", "EFI-SYSTEM"])
-            .verbose()
-            .quiet_output()
-            .run()?;
+        if !layout.used_repart {
+            Task::new("Creating ESP filesystem", "mkfs.fat")
+                .args([&espdev.path(), "-n", "EFI-SYSTEM"])
+                .verbose()
+                .quiet_output()
+                .run()?;
+        }
         let efifs_path = bootfs.join(crate::bootloader::EFI_DIR);
         std::fs::create_dir(&efifs_path).context("Creating efi dir")?;
     }
