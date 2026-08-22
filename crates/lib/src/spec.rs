@@ -255,16 +255,20 @@ pub enum BootloaderKind {
     GRUBClassic,
 }
 
-impl Display for Bootloader {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let string = match self {
+impl Bootloader {
+    pub fn as_str(self) -> &'static str {
+        match self {
             Bootloader::Grub => "grub",
             Bootloader::GrubCC => "grub-cc",
             Bootloader::Systemd => "systemd",
             Bootloader::None => "none",
-        };
+        }
+    }
+}
 
-        write!(f, "{}", string)
+impl Display for Bootloader {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 
