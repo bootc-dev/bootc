@@ -33,6 +33,12 @@ def run_install_to_disk [
     target_image: string
     extra_bootc_args: list<string>
 ] {
+    # Remove usr overlay state for ostree
+    # We still need this even though we now have usr-overlay check in ostree branch
+    # as well, because ostree checks for a file inside /run/ostree/deployment-state/...
+    # for usr-overlay status
+    rm -rvf /run/ostree/deployment-state
+
     let composefs_args = if (tap is_composefs) {
         ["--composefs-backend", "--bootloader", $bootloader]
     } else {
