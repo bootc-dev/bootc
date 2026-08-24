@@ -960,63 +960,61 @@ async fn composefs_deployment_status_from(
     let booted_cfs = host.require_composefs_booted()?;
 
     let mut grub_menu_string = String::new();
-    let (is_rollback_queued, sorted_bls_config, grub_menu_entries) = match booted_cfs
-        .bootloader
-        .kind()?
-    {
-        BootloaderKind::GRUBClassic => match boot_type {
-            BootType::Bls => {
-                let bls_configs = get_sorted_type1_boot_entries(boot_dir, false)?;
+    let (is_rollback_queued, sorted_bls_config, grub_menu_entries) =
+        match booted_cfs.bootloader.kind()? {
+            BootloaderKind::GRUBClassic => match boot_type {
+                BootType::Bls => {
+                    let bls_configs = get_sorted_type1_boot_entries(boot_dir, true)?;
+                    let bls_config = bls_configs
+                        .first()
+                        .ok_or_else(|| anyhow::anyhow!("First boot entry not found"))?;
+
+                    match &bls_config.cfg_type {
+                        BLSConfigType::NonEFI { .. } => {
+                            let is_rollback_queued = rollback_queued_from_first_entry(
+                                bls_config,
+                                booted_composefs_digest.as_ref(),
+                            )?;
+
+                            (is_rollback_queued, Some(bls_configs), None)
+                        }
+
+                        BLSConfigType::EFI { .. } => {
+                            anyhow::bail!("Found 'efi' field in Type1 boot entry")
+                        }
+
+                        BLSConfigType::Unknown => anyhow::bail!("Unknown BLS Config Type"),
+                    }
+                }
+
+                BootType::Uki => {
+                    let menuentries =
+                        get_sorted_grub_uki_boot_entries(boot_dir, &mut grub_menu_string)?;
+
+                    let is_rollback_queued = !menuentries
+                        .first()
+                        .ok_or(anyhow::anyhow!("First boot entry not found"))?
+                        .body
+                        .chainloader
+                        .contains(booted_composefs_digest.as_ref());
+
+                    (is_rollback_queued, None, Some(menuentries))
+                }
+            },
+
+            // We will have BLS stuff and the UKI stuff in the same DIR
+            BootloaderKind::BLSCompatible => {
+                let bls_configs = get_sorted_type1_boot_entries(boot_dir, true)?;
                 let bls_config = bls_configs
                     .first()
-                    .ok_or_else(|| anyhow::anyhow!("First boot entry not found"))?;
+                    .ok_or(anyhow::anyhow!("First boot entry not found"))?;
 
-                match &bls_config.cfg_type {
-                    BLSConfigType::NonEFI { options, .. } => {
-                        let is_rollback_queued = !options
-                            .as_ref()
-                            .ok_or_else(|| anyhow::anyhow!("options key not found in bls config"))?
-                            .contains(booted_composefs_digest.as_ref());
+                let is_rollback_queued =
+                    rollback_queued_from_first_entry(bls_config, booted_composefs_digest.as_ref())?;
 
-                        (is_rollback_queued, Some(bls_configs), None)
-                    }
-
-                    BLSConfigType::EFI { .. } => {
-                        anyhow::bail!("Found 'efi' field in Type1 boot entry")
-                    }
-
-                    BLSConfigType::Unknown => anyhow::bail!("Unknown BLS Config Type"),
-                }
+                (is_rollback_queued, Some(bls_configs), None)
             }
-
-            BootType::Uki => {
-                let menuentries =
-                    get_sorted_grub_uki_boot_entries(boot_dir, &mut grub_menu_string)?;
-
-                let is_rollback_queued = !menuentries
-                    .first()
-                    .ok_or(anyhow::anyhow!("First boot entry not found"))?
-                    .body
-                    .chainloader
-                    .contains(booted_composefs_digest.as_ref());
-
-                (is_rollback_queued, None, Some(menuentries))
-            }
-        },
-
-        // We will have BLS stuff and the UKI stuff in the same DIR
-        BootloaderKind::BLSCompatible => {
-            let bls_configs = get_sorted_type1_boot_entries(boot_dir, true)?;
-            let bls_config = bls_configs
-                .first()
-                .ok_or(anyhow::anyhow!("First boot entry not found"))?;
-
-            let is_rollback_queued =
-                rollback_queued_from_first_entry(bls_config, booted_composefs_digest.as_ref())?;
-
-            (is_rollback_queued, Some(bls_configs), None)
-        }
-    };
+        };
 
     // Determine rollback deployment by matching extra deployment boot entries against entires read from /boot
     // This collects verity digest across bls and grub enties, we should just have one of them, but still works
@@ -1163,8 +1161,23 @@ mod tests {
             secondary_sort_key("fedora")
         );
 
-        tempdir.atomic_write("loader/entries/bootc_fedora-44-0.conf", default_entry)?;
-        tempdir.atomic_write("loader/entries/bootc_fedora-44-1.conf", other_entry)?;
+        // Production pairing (boot.rs): the primary entry carries sort-key
+        // "...-0" AND filename release "1" — systemd-boot sorts sort-key
+        // ascending, grub sorts the release field descending, both put it first.
+        tempdir.atomic_write(
+            format!(
+                "loader/entries/{}",
+                type1_entry_conf_file_name("fedora", 44, FILENAME_PRIORITY_PRIMARY)
+            ),
+            default_entry,
+        )?;
+        tempdir.atomic_write(
+            format!(
+                "loader/entries/{}",
+                type1_entry_conf_file_name("fedora", 44, FILENAME_PRIORITY_SECONDARY)
+            ),
+            other_entry,
+        )?;
 
         let sorted =
             get_sorted_type1_boot_entries_helper(&tempdir, true, false, Bootloader::Systemd)?;
@@ -1201,13 +1214,79 @@ mod tests {
             secondary_sort_key("fedora")
         );
 
-        tempdir.atomic_write("loader/entries/bootc_fedora-44-0.conf", default_entry)?;
-        tempdir.atomic_write("loader/entries/bootc_fedora-44-1.conf", other_entry)?;
+        // Production pairing: primary sort-key rides filename release "1"
+        tempdir.atomic_write(
+            format!(
+                "loader/entries/{}",
+                type1_entry_conf_file_name("fedora", 44, FILENAME_PRIORITY_PRIMARY)
+            ),
+            default_entry,
+        )?;
+        tempdir.atomic_write(
+            format!(
+                "loader/entries/{}",
+                type1_entry_conf_file_name("fedora", 44, FILENAME_PRIORITY_SECONDARY)
+            ),
+            other_entry,
+        )?;
 
         let sorted =
             get_sorted_type1_boot_entries_helper(&tempdir, true, false, Bootloader::Systemd)?;
         let first = sorted.first().unwrap();
 
+        assert_eq!(
+            first.sort_key.as_ref().unwrap(),
+            &primary_sort_key("fedora")
+        );
+
+        assert!(!rollback_queued_from_first_entry(first, BOOTED)?);
+        assert!(rollback_queued_from_first_entry(first, ROLLBACK)?);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_rollback_queued_from_first_entry_grub_type1() -> Result<()> {
+        const BOOTED: &str = "7e11ac46e3e022053e7226a20104ac656bf72d1a84e3a398b7cce70e9df188b6";
+        const ROLLBACK: &str = "febdf62805de2ae7b6b597f2a9775d9c8a753ba1e5f09298fc8fbe0b0d13bf01";
+
+        let tempdir = cap_std_ext::cap_tempfile::tempdir(cap_std::ambient_authority())?;
+        tempdir.create_dir_all("loader/entries")?;
+
+        let default_entry = format!(
+            "title Fedora Bootc\nversion 44\nsort-key {}\nlinux /boot/{BOOTED}/vmlinuz\ninitrd /boot/{BOOTED}/initramfs.img\noptions root=UUID=abc123 rw composefs={BOOTED}\n",
+            primary_sort_key("fedora")
+        );
+        let other_entry = format!(
+            "title Fedora Bootc\nversion 44\nsort-key {}\nlinux /boot/{ROLLBACK}/vmlinuz\ninitrd /boot/{ROLLBACK}/initramfs.img\noptions root=UUID=abc123 rw composefs={ROLLBACK}\n",
+            secondary_sort_key("fedora")
+        );
+
+        tempdir.atomic_write(
+            format!(
+                "loader/entries/{}",
+                type1_entry_conf_file_name("fedora", 44, FILENAME_PRIORITY_PRIMARY)
+            ),
+            default_entry,
+        )?;
+        tempdir.atomic_write(
+            format!(
+                "loader/entries/{}",
+                type1_entry_conf_file_name("fedora", 44, FILENAME_PRIORITY_SECONDARY)
+            ),
+            other_entry,
+        )?;
+
+        // Grub and GrubCC ignore sort-key and sort the filename release field
+        // descending ("1" > "0"), so the primary entry is grub's default —
+        // the premise the first-entry check stands on for those bootloaders.
+        let sorted = get_sorted_type1_boot_entries_helper(
+            &tempdir,
+            true,
+            false,
+            crate::spec::Bootloader::Grub,
+        )?;
+        let first = sorted.first().unwrap();
         assert_eq!(
             first.sort_key.as_ref().unwrap(),
             &primary_sort_key("fedora")
