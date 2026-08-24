@@ -820,6 +820,32 @@ fn set_reboot_capable_uki_deployments(
     Ok(())
 }
 
+/// Whether the bootloader will boot a deployment other than the booted one,
+/// i.e. whether the first (default) boot entry references some other deployment.
+#[context("Determining if rollback is queued")]
+fn rollback_queued_from_first_entry(
+    bls_config: &BLSConfig,
+    booted_composefs_digest: &str,
+) -> Result<bool> {
+    match &bls_config.cfg_type {
+        // For UKI boot
+        BLSConfigType::EFI { key } => {
+            let path = match key {
+                EFIKey::Efi(path) | EFIKey::Uki(path) => path,
+            };
+            Ok(!path.as_str().contains(booted_composefs_digest))
+        }
+
+        // For boot entry Type1
+        BLSConfigType::NonEFI { options, .. } => Ok(!options
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("options key not found in bls config"))?
+            .contains(booted_composefs_digest)),
+
+        BLSConfigType::Unknown => anyhow::bail!("Unknown BLS Config Type"),
+    }
+}
+
 #[context("Getting composefs deployment status")]
 async fn composefs_deployment_status_from(
     storage: &Storage,
@@ -985,23 +1011,8 @@ async fn composefs_deployment_status_from(
                 .first()
                 .ok_or(anyhow::anyhow!("First boot entry not found"))?;
 
-            let is_rollback_queued = match &bls_config.cfg_type {
-                // For UKI boot
-                BLSConfigType::EFI { key } => {
-                    let path = match key {
-                        EFIKey::Efi(path) | EFIKey::Uki(path) => path,
-                    };
-                    path.as_str().contains(booted_composefs_digest.as_ref())
-                }
-
-                // For boot entry Type1
-                BLSConfigType::NonEFI { options, .. } => !options
-                    .as_ref()
-                    .ok_or(anyhow::anyhow!("options key not found in bls config"))?
-                    .contains(booted_composefs_digest.as_ref()),
-
-                BLSConfigType::Unknown => anyhow::bail!("Unknown BLS Config Type"),
-            };
+            let is_rollback_queued =
+                rollback_queued_from_first_entry(bls_config, booted_composefs_digest.as_ref())?;
 
             (is_rollback_queued, Some(bls_configs), None)
         }
@@ -1131,6 +1142,79 @@ mod tests {
                 .unwrap();
         assert_eq!(result[0].sort_key.as_ref().unwrap(), "2");
         assert_eq!(result[1].sort_key.as_ref().unwrap(), "1");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_rollback_queued_from_first_entry_uki() -> Result<()> {
+        const BOOTED: &str = "1111111111111111111111111111111111111111111111111111111111111111";
+        const ROLLBACK: &str = "2222222222222222222222222222222222222222222222222222222222222222";
+
+        let tempdir = cap_std_ext::cap_tempfile::tempdir(cap_std::ambient_authority())?;
+        tempdir.create_dir_all("loader/entries")?;
+
+        let default_entry = format!(
+            "title Fedora Bootc\nversion 44\nsort-key {}\nuki /EFI/Linux/bootc/bootc_composefs-{BOOTED}.efi\n",
+            primary_sort_key("fedora")
+        );
+        let other_entry = format!(
+            "title Fedora Bootc\nversion 44\nsort-key {}\nuki /EFI/Linux/bootc/bootc_composefs-{ROLLBACK}.efi\n",
+            secondary_sort_key("fedora")
+        );
+
+        tempdir.atomic_write("loader/entries/bootc_fedora-44-0.conf", default_entry)?;
+        tempdir.atomic_write("loader/entries/bootc_fedora-44-1.conf", other_entry)?;
+
+        let sorted =
+            get_sorted_type1_boot_entries_helper(&tempdir, true, false, Bootloader::Systemd)?;
+        let first = sorted.first().unwrap();
+
+        // The entry carrying the primary sort key is the bootloader default
+        assert_eq!(
+            first.sort_key.as_ref().unwrap(),
+            &primary_sort_key("fedora")
+        );
+
+        // The default entry references the booted deployment: nothing is queued
+        assert!(!rollback_queued_from_first_entry(first, BOOTED)?);
+        // The default entry references another deployment: a rollback is queued
+        assert!(rollback_queued_from_first_entry(first, ROLLBACK)?);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_rollback_queued_from_first_entry_type1() -> Result<()> {
+        const BOOTED: &str = "7e11ac46e3e022053e7226a20104ac656bf72d1a84e3a398b7cce70e9df188b6";
+        const ROLLBACK: &str = "febdf62805de2ae7b6b597f2a9775d9c8a753ba1e5f09298fc8fbe0b0d13bf01";
+
+        let tempdir = cap_std_ext::cap_tempfile::tempdir(cap_std::ambient_authority())?;
+        tempdir.create_dir_all("loader/entries")?;
+
+        let default_entry = format!(
+            "title Fedora Bootc\nversion 44\nsort-key {}\nlinux /boot/{BOOTED}/vmlinuz\ninitrd /boot/{BOOTED}/initramfs.img\noptions root=UUID=abc123 rw composefs={BOOTED}\n",
+            primary_sort_key("fedora")
+        );
+        let other_entry = format!(
+            "title Fedora Bootc\nversion 44\nsort-key {}\nlinux /boot/{ROLLBACK}/vmlinuz\ninitrd /boot/{ROLLBACK}/initramfs.img\noptions root=UUID=abc123 rw composefs={ROLLBACK}\n",
+            secondary_sort_key("fedora")
+        );
+
+        tempdir.atomic_write("loader/entries/bootc_fedora-44-0.conf", default_entry)?;
+        tempdir.atomic_write("loader/entries/bootc_fedora-44-1.conf", other_entry)?;
+
+        let sorted =
+            get_sorted_type1_boot_entries_helper(&tempdir, true, false, Bootloader::Systemd)?;
+        let first = sorted.first().unwrap();
+
+        assert_eq!(
+            first.sort_key.as_ref().unwrap(),
+            &primary_sort_key("fedora")
+        );
+
+        assert!(!rollback_queued_from_first_entry(first, BOOTED)?);
+        assert!(rollback_queued_from_first_entry(first, ROLLBACK)?);
 
         Ok(())
     }
