@@ -24,6 +24,14 @@ def imgsrc [] {
     $env.BOOTC_upgrade_image? | default "localhost/bootc-derived-local"
 }
 
+# Assert that bootc status reports the expected rollbackQueued value.
+# Regression check for https://github.com/bootc-dev/bootc/issues/2405 where
+# the composefs sd-boot UKI path reported the inverse.
+def assert_rollback_queued [expected: bool] {
+    let queued = (bootc status --json | from json).status.rollbackQueued
+    assert equal $queued $expected
+}
+
 # Run on the first boot - capture initial state and switch to new image
 def initial_switch [] {
     tap begin "bootc rollback test"
@@ -69,8 +77,14 @@ def second_boot_rollback [] {
     assert ("/usr/share/bootc-rollback-marker" | path exists)
     print "New image artifacts verified"
 
+    # A freshly booted deployment has no rollback queued
+    assert_rollback_queued false
+
     print "Performing bootc rollback..."
     bootc rollback
+
+    # ...and a real queued rollback must be reported as one
+    assert_rollback_queued true
 
     print "Rollback initiated, rebooting to previous deployment..."
     tmt-reboot
@@ -88,6 +102,9 @@ def back_to_first_depl [boot_count] {
     if ("/usr/share/bootc-rollback-marker" | path exists) {
         error make { msg: "Rollback target marker still present - rollback may have failed" }
     }
+
+    # Booting the intended deployment consumes any queued rollback
+    assert_rollback_queued false
 }
 
 # Verify that rollback was successful and we're back to original deployment
@@ -96,7 +113,9 @@ def third_boot_verify [] {
 
     # Finally test a double rollback, to make sure the rollback state is queued then unqueued
     bootc rollback
+    assert_rollback_queued true
     bootc rollback
+    assert_rollback_queued false
 
     tmt-reboot
 }
