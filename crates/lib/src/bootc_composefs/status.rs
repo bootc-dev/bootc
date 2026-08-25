@@ -440,9 +440,13 @@ pub(crate) async fn get_container_manifest_and_config(
     Ok(ImgConfigManifest { manifest, config })
 }
 
-/// Directory where systemd-boot / BLS-compatible bootloaders expect Type 1
-/// boot entries. Its presence is used as a signal that a non-EFI system
-/// nevertheless uses the BLS layout (see [`classify_bootloader`]).
+/// Directory where BLS-compatible bootloaders expect Type 1 boot entries.
+///
+/// Its presence says nothing about the bootloader on its own: EFI systems
+/// have it too, and GRUB reads the same entries via `blscfg`. It is only
+/// consulted when there are no EFI variables to inspect, and then only
+/// together with [`GRUB_DIRS`] to tell a BLS-native bootloader apart from
+/// GRUB (see [`classify_bootloader`]).
 const BLS_ENTRIES_DIR: &str = "/boot/loader/entries";
 
 /// Directories where GRUB keeps its own configuration and modules. Their
@@ -522,10 +526,6 @@ pub(crate) fn get_bootloader() -> Result<Bootloader> {
     }
 
     let efi_result = read_uefi_var(EFI_LOADER_INFO);
-    // Non-EFI systems have a stable filesystem-based classification, so we
-    // can cache. EFI systems are left uncached to preserve the pre-existing
-    // behavior of re-reading `EFI_LOADER_INFO` on every call — some tests
-    // observe bootloader-info changes over the course of a run.
     let non_efi = matches!(
         &efi_result,
         Err(EfiError::SystemNotUEFI) | Err(EfiError::MissingVar),
@@ -539,9 +539,9 @@ pub(crate) fn get_bootloader() -> Result<Bootloader> {
         non_efi && GRUB_DIRS.iter().any(|d| std::path::Path::new(d).is_dir()),
     )?;
 
-    if non_efi {
-        BOOTLOADER.get_or_init(|| bootloader);
-    }
+    // The bootloader cannot change over the lifetime of a single bootc
+    // invocation, so cache unconditionally.
+    BOOTLOADER.get_or_init(|| bootloader);
 
     Ok(bootloader)
 }
