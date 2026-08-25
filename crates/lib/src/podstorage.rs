@@ -26,6 +26,7 @@ use cap_std_ext::cmdext::{CapStdExtCommandExt, CmdFds};
 use cap_std_ext::dirext::CapStdExtDirExt;
 use cap_std_ext::{cap_std, cap_tempfile};
 use fn_error_context::context;
+use ostree_ext::container::{ImageReference, Transport};
 use ostree_ext::ostree::{self};
 use std::os::fd::OwnedFd;
 use tokio::process::Command as AsyncCommand;
@@ -53,6 +54,15 @@ pub(crate) const SUBPATH: &str = "storage";
 /// The path to the "runroot" with transient runtime state; this is
 /// relative to the /run directory
 const RUNROOT: &str = "bootc/storage";
+
+/// Only bare names and `containers-storage:` references can name an image in storage.
+fn resolvable_in_storage(image: &str) -> bool {
+    match ImageReference::try_from(image) {
+        Ok(r) => r.transport == Transport::ContainerStorage,
+        // No transport prefix
+        Err(_) => true,
+    }
+}
 
 /// A bootc-owned instance of `containers-storage:`.
 pub(crate) struct CStorage {
@@ -416,6 +426,10 @@ impl CStorage {
     pub(crate) async fn exists(&self, image: &str) -> Result<bool> {
         // Sadly https://docs.rs/containers-image-proxy/latest/containers_image_proxy/struct.ImageProxy.html#method.open_image_optional
         // doesn't work with containers-storage yet
+        if !resolvable_in_storage(image) {
+            tracing::debug!("Not a storage reference: {image}");
+            return Ok(false);
+        }
         let mut cmd = AsyncCommand::from(self.new_image_cmd()?);
         cmd.args(["exists", image]);
         Ok(cmd.status().await?.success())
@@ -495,4 +509,24 @@ impl CStorage {
 mod tests {
     use super::*;
     static_assertions::assert_not_impl_any!(CStorage: Sync);
+
+    #[test]
+    fn test_resolvable_in_storage() {
+        assert!(resolvable_in_storage("quay.io/example/foo:latest"));
+        assert!(resolvable_in_storage("localhost:5000/example/foo:latest"));
+        assert!(resolvable_in_storage(
+            "containers-storage:localhost/foo:latest"
+        ));
+        assert!(!resolvable_in_storage(
+            "registry:quay.io/example/foo:latest"
+        ));
+        assert!(!resolvable_in_storage("oci:/var/tmp/image.oci:latest"));
+        assert!(!resolvable_in_storage("oci-archive:/var/tmp/foo.tar"));
+        assert!(!resolvable_in_storage("dir:/var/tmp/foo"));
+        assert!(!resolvable_in_storage(
+            "docker://quay.io/example/foo:latest"
+        ));
+        assert!(!resolvable_in_storage("docker-archive:/var/tmp/foo.tar"));
+        assert!(!resolvable_in_storage("docker-daemon:localhost/foo:latest"));
+    }
 }
