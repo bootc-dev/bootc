@@ -210,7 +210,10 @@ struct RepartPartition {
     #[serde(rename = "type")]
     partition_type: String,
     /// 0-indexed partition number
-    partno: u32,
+    /// absent in older systemd-repart
+    /// versions, in c9s
+    #[serde(default)]
+    partno: Option<u32>,
     #[allow(dead_code)]
     fs: Option<String>,
 }
@@ -338,9 +341,11 @@ fn parse_repart_layout(partitions: &[RepartPartition]) -> Result<PartitionLayout
     let mut boot_partno = None;
     let mut rootpn = None;
 
-    for part in partitions {
+    for (idx, part) in partitions.iter().enumerate() {
         // repart partno is 0-indexed, lsblk/sfdisk use 1-indexed
-        let partno = part.partno + 1;
+        // Fall back to array indexing for older systemd-repart without partno
+        // like the version in c9s
+        let partno = part.partno.unwrap_or(idx as u32) + 1;
 
         match part.partition_type.as_str() {
             "esp" => esp_partno = Some(partno),
