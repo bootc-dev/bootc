@@ -30,7 +30,7 @@ linux-kernel-cmdline = { workspace = true }
 # This is a git dependency — not published to crates.io.
 # When updating, also check the bcvk-qemu Cargo.toml for its own
 # dependency versions (cap-std-ext, etc.) to avoid conflicts.
-bcvk-qemu = { git = "https://github.com/bootc-dev/bcvk", rev = "d0433d9efec73836c447ab511a365421dd90da82" }
+bcvk-qemu = { git = "https://github.com/bootc-dev/bcvk", rev = "9be68478bb6591cfced31c008410e136a9f8c6db" }
 data-encoding = "2.9"
 indicatif = { workspace = true }
 libtest-mimic = "0.8.0"
