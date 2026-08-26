@@ -6,6 +6,7 @@
     "rhel-9.9": "images.paas.redhat.com/bootc/rhel-bootc:latest-9.9",
     "centos-9": "quay.io/centos-bootc/centos-bootc:stream9",
     "centos-10": "quay.io/centos-bootc/centos-bootc:stream10",
+    "eln-11": "quay.io/fedora/eln-bootc:latest",
     "fedora-42": "quay.io/fedora/fedora-bootc:42",
     "fedora-43": "quay.io/fedora/fedora-bootc:43",
     "fedora-44": "quay.io/fedora/fedora-bootc:44",
