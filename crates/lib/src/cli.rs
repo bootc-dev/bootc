@@ -1033,7 +1033,14 @@ pub(crate) fn ensure_self_unshared_mount_namespace() -> Result<()> {
             anyhow::bail!("Failed to unshare mount namespace");
         }
     }
-    bootc_utils::reexec::reexec_with_guardenv(recurse_env, &["unshare", "-m", "--"])
+
+    // Pass --propagation=slave so that if systemd gpt-auto-generator has
+    // automount for /boot it gets propagated inside the new mount ns
+    // for us to be able to access the /boot mount even if it's expired
+    bootc_utils::reexec::reexec_with_guardenv(
+        recurse_env,
+        &["unshare", "-m", "--propagation=slave", "--"],
+    )
 }
 
 /// Load global storage state, expecting that we're booted into a bootc system.
