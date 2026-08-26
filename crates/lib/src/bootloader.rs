@@ -95,12 +95,27 @@ pub(crate) fn supports_bootupd(root: &Dir) -> Result<bool> {
     Ok(r)
 }
 
-/// Check whether the target bootupd supports `--filesystem`.
+/// Whether `bootupctl backend install --help` advertises `flag`.
 ///
-/// Runs `bootupctl backend install --help` and looks for `--filesystem` in the
-/// output. When `chroot_target` is set the command runs inside a chroot
-/// (via [`ChrootCmd`]) so we probe the binary from the target image.
-fn bootupd_supports_filesystem(chroot_target: Option<&Utf8Path>) -> Result<bool> {
+/// clap renders an option as `--flag <VAL>`, or `-f, --flag <VAL>` when it has a
+/// short form, always ahead of the description. Match only in that leading
+/// option column, and on a whole token: a flag named inside another option's
+/// prose is not support for it, and `--boot` is not `--bootloader`.
+fn help_advertises_flag(help: &str, flag: &str) -> bool {
+    help.lines().any(|line| {
+        line.split_whitespace()
+            .take_while(|token| token.starts_with('-'))
+            .any(|token| token.trim_end_matches(',') == flag)
+    })
+}
+
+/// The output of `bootupctl backend install --help` from the target bootupd.
+///
+/// When `chroot_target` is set the command runs inside a chroot (via
+/// [`ChrootCmd`]) so we probe the binary from the target image rather than the
+/// buildroot.
+#[context("Querying bootupd install options")]
+fn bootupd_install_help(chroot_target: Option<&Utf8Path>) -> Result<String> {
     let help_args = ["bootupctl", "backend", "install", "--help"];
     let output = if let Some(target_root) = chroot_target {
         ChrootCmd::new(target_root)
@@ -112,16 +127,7 @@ fn bootupd_supports_filesystem(chroot_target: Option<&Utf8Path>) -> Result<bool>
             .log_debug()
             .run_get_string()?
     };
-
-    let use_filesystem = output.contains("--filesystem");
-
-    if use_filesystem {
-        tracing::debug!("bootupd supports --filesystem");
-    } else {
-        tracing::debug!("bootupd does not support --filesystem, falling back to --device");
-    }
-
-    Ok(use_filesystem)
+    Ok(output)
 }
 
 /// Install the bootloader via bootupd.
@@ -155,6 +161,9 @@ pub(crate) fn install_via_bootupd(
     let verbose = std::env::var_os("BOOTC_BOOTLOADER_DEBUG").map(|_| "-vvvv");
     // bootc defaults to only targeting the platform boot method.
     let bootupd_opts = (!configopts.generic_image).then_some(["--update-firmware", "--auto"]);
+
+    // Probe the target bootupd's install options once, up front.
+    let help = bootupd_install_help(chroot_target)?;
 
     // When not running inside the target container (through `--src-imgref`) we
     // run bootupctl from the deployment via a chroot ([`ChrootCmd`]).
@@ -190,9 +199,7 @@ pub(crate) fn install_via_bootupd(
     // parent via require_single_root().  (Older bootupd doesn't support
     // multiple backing devices anyway.)
     // Computed before building bootupd_args so the String lives long enough.
-    let root_device_path = if bootupd_supports_filesystem(chroot_target)
-        .context("Probing bootupd --filesystem support")?
-    {
+    let root_device_path = if help_advertises_flag(&help, "--filesystem") {
         None
     } else {
         Some(device.require_single_root()?.path())
@@ -474,6 +481,37 @@ pub(crate) fn install_via_zipl(device: &bootc_blockdev::Device, boot_uuid: &str)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_help_advertises_flag() {
+        // Excerpted from `bootupctl backend install --help` of a recent and
+        // an old release.
+        const NEW: &str = "      --filesystem <FILESYSTEM>\n      --bootloader <BOOTLOADER>\n";
+        const OLD: &str = "      --device <DEVICE>\n";
+        let cases = [
+            (NEW, "--filesystem", true),
+            (NEW, "--bootloader", true),
+            (OLD, "--filesystem", false),
+            (OLD, "--bootloader", false),
+            // An option rendered with a short form still counts.
+            ("  -f, --filesystem <FS>\n", "--filesystem", true),
+            // A flag must not match a longer one that starts with it.
+            ("      --bootloader <B>\n", "--boot", false),
+            // Nor a mention inside another option's description.
+            (
+                "      --device <D>  ignored when --filesystem is given\n",
+                "--filesystem",
+                false,
+            ),
+        ];
+        for (help, flag, expected) in cases {
+            assert_eq!(
+                help_advertises_flag(help, flag),
+                expected,
+                "{flag} in {help:?}"
+            );
+        }
+    }
 
     #[test]
     fn test_parse_systemd_version() {
