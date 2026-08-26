@@ -60,7 +60,69 @@ $ sudo systemctl reboot
 See [Booting local builds](booting-local-builds.md) for more about the
 `containers-storage` transport. Rebuild and switch to this derived image
 whenever either the base image or the machine-specific initramfs configuration
-changes. A systemd service and timer can automate those steps if required.
+changes. A systemd service and timer can automate the rebuild if required.
+
+### Automate the local build
+
+For example, store the build context in `/var/lib/machine-bootc` and create a
+system service:
+
+```systemd
+# /etc/systemd/system/machine-bootc-build.service
+[Unit]
+Description=Build the machine-local bootc image
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/var/lib/machine-bootc
+ExecStart=/usr/bin/podman build --security-opt=label=disable --pull=newer --tag localhost/machine-bootc:latest .
+```
+
+Schedule the build with a timer:
+
+```systemd
+# /etc/systemd/system/machine-bootc-build.timer
+[Unit]
+Description=Build the machine-local bootc image daily
+
+[Timer]
+OnCalendar=*-*-* 06:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+```
+
+Enable the timer:
+
+```console
+$ sudo systemctl daemon-reload
+$ sudo systemctl enable --now machine-bootc-build.timer
+```
+
+This example automates only the build. It intentionally leaves staging the new
+image and rebooting as explicit operations. A deployment can be automated too,
+but should include appropriate validation and reboot policy for the machine.
+
+## The rpm-ostree client-side initramfs mechanism
+
+On rpm-ostree-managed systems, `rpm-ostree initramfs --enable` enables
+client-side initramfs regeneration and accepts additional dracut arguments.
+However, this mechanism predates bootc and records the regenerated initramfs as
+a local rpm-ostree modification in the deployment origin.
+
+Bootc does not currently know how to reproduce or carry that configuration
+onto a new container-image deployment. It marks a deployment with rpm-ostree
+local modifications as incompatible and `bootc upgrade` refuses to update it.
+Running `rpm-ostree reset` removes the local modifications and allows bootc to
+manage the deployment again, but also removes the client-side initramfs
+configuration. It may remove other rpm-ostree package layering and overrides as
+well, so inspect the pending changes before running it. Therefore, do not use
+`rpm-ostree initramfs --enable` for this workflow if the system is intended to
+continue receiving updates through bootc; use a derived container image
+instead. See also [Relationship with rpm-ostree](relationships.md#relationship-with-rpm-ostree).
 
 ## Future direction
 
