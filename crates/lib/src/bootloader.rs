@@ -10,6 +10,7 @@ use cap_std_ext::dirext::CapStdExtDirExt;
 use fn_error_context::context;
 
 use bootc_mount as mount;
+use rustix::fs::statfs;
 
 use crate::bootc_composefs::boot::{MountedImageRoot, SecurebootKeys};
 use crate::utils;
@@ -46,6 +47,18 @@ const BOOTCTL_RANDOM_SEED_MIN_VERSION: u32 = 257;
 /// in place (bootupd will overwrite them during installation).
 // TODO: clean all ESPs on multi-device setups
 pub(crate) fn mount_esp_part(root: &Dir, root_path: &Utf8Path, is_ostree: bool) -> Result<()> {
+    // systemd-gpt-auto-generator automounts ESP at /boot
+    let is_boot_mountpoint = root.is_mountpoint("boot")?;
+
+    if matches!(is_boot_mountpoint, Some(true)) {
+        let statfs = statfs(root_path.join("boot").as_std_path())?;
+
+        // We probably don't need to be this thorough, but no harm done
+        if statfs.f_type == libc::MSDOS_SUPER_MAGIC {
+            return Ok(());
+        }
+    }
+
     let efi_path = Utf8Path::new("boot").join(crate::bootloader::EFI_DIR);
     let Some(esp_fd) = root
         .open_dir_optional(&efi_path)

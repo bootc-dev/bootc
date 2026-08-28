@@ -193,3 +193,8 @@ check:
   summary: Test composefs UKI dumpfile diff print
   duration: 30m
   test: nu booted/test-composefs-uki-dumpfile.nu
+
+/test-49-system-reinstall-composefs:
+  summary: Test system-reinstall with composefs backend and bootloader compatibility
+  duration: 60m
+  test: nu booted/test-system-reinstall-composefs.nu

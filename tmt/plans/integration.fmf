@@ -311,4 +311,11 @@ execute:
     how: fmf
     test:
       - /tmt/tests/tests/test-48-composefs-uki-dumpfile
+
+/plan-49-system-reinstall-composefs:
+  summary: Test system-reinstall with composefs backend and bootloader compatibility
+  discover:
+    how: fmf
+    test:
+      - /tmt/tests/tests/test-49-system-reinstall-composefs
 # END GENERATED PLANS
