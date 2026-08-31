@@ -895,6 +895,55 @@ fn prune_known_run_paths(paths: &mut BTreeSet<Utf8PathBuf>) {
     }
 }
 
+/// List sourced from [workspace.metadata.binary-dependencies] in the workspace
+/// Cargo.toml via build.rs.
+const BINARY_DEPS: &str = env!("BOOTC_BINARY_DEPS");
+
+/// Return the resolved set of required runtime binaries.
+///
+/// Entries that match the default podman/skopeo names are replaced with the
+/// values from `bootc_utils::{podman,skopeo}_bin()` so that
+/// `BOOTC_EXP_EXTERNAL_CONTAINER_TOOL` overrides are honoured.
+fn resolve_runtime_bins<'a>(podman: &'a str, skopeo: &'a str) -> Vec<&'a str> {
+    let mut bins: Vec<&str> = BINARY_DEPS
+        .split(',')
+        .map(|b| match b {
+            "podman" => podman,
+            "skopeo" => skopeo,
+            other => other,
+        })
+        .collect();
+    bins.sort_unstable();
+    bins.dedup();
+    bins
+}
+
+fn resolved_runtime_bins() -> Vec<&'static str> {
+    resolve_runtime_bins(bootc_utils::podman_bin(), bootc_utils::skopeo_bin())
+}
+
+#[distributed_slice(LINTS)]
+static LINT_RUNTIME_DEPS: Lint = Lint::new_warning(
+    "runtime-deps",
+    "Check that required runtime dependencies are present in the image.",
+    check_runtime_deps,
+);
+fn check_runtime_deps(root: &Dir, _config: &LintExecutionConfig) -> LintResult {
+    let mut missing = Vec::new();
+    for bin in resolved_runtime_bins() {
+        if !crate::utils::have_executable_in_root(root, bin)? {
+            missing.push(bin);
+        }
+    }
+    if missing.is_empty() {
+        return lint_ok();
+    }
+    lint_err(format!(
+        "Missing required runtime dependencies: {}",
+        missing.join(", ")
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::LazyLock;
@@ -933,7 +982,17 @@ mod tests {
         root.create_dir_all(Utf8Path::new(PREPAREROOT_PATH).parent().unwrap())?;
         root.atomic_write(PREPAREROOT_PATH, PREPAREROOT)?;
 
+        for bin in resolved_runtime_bins() {
+            add_runtime_bin(&root, bin)?;
+        }
+
         Ok(root)
+    }
+
+    fn add_runtime_bin(root: &Dir, bin: &str) -> Result<()> {
+        root.create_dir_all("usr/bin")?;
+        root.write(format!("usr/bin/{bin}"), "")?;
+        Ok(())
     }
 
     #[test]
@@ -1458,6 +1517,38 @@ mod tests {
         format_items(&config, header, items_numbers.iter(), &mut output_str)?;
         similar_asserts::assert_eq!(output_str, "Numbers:\n  1\n  2\n  3\n");
 
+        Ok(())
+    }
+
+    #[test]
+    fn test_runtime_deps() -> Result<()> {
+        let root = &fixture()?;
+        let config = &LintExecutionConfig::default();
+
+        let bins = resolved_runtime_bins();
+        let err = check_runtime_deps(root, config)?.unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            format!("Missing required runtime dependencies: {}", bins.join(", "))
+        );
+
+        for bin in &bins {
+            add_runtime_bin(root, bin)?;
+        }
+        check_runtime_deps(root, config)??;
+
+        let podman = bootc_utils::podman_bin();
+        root.remove_file(format!("usr/bin/{podman}"))?;
+        let err = check_runtime_deps(root, config)?.unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            format!("Missing required runtime dependencies: {podman}")
+        );
+
+        assert_eq!(
+            resolve_runtime_bins("dtool", "dtool"),
+            ["chcon", "dtool", "ostree", "setpriv", "systemctl", "zstd"]
+        );
         Ok(())
     }
 }
