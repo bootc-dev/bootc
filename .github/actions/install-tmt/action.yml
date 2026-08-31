@@ -11,5 +11,5 @@ runs:
         # handling for the `connect` provisioner we use here (e.g.
         # https://github.com/teemtee/tmt/issues/5068); bump deliberately.
         # renovate: datasource=pypi depName=tmt
-        export VERSION=1.74.0
+        export VERSION=1.78.0
         pip install --user "tmt[provision-virtual]==${VERSION}"
