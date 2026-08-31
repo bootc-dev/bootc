@@ -295,7 +295,7 @@ dependencies = [
 
 [[package]]
 name = "bootc-internal-blockdev"
-version = "1.16.10"
+version = "1.16.11"
 dependencies = [
  "anyhow",
  "bootc-internal-mount",
@@ -315,7 +315,7 @@ dependencies = [
 
 [[package]]
 name = "bootc-internal-mount"
-version = "1.16.10"
+version = "1.16.11"
 dependencies = [
  "anyhow",
  "bootc-internal-utils",
@@ -332,7 +332,7 @@ dependencies = [
 
 [[package]]
 name = "bootc-internal-utils"
-version = "1.16.10"
+version = "1.16.11"
 dependencies = [
  "anstream",
  "anyhow",
@@ -354,7 +354,7 @@ dependencies = [
 
 [[package]]
 name = "bootc-lib"
-version = "1.16.10"
+version = "1.16.11"
 dependencies = [
  "anstream",
  "anstyle",
