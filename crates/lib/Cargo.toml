@@ -10,7 +10,7 @@ version = "1.16.10"
 # In general we try to keep this pinned to what's in the latest RHEL9.
 rust-version = "1.85.0"
 
-include = ["/src", "LICENSE-APACHE", "LICENSE-MIT"]
+include = ["/src", "/build.rs", "LICENSE-APACHE", "LICENSE-MIT"]
 
 [dependencies]
 # Internal crates
@@ -91,6 +91,9 @@ install-to-disk = []
 rhsm = []
 # Implementation detail of man page generation.
 docgen = ["clap_mangen"]
+
+[build-dependencies]
+cargo_metadata = "0.19"
 
 [lints]
 workspace = true

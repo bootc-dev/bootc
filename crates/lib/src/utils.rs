@@ -68,12 +68,32 @@ pub(crate) fn find_mount_option<'a>(
 }
 
 pub fn have_executable(name: &str) -> Result<bool> {
-    let Some(path) = std::env::var_os("PATH") else {
-        return Ok(false);
-    };
-    for mut elt in std::env::split_paths(&path) {
-        elt.push(name);
+    for elt in executable_candidates(name) {
         if elt.try_exists()? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn executable_candidates(name: &str) -> Vec<PathBuf> {
+    let Some(path) = std::env::var_os("PATH") else {
+        return Vec::new();
+    };
+    std::env::split_paths(&path)
+        .map(|mut path| {
+            path.push(name);
+            path
+        })
+        .collect()
+}
+
+/// Like [`have_executable`], but checks inside a filesystem root (e.g. a
+/// container image) rather than the host's `$PATH`.
+pub fn have_executable_in_root(root: &Dir, name: &str) -> Result<bool> {
+    for candidate in executable_candidates(name) {
+        let candidate = candidate.strip_prefix("/").unwrap_or(&candidate);
+        if root.try_exists(candidate)? {
             return Ok(true);
         }
     }
@@ -335,5 +355,19 @@ mod tests {
     fn test_have_executable() {
         assert!(have_executable("true").unwrap());
         assert!(!have_executable("someexethatdoesnotexist").unwrap());
+    }
+
+    #[test]
+    fn test_have_executable_in_root() -> anyhow::Result<()> {
+        use cap_std_ext::cap_std;
+
+        let root = cap_std_ext::cap_tempfile::tempdir(cap_std::ambient_authority())?;
+        assert!(!have_executable_in_root(&root, "podman")?);
+
+        root.create_dir_all("usr/bin")?;
+        root.write("usr/bin/podman", "")?;
+        assert!(have_executable_in_root(&root, "podman")?);
+        assert!(!have_executable_in_root(&root, "missing")?);
+        Ok(())
     }
 }
