@@ -205,10 +205,13 @@ There is a `--composefs-backend` option for `bootc install` to explicitly select
 
 The composefs backend is experimental; on-disk formats are subject to change.
 
+### Stability blockers
+
+- [Dual EROFS v1/v2 generation](https://github.com/bootc-dev/bootc/pull/2248) and https://github.com/bootc-dev/bootc/pull/2353
+
 ### Important
 
 - Extended install APIs: Ability to cleanly implement anaconda %post and osbuild post mutations and general post-install pre-reboot; right now some tools just mount the deployment directory (note this one also relates to [APIs in general](https://github.com/bootc-dev/bootc/issues/522))
-- [Dual EROFS v1/v2 generation](https://github.com/bootc-dev/bootc/pull/2248): `bootc install` currently generates both EROFS v1 and v2 images for every deployment, since v1 is required on older kernels (e.g. RHEL 9/CentOS Stream 9) while v2 is the modern native format. The overhead is small since EROFS images only hold metadata, but this dual generation is a stopgap until we can drop v1 support.
 - [zstd:chunked pull failures](https://github.com/bootc-dev/bootc/issues/2408): Images pushed with `--compression-format zstd:chunked` currently fail to pull on the composefs backend ("unexpected EOF reading tar entry"). A [decode fix](https://github.com/composefs/composefs-rs/pull/381) is in flight in composefs-rs and reaches bootc with the next composefs-rs update; until then publishers should use plain zstd (or gzip).
 
 ## Related issues
