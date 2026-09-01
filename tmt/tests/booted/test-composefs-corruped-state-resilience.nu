@@ -35,6 +35,7 @@ def first_boot [] {
     }
 
     let booted_verity = $st.status.booted.composefs.verity
+    let missing_verity = "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
 
     # Add some random entry in /boot/loader/entries to simulate
     # https://github.com/bootc-dev/bootc/issues/2208
@@ -43,7 +44,7 @@ def first_boot [] {
         cd ($entries_dir)
         cp * new-entry.conf
         
-        sed -i 's;($booted_verity);bad-verity;' new-entry.conf
+        sed -i 's;($booted_verity);($missing_verity);' new-entry.conf
     "
 
     # This should work but log a warning in journal
@@ -51,7 +52,7 @@ def first_boot [] {
 
     assert (
         journalctl F_MESSAGE_ID=d264f924dadb4c31bff0412107d391fb
-        | str contains $"No origin file for deployment bad-verity"
+        | str contains $"No origin file for deployment ($missing_verity)"
     )
 
     # Create a simple derived image to switch to
