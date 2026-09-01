@@ -2,6 +2,8 @@
 # tmt:
 #   summary: Verify etc merge conflicts are caught during upgrade, not finalization
 #   duration: 15m
+# extra:
+#   skip_if_ostree: true
 #
 # Verifies that file-to-directory and directory-to-file type changes between
 # the current /etc and the new image's /etc are detected during `bootc switch`
@@ -11,10 +13,6 @@
 # No reboot needed: the upgrade is expected to fail before staging.
 use std assert
 use tap.nu
-
-if not (tap is_composefs) {
-    exit 0
-}
 
 tap begin "etc merge conflict detection during upgrade"
 

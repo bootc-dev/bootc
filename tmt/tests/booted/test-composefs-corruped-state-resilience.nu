@@ -2,13 +2,11 @@
 # tmt:
 #   summary: Test composefs backend resilience to state corruption
 #   duration: 30m
+# extra:
+#   skip_if_ostree: true
 
 use std assert
 use tap.nu
-
-if not (tap is_composefs) {
-    exit 0
-}
 
 let st = bootc status --json | from json
 let booted = $st.status.booted.image
