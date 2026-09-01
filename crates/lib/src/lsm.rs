@@ -256,12 +256,17 @@ pub(crate) enum SELinuxLabelState {
     Labeled,
 }
 
+fn selinux_context_is_unlabeled(context: &[u8]) -> bool {
+    context.split(|b| *b == b':').nth(2) == Some(b"unlabeled_t".as_slice())
+}
+
 /// Query the SELinux labeling for a particular path
 pub(crate) fn has_security_selinux(root: &Dir, path: &Utf8Path) -> Result<SELinuxLabelState> {
     // TODO: avoid hardcoding a max size here
     let mut buf = [0u8; 2048];
     let fdpath = format!("/proc/self/fd/{}/{path}", root.as_raw_fd());
     match rustix::fs::lgetxattr(fdpath, "security.selinux", &mut buf) {
+        Ok(n) if selinux_context_is_unlabeled(&buf[..n]) => Ok(SELinuxLabelState::Unlabeled),
         Ok(_) => Ok(SELinuxLabelState::Labeled),
         Err(rustix::io::Errno::OPNOTSUPP) => Ok(SELinuxLabelState::Unsupported),
         Err(rustix::io::Errno::NODATA) => Ok(SELinuxLabelState::Unlabeled),
@@ -572,5 +577,18 @@ mod tests {
         }
         let found: &[(&[u8], &[u8])] = &[(b"foo", b"bar"), (SELINUX_XATTR, b"foo_t")];
         assert!(xattrs_have_selinux(&Variant::from(found)));
+    }
+
+    #[test]
+    fn test_selinux_context_is_unlabeled() {
+        for (context, expected) in [
+            (b"system_u:object_r:unlabeled_t:s0".as_slice(), true),
+            (b"system_u:object_r:unlabeled_t:s0\0".as_slice(), true),
+            (b"system_u:object_r:default_t:s0".as_slice(), false),
+            (b"unlabeled_t".as_slice(), false),
+            (b"".as_slice(), false),
+        ] {
+            assert_eq!(selinux_context_is_unlabeled(context), expected);
+        }
     }
 }
