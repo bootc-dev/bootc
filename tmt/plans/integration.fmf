@@ -290,6 +290,7 @@ execute:
     how: fmf
     test:
       - /tmt/tests/tests/test-45-composefs-corruped-state-resilience
+  extra-skip_if_ostree: true
 
 /plan-46-etc-merge-conflict:
   summary: Verify etc merge conflicts are caught during upgrade, not finalization
@@ -297,6 +298,7 @@ execute:
     how: fmf
     test:
       - /tmt/tests/tests/test-46-etc-merge-conflict
+  extra-skip_if_ostree: true
 
 /plan-47-download-only-switch:
   summary: Execute download-only switch tests
@@ -311,4 +313,5 @@ execute:
     how: fmf
     test:
       - /tmt/tests/tests/test-48-composefs-uki-dumpfile
+  extra-skip_if_ostree: true
 # END GENERATED PLANS

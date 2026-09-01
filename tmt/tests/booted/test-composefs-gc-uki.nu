@@ -8,10 +8,6 @@
 use std assert
 use tap.nu
 
-if not (tap is_composefs) {
-    exit 0
-}
-
 # bootc status
 let st = bootc status --json | from json
 let booted = $st.status.booted.image

@@ -12,10 +12,6 @@
 use std assert
 use tap.nu
 
-if not (tap is_composefs) {
-    exit 0
-}
-
 tap begin "bootc switch to same-digest image must error"
 
 # Copy the booted image into podman storage so we can retag it.

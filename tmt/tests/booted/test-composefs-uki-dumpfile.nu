@@ -2,13 +2,11 @@
 # tmt:
 #   summary: Test composefs UKI dumpfile diff print
 #   duration: 30m
+# extra:
+#   skip_if_ostree: true
 
 use std assert
 use tap.nu
-
-if not (tap is_composefs) {
-    exit 0
-}
 
 # bootc status
 let st = bootc status --json | from json
