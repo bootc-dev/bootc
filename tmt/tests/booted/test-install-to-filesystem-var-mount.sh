@@ -65,6 +65,7 @@ RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp
       --secrets /run/secrets \
       --kernel-dir /run/kernel/boot/\$kver \
       --seal-state $seal_state \
+      --erofs-version v1 \
       "${allow_missing_verity[@]}"
 
 RUNEOF

@@ -8,6 +8,7 @@
 ARG boot_type=bls
 ARG seal_state=unsealed
 ARG filesystem=ext4
+ARG erofs_version=v1
 
 # Capture contrib/packaging scripts for use in later stages
 FROM scratch AS packaging
@@ -41,7 +42,7 @@ RUN --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
 # bootc is already installed in localhost/bootc (our tools base); the
 # container ukify command it provides is needed for seal-uki.
 FROM tools AS sealed-upgrade-uki
-ARG boot_type seal_state filesystem
+ARG boot_type seal_state filesystem erofs_version
 RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
     --mount=type=secret,id=secureboot_key \
     --mount=type=secret,id=secureboot_cert \
@@ -65,7 +66,8 @@ if test "${boot_type}" = "uki"; then
       --secrets /run/secrets \
       "${allow_missing_verity[@]}" \
       --kernel-dir "/run/kernel/boot/$kver" \
-      --seal-state $seal_state
+      --seal-state $seal_state \
+      --erofs-version $erofs_version
 fi
 EORUN
 

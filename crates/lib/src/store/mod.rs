@@ -125,6 +125,14 @@ use crate::utils::{deployment_fd, open_dir_remount_rw};
 /// See <https://github.com/containers/composefs-rs/issues/159>
 pub type ComposefsRepository = composefs::repository::Repository<Sha512HashValue>;
 
+/// Configure new repositories to retain boot images for both supported formats.
+pub(crate) fn set_dual_erofs_formats(config: &mut RepositoryConfig) {
+    config.erofs_formats = composefs::erofs::format::FormatConfig {
+        default: composefs::erofs::format::FormatVersion::V1,
+        extra: [composefs::erofs::format::FormatVersion::V2].into(),
+    };
+}
+
 /// Path to the physical root
 pub const SYSROOT: &str = "sysroot";
 
@@ -722,9 +730,10 @@ impl Storage {
                 repo
             }
             Err(RepositoryOpenError::MetadataMissing) => {
-                // No meta.json — this is a fresh directory.  Initialize a new
-                // repository with the current defaults.
-                let config = RepositoryConfig::new(composefs::fsverity::Algorithm::SHA512);
+                // No meta.json — this is a fresh directory.  Existing repositories
+                // above retain their recorded format configuration.
+                let mut config = RepositoryConfig::new(composefs::fsverity::Algorithm::SHA512);
+                set_dual_erofs_formats(&mut config);
                 let config = if ostree_verity.enabled {
                     config
                 } else {
