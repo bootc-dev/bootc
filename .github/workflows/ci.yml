@@ -243,6 +243,8 @@ jobs:
         uses: bootc-dev/actions/bootc-ubuntu-setup@main
       - name: Build mdbook
         run: just build-mdbook
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
   # Build packages for each test OS
   package:
     if: needs.compute-ci-level.outputs.run_heavy == 'true'
