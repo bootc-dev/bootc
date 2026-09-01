@@ -284,12 +284,12 @@ execute:
     test:
       - /tmt/tests/tests/test-44-shadow-fixup
 
-/plan-45-composefs-corruped-state-resilience:
+/plan-45-composefs-corrupted-state-resilience:
   summary: Test composefs backend resilience to state corruption
   discover:
     how: fmf
     test:
-      - /tmt/tests/tests/test-45-composefs-corruped-state-resilience
+      - /tmt/tests/tests/test-45-composefs-corrupted-state-resilience
   extra-skip_if_ostree: true
 
 /plan-46-etc-merge-conflict:

@@ -174,10 +174,10 @@ check:
   duration: 30m
   test: nu booted/test-44-shadow-fixup.nu
 
-/test-45-composefs-corruped-state-resilience:
+/test-45-composefs-corrupted-state-resilience:
   summary: Test composefs backend resilience to state corruption
   duration: 30m
-  test: nu booted/test-composefs-corruped-state-resilience.nu
+  test: nu booted/test-composefs-corrupted-state-resilience.nu
 
 /test-46-etc-merge-conflict:
   summary: Verify etc merge conflicts are caught during upgrade, not finalization
