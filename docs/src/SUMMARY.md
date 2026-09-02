@@ -22,6 +22,7 @@
 - [Accessing registries and offline updates](registries-and-offline.md)
 - [Logically bound images](logically-bound-images.md)
 - [Booting local builds](booting-local-builds.md)
+- [Managing the initramfs after installation](initramfs.md)
 - [`man bootc`](man/bootc.8.md)
 - [`man bootc-status`](man/bootc-status.8.md)
 - [`man bootc-upgrade`](man/bootc-upgrade.8.md)
