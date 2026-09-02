@@ -758,6 +758,23 @@ fn parse_absolute_path(value: &str) -> std::result::Result<Utf8PathBuf, String> 
 }
 
 /// Hidden, internal only options
+#[derive(Debug, Parser, PartialEq, Eq)]
+pub(crate) struct FsckOpts {
+    /// Inspect existing state without initializing storage or changing mounts.
+    #[clap(long)]
+    readonly: bool,
+    /// Emit a bounded JSON diagnostic report. Implies --readonly.
+    #[clap(long)]
+    report: bool,
+}
+
+impl FsckOpts {
+    pub(crate) fn readonly(&self) -> bool {
+        self.readonly || self.report
+    }
+}
+
+/// Hidden, internal only options
 #[derive(Debug, clap::Subcommand, PartialEq, Eq)]
 pub(crate) enum InternalsOpts {
     SystemdGenerator {
@@ -781,7 +798,7 @@ pub(crate) enum InternalsOpts {
     #[clap(subcommand)]
     Selinux(SelinuxOpts),
     /// Perform consistency checking.
-    Fsck,
+    Fsck(FsckOpts),
     /// Perform cleanup actions
     Cleanup,
     Relabel {
@@ -2489,9 +2506,13 @@ async fn run_from_opt(opt: Opt) -> Result<CliExitStatus> {
             }
             InternalsOpts::Cfs { args } => composefs_ctl::run_from_iter(args.iter()).await,
             InternalsOpts::Reboot => crate::reboot::reboot(),
-            InternalsOpts::Fsck => {
-                let storage = &get_storage().await?;
-                crate::fsck::fsck(&storage, std::io::stdout().lock()).await?;
+            InternalsOpts::Fsck(opts) => {
+                if opts.readonly() {
+                    crate::fsck::fsck_readonly(root, opts.report, std::io::stdout().lock()).await?;
+                } else {
+                    let storage = &get_storage().await?;
+                    crate::fsck::fsck(&storage, std::io::stdout().lock()).await?;
+                }
                 Ok(())
             }
             InternalsOpts::FixupEtcFstab => crate::deploy::fixup_etc_fstab(&root),
@@ -3016,6 +3037,16 @@ mod tests {
             }
             _ => panic!("Expected Upgrade variant"),
         }
+    }
+
+    #[test]
+    fn test_fsck_report_implies_readonly() {
+        let opts = match Opt::try_parse_from(["bootc", "internals", "fsck", "--report"]).unwrap() {
+            Opt::Internals(InternalsOpts::Fsck(opts)) => opts,
+            other => panic!("unexpected options: {other:?}"),
+        };
+        assert!(opts.report);
+        assert!(opts.readonly());
     }
 
     #[test]
