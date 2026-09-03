@@ -183,7 +183,7 @@ jobs:
       - name: Fetch external dependencies (with retry)
         run: just build-fetch
 
-      - name: Integration tests
+      - name: Build images and test binaries
         run: |
           set -xeu
           # Build images as regular user, then copy to root's podman storage
@@ -197,13 +197,19 @@ jobs:
 
           # Build test binaries before any sudo commands to avoid cargo permission issues
           cargo build --release -p tests-integration
+          cargo build --release -p system-reinstall-bootc
 
           sudo podman build -t localhost/bootc-fsverity -f ci/Containerfile.install-fsverity
 
           df -h /
           sudo install -m 0755 target/release/tests-integration /usr/bin/bootc-integration-tests
+          sudo install -m 0755 target/release/system-reinstall-bootc /usr/bin/system-reinstall-bootc
           sudo rm target -rf
           df -h /
+
+      - name: Integration tests
+        run: |
+          set -xeu
           # The ostree-container tests
           sudo podman run --privileged --pid=host -v /:/run/host -v $(pwd):/src:ro -v /var/tmp:/var/tmp \
             --tmpfs /var/lib/containers \
@@ -216,14 +222,10 @@ jobs:
           # inspect system state after the install tests.
           sudo lsblk
           sudo mount
-          
-          # system-reinstall-bootc tests
-          cargo build --release -p system-reinstall-bootc
 
           # not sure why this is missing in the ubuntu image but just creating this directory allows the tests to pass
           sudo mkdir -p /run/sshd
 
-          sudo install -m 0755 target/release/system-reinstall-bootc /usr/bin/system-reinstall-bootc
           # These tests may mutate the system live so we can't run in parallel
           sudo bootc-integration-tests system-reinstall localhost/bootc --test-threads=1
 
@@ -530,6 +532,9 @@ jobs:
           name: packages-${{ matrix.test_os }}
           path: target/packages/
 
+      - name: Fetch external dependencies (with retry)
+        run: BOOTC_SKIP_PACKAGE=1 just build-fetch
+
       - name: Build container with baseconfig
         run: BOOTC_SKIP_PACKAGE=1 just build
 
@@ -633,7 +638,15 @@ jobs:
           name: packages-centos-10
           path: target/packages/
 
-      - name: Build and run container export test
+      - name: Fetch external dependencies (with retry)
+        run: BOOTC_SKIP_PACKAGE=1 just build-fetch
+
+      - name: Build container and fetch Anaconda ISO
+        run: |
+          BOOTC_SKIP_PACKAGE=1 just build
+          BOOTC_SKIP_PACKAGE=1 just fetch-anaconda-iso
+
+      - name: Run container export test
         run: |
           BOOTC_SKIP_PACKAGE=1 just test-container-export
 

@@ -1,2 +1,2 @@
 [Image]
-Image=registry.access.redhat.com/ubi9/podman:latest
+Image=docker.io/library/alpine:latest

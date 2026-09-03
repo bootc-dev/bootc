@@ -33,7 +33,7 @@ if not $has_storage {
     # And verify this works
     bootc image cmd list -q o>/dev/null
 
-    bootc image cmd pull busybox
+    bootc image cmd pull oci:/usr/share/bootc-test/busybox-oci
     podman --storage-opt=additionalimagestore=/usr/lib/bootc/storage image exists busybox
 
     # Images in bootc storage should be listed with type "unified"

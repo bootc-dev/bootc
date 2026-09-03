@@ -3,6 +3,7 @@
 #   summary: Test bootc install --karg-delete
 #   duration: 30m
 # extra:
+#   try_bind_storage: true
 #   fixme_skip_if_composefs: true
 #
 use std assert

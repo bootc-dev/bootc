@@ -3,6 +3,7 @@
 #   summary: Test soft reboot with SELinux policy changes
 #   duration: 30m
 # extra:
+#   try_bind_storage: true
 #   fixme_skip_if_uki: true
 #
 # Verify that soft reboot is blocked when SELinux policies differ
@@ -30,119 +31,28 @@ bootc status
 def initial_build [] {
     tap begin "Build base image and test soft reboot with SELinux policy change"
 
-    let td = mktemp -d
-    cd $td
+    # The derived image with a custom SELinux policy module pre-installed is
+    # built in the CI build phase (via `just _build-selinux-policy-image`) and
+    # exposed to this VM via --bind-storage-ro / STORAGE_OPTS additionalimagestore.
+    # Pull it into bootc's own storage before switching.
+    bootc image pull-from-default-storage localhost/bootc-selinux-tools
 
-    bootc image copy-to-storage
-
-    # copy-to-storage does not copy repo file
-    # but OSCI gating test needs repo to install package
-    let os = open /usr/lib/os-release
-        | lines
-        | filter {|l| $l != "" and not ($l | str starts-with "#") }
-        | parse "{key}={value}"
-        | reduce {|it, acc|
-            $acc | upsert $it.key ($it.value | str trim -c '"')
-    }
-    mut repo_copy = ""
-
-    if $os.ID == "rhel" {
-        cp /etc/yum.repos.d/rhel.repo .
-        $repo_copy = "COPY rhel.repo /etc/yum.repos.d/"
-    } else if $os.ID == "centos" {
-        let gpgkey = (
-            open /etc/yum.repos.d/centos.repo
-            | lines
-            | find --regex '^gpgkey='
-            | first
-            | split row "="
-            | last
-        )
-
-        if ($gpgkey | is-empty) {
-            print -e "Error: Could not find gpgkey in /etc/yum.repos.d/centos.repo"
-            exit 1
-        }
-
-        # Enable latest repos to avoid version skew between
-        # installed image and building image
-        let repo_content = $"[compose-baseos]
-name=CentOS Stream $releasever Compose BaseOS
-baseurl=https://composes.stream.centos.org/stream-$releasever/production/latest-CentOS-Stream/compose/BaseOS/$basearch/os/
-gpgcheck=1
-enabled=1
-priority=1
-gpgkey=($gpgkey)
-exclude=kernel-debug* kernel-uki-virt*
-
-[compose-appstream]
-name=CentOS Stream $releasever Compose AppStream
-baseurl=https://composes.stream.centos.org/stream-$releasever/production/latest-CentOS-Stream/compose/AppStream/$basearch/os/
-gpgcheck=1
-enabled=1
-priority=1
-gpgkey=($gpgkey)
-exclude=kernel-debug* kernel-uki-virt*
-"
-        $repo_content | save --force centos-compose.repo
-
-        $repo_copy = "COPY centos-compose.repo /etc/yum.repos.d/"
-    }
-
-    # Create a derived container that installs a custom SELinux policy module
-    # Installing a policy module will change the compiled policy checksum
-    # Following Colin's suggestion and the composefs-rs example
-    # We create a minimal policy module and install it
-    (tap make_uki_containerfile $"
-FROM localhost/bootc as base
-($repo_copy)
-
-# Install tools needed to build and install SELinux policy modules
-RUN dnf install -y selinux-policy-devel checkpolicy policycoreutils
-
-# Create a minimal SELinux policy module that will change the policy checksum
-# We install it to ensure it's part of the deployment filesystem
-RUN <<EORUN
-    set -eux
-    mkdir -p /tmp/bootc-test-policy
-    cd /tmp/bootc-test-policy
-    echo 'module bootc_test_policy 1.0;' > bootc_test_policy.te
-    echo 'require {' >> bootc_test_policy.te
-    echo '    type unconfined_t;' >> bootc_test_policy.te
-    echo '    class file { read write };' >> bootc_test_policy.te
-    echo '}' >> bootc_test_policy.te
-    echo 'type bootc_test_t;' >> bootc_test_policy.te
-    checkmodule -M -m -o bootc_test_policy.mod bootc_test_policy.te
-    semodule_package -o bootc_test_policy.pp -m bootc_test_policy.mod
-    semodule -i bootc_test_policy.pp
-    rm -rf /tmp/bootc-test-policy
-    # Clean up dnf cache and logs, and SELinux policy generation artifacts to satisfy lint checks
-    dnf clean all
-    rm -rf /var/log/dnf* /var/log/hawkey.log /var/log/rhsm
-    rm -rf /var/cache/dnf /var/lib/dnf
-    rm -rf /var/lib/sepolgen /var/lib/rhsm /var/cache/ldconfig
-EORUN
-") | save Dockerfile
-    
-    # Build the derived image
-    podman build --quiet -t localhost/bootc-derived-policy .
-    
     # Verify soft reboot preparation hasn't happened yet
     assert (not ("/run/nextroot" | path exists))
-    
+
     # Try to soft reboot - this should fail because policies differ
-    bootc switch --soft-reboot=auto --transport containers-storage localhost/bootc-derived-policy
+    bootc switch --soft-reboot=auto --transport containers-storage localhost/bootc-selinux-tools
     let st = bootc status --json | from json
-    
+
     # Verify staged deployment exists
     assert ($st.status.staged != null) "Expected staged deployment to exist"
-    
+
     # The staged deployment should NOT be soft-reboot capable because policies differ
     assert (not $st.status.staged.softRebootCapable) "Expected soft reboot to be blocked due to SELinux policy difference, but softRebootCapable is true"
-    
+
     # Verify soft reboot preparation didn't happen
     assert (not ("/run/nextroot" | path exists)) "Soft reboot should not be prepared when policies differ"
-    
+
     # Do a full reboot
     tmt-reboot
 }
@@ -150,12 +60,12 @@ EORUN
 # The second boot; verify we're in the derived image
 def second_boot [] {
     tap begin "Verify deployment with different SELinux policy"
-    
+
     # Verify we're in the new deployment
     let st = bootc status --json | from json
     let booted = $st.status.booted.image
-    assert ($booted.image.image | str contains "bootc-derived-policy") $"Expected booted image to contain 'bootc-derived-policy', got: ($booted.image.image)"
-    
+    assert ($booted.image.image | str contains "bootc-selinux-tools") $"Expected booted image to contain 'bootc-selinux-tools', got: ($booted.image.image)"
+
     tap ok
 }
 

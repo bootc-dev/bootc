@@ -89,3 +89,13 @@ fi
 dnf clean all
 # Clean logs and caches
 rm /var/log/* /var/cache /var/lib/{dnf,rpm-state,rhsm} -rf
+
+# Pre-fetch the busybox OCI image for the composefs cfs pull test
+# (030-test-composefs.nu).  We save it as an OCI layout so the test can
+# use "oci:" transport instead of "docker://" and avoid a live registry
+# pull inside the test VM.  This runs after dnf clean so it doesn't affect
+# the dnf cache, but still within the network-allowed fetch stage.
+mkdir -p /usr/share/bootc-test/busybox-oci
+skopeo copy --retry-times 5 \
+    docker://docker.io/library/busybox:latest \
+    oci:/usr/share/bootc-test/busybox-oci
