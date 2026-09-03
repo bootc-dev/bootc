@@ -144,6 +144,7 @@ mod aleph;
 pub(crate) mod baseline;
 pub(crate) mod completion;
 pub(crate) mod config;
+pub(crate) mod migrate;
 mod osbuild;
 pub(crate) mod osconfig;
 
@@ -549,6 +550,51 @@ pub(crate) struct InstallToExistingRootOpts {
 
     #[clap(flatten)]
     pub(crate) composefs_opts: InstallComposefsOpts,
+
+    /// Preserve the running system's `/var` data into the new bootc deployment.
+    ///
+    /// After a plain `bootc install to-existing-root`, the new deployment's
+    /// `/var` is initially empty (ostree bind-mounts it from a fresh directory).
+    /// Passing this flag performs the following additional steps **after** the
+    /// core install completes:
+    ///
+    ///   1. The running kernel and initramfs are saved to
+    ///      `<root>/var/lib/pkgmode-rollback/` BEFORE `/boot` is wiped.
+    ///   2. `/var` content is copied into the new deployment:
+    ///      - **Reflink copy** (btrfs / XFS): `cp --reflink=always` performs an
+    ///        instantaneous copy-on-write clone — no extra disk space consumed.
+    ///      - **Bind-mount unit** (ext4 fallback): a `var.mount` systemd unit is
+    ///        injected into the new deployment's `etc/`, causing the first boot
+    ///        to bind-mount the old `/var` from `/sysroot/var`.
+    ///   3. A "Previous OS" BLS boot entry is written so GRUB presents a
+    ///      package-mode rollback option (sort-key `zz-pkgmode`, last in menu).
+    ///
+    /// The running system's `root_path` must be mounted (e.g. `-v /:/target`).
+    #[clap(long)]
+    pub(crate) preserve_var: bool,
+
+    /// Merge the running system's `/etc` customisations into the new deployment.
+    ///
+    /// Plain `bootc install to-existing-root` populates the new deployment's
+    /// `/etc` directly from the image.  The running admin's customisations
+    /// (NIC profiles, SSH host keys, secrets, custom CA certificates, etc.)
+    /// remain at `<root>/etc` but are not applied to the new deployment.
+    ///
+    /// Passing this flag runs a 3-way merge using the `etc-merge` algorithm
+    /// after the core install completes:
+    ///
+    ///   A (pristine baseline) = `<deploy>/usr/etc`  — image's shipped defaults
+    ///   B (current live)      = `<root>/etc`        — running system's `/etc`
+    ///   C (new deployment)    = `<deploy>/etc`      — deploy target
+    ///
+    /// The diff A→B captures every file the admin changed relative to the image
+    /// defaults and applies those changes onto C.  This is the same algorithm
+    /// bootc uses during `bootc upgrade`, applied at install time rather than
+    /// only at upgrade time.
+    ///
+    /// The running system's `root_path` must be mounted (e.g. `-v /:/target`).
+    #[clap(long)]
+    pub(crate) merge_etc: bool,
 }
 
 #[derive(Debug, clap::Parser, PartialEq, Eq)]
@@ -2765,7 +2811,24 @@ pub(crate) async fn install_to_existing_root(opts: InstallToExistingRootOpts) ->
         false => Cleanup::Skip,
     };
 
-    let opts = InstallToFilesystemOpts {
+    // Extract migration flags before opts is consumed.
+    let preserve_var = opts.preserve_var;
+    let merge_etc = opts.merge_etc;
+    let root_path = std::path::PathBuf::from(opts.root_path.as_str());
+
+    // Phase 0 (migration only): save the running kernel/initramfs BEFORE
+    // clean_boot_directories() wipes /boot inside install_to_filesystem.
+    let kver = if preserve_var {
+        println!();
+        println!("Saving running kernel and initramfs for package-mode rollback...");
+        let kver = migrate::save_pkgmode_kernel(&root_path)
+            .context("Saving package-mode kernel before /boot wipe")?;
+        Some(kver)
+    } else {
+        None
+    };
+
+    let fs_opts = InstallToFilesystemOpts {
         filesystem_opts: InstallTargetFilesystemOpts {
             root_path: opts.root_path,
             root_mount_spec: None,
@@ -2780,7 +2843,25 @@ pub(crate) async fn install_to_existing_root(opts: InstallToExistingRootOpts) ->
         composefs_opts: opts.composefs_opts,
     };
 
-    install_to_filesystem(opts, true, cleanup).await
+    install_to_filesystem(fs_opts, true, cleanup).await?;
+
+    // Post-install migration steps (run after the ostree deploy is complete).
+    if preserve_var {
+        println!();
+        println!("Preserving /var and writing rollback BLS entry...");
+        let kver = kver.as_deref().unwrap();
+        migrate::preserve_var_and_write_rollback(&root_path, kver)
+            .context("Post-install /var preservation")?;
+    }
+
+    if merge_etc {
+        println!();
+        println!("Merging running /etc into new deployment...");
+        migrate::merge_etc_into_deployment(&root_path)
+            .context("Post-install /etc merge")?;
+    }
+
+    Ok(())
 }
 
 /// Read the /boot entry from /etc/fstab, if it exists
