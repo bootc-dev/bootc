@@ -17,7 +17,6 @@ rustix = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 shlex = { workspace = true }
-tempfile = { workspace = true }
 tokio = { workspace = true, features = ["process", "rt", "macros"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
@@ -26,6 +25,7 @@ tracing-journald = { workspace = true }
 [dev-dependencies]
 similar-asserts = { workspace = true }
 static_assertions = { workspace = true }
+tempfile = { workspace = true }
 
 [lints]
 workspace = true

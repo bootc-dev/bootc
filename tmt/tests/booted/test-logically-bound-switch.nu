@@ -102,6 +102,18 @@ def first_boot [] {
     }]
 
     let image_name = "localhost/bootc-bound"
+    let unavailable_images = [{
+        "bound": true,
+        "image": "invalid.invalid/bootc-bound-image-does-not-exist:latest",
+        "name": "unavailable"
+    }]
+    build_image $image_name $unavailable_images []
+    let failed_switch = do { bootc switch --transport containers-storage $image_name } | complete
+    assert ($failed_switch.exit_code != 0) "switch should fail when a bound image cannot be pulled"
+    assert ((bootc status --json | from json | get status.staged) == null) "no deployment should be staged after a bound image pull failure"
+
+    # Rebuilding the tag verifies that a failed pull leaves no partial staged
+    # deployment which would prevent a successful retry.
     build_image $image_name $images $containers
     bootc switch --transport containers-storage $image_name
     verify_images $images $containers
