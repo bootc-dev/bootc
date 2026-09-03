@@ -2082,7 +2082,7 @@ async fn run_from_opt(opt: Opt) -> Result<CliExitStatus> {
                     &repo,
                     &pull_result.config_digest,
                     Some(&pull_result.config_verity),
-                    &Default::default(),
+                    &composefs_oci::OciTransformOptions::default(),
                 )
                 .context("Populating fs")?;
                 fs.transform_for_boot(&repo).context("Preparing for boot")?;
