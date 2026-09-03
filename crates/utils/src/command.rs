@@ -9,6 +9,16 @@ use std::{
 
 use anyhow::{Context, Result};
 
+/// Create a seekable, filesystem-independent file for command output.
+fn command_output_file() -> Result<std::fs::File> {
+    // bootc's command helpers run from a systemd generator. Generators on
+    // systemd 252 and older may see a read-only /tmp (253+ provides a private
+    // writable /tmp), so output capture must not rely on filesystem temp files.
+    rustix::fs::memfd_create("bootc-command-output", rustix::fs::MemfdFlags::CLOEXEC)
+        .map(std::fs::File::from)
+        .context("create memfd for command output")
+}
+
 /// Helpers intended for [`std::process::Command`].
 pub trait CommandRunExt {
     /// Log (at debug level) the full child commandline.
@@ -139,7 +149,7 @@ impl CommandRunExt for Command {
 
     /// Synchronously execute the child, and return an error if the child exited unsuccessfully.
     fn run_capture_stderr(&mut self) -> Result<()> {
-        let stderr = tempfile::tempfile()?;
+        let stderr = command_output_file()?;
         self.stderr(stderr.try_clone()?);
         tracing::trace!("exec: {self:?}");
         self.status()?.check_status_with_stderr(stderr)
@@ -168,7 +178,7 @@ impl CommandRunExt for Command {
     }
 
     fn run_get_output(&mut self) -> Result<Box<dyn std::io::BufRead>> {
-        let mut stdout = tempfile::tempfile()?;
+        let mut stdout = command_output_file()?;
         self.stdout(stdout.try_clone()?);
         self.run_capture_stderr()?;
         stdout.seek(std::io::SeekFrom::Start(0)).context("seek")?;
@@ -220,7 +230,7 @@ pub trait AsyncCommandRunExt {
 
 impl AsyncCommandRunExt for tokio::process::Command {
     async fn run(&mut self) -> Result<()> {
-        let stderr = tempfile::tempfile()?;
+        let stderr = command_output_file()?;
         self.stderr(stderr.try_clone()?);
         self.status().await?.check_status_with_stderr(stderr)
     }
@@ -284,6 +294,22 @@ mod tests {
     }
 
     #[test]
+    fn command_output_file_is_a_memfd() {
+        use std::os::fd::AsRawFd;
+
+        let file = command_output_file().unwrap();
+        // An unprivileged test cannot reliably make /tmp read-only, so verify
+        // directly that the capture backing file is a memfd instead.
+        let fd_path = format!("/proc/self/fd/{}", file.as_raw_fd());
+        let target = std::fs::read_link(fd_path).unwrap();
+        assert!(
+            target
+                .to_string_lossy()
+                .contains("memfd:bootc-command-output")
+        );
+    }
+
+    #[test]
     fn exit_status_check_status() {
         use std::process::Command;
 
@@ -307,14 +333,14 @@ mod tests {
 
         // Test successful exit status
         let mut success_status = Command::new("true").status().unwrap();
-        let temp_stderr = tempfile::tempfile().unwrap();
+        let temp_stderr = command_output_file().unwrap();
         success_status
             .check_status_with_stderr(temp_stderr)
             .unwrap();
 
         // Test failed exit status with stderr content
         let mut fail_status = Command::new("false").status().unwrap();
-        let mut temp_stderr = tempfile::tempfile().unwrap();
+        let mut temp_stderr = command_output_file().unwrap();
         write!(temp_stderr, "test error message").unwrap();
         let e = fail_status
             .check_status_with_stderr(temp_stderr)
@@ -351,6 +377,13 @@ mod tests {
         let (success, fail) = tokio::join!(success.run(), fail.run(),);
         success.unwrap();
         assert!(fail.is_err());
+
+        let error = AsyncCommand::new("/bin/sh")
+            .args(["-c", "echo expected-async-error 1>&2; exit 1"])
+            .run()
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("expected-async-error"));
     }
 
     #[test]
