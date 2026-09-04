@@ -30,7 +30,7 @@ actions:
 
 jobs:
   # copr_build on PRs: only runs when ci/tier-1 or ci/merge label is present.
-  # ci/tier-1: centos-10 + fedora-44 (primary targets, all arches)
+  # ci/tier-1: centos-10 + fedora-latest-stable (primary targets, all arches)
   - job: copr_build
     trigger: pull_request
     identifier: tier-1
@@ -43,10 +43,10 @@ jobs:
       - centos-stream-10-aarch64
       # s390x disabled: https://github.com/fedora-copr/copr/issues/4219
       # - centos-stream-10-s390x
-      - fedora-44-x86_64
-      - fedora-44-aarch64
+      - fedora-latest-stable-x86_64
+      - fedora-latest-stable-aarch64
       # s390x disabled: https://github.com/fedora-copr/copr/issues/4219
-      # - fedora-44-s390x
+      # - fedora-latest-stable-s390x
 
   # ci/merge: full target set (mirrors what runs in the merge queue)
   - job: copr_build
@@ -65,20 +65,10 @@ jobs:
       - centos-stream-10-aarch64
       # s390x disabled: https://github.com/fedora-copr/copr/issues/4219
       # - centos-stream-10-s390x
-      - fedora-43-x86_64
-      - fedora-43-aarch64
+      - fedora-all-x86_64
+      - fedora-all-aarch64
       # s390x disabled: https://github.com/fedora-copr/copr/issues/4219
-      # - fedora-43-s390x
-      - fedora-44-x86_64
-      - fedora-44-aarch64
-      # s390x disabled: https://github.com/fedora-copr/copr/issues/4219
-      # - fedora-44-s390x
-      - fedora-45-x86_64
-      - fedora-45-aarch64
-      # s390x disabled: https://github.com/fedora-copr/copr/issues/4219
-      # - fedora-45-s390x
-      - fedora-rawhide-x86_64
-      - fedora-rawhide-aarch64
+      # - fedora-all-s390x
       # Temporarily disabled due to too old Rust...reenable post 9.6
       # - rhel-9-x86_64
       # - rhel-9-aarch64
@@ -92,7 +82,7 @@ jobs:
     enable_net: true
 
   # Testing Farm on PRs: only runs when ci/tier-1 or ci/merge label is present.
-  # ci/tier-1: centos-10 + fedora-44 (primary targets)
+  # ci/tier-1: centos-10 + fedora-latest-stable (primary targets)
   - job: tests
     trigger: pull_request
     identifier: tier-1
@@ -103,8 +93,8 @@ jobs:
     targets:
       - centos-stream-10-x86_64
       - centos-stream-10-aarch64
-      - fedora-44-x86_64
-      - fedora-44-aarch64
+      - fedora-latest-stable-x86_64
+      - fedora-latest-stable-aarch64
     tmt_plan: /tmt/plans/integration
     tf_extra_params:
       environments:
@@ -125,14 +115,8 @@ jobs:
       - centos-stream-9-aarch64
       - centos-stream-10-x86_64
       - centos-stream-10-aarch64
-      - fedora-43-x86_64
-      - fedora-43-aarch64
-      - fedora-44-x86_64
-      - fedora-44-aarch64
-      - fedora-45-x86_64
-      - fedora-45-aarch64
-      - fedora-rawhide-x86_64
-      - fedora-rawhide-aarch64
+      - fedora-all-x86_64
+      - fedora-all-aarch64
     tmt_plan: /tmt/plans/integration
     tf_extra_params:
       environments:
