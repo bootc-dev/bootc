@@ -111,6 +111,36 @@ view of `/etc`. This should generally be considered an internal implementation d
 of bootc/ostree. Do *not* explicitly put files into this location, it can create
 undefined behavior. There is a check for this in `bootc container lint`.
 
+### systemd-confext and systemd-sysext
+
+[systemd-confext](https://www.freedesktop.org/software/systemd/man/systemd-confext.html)
+and [systemd-sysext](https://www.freedesktop.org/software/systemd/man/systemd-sysext.html)
+are not currently supported on bootc-managed systems.
+
+These tools may be present in the operating system image (for example, because
+they ship in the `systemd` package), but bootc has not validated them on deployed
+systems. Using them on a bootc host is not recommended.
+
+A key reason is that bootc systems commonly use composefs for the root filesystem,
+and may also enable [transient root](#enabling-transient-root) and/or
+[transient `/etc`](#enabling-transient-etc). Each of these features uses overlayfs
+stacking. The Linux kernel limits filesystem stacking depth
+(`FILESYSTEM_MAX_STACK_DEPTH = 2`), so combining composefs with transient `/etc`
+already consumes the available depth. Adding confext or sysext overlays on top
+of that is likely to fail.
+
+For these reasons, transient `/etc` and systemd-confext should be treated as
+mutually exclusive today.
+
+For per-host configuration, use the patterns described in
+[Building images: Configuration](building/guidance.md#configuration) instead:
+image-embedded configuration (prefer `/usr` where possible), persistent `/etc`
+with day-2 configuration management tools, or machine-local kernel arguments
+via `rpm-ostree kargs` or `/usr/lib/bootc/kargs.d`.
+
+For more on the design rationale, see
+[Relationship with systemd "particles"](relationship-particles.md).
+
 ## `/var`
 
 Content in `/var` persists by default; it is however supported to make it or subdirectories
