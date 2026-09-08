@@ -41,6 +41,15 @@
 //!    - The merge commit overlays all layers, processing whiteouts
 //!    - Image metadata (manifest, config) is stored in commit metadata
 //!
+//! ## Importing without a registry
+//!
+//! Steps 1 and 2 above assume the manifest and the layer content both come
+//! over the registry connection. A caller that already has the manifest and
+//! can produce the layer content itself - by reconstructing it from an OCI
+//! delta, say - instead uses [`ImageImporter::new_without_proxy`] and
+//! [`ImageImporter::prepare_from_manifest`], passing a
+//! [`crate::container::LayerSource`] for the layers. Step 3 is unchanged.
+//!
 //! ## Layer Types
 //!
 //! The manifest layout is parsed to identify different layer types:
@@ -139,7 +148,7 @@ use cap_std_ext::cap_std;
 use cap_std_ext::cap_std::fs::{Dir, MetadataExt};
 
 use cap_std_ext::dirext::CapStdExtDirExt;
-use containers_image_proxy::{ImageProxy, OpenedImage};
+use containers_image_proxy::ImageProxy;
 use flate2::Compression;
 use fn_error_context::context;
 use futures_util::TryFutureExt;
@@ -292,6 +301,15 @@ impl CachedImageUpdate {
     }
 }
 
+/// What a target manifest amounts to, relative to what we imported before.
+enum PreviousState {
+    /// The target image is already imported; there is nothing to do.
+    UpToDate(Box<LayeredImageState>),
+    /// The target differs; carries the previous import to diff against and its
+    /// image ID, if there was a previous import at all.
+    Outdated(Option<(Box<LayeredImageState>, String)>),
+}
+
 /// A layer in the ostree repo, identified by its ref and commit checksum.
 struct LayerRef {
     ostree_ref: String,
@@ -304,7 +322,7 @@ pub struct ImageImporter {
     repo: ostree::Repo,
     /// The root filesystem directory, used for policy lookups.
     root: Dir,
-    pub(crate) proxy: ImageProxy,
+    proxy: Option<ImageProxy>,
     imgref: OstreeImageReference,
     target_imgref: Option<OstreeImageReference>,
     no_imgref: bool,  // If true, do not write final image ref
@@ -376,8 +394,8 @@ pub struct PreparedImport {
     pub layers: Vec<ManifestLayerState>,
     /// OSTree remote signature verification text, if enabled.
     pub verify_text: Option<String>,
-    /// Our open image reference
-    proxy_img: OpenedImage,
+    /// Where to read the layer content from.
+    layer_source: Box<dyn LayerSource>,
 }
 
 impl PreparedImport {
@@ -646,6 +664,22 @@ impl ImageImporter {
             &format!("Fetching {imgref}"),
         );
 
+        Self::new_impl(repo, imgref, Some(proxy))
+    }
+
+    /// Create an importer with no image proxy, and hence no way to fetch
+    /// anything itself; the caller supplies the image metadata and the layer
+    /// content via [`Self::prepare_from_manifest`].
+    #[context("Creating importer")]
+    pub fn new_without_proxy(repo: &ostree::Repo, imgref: &OstreeImageReference) -> Result<Self> {
+        Self::new_impl(repo, imgref, None)
+    }
+
+    fn new_impl(
+        repo: &ostree::Repo,
+        imgref: &OstreeImageReference,
+        proxy: Option<ImageProxy>,
+    ) -> Result<Self> {
         let repo = repo.clone();
 
         let diffid_to_digest = Self::build_diffid_to_digest_map(&repo)?;
@@ -739,7 +773,7 @@ impl ImageImporter {
     /// Serialize the metadata about a pending fetch as detached metadata on the commit object,
     /// so it can be retrieved later offline
     #[context("Writing cached pending manifest")]
-    pub(crate) async fn cache_pending(
+    async fn cache_pending(
         &self,
         commit: &str,
         manifest_digest: &Digest,
@@ -875,17 +909,32 @@ impl ImageImporter {
         Ok(())
     }
 
-    /// Given existing metadata (manifest, config, previous image statE) generate a PreparedImport structure
+    /// Given existing metadata (manifest, config, previous image state) generate a PreparedImport structure
     /// which e.g. includes a diff of the layers.
-    fn create_prepared_import(
+    ///
+    /// If there is a previous image, this also caches the new manifest and
+    /// config against it.
+    async fn create_prepared_import(
         &mut self,
         manifest_digest: Digest,
         manifest: ImageManifest,
         config: ImageConfiguration,
         previous_state: Option<Box<LayeredImageState>>,
         previous_imageid: Option<String>,
-        proxy_img: OpenedImage,
+        layer_source: Box<dyn LayerSource>,
     ) -> Result<Box<PreparedImport>> {
+        // If there is a currently fetched image, cache the new pending manifest+config
+        // as detached commit metadata, so that future fetches can query it offline.
+        if let Some(previous_state) = previous_state.as_ref() {
+            self.cache_pending(
+                previous_state.merge_commit.as_str(),
+                &manifest_digest,
+                &manifest,
+                &config,
+            )
+            .await?;
+        }
+
         let config_labels = super::labels_of(&config);
         if self.require_bootable {
             let bootable_key = ostree::METADATA_KEY_BOOTABLE;
@@ -931,29 +980,134 @@ impl ImageImporter {
             ostree_commit_layer: commit_layer,
             layers: remaining_layers,
             verify_text: None,
-            proxy_img,
+            layer_source,
         };
         Ok(Box::new(imp))
+    }
+
+    /// Verify that our signature source is usable at all.
+    fn check_sigverify(&self, verify_layers: bool) -> Result<()> {
+        match &self.imgref.sigverify {
+            SignatureSource::ContainerPolicy
+                if skopeo::container_policy_is_default_insecure(&self.root)? =>
+            {
+                Err(anyhow!(
+                    "containers-policy.json specifies a default of `insecureAcceptAnything`; refusing usage"
+                ))
+            }
+            SignatureSource::OstreeRemote(_) if verify_layers => Err(anyhow!(
+                "Cannot currently verify layered containers via ostree remote"
+            )),
+            _ => Ok(()),
+        }
+    }
+
+    /// Compare a target manifest against any previous import of the same image
+    /// reference.
+    fn diff_previous_state(
+        previous_state: Option<Box<LayeredImageState>>,
+        manifest_digest: &Digest,
+        new_imageid: &Digest,
+    ) -> PreviousState {
+        let Some(previous_state) = previous_state else {
+            return PreviousState::Outdated(None);
+        };
+        // If the manifest digests match, we're done.
+        if &previous_state.manifest_digest == manifest_digest {
+            return PreviousState::UpToDate(previous_state);
+        }
+        // Failing that, if they have the same imageID, we're also done.
+        let previous_imageid = previous_state.manifest.config().digest();
+        if previous_imageid == new_imageid {
+            return PreviousState::UpToDate(previous_state);
+        }
+        let previous_imageid = previous_imageid.to_string();
+        PreviousState::Outdated(Some((previous_state, previous_imageid)))
+    }
+
+    /// Prepare an import of a manifest the caller already has, reading the
+    /// layer content from `layer_source` instead of over the network.
+    ///
+    /// `manifest_digest` is taken on trust: it is what future update checks for
+    /// this image reference will compare against, and nothing here can verify
+    /// it, as re-serializing a parsed manifest does not necessarily reproduce
+    /// the bytes it was parsed from. The caller must have checked the raw
+    /// manifest and config bytes against their digests, and must have
+    /// established that this is the image `self.imgref` names, before calling
+    /// this.
+    ///
+    /// [`SignatureSource::ContainerPolicy`] is rejected: enforcing
+    /// containers-policy.json is skopeo's job, and there is no registry
+    /// interaction here for it to enforce anything on. Importing anyway would
+    /// produce a merge commit indistinguishable from a policy-verified pull.
+    /// [`SignatureSource::OstreeRemote`] is fine, as that signature is on the
+    /// ostree commit and is still checked while committing it.
+    #[context("Preparing import from manifest")]
+    pub async fn prepare_from_manifest(
+        &mut self,
+        manifest_digest: Digest,
+        manifest: ImageManifest,
+        config: ImageConfiguration,
+        layer_source: Box<dyn LayerSource>,
+    ) -> Result<PrepareResult> {
+        if matches!(self.imgref.sigverify, SignatureSource::ContainerPolicy) {
+            anyhow::bail!(
+                "Cannot verify {} against containers-policy.json without fetching it; refusing usage",
+                self.imgref,
+            );
+        }
+
+        // We have no proxy to fetch anything with, so make sure we do not leave
+        // a skopeo process behind if the caller made one anyway.
+        if let Some(proxy) = self.proxy.take() {
+            proxy.finalize().await?;
+        }
+
+        // A digested pull spec is the one part of the caller's claim we can
+        // check ourselves.
+        let target_reference = self.imgref.imgref.name.parse::<Reference>().ok();
+        if let Some(target_digest) = target_reference
+            .as_ref()
+            .and_then(|v| v.digest())
+            .map(Digest::from_str)
+            .transpose()?
+            && target_digest != manifest_digest
+        {
+            anyhow::bail!(
+                "Image reference {} names digest {target_digest}, but the manifest is {manifest_digest}",
+                self.imgref,
+            );
+        }
+
+        // Check if we have an image already pulled
+        let previous_state = try_query_image(&self.repo, &self.imgref.imgref)?;
+
+        let (previous_state, previous_imageid) = match Self::diff_previous_state(
+            previous_state,
+            &manifest_digest,
+            manifest.config().digest(),
+        ) {
+            PreviousState::UpToDate(state) => return Ok(PrepareResult::AlreadyPresent(state)),
+            PreviousState::Outdated(previous) => previous.unzip(),
+        };
+
+        let imp = self
+            .create_prepared_import(
+                manifest_digest,
+                manifest,
+                config,
+                previous_state,
+                previous_imageid,
+                layer_source,
+            )
+            .await?;
+        Ok(PrepareResult::Ready(imp))
     }
 
     /// Determine if there is a new manifest, and if so return its digest.
     #[context("Fetching manifest")]
     pub(crate) async fn prepare_internal(&mut self, verify_layers: bool) -> Result<PrepareResult> {
-        match &self.imgref.sigverify {
-            SignatureSource::ContainerPolicy
-                if skopeo::container_policy_is_default_insecure(&self.root)? =>
-            {
-                return Err(anyhow!(
-                    "containers-policy.json specifies a default of `insecureAcceptAnything`; refusing usage"
-                ));
-            }
-            SignatureSource::OstreeRemote(_) if verify_layers => {
-                return Err(anyhow!(
-                    "Cannot currently verify layered containers via ostree remote"
-                ));
-            }
-            _ => {}
-        }
+        self.check_sigverify(verify_layers)?;
 
         // Check if we have an image already pulled
         let previous_state = try_query_image(&self.repo, &self.imgref.imgref)?;
@@ -984,55 +1138,48 @@ impl ImageImporter {
             anyhow::bail!("Manifest fetch required in offline mode");
         }
 
-        let proxy_img = self
-            .proxy
-            .open_image(&self.imgref.imgref.to_string())
-            .await?;
+        let proxy = self.proxy.as_ref().ok_or_else(|| {
+            anyhow!(
+                "This importer was created without an image proxy; use prepare_from_manifest() instead"
+            )
+        })?;
+        let proxy_img = proxy.open_image(&self.imgref.imgref.to_string()).await?;
 
-        let (manifest_digest, manifest) = self.proxy.fetch_manifest(&proxy_img).await?;
+        let (manifest_digest, manifest) = proxy.fetch_manifest(&proxy_img).await?;
         let manifest_digest = Digest::from_str(&manifest_digest)?;
-        let new_imageid = manifest.config().digest();
 
         // Query for previous stored state
 
-        let (previous_state, previous_imageid) = if let Some(previous_state) = previous_state {
-            // If the manifest digests match, we're done.
-            if previous_state.manifest_digest == manifest_digest {
-                return Ok(PrepareResult::AlreadyPresent(previous_state));
-            }
-            // Failing that, if they have the same imageID, we're also done.
-            let previous_imageid = previous_state.manifest.config().digest();
-            if previous_imageid == new_imageid {
-                return Ok(PrepareResult::AlreadyPresent(previous_state));
-            }
-            let previous_imageid = previous_imageid.to_string();
-            (Some(previous_state), Some(previous_imageid))
-        } else {
-            (None, None)
+        let (previous_state, previous_imageid) = match Self::diff_previous_state(
+            previous_state,
+            &manifest_digest,
+            manifest.config().digest(),
+        ) {
+            PreviousState::UpToDate(state) => return Ok(PrepareResult::AlreadyPresent(state)),
+            PreviousState::Outdated(previous) => previous.unzip(),
         };
 
-        let config = self.proxy.fetch_config(&proxy_img).await?;
+        let config = proxy.fetch_config(&proxy_img).await?;
 
-        // If there is a currently fetched image, cache the new pending manifest+config
-        // as detached commit metadata, so that future fetches can query it offline.
-        if let Some(previous_state) = previous_state.as_ref() {
-            self.cache_pending(
-                previous_state.merge_commit.as_str(),
-                &manifest_digest,
-                &manifest,
-                &config,
+        // The layer source consumes the proxy, so only take it once the checks
+        // that can return `AlreadyPresent` are done.
+        let proxy = self.proxy.take().unwrap();
+
+        let layer_source = Box::new(ProxyLayerSource::new(
+            proxy,
+            proxy_img,
+            self.imgref.imgref.transport,
+        ));
+        let imp = self
+            .create_prepared_import(
+                manifest_digest,
+                manifest,
+                config,
+                previous_state,
+                previous_imageid,
+                layer_source,
             )
             .await?;
-        }
-
-        let imp = self.create_prepared_import(
-            manifest_digest,
-            manifest,
-            config,
-            previous_state,
-            previous_imageid,
-            proxy_img,
-        )?;
         Ok(PrepareResult::Ready(imp))
     }
 
@@ -1045,13 +1192,7 @@ impl ImageImporter {
         write_refs: bool,
     ) -> Result<()> {
         tracing::debug!("Fetching base");
-        if matches!(self.imgref.sigverify, SignatureSource::ContainerPolicy)
-            && skopeo::container_policy_is_default_insecure(&self.root)?
-        {
-            return Err(anyhow!(
-                "containers-policy.json specifies a default of `insecureAcceptAnything`; refusing usage"
-            ));
-        }
+        self.check_sigverify(false)?;
         let remote = match &self.imgref.sigverify {
             SignatureSource::OstreeRemote(remote) => Some(remote.clone()),
             SignatureSource::ContainerPolicy | SignatureSource::ContainerPolicyAllowInsecure => {
@@ -1066,7 +1207,6 @@ impl ImageImporter {
             }
             return Ok(());
         };
-        let des_layers = self.proxy.get_layer_info(&import.proxy_img).await?;
         for layer in import.ostree_layers.iter_mut() {
             if let Some(commit) = layer.commit.as_ref() {
                 if write_refs {
@@ -1078,16 +1218,14 @@ impl ImageImporter {
                 p.send(ImportProgress::OstreeChunkStarted(layer.layer.clone()))
                     .await?;
             }
-            let (blob, driver, media_type) = fetch_layer(
-                &self.proxy,
-                &import.proxy_img,
-                &import.manifest,
-                &layer.layer,
-                self.layer_byte_progress.as_ref(),
-                des_layers.as_ref(),
-                self.imgref.imgref.transport,
-            )
-            .await?;
+            let (blob, driver, media_type) = import
+                .layer_source
+                .fetch_layer(
+                    &import.manifest,
+                    &layer.layer,
+                    self.layer_byte_progress.as_ref(),
+                )
+                .await?;
             let repo = self.repo.clone();
             let target_ref = layer.ostree_ref.clone();
             let import_task =
@@ -1129,16 +1267,14 @@ impl ImageImporter {
                 ))
                 .await?;
             }
-            let (blob, driver, media_type) = fetch_layer(
-                &self.proxy,
-                &import.proxy_img,
-                &import.manifest,
-                &commit_layer.layer,
-                self.layer_byte_progress.as_ref(),
-                des_layers.as_ref(),
-                self.imgref.imgref.transport,
-            )
-            .await?;
+            let (blob, driver, media_type) = import
+                .layer_source
+                .fetch_layer(
+                    &import.manifest,
+                    &commit_layer.layer,
+                    self.layer_byte_progress.as_ref(),
+                )
+                .await?;
             let repo = self.repo.clone();
             let target_ref = commit_layer.ostree_ref.clone();
             let import_task =
@@ -1189,9 +1325,7 @@ impl ImageImporter {
         }
         let deprecated_warning = prep.deprecated_warning().map(ToOwned::to_owned);
         self.unencapsulate_base(&mut prep, true, false).await?;
-        // TODO change the imageproxy API to ensure this happens automatically when
-        // the image reference is dropped
-        self.proxy.close_image(&prep.proxy_img).await?;
+        prep.layer_source.finish().await?;
         // SAFETY: We know we have a commit
         let ostree_commit = prep.ostree_commit_layer.unwrap().commit.unwrap();
         let image_digest = prep.manifest_digest;
@@ -1455,8 +1589,6 @@ impl ImageImporter {
         // First download all layers for the base image (if necessary) - we need the SELinux policy
         // there to label all following layers.
         self.unencapsulate_base(&mut import, false, true).await?;
-        let des_layers = self.proxy.get_layer_info(&import.proxy_img).await?;
-        let proxy = self.proxy;
         let target_imgref = self.target_imgref.as_ref().unwrap_or(&self.imgref);
         let base_commit = import
             .ostree_commit_layer
@@ -1493,16 +1625,14 @@ impl ImageImporter {
                     p.send(ImportProgress::DerivedLayerStarted(layer.layer.clone()))
                         .await?;
                 }
-                let (blob, driver, media_type) = super::unencapsulate::fetch_layer(
-                    &proxy,
-                    &import.proxy_img,
-                    &import.manifest,
-                    &layer.layer,
-                    self.layer_byte_progress.as_ref(),
-                    des_layers.as_ref(),
-                    self.imgref.imgref.transport,
-                )
-                .await?;
+                let (blob, driver, media_type) = import
+                    .layer_source
+                    .fetch_layer(
+                        &import.manifest,
+                        &layer.layer,
+                        self.layer_byte_progress.as_ref(),
+                    )
+                    .await?;
                 // SELinux label derived layers using the base policy.  For non-ostree
                 // containers (base_commit is None), fall back to the caller-provided
                 // sepolicy_commit (typically the booted deployment's commit).
@@ -1553,13 +1683,8 @@ impl ImageImporter {
             }
         }
 
-        // TODO change the imageproxy API to ensure this happens automatically when
-        // the image reference is dropped
-        proxy.close_image(&import.proxy_img).await?;
-
-        // We're done with the proxy, make sure it didn't have any errors.
-        proxy.finalize().await?;
-        tracing::debug!("finalized proxy");
+        import.layer_source.finish().await?;
+        tracing::debug!("finished layer source");
 
         // Disconnect progress notifiers to signal we're done with fetching.
         let _ = self.layer_byte_progress.take();
