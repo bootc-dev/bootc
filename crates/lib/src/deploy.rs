@@ -48,6 +48,7 @@ use std::collections::HashSet;
 use std::io::{BufRead, Write};
 use std::os::fd::{AsFd, AsRawFd};
 use std::process::Command;
+use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
 use bootc_utils::skopeo_bin;
@@ -75,6 +76,14 @@ use crate::utils::async_task_with_spinner;
 
 // TODO use https://github.com/ostreedev/ostree-rs-ext/pull/493/commits/afc1837ff383681b947de30c0cefc70080a4f87a
 const BASE_IMAGE_PREFIX: &str = "ostree/container/baseimage/bootc";
+
+// Match podman's default registry retry policy. A failed attempt has to rebuild
+// the importer, so retries are made at the whole-pull boundary instead of for
+// individual layers.
+// TODO: Read this policy from the proxy once
+// https://github.com/podman-container-tools/container-libs/pull/951 is available.
+const PULL_MAX_RETRIES: u32 = 3;
+const PULL_RETRY_INITIAL_DELAY: Duration = Duration::from_secs(2);
 
 /// Create an ImageProxyConfig with bootc's user agent prefix set.
 ///
@@ -769,8 +778,53 @@ pub(crate) async fn pull_from_prepared(
     Ok(Box::new((*import).into()))
 }
 
-/// Wrapper for pulling a container image, wiring up status output.
-pub(crate) async fn pull(
+fn is_retryable_pull_error(error: &anyhow::Error) -> bool {
+    // TODO: Also classify transient prepare/OpenImage failures once
+    // containers-image-proxy exposes a typed error for them. Its current
+    // RequestInitiationFailure cannot safely distinguish DNS/TCP failures from
+    // permanent errors such as a missing image or a signature-policy rejection.
+    error.chain().any(|source| {
+        matches!(
+            source.downcast_ref::<ostree_ext::containers_image_proxy::Error>(),
+            Some(ostree_ext::containers_image_proxy::Error::BlobError(
+                ostree_ext::containers_image_proxy::GetBlobError::Retryable(_)
+            ))
+        )
+    })
+}
+
+fn pull_retry_delay(retry: u32) -> Duration {
+    PULL_RETRY_INITIAL_DELAY.saturating_mul(2_u32.saturating_pow(retry))
+}
+
+pub(crate) async fn retry_pull_operation<F, Fut, T>(mut operation: F) -> Result<T>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T>>,
+{
+    let mut retries = 0;
+    loop {
+        match operation().await {
+            Ok(value) => return Ok(value),
+            Err(error) if retries < PULL_MAX_RETRIES && is_retryable_pull_error(&error) => {
+                let retry_delay = pull_retry_delay(retries);
+                let attempt = retries + 1;
+                tracing::warn!(
+                    attempt,
+                    max_retries = PULL_MAX_RETRIES,
+                    retry_delay_seconds = retry_delay.as_secs(),
+                    error = %error,
+                    "Container image pull failed; retrying"
+                );
+                retries += 1;
+                tokio::time::sleep(retry_delay).await;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+async fn pull_once(
     repo: &ostree::Repo,
     imgref: &ImageReference,
     target_imgref: Option<&OstreeImageReference>,
@@ -808,6 +862,31 @@ pub(crate) async fn pull(
             Ok(pull_from_prepared(imgref, quiet, prog, *prepared_image_meta).await?)
         }
     }
+}
+
+/// Wrapper for pulling a container image, wiring up status output.
+pub(crate) async fn pull(
+    repo: &ostree::Repo,
+    imgref: &ImageReference,
+    target_imgref: Option<&OstreeImageReference>,
+    quiet: bool,
+    prog: ProgressWriter,
+    booted_deployment: Option<&ostree::Deployment>,
+) -> Result<Box<ImageState>> {
+    let operation = || {
+        pull_once(
+            repo,
+            imgref,
+            target_imgref,
+            quiet,
+            prog.clone(),
+            booted_deployment,
+        )
+    };
+    if imgref.transport != "registry" {
+        return operation().await;
+    }
+    retry_pull_operation(operation).await
 }
 
 pub(crate) async fn wipe_ostree(sysroot: Sysroot) -> Result<()> {
@@ -1433,6 +1512,120 @@ pub(crate) fn fixup_etc_fstab(root: &Dir) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn get_blob_failure(error: ostree_ext::containers_image_proxy::GetBlobError) -> anyhow::Error {
+        let error = ostree_ext::containers_image_proxy::Error::BlobError(error);
+        anyhow::Error::from(error).context("Unencapsulating base")
+    }
+
+    fn retryable_blob_failure(message: &str) -> anyhow::Error {
+        get_blob_failure(ostree_ext::containers_image_proxy::GetBlobError::Retryable(
+            message.into(),
+        ))
+    }
+
+    fn permanent_blob_failure(message: &str) -> anyhow::Error {
+        get_blob_failure(ostree_ext::containers_image_proxy::GetBlobError::Other(
+            message.into(),
+        ))
+    }
+
+    fn open_image_failure(message: &str) -> anyhow::Error {
+        let error = ostree_ext::containers_image_proxy::Error::RequestInitiationFailure {
+            method: "OpenImage".into(),
+            error: message.into(),
+        };
+        anyhow::Error::from(error).context("Creating importer")
+    }
+
+    #[test]
+    fn test_retryable_pull_error_classification() {
+        let cases = [
+            (retryable_blob_failure("502 Bad Gateway"), true),
+            (permanent_blob_failure("blob unknown"), false),
+            (open_image_failure("image unknown"), false),
+        ];
+
+        for (error, expected) in cases {
+            assert_eq!(is_retryable_pull_error(&error), expected, "{error:#}");
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_retry_pull_operation_succeeds() -> Result<()> {
+        let attempts = std::cell::Cell::new(0);
+        let start = tokio::time::Instant::now();
+        let value = retry_pull_operation(|| {
+            let attempt = attempts.get() + 1;
+            attempts.set(attempt);
+            async move {
+                if attempt == 1 {
+                    Err(retryable_blob_failure("502 Bad Gateway"))
+                } else {
+                    Ok(42)
+                }
+            }
+        })
+        .await?;
+
+        assert_eq!(value, 42);
+        assert_eq!(attempts.get(), 2);
+        assert_eq!(start.elapsed(), pull_retry_delay(0));
+        Ok(())
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_retry_pull_operation_stops_after_max_attempts() {
+        let attempts = std::cell::Cell::new(0);
+        let start = tokio::time::Instant::now();
+        let error = retry_pull_operation(|| {
+            attempts.set(attempts.get() + 1);
+            async { Err::<(), _>(retryable_blob_failure("registry unavailable")) }
+        })
+        .await
+        .unwrap_err();
+
+        let expected_delay = (0..PULL_MAX_RETRIES)
+            .map(pull_retry_delay)
+            .fold(Duration::ZERO, Duration::saturating_add);
+        assert_eq!(attempts.get(), PULL_MAX_RETRIES + 1);
+        assert_eq!(start.elapsed(), expected_delay);
+        assert_eq!(
+            error.root_cause().to_string(),
+            "retryable error: registry unavailable"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_retry_pull_operation_does_not_retry_permanent_blob_error() {
+        let attempts = std::cell::Cell::new(0);
+        let error = retry_pull_operation(|| {
+            attempts.set(attempts.get() + 1);
+            async { Err::<(), _>(permanent_blob_failure("blob unknown")) }
+        })
+        .await
+        .unwrap_err();
+
+        assert_eq!(attempts.get(), 1);
+        assert_eq!(error.root_cause().to_string(), "other error: blob unknown");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_retry_pull_operation_does_not_retry_opaque_prepare_error() {
+        let attempts = std::cell::Cell::new(0);
+        let error = retry_pull_operation(|| {
+            attempts.set(attempts.get() + 1);
+            async { Err::<(), _>(open_image_failure("image unknown")) }
+        })
+        .await
+        .unwrap_err();
+
+        assert_eq!(attempts.get(), 1);
+        assert_eq!(
+            error.root_cause().to_string(),
+            "failed to invoke method OpenImage: image unknown"
+        );
+    }
 
     #[test]
     fn test_new_proxy_config_user_agent() {
