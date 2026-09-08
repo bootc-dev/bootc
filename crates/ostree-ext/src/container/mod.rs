@@ -468,6 +468,8 @@ pub fn version_for_config(config: &oci_spec::image::ImageConfiguration) -> Optio
 pub mod deploy;
 mod encapsulate;
 pub use encapsulate::*;
+mod layer_source;
+pub use layer_source::*;
 mod unencapsulate;
 pub use unencapsulate::*;
 pub mod skopeo;
