@@ -278,14 +278,14 @@ pub(crate) mod tests {
     use ocidir::oci_spec::image::{ImageConfigurationBuilder, ImageManifestBuilder, RootFsBuilder};
     use std::collections::HashMap;
 
-    const DELTA_CONTENT: &str = "io.github.containers.delta.content";
-    const DELTA_TO: &str = "io.github.containers.delta.to";
-    const DELTA_SOURCE_CONFIG: &str = "io.github.containers.delta.source-config";
+    pub(crate) const DELTA_CONTENT: &str = "io.github.containers.delta.content";
+    pub(crate) const DELTA_TO: &str = "io.github.containers.delta.to";
+    pub(crate) const DELTA_SOURCE_CONFIG: &str = "io.github.containers.delta.source-config";
     const TAR_DIFF: &str = "application/vnd.tar-diff";
     const ZERO_DIGEST: &str =
         "sha256:0000000000000000000000000000000000000000000000000000000000000000";
 
-    fn blob(oci: &OciDir, data: &[u8], media_type: MediaType) -> Descriptor {
+    pub(crate) fn blob(oci: &OciDir, data: &[u8], media_type: MediaType) -> Descriptor {
         let mut w = oci.create_blob().unwrap();
         std::io::Write::write_all(&mut w, data).unwrap();
         w.complete()
@@ -309,7 +309,7 @@ pub(crate) mod tests {
             .unwrap()
     }
 
-    fn annotate(mut desc: Descriptor, annotations: &[(&str, &str)]) -> Descriptor {
+    pub(crate) fn annotate(mut desc: Descriptor, annotations: &[(&str, &str)]) -> Descriptor {
         desc.set_annotations(Some(
             annotations
                 .iter()
