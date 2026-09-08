@@ -5,6 +5,7 @@ use camino::Utf8Path;
 use cap_std::fs::{Dir, DirBuilder, DirBuilderExt};
 use cap_std_ext::cap_std;
 use containers_image_proxy::oci_spec;
+use futures_util::future::BoxFuture;
 use gvariant::aligned_bytes::TryAsAligned;
 use gvariant::{Marker, Structure};
 use oci_image::ImageManifest;
@@ -14,7 +15,8 @@ use ocidir::oci_spec::distribution::Reference;
 use ocidir::oci_spec::image::{Arch, DigestAlgorithm};
 use ostree_ext::chunking::ObjectMetaSized;
 use ostree_ext::container::{
-    Config, ExportOpts, ImageReference, OstreeImageReference, SignatureSource, Transport,
+    Config, ExportOpts, FetchedLayer, ImageReference, LayerSource, OstreeImageReference,
+    SignatureSource, Transport,
 };
 use ostree_ext::container::{ManifestDiff, OSTREE_COMMIT_LABEL, store};
 use ostree_ext::prelude::{Cast, FileExt};
@@ -759,6 +761,99 @@ async fn test_no_fetch_digested() -> Result<()> {
         store::PrepareResult::AlreadyPresent(_) => {}
         store::PrepareResult::Ready(_) => panic!("Should have image already"),
     };
+
+    Ok(())
+}
+
+/// A [`LayerSource`] which reads blobs straight out of an OCI directory,
+/// standing in for anything that produces layer content without a registry.
+#[derive(Debug)]
+struct OciDirLayerSource(ocidir::OciDir);
+
+impl LayerSource for OciDirLayerSource {
+    fn fetch_layer<'a>(
+        &'a self,
+        _manifest: &'a oci_image::ImageManifest,
+        layer: &'a oci_image::Descriptor,
+        _progress: Option<&'a tokio::sync::watch::Sender<Option<store::LayerProgress>>>,
+    ) -> BoxFuture<'a, Result<FetchedLayer<'a>>> {
+        Box::pin(async move {
+            let blob = tokio::fs::File::from_std(self.0.read_blob(layer)?);
+            let blob: Box<dyn tokio::io::AsyncBufRead + Send + Unpin> =
+                Box::new(tokio::io::BufReader::new(blob));
+            let driver = Box::pin(std::future::ready(Ok(())));
+            Ok((blob, driver as BoxFuture<'a, _>, layer.media_type().clone()))
+        })
+    }
+
+    fn finish(self: Box<Self>) -> BoxFuture<'static, Result<()>> {
+        Box::pin(std::future::ready(Ok(())))
+    }
+}
+
+/// Import an image from a manifest and a caller-provided layer source, with no
+/// image proxy in play at all.
+#[tokio::test]
+async fn test_prepare_from_manifest() -> Result<()> {
+    let fixture = Fixture::new_v1()?;
+    let (src_imgref, expected_digest) = fixture.export_container().await.unwrap();
+
+    let open_source = || -> Result<Box<dyn LayerSource>> {
+        let dir = Dir::open_ambient_dir(
+            Utf8Path::new(src_imgref.name.as_str()),
+            cap_std::ambient_authority(),
+        )?;
+        Ok(Box::new(OciDirLayerSource(ocidir::OciDir::open(dir)?)))
+    };
+
+    let ocidir = ocidir::OciDir::open(Dir::open_ambient_dir(
+        Utf8Path::new(src_imgref.name.as_str()),
+        cap_std::ambient_authority(),
+    )?)?;
+    let index = ocidir.read_index()?;
+    let manifest: oci_image::ImageManifest =
+        ocidir.read_json_blob(index.manifests().first().unwrap())?;
+    let config: oci_image::ImageConfiguration = ocidir.read_json_blob(manifest.config())?;
+
+    let imgref = OstreeImageReference {
+        sigverify: SignatureSource::ContainerPolicyAllowInsecure,
+        imgref: src_imgref.clone(),
+    };
+
+    let mut imp = store::ImageImporter::new_without_proxy(fixture.destrepo(), &imgref)?;
+    let prep = match imp
+        .prepare_from_manifest(
+            expected_digest.clone(),
+            manifest.clone(),
+            config.clone(),
+            open_source()?,
+        )
+        .await?
+    {
+        store::PrepareResult::AlreadyPresent(_) => panic!("Image should not be present yet"),
+        store::PrepareResult::Ready(prep) => prep,
+    };
+    assert_eq!(prep.manifest_digest, expected_digest);
+    assert_eq!(prep.all_layers().count(), LAYERS_V0_LEN);
+    let state = imp.import(prep).await?;
+    assert_eq!(state.manifest_digest, expected_digest);
+
+    // The layers we read out of the OCI directory reassemble into the content
+    // the fixture started from.
+    let (commitdata, _) = fixture.destrepo().load_commit(&state.base_commit)?;
+    assert_eq!(
+        CONTENTS_CHECKSUM_V0,
+        ostree::commit_get_content_checksum(&commitdata)
+            .unwrap()
+            .as_str()
+    );
+
+    // And now it is present, established without ever contacting a registry.
+    let mut imp = store::ImageImporter::new_without_proxy(fixture.destrepo(), &imgref)?;
+    let prep = imp
+        .prepare_from_manifest(expected_digest, manifest, config, open_source()?)
+        .await?;
+    assert!(matches!(prep, store::PrepareResult::AlreadyPresent(_)));
 
     Ok(())
 }
