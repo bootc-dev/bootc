@@ -310,8 +310,16 @@ pub(crate) fn find_source_commit(repo: &ostree::Repo, delta: &Delta) -> Result<S
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anyhow::ensure;
+    use camino::{Utf8Path, Utf8PathBuf};
     use cap_std_ext::cap_std::ambient_authority;
+    use oci_delta::MEDIA_TYPE_DELTA;
+    use ocidir::OciDir;
+    use ocidir::prelude::*;
+    use ostree_ext::fixture::{FileDef, Fixture};
+    use std::collections::HashSet;
     use std::os::fd::{AsFd, AsRawFd};
+    use std::process::{Command, Stdio};
 
     #[test]
     fn test_source_path_candidates() {
@@ -436,6 +444,433 @@ mod tests {
             format!("{err:#}").contains("not present in this system's ostree repository"),
             "{err:#}"
         );
+        Ok(())
+    }
+
+    fn have_tool(name: &str) -> bool {
+        Command::new(name)
+            .arg("--help")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok()
+    }
+
+    fn copy_dir(src: &Utf8Path, dst: &Utf8Path) -> Result<()> {
+        let st = Command::new("cp")
+            .args(["-a", src.as_str(), dst.as_str()])
+            .status()?;
+        ensure!(st.success(), "cp -a {src} {dst} failed: {st}");
+        Ok(())
+    }
+
+    fn open_oci(path: &Utf8Path) -> Result<OciDir> {
+        Ok(OciDir::open(Dir::open_ambient_dir(
+            path,
+            ambient_authority(),
+        )?)?)
+    }
+
+    fn single_manifest(oci: &OciDir) -> Result<(oci_image::Descriptor, oci_image::ImageManifest)> {
+        let index = oci.read_index()?;
+        let desc = index
+            .manifests()
+            .first()
+            .cloned()
+            .context("Layout has no manifest")?;
+        let manifest = oci.read_json_blob(&desc)?;
+        Ok((desc, manifest))
+    }
+
+    fn read_blob(oci: &OciDir, desc: &oci_image::Descriptor) -> Result<Vec<u8>> {
+        let mut buf = Vec::new();
+        oci.read_blob(desc)?.read_to_end(&mut buf)?;
+        Ok(buf)
+    }
+
+    /// Import `path` as the image a delta will be applied on top of.
+    async fn import_source(fixture: &Fixture, path: &Utf8Path) -> Result<()> {
+        fixture
+            .must_import(&ostree_container::ImageReference {
+                transport: ostree_container::Transport::OciDir,
+                name: path.to_string(),
+            })
+            .await?;
+        Ok(())
+    }
+
+    /// Apply the delta at `delta_path` as an update to `target_path`.
+    async fn apply_delta(
+        fixture: &Fixture,
+        target_path: &Utf8Path,
+        delta_path: &Utf8Path,
+    ) -> Result<(Arc<crate::delta::Delta>, Box<crate::deploy::ImageState>)> {
+        let delta = Arc::new(crate::delta::Delta::open(delta_path).await?);
+        let imgref = crate::spec::ImageReference {
+            image: target_path.to_string(),
+            transport: "oci".into(),
+            signature: None,
+        };
+        let state = crate::deploy::pull_delta(
+            fixture.destrepo(),
+            &imgref,
+            Arc::clone(&delta),
+            true,
+            Default::default(),
+            None,
+        )
+        .await?;
+        Ok((delta, state))
+    }
+
+    /// The delta reconstructed the target image exactly: the same content as
+    /// the fixture's own commit, recorded under the target's real digest.
+    fn assert_applied(
+        fixture: &Fixture,
+        state: &crate::deploy::ImageState,
+        target: &oci_image::Digest,
+    ) {
+        assert_eq!(&state.manifest_digest, target);
+        let expected = fixture.srcrepo().require_rev(fixture.testref()).unwrap();
+        let layered =
+            ostree_container::store::query_image_commit(fixture.destrepo(), &state.ostree_commit)
+                .unwrap();
+        ostree_ext::fixture::assert_commits_content_equal(
+            fixture.destrepo(),
+            &layered.base_commit,
+            fixture.srcrepo(),
+            &expected,
+        );
+    }
+
+    /// Export the fixture as a container, change it, and export it again: a
+    /// pair of ostree-native (chunked) images, as a bootc base image update
+    /// looks. The source is imported into the destination repo.
+    async fn chunked_source_and_target()
+    -> Result<(Fixture, Utf8PathBuf, Utf8PathBuf, oci_image::Digest)> {
+        let mut fixture = Fixture::new_v1()?;
+        let (exported, _) = fixture.export_container().await?;
+        let source = fixture.path.join("source-oci");
+        copy_dir(Utf8Path::new(&exported.name), &source)?;
+
+        fixture.update(
+            // Both of these are paths the fixture has an owning "package" for,
+            // which its chunked export requires.
+            FileDef::iter_from(
+                "r usr/bin/bash the-bash-shell-v2\nr usr/etc/someconfig.conf someconfig-v2\n",
+            ),
+            std::iter::empty(),
+        )?;
+        let (exported, digest) = fixture.export_container().await?;
+        let target = Utf8PathBuf::from(exported.name);
+
+        import_source(&fixture, &source).await?;
+        Ok((fixture, source, target, digest))
+    }
+
+    /// 64 KiB of incompressible but deterministic data. `v2` differs from `v1`
+    /// in eight bytes, so a binary diff of the two is tiny - which is how the
+    /// tests tell whether the patch really read from the source.
+    fn big_file(v2: bool) -> Vec<u8> {
+        let mut state = 0x1234_5678u32;
+        let mut data: Vec<u8> = std::iter::repeat_with(|| {
+            state = state.wrapping_mul(1664525).wrapping_add(1013904223);
+            (state >> 24) as u8
+        })
+        .take(64 * 1024)
+        .collect();
+        if v2 {
+            data[32 * 1024..32 * 1024 + 8].fill(0xff);
+        }
+        data
+    }
+
+    /// Append a derived layer holding [`big_file`] at `/etc/bigconf`, i.e. at a
+    /// path the ostree importer relocates.
+    fn derive(oci: &Utf8Path, v2: bool) -> Result<()> {
+        let content = big_file(v2);
+        ostree_ext::integrationtest::generate_derived_oci_from_tar(
+            oci,
+            move |w| {
+                let mut tar = tar::Builder::new(w);
+                let mut dir = tar::Header::new_gnu();
+                dir.set_entry_type(tar::EntryType::Directory);
+                dir.set_mode(0o755);
+                dir.set_size(0);
+                tar.append_data(&mut dir, "etc/", std::io::empty())?;
+                let mut file = tar::Header::new_gnu();
+                file.set_mode(0o644);
+                file.set_size(content.len() as u64);
+                tar.append_data(&mut file, "etc/bigconf", content.as_slice())?;
+                tar.finish()?;
+                Ok(())
+            },
+            None,
+            None,
+        )
+    }
+
+    /// A pair of images that share a base and differ only in one derived layer,
+    /// as a bootc image built from a Containerfile does. The source is imported
+    /// into the destination repo.
+    async fn derived_source_and_target()
+    -> Result<(Fixture, Utf8PathBuf, Utf8PathBuf, oci_image::Digest)> {
+        let fixture = Fixture::new_v1()?;
+        let (exported, _) = fixture.export_container().await?;
+        let source = fixture.path.join("source-oci");
+        let target = fixture.path.join("target-oci");
+        copy_dir(Utf8Path::new(&exported.name), &source)?;
+        copy_dir(Utf8Path::new(&exported.name), &target)?;
+        derive(&source, false)?;
+        derive(&target, true)?;
+        let digest = single_manifest(&open_oci(&target)?)?.0.digest().clone();
+
+        import_source(&fixture, &source).await?;
+        Ok((fixture, source, target, digest))
+    }
+
+    /// Write a delta from `source` to `target` that carries each changed layer
+    /// whole rather than as a tar-diff.
+    ///
+    /// The format permits either, so this covers everything but the patch
+    /// application itself while needing no external tooling; the tests below
+    /// that use the real `oci-delta` skip themselves when it is absent.
+    fn build_whole_layer_delta(source: &Utf8Path, target: &Utf8Path, out: &Utf8Path) -> Result<()> {
+        use crate::delta::tests::{DELTA_CONTENT, DELTA_SOURCE_CONFIG, DELTA_TO, annotate, blob};
+
+        let source = open_oci(source)?;
+        let target = open_oci(target)?;
+        let (_, source_manifest) = single_manifest(&source)?;
+        let (target_manifest_desc, target_manifest) = single_manifest(&target)?;
+
+        std::fs::create_dir_all(out)?;
+        let out = OciDir::ensure(Dir::open_ambient_dir(out, ambient_authority())?)?;
+
+        let mut layers = vec![
+            annotate(
+                blob(
+                    &out,
+                    &read_blob(&target, &target_manifest_desc)?,
+                    oci_image::MediaType::ImageManifest,
+                ),
+                &[(DELTA_CONTENT, "image-manifest")],
+            ),
+            annotate(
+                blob(
+                    &out,
+                    &read_blob(&target, target_manifest.config())?,
+                    oci_image::MediaType::ImageConfig,
+                ),
+                &[(DELTA_CONTENT, "image-config")],
+            ),
+        ];
+        let shared: HashSet<_> = source_manifest
+            .layers()
+            .iter()
+            .map(|l| l.digest())
+            .collect();
+        for layer in target_manifest.layers() {
+            if shared.contains(layer.digest()) {
+                continue;
+            }
+            let patch = blob(
+                &out,
+                &read_blob(&target, layer)?,
+                layer.media_type().clone(),
+            );
+            let to = layer.digest().to_string();
+            layers.push(annotate(
+                patch,
+                &[(DELTA_CONTENT, "image-layer"), (DELTA_TO, to.as_str())],
+            ));
+        }
+        ensure!(
+            layers.len() > 2,
+            "Source and target images share every layer"
+        );
+
+        let empty = blob(&out, b"{}", oci_image::MediaType::EmptyJSON);
+        let manifest = oci_image::ImageManifestBuilder::default()
+            .schema_version(2u32)
+            .media_type(oci_image::MediaType::ImageManifest)
+            .artifact_type(oci_image::MediaType::Other(MEDIA_TYPE_DELTA.to_string()))
+            .config(empty)
+            .layers(layers)
+            .annotations(std::collections::HashMap::from([(
+                DELTA_SOURCE_CONFIG.to_string(),
+                source_manifest.config().digest().to_string(),
+            )]))
+            .build()?;
+        out.replace_with_single_manifest(manifest, Default::default())?;
+        Ok(())
+    }
+
+    fn create_delta(source: &Utf8Path, target: &Utf8Path, out: &Utf8Path) -> Result<()> {
+        let out = Command::new("oci-delta")
+            .arg("create")
+            .arg(format!("oci:{source}"))
+            .arg(format!("oci:{target}"))
+            .arg(format!("oci:{out}"))
+            .output()?;
+        ensure!(
+            out.status.success(),
+            "oci-delta create failed: {}\n{}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr),
+        );
+        Ok(())
+    }
+
+    /// The whole pipeline - parse and validate the delta, find the source image
+    /// in the repository, reconstruct the changed layers, import - with the
+    /// patches degenerate so that no external tooling is needed.
+    #[tokio::test]
+    async fn test_apply_delta_whole_layers() -> Result<()> {
+        let (fixture, source, target, digest) = chunked_source_and_target().await?;
+        let delta_path = fixture.path.join("delta");
+        build_whole_layer_delta(&source, &target, &delta_path)?;
+
+        let (_, state) = apply_delta(&fixture, &target, &delta_path).await?;
+        assert_applied(&fixture, &state, &digest);
+        Ok(())
+    }
+
+    /// Construct and apply a real delta between two ostree-native (chunked) images.
+    #[tokio::test]
+    async fn test_apply_delta_chunked() -> Result<()> {
+        if !have_tool("oci-delta") {
+            eprintln!("skipping: oci-delta not found in PATH");
+            return Ok(());
+        }
+        let (fixture, source, target, digest) = chunked_source_and_target().await?;
+        let delta_path = fixture.path.join("delta");
+        create_delta(&source, &target, &delta_path)?;
+
+        let (_, state) = apply_delta(&fixture, &target, &delta_path).await?;
+        assert_applied(&fixture, &state, &digest);
+        Ok(())
+    }
+
+    /// A real delta over a derived layer, which unlike a chunked one is an
+    /// ordinary root filesystem tar. This is the case that actually drives
+    /// [`OstreeDataSource`], and the file it patches is one the importer
+    /// relocated from `/etc` to `/usr/etc`.
+    #[tokio::test]
+    async fn test_apply_delta_derived() -> Result<()> {
+        if !have_tool("oci-delta") {
+            eprintln!("skipping: oci-delta not found in PATH");
+            return Ok(());
+        }
+        let (fixture, source, target, digest) = derived_source_and_target().await?;
+        let delta_path = fixture.path.join("delta");
+        create_delta(&source, &target, &delta_path)?;
+
+        let (delta, state) = apply_delta(&fixture, &target, &delta_path).await?;
+        assert_eq!(&state.manifest_digest, &digest);
+
+        // Only the derived layer changed, and the patch for it is a fraction of
+        // its size - which it can only be if the reconstruction read the bulk
+        // of the content back out of the source commit.
+        let patched = delta.parsed.delta_layer_by_to.iter().collect::<Vec<_>>();
+        let [(to, patch)] = patched.as_slice() else {
+            panic!("expected one patched layer, got {}", patched.len());
+        };
+        let layer = delta
+            .target_manifest()
+            .layers()
+            .iter()
+            .find(|l| l.digest() == *to)
+            .unwrap();
+        assert!(
+            patch.size() * 4 < layer.size(),
+            "patch is {} bytes against a {} byte layer, so nothing was reused from the source",
+            patch.size(),
+            layer.size(),
+        );
+
+        let root = ostree_ext::fixture::ostree_ls(fixture.destrepo(), &state.ostree_commit)?;
+        assert!(
+            root.contains(&format!("r /usr/etc/bigconf {}\n", 64 * 1024)),
+            "/usr/etc/bigconf is missing from the applied image:\n{root}"
+        );
+        Ok(())
+    }
+
+    /// A deployed source remains usable after staging advances to its image ref.
+    #[tokio::test]
+    async fn test_delta_source_retained_by_deployment() -> Result<()> {
+        let (mut fixture, source, target, _) = chunked_source_and_target().await?;
+        let repo = fixture.destrepo().clone();
+        let source_ref = ostree_container::ImageReference {
+            transport: ostree_container::Transport::OciDir,
+            name: source.to_string(),
+        };
+        let original = ostree_container::store::query_image(&repo, &source_ref)?.unwrap();
+        let newer = fixture
+            .must_import(&ostree_container::ImageReference {
+                transport: ostree_container::Transport::OciDir,
+                name: target.to_string(),
+            })
+            .await?;
+        // Model staging B over A under the same image reference.
+        for (name, commit) in repo.list_refs_ext(
+            Some("ostree/container/image"),
+            ostree::RepoListRefsExtFlags::empty(),
+            gio::Cancellable::NONE,
+        )? {
+            if commit.as_str() == original.merge_commit {
+                repo.set_ref_immediate(
+                    None,
+                    &name,
+                    Some(&newer.merge_commit),
+                    gio::Cancellable::NONE,
+                )?;
+            }
+        }
+
+        // Build A→C; no image ref now identifies A.
+        fixture.update(
+            FileDef::iter_from("r usr/bin/bash the-bash-shell-v3\n"),
+            std::iter::empty(),
+        )?;
+        let (_, digest) = fixture.export_container().await?;
+        let delta_path = fixture.path.join("delta-retained-source");
+        build_whole_layer_delta(&source, &target, &delta_path)?;
+        let delta = Delta::open(&delta_path).await?;
+        assert!(find_source_commit(&repo, &delta).is_err());
+
+        // Ordinary ostree deployments have no container metadata.
+        repo.set_ref_immediate(
+            None,
+            "ostree/0/0/1",
+            Some(&original.base_commit),
+            gio::Cancellable::NONE,
+        )?;
+        // Each supported deployment/base-image ref can retain A independently.
+        for name in [
+            "ostree/0/0/0",
+            "ostree/1/0/0",
+            "rpmostree/base/test",
+            "ostree/container/baseimage/test",
+        ] {
+            repo.set_ref_immediate(
+                None,
+                name,
+                Some(&original.merge_commit),
+                gio::Cancellable::NONE,
+            )?;
+            assert_eq!(find_source_commit(&repo, &delta)?, original.merge_commit);
+            repo.set_ref_immediate(None, name, None, gio::Cancellable::NONE)?;
+        }
+        repo.set_ref_immediate(
+            None,
+            "ostree/0/0/0",
+            Some(&original.merge_commit),
+            gio::Cancellable::NONE,
+        )?;
+        // Apply A→C using A retained solely by its deployment ref.
+        let (_, state) = apply_delta(&fixture, &target, &delta_path).await?;
+        assert_applied(&fixture, &state, &digest);
         Ok(())
     }
 }
