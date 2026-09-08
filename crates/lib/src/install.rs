@@ -195,7 +195,9 @@ use crate::bootc_composefs::{
 use crate::bootc_kargs::{INITRD_ARG_PREFIX, ROOTFLAGS_KEY};
 use crate::boundimage::{BoundImage, ResolvedBoundImage};
 use crate::containerenv::ContainerExecutionInfo;
-use crate::deploy::{MergeState, PreparedPullResult, prepare_for_pull, pull_from_prepared};
+use crate::deploy::{
+    MergeState, PreparedPullResult, prepare_for_pull, pull_from_prepared, retry_pull_operation,
+};
 use crate::install::config::Filesystem as FilesystemEnum;
 use crate::lsm;
 use crate::progress_jsonl::ProgressWriter;
@@ -1022,6 +1024,21 @@ async fn initialize_ostree_root(state: &State, root_setup: &RootSetup) -> Result
     Ok((storage, has_ostree))
 }
 
+async fn pull_ostree_install_once(
+    repo: &ostree::Repo,
+    imgref: &ImageReference,
+    target_imgref: &ostree_container::OstreeImageReference,
+) -> Result<Box<crate::deploy::ImageState>> {
+    let prepared = prepare_for_pull(repo, imgref, Some(target_imgref), None).await?;
+    match prepared {
+        PreparedPullResult::AlreadyPresent(existing) => Ok(existing),
+        PreparedPullResult::Ready(image_meta) => {
+            crate::deploy::check_disk_space_ostree(repo, &image_meta, imgref)?;
+            pull_from_prepared(imgref, false, ProgressWriter::default(), *image_meta).await
+        }
+    }
+}
+
 #[context("Creating ostree deployment")]
 async fn install_container(
     state: &State,
@@ -1073,25 +1090,30 @@ async fn install_container(
     // Auto-detection (None) is only appropriate for upgrade/switch on a running system.
     let use_unified = state.target_opts.unified_storage_exp;
 
-    let prepared = if use_unified {
+    let pulled_image = if use_unified {
         tracing::info!("Using unified storage path for installation");
-        crate::deploy::prepare_for_pull_unified(
+        let prepared = crate::deploy::prepare_for_pull_unified(
             repo,
             &spec_imgref,
             Some(&state.target_imgref),
             storage,
             None,
         )
-        .await?
+        .await?;
+        match prepared {
+            PreparedPullResult::AlreadyPresent(existing) => existing,
+            PreparedPullResult::Ready(image_meta) => {
+                crate::deploy::check_disk_space_ostree(repo, &image_meta, &spec_imgref)?;
+                pull_from_prepared(&spec_imgref, false, ProgressWriter::default(), *image_meta)
+                    .await?
+            }
+        }
     } else {
-        prepare_for_pull(repo, &spec_imgref, Some(&state.target_imgref), None).await?
-    };
-
-    let pulled_image = match prepared {
-        PreparedPullResult::AlreadyPresent(existing) => existing,
-        PreparedPullResult::Ready(image_meta) => {
-            crate::deploy::check_disk_space_ostree(repo, &image_meta, &spec_imgref)?;
-            pull_from_prepared(&spec_imgref, false, ProgressWriter::default(), *image_meta).await?
+        let operation = || pull_ostree_install_once(repo, &spec_imgref, &state.target_imgref);
+        if spec_imgref.transport == "registry" {
+            retry_pull_operation(operation).await?
+        } else {
+            operation().await?
         }
     };
 
