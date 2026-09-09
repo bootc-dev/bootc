@@ -100,6 +100,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::bootc_composefs::state::{get_booted_bls, write_composefs_state};
 use crate::bootc_composefs::status::build_composefs_karg;
+use crate::bootc_composefs::uki_addon::list_installed_uki_addons;
 use crate::bootc_kargs::compute_new_kargs;
 use crate::composefs_consts::{TYPE1_BOOT_DIR_PREFIX, TYPE1_ENT_PATH, TYPE1_ENT_PATH_STAGED};
 use crate::parsers::bls_config::{BLSConfig, BLSConfigType, EFIKey};
@@ -1756,6 +1757,8 @@ pub(crate) fn setup_composefs_uki_boot(
     boot_ids: &ExpectedBootImageIds,
     entries: Vec<ComposefsBootEntry<Sha512HashValue>>,
 ) -> Result<(String, Sha512HashValue)> {
+    let addons_to_update;
+
     let (root_path, esp_device, bootloader, missing_fsverity_allowed, uki_addons) = match setup_type
     {
         BootSetupType::Setup((root_setup, state, postfetch, allow_missing_fsverity)) => {
@@ -1781,16 +1784,24 @@ pub(crate) fn setup_composefs_uki_boot(
             let root_dev = bootc_blockdev::list_dev_by_dir(&storage.physical_root)?;
             let esp_dev = root_dev.find_first_colocated_esp()?;
 
+            let installed_addons = list_installed_uki_addons(storage, booted_cfs)?;
+
+            // If we find addons (that are currently installed) in the new image as well,
+            // we will update them
+            //
+            // TODO: This has a weird edge case where a local addon and global addon can have
+            // the same name. We can add a container lint for this
+            addons_to_update = installed_addons
+                .into_iter()
+                .map(|a| a.name)
+                .collect::<Vec<_>>();
+
             (
                 sysroot,
                 esp_dev.path(),
                 bootloader,
                 booted_cfs.cmdline.allow_missing_fsverity,
-                // TODO: We never (re)install UKI addons on upgrade, only on initial
-                // `install`. This is especially relevant for global addons (see the
-                // TODO on `GLOBAL_UKI_ADDONS_DIR`): if a newer image changes or drops
-                // one, the ESP copy is never reconciled.
-                None,
+                Some(&addons_to_update),
             )
         }
     };
