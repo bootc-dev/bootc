@@ -14,5 +14,6 @@ pub(crate) mod soft_reboot;
 pub(crate) mod state;
 pub(crate) mod status;
 pub(crate) mod switch;
+pub(crate) mod uki_addon;
 pub(crate) mod update;
 pub(crate) mod utils;
