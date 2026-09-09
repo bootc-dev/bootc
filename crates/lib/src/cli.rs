@@ -54,6 +54,7 @@ use crate::bootc_composefs::{
     update::upgrade_composefs,
 };
 use crate::deploy::{MergeState, RequiredHostSpec};
+use crate::install::UkiAddonOpts;
 use crate::podstorage::set_additional_image_store;
 use crate::progress_jsonl::{ProgressWriter, RawProgressFd};
 use crate::spec::FilesystemOverlayAccessMode;
@@ -152,6 +153,10 @@ pub(crate) struct UpgradeOpts {
 
     #[clap(flatten)]
     pub(crate) progress: ProgressOptions,
+
+    // This is kinda unfortunate that we can't gate this only for composefs systems
+    #[clap(flatten)]
+    pub(crate) uki_addon_opts: UkiAddonOpts,
 }
 
 /// Perform an switch operation
@@ -235,6 +240,10 @@ pub(crate) struct SwitchOpts {
 
     #[clap(flatten)]
     pub(crate) progress: ProgressOptions,
+
+    // This is kinda unfortunate that we can't gate this only for composefs systems
+    #[clap(flatten)]
+    pub(crate) uki_addon_opts: UkiAddonOpts,
 }
 
 /// Finalize a staged composefs deployment.

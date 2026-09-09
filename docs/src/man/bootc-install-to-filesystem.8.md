@@ -137,13 +137,13 @@ is currently expected to be empty by default.
 
     Default: false
 
-**--uki-addon**=*UKI_ADDON*
+**--uki-addon**=*SCOPED*
 
-    Name of the local/scoped UKI addons to install without the ".efi.addon" suffix. This option can be provided multiple times if multiple addons are to be installed (composefs backend only)
+    Experimental. Name of the local/scoped UKI addons to install without the ".addon.efi" suffix. This option can be provided multiple times if multiple addons are to be installed (composefs backend only). On upgrade and switch, scoped addons already installed are carried forward; passing this flag adds further addons on top
 
-**--global-uki-addon**=*GLOBAL_UKI_ADDON*
+**--global-uki-addon**=*GLOBAL*
 
-    Name of the global UKI addons to install without the ".efi.addon" suffix. This option can be provided multiple times if multiple addons are to be installed (composefs backend only)
+    Experimental. Name of the global UKI addons to install without the ".addon.efi" suffix. This option can be provided multiple times if multiple addons are to be installed (composefs backend only). On upgrade and switch, global addons already installed are carried forward; passing this flag adds further addons on top
 
 <!-- END GENERATED OPTIONS -->
 

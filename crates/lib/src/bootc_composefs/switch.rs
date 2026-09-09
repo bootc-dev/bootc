@@ -38,6 +38,7 @@ pub(crate) async fn switch_composefs(
         quiet: opts.quiet,
         prog,
         delta: delta.as_ref(),
+        uki_addon_opts: opts.uki_addon_opts.clone(),
     };
 
     if opts.download_opts.from_downloaded {
