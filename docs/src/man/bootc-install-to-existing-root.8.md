@@ -246,11 +246,11 @@ of migrating the fstab entries. See the "Injecting kernel arguments" section abo
 
     Default: false
 
-**--uki-addon**=*UKI_ADDON*
+**--uki-addon**=*SCOPED*
 
     Name of the local/scoped UKI addons to install without the ".efi.addon" suffix
 
-**--global-uki-addon**=*GLOBAL_UKI_ADDON*
+**--global-uki-addon**=*GLOBAL*
 
     Name of the global UKI addons to install without the ".efi.addon" suffix
 

@@ -117,7 +117,7 @@ use crate::{
 };
 use crate::{parsers::grub_menuconfig::MenuEntry, store::BootedComposefs};
 
-use crate::install::{RootSetup, State};
+use crate::install::{RootSetup, State, UkiAddonOpts};
 
 /// Contains the EFP's filesystem UUID. Used by grub
 pub(crate) const EFI_UUID_FILE: &str = "efiuuid.cfg";
@@ -262,7 +262,14 @@ pub(crate) enum BootSetupType<'a> {
     /// For initial setup, i.e. install to-disk
     Setup((&'a RootSetup, &'a State, &'a PostFetchState)),
     /// For `bootc upgrade`
-    Upgrade((&'a Storage, &'a BootedComposefs, &'a Host)),
+    Upgrade(
+        (
+            &'a Storage,
+            &'a BootedComposefs,
+            &'a Host,
+            Option<&'a UkiAddonOpts>,
+        ),
+    ),
 }
 
 #[derive(
@@ -716,7 +723,7 @@ pub(crate) fn setup_composefs_bls_boot(
             )
         }
 
-        BootSetupType::Upgrade((storage, booted_cfs, host)) => {
+        BootSetupType::Upgrade((storage, booted_cfs, host, _)) => {
             let bootloader = host.require_composefs_booted()?.bootloader.clone();
 
             let boot_dir = storage.require_boot_dir()?;
@@ -1287,25 +1294,23 @@ pub(crate) fn setup_composefs_uki_boot(
 
             let mut addons: Vec<UkiAddonsList> = vec![];
 
-            if let Some(local_addons) = &state.composefs_options.uki_addon {
-                for addon in local_addons {
-                    addons.push(UkiAddonsList {
-                        name: addon.into(),
-                        addon_type: UkiAddonType::Scoped {
-                            depl_id: id.to_hex(),
-                        },
-                    });
-                }
-            };
+            let addon_opts = &state.composefs_options.uki_addon_opts;
 
-            if let Some(global_addons) = &state.composefs_options.global_uki_addon {
-                for addon in global_addons {
-                    addons.push(UkiAddonsList {
-                        name: addon.into(),
-                        addon_type: UkiAddonType::Global,
-                    });
-                }
-            };
+            for addon in addon_opts.scoped.iter().flatten() {
+                addons.push(UkiAddonsList {
+                    name: addon.into(),
+                    addon_type: UkiAddonType::Scoped {
+                        depl_id: id.to_hex(),
+                    },
+                });
+            }
+
+            for addon in addon_opts.global.iter().flatten() {
+                addons.push(UkiAddonsList {
+                    name: addon.into(),
+                    addon_type: UkiAddonType::Global,
+                });
+            }
 
             (
                 root_setup.physical_root_path.clone(),
@@ -1316,7 +1321,7 @@ pub(crate) fn setup_composefs_uki_boot(
             )
         }
 
-        BootSetupType::Upgrade((storage, booted_cfs, host)) => {
+        BootSetupType::Upgrade((storage, booted_cfs, host, uki_addon_opts)) => {
             let sysroot = Utf8PathBuf::from("/sysroot"); // Still needed for root_path
             let bootloader = host.require_composefs_booted()?.bootloader.clone();
 
@@ -1324,7 +1329,29 @@ pub(crate) fn setup_composefs_uki_boot(
             let root_dev = bootc_blockdev::list_dev_by_dir(&storage.physical_root)?;
             let esp_dev = root_dev.find_first_colocated_esp()?;
 
-            let installed_addons = list_installed_uki_addons(storage)?;
+            // These are the currently installed addons which we will update automatically
+            // if we find in the new image
+            let mut installed_addons = list_installed_uki_addons(storage)?;
+
+            if let Some(addons) = &uki_addon_opts {
+                for addon in addons.global.iter().flatten() {
+                    installed_addons.push(UkiAddonsList {
+                        name: addon.into(),
+                        addon_type: UkiAddonType::Global,
+                    });
+                }
+
+                let depl_id = id.to_hex();
+
+                for addon in addons.scoped.iter().flatten() {
+                    installed_addons.push(UkiAddonsList {
+                        name: addon.into(),
+                        addon_type: UkiAddonType::Scoped {
+                            depl_id: depl_id.clone(),
+                        },
+                    });
+                }
+            }
 
             (
                 sysroot,
