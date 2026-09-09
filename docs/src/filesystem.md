@@ -111,6 +111,48 @@ view of `/etc`. This should generally be considered an internal implementation d
 of bootc/ostree. Do *not* explicitly put files into this location, it can create
 undefined behavior. There is a check for this in `bootc container lint`.
 
+### systemd-confext and systemd-sysext
+
+[systemd-confext](https://www.freedesktop.org/software/systemd/man/systemd-confext.html)
+and [systemd-sysext](https://www.freedesktop.org/software/systemd/man/systemd-sysext.html)
+are not currently supported on bootc-managed systems.
+
+These tools may be present in the operating system image (for example, because
+they ship in the `systemd` package), but bootc has not validated them on deployed
+systems. Using them on a bootc host is not recommended. There are two categories
+of concern to be aware of.
+
+#### Conflicts with transient overlays
+
+confext and sysext apply their content by stacking overlayfs mounts. This can
+conflict with the non-default use of transient overlays for `/` and `/etc`.
+bootc systems commonly use composefs for the root filesystem, and may also enable
+[transient root](#enabling-transient-root) and/or
+[transient `/etc`](#enabling-transient-etc), each of which also uses overlayfs
+stacking. The Linux kernel limits filesystem stacking depth
+(`FILESYSTEM_MAX_STACK_DEPTH = 2`), so combining these features can exhaust the
+available depth and cause confext or sysext overlays to fail.
+
+The `/etc` case in particular is expected to become tractable: configuring the
+composefs backend with `etc = none` (there is not yet a corresponding ostree
+knob) leaves `/etc` free for confext to manage.
+
+#### OS-specific integration concerns
+
+Beyond the bootc-specific overlay concerns above, there may be additional
+integration issues (for example, SELinux labeling) that are specific to a
+particular OS or distribution. Consult your OS/distribution documentation for
+guidance on confext and sysext.
+
+For per-host configuration, use the patterns described in
+[Building images: Configuration](building/guidance.md#configuration) instead:
+image-embedded configuration (prefer `/usr` where possible), persistent `/etc`
+with day-2 configuration management tools, or machine-local kernel arguments
+via `rpm-ostree kargs` or `/usr/lib/bootc/kargs.d`.
+
+For more on the design rationale, see
+[Relationship with systemd "particles"](relationship-particles.md).
+
 ## `/var`
 
 Content in `/var` persists by default; it is however supported to make it or subdirectories
