@@ -100,7 +100,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::bootc_composefs::state::{get_booted_bls, write_composefs_state};
 use crate::bootc_composefs::status::build_composefs_karg;
-use crate::bootc_composefs::uki_addon::list_installed_uki_addons;
+use crate::bootc_composefs::uki_addon::{UkiAddonType, UkiAddonsList, list_installed_uki_addons};
 use crate::bootc_kargs::compute_new_kargs;
 use crate::composefs_consts::{TYPE1_BOOT_DIR_PREFIX, TYPE1_ENT_PATH, TYPE1_ENT_PATH_STAGED};
 use crate::parsers::bls_config::{BLSConfig, BLSConfigType, EFIKey};
@@ -1757,8 +1757,6 @@ pub(crate) fn setup_composefs_uki_boot(
     boot_ids: &ExpectedBootImageIds,
     entries: Vec<ComposefsBootEntry<Sha512HashValue>>,
 ) -> Result<(String, Sha512HashValue)> {
-    let addons_to_update;
-
     let (root_path, esp_device, bootloader, missing_fsverity_allowed, uki_addons) = match setup_type
     {
         BootSetupType::Setup((root_setup, state, postfetch, allow_missing_fsverity)) => {
@@ -1767,12 +1765,34 @@ pub(crate) fn setup_composefs_uki_boot(
             // Locate ESP partition device by walking up to the root disk(s)
             let esp_part = root_setup.device_info.find_first_colocated_esp()?;
 
+            let mut addons: Vec<UkiAddonsList> = vec![];
+
+            if let Some(local_addons) = &state.composefs_options.uki_addon {
+                for addon in local_addons {
+                    addons.push(UkiAddonsList {
+                        name: addon.into(),
+                        addon_type: UkiAddonType::Scoped {
+                            depl_id: id.to_hex(),
+                        },
+                    });
+                }
+            };
+
+            if let Some(global_addons) = &state.composefs_options.global_uki_addon {
+                for addon in global_addons {
+                    addons.push(UkiAddonsList {
+                        name: addon.into(),
+                        addon_type: UkiAddonType::Global,
+                    });
+                }
+            };
+
             (
                 root_setup.physical_root_path.clone(),
                 esp_part.path(),
                 postfetch.detected_bootloader.clone(),
                 allow_missing_fsverity,
-                state.composefs_options.uki_addon.as_ref(),
+                addons,
             )
         }
 
@@ -1784,24 +1804,14 @@ pub(crate) fn setup_composefs_uki_boot(
             let root_dev = bootc_blockdev::list_dev_by_dir(&storage.physical_root)?;
             let esp_dev = root_dev.find_first_colocated_esp()?;
 
-            let installed_addons = list_installed_uki_addons(storage, booted_cfs)?;
-
-            // If we find addons (that are currently installed) in the new image as well,
-            // we will update them
-            //
-            // TODO: This has a weird edge case where a local addon and global addon can have
-            // the same name. We can add a container lint for this
-            addons_to_update = installed_addons
-                .into_iter()
-                .map(|a| a.name)
-                .collect::<Vec<_>>();
+            let installed_addons = list_installed_uki_addons(storage)?;
 
             (
                 sysroot,
                 esp_dev.path(),
                 bootloader,
                 booted_cfs.cmdline.allow_missing_fsverity,
-                Some(&addons_to_update),
+                installed_addons,
             )
         }
     };
@@ -1821,10 +1831,6 @@ pub(crate) fn setup_composefs_uki_boot(
                 // If --uki-addon is not passed, we don't install any addon (whether
                 // it's scoped to this UKI or a global one)
                 if matches!(entry.pe_type, PEType::UkiAddon | PEType::GlobalUkiAddon) {
-                    let Some(addons) = uki_addons else {
-                        continue;
-                    };
-
                     let addon_name = entry
                         .file_path
                         .components()
@@ -1838,8 +1844,32 @@ pub(crate) fn setup_composefs_uki_boot(
                             anyhow::anyhow!("UKI addon doesn't end with {EFI_ADDON_DIR_EXT}")
                         })?;
 
-                    if !addons.iter().any(|passed_addon| passed_addon == addon_name) {
-                        continue;
+                    match entry.pe_type {
+                        PEType::Uki => unreachable!("Outer match should've only caught UKI Addons"),
+                        PEType::UkiAddon => {
+                            let found = uki_addons.iter().any(|addon| {
+                                matches!(addon.addon_type, UkiAddonType::Scoped { .. })
+                                    && addon.name == addon_name
+                            });
+
+                            if !found {
+                                tracing::info!("Not installing found UKI Addon: {addon_name}");
+                                continue;
+                            }
+                        }
+                        PEType::GlobalUkiAddon => {
+                            let found = uki_addons.iter().any(|addon| {
+                                matches!(addon.addon_type, UkiAddonType::Global)
+                                    && addon.name == addon_name
+                            });
+
+                            if !found {
+                                tracing::info!(
+                                    "Not installing found global UKI Addon: {addon_name}"
+                                );
+                                continue;
+                            }
+                        }
                     }
                 }
 
