@@ -8,7 +8,7 @@ use ostree_ext::composefs_boot::bootloader::{EFI_ADDON_DIR_EXT, EFI_ADDON_FILE_E
 use crate::{
     bootc_composefs::boot::{BOOTC_UKI_DIR, GLOBAL_UKI_ADDONS_DIR},
     composefs_consts::UKI_NAME_PREFIX,
-    store::{BootedComposefs, Storage},
+    store::Storage,
 };
 
 #[derive(Debug, Clone)]
@@ -44,10 +44,7 @@ fn gather_addons_from_dir(
 }
 
 #[context("Listing UKI Addons")]
-pub fn list_installed_uki_addons(
-    storage: &Storage,
-    booted_composefs: &BootedComposefs,
-) -> Result<Vec<UkiAddonsList>> {
+pub fn list_installed_uki_addons(storage: &Storage) -> Result<Vec<UkiAddonsList>> {
     let mut addons = vec![];
 
     let Ok(esp) = storage.require_esp() else {

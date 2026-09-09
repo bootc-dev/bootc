@@ -188,7 +188,11 @@ set `discoverable-partitions = true` in their install configuration
 
 **--uki-addon**=*UKI_ADDON*
 
-    Name of the UKI addons to install without the ".efi.addon" suffix. This option can be provided multiple times if multiple addons are to be installed (composefs backend only)
+    Name of the local/scoped UKI addons to install without the ".efi.addon" suffix. This option can be provided multiple times if multiple addons are to be installed (composefs backend only)
+
+**--global-uki-addon**=*GLOBAL_UKI_ADDON*
+
+    Name of the global UKI addons to install without the ".efi.addon" suffix. This option can be provided multiple times if multiple addons are to be installed (composefs backend only)
 
 <!-- END GENERATED OPTIONS -->
 

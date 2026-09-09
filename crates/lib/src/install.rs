@@ -409,12 +409,19 @@ pub(crate) struct InstallComposefsOpts {
     #[serde(default)]
     pub(crate) allow_missing_verity: bool,
 
-    /// Name of the UKI addons to install without the ".efi.addon" suffix.
+    /// Name of the local/scoped UKI addons to install without the ".efi.addon" suffix.
     /// This option can be provided multiple times if multiple addons are to be installed
     /// (composefs backend only).
-    #[clap(long)]
+    #[clap(long, requires = "composefs_backend")]
     #[serde(default)]
     pub(crate) uki_addon: Option<Vec<String>>,
+
+    /// Name of the global UKI addons to install without the ".efi.addon" suffix.
+    /// This option can be provided multiple times if multiple addons are to be installed
+    /// (composefs backend only).
+    #[clap(long, requires = "composefs_backend")]
+    #[serde(default)]
+    pub(crate) global_uki_addon: Option<Vec<String>>,
 }
 
 impl InstallComposefsOpts {
@@ -3149,6 +3156,7 @@ mod tests {
                 composefs_backend,
                 allow_missing_verity,
                 uki_addon,
+                global_uki_addon: None,
             };
             assert_eq!(
                 opts.validate(bootloader.as_ref()).is_ok(),
