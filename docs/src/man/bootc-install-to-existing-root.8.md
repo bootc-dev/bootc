@@ -248,7 +248,11 @@ of migrating the fstab entries. See the "Injecting kernel arguments" section abo
 
 **--uki-addon**=*UKI_ADDON*
 
-    Name of the UKI addons to install without the ".efi.addon" suffix. This option can be provided multiple times if multiple addons are to be installed
+    Name of the local/scoped UKI addons to install without the ".efi.addon" suffix
+
+**--global-uki-addon**=*GLOBAL_UKI_ADDON*
+
+    Name of the global UKI addons to install without the ".efi.addon" suffix
 
 <!-- END GENERATED OPTIONS -->
 
