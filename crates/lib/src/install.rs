@@ -396,6 +396,23 @@ pub(crate) struct InstallConfigOpts {
 }
 
 #[derive(Debug, Default, Clone, clap::Parser, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct UkiAddonOpts {
+    /// Name of the local/scoped UKI addons to install without the ".efi.addon" suffix.
+    /// This option can be provided multiple times if multiple addons are to be installed
+    /// (composefs backend only).
+    #[clap(long = "uki-addon", requires = "composefs_backend")]
+    #[serde(default)]
+    pub(crate) scoped: Option<Vec<String>>,
+
+    /// Name of the global UKI addons to install without the ".efi.addon" suffix.
+    /// This option can be provided multiple times if multiple addons are to be installed
+    /// (composefs backend only).
+    #[clap(long = "global-uki-addon", requires = "composefs_backend")]
+    #[serde(default)]
+    pub(crate) global: Option<Vec<String>>,
+}
+
+#[derive(Debug, Default, Clone, clap::Parser, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct InstallComposefsOpts {
     /// Use the composefs backend instead of ostree. This is the default for images with a UKI,
     /// and for images with /usr/lib/composefs/setup-root-conf.toml and no ostree prepare-root.conf
@@ -409,19 +426,9 @@ pub(crate) struct InstallComposefsOpts {
     #[serde(default)]
     pub(crate) allow_missing_verity: bool,
 
-    /// Name of the local/scoped UKI addons to install without the ".efi.addon" suffix.
-    /// This option can be provided multiple times if multiple addons are to be installed
-    /// (composefs backend only).
-    #[clap(long, requires = "composefs_backend")]
-    #[serde(default)]
-    pub(crate) uki_addon: Option<Vec<String>>,
-
-    /// Name of the global UKI addons to install without the ".efi.addon" suffix.
-    /// This option can be provided multiple times if multiple addons are to be installed
-    /// (composefs backend only).
-    #[clap(long, requires = "composefs_backend")]
-    #[serde(default)]
-    pub(crate) global_uki_addon: Option<Vec<String>>,
+    #[clap(flatten)]
+    #[serde(flatten)]
+    pub(crate) uki_addon_opts: UkiAddonOpts,
 }
 
 impl InstallComposefsOpts {
@@ -439,8 +446,12 @@ impl InstallComposefsOpts {
                 "--allow-missing-verity requires the composefs backend"
             );
             anyhow::ensure!(
-                self.uki_addon.is_none(),
+                self.uki_addon_opts.scoped.is_none(),
                 "--uki-addon requires the composefs backend"
+            );
+            anyhow::ensure!(
+                self.uki_addon_opts.global.is_none(),
+                "--global-uki-addon requires the composefs backend"
             );
         }
         Ok(())
@@ -3155,8 +3166,10 @@ mod tests {
             let opts = InstallComposefsOpts {
                 composefs_backend,
                 allow_missing_verity,
-                uki_addon,
-                global_uki_addon: None,
+                uki_addon_opts: UkiAddonOpts {
+                    scoped: uki_addon,
+                    global: None,
+                },
             };
             assert_eq!(
                 opts.validate(bootloader.as_ref()).is_ok(),
