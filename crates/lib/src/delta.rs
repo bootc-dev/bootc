@@ -27,7 +27,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 use cap_std_ext::cap_std;
 use fn_error_context::context;
 use ocidir::oci_spec::image::{
-    Descriptor, Digest, DigestAlgorithm, ImageManifest, MediaType,
+    Descriptor, Digest, DigestAlgorithm, ImageConfiguration, ImageManifest, MediaType,
 };
 use ocidir::prelude::*;
 use ocidir::{OciArchive, OciDir};
@@ -98,6 +98,7 @@ pub(crate) struct Delta {
     pub(crate) path: Utf8PathBuf,
     /// Parsed information about the delta.
     pub(crate) parsed: ParsedDelta,
+    layout: Layout,
 }
 
 impl Delta {
@@ -116,7 +117,15 @@ impl Delta {
         Ok(Self {
             path: path.to_owned(),
             parsed,
+            layout,
         })
+    }
+
+    /// Open the patch blob `desc`
+    pub(crate) fn read_patch(&self, desc: &Descriptor) -> Result<Box<dyn BlobStream>> {
+        self.layout
+            .read_blob(desc)
+            .with_context(|| format!("Reading delta patch {}", desc.digest()))
     }
 
     /// The digest of the target image's manifest, as recorded in the delta.
@@ -153,6 +162,11 @@ impl Delta {
         &self.parsed.target_manifest
     }
 
+    /// The target image's config.
+    pub(crate) fn target_config(&self) -> &ImageConfiguration {
+        &self.parsed.target_config
+    }
+
     /// The config digest of the image this delta was built against.
     pub(crate) fn source_config_digest(&self) -> &Digest {
         &self.parsed.source_config_digest
@@ -178,6 +192,18 @@ impl Delta {
             .map_err(|e| anyhow::anyhow!("Building image reference for {}: {e}", self.path))
     }
 
+    /// A one-line description of what applying this delta would do.
+    pub(crate) fn describe(&self) -> String {
+        let total = self.parsed.target_manifest.layers().len();
+        let patched = self.parsed.delta_layer_by_to.len();
+        format!(
+            "{}: target manifest {}, {total} layers ({patched} patched, {} reused from source config {})",
+            self.path,
+            self.target_manifest_digest(),
+            total - patched,
+            self.parsed.source_config_digest,
+        )
+    }
 }
 
 /// Open the delta named by a `--from-delta` argument, if there is one.
@@ -185,14 +211,6 @@ pub(crate) async fn open_opt(path: Option<&Utf8Path>) -> Result<Option<Delta>> {
     match path {
         Some(path) => Ok(Some(Delta::open(path).await?)),
         None => Ok(None),
-    }
-}
-
-/// Reject `--from-delta` on a storage backend that cannot apply one yet.
-pub(crate) fn reject_unsupported(path: Option<&Utf8Path>) -> Result<()> {
-    match path {
-        Some(path) => bail!("--from-delta ({path}) is not supported by the ostree backend yet"),
-        None => Ok(()),
     }
 }
 
@@ -263,7 +281,7 @@ fn read_verified(what: &str, mut reader: impl Read, expected: &Digest) -> Result
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use ocidir::oci_spec::image::{ImageConfigurationBuilder, ImageConfiguration,ImageManifestBuilder, RootFsBuilder};
+    use ocidir::oci_spec::image::{ImageConfigurationBuilder, ImageManifestBuilder, RootFsBuilder};
     use std::collections::HashMap;
 
     const DELTA_CONTENT: &str = "io.github.containers.delta.content";
@@ -444,6 +462,7 @@ pub(crate) mod tests {
         assert_eq!(delta.target_manifest_digest(), t.manifest_desc.digest());
         assert_eq!(delta.parsed.target_manifest.layers().len(), 2);
         assert_eq!(delta.parsed.delta_layer_by_to.len(), 1);
+        assert!(delta.describe().contains("1 patched, 1 reused"));
 
         let pull_ref = delta.pull_ref().unwrap();
         assert_eq!(

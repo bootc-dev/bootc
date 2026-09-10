@@ -1368,7 +1368,9 @@ async fn upgrade(
     storage: &Storage,
     booted_ostree: &BootedOstree<'_>,
 ) -> Result<()> {
-    crate::delta::reject_unsupported(opts.from_delta.as_deref())?;
+    let delta = crate::delta::open_opt(opts.from_delta.as_deref())
+        .await?
+        .map(std::sync::Arc::new);
 
     let repo = &booted_ostree.repo();
 
@@ -1434,6 +1436,9 @@ async fn upgrade(
     // needs this for update_mtime() and the non-check path needs it for
     // unified pull detection.
     let use_unified = crate::deploy::image_exists_in_unified_storage(storage, imgref).await?;
+    if let Some(delta) = delta.as_deref() {
+        crate::delta::reject_unified_storage(delta, use_unified)?;
+    }
 
     if opts.check {
         let ostree_imgref = imgref.clone().into();
@@ -1460,7 +1465,17 @@ async fn upgrade(
             }
         }
     } else {
-        let fetched = if use_unified {
+        let fetched = if let Some(delta) = delta.clone() {
+            crate::deploy::pull_delta(
+                repo,
+                imgref,
+                delta,
+                opts.quiet,
+                prog.clone(),
+                Some(&booted_ostree.deployment),
+            )
+            .await?
+        } else if use_unified {
             crate::deploy::pull_unified(
                 repo,
                 imgref,
@@ -1597,7 +1612,9 @@ async fn switch_ostree(
     storage: &Storage,
     booted_ostree: &BootedOstree<'_>,
 ) -> Result<()> {
-    crate::delta::reject_unsupported(opts.from_delta.as_deref())?;
+    let delta = crate::delta::open_opt(opts.from_delta.as_deref())
+        .await?
+        .map(std::sync::Arc::new);
 
     let (_, host) = crate::status::get_status(booted_ostree)?;
 
@@ -1663,8 +1680,21 @@ async fn switch_ostree(
     } else {
         crate::deploy::image_exists_in_unified_storage(storage, &target).await?
     };
+    if let Some(delta) = delta.as_deref() {
+        crate::delta::reject_unified_storage(delta, use_unified)?;
+    }
 
-    let fetched = if use_unified {
+    let fetched = if let Some(delta) = delta.clone() {
+        crate::deploy::pull_delta(
+            repo,
+            &target,
+            delta,
+            opts.quiet,
+            prog.clone(),
+            Some(&booted_ostree.deployment),
+        )
+        .await?
+    } else if use_unified {
         crate::deploy::pull_unified(
             repo,
             &target,
