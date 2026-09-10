@@ -1051,7 +1051,7 @@ pub(crate) enum UkiAddonCliOpts {
     },
     /// Remove a UKI Addon
     Remove {
-        /// Addon name to be provided without the `.efi.addon` suffix
+        /// Addon name to be provided without the `.addon.efi` suffix
         name: String,
         /// If removing a scoped addon, deployment_id is required.
         /// If removing a global addon, deployment_id is not required.
@@ -1059,7 +1059,7 @@ pub(crate) enum UkiAddonCliOpts {
     },
     /// Add a UKI Addon to the current deployment
     Add {
-        /// Addon name to be provided without the `.efi.addon` suffix
+        /// Addon name to be provided without the `.addon.efi` suffix
         name: String,
         addon_type: UkiAddonScope,
     },
@@ -1197,6 +1197,7 @@ pub(crate) enum Opt {
     #[clap(hide = true)]
     DeleteDeployment { depl_id: String },
 
+    /// Perform operations related to UKI Addons
     #[clap(subcommand)]
     UkiAddon(UkiAddonCliOpts),
 }
