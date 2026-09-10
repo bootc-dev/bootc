@@ -123,7 +123,55 @@ def fourth_boot [] {
     assert (open /proc/cmdline | str contains "berserk=guts")
     # Global addon should've been updated
     assert (open /proc/cmdline | str contains "pink=floyd")
-    
+
+    # --- CLI tests ---
+
+    # list --json should return 3 addons
+    let addons = bootc uki-addon list --json | from json
+    assert (($addons | length) == 3)
+
+    # Verify the global addon is present
+    let globals = $addons | where addon_type.type == "global"
+    assert (($globals | length) == 1)
+    assert ($globals.0.name == "global-cmdline")
+
+    # Verify we have two scoped addons
+    let scoped = $addons | where addon_type.type == "scoped"
+    assert (($scoped | length) == 2)
+
+    # Human-readable list should not error
+    bootc uki-addon list
+
+    # Remove the global addon
+    bootc uki-addon remove global-cmdline
+    let addons_after_remove = bootc uki-addon list --json | from json
+    assert (($addons_after_remove | length) == 2)
+    let globals_after = $addons_after_remove | where addon_type.type == "global"
+    assert (($globals_after | length) == 0)
+
+    # Add it back from the booted image
+    bootc uki-addon add global-cmdline global
+    let addons_after_add = bootc uki-addon list --json | from json
+    assert (($addons_after_add | length) == 3)
+    let globals_readded = $addons_after_add | where addon_type.type == "global"
+    assert (($globals_readded | length) == 1)
+    assert ($globals_readded.0.name == "global-cmdline")
+
+    # Adding the same addon again should be a no-op
+    bootc uki-addon add global-cmdline global
+
+    # Remove a scoped addon from the old deployment
+    let old_scoped = $scoped | where name == "monster-cmdline"
+    assert (($old_scoped | length) == 1)
+    let old_depl_id = $old_scoped.0.addon_type.depl_id
+    bootc uki-addon remove monster-cmdline $old_depl_id
+    let addons_final = bootc uki-addon list --json | from json
+    assert (($addons_final | length) == 2)
+
+    # Removing a non-existent addon should fail
+    let failed = (do { bootc uki-addon remove nonexistent-addon } | complete)
+    assert ($failed.exit_code != 0)
+
     tap ok
 }
 
