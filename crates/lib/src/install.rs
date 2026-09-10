@@ -402,14 +402,14 @@ pub(crate) struct UkiAddonOpts {
     /// Name of the local/scoped UKI addons to install without the ".efi.addon" suffix.
     ///
     /// This option can be provided multiple times if multiple addons are to be installed.
-    #[clap(long = "uki-addon", requires = "composefs_backend")]
+    #[clap(long = "uki-addon")]
     #[serde(default)]
     pub(crate) scoped: Option<Vec<String>>,
 
     /// Name of the global UKI addons to install without the ".efi.addon" suffix.
     ///
     /// This option can be provided multiple times if multiple addons are to be installed.
-    #[clap(long = "global-uki-addon", requires = "composefs_backend")]
+    #[clap(long = "global-uki-addon")]
     #[serde(default)]
     pub(crate) global: Option<Vec<String>>,
 }
