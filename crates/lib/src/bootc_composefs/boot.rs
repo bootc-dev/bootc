@@ -1797,8 +1797,7 @@ pub(crate) fn setup_composefs_uki_boot(
     boot_ids: &ExpectedBootImageIds,
     entries: Vec<ComposefsBootEntry<Sha512HashValue>>,
 ) -> Result<(String, Sha512HashValue)> {
-    let (esp_device, bootloader, missing_fsverity_allowed, uki_addons) = match setup_type
-    {
+    let (esp_device, bootloader, missing_fsverity_allowed, uki_addons) = match setup_type {
         BootSetupType::Setup((root_setup, state, postfetch, allow_missing_fsverity)) => {
             state.require_no_kargs_for_uki()?;
 
