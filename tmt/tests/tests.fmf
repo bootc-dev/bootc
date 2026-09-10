@@ -193,3 +193,8 @@ check:
   summary: Test composefs UKI dumpfile diff print
   duration: 30m
   test: nu booted/test-composefs-uki-dumpfile.nu
+
+/test-49-composefs-uki-addons:
+  summary: Test composefs UKI Addons
+  duration: 30m
+  test: nu booted/test-composefs-uki-addons.nu

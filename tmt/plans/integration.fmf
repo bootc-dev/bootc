@@ -314,4 +314,12 @@ execute:
     test:
       - /tmt/tests/tests/test-48-composefs-uki-dumpfile
   extra-skip_if_ostree: true
+
+/plan-49-composefs-uki-addons:
+  summary: Test composefs UKI Addons
+  discover:
+    how: fmf
+    test:
+      - /tmt/tests/tests/test-49-composefs-uki-addons
+  extra-skip_if_ostree: true
 # END GENERATED PLANS
