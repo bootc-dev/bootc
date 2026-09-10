@@ -2160,13 +2160,13 @@ pub async fn export(
     .await
 }
 
-/// Iterate over deployment commits, returning the manifests from
+/// Iterate over deployment commits, returning the commit id and commit object for
 /// commits which point to a container image.
-#[context("Listing deployment manifests")]
-fn list_container_deployment_manifests(
+#[context("Listing deployment commits")]
+fn list_container_deployment_commits_full(
     repo: &ostree::Repo,
     cancellable: Option<&gio::Cancellable>,
-) -> Result<Vec<ImageManifest>> {
+) -> Result<Vec<(String, ostree::glib::Variant)>> {
     // Gather all refs which start with ostree/0/ or ostree/1/ or rpmostree/base/
     // and create a set of the commits which they reference.
     let commits = OSTREE_BASE_DEPLOYMENT_REFS
@@ -2197,11 +2197,37 @@ fn list_container_deployment_manifests(
             .is_some()
         {
             tracing::trace!("Commit {commit} is a container image");
-            let manifest = manifest_data_from_commitmeta(commit_meta)?.0;
-            r.push(manifest);
+            r.push((commit.to_string(), commit_obj));
         }
     }
     Ok(r)
+}
+
+/// List container image commits retained by deployment or protected base-image refs.
+pub fn list_container_deployment_commits(
+    repo: &ostree::Repo,
+    cancellable: Option<&gio::Cancellable>,
+) -> Result<Vec<String>> {
+    list_container_deployment_commits_full(repo, cancellable)?
+        .into_iter()
+        .map(|(commit, _commit_obj)| Ok(commit))
+        .collect()
+}
+
+/// Iterate over deployment commits, returning the manifests from
+/// commits which point to a container image.
+#[context("Listing deployment manifests")]
+fn list_container_deployment_manifests(
+    repo: &ostree::Repo,
+    cancellable: Option<&gio::Cancellable>,
+) -> Result<Vec<ImageManifest>> {
+    list_container_deployment_commits_full(repo, cancellable)?
+        .into_iter()
+        .map(|(_commit, commit_obj)| {
+            let metadata = glib::VariantDict::new(Some(&commit_obj.child_value(0)));
+            Ok(manifest_data_from_commitmeta(&metadata)?.0)
+        })
+        .collect()
 }
 
 /// Garbage collect unused image layer references.
