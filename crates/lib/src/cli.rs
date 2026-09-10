@@ -107,7 +107,7 @@ pub(crate) struct DownloadOnlyOpts {
     /// This unlocks the staged deployment without fetching updates from the container image source.
     /// The deployment will be applied on the next shutdown or reboot. Use with --apply to
     /// reboot immediately.
-    #[clap(long, conflicts_with = "download_only")]
+    #[clap(long, conflicts_with_all = ["download_only", "scoped", "global"])]
     pub(crate) from_downloaded: bool,
 }
 
@@ -121,7 +121,7 @@ pub(crate) struct UpgradeOpts {
     /// Check if an update is available without applying it.
     ///
     /// This only downloads updated metadata, not the full image layers.
-    #[clap(long, conflicts_with_all = ["apply", "download_only", "from_downloaded"])]
+    #[clap(long, conflicts_with_all = ["apply", "download_only", "from_downloaded", "scoped", "global"])]
     pub(crate) check: bool,
 
     /// Restart or reboot into the new target image.
