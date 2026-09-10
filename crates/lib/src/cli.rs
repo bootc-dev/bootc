@@ -1148,6 +1148,7 @@ pub(crate) enum Opt {
     #[clap(hide = true)]
     DeleteDeployment { depl_id: String },
 
+    /// Perform operations related to UKI Addons
     #[clap(subcommand)]
     UkiAddon(UkiAddonCliOpts),
 }
