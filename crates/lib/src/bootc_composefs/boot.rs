@@ -147,15 +147,12 @@ pub(crate) const BOOTC_UKI_DIR: &str = "EFI/Linux/bootc";
 /// deployment, so they're neither namespaced by deployment verity nor cleaned up by GC.
 ///
 /// TODO: This directory is shared, unscoped machine state (any systemd-stub UKI on the
-/// ESP will load whatever's here), but we currently treat it like deployment-owned
-/// content: we blindly overwrite same-named files with no ownership tracking, we only
-/// (re)install addons on `install` (not on upgrade, see `uki_addons` being hardcoded to
-/// `None` for `BootSetupType::Upgrade` below), and GC never removes stale entries here.
-/// Before recommending this feature for real use we should track which files here are
-/// bootc-owned, reconcile that set on every upgrade (installing newly-selected addons,
-/// removing ones we own that are no longer selected/present), and decide/document how
-/// this interacts with deployment rollback (a global addon update isn't reverted by
-/// rolling back to an older deployment).
+/// ESP will load whatever's here). Addons are now (re)installed on upgrade/switch
+/// (installed addons are auto-updated when the new image has a matching filename),
+/// but we still blindly overwrite same-named (global) files with no ownership tracking.
+/// Before recommending this feature for wider use we should track which global addon
+/// files are bootc-owned, and decide/document how this interacts with deployment
+/// rollback (a global addon update isn't reverted by rolling back to an older deployment).
 pub(crate) const GLOBAL_UKI_ADDONS_DIR: &str = "loader/addons";
 
 #[derive(thiserror::Error, Debug)]
