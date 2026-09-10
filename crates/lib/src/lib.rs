@@ -73,6 +73,7 @@ mod composefs_consts;
 mod container_export;
 mod containerenv;
 pub(crate) mod delta;
+pub(crate) mod delta_ostree;
 pub(crate) mod deploy;
 mod discoverable_partition_specification;
 pub(crate) mod fsck;
