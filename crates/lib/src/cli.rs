@@ -508,13 +508,23 @@ pub(crate) enum ContainerOpts {
         #[clap(long)]
         kernel_in_boot: bool,
 
-        /// Disable SELinux labeling in the exported archive.
-        #[clap(long)]
-        disable_selinux: bool,
+        /// SELinux labeling mode for exported entries.
+        #[clap(long, default_value = "enabled")]
+        selinux: ExportSelinuxMode,
 
         /// Path to the container filesystem root
         target: Utf8PathBuf,
     },
+}
+
+#[derive(Debug, Clone, ValueEnum, PartialEq, Eq)]
+pub(crate) enum ExportSelinuxMode {
+    /// Compute and apply SELinux labels; error if any file has no policy match.
+    Enabled,
+    /// Compute and apply SELinux labels; warn (don't error) for files with no policy match.
+    WarnOnMissing,
+    /// Do not apply SELinux labels.
+    Disabled,
 }
 
 #[derive(Debug, Clone, ValueEnum, PartialEq, Eq)]
@@ -2143,14 +2153,14 @@ async fn run_from_opt(opt: Opt) -> Result<CliExitStatus> {
                 target,
                 output,
                 kernel_in_boot,
-                disable_selinux,
+                selinux,
             } => {
                 crate::container_export::export(
                     &format,
                     &target,
                     output.as_deref(),
                     kernel_in_boot,
-                    disable_selinux,
+                    &selinux,
                 )
                 .await
             }

@@ -259,6 +259,17 @@ pub(crate) fn require_label(
         })
 }
 
+/// Look up the label for a path in a policy, returning None if no match is found.
+pub(crate) fn optional_label(
+    policy: &ostree::SePolicy,
+    destname: &Utf8Path,
+    mode: u32,
+) -> Result<Option<ostree::glib::GString>> {
+    policy
+        .label(destname.as_str(), mode, ostree::gio::Cancellable::NONE)
+        .map_err(Into::into)
+}
+
 /// A thin wrapper for invoking fsetxattr(security.selinux)
 pub(crate) fn set_security_selinux(fd: std::os::fd::BorrowedFd, label: &[u8]) -> Result<()> {
     rustix::fs::fsetxattr(
