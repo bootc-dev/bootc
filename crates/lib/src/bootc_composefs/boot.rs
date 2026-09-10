@@ -521,10 +521,18 @@ pub(crate) fn get_uki_addon_dir_name(depl_verity: &str) -> String {
     format!("{UKI_NAME_PREFIX}{depl_verity}{EFI_ADDON_DIR_EXT}")
 }
 
-#[allow(dead_code)]
-/// Returns the name of a UKI Addon given verity digest
-pub(crate) fn get_uki_addon_file_name(depl_verity: &str) -> String {
-    format!("{UKI_NAME_PREFIX}{depl_verity}{EFI_ADDON_FILE_EXT}")
+/// Returns the name of a scoped/local UKI Addon directory given name
+/// with or without the `.addon.efi` prefix
+pub(crate) fn get_scoped_uki_addon_name(name: &str) -> String {
+    let name_wo_suffix = name.strip_suffix(EFI_ADDON_FILE_EXT).unwrap_or(name);
+    format!("{name_wo_suffix}{EFI_ADDON_FILE_EXT}")
+}
+
+/// Returns the name of a global UKI Addon directory given name
+/// with or without the `.addon.efi` prefix
+pub(crate) fn get_global_uki_addon_name(name: &str) -> String {
+    let name_wo_suffix = name.strip_suffix(EFI_ADDON_FILE_EXT).unwrap_or(name);
+    format!("{UKI_NAME_PREFIX}{name_wo_suffix}{EFI_ADDON_FILE_EXT}")
 }
 
 /// Compute SHA256Sum of VMlinuz + Initrd
@@ -1361,6 +1369,15 @@ fn write_pe_to_esp(
             .last()
             .ok_or_else(|| anyhow::anyhow!("Failed to get UKI Addon file name"))?
             .as_str(),
+    };
+
+    // Prefix global Uki Addons for identification
+    let pe_name = if matches!(pe_type, PEType::GlobalUkiAddon) {
+        &get_global_uki_addon_name(pe_name)
+    } else if matches!(pe_type, PEType::UkiAddon) {
+        &get_scoped_uki_addon_name(pe_name)
+    } else {
+        pe_name
     };
 
     uki_reader.seek(SeekFrom::Start(0))?;
