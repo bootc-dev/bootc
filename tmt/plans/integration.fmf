@@ -344,6 +344,14 @@ execute:
     because: only the image_mode test image installs bootc-tests
   extra-skip_if_ostree: true
 
+/plan-51-composefs-uki-addons:
+  summary: Test composefs UKI Addons
+  discover:
+    how: fmf
+    test:
+      - /tmt/tests/tests/test-51-composefs-uki-addons
+  extra-skip_if_ostree: true
+
 /plan-52-install-repart:
   summary: Test bootc install to-disk with systemd-repart partitioning
   discover:
