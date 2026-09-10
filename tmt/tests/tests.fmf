@@ -216,6 +216,11 @@ check:
     because: only the image_mode test image installs bootc-tests
   test: bootc-integration-tests booted switch-zstd-chunked
 
+/test-51-composefs-uki-addons:
+  summary: Test composefs UKI Addons
+  duration: 30m
+  test: nu booted/test-composefs-uki-addons.nu
+
 /test-51-switch-from-delta:
   summary: Switch to a derived image using an OCI delta and verify after reboot
   duration: 30m

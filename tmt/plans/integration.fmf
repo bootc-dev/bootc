@@ -344,6 +344,14 @@ execute:
     because: only the image_mode test image installs bootc-tests
   extra-skip_if_ostree: true
 
+/plan-51-composefs-uki-addons:
+  summary: Test composefs UKI Addons
+  discover:
+    how: fmf
+    test:
+      - /tmt/tests/tests/test-51-composefs-uki-addons
+  extra-skip_if_ostree: true
+
 /plan-51-switch-from-delta:
   summary: Switch to a derived image using an OCI delta and verify after reboot
   discover:
