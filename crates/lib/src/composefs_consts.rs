@@ -54,6 +54,12 @@ pub(crate) const TYPE1_BOOT_DIR_PREFIX: &str = "bootc_composefs-";
 pub(crate) const BLS_ENTRY_FILE_PREFIX: &str = "bootc_";
 
 /// The prefix for names of UKI and UKI Addons
+///
+/// The actual name of a scoped UKI Addon is NOT prefixed,
+/// only its directory name is prefixed
+///
+/// The actual name of a global UKI Addon IS prefixed, since
+/// they all live in ESP/loader/addons
 pub(crate) const UKI_NAME_PREFIX: &str = TYPE1_BOOT_DIR_PREFIX;
 
 /// Prefix for OCI tags owned by bootc in the composefs repository.
