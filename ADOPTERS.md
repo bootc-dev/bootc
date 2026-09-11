@@ -14,6 +14,7 @@ Vendor | Caligra | 2025 | [workbench](https://caligra.com/workbench/) | An OS de
 Vendor | CIQ | 2026 | https://ciq.com | Rocky Linux from CIQ (RLC) - Image Based Linux - Standard and Cloud variants
 Vendor | Universal Blue (Aurora/Bazzite/Bluefin) | 2024 | https://universal-blue.org/ |  The reliability of a Chromebook, but with the flexibility and power of a traditional Linux desktop
 Integration | Kheeper | 2026 | https://kheeper.com | Registry with cloud and bare metal integrations for booting customized images
+Vendor | ALT Atomic | 2025 | https://alt-atomic.org/en/ | Atomic variant of ALT Linux
 
 # bootc Adopters (indirect, via ostree)
 
