@@ -105,10 +105,6 @@ def third_boot [] {
     assert (not ($"/var/tmp/efi/EFI/Linux/bootc/($uki_prefix)(cat /var/boot0-verity).efi" | path exists))
     assert ($"/var/tmp/efi/EFI/Linux/bootc/($uki_prefix)(cat /var/boot1-verity).efi" | path exists)
 
-    # The scoped addon dir from boot 1 (bootc-first) should be gone
-    let boot1_addon_dir = $"/var/tmp/efi/EFI/Linux/bootc/($uki_prefix)(cat /var/boot1-verity).efi.extra.d"
-    assert (not ($boot1_addon_dir | path exists))
-
     echo $st.status.booted.composefs.verity | save /var/boot2-verity
 
     # this is not deleted yet
@@ -140,6 +136,10 @@ def fourth_boot [] {
     assert equal $booted.image.image "localhost/bootc-third"
     assert (not ($"/var/tmp/efi/EFI/Linux/bootc/($uki_prefix)(cat /var/boot1-verity).efi" | path exists))
     assert ($"/var/tmp/efi/EFI/Linux/bootc/($uki_prefix)(cat /var/boot2-verity).efi" | path exists)
+
+    # The scoped addon dir from boot 1 (bootc-first) should be gone
+    let boot1_addon_dir = $"/var/tmp/efi/EFI/Linux/bootc/($uki_prefix)(cat /var/boot1-verity).efi.extra.d"
+    assert (not ($boot1_addon_dir | path exists))
 
     mut containerfile = "
         FROM localhost/bootc as base

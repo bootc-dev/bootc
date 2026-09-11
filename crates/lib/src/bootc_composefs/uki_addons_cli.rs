@@ -141,10 +141,31 @@ pub(crate) fn handle_addon_cli_cmd(
                         .join(get_scoped_uki_addon_name(addon_name));
 
                     esp.fd
-                        .remove_file(addon_path)
+                        .remove_file(&addon_path)
                         .with_context(|| format!("Failed to remove addon {addon_name}"))?;
 
                     println!("Removed addon {addon_name}");
+
+                    let addons_dir = addon_path
+                        .parent()
+                        .expect("Expected addon path to have a parent");
+
+                    let num_ents = esp
+                        .fd
+                        .open_dir(addons_dir)
+                        .context("Opening addons dir")?
+                        .entries()
+                        .context("Getting addons dir entries")?
+                        .count();
+
+                    // Remove directory if empty
+                    if num_ents == 0 {
+                        esp.fd.remove_dir(&addons_dir).with_context(|| {
+                            format!("Removing addons dir: {}", addons_dir.display())
+                        })?;
+
+                        println!("Removed empty directory {}", addons_dir.display());
+                    }
                 }
 
                 // Removing a global addon
@@ -166,6 +187,23 @@ pub(crate) fn handle_addon_cli_cmd(
                         .with_context(|| format!("Removing global addon {full_addon_name}"))?;
 
                     println!("Removed Global Addon {addon_name}");
+
+                    let num_ents = esp
+                        .fd
+                        .open_dir(GLOBAL_UKI_ADDONS_DIR)
+                        .context("Opening global addons dir")?
+                        .entries()
+                        .context("Getting global addons dir entries")?
+                        .count();
+
+                    // Remove directory if empty
+                    if num_ents == 0 {
+                        esp.fd
+                            .remove_dir(GLOBAL_UKI_ADDONS_DIR)
+                            .context("Removing global addons dir")?;
+
+                        println!("Removed empty directory {GLOBAL_UKI_ADDONS_DIR}");
+                    }
                 }
             }
         }
