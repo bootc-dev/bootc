@@ -60,13 +60,26 @@ def second_boot [] {
       ukify build --cmdline 'johan=liebert' --output /out/${kver}.efi.extra.d/monster-cmdline.addon.efi
       mkdir -p '/out/loader/addons'
       ukify build --cmdline 'kenzo=tenma' --output /out/loader/addons/global-cmdline.addon.efi
+      
+      # /run/target is taken from tap make_uki_containerfile 'FROM base as sealed-uki'
+      CFS_DIGEST=$\(bootc compute-composefs-digest /run/target\)
+      ukify build --cmdline 'composefs=${CFS_DIGEST}' --output /out/loader/addons/global-cfs-cmdline.addon.efi
     "
 
     $containerfile = (tap make_uki_containerfile $containerfile --addon-cmds $cmds)
 
     echo $containerfile | podman build -t localhost/bootc-uki-addons-2 . -f -
 
-    # Include two addons
+    # Include composefs cmdline in global addon
+    # Should fail
+    let result_global = (do { 
+        bootc switch --transport containers-storage --global-uki-addon global-cfs-cmdline localhost/bootc-uki-addons-2
+    } | complete)
+
+    assert ($result_global.exit_code != 0) "Global addon with composefs= should be rejected"
+
+    # Include two addons, but don't include the global composefs= cmdline
+    # should succeed
     bootc switch --transport containers-storage --uki-addon monster-cmdline --global-uki-addon global-cmdline localhost/bootc-uki-addons-2
 
     tmt-reboot
@@ -89,9 +102,15 @@ def third_boot [] {
         RUN touch /usr/share/third
     "
 
+    # Put the composefs= in a local addon
     let cmds = "
       mkdir -p /out/${kver}.efi.extra.d
       ukify build --cmdline 'berserk=guts' --output /out/${kver}.efi.extra.d/berserk-cmdline.addon.efi
+
+      # /run/target is taken from tap make_uki_containerfile 'FROM base as sealed-uki'
+      CFS_DIGEST=$\(bootc compute-composefs-digest /run/target\)
+      ukify build --cmdline 'composefs=${CFS_DIGEST}' --output /out/${kver}.efi.extra.d/local-cfs-cmdline.addon.efi
+
       mkdir -p '/out/loader/addons'
       ukify build --cmdline 'pink=floyd' --output /out/loader/addons/global-cmdline.addon.efi
     "
@@ -100,7 +119,16 @@ def third_boot [] {
 
     echo $containerfile | podman build -t localhost/bootc-uki-addons-3 . -f -
 
+    # Include two composefs cmdlines
+    # Should fail
+    let result_local = (do { 
+        bootc switch --transport containers-storage --uki-addon local-cfs-cmdline localhost/bootc-uki-addons-3
+    } | complete)
+
+    assert ($result_local.exit_code != 0) "Two composefs cmdline should've been rejected"
+
     # This should update the global cmdline because we have the same name
+    # Also this shouldn't include the local cmdline addon so we're good and this should pass
     bootc switch --transport containers-storage --uki-addon berserk-cmdline localhost/bootc-uki-addons-3
 
     tmt-reboot
