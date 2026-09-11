@@ -7,7 +7,11 @@ use cap_std_ext::cap_std::fs::Dir;
 use fn_error_context::context;
 use ostree_ext::{
     composefs::fsverity::{FsVerityHashValue, Sha512HashValue},
-    composefs_boot::bootloader::{EFI_ADDON_DIR_EXT, EFI_ADDON_FILE_EXT},
+    composefs_boot::{
+        bootloader::{EFI_ADDON_DIR_EXT, EFI_ADDON_FILE_EXT},
+        cmdline::ComposefsCmdline as ComposefsBootCmdline,
+        uki,
+    },
     composefs_oci::linked_erofs_images,
 };
 
@@ -139,6 +143,31 @@ pub(crate) fn handle_addon_cli_cmd(
                     let addon_path = Path::new(BOOTC_UKI_DIR)
                         .join(get_uki_addon_dir_name(depl_id))
                         .join(get_scoped_uki_addon_name(addon_name));
+
+                    // Absolutely make sure the addon doesn't contain `composefs=` cmdline
+                    // if it does, we can't remove it
+                    let mut addon_file = esp
+                        .fd
+                        .open(&addon_path)
+                        .with_context(|| format!("Opening {}", addon_path.display()))?;
+
+                    match uki::get_cmdline_buffered(&mut addon_file) {
+                        Ok(cmdline_str) => {
+                            let cfs_cmdline_info =
+                                ComposefsBootCmdline::<Sha512HashValue>::from_cmdline(&cmdline_str)
+                                    .context("Parsing composefs=")?;
+
+                            if let Some(cmdline) = cfs_cmdline_info {
+                                anyhow::bail!(
+                                    "Composefs commandline {cmdline:?} found in addon {addon_name}, cannot remove"
+                                );
+                            };
+                        }
+                        Err(uki::UkiError::MissingSection(..)) => {
+                            // All good, no cmdline section in this addon
+                        }
+                        Err(e) => Err(e).context("Reading cmdline section from addon")?,
+                    };
 
                     esp.fd
                         .remove_file(&addon_path)
