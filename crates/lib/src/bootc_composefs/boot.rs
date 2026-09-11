@@ -94,6 +94,7 @@ use composefs_ctl::composefs_oci;
 use fn_error_context::context;
 use linux_kernel_cmdline::utf8::{Cmdline, Parameter, ParameterKey};
 use ostree_ext::composefs::dumpfile;
+use ostree_ext::composefs_boot::bootloader::Type2Entry;
 use rustix::{mount::MountFlags, path::Arg};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -214,6 +215,9 @@ pub(crate) fn print_uki_dumpfile_diff(
     let dumpfile_name = mismatch
         .uki_name()
         .and_then(|x| x.strip_suffix(EFI_EXT).map(|x| format!("{x}.dump")));
+    // .uki_name
+    // .strip_suffix(EFI_EXT)
+    // .map(|x| format!("{x}.dump"));
 
     let Some(dumpfile_name) = &dumpfile_name else {
         return;
@@ -1049,7 +1053,8 @@ struct UKIInfo {
     version: Option<String>,
     os_id: Option<String>,
     boot_digest: String,
-    composefs_digest: Sha512HashValue,
+    // by me - cmdline: Option<ComposefsBootCmdline<Sha512HashValue>>,
+    composefs_digest: Option<Sha512HashValue>,
 }
 
 /// The EROFS format a UKI composefs kernel argument claims for its digest.
@@ -1269,113 +1274,152 @@ fn pe_output_dir(
     }
 }
 
-/// Writes a PortableExecutable to ESP along with any PE specific or Global addons
-#[context("Writing {file_path} to ESP")]
-fn write_pe_to_esp(
+/// Return a UKI/UKI Addon as a file descriptor from a `Type2Entry` boot entry
+fn file_from_type2_entry(
     repo: &crate::store::ComposefsRepository,
-    file: &RegularFile<Sha512HashValue>,
-    file_path: &Utf8Path,
-    pe_type: PEType,
-    uki_id: &Sha512HashValue,
-    boot_ids: &ExpectedBootImageIds,
-    missing_fsverity_allowed: bool,
-    mounted_efi: impl AsRef<Path>,
-) -> Result<Option<UKIInfo>> {
-    let mut uki_reader = match file {
+    entry: &Type2Entry<Sha512HashValue>,
+) -> Result<std::fs::File> {
+    match &entry.file {
         RegularFile::Inline(..) => {
             // UKI/Addons would always be large enough to be an external object
             anyhow::bail!("File too small to be UKI/Addon")
         }
         RegularFile::External(id, ..) | RegularFile::ExternalNoVerity(id, ..) => {
-            std::fs::File::from(repo.open_object(id)?)
+            Ok(std::fs::File::from(repo.open_object(id)?))
         }
         RegularFile::Sparse(..) => {
             anyhow::bail!("Sparse file cannot be a UKI/Addon")
         }
-    };
+    }
+}
 
-    let mut boot_label: Option<UKIInfo> = None;
-
-    // UKI Extension might not even have a cmdline
-    // TODO: UKI Addon might also have a composefs= cmdline?
+#[context("Parsing UKI cmdline from {uki_name}")]
+/// Makes sure there is no composefs= cmdline in a global UKI Addon
+/// Makes sure if we already have a parsed cmdline, we don't find another one
+fn parse_uki_cmdline<R: Read + Seek>(
+    pe_type: &PEType,
+    missing_fsverity_allowed: bool,
+    boot_ids: &ExpectedBootImageIds,
+    uki_reader: &mut R,
+    uki_name: &str,
+    uki_info: &mut UKIInfo,
+) -> Result<()> {
+    // We expect this in the UKI itself and not in addons
     if matches!(pe_type, PEType::Uki) {
-        let cmdline = uki::get_cmdline_buffered(&mut uki_reader).context("Getting UKI cmdline")?;
-
-        let composefs_candidates = parse_uki_composefs_candidates(&cmdline)
-            .context("Parsing composefs kernel arguments")?;
-        let missing_verity_allowed_cmdline = uki_candidates_policy(&composefs_candidates)?;
-        let composefs_digest = primary_uki_candidate(&composefs_candidates).digest.clone();
-
-        anyhow::ensure!(
-            !missing_verity_allowed_cmdline || missing_fsverity_allowed,
-            "The UKI requests insecure composefs operation, but this repository requires fs-verity. Use --allow-missing-verity only when missing fs-verity is explicitly supported for this install."
-        );
-
-        // If the UKI cmdline does not match what the user has passed as cmdline option
-        // NOTE: This will only be checked for new installs and now upgrades/switches
-        match missing_fsverity_allowed {
-            true if !missing_verity_allowed_cmdline => {
-                tracing::warn!(
-                    "--allow-missing-verity passed as option but UKI cmdline does not support it"
-                );
-            }
-
-            false if missing_verity_allowed_cmdline => {
-                tracing::warn!("UKI cmdline has composefs set as insecure");
-            }
-
-            _ => { /* no-op */ }
-        }
-
-        validate_uki_candidates(
-            &composefs_candidates,
-            boot_ids,
-            file_path.file_name().map(|name| name.to_string()),
-        )?;
-
-        uki_reader.seek(SeekFrom::Start(0))?;
-        let osrel = uki::get_text_section_buffered(&mut uki_reader, ".osrel")?;
+        let osrel = uki::get_text_section_buffered(uki_reader, ".osrel")?;
 
         let parsed_osrel = OsReleaseInfo::parse(&osrel);
 
         uki_reader.seek(SeekFrom::Start(0))?;
-        let boot_digest = compute_boot_digest_uki(&mut uki_reader)?;
+        let boot_digest = compute_boot_digest_uki(uki_reader)?;
 
         uki_reader.seek(SeekFrom::Start(0))?;
-        boot_label = Some(UKIInfo {
-            boot_label: uki::get_boot_label_buffered(&mut uki_reader)
-                .context("Getting UKI boot label")?,
-            version: parsed_osrel.get_version(),
-            os_id: parsed_osrel.get_value(&["ID"]),
-            boot_digest,
-            composefs_digest,
-        });
+
+        uki_info.boot_label =
+            uki::get_boot_label_buffered(uki_reader).context("Getting UKI boot label")?;
+        uki_info.version = parsed_osrel.get_version();
+        uki_info.os_id = parsed_osrel.get_value(&["ID"]);
+        uki_info.boot_digest = boot_digest;
+
+        uki_reader.seek(SeekFrom::Start(0))?;
     }
 
-    let final_pe_path = pe_output_dir(&pe_type, mounted_efi.as_ref(), file_path, uki_id);
+    // UKI Addon might not even have a cmdline
+    let cmdline = uki::get_cmdline_buffered(uki_reader);
+
+    let cmdline_str = match cmdline {
+        Ok(ref cmdline) => cmdline,
+        Err(uki::UkiError::MissingSection(..)) => {
+            // No .cmdline section here
+            // We might find it in another PE binary
+            return Ok(());
+        }
+        Err(e) => {
+            return Err(e).context("Getting UKI cmdline");
+        }
+    };
+
+    tracing::debug!("cmdline found in {pe_type:?}: {cmdline_str}");
+
+    let composefs_candidates = parse_uki_composefs_candidates(&cmdline_str)
+        .context("Parsing composefs kernel arguments")?;
+
+    // We could have a cmdline in an Addon, so don't early error out if we don't find it
+    // immediately
+    if composefs_candidates.is_empty() {
+        return Ok(());
+    };
+
+    // Make sure there's no composefs= in a global UKI Addon
+    if matches!(pe_type, PEType::GlobalUkiAddon) {
+        anyhow::bail!("Composefs cmdline {cmdline:?} found in a Global UKI Addon");
+    }
+
+    let missing_verity_allowed_cmdline = uki_candidates_policy(&composefs_candidates)?;
+    let composefs_digest = primary_uki_candidate(&composefs_candidates).digest.clone();
+
+    // Already found a cmdline, outright refuse another cmdline found in an addon
+    // or otherwise, even if they're the same
+    if let Some(found_cmdline) = &uki_info.composefs_digest {
+        anyhow::bail!("Already had cmdline {found_cmdline:?}, found another {composefs_digest:?}");
+    };
+
+    // If the UKI cmdline does not match what the user has passed as cmdline option
+    // NOTE: This will only be checked for new installs and now upgrades/switches
+    match missing_fsverity_allowed {
+        true if !missing_verity_allowed_cmdline => {
+            tracing::warn!(
+                "--allow-missing-fsverity passed as option but UKI cmdline does not support it"
+            );
+        }
+
+        false if missing_verity_allowed_cmdline => {
+            tracing::warn!("UKI cmdline has composefs set as insecure");
+        }
+
+        _ => { /* no-op */ }
+    }
+
+    validate_uki_candidates(&composefs_candidates, boot_ids, Some(uki_name.into()))?;
+
+    uki_info.composefs_digest = Some(composefs_digest);
+
+    Ok(())
+}
+
+/// Writes a PortableExecutable to ESP along with any PE specific or Global addons
+#[context("Writing {} to ESP", entry.file_path.display())]
+fn write_pe_to_esp(
+    repo: &crate::store::ComposefsRepository,
+    entry: &Type2Entry<Sha512HashValue>,
+    uki_id: &Sha512HashValue,
+    mounted_efi: impl AsRef<Path>,
+) -> Result<()> {
+    let mut uki_reader = file_from_type2_entry(repo, entry)?;
+
+    let file_path = Utf8Path::from_path(&entry.file_path)
+        .ok_or_else(|| anyhow::anyhow!("Path is not valid UTf8"))?;
+
+    let final_pe_path = pe_output_dir(&entry.pe_type, mounted_efi.as_ref(), file_path, uki_id);
     create_dir_all(&final_pe_path).with_context(|| format!("Creating {final_pe_path:?}"))?;
 
     let pe_dir = Dir::open_ambient_dir(&final_pe_path, ambient_authority())
         .with_context(|| format!("Opening {final_pe_path:?}"))?;
 
-    let pe_name_owned;
-    let pe_name = match pe_type {
-        PEType::Uki => {
-            pe_name_owned = get_uki_name(&boot_label.as_ref().unwrap().composefs_digest.to_hex());
-            &pe_name_owned
-        }
+    let pe_name = match entry.pe_type {
+        PEType::Uki => get_uki_name(&uki_id.to_hex()),
         PEType::UkiAddon | PEType::GlobalUkiAddon => file_path
             .components()
             .last()
             .ok_or_else(|| anyhow::anyhow!("Failed to get UKI Addon file name"))?
-            .as_str(),
+            .to_string(),
     };
 
     // Prefix global Uki Addons for identification
-    let pe_name = if matches!(pe_type, PEType::GlobalUkiAddon) {
-        &get_global_uki_addon_name(pe_name)
-    } else if matches!(pe_type, PEType::UkiAddon) {
-        &get_scoped_uki_addon_name(pe_name)
+    let pe_name = if matches!(entry.pe_type, PEType::GlobalUkiAddon) {
+        get_global_uki_addon_name(&pe_name)
+    } else if matches!(entry.pe_type, PEType::UkiAddon) {
+        get_scoped_uki_addon_name(&pe_name)
     } else {
         pe_name
     };
@@ -1392,7 +1436,7 @@ fn write_pe_to_esp(
     )
     .context("fsync")?;
 
-    Ok(boot_label)
+    Ok(())
 }
 
 fn uki_file_name(file_path: &Path) -> Result<String> {
@@ -1859,7 +1903,15 @@ pub(crate) fn setup_composefs_uki_boot(
 
     let esp_mount = mount_esp_writable(&esp_device).context("Mounting ESP")?;
 
-    let mut uki_info: Option<UKIInfo> = None;
+    let mut uki_info = UKIInfo {
+        boot_label: "".into(),
+        version: None,
+        os_id: None,
+        boot_digest: "".into(),
+        composefs_digest: None,
+    };
+
+    let mut entries_to_write: Vec<Type2Entry<Sha512HashValue>> = vec![];
 
     for entry in entries {
         match entry {
@@ -1917,34 +1969,43 @@ pub(crate) fn setup_composefs_uki_boot(
                 let utf8_file_path = Utf8Path::from_path(&entry.file_path)
                     .ok_or_else(|| anyhow::anyhow!("Path is not valid UTf8"))?;
 
-                let ret = write_pe_to_esp(
-                    &repo,
-                    &entry.file,
-                    utf8_file_path,
-                    entry.pe_type,
-                    &id,
-                    boot_ids,
+                let mut uki_reader = file_from_type2_entry(repo, &entry)?;
+
+                parse_uki_cmdline(
+                    &entry.pe_type,
                     missing_fsverity_allowed,
-                    esp_mount.dir.path(),
+                    boot_ids,
+                    &mut uki_reader,
+                    utf8_file_path
+                        .file_name()
+                        .context("Filename not found for PE binary")?,
+                    &mut uki_info,
                 )?;
 
-                if let Some(label) = ret {
-                    uki_info = Some(label);
-                }
+                entries_to_write.push(entry);
             }
         };
     }
 
-    let uki_info =
-        uki_info.ok_or_else(|| anyhow::anyhow!("Failed to get version and boot label from UKI"))?;
+    let Some(deploy_id) = uki_info.composefs_digest else {
+        anyhow::bail!("No composefs cmdline found in UKI or UKI Addons");
+    };
+
+    if uki_info.boot_label.is_empty() {
+        anyhow::bail!("Failed to get boot label from UKI");
+    }
 
     let UKIInfo {
         boot_label,
         version,
         os_id,
         boot_digest,
-        composefs_digest: deploy_id,
+        ..
     } = uki_info;
+
+    for entry in entries_to_write {
+        write_pe_to_esp(repo, &entry, &deploy_id, esp_mount.dir.path())?;
+    }
 
     match bootloader.kind()? {
         BootloaderKind::GRUBClassic => {
