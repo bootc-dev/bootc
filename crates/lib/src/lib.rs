@@ -35,6 +35,7 @@
 //! - [`image`] - Image operations and queries
 //! - [`delta`] - oci-delta artifacts (`--from-delta`)
 //! - [`boundimage`] - Logically Bound Images (LBIs)
+//! - [`applylive`] - Applying staged content to the running system (`bootc apply-live`)
 //! - [`podstorage`] - bootc-owned container storage (`/usr/lib/bootc/storage`)
 //! - [`podman`] - Podman command helpers
 //!
@@ -65,6 +66,7 @@
 //! - [`etc-merge`](../etc_merge/index.html) - `/etc` three-way merge
 
 mod aboot;
+mod applylive;
 mod boot_artifact;
 mod bootc_composefs;
 pub(crate) mod bootc_kargs;
