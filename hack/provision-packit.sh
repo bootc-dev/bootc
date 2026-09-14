@@ -93,4 +93,8 @@ podman pull -q --retry 5 --retry-delay 5s quay.io/curl/curl:latest quay.io/curl/
 
 # Run system-reinstall-bootc
 # TODO make it more scriptable instead of expect + send
-./system-reinstall-bootc.exp
+if grep -q "^BOOTC_IMAGE=" /etc/os-release /usr/lib/os-release 2>/dev/null; then
+    ./system-reinstall-bootc.exp
+else
+    ./system-reinstall-bootc.exp localhost/bootc
+fi
