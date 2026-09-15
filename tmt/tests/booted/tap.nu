@@ -75,7 +75,7 @@ rm -vrf /usr/lib/bootc/bound-images.d
 "
 }
 
-export def make_uki_containerfile [containerfile: string] {
+export def make_uki_containerfile [containerfile: string, --erofs-version: string = "v1"] {
     let is_cfs = (is_composefs)
 
     if not $is_cfs {
@@ -121,7 +121,8 @@ export def make_uki_containerfile [containerfile: string] {
                   --secrets /run/secrets ($allow_missing_verity) \\
                   --kernel-dir /run/kernel/boot/${kver} \\
                   --write-dumpfile-to /out/${kver}.dump \\
-                  --seal-state ($seal_state)
+                  --seal-state ($seal_state) \\
+                  --erofs-version ($erofs_version)
         EOF
 
         FROM base-final

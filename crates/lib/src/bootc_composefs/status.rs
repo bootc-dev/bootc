@@ -2,7 +2,9 @@ use std::{io::Read, sync::OnceLock};
 
 use anyhow::{Context, Result};
 use bootc_mount::inspect_filesystem;
-use composefs_ctl::composefs::fsverity::Sha512HashValue;
+use composefs_ctl::composefs::erofs::format::FormatVersion;
+use composefs_ctl::composefs::fsverity::{FsVerityHashValue, Sha512HashValue};
+use composefs_ctl::composefs_boot::cmdline::ComposefsCmdline as BootComposefsCmdline;
 use composefs_ctl::composefs_oci;
 use composefs_oci::OciImage;
 use fn_error_context::context;
@@ -18,8 +20,9 @@ use crate::{
         utils::{compute_store_boot_digest_for_uki, get_uki_cmdline},
     },
     composefs_consts::{
-        COMPOSEFS_CMDLINE, ORIGIN_KEY_BOOT_DIGEST, ORIGIN_KEY_IMAGE, ORIGIN_KEY_MANIFEST_DIGEST,
-        TYPE1_ENT_PATH, TYPE1_ENT_PATH_STAGED, USER_CFG, USER_CFG_STAGED,
+        COMPOSEFS_CMDLINE, COMPOSEFS_DIGEST_CMDLINE, ORIGIN_KEY_BOOT_DIGEST, ORIGIN_KEY_IMAGE,
+        ORIGIN_KEY_MANIFEST_DIGEST, TYPE1_ENT_PATH, TYPE1_ENT_PATH_STAGED, USER_CFG,
+        USER_CFG_STAGED,
     },
     install::EFI_LOADER_INFO,
     parsers::{
@@ -88,24 +91,30 @@ impl ComposefsCmdline {
         }
     }
 
-    pub(crate) fn build(digest: &str, allow_missing_fsverity: bool) -> Self {
-        ComposefsCmdline {
-            allow_missing_fsverity,
-            digest: digest.into(),
-            is_transient: false,
-        }
-    }
-
-    /// Search for the `composefs=` parameter in the passed in kernel command line
+    /// Search for either supported composefs kernel command line parameter.
     pub(crate) fn find_in_cmdline(cmdline: &Cmdline) -> Option<Self> {
-        match cmdline.find(COMPOSEFS_CMDLINE) {
-            Some(param) => {
-                let value = param.value()?;
-                Some(Self::new(value))
-            }
-            None => None,
-        }
+        let parsed = BootComposefsCmdline::<Sha512HashValue>::from_cmdline(cmdline).ok()??;
+        Some(Self {
+            allow_missing_fsverity: parsed.is_insecure(),
+            digest: parsed.digest().to_hex().into(),
+            is_transient: false,
+        })
     }
+}
+
+/// Render a composefs karg that identifies the EROFS format of `digest`.
+pub(crate) fn build_composefs_karg(
+    digest: Sha512HashValue,
+    format_version: FormatVersion,
+    allow_missing_fsverity: bool,
+) -> String {
+    match format_version {
+        FormatVersion::V0 | FormatVersion::V1 => {
+            BootComposefsCmdline::new_v1(digest, allow_missing_fsverity)
+        }
+        FormatVersion::V2 => BootComposefsCmdline::new_v2(digest, allow_missing_fsverity),
+    }
+    .to_cmdline_arg()
 }
 
 impl std::fmt::Display for ComposefsCmdline {
@@ -157,11 +166,9 @@ pub(crate) fn composefs_booted() -> Result<Option<&'static ComposefsCmdline>> {
         return Ok(v.as_ref());
     }
     let cmdline = Cmdline::from_proc()?;
-    let Some(kv) = cmdline.find(COMPOSEFS_CMDLINE) else {
+    let Some(v) = ComposefsCmdline::find_in_cmdline(&cmdline) else {
         return Ok(None);
     };
-    let Some(v) = kv.value() else { return Ok(None) };
-    let v = ComposefsCmdline::new(v);
 
     // Find the source of / mountpoint as the cmdline doesn't change on soft-reboot
     let root_mnt = inspect_filesystem("/".into())?;
@@ -730,10 +737,11 @@ fn find_bls_entry<'a>(
     Ok(None)
 }
 
-/// Compares cmdline `first` and `second` skipping `composefs=`
+/// Compares cmdline `first` and `second` skipping either composefs karg spelling.
 fn compare_cmdline_skip_cfs(first: &Cmdline<'_>, second: &Cmdline<'_>) -> bool {
     for param in first {
-        if param.key() == COMPOSEFS_CMDLINE.into() {
+        if param.key() == COMPOSEFS_CMDLINE.into() || param.key() == COMPOSEFS_DIGEST_CMDLINE.into()
+        {
             continue;
         }
 
@@ -1163,13 +1171,37 @@ mod tests {
 
     #[test]
     fn test_composefs_parsing() {
-        const DIGEST: &str = "8b7df143d91c716ecfa5fc1730022f6b421b05cedee8fd52b1fc65a96030ad52";
+        const DIGEST: &str = "8b7df143d91c716ecfa5fc1730022f6b421b05cedee8fd52b1fc65a96030ad528b7df143d91c716ecfa5fc1730022f6b421b05cedee8fd52b1fc65a96030ad52";
         let v = ComposefsCmdline::new(DIGEST);
         assert!(!v.allow_missing_fsverity);
         assert_eq!(v.digest.as_ref(), DIGEST);
         let v = ComposefsCmdline::new(&format!("?{}", DIGEST));
         assert!(v.allow_missing_fsverity);
         assert_eq!(v.digest.as_ref(), DIGEST);
+    }
+
+    #[test]
+    fn test_build_composefs_karg() {
+        let hex = "ab".repeat(64);
+        let digest = || Sha512HashValue::from_hex(&hex).unwrap();
+
+        assert_eq!(
+            build_composefs_karg(digest(), FormatVersion::V1, false),
+            format!("composefs.digest=v1-sha512-12:{hex}")
+        );
+        assert_eq!(
+            build_composefs_karg(digest(), FormatVersion::V2, true),
+            format!("composefs=?{hex}")
+        );
+
+        let cmdline = Cmdline::from(format!("composefs.digest=v1-sha512-12:{hex}"));
+        assert_eq!(
+            ComposefsCmdline::find_in_cmdline(&cmdline)
+                .unwrap()
+                .digest
+                .as_ref(),
+            hex
+        );
     }
 
     #[test]
@@ -1550,7 +1582,7 @@ mod tests {
 
     #[test]
     fn test_find_in_cmdline() {
-        const DIGEST: &str = "8b7df143d91c716ecfa5fc1730022f6b421b05cedee8fd52b1fc65a96030ad52";
+        const DIGEST: &str = "8b7df143d91c716ecfa5fc1730022f6b421b05cedee8fd52b1fc65a96030ad528b7df143d91c716ecfa5fc1730022f6b421b05cedee8fd52b1fc65a96030ad52";
 
         // Test case: cmdline contains composefs parameter
         let cmdline = Cmdline::from(format!("root=UUID=abc123 rw composefs={}", DIGEST));

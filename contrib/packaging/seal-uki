@@ -4,6 +4,7 @@ set -xeuo pipefail
 
 missing_verity=()
 dumpfile_args=()
+erofs_version=v1
 
 while [ ! -z "${1:-}" ]; do
     case "$1" in
@@ -41,6 +42,12 @@ while [ ! -z "${1:-}" ]; do
 
         "--write-dumpfile-to")
             dumpfile_args=(--write-dumpfile-to "$2")
+            shift
+            shift
+        ;;
+
+        "--erofs-version")
+            erofs_version="$2"
             shift
             shift
         ;;
@@ -92,4 +99,4 @@ containerukifyargs=(--rootfs "${target}")
 
 # Build the UKI using bootc container ukify
 # This computes the composefs digest, reads kargs from kargs.d, and invokes ukify
-bootc container ukify "${containerukifyargs[@]}" "${kernel_params[@]}" "${missing_verity[@]}" "${dumpfile_args[@]}" -- "${ukifyargs[@]}"
+bootc container ukify "${containerukifyargs[@]}" "${kernel_params[@]}" "${missing_verity[@]}" "${dumpfile_args[@]}" --erofs-version="${erofs_version}" -- "${ukifyargs[@]}"

@@ -103,12 +103,13 @@ pub(crate) async fn initialize_composefs_repository(
 
     crate::store::ensure_composefs_dir(rootfs_dir)?;
 
-    let config = RepositoryConfig::new(composefs::fsverity::Algorithm::SHA512);
-    let config = if allow_missing_fsverity {
+    let mut config = RepositoryConfig::new(composefs::fsverity::Algorithm::SHA512);
+    config = if allow_missing_fsverity {
         config.set_insecure()
     } else {
         config
     };
+    crate::store::set_dual_erofs_formats(&mut config);
     let (repo, _created) =
         crate::store::ComposefsRepository::init_path(rootfs_dir, "composefs", config)
             .context("Failed to initialize composefs repository")?;
