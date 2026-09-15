@@ -41,6 +41,9 @@ This command requires the composefs backend with UKI boot.
 **remove**
 :   Remove a UKI addon from the ESP. See **bootc-uki-addon-remove**(8).
 
+**list-referenced**
+:   List UKI addons referenced by deployed images. See **bootc-uki-addon-list-referenced**(8).
+
 # EXAMPLES
 
 List all installed addons:
@@ -55,9 +58,13 @@ Remove a global addon:
 
     bootc uki-addon remove site-config
 
+List all referenced addons:
+
+    bootc uki-addon list-referenced
+
 # SEE ALSO
 
-**bootc**(8), **bootc-uki-addon-list**(8), **bootc-uki-addon-add**(8), **bootc-uki-addon-remove**(8)
+**bootc**(8), **bootc-uki-addon-list**(8), **bootc-uki-addon-add**(8), **bootc-uki-addon-remove**(8), **bootc-uki-addon-list-referenced**(8)
 
 # VERSION
 
