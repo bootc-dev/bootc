@@ -1,17 +1,24 @@
-#![allow(dead_code)]
 use std::fmt;
 
 use anyhow::{Context, Result};
+use bootc_mount::tempmount::TempMount;
 use cap_std_ext::cap_std::fs::Dir;
 use cap_std_ext::dirext::CapStdExtDirExt;
 use fn_error_context::context;
-use ostree_ext::composefs_boot::bootloader::{EFI_ADDON_DIR_EXT, EFI_ADDON_FILE_EXT};
+use ostree_ext::{
+    composefs::fsverity::{FsVerityHashValue, Sha512HashValue},
+    composefs_boot::bootloader::{EFI_ADDON_DIR_EXT, EFI_ADDON_FILE_EXT},
+    composefs_oci::linked_erofs_images,
+};
 use serde::Serialize;
 
 use crate::{
-    bootc_composefs::boot::{BOOTC_UKI_DIR, GLOBAL_UKI_ADDONS_DIR},
+    bootc_composefs::{
+        boot::{BOOTC_UKI_DIR, EFI_LINUX, GLOBAL_UKI_ADDONS_DIR},
+        status::BootloaderEntry,
+    },
     composefs_consts::UKI_NAME_PREFIX,
-    store::Storage,
+    store::{BootedComposefs, Storage},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -80,6 +87,69 @@ fn gather_addons_from_dir(
     Ok(())
 }
 
+/// Gathers UKI Addons (Global + Scoped) from the ESP
+#[context("Gathering addons from filesystem")]
+pub fn gather_addons_from_filesystem(
+    boot_dir: &Dir,
+    depl_id: Option<&str>,
+) -> Result<Vec<UkiAddonsList>> {
+    let mut addons_list: Vec<UkiAddonsList> = vec![];
+
+    if let Some(global_dir) = boot_dir.open_dir_optional(GLOBAL_UKI_ADDONS_DIR)? {
+        for entry in global_dir.entries_utf8()? {
+            let entry = entry?;
+            let filename = entry.file_name()?;
+
+            if let Some(name) = filename.strip_suffix(EFI_ADDON_FILE_EXT) {
+                addons_list.push(UkiAddonsList {
+                    name: name.to_string(),
+                    addon_type: UkiAddonType::Global,
+                });
+            }
+        }
+    }
+
+    let Some(efi_linux) = boot_dir.open_dir_optional(EFI_LINUX)? else {
+        return Ok(addons_list);
+    };
+
+    for entry in efi_linux.entries_utf8()? {
+        let entry = entry?;
+
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+
+        let dirname = entry.file_name()?;
+
+        // This will usually be the kernel version
+        let Some(..) = dirname.strip_suffix(EFI_ADDON_DIR_EXT) else {
+            continue;
+        };
+
+        let dir = efi_linux
+            .open_dir(&dirname)
+            .with_context(|| format!("Opening {dirname}"))?;
+
+        for addon_ent in dir.entries_utf8()? {
+            let addon_ent = addon_ent?;
+            let filename = addon_ent.file_name()?;
+
+            if let Some(name) = filename.strip_suffix(EFI_ADDON_FILE_EXT) {
+                addons_list.push(UkiAddonsList {
+                    name: name.to_string(),
+                    addon_type: UkiAddonType::Scoped {
+                        // We can't always have the deployment id with us
+                        depl_id: depl_id.map(|x| x.to_string()).unwrap_or("".into()),
+                    },
+                });
+            }
+        }
+    }
+
+    Ok(addons_list)
+}
+
 #[context("Listing UKI Addons")]
 pub fn list_installed_uki_addons(storage: &Storage) -> Result<Vec<UkiAddonsList>> {
     let mut addons = vec![];
@@ -128,4 +198,70 @@ pub fn list_installed_uki_addons(storage: &Storage) -> Result<Vec<UkiAddonsList>
     }
 
     Ok(addons)
+}
+
+/// Go through all the EROFS images and get all the referenced UKI Addons
+///
+/// Returns a list of tuple of (EROFS verity, List of referenced addons)
+#[context("Getting all referenced UKI Addons")]
+pub fn list_referenced_uki_addons(
+    booted_cfs: &BootedComposefs,
+    bootloader_entries: &Vec<BootloaderEntry>,
+) -> Result<Vec<(String, Vec<UkiAddonsList>)>> {
+    let mut all_referenced_addons: Vec<(String, Vec<UkiAddonsList>)> = vec![];
+
+    for entry in bootloader_entries {
+        let verity = Sha512HashValue::from_hex(&entry.fsverity);
+
+        let verity = match verity {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!(
+                    "Invalid fsverity found in bootloader entry {}: {e:?}",
+                    entry.fsverity
+                );
+                continue;
+            }
+        };
+
+        let linked_erofs = match linked_erofs_images(&booted_cfs.repo, &verity) {
+            Ok(v) => v,
+            // Skip entries with no linked EROFS image, but propagate any other error
+            // TODO: Update with proper error downcasted match once we have
+            // https://github.com/composefs/composefs-rs/pull/400 released
+            Err(e)
+                if e.chain()
+                    .any(|c| c.to_string().contains("No EROFS image found")) =>
+            {
+                tracing::debug!("No EROFS image found for {}", entry.fsverity);
+                continue;
+            }
+            Err(e) => return Err(e),
+        };
+
+        let Some(non_bootable) = linked_erofs.iter().find(|e| !e.bootable) else {
+            tracing::debug!("No non-bootable EROFS found for {}", entry.fsverity);
+            continue;
+        };
+
+        let composefs_mnt_fd = booted_cfs
+            .repo
+            .mount(&non_bootable.id.to_hex())
+            .context("Failed to mount composefs image")?;
+
+        let composefs = TempMount::mount_fd(composefs_mnt_fd)
+            .context("Attaching composefs image to temporary directory")?;
+
+        let cfs_boot_dir = composefs
+            .fd
+            .open_dir("boot")
+            .context("Opening boot directory in composefs image")?;
+
+        let addons_list = gather_addons_from_filesystem(&cfs_boot_dir, Some(&entry.fsverity))?;
+
+        // We work with the bootable fsverity everywhere
+        all_referenced_addons.push((entry.fsverity.clone(), addons_list));
+    }
+
+    Ok(all_referenced_addons)
 }

@@ -1002,6 +1002,12 @@ pub(crate) enum UkiAddonCliOpts {
         name: String,
         addon_type: UkiAddonScope,
     },
+    /// List all referenced UKI Addons across all deployments
+    ListReferenced {
+        /// Output in JSON format
+        #[clap(long)]
+        json: bool,
+    },
 }
 
 /// Deploy and transactionally in-place with bootable container images.
