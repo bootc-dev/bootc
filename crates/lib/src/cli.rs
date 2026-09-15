@@ -261,6 +261,42 @@ pub(crate) enum SoftRebootMode {
     Auto,
 }
 
+/// Options for `bootc apply-live bound-images`
+#[derive(Debug, Parser, PartialEq, Eq)]
+pub(crate) struct ApplyLiveBoundImagesOpts {
+    /// Write the definitions and ensure the images are present, but don't
+    /// reload systemd or restart any units.
+    #[clap(long)]
+    pub(crate) no_restart: bool,
+
+    /// Print what would be done without changing the running system.
+    #[clap(long)]
+    pub(crate) dry_run: bool,
+}
+
+/// Subcommands for applying staged content to the running system.
+#[derive(Debug, clap::Subcommand, PartialEq, Eq)]
+pub(crate) enum ApplyLiveOpts {
+    /// Apply the staged deployment's logically bound image definitions to the running system.
+    ///
+    /// The staged deployment must differ from the booted deployment only in
+    /// logically bound image definitions: the `/usr/lib/bootc/bound-images.d`
+    /// symlinks and the `.container` or `.image` files they reference. If
+    /// anything else changed, this command fails and a reboot is required.
+    ///
+    /// Changed quadlet files are written to `/run/containers/systemd/`, which
+    /// podman gives precedence over `/etc` and `/usr`, and the corresponding
+    /// units are restarted (added units are started, removed units stopped).
+    /// The images themselves are already present in the bootc-owned storage
+    /// shared by all deployments.
+    ///
+    /// Because `/run` is transient this state is discarded on reboot, at which
+    /// point the staged deployment's own content applies. The applied state is
+    /// visible in `bootc status`.
+    #[clap(alias = "lbi")]
+    BoundImages(ApplyLiveBoundImagesOpts),
+}
+
 /// Perform an status operation
 #[derive(Debug, Parser, PartialEq, Eq)]
 pub(crate) struct StatusOpts {
@@ -987,6 +1023,11 @@ pub(crate) enum Opt {
     /// Allows temporary package installation that will be discarded on reboot.
     #[clap(alias = "usroverlay")]
     UsrOverlay(UsrOverlayOpts),
+    /// Apply content from the staged deployment to the running system without a reboot.
+    ///
+    /// Stability: This interface is experimental and may change in the future.
+    #[clap(subcommand, hide = true)]
+    ApplyLive(ApplyLiveOpts),
     /// Install the running container to a target.
     ///
     /// Takes a container image and installs it to disk in a bootable format.
@@ -1127,6 +1168,9 @@ fn prepare_soft_reboot(sysroot: &SysrootLock, deployment: &ostree::Deployment) -
     sysroot
         .deployment_set_soft_reboot(deployment, false, cancellable)
         .context("Failed to prepare soft-reboot")?;
+    // A soft reboot preserves /run, so anything applied live must not leak
+    // into the target deployment.
+    crate::applylive::clear_state_from_host()?;
     Ok(())
 }
 
@@ -1951,6 +1995,19 @@ async fn run_from_opt(opt: Opt) -> Result<CliExitStatus> {
             Ok(())
         }
         Opt::Edit(opts) => edit(opts).await,
+        Opt::ApplyLive(opts) => {
+            let storage = &get_storage().await?;
+            match storage.kind()? {
+                BootedStorageKind::Ostree(booted_ostree) => match opts {
+                    ApplyLiveOpts::BoundImages(opts) => {
+                        crate::applylive::apply_bound_images(storage, &booted_ostree, &opts).await
+                    }
+                },
+                BootedStorageKind::Composefs(_) => {
+                    anyhow::bail!("apply-live is not yet supported on composefs systems")
+                }
+            }
+        }
         Opt::UsrOverlay(opts) => {
             use crate::store::Environment;
             let env = Environment::detect()?;

@@ -415,6 +415,18 @@ pub(crate) async fn prune_container_store(sysroot: &Storage) -> Result<()> {
             });
         }
     }
+    // Images applied live via `bootc apply-live bound-images` must survive
+    // even if the deployment they came from is discarded before reboot.
+    if let Some(live) = crate::applylive::read_state_from_host()? {
+        all_bound_images.extend(
+            live.images
+                .into_iter()
+                .map(|img| crate::boundimage::BoundImage {
+                    image: img.image,
+                    auth_file: None,
+                }),
+        );
+    }
     // Convert to a hashset of just the image names
     let image_names = HashSet::from_iter(all_bound_images.iter().map(|img| img.image.as_str()));
     let pruned = sysroot

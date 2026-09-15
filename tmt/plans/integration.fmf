@@ -314,4 +314,12 @@ execute:
     test:
       - /tmt/tests/tests/test-48-composefs-uki-dumpfile
   extra-skip_if_ostree: true
+
+/plan-49-logically-bound-apply-live:
+  summary: Execute logically bound images tests for bootc apply-live bound-images
+  discover:
+    how: fmf
+    test:
+      - /tmt/tests/tests/test-49-logically-bound-apply-live
+  extra-fixme_skip_if_composefs: true
 # END GENERATED PLANS

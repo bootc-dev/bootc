@@ -193,3 +193,8 @@ check:
   summary: Test composefs UKI dumpfile diff print
   duration: 30m
   test: nu booted/test-composefs-uki-dumpfile.nu
+
+/test-49-logically-bound-apply-live:
+  summary: Execute logically bound images tests for bootc apply-live bound-images
+  duration: 30m
+  test: nu booted/test-logically-bound-apply-live.nu
