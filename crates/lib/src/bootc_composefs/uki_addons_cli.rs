@@ -21,7 +21,8 @@ use crate::{
             BOOTC_UKI_DIR, EFI_LINUX, GLOBAL_UKI_ADDONS_DIR, get_global_uki_addon_name,
             get_scoped_uki_addon_name, get_uki_addon_dir_name,
         },
-        uki_addon::{UkiAddonType, list_installed_uki_addons},
+        status::list_bootloader_entries,
+        uki_addon::{UkiAddonType, list_installed_uki_addons, list_referenced_uki_addons},
     },
     cli::{UkiAddonCliOpts, UkiAddonScope},
     store::{BootedComposefs, Storage},
@@ -328,6 +329,31 @@ pub(crate) fn handle_addon_cli_cmd(
                         .fd
                         .copy(addon_path, &to_dir, get_scoped_uki_addon_name(addon_name))
                         .context("Copying addon")?;
+                }
+            }
+        }
+        UkiAddonCliOpts::ListReferenced { json } => {
+            let referenced =
+                list_referenced_uki_addons(booted_cfs, &list_bootloader_entries(storage)?)?;
+
+            if *json {
+                return serde_json::to_writer(std::io::stdout(), &referenced)
+                    .context("Writing JSON output");
+            }
+
+            if referenced.is_empty() {
+                println!("No referenced UKI addons found");
+                return Ok(());
+            }
+
+            for (verity, addons) in &referenced {
+                println!("Deployment {verity}:");
+                if addons.is_empty() {
+                    println!("  (none)");
+                } else {
+                    for addon in addons {
+                        println!("  {addon}");
+                    }
                 }
             }
         }
