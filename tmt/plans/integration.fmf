@@ -314,4 +314,12 @@ execute:
     test:
       - /tmt/tests/tests/test-48-composefs-uki-dumpfile
   extra-skip_if_ostree: true
+
+/plan-49-composefs-loader-entries-source:
+  summary: Test bootc loader-entries set-options-for-source on composefs
+  discover:
+    how: fmf
+    test:
+      - /tmt/tests/tests/test-49-composefs-loader-entries-source
+  extra-skip_if_ostree: true
 # END GENERATED PLANS

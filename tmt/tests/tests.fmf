@@ -193,3 +193,8 @@ check:
   summary: Test composefs UKI dumpfile diff print
   duration: 30m
   test: nu booted/test-composefs-uki-dumpfile.nu
+
+/test-49-composefs-loader-entries-source:
+  summary: Test bootc loader-entries set-options-for-source on composefs
+  duration: 45m
+  test: nu booted/test-composefs-loader-entries-source.nu

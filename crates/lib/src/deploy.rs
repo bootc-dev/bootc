@@ -904,9 +904,8 @@ async fn deploy(
     lock_finalization: bool,
 ) -> Result<Deployment> {
     // Compute the kernel argument overrides. In practice today this API is always expecting
-    // a merge deployment. The kargs code also always looks at the booted root (which
-    // is a distinct minor issue, but not super important as right now the install path
-    // doesn't use this API).
+    // a merge deployment; the kargs code builds on the staged deployment instead when
+    // there is one, so that a pending kargs change is not lost.
     let (stateroot, override_kargs) = match &from {
         MergeState::MergeDeployment(deployment) => {
             let kargs = crate::bootc_kargs::get_kargs(sysroot, &deployment, image)?;
