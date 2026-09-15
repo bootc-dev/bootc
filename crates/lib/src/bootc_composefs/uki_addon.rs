@@ -163,10 +163,15 @@ pub fn list_installed_uki_addons(storage: &Storage) -> Result<Vec<UkiAddonsList>
             .context("Gathering global addons")?;
     };
 
-    for ent in esp
+    let Some(bootc_uki_dir) = esp
         .fd
-        .open_dir(BOOTC_UKI_DIR)
+        .open_dir_optional(BOOTC_UKI_DIR)
         .context("Opening UKI dir")?
+    else {
+        return Ok(addons);
+    };
+
+    for ent in bootc_uki_dir
         .entries_utf8()
         .context("Reading UKI dir entries")?
     {
