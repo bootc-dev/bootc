@@ -50,6 +50,14 @@ completion: bin
 		target/release/bootc completion $$shell > target/completion/bootc.$$shell; \
 	done
 
+SELINUX_PP = contrib/selinux/bootc.pp
+.PHONY: selinux
+selinux: $(SELINUX_PP)
+$(SELINUX_PP): contrib/selinux/bootc.te
+	checkmodule -M -m -o contrib/selinux/bootc.mod $<
+	semodule_package -o $@ -m contrib/selinux/bootc.mod
+	rm -f contrib/selinux/bootc.mod
+
 STORAGE_RELATIVE_PATH ?= $(shell realpath -m -s --relative-to="$(prefix)/lib/bootc/storage" /sysroot/ostree/bootc/storage)
 install: completion
 	install -D -m 0755 -t $(DESTDIR)$(prefix)/bin target/release/bootc
@@ -85,6 +93,9 @@ install: completion
 	install -D -m 0644 -t $(DESTDIR)/usr/lib/systemd/system crates/initramfs/*.service
 	install -D -m 0755 target/release/bootc-initramfs-setup $(DESTDIR)/usr/lib/bootc/initramfs-setup
 	install -D -m 0755 -t $(DESTDIR)/usr/lib/dracut/modules.d/51bootc crates/initramfs/dracut/module-setup.sh
+	if test -f $(SELINUX_PP); then \
+		install -D -m 0644 $(SELINUX_PP) $(DESTDIR)$(prefix)/share/selinux/packages/bootc.pp; \
+	fi
 
 # Run this to also take over the functionality of `ostree container` for example.
 # Only needed for OS/distros that have callers invoking `ostree container` and not bootc.

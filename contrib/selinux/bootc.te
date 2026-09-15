@@ -1,0 +1,25 @@
+module bootc 1.0;
+
+require {
+    type install_t;
+    type install_exec_t;
+    type initrc_t;
+    type unconfined_service_t;
+    class process { transition sigchld };
+}
+
+# When systemd runs a wrapper script/service (rather than bootc directly),
+# the wrapper process runs as initrc_t or unconfined_service_t.  Without
+# these rules, executing an install_exec_t binary (bootc, ostree) from
+# the wrapper does NOT transition to install_t, so the process lacks the
+# mac_admin capability needed for cross-version OS updates.
+#
+# See https://redhat.atlassian.net/browse/RHEL-117256
+
+type_transition initrc_t install_exec_t : process install_t;
+allow initrc_t install_t : process transition;
+allow install_t initrc_t : process sigchld;
+
+type_transition unconfined_service_t install_exec_t : process install_t;
+allow unconfined_service_t install_t : process transition;
+allow install_t unconfined_service_t : process sigchld;
