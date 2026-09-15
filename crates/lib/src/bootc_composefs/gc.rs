@@ -17,6 +17,10 @@ use ostree_ext::composefs_oci::linked_erofs_images;
 use rustix::fs::AtFlags;
 use rustix::fs::{statat, unlinkat};
 
+use crate::bootc_composefs::boot::GLOBAL_UKI_ADDONS_DIR;
+use crate::bootc_composefs::boot::get_global_uki_addon_name;
+use crate::bootc_composefs::uki_addon::UkiAddonType;
+use crate::bootc_composefs::uki_addon::list_referenced_uki_addons;
 use crate::{
     bootc_composefs::{
         boot::{BOOTC_UKI_DIR, BootType, get_type1_dir_name, get_uki_addon_dir_name, get_uki_name},
@@ -142,9 +146,6 @@ fn delete_kernel_initrd(storage: &Storage, dir_to_delete: &str, dry_run: bool) -
 fn delete_uki(storage: &Storage, uki_id: &str, dry_run: bool) -> Result<()> {
     let esp_mnt = storage.require_esp()?;
 
-    // NOTE: We don't delete global addons here (see `GLOBAL_UKI_ADDONS_DIR`)
-    // Which is fine as global addons don't belong to any single deployment, but it also
-    // means they're never cleaned up at all: see the TODO on `GLOBAL_UKI_ADDONS_DIR`.
     let uki_dir = esp_mnt.fd.open_dir(BOOTC_UKI_DIR)?;
 
     for entry in uki_dir.entries_utf8()? {
@@ -291,12 +292,52 @@ pub(crate) async fn composefs_gc(
         )
     }
 
-    for (ty, verity) in unreferenced_boot_binaries {
+    for (ty, verity) in &unreferenced_boot_binaries {
         match ty {
             BootType::Bls => {
                 delete_kernel_initrd(storage, &get_type1_dir_name(verity), gc_opts.dry_run)?
             }
             BootType::Uki => delete_uki(storage, verity, gc_opts.dry_run)?,
+        }
+    }
+
+    // Remove unreferenced global UKI Addons
+    let currently_referenced_addons = list_referenced_uki_addons(booted_cfs, &bootloader_entries)?;
+    let mut unreferenced_global_addons = vec![];
+
+    for (verity, referenced_addons) in currently_referenced_addons {
+        if !unreferenced_boot_binaries.iter().any(|bb| bb.1 == verity) {
+            continue;
+        }
+
+        for addon in referenced_addons {
+            if addon.addon_type == UkiAddonType::Global {
+                unreferenced_global_addons.push(addon.name);
+            }
+        }
+    }
+
+    tracing::debug!("Unreferenced Global Addons: {unreferenced_global_addons:?}");
+
+    if !unreferenced_global_addons.is_empty() {
+        let global_uki_dir = storage
+            .require_esp()?
+            .fd
+            .open_dir(GLOBAL_UKI_ADDONS_DIR)
+            .context("Opening global UKI Addons dir")?;
+
+        for addon in &unreferenced_global_addons {
+            let global_addon_name = get_global_uki_addon_name(&addon);
+
+            tracing::debug!("Deleting Global UKI Addon: {}", addon);
+
+            if gc_opts.dry_run {
+                continue;
+            }
+
+            global_uki_dir
+                .remove_file(&global_addon_name)
+                .with_context(|| format!("Removing global addon {global_addon_name}"))?;
         }
     }
 
