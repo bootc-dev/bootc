@@ -95,8 +95,8 @@ use std::ops::Deref;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use bootc_mount::run_findmnt;
 use bootc_mount::tempmount::TempMount;
+use bootc_mount::{Filesystem, run_findmnt};
 use camino::Utf8PathBuf;
 use cap_std_ext::cap_std;
 use cap_std_ext::cap_std::fs::{
@@ -386,7 +386,7 @@ fn get_boot_dir_for_grub(physical_root: &Dir) -> Result<Dir> {
     // Figure out if it's the ESP or XBOOTLDR
     let mnt_res = run_findmnt(&[], None, Some("/boot")).context("Finding /boot mount info")?;
 
-    let mut boot_fs = None;
+    let mut boot_mount_details: Option<Filesystem> = None;
 
     for mount in mnt_res.filesystems {
         if mount.source.starts_with("systemd") {
@@ -394,47 +394,60 @@ fn get_boot_dir_for_grub(physical_root: &Dir) -> Result<Dir> {
             continue;
         }
 
-        if let Some(already_found) = boot_fs {
+        if let Some(already_found) = boot_mount_details {
             // Really shouldn't happen, but for sanity
             anyhow::bail!(
-                "Found multiple mounts on /boot. Found {}, already had {already_found}",
-                mount.fstype
+                "Found multiple mounts on /boot. Found {}, already had {}",
+                mount.source,
+                already_found.source,
             );
         };
 
-        boot_fs = Some(mount.fstype);
+        boot_mount_details = Some(mount);
     }
 
-    let boot_fs = boot_fs.ok_or_else(|| anyhow::anyhow!("Failed to get filesystem for /boot"))?;
+    let boot_mount_details = boot_mount_details
+        .ok_or_else(|| anyhow::anyhow!("Failed to get mount details for /boot"))?;
 
-    // NOTE: It would be ideal here to check for DPS UUID but we can't be sure that the
-    // device that /boot is mounted as will have DPS compatible UUID
-    //
-    // The best effort we can have is to check the fstype
-    match boot_fs.as_ref() {
+    let boot_fs = boot_mount_details.fstype;
+
+    let boot_dev_info = bootc_blockdev::list_dev(&Utf8PathBuf::from(boot_mount_details.source))?;
+
+    let boot_is_esp = || {
         // /boot is ESP so we have grub configs in /sysroot/boot
-        "vfat" => {
-            return physical_root
-                .open_dir("boot")
-                .context("Opening boot in physical root");
-        }
+        return physical_root
+            .open_dir("boot")
+            .context("Opening boot in physical root");
+    };
 
+    let boot_is_xbootldr = || {
         // XBOOTLDR, so grub configs should hopefully be here
         // but check just in case
-        "ext4" | "xfs" | "btrfs" => {
-            if boot.is_dir("grub2") {
-                return Ok(boot);
-            }
-
-            return physical_root
-                .open_dir("boot")
-                .context("Opening boot in physical root");
+        if boot.is_dir("grub2") {
+            // Remount /boot if mounted RO
+            return open_dir_remount_rw(&boot, ".".into());
         }
 
-        fstype => {
-            anyhow::bail!("Unknown fstype {fstype} for /boot")
-        }
+        return physical_root
+            .open_dir("boot")
+            .context("Opening boot in physical root");
     };
+
+    let return_boot_by_fs = || match boot_fs.as_ref() {
+        "vfat" => boot_is_esp(),
+        _ => boot_is_xbootldr(),
+    };
+
+    use crate::discoverable_partition_specification as dps;
+
+    match boot_dev_info.parttype {
+        Some(parttype) => match parttype.as_str() {
+            dps::ESP => boot_is_esp(),
+            dps::XBOOTLDR => boot_is_xbootldr(),
+            _ => return_boot_by_fs(),
+        },
+        None => return_boot_by_fs(),
+    }
 }
 
 impl BootedStorage {
