@@ -21,3 +21,8 @@ dnf -y distro-sync ostree{,-libs} systemd
 dnf -y builddep bootc.spec
 # And extra packages
 grep -Ev -e '^#' fedora-extra.txt | xargs dnf -y install
+# Packages that only enable extra tests, and are not in every distribution we
+# build on. The tests that want these skip themselves when they are missing.
+for pkg in $(grep -Ev -e '^#' fedora-extra-optional.txt); do
+  dnf -y install "$pkg" || echo "warning: optional package $pkg is unavailable"
+done

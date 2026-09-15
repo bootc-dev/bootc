@@ -391,6 +391,7 @@ dependencies = [
  "linkme",
  "linux-kernel-cmdline",
  "nom 8.0.0",
+ "oci-delta",
  "ocidir",
  "openssl",
  "ostree-ext",
@@ -2407,6 +2408,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ff76201f031d8863c38aa7f905eca4f53abbfa15f609db4277d44cd8938f33fe"
 dependencies = [
  "memchr",
+]
+
+[[package]]
+name = "oci-delta"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fc185feabe86ac78e5c4ae8b800078f257621ba652cd426d516a846aed93b543"
+dependencies = [
+ "anyhow",
+ "flate2",
+ "hex",
+ "oci-spec",
+ "openssl",
+ "zstd",
 ]
 
 [[package]]

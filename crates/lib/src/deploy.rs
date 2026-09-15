@@ -48,6 +48,7 @@ use std::collections::HashSet;
 use std::io::{BufRead, Write};
 use std::os::fd::AsFd;
 use std::process::Command;
+use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow};
 use bootc_utils::skopeo_bin;
@@ -136,21 +137,26 @@ impl ImageState {
     }
 }
 
-/// Wrapper for pulling a container image, wiring up status output.
-pub(crate) async fn new_importer(
-    repo: &ostree::Repo,
-    imgref: &ostree_container::OstreeImageReference,
+/// The importer settings every bootc pull uses, however the layers arrive.
+fn configure_importer(
+    imp: &mut ostree_container::store::ImageImporter,
     booted_deployment: Option<&ostree::Deployment>,
-) -> Result<ostree_container::store::ImageImporter> {
-    let config = new_proxy_config();
-    let mut imp = ostree_container::store::ImageImporter::new(repo, imgref, config).await?;
+) {
     imp.require_bootable();
     // We do our own GC/prune in deploy::prune(), so skip the importer's internal one.
     imp.disable_gc();
     if let Some(deployment) = booted_deployment {
         imp.set_sepolicy_commit(deployment.csum().to_string());
     }
-    Ok(imp)
+}
+
+/// Wrapper for pulling a container image, wiring up status output.
+pub(crate) async fn new_importer(
+    repo: &ostree::Repo,
+    imgref: &ostree_container::OstreeImageReference,
+    booted_deployment: Option<&ostree::Deployment>,
+) -> Result<ostree_container::store::ImageImporter> {
+    new_importer_with_config(repo, imgref, new_proxy_config(), booted_deployment).await
 }
 
 /// Wrapper for pulling a container image with a custom proxy config (e.g. for unified storage).
@@ -161,12 +167,7 @@ pub(crate) async fn new_importer_with_config(
     booted_deployment: Option<&ostree::Deployment>,
 ) -> Result<ostree_container::store::ImageImporter> {
     let mut imp = ostree_container::store::ImageImporter::new(repo, imgref, config).await?;
-    imp.require_bootable();
-    // We do our own GC/prune in deploy::prune(), so skip the importer's internal one.
-    imp.disable_gc();
-    if let Some(deployment) = booted_deployment {
-        imp.set_sepolicy_commit(deployment.csum().to_string());
-    }
+    configure_importer(&mut imp, booted_deployment);
     Ok(imp)
 }
 
@@ -525,6 +526,17 @@ pub(crate) async fn prepare_for_pull(
         }
         PrepareResult::Ready(p) => p,
     };
+    Ok(PreparedPullResult::Ready(Box::new(
+        prepared_import_meta(imp, prep).await?,
+    )))
+}
+
+/// Report on what a prepared import is going to do, and tally it up for the
+/// progress display.
+async fn prepared_import_meta(
+    imp: ImageImporter,
+    prep: Box<PreparedImport>,
+) -> Result<PreparedImportMeta> {
     check_bootc_label(&prep.config);
     if let Some(warning) = prep.deprecated_warning() {
         ostree_ext::cli::print_deprecated_warning(warning).await;
@@ -532,7 +544,7 @@ pub(crate) async fn prepare_for_pull(
     ostree_ext::cli::print_layer_status(&prep);
     let layers_to_fetch = prep.layers_to_fetch().collect::<Result<Vec<_>>>()?;
 
-    let prepared_image = PreparedImportMeta {
+    Ok(PreparedImportMeta {
         imp,
         n_layers_to_fetch: layers_to_fetch.len(),
         layers_total: prep.all_layers().count(),
@@ -540,9 +552,80 @@ pub(crate) async fn prepare_for_pull(
         bytes_total: prep.all_layers().map(|l| l.layer.size()).sum(),
         digest: prep.manifest_digest.clone(),
         prep,
+    })
+}
+
+/// Prepare an import whose metadata and layer content both come from a delta
+/// file plus the source image already in `repo`; nothing is fetched.
+pub(crate) async fn prepare_for_pull_delta(
+    repo: &ostree::Repo,
+    imgref: &ImageReference,
+    delta: Arc<crate::delta::Delta>,
+    booted_deployment: Option<&ostree::Deployment>,
+) -> Result<PreparedPullResult> {
+    delta.validate_image_reference(imgref)?;
+    let imgref_canonicalized = imgref.clone().canonicalize()?;
+    tracing::debug!("Canonicalized image reference: {imgref_canonicalized:#}");
+    let ostree_imgref = &OstreeImageReference::from(imgref_canonicalized);
+
+    let mut imp = ImageImporter::new_without_proxy(repo, ostree_imgref)?;
+    configure_importer(&mut imp, booted_deployment);
+
+    let layer_source = Box::new(crate::delta_ostree::DeltaLayerSource::new(
+        Arc::clone(&delta),
+        repo,
+    ));
+    let prep = match imp
+        .prepare_from_manifest(
+            delta.target_manifest_digest().clone(),
+            delta.target_manifest().clone(),
+            delta.target_config().clone(),
+            layer_source,
+        )
+        .await?
+    {
+        PrepareResult::AlreadyPresent(c) => {
+            println!("No changes in {imgref:#} => {}", c.manifest_digest);
+            return Ok(PreparedPullResult::AlreadyPresent(Box::new((*c).into())));
+        }
+        PrepareResult::Ready(p) => p,
     };
 
-    Ok(PreparedPullResult::Ready(Box::new(prepared_image)))
+    Ok(PreparedPullResult::Ready(Box::new(
+        prepared_import_meta(imp, prep).await?,
+    )))
+}
+
+/// Wrapper for applying a delta, wiring up status output.
+pub(crate) async fn pull_delta(
+    repo: &ostree::Repo,
+    imgref: &ImageReference,
+    delta: Arc<crate::delta::Delta>,
+    quiet: bool,
+    prog: ProgressWriter,
+    booted_deployment: Option<&ostree::Deployment>,
+) -> Result<Box<ImageState>> {
+    if !quiet {
+        println!("Applying delta {}", delta.describe());
+    }
+    match prepare_for_pull_delta(repo, imgref, delta, booted_deployment).await? {
+        PreparedPullResult::AlreadyPresent(existing) => Ok(existing),
+        PreparedPullResult::Ready(prepared_image_meta) => {
+            check_disk_space_ostree(repo, &prepared_image_meta, imgref)?;
+            let r = pull_from_prepared(imgref, quiet, prog, *prepared_image_meta).await;
+            if r.is_err() {
+                // The importer publishes a layer's ref before the reconstruction
+                // that feeds it has finished being verified, so a failed apply
+                // can leave a ref to content that never passed its diff_id
+                // check. Drop the unreferenced layers so a retry cannot pick one
+                // up; failing to do so is not worth masking the real error.
+                if let Err(e) = ostree_container::store::gc_image_layers(repo) {
+                    tracing::warn!("Pruning layers after failed delta apply: {e:#}");
+                }
+            }
+            r
+        }
+    }
 }
 
 /// Check whether the image exists in bootc's unified container storage.

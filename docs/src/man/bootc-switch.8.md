@@ -79,6 +79,10 @@ Soft reboot allows faster system restart by avoiding full hardware reboot when p
 
     Retain reference to currently booted image
 
+**--from-delta**=*PATH*
+
+    Switch using a local oci-delta artifact instead of the network
+
 <!-- END GENERATED OPTIONS -->
 
 # EXAMPLES

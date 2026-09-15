@@ -14,6 +14,7 @@ use ostree_ext::container::ManifestDiff;
 
 use crate::bootc_composefs::finalize::get_etc_diff;
 use crate::bootc_composefs::gc::GCOpts;
+use crate::delta::Delta;
 use crate::spec::BootloaderKind;
 use crate::{
     bootc_composefs::{
@@ -59,23 +60,51 @@ use crate::{
 /// * `Some<Sha512HashValue>` if the image is pulled/available locally, `None` otherwise
 /// * The container image manifest
 /// * The container image configuration
+/// * The digest of the manifest, as the registry reported it
 #[context("Checking if image {} is pulled", imgref.image)]
 pub(crate) async fn is_image_pulled(
     repo: &ComposefsRepository,
     imgref: &ImageReference,
-) -> Result<(Option<Sha512HashValue>, ImgConfigManifest)> {
+) -> Result<(Option<Sha512HashValue>, ImgConfigManifest, String)> {
     let imgref_repr = imgref.to_image_proxy_ref()?;
-    let img_config_manifest = get_container_manifest_and_config(&imgref_repr).await?;
+    let (img_config_manifest, manifest_digest) =
+        get_container_manifest_and_config(&imgref_repr).await?;
 
-    let img_digest = img_config_manifest.manifest.config().digest().digest();
+    let container_pulled =
+        lookup_config_splitstream(repo, img_config_manifest.manifest.config().digest())?;
+
+    Ok((container_pulled, img_config_manifest, manifest_digest))
+}
+
+/// Look up the config splitstream for an image config digest, which is present
+/// exactly when that image has been imported into `repo`.
+pub(crate) fn lookup_config_splitstream(
+    repo: &ComposefsRepository,
+    config_digest: &composefs_oci::OciDigest,
+) -> Result<Option<Sha512HashValue>> {
+    let img_digest = config_digest.digest();
 
     // TODO: export config_identifier function from composefs-oci/src/lib.rs and use it here
     let img_id = format!("oci-config-sha256:{img_digest}");
 
     // NB: add deep checking?
-    let container_pulled = repo.has_stream(&img_id).context("Checking stream")?;
+    repo.has_stream(&img_id).context("Checking stream")
+}
 
-    Ok((container_pulled, img_config_manifest))
+/// A delta only carries the layers that changed; the rest have to come from the
+/// image it was built against, which must therefore already be in `repo`.
+///
+/// composefs would notice this eventually, but only once it starts importing, which is
+/// pretty late for a nice experience.
+pub(crate) fn ensure_delta_source_present(repo: &ComposefsRepository, delta: &Delta) -> Result<()> {
+    let source = delta.source_config_digest();
+    anyhow::ensure!(
+        lookup_config_splitstream(repo, source)?.is_some(),
+        "Delta {} was built against the image with config {source}, which is not present in \
+         this system's composefs repository.",
+        delta.path,
+    );
+    Ok(())
 }
 
 fn rm_staged_type1_ent(boot_dir: &Dir) -> Result<()> {
@@ -210,7 +239,7 @@ pub(crate) fn validate_update(
 }
 
 /// This is just an intersection of SwitchOpts and UpgradeOpts
-pub(crate) struct DoUpgradeOpts {
+pub(crate) struct DoUpgradeOpts<'a> {
     pub(crate) apply: bool,
     pub(crate) soft_reboot: Option<SoftRebootMode>,
     pub(crate) download_only: bool,
@@ -220,13 +249,15 @@ pub(crate) struct DoUpgradeOpts {
     pub(crate) quiet: bool,
     /// Structured (JSON-Lines) progress sink; see `--progress-fd`.
     pub(crate) prog: ProgressWriter,
+    /// Take the image content from this local delta rather than the network.
+    pub(crate) delta: Option<&'a Delta>,
 }
 
 async fn apply_upgrade(
     storage: &Storage,
     booted_cfs: &BootedComposefs,
     depl_id: &String,
-    opts: &DoUpgradeOpts,
+    opts: &DoUpgradeOpts<'_>,
 ) -> Result<()> {
     if let Some(soft_reboot_mode) = opts.soft_reboot {
         return prepare_soft_reboot_composefs(
@@ -253,7 +284,7 @@ pub(crate) async fn do_upgrade(
     booted_cfs: &BootedComposefs,
     host: &Host,
     imgref: &ImageReference,
-    opts: &DoUpgradeOpts,
+    opts: &DoUpgradeOpts<'_>,
     manifest: &ostree_ext::oci_spec::image::ImageManifest,
 ) -> Result<()> {
     // Pre-flight disk space check before pulling.
@@ -269,12 +300,24 @@ pub(crate) async fn do_upgrade(
         fs: oci_fs,
     } = pull_composefs_repo(
         imgref,
+        opts.delta,
         booted_cfs.cmdline.allow_missing_fsverity,
         opts.use_unified,
         opts.quiet,
         opts.prog.clone(),
     )
     .await?;
+
+    // We validated the delta by reading the file ourselves; composefs read it
+    // independently. Validate they are the same.
+    if let Some(delta) = opts.delta {
+        let expected = delta.target_manifest_digest().to_string();
+        anyhow::ensure!(
+            manifest_digest == expected,
+            "Delta {} imported manifest {manifest_digest}, but it records {expected} as its target",
+            delta.path,
+        );
+    }
 
     // If the target image produces the same fs-verity digest as any existing
     // deployment (booted, staged, rollback, or pinned), error out.  Two images
@@ -400,7 +443,7 @@ pub(crate) async fn apply_upgrade_from_downloaded(
     storage: &Storage,
     composefs: &BootedComposefs,
     host: &Host,
-    do_upgrade_opts: &DoUpgradeOpts,
+    do_upgrade_opts: &DoUpgradeOpts<'_>,
 ) -> Result<()> {
     let staged = host
         .status
@@ -481,6 +524,8 @@ pub(crate) async fn upgrade_composefs(
         None
     };
 
+    let delta = crate::delta::open_opt(opts.from_delta.as_deref()).await?;
+
     let prog: ProgressWriter = opts.progress.try_into()?;
 
     let mut do_upgrade_opts = DoUpgradeOpts {
@@ -490,6 +535,7 @@ pub(crate) async fn upgrade_composefs(
         use_unified: false,
         quiet: opts.quiet,
         prog,
+        delta: delta.as_ref(),
     };
 
     if opts.download_opts.from_downloaded {
@@ -498,6 +544,9 @@ pub(crate) async fn upgrade_composefs(
 
     let imgref = derived_image.as_ref().or(current_image);
     let mut booted_imgref = imgref.ok_or_else(|| anyhow::anyhow!("No image source specified"))?;
+    if let Some(delta) = delta.as_ref() {
+        delta.validate_image_reference(booted_imgref)?;
+    }
 
     // Auto-detect unified storage: use the unified path if the target image is
     // already in bootc-owned containers-storage, OR if the booted image is —
@@ -513,17 +562,37 @@ pub(crate) async fn upgrade_composefs(
 
     let repo = &*composefs.repo;
 
-    let (img_pulled, mut img_config) = is_image_pulled(&repo, booted_imgref).await?;
-    let booted_img_digest = img_config.manifest.config().digest().to_string();
+    // With a delta the target is whatever the delta says it is, and we can look
+    // it up locally; without one we have to ask the registry.
+    let (img_pulled, mut manifest, manifest_digest) = match &delta {
+        Some(delta) => {
+            crate::delta::reject_unified_storage(delta, do_upgrade_opts.use_unified)?;
+            ensure_delta_source_present(repo, delta)?;
+            (
+                lookup_config_splitstream(repo, delta.target_manifest().config().digest())?,
+                delta.target_manifest().clone(),
+                delta.target_manifest_digest().to_string(),
+            )
+        }
+        None => is_image_pulled(&repo, booted_imgref)
+            .await
+            .map(|(pulled, img, digest)| (pulled, img.manifest, digest))?,
+    };
 
     // Check if we already have this update staged
     // Or if we have another staged deployment with a different image
     let staged_image = host.status.staged.as_ref().and_then(|i| i.image.as_ref());
 
+    // When applying deltas, only handle the staged image if it matches the delta,
+    // because with deltas we always want the specific version, and don't want to do
+    // any network resolve here.
+    let staged_image =
+        staged_image.filter(|staged| delta.is_none() || staged.image_digest == manifest_digest);
+
     if let Some(staged_image) = staged_image {
         // We have a staged image and it has the same digest as the currently booted image's latest
         // digest
-        if staged_image.image_digest == booted_img_digest {
+        if staged_image.image_digest == manifest_digest {
             if opts.apply {
                 return crate::reboot::reboot();
             }
@@ -538,15 +607,15 @@ pub(crate) async fn upgrade_composefs(
         // Switch takes precedence over update, so we change the imgref
         booted_imgref = &staged_image.image;
 
-        let (img_pulled, staged_img_config) = is_image_pulled(&repo, booted_imgref).await?;
-        img_config = staged_img_config;
+        let (img_pulled, staged_img_config, _) = is_image_pulled(&repo, booted_imgref).await?;
+        manifest = staged_img_config.manifest;
 
         if let Some(cfg_verity) = img_pulled {
             let action = validate_update(
                 storage,
                 composefs,
                 &host,
-                img_config.manifest.config().digest().as_ref(),
+                manifest.config().digest().as_ref(),
                 &cfg_verity,
                 false,
             )?;
@@ -564,7 +633,7 @@ pub(crate) async fn upgrade_composefs(
                         &host,
                         booted_imgref,
                         &do_upgrade_opts,
-                        &img_config.manifest,
+                        &manifest,
                     )
                     .await;
                 }
@@ -578,7 +647,7 @@ pub(crate) async fn upgrade_composefs(
             storage,
             composefs,
             &host,
-            &booted_img_digest,
+            manifest.config().digest().as_ref(),
             &cfg_verity,
             false,
         )?;
@@ -596,7 +665,7 @@ pub(crate) async fn upgrade_composefs(
                     &host,
                     booted_imgref,
                     &do_upgrade_opts,
-                    &img_config.manifest,
+                    &manifest,
                 )
                 .await;
             }
@@ -605,7 +674,7 @@ pub(crate) async fn upgrade_composefs(
 
     if opts.check {
         let (current_manifest, _) = get_imginfo(storage, &*composefs.cmdline.digest)?;
-        let diff = ManifestDiff::new(&current_manifest.manifest, &img_config.manifest);
+        let diff = ManifestDiff::new(&current_manifest.manifest, &manifest);
         diff.print();
         return Ok(());
     }
@@ -616,7 +685,7 @@ pub(crate) async fn upgrade_composefs(
         &host,
         booted_imgref,
         &do_upgrade_opts,
-        &img_config.manifest,
+        &manifest,
     )
     .await?;
 

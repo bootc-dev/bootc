@@ -316,10 +316,17 @@ async fn pull_composefs_unified(
 /// When `use_unified` is false (the default), the image is pulled directly
 /// into the composefs repo via skopeo.
 ///
+/// With a `delta`, the content is read from the delta file instead and no
+/// network access happens at all; `spec_imgref` then only names what the
+/// resulting deployment tracks. composefs-ctl recognises the delta artifact
+/// from the layout's manifest and reconstructs the changed layers against the
+/// source image in the repository, failing if that image is absent.
+///
 /// Checks for boot entries in the image and returns them.
 #[context("Pulling composefs repository")]
 pub(crate) async fn pull_composefs_repo(
     spec_imgref: &crate::spec::ImageReference,
+    delta: Option<&crate::delta::Delta>,
     allow_missing_fsverity: bool,
     use_unified: bool,
     quiet: bool,
@@ -327,7 +334,17 @@ pub(crate) async fn pull_composefs_repo(
 ) -> Result<PullRepoResult> {
     const COMPOSEFS_PULL_JOURNAL_ID: &str = "4c3b2a1f0e9d8c7b6a5f4e3d2c1b0a9f8";
 
-    let imgref = spec_imgref.to_image_proxy_ref()?;
+    let imgref = match delta {
+        Some(delta) => {
+            delta.validate_image_reference(spec_imgref)?;
+            crate::delta::reject_unified_storage(delta, use_unified)?;
+            if !quiet {
+                println!("Applying delta {}", delta.describe());
+            }
+            delta.pull_ref()?
+        }
+        None => spec_imgref.to_image_proxy_ref()?,
+    };
 
     tracing::info!(
         message_id = COMPOSEFS_PULL_JOURNAL_ID,
@@ -336,6 +353,7 @@ pub(crate) async fn pull_composefs_repo(
         bootc.transport = %imgref.transport,
         bootc.allow_missing_fsverity = allow_missing_fsverity,
         bootc.unified_storage = use_unified,
+        bootc.delta = delta.map(|d| d.path.as_str()),
         "Pulling composefs image {imgref}",
     );
 
