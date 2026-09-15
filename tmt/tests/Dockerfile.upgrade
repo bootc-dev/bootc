@@ -1,21 +1,22 @@
 # Creates a synthetic upgrade image for testing.
-# For non-UKI builds, this just adds a marker file on top of localhost/bootc.
+# For non-UKI builds, this just adds a marker file on top of the base image.
 # For UKI builds (boot_type=uki), the image is re-sealed with a new composefs
 # digest and (optionally signed) UKI.
 #
 # Build secrets required (for sealed builds):
 #   secureboot_key, secureboot_cert
+ARG base=localhost/bootc
 ARG boot_type=bls
 ARG seal_state=unsealed
 ARG filesystem=ext4
-ARG erofs_version=v1
+ARG erofs_version=auto
 
 # Capture contrib/packaging scripts for use in later stages
 FROM scratch AS packaging
 COPY contrib/packaging /
 
 # Get kernel + initrd from the UKI
-FROM localhost/bootc as kernel
+FROM ${base} as kernel
 ARG boot_type
 RUN <<-EOF
     if test "${boot_type}" = "uki"; then
@@ -27,19 +28,19 @@ EOF
 # Create the upgrade content (a simple marker file).
 # For UKI builds, we also remove the existing UKI so that seal-uki can
 # regenerate it with the correct composefs digest for this derived image.
-FROM localhost/bootc AS upgrade-base
+FROM ${base} AS upgrade-base
 ARG boot_type
 RUN touch --reference=/usr/bin/bash /usr/share/testing-bootc-upgrade-apply && \
     if test "${boot_type}" = "uki"; then rm -rf /boot/EFI/Linux/*.efi; fi
 
 # Tools for sealing (only meaningfully used for UKI builds)
-FROM localhost/bootc AS tools
+FROM ${base} AS tools
 RUN --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
     --mount=type=bind,from=packaging,src=/,target=/run/packaging \
     /run/packaging/initialize-sealing-tools
 
 # Generate a sealed UKI for the upgrade image.
-# bootc is already installed in localhost/bootc (our tools base); the
+# bootc is already installed in the selected base image (our tools base); the
 # container ukify command it provides is needed for seal-uki.
 FROM tools AS sealed-upgrade-uki
 ARG boot_type seal_state filesystem erofs_version

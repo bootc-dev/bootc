@@ -354,7 +354,7 @@ ARG variant
 ARG filesystem
 ARG seal_state
 ARG boot_type
-ARG erofs_version=v1
+ARG erofs_version=auto
 # Install our bootc package (only needed for the compute-composefs-digest command)
 RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
     --mount=type=bind,from=packages,src=/,target=/run/packages \

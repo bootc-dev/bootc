@@ -197,3 +197,12 @@ check:
   summary: Test composefs UKI dumpfile diff print
   duration: 30m
   test: nu booted/test-composefs-uki-dumpfile.nu
+
+/test-49-composefs-1-16-bridge:
+  summary: Test the bootc 1.16 composefs UKI bridge
+  duration: 45m
+  enabled: false
+  adjust:
+  - when: composefs_bridge == true
+    enabled: true
+  test: nu booted/test-49-composefs-1-16-bridge.nu

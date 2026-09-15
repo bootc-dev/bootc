@@ -56,7 +56,9 @@ use ostree_ext::containers_image_proxy;
 
 use cap_std_ext::cap_std::{ambient_authority, fs::Dir};
 
-use crate::bootc_composefs::boot::ensure_correct_composefs_digest;
+use crate::bootc_composefs::boot::{
+    ensure_correct_composefs_digest, print_uki_dumpfile_diff_on_mismatch,
+};
 use crate::bootc_composefs::progress;
 use crate::composefs_consts::BOOTC_TAG_PREFIX;
 use crate::install::{RootSetup, State};
@@ -76,6 +78,33 @@ pub(crate) fn bootc_tag_for_manifest(manifest_digest: &str) -> String {
 pub(crate) fn open_composefs_repo(rootfs_dir: &Dir) -> Result<crate::store::ComposefsRepository> {
     crate::store::ComposefsRepository::open_path(rootfs_dir, "composefs")
         .context("Failed to open composefs repository")
+}
+
+/// Build the repository configuration used by every composefs initialization
+/// path.  Keeping the fs-verity policy and the dual EROFS format policy here
+/// prevents preflight initialization from silently creating a different
+/// repository than the real pull path will use.
+pub(crate) fn composefs_repository_config(allow_missing_fsverity: bool) -> RepositoryConfig {
+    let mut config = RepositoryConfig::new(composefs::fsverity::Algorithm::SHA512);
+    if allow_missing_fsverity {
+        config = config.set_insecure();
+    }
+    crate::store::set_dual_erofs_formats(&mut config);
+    config
+}
+
+/// Enforce the durable repository policy without forbidding an explicit
+/// per-session relaxation of a strict repository.
+pub(crate) fn validate_repository_policy(
+    repo: &crate::store::ComposefsRepository,
+    allow_missing_fsverity: bool,
+) -> Result<()> {
+    if !allow_missing_fsverity && repo.is_insecure() {
+        anyhow::bail!(
+            "Existing composefs repository is insecure, but this install requires fs-verity; refusing to continue"
+        );
+    }
+    Ok(())
 }
 
 pub(crate) async fn initialize_composefs_repository(
@@ -104,16 +133,17 @@ pub(crate) async fn initialize_composefs_repository(
 
     crate::store::ensure_composefs_dir(rootfs_dir)?;
 
-    let mut config = RepositoryConfig::new(composefs::fsverity::Algorithm::SHA512);
-    config = if allow_missing_fsverity {
-        config.set_insecure()
-    } else {
-        config
-    };
-    crate::store::set_dual_erofs_formats(&mut config);
-    let (repo, _created) =
+    let config = composefs_repository_config(allow_missing_fsverity);
+    let (mut repo, _created) =
         crate::store::ComposefsRepository::init_path(rootfs_dir, "composefs", config)
             .context("Failed to initialize composefs repository")?;
+    // `set_insecure()` is an explicit per-handle relaxation.  It must also be
+    // applied when init_path opened an existing strict repository; init_path
+    // correctly derives the durable policy from meta.json and does not rewrite
+    // it merely because this session permits missing fs-verity.
+    if allow_missing_fsverity {
+        repo.set_insecure();
+    }
 
     let imgref: containers_image_proxy::ImageReference = state
         .source
@@ -419,11 +449,15 @@ pub(crate) async fn pull_composefs_repo(
     // If the UKI was built by tooling using a different xattr filtering
     // mode, find the mode whose boot image matches the digest embedded in
     // the UKI.
-    let id = ensure_correct_composefs_digest(
+    let id = print_uki_dumpfile_diff_on_mismatch(
+        ensure_correct_composefs_digest(
+            &repo,
+            &pull_result.manifest_digest,
+            generated_id,
+            &entries,
+        ),
         &repo,
-        &pull_result.manifest_digest,
-        generated_id,
-        &entries,
+        &fs,
     )?;
 
     // Unwrap the Arc to get the owned repo back.
@@ -453,5 +487,80 @@ mod tests {
         let tag = bootc_tag_for_manifest(digest);
         assert_eq!(tag, "localhost/bootc-sha256:abc123def456");
         assert!(tag.starts_with(BOOTC_TAG_PREFIX));
+    }
+
+    #[test]
+    fn test_repository_init_preserves_requested_verity_policy() {
+        for allow_missing in [true, false] {
+            let tempdir = tempfile::tempdir().unwrap();
+            let root = Dir::open_ambient_dir(tempdir.path(), ambient_authority()).unwrap();
+            let result = crate::store::ComposefsRepository::init_path(
+                &root,
+                ".",
+                composefs_repository_config(allow_missing),
+            );
+
+            match result {
+                Ok((repo, _)) => assert_eq!(repo.is_insecure(), allow_missing),
+                Err(error) if !allow_missing => {
+                    // A host without fs-verity support must fail strict
+                    // initialization rather than silently creating insecure
+                    // metadata.
+                    let message = format!("{error:#}");
+                    assert!(
+                        message.to_ascii_lowercase().contains("verity"),
+                        "strict initialization failed for an unrelated reason: {message}"
+                    );
+                }
+                Err(error) => panic!("insecure initialization failed: {error:#}"),
+            }
+        }
+    }
+
+    #[test]
+    fn test_existing_repository_policy_is_one_way() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let root = Dir::open_ambient_dir(tempdir.path(), ambient_authority()).unwrap();
+        let (strict_repo, _) = match crate::store::ComposefsRepository::init_path(
+            &root,
+            ".",
+            composefs_repository_config(false),
+        ) {
+            Ok(result) => result,
+            Err(error) if format!("{error:#}").to_ascii_lowercase().contains("verity") => {
+                // The host test filesystem may not support fs-verity.  The
+                // strict fresh-install behavior is covered by the same init
+                // probe above and by the VM test environment.
+                return;
+            }
+            Err(error) => panic!("strict initialization failed unexpectedly: {error:#}"),
+        };
+        assert!(!strict_repo.is_insecure());
+
+        let metadata_before = std::fs::read(tempdir.path().join("meta.json")).unwrap();
+        let (mut relaxed_repo, _) = crate::store::ComposefsRepository::init_path(
+            &root,
+            ".",
+            composefs_repository_config(true),
+        )
+        .unwrap();
+        relaxed_repo.set_insecure();
+        assert!(relaxed_repo.is_insecure());
+        assert_eq!(
+            metadata_before,
+            std::fs::read(tempdir.path().join("meta.json")).unwrap()
+        );
+        assert!(validate_repository_policy(&relaxed_repo, true).is_ok());
+
+        let insecure_tempdir = tempfile::tempdir().unwrap();
+        let insecure_root =
+            Dir::open_ambient_dir(insecure_tempdir.path(), ambient_authority()).unwrap();
+        let (insecure_repo, _) = crate::store::ComposefsRepository::init_path(
+            &insecure_root,
+            ".",
+            composefs_repository_config(true),
+        )
+        .unwrap();
+        assert!(validate_repository_policy(&insecure_repo, false).is_err());
     }
 }

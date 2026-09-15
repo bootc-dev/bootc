@@ -20,7 +20,7 @@ if not $is_uki {
     exit 0
 }
 
-let erofs_version = ($env.BOOTC_erofs_version? | default "v1")
+let erofs_version = tap selected_erofs_version
 print $"# Testing EROFS version: ($erofs_version)"
 
 # Verify composefs is active and status is healthy
@@ -46,8 +46,16 @@ let cfs_digest = if $erofs_version == "v1" {
     let value = ($param | str replace "composefs.digest=" "")
     # Strip optional leading '?' for insecure mode, then the "v1-<hash>-<lg>:" descriptor
     let value = (if ($value | str starts-with "?") { $value | str substring 1.. } else { $value })
+    # The default V1 UKI must retain a V2 fallback.  V2-only initramfs
+    # releases ignore the self-describing V1 argument and consume this one.
+    assert (
+        $params | any { |p| $p | str starts-with "composefs=" }
+    ) $"Expected V2 fallback karg in cmdline, got: ($cmdline)"
     ($value | split row ":" | last)
 } else {
+    assert (
+        not ($params | any { |p| $p | str starts-with "composefs.digest=" })
+    ) $"Explicit V2 UKI must not contain a V1 karg, got: ($cmdline)"
     assert (
         $cmdline | str contains "composefs="
     ) $"Expected composefs= karg in cmdline, got: ($cmdline)"

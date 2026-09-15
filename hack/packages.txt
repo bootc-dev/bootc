@@ -11,5 +11,7 @@ parted
 lvm2
 dosfstools
 e2fsprogs
+# Required by composefs UKI target-policy inspection before UKI creation
+binutils
 # Required by  bib-build test
 qemu-img

@@ -19,7 +19,7 @@ use crate::spec::BootloaderKind;
 use crate::{
     bootc_composefs::{
         boot::{
-            BootSetupType, BootType, UKIDigestMismatch, print_uki_dumpfile_diff,
+            BootSetupType, BootType, accepted_boot_image_ids, print_uki_dumpfile_diff_on_mismatch,
             setup_composefs_bls_boot, setup_composefs_uki_boot,
         },
         gc::composefs_gc,
@@ -340,7 +340,7 @@ pub(crate) async fn do_upgrade(
         Some(v1) => (v1.clone(), FormatVersion::V1),
         None => (id.clone(), repo.erofs_version()),
     };
-    let boot_ids: Vec<Sha512HashValue> = [boot_id_v1, boot_id_v2].into_iter().flatten().collect();
+    let boot_ids = accepted_boot_image_ids(boot_id_v1, boot_id_v2, &id);
 
     let (boot_digest, deploy_id) = match boot_type {
         BootType::Bls => (
@@ -355,26 +355,17 @@ pub(crate) async fn do_upgrade(
             provisional_deploy_id,
         ),
 
-        BootType::Uki => {
-            let uki_setup_result = setup_composefs_uki_boot(
+        BootType::Uki => print_uki_dumpfile_diff_on_mismatch(
+            setup_composefs_uki_boot(
                 BootSetupType::Upgrade((storage, booted_cfs, &host)),
                 &repo,
                 &provisional_deploy_id,
                 &boot_ids,
                 entries,
-            );
-
-            match uki_setup_result {
-                Ok(result) => result,
-                Err(e) => match e.downcast::<UKIDigestMismatch>() {
-                    Ok(mismatch) => {
-                        print_uki_dumpfile_diff(&mismatch, &repo, &oci_fs);
-                        return Err(mismatch.into());
-                    }
-                    Err(e) => Err(e)?,
-                },
-            }
-        }
+            ),
+            &repo,
+            &oci_fs,
+        )?,
     };
 
     // `repo` holds its own flock(LOCK_SH) on /sysroot/composefs, taken out by

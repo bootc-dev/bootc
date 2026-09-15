@@ -40,6 +40,23 @@ def parse_cmdline []  {
     open /proc/cmdline | str trim | split row " "
 }
 
+def assert_composefs_uki_format [] {
+    let erofs_version = tap selected_erofs_version
+    let params = parse_cmdline
+    let has_v1 = ($params | any { |p| $p | str starts-with "composefs.digest=" })
+    let has_v2 = ($params | any { |p| $p | str starts-with "composefs=" })
+
+    if $erofs_version == "v1" {
+        assert $has_v1 "V1 UKI must contain composefs.digest="
+        assert $has_v2 "V1 UKI must retain a V2 fallback"
+    } else if $erofs_version == "v2" {
+        assert $has_v2 "V2 UKI must contain composefs="
+        assert (not $has_v1) "Explicit V2 UKI must not contain composefs.digest="
+    } else {
+        error make { msg: $"Unsupported EROFS version: ($erofs_version)" }
+    }
+}
+
 def imgsrc [] {
     $env.BOOTC_upgrade_image? | default "localhost/bootc-derived-local"
 }
@@ -49,13 +66,14 @@ def initial_build [] {
     tap begin "local image push + pull + upgrade"
 
     let imgsrc = imgsrc
+    let erofs_version = tap selected_erofs_version
     # For the packit case, we build locally right now
     if ($imgsrc | str ends-with "-local") {
         bootc image copy-to-storage
 
         # A simple derived container that adds a file
         (
-            tap make_uki_containerfile "
+            tap make_uki_containerfile --erofs-version $erofs_version "
                 FROM localhost/bootc as base
                 RUN touch /usr/share/testing-bootc-upgrade-apply
         ") | save Dockerfile
@@ -100,6 +118,7 @@ def second_boot [] {
 
         # For UKI boot type, verify both the original and upgrade UKIs exist on the ESP
         if ($composefs_info.bootType | str downcase) == "uki" {
+            assert_composefs_uki_format
             mkdir /var/tmp/efi
             mount /dev/disk/by-partlabel/EFI-SYSTEM /var/tmp/efi
             let boot_dir = "/var/tmp/efi/EFI/Linux/bootc"

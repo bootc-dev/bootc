@@ -19,6 +19,16 @@ export def is_composefs [] {
     $st.status.booted.composefs? != null
 }
 
+# Return the EROFS format selected by the tmt configuration. Keep this in the
+# harness so derived UKI test images use the same default as the source image.
+export def selected_erofs_version [] {
+    let version = ($env.BOOTC_erofs_version? | default "v1")
+    if not ($version in ["v1" "v2"]) {
+        error make { msg: $"Unsupported EROFS version: ($version)" }
+    }
+    $version
+}
+
 # Get the target image for install tests based on the running OS
 # This ensures the target image matches the host OS to avoid version mismatches
 # (e.g., XFS features created by newer mkfs.xfs not recognized by older grub2)
@@ -75,7 +85,16 @@ rm -vrf /usr/lib/bootc/bound-images.d
 "
 }
 
-export def make_uki_containerfile [containerfile: string, --erofs-version: string = "v1"] {
+export def make_uki_containerfile [containerfile: string, --erofs-version: string = ""] {
+    let erofs_version = if $erofs_version == "" {
+        selected_erofs_version
+    } else {
+        $erofs_version
+    }
+
+    if not ($erofs_version in ["v1" "v2"]) {
+        error make { msg: $"Unsupported EROFS version: ($erofs_version)" }
+    }
     let is_cfs = (is_composefs)
 
     if not $is_cfs {

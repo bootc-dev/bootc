@@ -418,13 +418,13 @@ pub(crate) enum ContainerOpts {
         #[clap(default_value = "/target")]
         path: Utf8PathBuf,
 
-        /// Additionally generate a dumpfile written to the target path
+        /// Additionally generate a dumpfile for the preferred digest, written to the target path
         #[clap(long)]
         write_dumpfile_to: Option<Utf8PathBuf>,
 
         /// EROFS format version to use when computing the composefs digest.
         ///
-        /// V1 produces a `composefs.digest=v1-sha256-12:<hex>` karg (C-tool compatible).
+        /// V1 produces a `composefs.digest=v1-sha512-12:<hex>` karg (C-tool compatible).
         /// V2 produces the legacy `composefs=<hex>` karg (composefs-rs native).
         #[clap(long, default_value = "v1")]
         erofs_version: ErofsVersionArg,
@@ -432,7 +432,7 @@ pub(crate) enum ContainerOpts {
     /// Output the bootable composefs digest from container storage.
     #[clap(hide = true)]
     ComputeComposefsDigestFromStorage {
-        /// Additionally generate a dumpfile written to the target path
+        /// Additionally generate a dumpfile for the preferred digest, written to the target path
         #[clap(long)]
         write_dumpfile_to: Option<Utf8PathBuf>,
 
@@ -488,11 +488,12 @@ pub(crate) enum ContainerOpts {
 
         /// EROFS format version to use when computing the composefs digest.
         ///
-        /// V1 produces a `composefs.digest=v1-sha256-12:<hex>` karg (C-tool compatible).
-        /// V2 produces the legacy `composefs=<hex>` karg (composefs-rs native).
-        /// Must match the format version used when images were committed to the repository.
-        #[clap(long, default_value = "v1")]
-        erofs_version: ErofsVersionArg,
+        /// By default, produce V1 then V2 kargs for compatibility. V1 produces a
+        /// `composefs.digest=v1-sha512-12:<hex>` karg (C-tool compatible), while V2
+        /// produces the legacy `composefs=<hex>` karg (composefs-rs native).
+        /// Explicit V2 produces only the V2 karg as a compatibility escape hatch.
+        #[clap(long)]
+        erofs_version: Option<ErofsVersionArg>,
 
         /// Write a dumpfile to this path
         #[clap(long)]
@@ -543,7 +544,7 @@ pub(crate) enum ContainerOpts {
 /// EROFS format version for `bootc container ukify --erofs-version`.
 #[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
 pub(crate) enum ErofsVersionArg {
-    /// V1 EROFS (C-tool compatible, `composefs.digest=v1-sha256-12:<hex>` karg).  Default.
+    /// V1 EROFS (C-tool compatible, `composefs.digest=v1-sha512-12:<hex>` karg).  Default.
     V1,
     /// V2 EROFS (composefs-rs native, `composefs=` karg).
     V2,
@@ -2274,7 +2275,7 @@ async fn run_from_opt(opt: Opt) -> Result<CliExitStatus> {
                     &args,
                     kernel,
                     allow_missing_verity,
-                    erofs_version.into(),
+                    erofs_version,
                     write_dumpfile_to.as_deref(),
                 )
                 .await
@@ -2815,6 +2816,27 @@ mod tests {
             o.config_opts.bound_images,
             crate::install::BoundImagesOpt::Stored
         );
+    }
+
+    #[test]
+    fn test_parse_ukify_erofs_version_args() {
+        for (command, expected) in [
+            (&["bootc", "container", "ukify"][..], None),
+            (
+                &["bootc", "container", "ukify", "--erofs-version=v1"][..],
+                Some(ErofsVersionArg::V1),
+            ),
+            (
+                &["bootc", "container", "ukify", "--erofs-version=v2"][..],
+                Some(ErofsVersionArg::V2),
+            ),
+        ] {
+            let opt = Opt::try_parse_from(command).unwrap();
+            let Opt::Container(ContainerOpts::Ukify { erofs_version, .. }) = opt else {
+                panic!("expected container ukify options");
+            };
+            assert_eq!(erofs_version, expected);
+        }
     }
 
     #[test]

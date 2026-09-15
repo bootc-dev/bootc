@@ -243,6 +243,10 @@ pub(crate) struct RunTmtArgs {
     #[clap(long)]
     pub(crate) upgrade_image: Option<String>,
 
+    /// Bridge image to use when bind-storage-ro is available
+    #[clap(long)]
+    pub(crate) bridge_image: Option<String>,
+
     /// Skip the `--bind-storage-ro` host container-storage virtiofs mount even for
     /// plans that request it.  Useful where libvirt-managed virtiofsd cannot run
     /// (nested user namespaces, cloud/non-qemu).  Plans that depend on a locally

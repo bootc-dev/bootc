@@ -207,7 +207,6 @@ use crate::store::Storage;
 use crate::task::Task;
 use crate::utils::sigpolicy_from_opt;
 use bootc_mount::Filesystem;
-use composefs_ctl::composefs::repository::RepositoryConfig;
 use linux_kernel_cmdline::{bytes, utf8};
 
 /// The toplevel boot directory
@@ -2058,14 +2057,17 @@ async fn install_to_filesystem_impl(
             // Use init_path since the repo may not exist yet during install.
             // Generate both V1 and V2 EROFS images (see initialize_composefs_repository);
             // this config must match the one used there since it re-inits the same repo.
-            let mut config =
-                RepositoryConfig::new(composefs_ctl::composefs::fsverity::Algorithm::SHA512)
-                    .set_insecure();
-            crate::store::set_dual_erofs_formats(&mut config);
+            let allow_missing_fsverity = state.composefs_options.allow_missing_verity;
+            let config =
+                crate::bootc_composefs::repo::composefs_repository_config(allow_missing_fsverity);
             let (cfs_repo, _created) = crate::store::ComposefsRepository::init_path(
                 &rootfs.physical_root,
                 crate::store::COMPOSEFS,
                 config,
+            )?;
+            crate::bootc_composefs::repo::validate_repository_policy(
+                &cfs_repo,
+                allow_missing_fsverity,
             )?;
             crate::deploy::check_disk_space_composefs(
                 &cfs_repo,
