@@ -23,7 +23,8 @@ There are two types of addons:
   when the deployment is removed.
 
 - **Global** addons apply to every UKI on the ESP. They persist across
-  deployments and are not removed by garbage collection.
+  deployments and are removed by garbage collection once no remaining 
+  deployment references them.
 
 This command requires the composefs backend with UKI boot.
 
