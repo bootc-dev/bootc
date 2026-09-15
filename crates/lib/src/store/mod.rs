@@ -96,6 +96,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use bootc_mount::tempmount::TempMount;
+use bootc_mount::{Filesystem, run_findmnt};
 use camino::Utf8PathBuf;
 use cap_std_ext::cap_std;
 use cap_std_ext::cap_std::fs::{
@@ -104,6 +105,7 @@ use cap_std_ext::cap_std::fs::{
 use cap_std_ext::dirext::CapStdExtDirExt;
 use fn_error_context::context;
 
+use ocidir::cap_std::ambient_authority;
 use ostree_ext::container_utils::ostree_booted;
 use ostree_ext::prelude::FileExt;
 use ostree_ext::sysroot::SysrootLock;
@@ -361,6 +363,93 @@ fn sysroot_is_read_only(d: &Dir) -> Result<bool> {
     Ok(false)
 }
 
+#[context("Finding boot for Grub")]
+fn get_boot_dir_for_grub(physical_root: &Dir) -> Result<Dir> {
+    // We have this so systemd's boot.automount shouldn't expire until
+    // this function finishes execution as we have a handle to /boot
+    let boot =
+        Dir::open_ambient_dir("/boot", ambient_authority()).context("Failed to open /boot")?;
+
+    let is_boot_mntpnt = boot
+        .is_mountpoint(".")
+        .context("Checking if /boot is a mountpoint")?;
+
+    // /boot is not a mount point for bootloader Grub, so we have to
+    // have stuff in /sysroot/boot
+    if !matches!(is_boot_mntpnt, Some(true)) {
+        return physical_root
+            .open_dir("boot")
+            .context("Opening boot in physical root");
+    }
+
+    // /boot is a mountpoint
+    // Figure out if it's the ESP or XBOOTLDR
+    let mnt_res = run_findmnt(&[], None, Some("/boot")).context("Finding /boot mount info")?;
+
+    let mut boot_mount_details: Option<Filesystem> = None;
+
+    for mount in mnt_res.filesystems {
+        if mount.source.starts_with("systemd") {
+            // systemd automount, useless for getting any info
+            continue;
+        }
+
+        if let Some(already_found) = boot_mount_details {
+            // Really shouldn't happen, but for sanity
+            anyhow::bail!(
+                "Found multiple mounts on /boot. Found {}, already had {}",
+                mount.source,
+                already_found.source,
+            );
+        };
+
+        boot_mount_details = Some(mount);
+    }
+
+    let boot_mount_details = boot_mount_details
+        .ok_or_else(|| anyhow::anyhow!("Failed to get mount details for /boot"))?;
+
+    let boot_fs = boot_mount_details.fstype;
+
+    let boot_dev_info = bootc_blockdev::list_dev(&Utf8PathBuf::from(boot_mount_details.source))?;
+
+    let boot_is_esp = || {
+        // /boot is ESP so we have grub configs in /sysroot/boot
+        return physical_root
+            .open_dir("boot")
+            .context("Opening boot in physical root");
+    };
+
+    let boot_is_xbootldr = || {
+        // XBOOTLDR, so grub configs should hopefully be here
+        // but check just in case
+        if boot.is_dir("grub2") {
+            // Remount /boot if mounted RO
+            return open_dir_remount_rw(&boot, ".".into());
+        }
+
+        return physical_root
+            .open_dir("boot")
+            .context("Opening boot in physical root");
+    };
+
+    let return_boot_by_fs = || match boot_fs.as_ref() {
+        "vfat" => boot_is_esp(),
+        _ => boot_is_xbootldr(),
+    };
+
+    use crate::discoverable_partition_specification as dps;
+
+    match boot_dev_info.parttype {
+        Some(parttype) => match parttype.as_str() {
+            dps::ESP => boot_is_esp(),
+            dps::XBOOTLDR => boot_is_xbootldr(),
+            _ => return_boot_by_fs(),
+        },
+        None => return_boot_by_fs(),
+    }
+}
+
 impl BootedStorage {
     /// Create a new booted storage accessor for the given environment.
     ///
@@ -390,9 +479,8 @@ impl BootedStorage {
                 };
 
                 let boot_dir = match get_bootloader()?.kind()? {
-                    BootloaderKind::GRUBClassic => {
-                        physical_root.open_dir("boot").context("Opening boot")?
-                    }
+                    // We can have a separate /boot and not /sysroot/boot
+                    BootloaderKind::GRUBClassic => get_boot_dir_for_grub(&physical_root)?,
                     // NOTE: Handle XBOOTLDR partitions here if and when we use it
                     BootloaderKind::BLSCompatible => {
                         esp_mount.fd.try_clone().context("Cloning fd")?
