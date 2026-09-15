@@ -1,0 +1,112 @@
+name: Upgrade gh-aw
+
+# This is a plain (non-gh-aw) workflow: keeps the gh-aw CLI version pin
+# (.github/aw/gh-aw-version), the compiler's action-version pins
+# (.github/aw/actions-lock.json), and the compiled `*.lock.yml` files all
+# in sync on a schedule. No fork-guard or bot-role check is needed here —
+# schedule/workflow_dispatch events only ever run in this repo's own
+# context, with no untrusted event payload to gate against.
+#
+# Renovate must not touch .github/workflows/*.lock.yml or
+# .github/aw/actions-lock.json directly (see README's Roadmap) — those
+# files are compiler output, and this workflow is the intended,
+# compiler-aware way they change. The App used below already needs
+# `workflows: write` on its installation, same as drafter.md/fix.md
+# already require to push lock-file changes (see README's setup
+# checklist).
+
+on:
+  schedule:
+    - cron: "25 7 * * 1"  # Weekly, Monday 07:25 UTC; avoids the hourly stampede.
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  upgrade:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Generate App token
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.GH_AW_APP_CLIENT_ID }}
+          private-key: ${{ secrets.GH_AW_APP_PRIVATE_KEY }}
+
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Install latest gh-aw and update the version pin
+        id: install
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          # Deliberately unpinned here: discovering the latest version is
+          # this workflow's job. ci.yml and `just setup` always pin to
+          # whatever ends up in .github/aw/gh-aw-version, which this step
+          # now updates, so both stay in sync with what gets compiled below.
+          gh extension install --force github/gh-aw
+          version=$(gh aw version | awk '{print $NF}')
+          echo "Installed gh-aw ${version}"
+          printf '%s\n' "$version" >.github/aw/gh-aw-version
+          echo "version=${version}" >>"$GITHUB_OUTPUT"
+
+      - name: Update action-version pins and recompile all workflows
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          # --no-compile: compile as its own step below, so a failure there
+          # is clearly attributable to compilation, not the upgrade itself.
+          gh aw upgrade --no-compile --approve
+          # No workflow-id arguments, unlike ci.yml/justfile: compiles every
+          # .md file under .github/workflows, so a new pipeline stage never
+          # needs this workflow updated to know about it.
+          gh aw compile --approve
+
+      - name: Open or update a pull request with the results
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          VERSION: ${{ steps.install.outputs.version }}
+        run: |
+          set -euo pipefail
+          git add -A
+          if git diff --cached --quiet; then
+            echo "Already up to date, nothing to upgrade."
+            exit 0
+          fi
+
+          branch="automation/upgrade-gh-aw"
+          title="build: Upgrade gh-aw to ${VERSION}"
+          body="$(cat <<EOF
+          Automated upgrade, opened by \`.github/workflows/upgrade.yml\`:
+
+          - Bumped \`.github/aw/gh-aw-version\` to \`${VERSION}\`.
+          - Refreshed action-version pins in \`.github/aw/actions-lock.json\`.
+          - Recompiled all \`*.lock.yml\` files against the new version.
+
+          Safe to merge once \`check-drift\` passes; no manual review is
+          needed beyond that unless the CLI upgrade changed compiler
+          behavior in a way worth double-checking.
+          EOF
+          )"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B "$branch"
+          git commit -m "$title"
+          git push --force-with-lease origin "$branch"
+
+          existing=$(gh pr list --head "$branch" --state open --json number --jq '.[0].number // empty')
+          if [ -n "$existing" ]; then
+            gh pr edit "$existing" --title "$title" --body "$body"
+            echo "Updated existing PR #${existing}"
+          else
+            gh pr create --title "$title" --body "$body" --head "$branch"
+          fi
