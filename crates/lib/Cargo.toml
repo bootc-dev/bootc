@@ -80,6 +80,7 @@ uapi-version = "0.4.0"
 [dev-dependencies]
 similar-asserts = { workspace = true }
 static_assertions = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
 
 [features]
 default = ["install-to-disk"]
