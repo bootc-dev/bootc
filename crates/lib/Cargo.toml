@@ -94,7 +94,7 @@ rhsm = []
 docgen = ["clap_mangen"]
 
 [build-dependencies]
-cargo_metadata = "0.19"
+cargo_metadata = "0.23"
 
 [lints]
 workspace = true

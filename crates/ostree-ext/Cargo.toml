@@ -52,7 +52,7 @@ ostree = { features = ["v2025_3"], version = "0.20.5" }
 pin-project = "1.0"
 tar = "0.4.43"
 tokio-stream = { features = ["sync"], version = "0.1.8" }
-zstd = { version = "0.13.1", features = ["pkg-config"] }
+zstd = { version = "0.14.0", features = ["pkg-config"] }
 
 [dev-dependencies]
 quickcheck = "1"
