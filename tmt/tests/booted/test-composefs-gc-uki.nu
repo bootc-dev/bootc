@@ -33,13 +33,15 @@ def first_boot [] {
     let addon_cmds = "
       mkdir -p /out/${kver}.efi.extra.d
       ukify build --cmdline 'gc_test=1' --output /out/${kver}.efi.extra.d/gc-test.addon.efi
+      mkdir -p /out/loader/addons
+      ukify build --cmdline 'gc_test=global' --output /out/loader/addons/gc-test-global.addon.efi
     "
 
     $containerfile = (tap make_uki_containerfile $containerfile --addon-cmds $addon_cmds)
 
     echo $containerfile | podman build -t localhost/bootc-first . -f -
 
-    bootc switch --transport containers-storage --uki-addon gc-test localhost/bootc-first
+    bootc switch --transport containers-storage --uki-addon gc-test --global-uki-addon gc-test-global localhost/bootc-first
 
     # Make sure we have the .boot EROFS
     let st = bootc status --json | from json
@@ -140,6 +142,10 @@ def fourth_boot [] {
     # The scoped addon dir from boot 1 (bootc-first) should be gone
     let boot1_addon_dir = $"/var/tmp/efi/EFI/Linux/bootc/($uki_prefix)(cat /var/boot1-verity).efi.extra.d"
     assert (not ($boot1_addon_dir | path exists))
+
+    # The global addon should also be gone
+    let global_addon = $"/var/tmp/efi/EFI/loader/addons/bootc_composefs-gc-test-global.addon.efi"
+    assert (not ($global_addon | path exists))
 
     mut containerfile = "
         FROM localhost/bootc as base
