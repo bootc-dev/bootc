@@ -513,8 +513,15 @@ pub(crate) async fn composefs_gc(
             continue;
         };
 
-        let linked_images = linked_erofs_images(&booted_cfs.repo, &verity_to_sha)
-            .with_context(|| anyhow::anyhow!("Getting linked images for {verity}"))?;
+        let linked_images = match linked_erofs_images(&booted_cfs.repo, &verity_to_sha) {
+            Ok(images) => images,
+            Err(err) => {
+                tracing::warn!(
+                    "Unable to inspect linked EROFS images for orphan '{verity}', skipping boot-object cleanup: {err:#}"
+                );
+                continue;
+            }
+        };
 
         // Get any image that is non-bootable
         let Some(non_bootable_img) = linked_images.iter().find(|img| !img.bootable) else {

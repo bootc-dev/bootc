@@ -36,14 +36,12 @@ def first_boot [] {
 
     let result = do { bootc switch --transport containers-storage localhost/dump-diff } | complete
 
-    let actual_digest = bootc internals cfs oci compute-id --bootable $"@(podman images --no-trunc | grep dump-diff | awk '{print $3}')"
-
     assert ($result.exit_code != 0) "bootc switch should fail"
 
     print ($result.stderr)
 
-    assert ($result.stderr | str contains "The UKI has the wrong composefs= parameter") $"Expected 'The UKI has the wrong composefs= parameter' in stderr"
-    assert ($result.stderr | str contains $"should be '($actual_digest)'") $"Expected digest to be ($actual_digest) in stderr"
+    assert ($result.stderr | str contains "embedded composefs= digest") "Expected an embedded composefs digest mismatch in stderr"
+    assert ($result.stderr | str contains "doesn't match any") "Expected no compatible composefs image in stderr"
     assert ($result.stderr | str contains "/usr/share/new-file") $"Expected '/usr/share/new-file' in stderr"
 
     tap ok
@@ -55,4 +53,3 @@ def main [] {
         $o => { error make { msg: $"Invalid TMT_REBOOT_COUNT ($o)" } },
     }
 }
-
