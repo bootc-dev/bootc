@@ -85,6 +85,46 @@ const BASE_IMAGE_PREFIX: &str = "ostree/container/baseimage/bootc";
 const PULL_MAX_RETRIES: u32 = 3;
 const PULL_RETRY_INITIAL_DELAY: Duration = Duration::from_secs(2);
 
+/// Progress output shared by all attempts to pull an image.
+#[derive(Clone)]
+pub(crate) struct PullProgress {
+    bars: indicatif::MultiProgress,
+    json: ProgressWriter,
+    quiet: bool,
+}
+
+impl PullProgress {
+    pub(crate) fn new(quiet: bool, json: ProgressWriter) -> Self {
+        let bars = indicatif::MultiProgress::new();
+        if quiet {
+            bars.set_draw_target(indicatif::ProgressDrawTarget::hidden());
+        }
+        Self { bars, json, quiet }
+    }
+
+    fn println(&self, message: impl AsRef<str>) {
+        if self.quiet {
+            return;
+        }
+        if let Err(error) = self.bars.println(message) {
+            tracing::debug!(%error, "Writing pull progress message");
+        }
+    }
+
+    async fn send(&self, event: Event<'_>) {
+        self.json.send(event.clone()).await;
+        if let Event::ProgressSteps { description, .. } = &event {
+            self.println(description);
+        }
+    }
+
+    fn clear(&self) {
+        if let Err(error) = self.bars.clear() {
+            tracing::debug!(%error, "Clearing pull progress");
+        }
+    }
+}
+
 /// Create an ImageProxyConfig with bootc's user agent prefix set.
 ///
 /// This allows registries to distinguish "image pulls for bootc client runs"
@@ -234,18 +274,14 @@ struct LayerProgressConfig {
     layers_total: usize,
     bytes_to_download: u64,
     bytes_total: u64,
-    prog: ProgressWriter,
-    quiet: bool,
+    progress: PullProgress,
 }
 
 /// Write container fetch progress to standard output.
-async fn handle_layer_progress_print(mut config: LayerProgressConfig) -> ProgressWriter {
+async fn handle_layer_progress_print(mut config: LayerProgressConfig) {
     let start = std::time::Instant::now();
     let mut total_read = 0u64;
-    let bar = indicatif::MultiProgress::new();
-    if config.quiet {
-        bar.set_draw_target(indicatif::ProgressDrawTarget::hidden());
-    }
+    let bar = &config.progress.bars;
     let layers_bar = bar.add(indicatif::ProgressBar::new(
         config.n_layers_to_fetch.try_into().unwrap(),
     ));
@@ -307,7 +343,7 @@ async fn handle_layer_progress_print(mut config: LayerProgressConfig) -> Progres
                         subtask.bytes_total = actual_size;
                         subtask.bytes = actual_size;
                         subtasks.push(subtask.clone());
-                        config.prog.send(Event::ProgressBytes {
+                        config.progress.json.send(Event::ProgressBytes {
                             task: "pulling".into(),
                             description: format!("Pulling Image: {}", config.digest).into(),
                             id: (*config.digest).into(),
@@ -342,7 +378,7 @@ async fn handle_layer_progress_print(mut config: LayerProgressConfig) -> Progres
                     byte_bar.set_position(bytes.fetched);
                     subtask.bytes_total = bytes.total;
                     subtask.bytes = byte_bar.position();
-                    config.prog.send_lossy(Event::ProgressBytes {
+                    config.progress.json.send_lossy(Event::ProgressBytes {
                         task: "pulling".into(),
                         description: format!("Pulling Image: {}", config.digest).into(),
                         id: (*config.digest).into(),
@@ -360,27 +396,26 @@ async fn handle_layer_progress_print(mut config: LayerProgressConfig) -> Progres
     }
     byte_bar.finish_and_clear();
     layers_bar.finish_and_clear();
-    if let Err(e) = bar.clear() {
-        tracing::warn!("clearing bar: {e}");
-    }
+    bar.remove(&byte_bar);
+    bar.remove(&layers_bar);
+    config.progress.clear();
     let end = std::time::Instant::now();
     let elapsed = end.duration_since(start);
     let persec = total_read as f64 / elapsed.as_secs_f64();
     let persec = indicatif::HumanBytes(persec as u64);
-    if let Err(e) = bar.println(&format!(
+    config.progress.println(format!(
         "Fetched layers: {} in {} ({}/s)",
         indicatif::HumanBytes(total_read),
         indicatif::HumanDuration(elapsed),
         persec,
-    )) {
-        tracing::warn!("writing to stdout: {e}");
-    }
+    ));
 
     // Since the progress notifier closed, we know import has started
     // use as a heuristic to begin import progress
     // Cannot be lossy or it is dropped
     config
-        .prog
+        .progress
+        .json
         .send(Event::ProgressSteps {
             task: "importing".into(),
             description: "Importing Image".into(),
@@ -397,9 +432,6 @@ async fn handle_layer_progress_print(mut config: LayerProgressConfig) -> Progres
             .into(),
         })
         .await;
-
-    // Return the writer
-    config.prog
 }
 
 /// Gather all bound images in all deployments, then prune the image store,
@@ -673,6 +705,7 @@ pub(crate) async fn pull_unified(
     store: &Storage,
     booted_deployment: Option<&ostree::Deployment>,
 ) -> Result<Box<ImageState>> {
+    let progress = PullProgress::new(quiet, prog);
     match prepare_for_pull_unified(repo, imgref, target_imgref, store, booted_deployment).await? {
         PreparedPullResult::AlreadyPresent(existing) => {
             // Log that the image was already present (Debug level since it's not actionable)
@@ -699,7 +732,7 @@ pub(crate) async fn pull_unified(
                 image: imgref.image.clone(),
                 signature: imgref.signature.clone(),
             };
-            pull_from_prepared(&cs_imgref, quiet, prog, *prepared_image_meta).await
+            pull_from_prepared(&cs_imgref, progress, *prepared_image_meta).await
         }
     }
 }
@@ -707,8 +740,7 @@ pub(crate) async fn pull_unified(
 #[context("Pulling")]
 pub(crate) async fn pull_from_prepared(
     imgref: &ImageReference,
-    quiet: bool,
-    prog: ProgressWriter,
+    progress: PullProgress,
     mut prepared_image: PreparedImportMeta,
 ) -> Result<Box<ImageState>> {
     let layer_progress = prepared_image.imp.request_progress();
@@ -716,6 +748,7 @@ pub(crate) async fn pull_from_prepared(
     let digest = prepared_image.digest.clone();
     let digest_imp = prepared_image.digest.clone();
 
+    let printer_progress = progress.clone();
     let printer = tokio::task::spawn(async move {
         handle_layer_progress_print(LayerProgressConfig {
             layers: layer_progress,
@@ -725,30 +758,31 @@ pub(crate) async fn pull_from_prepared(
             layers_total: prepared_image.layers_total,
             bytes_to_download: prepared_image.bytes_to_fetch,
             bytes_total: prepared_image.bytes_total,
-            prog,
-            quiet,
+            progress: printer_progress,
         })
         .await
     });
     let import = prepared_image.imp.import(prepared_image.prep).await;
-    let prog = printer.await?;
+    printer.await?;
     // Both the progress and the import are done, so import is done as well
-    prog.send(Event::ProgressSteps {
-        task: "importing".into(),
-        description: "Importing Image".into(),
-        id: digest_imp.clone().as_ref().into(),
-        steps_cached: 0,
-        steps: 1,
-        steps_total: 1,
-        subtasks: [SubTaskStep {
-            subtask: "importing".into(),
+    progress
+        .json
+        .send(Event::ProgressSteps {
+            task: "importing".into(),
             description: "Importing Image".into(),
-            id: "importing".into(),
-            completed: true,
-        }]
-        .into(),
-    })
-    .await;
+            id: digest_imp.clone().as_ref().into(),
+            steps_cached: 0,
+            steps: 1,
+            steps_total: 1,
+            subtasks: [SubTaskStep {
+                subtask: "importing".into(),
+                description: "Importing Image".into(),
+                id: "importing".into(),
+                completed: true,
+            }]
+            .into(),
+        })
+        .await;
     let import = import?;
     let imgref_canonicalized = imgref.clone().canonicalize()?;
     tracing::debug!("Canonicalized image reference: {imgref_canonicalized:#}");
@@ -783,6 +817,7 @@ fn is_retryable_pull_error(error: &anyhow::Error) -> bool {
     // containers-image-proxy exposes a typed error for them. Its current
     // RequestInitiationFailure cannot safely distinguish DNS/TCP failures from
     // permanent errors such as a missing image or a signature-policy rejection.
+    // https://github.com/bootc-dev/bootc/issues/2466
     error.chain().any(|source| {
         matches!(
             source.downcast_ref::<ostree_ext::containers_image_proxy::Error>(),
@@ -797,7 +832,10 @@ fn pull_retry_delay(retry: u32) -> Duration {
     PULL_RETRY_INITIAL_DELAY.saturating_mul(2_u32.saturating_pow(retry))
 }
 
-pub(crate) async fn retry_pull_operation<F, Fut, T>(mut operation: F) -> Result<T>
+pub(crate) async fn retry_pull_operation<F, Fut, T>(
+    progress: &PullProgress,
+    mut operation: F,
+) -> Result<T>
 where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Result<T>>,
@@ -809,13 +847,21 @@ where
             Err(error) if retries < PULL_MAX_RETRIES && is_retryable_pull_error(&error) => {
                 let retry_delay = pull_retry_delay(retries);
                 let attempt = retries + 1;
-                tracing::warn!(
-                    attempt,
-                    max_retries = PULL_MAX_RETRIES,
-                    retry_delay_seconds = retry_delay.as_secs(),
-                    error = %error,
-                    "Container image pull failed; retrying"
+                let description = format!(
+                    "Container image pull failed; retrying in {} seconds ({attempt}/{PULL_MAX_RETRIES}): {error}",
+                    retry_delay.as_secs()
                 );
+                progress
+                    .send(Event::ProgressSteps {
+                        task: "pulling".into(),
+                        description: description.into(),
+                        id: "pull-retry".into(),
+                        steps_cached: 0,
+                        steps: attempt.into(),
+                        steps_total: PULL_MAX_RETRIES.into(),
+                        subtasks: Vec::new(),
+                    })
+                    .await;
                 retries += 1;
                 tokio::time::sleep(retry_delay).await;
             }
@@ -828,8 +874,7 @@ async fn pull_once(
     repo: &ostree::Repo,
     imgref: &ImageReference,
     target_imgref: Option<&OstreeImageReference>,
-    quiet: bool,
-    prog: ProgressWriter,
+    progress: PullProgress,
     booted_deployment: Option<&ostree::Deployment>,
 ) -> Result<Box<ImageState>> {
     match prepare_for_pull(repo, imgref, target_imgref, booted_deployment).await? {
@@ -859,7 +904,7 @@ async fn pull_once(
                 "Pulling new image: {}",
                 imgref
             );
-            Ok(pull_from_prepared(imgref, quiet, prog, *prepared_image_meta).await?)
+            Ok(pull_from_prepared(imgref, progress, *prepared_image_meta).await?)
         }
     }
 }
@@ -873,20 +918,20 @@ pub(crate) async fn pull(
     prog: ProgressWriter,
     booted_deployment: Option<&ostree::Deployment>,
 ) -> Result<Box<ImageState>> {
+    let progress = PullProgress::new(quiet, prog);
     let operation = || {
         pull_once(
             repo,
             imgref,
             target_imgref,
-            quiet,
-            prog.clone(),
+            progress.clone(),
             booted_deployment,
         )
     };
     if imgref.transport != "registry" {
         return operation().await;
     }
-    retry_pull_operation(operation).await
+    retry_pull_operation(&progress, operation).await
 }
 
 pub(crate) async fn wipe_ostree(sysroot: Sysroot) -> Result<()> {
@@ -1512,6 +1557,7 @@ pub(crate) fn fixup_etc_fstab(root: &Dir) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::io::{AsyncBufReadExt, BufReader};
 
     fn get_blob_failure(error: ostree_ext::containers_image_proxy::GetBlobError) -> anyhow::Error {
         let error = ostree_ext::containers_image_proxy::Error::BlobError(error);
@@ -1555,7 +1601,8 @@ mod tests {
     async fn test_retry_pull_operation_succeeds() -> Result<()> {
         let attempts = std::cell::Cell::new(0);
         let start = tokio::time::Instant::now();
-        let value = retry_pull_operation(|| {
+        let progress = PullProgress::new(true, ProgressWriter::default());
+        let value = retry_pull_operation(&progress, || {
             let attempt = attempts.get() + 1;
             attempts.set(attempt);
             async move {
@@ -1575,10 +1622,56 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn test_retry_pull_operation_reports_progress() -> Result<()> {
+        let attempts = std::cell::Cell::new(0);
+        let (send, recv) = tokio::net::unix::pipe::pipe()?;
+        let progress = PullProgress::new(true, ProgressWriter::from(send));
+
+        retry_pull_operation(&progress, || {
+            let attempt = attempts.get() + 1;
+            attempts.set(attempt);
+            async move {
+                if attempt == 1 {
+                    Err(retryable_blob_failure("502 Bad Gateway"))
+                } else {
+                    Ok(())
+                }
+            }
+        })
+        .await?;
+
+        let mut lines = BufReader::new(recv).lines();
+        let start_line = lines.next_line().await?.unwrap();
+        let start: Event = serde_json::from_str(&start_line)?;
+        assert!(matches!(start, Event::Start { version } if version == "0.1.0"));
+
+        let retry_line = lines.next_line().await?.unwrap();
+        let retry: Event = serde_json::from_str(&retry_line)?;
+        assert_eq!(
+            retry,
+            Event::ProgressSteps {
+                task: "pulling".into(),
+                description:
+                    "Container image pull failed; retrying in 2 seconds (1/3): Unencapsulating base"
+                        .into(),
+                id: "pull-retry".into(),
+                steps_cached: 0,
+                steps: 1,
+                steps_total: 3,
+                subtasks: Vec::new(),
+            }
+        );
+        drop(progress);
+        assert!(lines.next_line().await?.is_none());
+        Ok(())
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn test_retry_pull_operation_stops_after_max_attempts() {
         let attempts = std::cell::Cell::new(0);
         let start = tokio::time::Instant::now();
-        let error = retry_pull_operation(|| {
+        let progress = PullProgress::new(true, ProgressWriter::default());
+        let error = retry_pull_operation(&progress, || {
             attempts.set(attempts.get() + 1);
             async { Err::<(), _>(retryable_blob_failure("registry unavailable")) }
         })
@@ -1599,7 +1692,8 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn test_retry_pull_operation_does_not_retry_permanent_blob_error() {
         let attempts = std::cell::Cell::new(0);
-        let error = retry_pull_operation(|| {
+        let progress = PullProgress::new(true, ProgressWriter::default());
+        let error = retry_pull_operation(&progress, || {
             attempts.set(attempts.get() + 1);
             async { Err::<(), _>(permanent_blob_failure("blob unknown")) }
         })
@@ -1613,7 +1707,8 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn test_retry_pull_operation_does_not_retry_opaque_prepare_error() {
         let attempts = std::cell::Cell::new(0);
-        let error = retry_pull_operation(|| {
+        let progress = PullProgress::new(true, ProgressWriter::default());
+        let error = retry_pull_operation(&progress, || {
             attempts.set(attempts.get() + 1);
             async { Err::<(), _>(open_image_failure("image unknown")) }
         })

@@ -196,7 +196,8 @@ use crate::bootc_kargs::{INITRD_ARG_PREFIX, ROOTFLAGS_KEY};
 use crate::boundimage::{BoundImage, ResolvedBoundImage};
 use crate::containerenv::ContainerExecutionInfo;
 use crate::deploy::{
-    MergeState, PreparedPullResult, prepare_for_pull, pull_from_prepared, retry_pull_operation,
+    MergeState, PreparedPullResult, PullProgress, prepare_for_pull, pull_from_prepared,
+    retry_pull_operation,
 };
 use crate::install::config::Filesystem as FilesystemEnum;
 use crate::lsm;
@@ -1028,21 +1029,23 @@ async fn pull_ostree_install_once(
     repo: &ostree::Repo,
     imgref: &ImageReference,
     target_imgref: &ostree_container::OstreeImageReference,
+    progress: PullProgress,
 ) -> Result<Box<crate::deploy::ImageState>> {
     let prepared = prepare_for_pull(repo, imgref, Some(target_imgref), None).await?;
-    pull_ostree_install_from_prepared(repo, imgref, prepared).await
+    pull_ostree_install_from_prepared(repo, imgref, prepared, progress).await
 }
 
 async fn pull_ostree_install_from_prepared(
     repo: &ostree::Repo,
     imgref: &ImageReference,
     prepared: PreparedPullResult,
+    progress: PullProgress,
 ) -> Result<Box<crate::deploy::ImageState>> {
     match prepared {
         PreparedPullResult::AlreadyPresent(existing) => Ok(existing),
         PreparedPullResult::Ready(image_meta) => {
             crate::deploy::check_disk_space_ostree(repo, &image_meta, imgref)?;
-            pull_from_prepared(imgref, false, ProgressWriter::default(), *image_meta).await
+            pull_from_prepared(imgref, progress, *image_meta).await
         }
     }
 }
@@ -1097,6 +1100,7 @@ async fn install_container(
     // During install, we only use unified storage if explicitly requested.
     // Auto-detection (None) is only appropriate for upgrade/switch on a running system.
     let use_unified = state.target_opts.unified_storage_exp;
+    let progress = PullProgress::new(false, ProgressWriter::default());
 
     let pulled_image = if use_unified {
         tracing::info!("Using unified storage path for installation");
@@ -1108,11 +1112,12 @@ async fn install_container(
             None,
         )
         .await?;
-        pull_ostree_install_from_prepared(repo, &spec_imgref, prepared).await?
+        pull_ostree_install_from_prepared(repo, &spec_imgref, prepared, progress.clone()).await?
     } else {
-        let operation = || pull_ostree_install_once(repo, &spec_imgref, &state.target_imgref);
+        let operation =
+            || pull_ostree_install_once(repo, &spec_imgref, &state.target_imgref, progress.clone());
         if spec_imgref.transport == "registry" {
-            retry_pull_operation(operation).await?
+            retry_pull_operation(&progress, operation).await?
         } else {
             operation().await?
         }
