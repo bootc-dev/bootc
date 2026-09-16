@@ -75,7 +75,7 @@ rm -vrf /usr/lib/bootc/bound-images.d
 "
 }
 
-export def make_uki_containerfile [containerfile: string] {
+export def make_uki_containerfile [containerfile: string, --addon-cmds: string = ""] {
     let is_cfs = (is_composefs)
 
     if not $is_cfs {
@@ -122,6 +122,8 @@ export def make_uki_containerfile [containerfile: string] {
                   --kernel-dir /run/kernel/boot/${kver} \\
                   --write-dumpfile-to /out/${kver}.dump \\
                   --seal-state ($seal_state)
+
+                ($addon_cmds)
         EOF
 
         FROM base-final

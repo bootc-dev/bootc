@@ -392,6 +392,23 @@ pub(crate) struct InstallConfigOpts {
 }
 
 #[derive(Debug, Default, Clone, clap::Parser, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct UkiAddonOpts {
+    /// Name of the local/scoped UKI addons to install without the ".efi.addon" suffix.
+    ///
+    /// This option can be provided multiple times if multiple addons are to be installed.
+    #[clap(long = "uki-addon")]
+    #[serde(default)]
+    pub(crate) scoped: Option<Vec<String>>,
+
+    /// Name of the global UKI addons to install without the ".efi.addon" suffix.
+    ///
+    /// This option can be provided multiple times if multiple addons are to be installed.
+    #[clap(long = "global-uki-addon")]
+    #[serde(default)]
+    pub(crate) global: Option<Vec<String>>,
+}
+
+#[derive(Debug, Default, Clone, clap::Parser, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct InstallComposefsOpts {
     /// If true, composefs backend is used, else ostree backend is used
     #[clap(long, default_value_t)]
@@ -403,11 +420,9 @@ pub(crate) struct InstallComposefsOpts {
     #[serde(default)]
     pub(crate) allow_missing_verity: bool,
 
-    /// Name of the UKI addons to install without the ".efi.addon" suffix.
-    /// This option can be provided multiple times if multiple addons are to be installed.
-    #[clap(long, requires = "composefs_backend")]
-    #[serde(default)]
-    pub(crate) uki_addon: Option<Vec<String>>,
+    #[clap(flatten)]
+    #[serde(flatten)]
+    pub(crate) uki_addon_opts: UkiAddonOpts,
 }
 
 #[cfg(feature = "install-to-disk")]
