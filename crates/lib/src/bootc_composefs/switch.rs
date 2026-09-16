@@ -40,6 +40,10 @@ pub(crate) async fn switch_composefs(
         return apply_upgrade_from_downloaded(storage, booted_cfs, &host, &do_upgrade_opts).await;
     }
 
+    if opts.target_imgref.is_some() {
+        anyhow::bail!("--target-imgref is not yet supported with the composefs backend");
+    }
+
     let target = imgref_for_switch(&opts)?;
 
     let new_spec = {
