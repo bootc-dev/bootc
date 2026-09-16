@@ -1018,6 +1018,7 @@ pub(crate) enum Opt {
     #[clap(subcommand)]
     #[clap(hide = true)]
     Internals(InternalsOpts),
+    #[clap(hide = true)]
     ComposefsFinalizeStaged,
     /// Diff current /etc configuration versus default
     #[clap(hide = true)]
@@ -1032,9 +1033,7 @@ pub(crate) enum Opt {
         shell: clap_complete::aot::Shell,
     },
     #[clap(hide = true)]
-    DeleteDeployment {
-        depl_id: String,
-    },
+    DeleteDeployment { depl_id: String },
 }
 
 /// Ensure we've entered a mount namespace, so that we can remount
