@@ -140,11 +140,11 @@ jobs:
 
   # Run basic validation checks (linting, formatting, etc)
   validate:
-    runs-on: ubuntu-26.04
+    runs-on: rhel10-x86_64-16c-64g
     steps:
+      - name: Bootc host setup
+        uses: cgwalters-bot/actions/bootc-host-setup@bootc-host-setup-rhel10
       - uses: actions/checkout@v7
-      - name: Bootc Ubuntu Setup
-        uses: bootc-dev/actions/bootc-ubuntu-setup@main
       - name: Validate (default)
         run: just validate
   # Check for security vulnerabilities and license compliance
@@ -171,8 +171,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
-      - name: Bootc Ubuntu Setup
-        uses: bootc-dev/actions/bootc-ubuntu-setup@main
+      - name: Bootc host setup
+        uses: cgwalters-bot/actions/bootc-host-setup@bootc-host-setup-rhel10
       - name: Use native overlay instead of fuse-overlayfs
         run: |
           sudo sed -i 's|mount_program.*|mount_program = ""|' /etc/containers/storage.conf
@@ -236,11 +236,11 @@ jobs:
           done
   # Test that we can build documentation
   docs:
-    runs-on: ubuntu-26.04
+    runs-on: rhel10-x86_64-16c-64g
     steps:
+      - name: Bootc host setup
+        uses: cgwalters-bot/actions/bootc-host-setup@bootc-host-setup-rhel10
       - uses: actions/checkout@v7
-      - name: Bootc Ubuntu Setup
-        uses: bootc-dev/actions/bootc-ubuntu-setup@main
       - name: Build mdbook
         run: just build-mdbook
         env:
@@ -254,14 +254,14 @@ jobs:
       matrix:
         test_os: ${{ fromJson(needs.compute-ci-level.outputs.package_os_matrix) }}
 
-    runs-on: ubuntu-26.04
+    runs-on: rhel10-x86_64-16c-64g
     # Rawhide is best-effort; don't let it block merges
     continue-on-error: ${{ matrix.test_os == 'fedora-46' }}
 
     steps:
+      - name: Bootc host setup
+        uses: cgwalters-bot/actions/bootc-host-setup@bootc-host-setup-rhel10
       - uses: actions/checkout@v7
-      - name: Bootc Ubuntu Setup
-        uses: bootc-dev/actions/bootc-ubuntu-setup@main
 
       - name: Setup env
         run: |
@@ -284,6 +284,44 @@ jobs:
       # of once per matrix leg.
       - name: Unit tests
         run: just unit-tests
+
+  # Keep a minimal host-OS compatibility lane alongside the primary RHEL 10
+  # coverage: build the CentOS 10 package and boot its readonly TMT plan from
+  # an Ubuntu host.
+  test-ubuntu:
+    if: needs.compute-ci-level.outputs.run_heavy == 'true'
+    needs: compute-ci-level
+    runs-on: ubuntu-26.04
+
+    steps:
+      - name: Bootc host setup
+        uses: cgwalters-bot/actions/bootc-host-setup@bootc-host-setup-rhel10
+        with:
+          libvirt: true
+      - uses: actions/checkout@v7
+      - name: Install tmt
+        uses: ./.github/actions/install-tmt
+
+      - name: Setup env
+        run: |
+          BASE=$(just pullspec-for-os base centos-10)
+          {
+            echo "BOOTC_base=${BASE}"
+            echo "RUST_BACKTRACE=full"
+          } >> "$GITHUB_ENV"
+
+      - name: Build CentOS 10 packages (and verify build system)
+        run: just check-buildsys
+
+      - name: Run TMT readonly tests
+        run: BOOTC_SKIP_PACKAGE=1 just test-tmt readonly
+
+      - name: Archive TMT logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: tmt-log-centos-10-ubuntu-${{ env.ARCH }}
+          path: /var/tmp/tmt
 
   # Build bootc from source into a container image FROM each specified base `test_os`
   # running unit and integration tests (using TMT, leveraging the support for nested virtualization
@@ -339,14 +377,14 @@ jobs:
           - bootloader: grub-cc
             seal_state: sealed
 
-    runs-on: ubuntu-26.04
+    runs-on: rhel10-x86_64-4c-16g
 
     steps:
-      - uses: actions/checkout@v7
-      - name: Bootc Ubuntu Setup
-        uses: bootc-dev/actions/bootc-ubuntu-setup@main
+      - name: Bootc host setup
+        uses: cgwalters-bot/actions/bootc-host-setup@bootc-host-setup-rhel10
         with:
           libvirt: true
+      - uses: actions/checkout@v7
       - name: Install tmt
         uses: ./.github/actions/install-tmt
 
@@ -438,14 +476,14 @@ jobs:
           - test_os: fedora-44
             variant: composefs
 
-    runs-on: ubuntu-26.04
+    runs-on: rhel10-x86_64-16c-64g
 
     steps:
-      - uses: actions/checkout@v7
-      - name: Bootc Ubuntu Setup
-        uses: bootc-dev/actions/bootc-ubuntu-setup@main
+      - name: Bootc host setup
+        uses: cgwalters-bot/actions/bootc-host-setup@bootc-host-setup-rhel10
         with:
           libvirt: true
+      - uses: actions/checkout@v7
       - name: Install tmt
         uses: ./.github/actions/install-tmt
 
@@ -500,14 +538,14 @@ jobs:
           # centos-9 ships an older dracut that lacks the auto-install of setup-root-conf.toml
           - test_os: centos-9
 
-    runs-on: ubuntu-26.04
+    runs-on: rhel10-x86_64-16c-64g
 
     steps:
-      - uses: actions/checkout@v7
-      - name: Bootc Ubuntu Setup
-        uses: bootc-dev/actions/bootc-ubuntu-setup@main
+      - name: Bootc host setup
+        uses: cgwalters-bot/actions/bootc-host-setup@bootc-host-setup-rhel10
         with:
           libvirt: true
+      - uses: actions/checkout@v7
       - name: Install tmt
         uses: ./.github/actions/install-tmt
 
@@ -569,11 +607,11 @@ jobs:
     runs-on: ubuntu-26.04
 
     steps:
-      - uses: actions/checkout@v7
-      - name: Bootc Ubuntu Setup
-        uses: bootc-dev/actions/bootc-ubuntu-setup@main
+      - name: Bootc host setup
+        uses: cgwalters-bot/actions/bootc-host-setup@bootc-host-setup-rhel10
         with:
           libvirt: true
+      - uses: actions/checkout@v7
       - name: Install tmt
         uses: ./.github/actions/install-tmt
 
@@ -609,14 +647,14 @@ jobs:
   test-container-export:
     if: needs.compute-ci-level.outputs.run_heavy == 'true'
     needs: [compute-ci-level, package]
-    runs-on: ubuntu-26.04
+    runs-on: rhel10-x86_64-16c-64g
 
     steps:
-      - uses: actions/checkout@v7
-      - name: Bootc Ubuntu Setup
-        uses: bootc-dev/actions/bootc-ubuntu-setup@main
+      - name: Bootc host setup
+        uses: cgwalters-bot/actions/bootc-host-setup@bootc-host-setup-rhel10
         with:
           libvirt: true
+      - uses: actions/checkout@v7
 
       - name: Setup env
         run: |
@@ -650,7 +688,7 @@ jobs:
   # rather than being skipped along with it.
   required-checks-heavy:
     if: ${{ always() && (github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && needs.compute-ci-level.outputs.merge_queue_enabled != 'true')) }}
-    needs: [compute-ci-level, cargo-deny, validate, install-tests, docs, package, test-integration, test-upgrade, test-baseconfigs, test-container-export]
+    needs: [compute-ci-level, cargo-deny, validate, install-tests, docs, package, test-ubuntu, test-integration, test-upgrade, test-baseconfigs, test-container-export]
     # Cheap aggregation (jq only) — no need for a full VM.
     runs-on: ubuntu-slim
     steps:
