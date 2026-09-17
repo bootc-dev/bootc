@@ -34,25 +34,31 @@ pub(crate) async fn switch_composefs(
         use_unified: false,
         quiet: opts.quiet,
         prog,
+        origin_override: None,
     };
 
     if opts.download_opts.from_downloaded {
         return apply_upgrade_from_downloaded(storage, booted_cfs, &host, &do_upgrade_opts).await;
     }
 
-    if opts.target_imgref.is_some() {
-        anyhow::bail!("--target-imgref is not yet supported with the composefs backend");
-    }
-
-    let target = imgref_for_switch(&opts)?;
+    // The source we fetch the image from now.
+    let source = imgref_for_switch(&opts)?;
+    // Optional decoupled reference to persist as the origin for future upgrades
+    // (`--target-imgref`, issue #2464). `None` means source and origin coincide.
+    let origin_override =
+        crate::cli::target_imgref_for_switch(&opts)?.map(crate::spec::ImageReference::from);
 
     let new_spec = {
         let mut new_spec = host.spec.clone();
-        new_spec.image = Some(target.clone());
+        new_spec.image = Some(origin_override.clone().unwrap_or_else(|| source.clone()));
         new_spec
     };
 
-    if new_spec == host.spec {
+    // Only take the unchanged fast path when the pull source is also the origin.
+    // With `--target-imgref` the source is decoupled from the persisted origin, so a
+    // switch from a different source keeping the same origin (issue #2464) must still
+    // run the pull even though `new_spec == host.spec`.
+    if origin_override.is_none() && new_spec == host.spec {
         println!("Image specification is unchanged.");
         if opts.apply && host.status.staged.is_some() {
             crate::reboot::reboot()?;
@@ -60,16 +66,25 @@ pub(crate) async fn switch_composefs(
         return Ok(());
     }
 
-    let Some(target_imgref) = new_spec.image else {
-        anyhow::bail!("Target image is undefined")
-    };
+    // Persist the decoupled origin (if any); everything below pulls and validates
+    // against the source image.
+    do_upgrade_opts.origin_override = origin_override;
+    let target_imgref = source;
 
     const COMPOSEFS_SWITCH_JOURNAL_ID: &str = "7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d1";
+
+    // With `--target-imgref` the persisted origin is decoupled from the pull
+    // source, so record both (mirroring the ostree path's journal fields).
+    let origin_image = do_upgrade_opts
+        .origin_override
+        .as_ref()
+        .unwrap_or(&target_imgref);
 
     tracing::info!(
         message_id = COMPOSEFS_SWITCH_JOURNAL_ID,
         bootc.operation = "switch",
-        bootc.target_image = target_imgref.to_string(),
+        bootc.source_image = target_imgref.to_string(),
+        bootc.target_image = origin_image.to_string(),
         bootc.apply_mode = opts.apply,
         bootc.download_only = opts.download_opts.download_only,
         bootc.from_downloaded = opts.download_opts.from_downloaded,

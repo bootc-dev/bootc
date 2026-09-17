@@ -220,6 +220,10 @@ pub(crate) struct DoUpgradeOpts {
     pub(crate) quiet: bool,
     /// Structured (JSON-Lines) progress sink; see `--progress-fd`.
     pub(crate) prog: ProgressWriter,
+    /// Origin to persist for future upgrades when it is decoupled from the pull
+    /// source (i.e. `switch --target-imgref`, issue #2464). `None` means the pull
+    /// source is also the origin, which is the default for plain upgrades.
+    pub(crate) origin_override: Option<ImageReference>,
 }
 
 async fn apply_upgrade(
@@ -364,10 +368,15 @@ pub(crate) async fn do_upgrade(
         finalization_locked: opts.download_only,
     };
 
+    // The image is fetched from `imgref`, but the origin persisted for future
+    // upgrades may be decoupled from that pull source via `switch --target-imgref`
+    // (issue #2464); fall back to the source when they coincide.
+    let origin = opts.origin_override.as_ref().unwrap_or(imgref);
+
     write_composefs_state(
         &Utf8PathBuf::from("/sysroot"),
         &id,
-        imgref,
+        origin,
         Some(staged_state),
         boot_type,
         boot_digest,
@@ -490,6 +499,8 @@ pub(crate) async fn upgrade_composefs(
         use_unified: false,
         quiet: opts.quiet,
         prog,
+        // Plain upgrade never decouples the origin from the pull source.
+        origin_override: None,
     };
 
     if opts.download_opts.from_downloaded {

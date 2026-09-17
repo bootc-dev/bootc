@@ -318,4 +318,12 @@ execute:
     test:
       - /tmt/tests/tests/test-48-composefs-uki-dumpfile
   extra-skip_if_ostree: true
+
+/plan-49-switch-target-imgref:
+  summary: switch --target-imgref records a decoupled origin (composefs)
+  discover:
+    how: fmf
+    test:
+      - /tmt/tests/tests/test-49-switch-target-imgref
+  extra-skip_if_ostree: true
 # END GENERATED PLANS
