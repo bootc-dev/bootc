@@ -1,7 +1,8 @@
 [Unit]
 Description=Apply bootc updates
 Documentation=man:bootc(8)
-ConditionPathExists=/run/ostree-booted
+ConditionPathExists=|/run/ostree-booted
+ConditionKernelCommandLine=|composefs
 
 [Service]
 Type=oneshot
