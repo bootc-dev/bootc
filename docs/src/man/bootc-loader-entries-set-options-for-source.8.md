@@ -21,6 +21,11 @@ When a staged deployment already exists (e.g. from `bootc upgrade`),
 it is replaced using the staged deployment's commit and origin,
 preserving the pending upgrade while layering the kargs change on top.
 
+On composefs systems the booted deployment itself is staged again with
+a new boot entry; the current entry becomes the rollback and the change
+is finalized at shutdown like an upgrade. `bootc rollback` undoes it.
+If an upgrade is already staged, its pending entry is updated instead.
+
 # OPTIONS
 
 <!-- BEGIN GENERATED OPTIONS -->
@@ -36,9 +41,16 @@ preserving the pending upgrade while layering the kargs change on top.
 
 # REQUIREMENTS
 
-This command requires ostree >= 2026.1 with `bootconfig-extra` support
-for preserving extension BLS keys through staged deployment roundtrips.
-On older ostree versions, the command will exit with an error.
+On the ostree backend this command requires ostree >= 2026.1 with
+`bootconfig-extra` support for preserving extension BLS keys through
+staged deployment roundtrips. On older ostree versions, the command
+will exit with an error. ostree >= 2026.5 is needed for the source keys
+to survive when another tool (e.g. `rpm-ostree kargs`) re-stages before
+the reboot.
+
+On composefs systems the boot entries must be BLS Type #1 entries; with
+a UKI the kernel arguments are embedded in the image and the command
+exits with an error.
 
 # EXAMPLES
 
@@ -65,8 +77,8 @@ Multiple sources can coexist independently:
 
 # KNOWN LIMITATIONS
 
-Source keys set by prior calls in the same boot cycle (before any reboot)
-are discovered by reading the staged deployment data file at
+On the ostree backend, source keys set by prior calls in the same boot
+cycle (before any reboot) are discovered by reading the staged deployment data file at
 `/run/ostree/staged-deployment`. If this file is missing or cannot be
 parsed, sources from prior calls may not be discovered, potentially
 orphaning their kargs. In practice this should not occur, as the file is

@@ -45,6 +45,7 @@ use ostree_ext::{container::deploy::ORIGIN_CONTAINER, oci_spec::image::ImageConf
 use ostree_ext::oci_spec::image::ImageManifest;
 use tokio::io::AsyncReadExt;
 
+use crate::bootc_composefs::state::select_booted_bls;
 use crate::composefs_consts::{
     COMPOSEFS_STAGED_DEPLOYMENT_FNAME, COMPOSEFS_TRANSIENT_STATE_DIR, ORIGIN_KEY_BOOT,
     ORIGIN_KEY_BOOT_TYPE, STATE_DIR_RELATIVE,
@@ -148,6 +149,13 @@ pub(crate) struct BootloaderEntry {
     ///
     /// We mainly need this in order to GC shared Type1 entries
     pub(crate) boot_artifact_name: String,
+    /// The `options` line of a Type1 entry; `None` for UKI entries
+    ///
+    /// Entries of one deployment share the verity, so this is what tells the
+    /// booted entry from the rollback left behind by a kernel-argument change.
+    pub(crate) options: Option<String>,
+    /// Whether the entry is pending under `loader/entries.staged`
+    pub(crate) staged: bool,
 }
 
 /// Detect if we have `composefs=<digest>` in `/proc/cmdline`
@@ -253,8 +261,44 @@ pub(crate) fn get_sorted_type1_boot_entries(
     boot_dir: &Dir,
     ascending: bool,
 ) -> Result<Vec<BLSConfig>> {
+    Ok(get_sorted_type1_entries(boot_dir, ascending, false)?
+        .into_iter()
+        .map(|e| e.config)
+        .collect())
+}
+
+/// A Type1 boot entry together with the name of its `.conf` file
+#[derive(Debug)]
+pub(crate) struct Type1Entry {
+    pub(crate) filename: String,
+    pub(crate) config: BLSConfig,
+}
+
+/// Same as [`get_sorted_type1_boot_entries`] but keeps each entry's file
+/// name, for callers that rewrite an entry in place.  `staged` selects the
+/// entries under `loader/entries.staged` instead of `loader/entries`.
+pub(crate) fn get_sorted_type1_entries(
+    boot_dir: &Dir,
+    ascending: bool,
+    staged: bool,
+) -> Result<Vec<Type1Entry>> {
     let bootloader = get_bootloader()?;
-    get_sorted_type1_boot_entries_helper(boot_dir, ascending, false, bootloader)
+    get_sorted_type1_entries_helper(boot_dir, ascending, staged, bootloader)
+}
+
+#[cfg(test)]
+fn get_sorted_type1_boot_entries_helper(
+    boot_dir: &Dir,
+    ascending: bool,
+    get_staged_entries: bool,
+    bootloader: crate::spec::Bootloader,
+) -> Result<Vec<BLSConfig>> {
+    Ok(
+        get_sorted_type1_entries_helper(boot_dir, ascending, get_staged_entries, bootloader)?
+            .into_iter()
+            .map(|e| e.config)
+            .collect(),
+    )
 }
 
 /// Same as [`get_sorted_type1_boot_entries`], but returns staged entries
@@ -263,23 +307,19 @@ pub(crate) fn get_sorted_staged_type1_boot_entries(
     boot_dir: &Dir,
     ascending: bool,
 ) -> Result<Vec<BLSConfig>> {
-    let bootloader = get_bootloader()?;
-    get_sorted_type1_boot_entries_helper(boot_dir, ascending, true, bootloader)
+    Ok(get_sorted_type1_entries(boot_dir, ascending, true)?
+        .into_iter()
+        .map(|e| e.config)
+        .collect())
 }
 
 #[context("Getting sorted Type1 boot entries")]
-fn get_sorted_type1_boot_entries_helper(
+fn get_sorted_type1_entries_helper(
     boot_dir: &Dir,
     ascending: bool,
     get_staged_entries: bool,
     bootloader: crate::spec::Bootloader,
-) -> Result<Vec<BLSConfig>> {
-    #[derive(Debug)]
-    struct ConfigWithFilename {
-        config: BLSConfig,
-        filename: String,
-    }
-
+) -> Result<Vec<Type1Entry>> {
     let dir = match get_staged_entries {
         true => {
             let dir = boot_dir.open_dir_optional(TYPE1_ENT_PATH_STAGED)?;
@@ -319,7 +359,7 @@ fn get_sorted_type1_boot_entries_helper(
 
         let config = parse_bls_config(&contents).context("Parsing bls config")?;
 
-        configs_with_filenames.push(ConfigWithFilename {
+        configs_with_filenames.push(Type1Entry {
             config,
             filename: file_name.to_string(),
         });
@@ -341,10 +381,7 @@ fn get_sorted_type1_boot_entries_helper(
         if ascending { ord } else { ord.reverse() }
     });
 
-    Ok(configs_with_filenames
-        .into_iter()
-        .map(|c| c.config)
-        .collect())
+    Ok(configs_with_filenames)
 }
 
 pub(crate) fn list_type1_entries(boot_dir: &Dir) -> Result<Vec<BootloaderEntry>> {
@@ -357,11 +394,14 @@ pub(crate) fn list_type1_entries(boot_dir: &Dir) -> Result<Vec<BootloaderEntry>>
 
     boot_entries
         .into_iter()
-        .chain(staged_boot_entries)
-        .map(|entry| {
+        .map(|entry| (entry, false))
+        .chain(staged_boot_entries.into_iter().map(|entry| (entry, true)))
+        .map(|(entry, staged)| {
             Ok(BootloaderEntry {
                 fsverity: entry.get_verity()?,
                 boot_artifact_name: entry.boot_artifact_name()?.to_string(),
+                options: entry.get_cmdline().ok().map(|c| c.to_string()),
+                staged,
             })
         })
         .collect::<Result<Vec<_>, _>>()
@@ -392,11 +432,14 @@ pub(crate) fn list_bootloader_entries(storage: &Storage) -> Result<Vec<Bootloade
 
                 boot_entries
                     .into_iter()
-                    .chain(boot_entries_staged)
-                    .map(|entry| {
+                    .map(|entry| (entry, false))
+                    .chain(boot_entries_staged.into_iter().map(|entry| (entry, true)))
+                    .map(|(entry, staged)| {
                         Ok(BootloaderEntry {
                             fsverity: entry.get_verity()?,
                             boot_artifact_name: entry.boot_artifact_name()?,
+                            options: None,
+                            staged,
                         })
                     })
                     .collect::<Result<Vec<_>, anyhow::Error>>()?
@@ -786,6 +829,13 @@ fn set_reboot_capable_type1_deployments(
     {
         let depl_verity = &depl.require_composefs()?.verity;
 
+        // Another entry of the booted deployment differs only in kernel
+        // arguments, which need a real reboot
+        if *depl_verity == *booted_cmdline.digest {
+            depl.soft_reboot_capable = false;
+            continue;
+        }
+
         let entry = find_bls_entry(&depl_verity, &bls_entries)?
             .ok_or_else(|| anyhow::anyhow!("Entry not found"))?;
 
@@ -897,9 +947,14 @@ fn set_reboot_capable_uki_deployments(
 /// Whether the bootloader will boot a deployment other than the booted one,
 /// i.e. whether the first (default) boot entry references some other deployment.
 #[context("Determining if rollback is queued")]
+/// Whether the default entry is not the booted one.  `booted_options` is the
+/// booted entry's options line when known: entries of the same deployment
+/// share the digest after a kernel-argument change, so the digest alone is
+/// not enough to recognize the booted entry among them.
 fn rollback_queued_from_first_entry(
     bls_config: &BLSConfig,
     booted_composefs_digest: &str,
+    booted_options: Option<&str>,
 ) -> Result<bool> {
     match &bls_config.cfg_type {
         // For UKI boot
@@ -911,13 +966,31 @@ fn rollback_queued_from_first_entry(
         }
 
         // For boot entry Type1
-        BLSConfigType::NonEFI { options, .. } => Ok(!options
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("options key not found in bls config"))?
-            .contains(booted_composefs_digest)),
+        BLSConfigType::NonEFI { options, .. } => {
+            let options = options
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("options key not found in bls config"))?;
+            if !options.contains(booted_composefs_digest) {
+                return Ok(true);
+            }
+            Ok(booted_options.is_some_and(|booted| booted != &**options))
+        }
 
         BLSConfigType::Unknown => anyhow::bail!("Unknown BLS Config Type"),
     }
+}
+
+/// The options line of the Type1 entry the kernel was booted from, or `None`
+/// when there are no Type1 entries (UKI boot).
+fn booted_type1_options(boot_dir: &Dir, cmdline: &ComposefsCmdline) -> Result<Option<String>> {
+    if boot_dir.open_dir_optional(TYPE1_ENT_PATH)?.is_none() {
+        return Ok(None);
+    }
+    let entries = get_sorted_type1_boot_entries(boot_dir, true)?;
+    let kernel_cmdline = Cmdline::from_proc()?;
+    Ok(select_booted_bls(&entries, cmdline, &kernel_cmdline)?
+        .and_then(|entry| entry.get_cmdline().ok())
+        .map(|options| options.to_string()))
 }
 
 #[context("Getting composefs deployment status")]
@@ -952,6 +1025,17 @@ async fn composefs_deployment_status_from(
         Err(e) => Err(e),
     }?;
 
+    let staged_deployment = staged_deployment
+        .as_deref()
+        .map(serde_json::from_str::<StagedDeployment>)
+        .transpose()?;
+
+    // A kernel-argument change (`bootc loader-entries set-options-for-source`)
+    // stages the booted deployment again with a new entry and keeps the current
+    // one as its rollback, so up to three entries share the booted verity and
+    // only the options line tells them apart.
+    let booted_options = booted_type1_options(boot_dir, cmdline)?;
+
     let mut boot_type: Option<BootType> = None;
 
     // Boot entries from deployments that are neither booted nor staged deployments
@@ -960,6 +1044,8 @@ async fn composefs_deployment_status_from(
 
     for BootloaderEntry {
         fsverity: verity_digest,
+        options: entry_options,
+        staged: from_staged_dir,
         ..
     } in bootloader_entry_verity
     {
@@ -1000,13 +1086,27 @@ async fn composefs_deployment_status_from(
         };
 
         if verity_digest == booted_composefs_digest.as_ref() {
-            host.status.booted = Some(boot_entry);
+            let same_options = match (&booted_options, &entry_options) {
+                (Some(booted), Some(entry)) => booted == entry,
+                _ => true,
+            };
+            if same_options {
+                host.status.booted = Some(boot_entry);
+            } else if !from_staged_dir {
+                // The entry the booted deployment had before its kernel
+                // arguments changed
+                extra_deployment_boot_entries.push(boot_entry);
+            } else if let Some(staged_depl) = staged_deployment
+                .as_ref()
+                .filter(|s| s.depl_id == verity_digest)
+            {
+                boot_entry.download_only = staged_depl.finalization_locked;
+                host.status.staged = Some(boot_entry);
+            }
             continue;
         }
 
-        if let Some(staged_deployment) = &staged_deployment {
-            let staged_depl = serde_json::from_str::<StagedDeployment>(&staged_deployment)?;
-
+        if let Some(staged_depl) = &staged_deployment {
             if verity_digest == staged_depl.depl_id {
                 boot_entry.download_only = staged_depl.finalization_locked;
                 host.status.staged = Some(boot_entry);
@@ -1048,6 +1148,7 @@ async fn composefs_deployment_status_from(
                             let is_rollback_queued = rollback_queued_from_first_entry(
                                 bls_config,
                                 booted_composefs_digest.as_ref(),
+                                booted_options.as_deref(),
                             )?;
 
                             (is_rollback_queued, Some(bls_configs), None)
@@ -1083,8 +1184,11 @@ async fn composefs_deployment_status_from(
                     .first()
                     .ok_or(anyhow::anyhow!("First boot entry not found"))?;
 
-                let is_rollback_queued =
-                    rollback_queued_from_first_entry(bls_config, booted_composefs_digest.as_ref())?;
+                let is_rollback_queued = rollback_queued_from_first_entry(
+                    bls_config,
+                    booted_composefs_digest.as_ref(),
+                    booted_options.as_deref(),
+                )?;
 
                 (is_rollback_queued, Some(bls_configs), None)
             }
@@ -1383,9 +1487,9 @@ mod tests {
         );
 
         // The default entry references the booted deployment: nothing is queued
-        assert!(!rollback_queued_from_first_entry(first, BOOTED)?);
+        assert!(!rollback_queued_from_first_entry(first, BOOTED, None)?);
         // The default entry references another deployment: a rollback is queued
-        assert!(rollback_queued_from_first_entry(first, ROLLBACK)?);
+        assert!(rollback_queued_from_first_entry(first, ROLLBACK, None)?);
 
         Ok(())
     }
@@ -1432,8 +1536,8 @@ mod tests {
             &primary_sort_key("fedora")
         );
 
-        assert!(!rollback_queued_from_first_entry(first, BOOTED)?);
-        assert!(rollback_queued_from_first_entry(first, ROLLBACK)?);
+        assert!(!rollback_queued_from_first_entry(first, BOOTED, None)?);
+        assert!(rollback_queued_from_first_entry(first, ROLLBACK, None)?);
 
         Ok(())
     }
@@ -1485,8 +1589,8 @@ mod tests {
             &primary_sort_key("fedora")
         );
 
-        assert!(!rollback_queued_from_first_entry(first, BOOTED)?);
-        assert!(rollback_queued_from_first_entry(first, ROLLBACK)?);
+        assert!(!rollback_queued_from_first_entry(first, BOOTED, None)?);
+        assert!(rollback_queued_from_first_entry(first, ROLLBACK, None)?);
 
         Ok(())
     }
@@ -1826,6 +1930,37 @@ mod tests {
         assert_eq!(result[0].version(), "41.20251125.0".into());
         assert_eq!(result[1].version(), "42.20251125.0".into());
 
+        Ok(())
+    }
+    /// Two entries of the booted deployment differ only in kernel arguments
+    /// after `loader-entries set-options-for-source`; the digest alone does
+    /// not say whether the default entry is the booted one.
+    #[test]
+    fn test_rollback_queued_from_first_entry_same_verity() -> Result<()> {
+        const DIGEST: &str = "abc123";
+        let entry = |options: &str| {
+            crate::parsers::bls_config::parse_bls_config(&format!(
+                "title t\nversion 1\nlinux /vmlinuz\ninitrd /initrd\noptions {options}\n"
+            ))
+            .unwrap()
+        };
+        let old = entry(&format!("root=/dev/a composefs={DIGEST}"));
+        let new = entry(&format!("root=/dev/a composefs={DIGEST} nohz=full"));
+        let new_options = new.get_cmdline()?.to_string();
+
+        // Booted into the new entry: queued only when the old one is first
+        assert!(!rollback_queued_from_first_entry(
+            &new,
+            DIGEST,
+            Some(&new_options)
+        )?);
+        assert!(rollback_queued_from_first_entry(
+            &old,
+            DIGEST,
+            Some(&new_options)
+        )?);
+        // Without the options line the digest is all there is
+        assert!(!rollback_queued_from_first_entry(&old, DIGEST, None)?);
         Ok(())
     }
 }

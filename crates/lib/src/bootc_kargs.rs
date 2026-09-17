@@ -194,9 +194,10 @@ fn get_kargs_from_ostree(
     Ok(ret)
 }
 
-/// Compute the kernel arguments for the new deployment. This starts from the booted
-/// karg, but applies the diff between the bootc karg files in /usr/lib/bootc/kargs.d
-/// between the booted deployment and the new one.
+/// Compute the kernel arguments for the new deployment. This starts from the kargs
+/// of the deployment being replaced -- the staged one if there is one, otherwise the
+/// merge (booted) deployment -- and applies the diff between the bootc karg files in
+/// /usr/lib/bootc/kargs.d of that deployment and the new one.
 pub(crate) fn get_kargs(
     sysroot: &Storage,
     merge_deployment: &Deployment,
@@ -207,16 +208,25 @@ pub(crate) fn get_kargs(
     let repo = &ostree.repo();
     let sys_arch = std::env::consts::ARCH;
 
-    // Get the kargs used for the merge in the bootloader config
-    let mut kargs = ostree::Deployment::bootconfig(merge_deployment)
+    // A staged deployment carries kargs changes that are not in the booted
+    // entry yet (e.g. from `bootc loader-entries set-options-for-source` or
+    // `rpm-ostree kargs`).  Staging replaces it, so build on it rather than
+    // silently discarding those changes.
+    let staged = ostree
+        .staged_deployment()
+        .filter(|s| s.stateroot() == merge_deployment.stateroot());
+    let base_deployment = staged.as_ref().unwrap_or(merge_deployment);
+
+    // Get the kargs used for the base deployment in the bootloader config
+    let mut kargs = ostree::Deployment::bootconfig(base_deployment)
         .and_then(|bootconfig| {
             ostree::BootconfigParser::get(&bootconfig, "options")
                 .map(|options| Cmdline::from(options.to_string()))
         })
         .unwrap_or_default();
 
-    // Get the kargs in kargs.d of the merge
-    let merge_root = &crate::utils::deployment_fd(ostree, merge_deployment)?;
+    // Get the kargs in kargs.d of the base deployment
+    let merge_root = &crate::utils::deployment_fd(ostree, base_deployment)?;
     let existing_kargs = get_kargs_in_root(merge_root, sys_arch)?;
 
     // Get the kargs in kargs.d of the pending image
