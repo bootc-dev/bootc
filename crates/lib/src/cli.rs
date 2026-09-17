@@ -173,7 +173,7 @@ pub(crate) struct SwitchOpts {
     /// `--transport`/`<TARGET>` (e.g. a local `containers-storage` copy loaded via
     /// `podman load`), but the origin recorded for subsequent updates is this
     /// reference instead (e.g. the normal registry pull spec).
-    #[clap(long, conflicts_with = "from_downloaded")]
+    #[clap(long, conflicts_with_all = ["from_downloaded", "mutate_in_place"])]
     pub(crate) target_imgref: Option<String>,
 
     /// The transport for `--target-imgref`; e.g. registry, oci, oci-archive,
@@ -1575,7 +1575,11 @@ async fn switch_ostree(
         new_spec
     };
 
-    if new_spec == host.spec {
+    // Only take the unchanged fast path when the pull source is also the origin.
+    // With `--target-imgref` the source is decoupled from the persisted origin, so a
+    // switch from a different source keeping the same origin (issue #2464) must still
+    // run the pull even though `new_spec == host.spec`.
+    if target_imgref.is_none() && new_spec == host.spec {
         println!("Image specification is unchanged.");
         if opts.apply && host.status.staged.is_some() {
             crate::reboot::reboot()?;
@@ -2822,6 +2826,20 @@ mod tests {
             ostree_container::Transport::Registry
         );
         assert_eq!(target.imgref.name, "quay.io/example/os:latest");
+
+        // --target-imgref performs a real pull; --mutate-in-place performs none, so the
+        // combination is rejected rather than silently ignoring --target-imgref.
+        assert!(
+            Opt::try_parse_from([
+                "bootc",
+                "switch",
+                "--mutate-in-place",
+                "--target-imgref",
+                "quay.io/example/os:latest",
+                "localhost/someimage",
+            ])
+            .is_err()
+        );
     }
 
     #[test]
