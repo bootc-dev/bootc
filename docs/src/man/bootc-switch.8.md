@@ -79,6 +79,14 @@ Soft reboot allows faster system restart by avoiding full hardware reboot when p
 
     Retain reference to currently booted image
 
+**--uki-addon**=*SCOPED*
+
+    Name of the local/scoped UKI addons to install without the ".efi.addon" suffix
+
+**--global-uki-addon**=*GLOBAL*
+
+    Name of the global UKI addons to install without the ".efi.addon" suffix
+
 <!-- END GENERATED OPTIONS -->
 
 # EXAMPLES

@@ -187,6 +187,111 @@ For production environments with dedicated signing infrastructure:
 
 This workflow is planned for streamlining in future releases (see [#1498](https://github.com/bootc-dev/bootc/issues/1498)).
 
+## UKI Addons
+
+UKI addons are signed PE binaries that [systemd-stub](https://www.freedesktop.org/software/systemd/man/latest/systemd-stub.html) loads alongside the main UKI at boot. Each addon carries extra kernel command-line parameters (or other PE sections) that get merged into the boot. This lets you ship optional configuration — debug flags, hardware quirks, site-specific parameters — separately from the base UKI, without rebuilding or re-signing it.
+
+bootc supports two types of UKI addons:
+
+- **Scoped addons** are tied to a specific UKI (and therefore a specific deployment). They live in a `<uki>.efi.extra.d/` directory next to the UKI on the ESP, and are cleaned up by garbage collection when the deployment is removed.
+- **Global addons** apply to *every* UKI on the ESP. They live in `loader/addons/` and persist across deployments — they are not removed by GC.
+
+### Building Images with Addons
+
+One way to build addons is with `ukify` in the same Containerfile stage that produces the sealed UKI. Each addon is a separate `ukify build` invocation:
+
+```dockerfile
+# Inside the sealed-uki build stage, after building the main UKI:
+
+# Scoped addon: lives in <kver>.efi.extra.d/, loaded only by this UKI
+ukify build --cmdline 'debug loglevel=7' \
+    --output /out/${kver}.efi.extra.d/debug.addon.efi
+
+# Global addon: lives in loader/addons/, loaded by every UKI ergo every deployment
+mkdir -p /out/loader/addons
+ukify build --cmdline 'custom_param=value' \
+    --output /out/loader/addons/site-config.addon.efi
+```
+
+Alternatively, pre-built addons can be copied from an external OCI image:
+
+```dockerfile
+# Copy a pre-built scoped addon from another image
+COPY --from=quay.io/exampleos/uki-addons:latest \
+    /usr/lib/modules/${kver}/debug.addon.efi \
+    /out/${kver}.efi.extra.d/debug.addon.efi
+
+# Copy a pre-built global addon from another image
+COPY --from=quay.io/exampleos/uki-addons:latest \
+    /usr/lib/modules/${kver}/site-config.addon.efi \
+    /out/loader/addons/site-config.addon.efi
+```
+
+See the [UKI specification](https://uapi-group.org/specifications/specs/unified_kernel_image/#locations-for-distribution-built-ukis-installed-by-package-managers) for standard addon locations in distribution-built images.
+
+The `finalize-uki` script (run in the final Containerfile stage) copies these directories into `/boot` alongside the UKI if they exist.
+
+Addons can also be signed for Secure Boot by passing `--signtool` and key/cert options to `ukify build`, the same as for the main UKI.
+
+### Selecting Addons at Install Time
+
+An image can ship multiple addons, but none are installed unless explicitly requested. Use `--uki-addon` for scoped addons and `--global-uki-addon` for global ones. The name is the addon filename without the `.addon.efi` suffix:
+
+```bash
+# Install with one scoped and one global addon
+bootc install to-disk \
+    --uki-addon debug \
+    --global-uki-addon site-config \
+    /dev/sda
+
+# Multiple addons of the same type
+bootc install to-disk \
+    --uki-addon debug \
+    --uki-addon extra-kargs \
+    --global-uki-addon site-config \
+    /dev/sda
+```
+
+Without `--uki-addon` or `--global-uki-addon`, no addons are installed even if the image contains them.
+
+### Addons on Upgrade and Switch
+
+The same `--uki-addon` and `--global-uki-addon` options are available on `bootc upgrade` and `bootc switch`:
+
+```bash
+# Add a new addon during switch
+bootc switch --uki-addon debug --global-uki-addon site-config \
+    quay.io/myorg/myimage:v2
+
+# Add an addon during upgrade
+bootc upgrade --uki-addon debug
+```
+
+Once an addon is installed, it **persists across subsequent upgrades**. If the new image contains an addon with the same filename as one already installed, bootc automatically updates it with the version from the new image. You do not need to pass `--uki-addon` again on every upgrade — only when adding a new addon that wasn't previously installed.
+
+If an addon name is passed but no matching file exists in the image, it is silently skipped.
+
+### ESP Layout
+
+On the EFI System Partition, bootc places addon files as follows:
+
+```
+ESP/
+├── EFI/Linux/bootc/
+│   ├── bootc-<deployment-id>.efi              # The UKI
+│   └── bootc-<deployment-id>.efi.extra.d/     # Scoped addons for this UKI
+│       ├── debug.addon.efi
+│       └── extra-kargs.addon.efi
+└── loader/addons/                              # Global addons
+    └── site-config.addon.efi
+```
+
+Scoped addon directories are namespaced by the deployment's composefs digest, so different deployments can have different sets of scoped addons without colliding.
+
+### Current Limitations
+
+- **Global addons are not rollback-aware**: Rolling back to a previous deployment does not revert changes to global addons, since they are shared across all UKIs.
+
 ## Developing and Testing bootc with composefs
 
 See [CONTRIBUTING.md](https://github.com/bootc-dev/bootc/blob/main/CONTRIBUTING.md) for information on building and testing bootc itself with composefs support.

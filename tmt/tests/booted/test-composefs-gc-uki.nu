@@ -30,11 +30,18 @@ def first_boot [] {
         RUN echo 'large-file-marker' | dd of=/usr/share/large-test-file conv=notrunc
     "
 
-    $containerfile = (tap make_uki_containerfile $containerfile)
+    let addon_cmds = "
+      mkdir -p /out/${kver}.efi.extra.d
+      ukify build --cmdline 'gc_test=1' --output /out/${kver}.efi.extra.d/gc-test.addon.efi
+      mkdir -p /out/loader/addons
+      ukify build --cmdline 'gc_test=global' --output /out/loader/addons/gc-test-global.addon.efi
+    "
+
+    $containerfile = (tap make_uki_containerfile $containerfile --addon-cmds $addon_cmds)
 
     echo $containerfile | podman build -t localhost/bootc-first . -f -
 
-    bootc switch --transport containers-storage localhost/bootc-first
+    bootc switch --transport containers-storage --uki-addon gc-test --global-uki-addon gc-test-global localhost/bootc-first
 
     # Make sure we have the .boot EROFS
     let st = bootc status --json | from json
@@ -51,7 +58,6 @@ def first_boot [] {
 
     # Find the UKI in the objects directory
     # Intentionally not using the dump-files API here
-    # min/max depth = 1 to not include addons (for now)
     let uki_sha = sha512sum $"/var/tmp/efi/EFI/Linux/bootc/($uki_prefix)($st.status.booted.composefs.verity).efi" | awk '{print $1}'
     let uki_in_objs = ^find /sysroot/composefs/objects -type f -exec sha512sum {} + | grep ($uki_sha) | awk '{print $2}'
 
@@ -69,6 +75,11 @@ def second_boot [] {
     assert equal $booted.image.image "localhost/bootc-first"
     assert ($"/var/tmp/efi/EFI/Linux/bootc/($uki_prefix)(cat /var/boot0-verity).efi" | path exists)
 
+    # The scoped addon dir from boot 1 (bootc-first) should exist
+    let boot1_addon_dir = $"/var/tmp/efi/EFI/Linux/bootc/($uki_prefix)($st.status.booted.composefs.verity).efi.extra.d"
+    assert ($boot1_addon_dir | path exists)
+    assert ($"($boot1_addon_dir)/gc-test.addon.efi" | path exists)
+
     echo $st.status.booted.composefs.verity | save /var/boot1-verity
 
     let path = cat /var/large-file-marker-objpath
@@ -77,7 +88,7 @@ def second_boot [] {
     mut containerfile = echo "
         FROM localhost/bootc as base
         RUN echo 'second' > /usr/share/second
-    " 
+    "
 
     $containerfile = (tap make_uki_containerfile $containerfile)
 
@@ -105,7 +116,7 @@ def third_boot [] {
     mut containerfile = echo "
         FROM localhost/bootc as base
         RUN echo 'third' > /usr/share/third
-    " 
+    "
 
     $containerfile = (tap make_uki_containerfile $containerfile)
 
@@ -127,6 +138,14 @@ def fourth_boot [] {
     assert equal $booted.image.image "localhost/bootc-third"
     assert (not ($"/var/tmp/efi/EFI/Linux/bootc/($uki_prefix)(cat /var/boot1-verity).efi" | path exists))
     assert ($"/var/tmp/efi/EFI/Linux/bootc/($uki_prefix)(cat /var/boot2-verity).efi" | path exists)
+
+    # The scoped addon dir from boot 1 (bootc-first) should be gone
+    let boot1_addon_dir = $"/var/tmp/efi/EFI/Linux/bootc/($uki_prefix)(cat /var/boot1-verity).efi.extra.d"
+    assert (not ($boot1_addon_dir | path exists))
+
+    # The global addon should also be gone
+    let global_addon = $"/var/tmp/efi/EFI/loader/addons/bootc_composefs-gc-test-global.addon.efi"
+    assert (not ($global_addon | path exists))
 
     mut containerfile = "
         FROM localhost/bootc as base
