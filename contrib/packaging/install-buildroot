@@ -15,8 +15,17 @@ if test -x /usr/bin/dnf5; then
 else
   dnf -y install 'dnf-command(builddep)'
 fi
-# Handle version skew, xref https://gitlab.com/redhat/centos-stream/containers/bootc/-/issues/1174
-dnf -y distro-sync ostree{,-libs} systemd
+# Handle version skew in packages already installed in the base image,
+# xref https://gitlab.com/redhat/centos-stream/containers/bootc/-/issues/1174
+sync_packages=()
+for package in ostree{,-libs} systemd; do
+  if rpm -q --quiet "$package"; then
+    sync_packages+=("$package")
+  fi
+done
+if test "${#sync_packages[@]}" -gt 0; then
+  dnf -y distro-sync "${sync_packages[@]}"
+fi
 # Install base build requirements
 dnf -y builddep bootc.spec
 # And extra packages

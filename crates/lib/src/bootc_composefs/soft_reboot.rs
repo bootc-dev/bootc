@@ -1,7 +1,7 @@
 use crate::{
     bootc_composefs::{
         service::start_finalize_stated_svc,
-        status::{ComposefsCmdline, get_composefs_status},
+        status::{build_composefs_karg, get_composefs_status},
     },
     cli::SoftRebootMode,
     store::{BootedComposefs, Storage},
@@ -13,6 +13,7 @@ use camino::Utf8Path;
 use cap_std_ext::cap_std::ambient_authority;
 use cap_std_ext::cap_std::fs::Dir;
 use cap_std_ext::dirext::CapStdExtDirExt;
+use composefs_ctl::composefs::fsverity::{FsVerityHashValue, Sha512HashValue};
 use fn_error_context::context;
 use linux_kernel_cmdline::utf8::Cmdline;
 use ostree_ext::systemd_has_soft_reboot;
@@ -108,14 +109,25 @@ pub(crate) async fn prepare_soft_reboot_composefs(
 
     create_dir_all(NEXTROOT).context("Creating nextroot")?;
 
-    let cmdline = ComposefsCmdline::build(deployment_id, booted_cfs.cmdline.allow_missing_fsverity);
+    let deployment_digest = Sha512HashValue::from_hex(deployment_id)
+        .with_context(|| format!("Parsing deployment id '{deployment_id}'"))?;
+    // We don't persist which EROFS format each deployment was written with, so
+    // fall back to the repo's currently configured default.  This only affects
+    // the karg's self-description, not whether the soft-reboot actually
+    // succeeds: `setup_root` (below) resolves the deployment purely from the
+    // digest, independent of the composefs=/composefs.digest= tag.
+    let cmdline = build_composefs_karg(
+        deployment_digest,
+        booted_cfs.repo.erofs_version(),
+        booted_cfs.cmdline.allow_missing_fsverity,
+    );
 
     let args = bootc_initramfs_setup::Args {
         cmd: vec![],
         sysroot: PathBuf::from("/sysroot"),
         config: Default::default(),
         root_fs: None,
-        cmdline: Some(Cmdline::from(cmdline.to_string())),
+        cmdline: Some(Cmdline::from(cmdline)),
         target: Some(NEXTROOT.into()),
     };
 

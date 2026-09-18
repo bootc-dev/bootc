@@ -4,6 +4,7 @@ set -xeuo pipefail
 
 missing_verity=()
 dumpfile_args=()
+erofs_version=auto
 
 while [ ! -z "${1:-}" ]; do
     case "$1" in
@@ -41,6 +42,12 @@ while [ ! -z "${1:-}" ]; do
 
         "--write-dumpfile-to")
             dumpfile_args=(--write-dumpfile-to "$2")
+            shift
+            shift
+        ;;
+
+        "--erofs-version")
+            erofs_version="$2"
             shift
             shift
         ;;
@@ -89,6 +96,9 @@ fi
 
 # Baseline container ukify options
 containerukifyargs=(--rootfs "${target}")
+if [[ $erofs_version != "auto" ]]; then
+    containerukifyargs+=(--erofs-version="${erofs_version}")
+fi
 
 # Build the UKI using bootc container ukify
 # This computes the composefs digest, reads kargs from kargs.d, and invokes ukify

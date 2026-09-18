@@ -21,6 +21,7 @@ const COMMON_INST_ARGS: &[&str] = &["--label=bootc.test=1"];
 const FIELD_TRY_BIND_STORAGE: &str = "try_bind_storage";
 const FIELD_SUMMARY: &str = "summary";
 const FIELD_ADJUST: &str = "adjust";
+const FIELD_ENABLED: &str = "enabled";
 
 const FIELD_FIXME_SKIP_IF_COMPOSEFS: &str = "fixme_skip_if_composefs";
 const FIELD_FIXME_SKIP_IF_UKI: &str = "fixme_skip_if_uki";
@@ -32,6 +33,7 @@ const FIELD_SKIP_IF_OSTREE: &str = "skip_if_ostree";
 // bcvk options
 const BCVK_OPT_BIND_STORAGE_RO: &str = "--bind-storage-ro";
 const ENV_BOOTC_UPGRADE_IMAGE: &str = "BOOTC_upgrade_image";
+const ENV_BOOTC_BRIDGE_IMAGE: &str = "BOOTC_bridge_image";
 
 // Distro identifiers
 const DISTRO_CENTOS_9: &str = "centos-9";
@@ -557,8 +559,11 @@ pub(crate) fn run_tmt(sh: &Shell, args: &RunTmtArgs) -> Result<()> {
 
             let mut opts = Vec::new();
 
-            // If test wants bind storage and distro supports it, add --bind-storage-ro
-            if try_bind_storage && supports_bind_storage_ro {
+            // If test wants bind storage, the distro supports it, and it wasn't
+            // explicitly disabled, add --bind-storage-ro
+            let use_bind_storage =
+                try_bind_storage && supports_bind_storage_ro && !args.skip_bind_storage;
+            if use_bind_storage {
                 opts.push(BCVK_OPT_BIND_STORAGE_RO.to_string());
 
                 // If upgrade image is provided, set it as an environment variable for tmt
@@ -566,6 +571,13 @@ pub(crate) fn run_tmt(sh: &Shell, args: &RunTmtArgs) -> Result<()> {
                 if let Some(ref upgrade_img) = args.upgrade_image {
                     tmt_env_vars.push(format!("{}={}", ENV_BOOTC_UPGRADE_IMAGE, upgrade_img));
                 }
+                if let Some(ref bridge_img) = args.bridge_image {
+                    tmt_env_vars.push(format!("{}={}", ENV_BOOTC_BRIDGE_IMAGE, bridge_img));
+                }
+            } else if try_bind_storage && args.skip_bind_storage {
+                println!(
+                    "Note: Test requests bind storage but --skip-bind-storage was set; running without host container-storage mount"
+                );
             } else if try_bind_storage && !supports_bind_storage_ro {
                 println!(
                     "Note: Test wants bind storage but skipping on {} (missing systemd.extra-unit.* support)",
@@ -1302,6 +1314,12 @@ fn generate_integration() -> Result<(String, String)> {
                 plan_value.insert(
                     serde_yaml::Value::String(FIELD_SUMMARY.to_string()),
                     summary.clone(),
+                );
+            }
+            if let Some(enabled) = map.get(&serde_yaml::Value::String(FIELD_ENABLED.to_string())) {
+                plan_value.insert(
+                    serde_yaml::Value::String(FIELD_ENABLED.to_string()),
+                    enabled.clone(),
                 );
             }
         }

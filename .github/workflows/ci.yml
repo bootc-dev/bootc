@@ -265,8 +265,10 @@ jobs:
 
       - name: Setup env
         run: |
-          BASE=$(just pullspec-for-os base ${{ matrix.test_os }})
-          echo "BOOTC_base=${BASE}" >> $GITHUB_ENV
+          BASE="$(just pullspec-for-os base "${{ matrix.test_os }}")"
+          BUILDROOT_BASE="$(just pullspec-for-os buildroot-base "${{ matrix.test_os }}")"
+          printf 'BOOTC_base=%s\n' "$BASE" >> "$GITHUB_ENV"
+          printf 'BOOTC_buildroot_base=%s\n' "$BUILDROOT_BASE" >> "$GITHUB_ENV"
 
       - name: Build packages (and verify build system)
         run: just check-buildsys
@@ -302,6 +304,14 @@ jobs:
         seal_state: ["sealed", "unsealed"]
 
         exclude:
+          # centos-9 composefs: only sealed UKI is supported (V1 EROFS).
+          # BLS and unsealed modes require newer dracut/systemd features.
+          - test_os: centos-9
+            variant: composefs
+            boot_type: bls
+          - test_os: centos-9
+            variant: composefs
+            seal_state: unsealed
           - seal_state: "sealed"
             boot_type: bls
           - seal_state: "sealed"
@@ -352,8 +362,10 @@ jobs:
 
       - name: Setup env
         run: |
-          BASE=$(just pullspec-for-os base ${{ matrix.test_os }})
-          echo "BOOTC_base=${BASE}" >> $GITHUB_ENV
+          BASE="$(just pullspec-for-os base "${{ matrix.test_os }}")"
+          BUILDROOT_BASE="$(just pullspec-for-os buildroot-base "${{ matrix.test_os }}")"
+          printf 'BOOTC_base=%s\n' "$BASE" >> "$GITHUB_ENV"
+          printf 'BOOTC_buildroot_base=%s\n' "$BUILDROOT_BASE" >> "$GITHUB_ENV"
           echo "RUST_BACKTRACE=full" >> $GITHUB_ENV
           echo "RUST_LOG=debug" >> $GITHUB_ENV
 
@@ -451,8 +463,10 @@ jobs:
 
       - name: Setup env
         run: |
-          BASE=$(just pullspec-for-os base ${{ matrix.test_os }})
-          echo "BOOTC_base=${BASE}" >> $GITHUB_ENV
+          BASE="$(just pullspec-for-os base "${{ matrix.test_os }}")"
+          BUILDROOT_BASE="$(just pullspec-for-os buildroot-base "${{ matrix.test_os }}")"
+          printf 'BOOTC_base=%s\n' "$BASE" >> "$GITHUB_ENV"
+          printf 'BOOTC_buildroot_base=%s\n' "$BUILDROOT_BASE" >> "$GITHUB_ENV"
           echo "BOOTC_variant=${{ matrix.variant }}" >> $GITHUB_ENV
           echo "BOOTC_SKIP_PACKAGE=1" >> $GITHUB_ENV
           echo "RUST_BACKTRACE=full" >> $GITHUB_ENV
@@ -513,8 +527,10 @@ jobs:
 
       - name: Setup env
         run: |
-          BASE=$(just pullspec-for-os base ${{ matrix.test_os }})
-          echo "BOOTC_base=${BASE}" >> $GITHUB_ENV
+          BASE="$(just pullspec-for-os base "${{ matrix.test_os }}")"
+          BUILDROOT_BASE="$(just pullspec-for-os buildroot-base "${{ matrix.test_os }}")"
+          printf 'BOOTC_base=%s\n' "$BASE" >> "$GITHUB_ENV"
+          printf 'BOOTC_buildroot_base=%s\n' "$BUILDROOT_BASE" >> "$GITHUB_ENV"
           echo "BOOTC_variant=composefs" >> $GITHUB_ENV
           echo "BOOTC_baseconfigs=${{ matrix.baseconfigs }}" >> $GITHUB_ENV
           echo "RUST_BACKTRACE=full" >> $GITHUB_ENV

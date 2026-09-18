@@ -1,6 +1,3 @@
-/// composefs= parameter in kernel cmdline
-pub const COMPOSEFS_CMDLINE: &str = "composefs";
-
 /// Directory to store transient state, such as staged deployemnts etc
 pub(crate) const COMPOSEFS_TRANSIENT_STATE_DIR: &str = "/run/composefs";
 /// File created in /run/composefs to record a staged-deployment

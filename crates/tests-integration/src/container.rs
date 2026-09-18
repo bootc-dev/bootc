@@ -3,7 +3,7 @@ use cap_std_ext::cap_std::fs::Dir;
 use indoc::indoc;
 use scopeguard::defer;
 use serde::Deserialize;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::{fs, path::Path};
 
 use anyhow::{Context, Result};
@@ -351,6 +351,179 @@ pub(crate) fn test_compute_composefs_digest() -> Result<()> {
     Ok(())
 }
 
+/// Test that `bootc container ukify --erofs-version` is plumbed correctly.
+///
+/// Verifies that:
+/// - `compute-composefs-digest --erofs-version=v1` and `=v2` produce distinct,
+///   valid 128-char SHA-512 hex digests (different EROFS layouts → different IDs).
+/// - the default producer passes both V1 and V2 composefs kargs to ukify.
+/// - explicit V2 selection passes only the V2 karg, including for an old-style
+///   initramfs artifact.
+pub(crate) fn test_container_ukify_erofs_versions() -> Result<()> {
+    use std::{io::Write, os::unix::fs::PermissionsExt};
+
+    fn write_old_cpio_initramfs(path: &Path) -> Result<()> {
+        let source = tempfile::tempdir()?;
+        fs::create_dir_all(source.path().join("etc"))?;
+        fs::write(source.path().join("etc/legacy"), b"legacy\n")?;
+        let filenames = b"etc/legacy\0";
+        let mut cpio = Command::new("cpio");
+        cpio.current_dir(source.path())
+            .args(["--create", "--format=newc", "--null"])
+            .stdin(Stdio::piped())
+            .stdout(fs::File::create(path)?);
+        let mut child = cpio.spawn().context("Creating CPIO initramfs fixture")?;
+        child
+            .stdin
+            .take()
+            .expect("stdin was requested")
+            .write_all(&filenames[..])?;
+        anyhow::ensure!(
+            child.wait()?.success(),
+            "Creating CPIO initramfs fixture failed"
+        );
+        Ok(())
+    }
+
+    // Build a minimal rootfs that satisfies find_kernel() and build_ukify()'s
+    // existence checks.  The files don't need to be real ELF/CPIO — bootc only
+    // stat-checks them before handing them off to ukify.
+    let td = tempfile::tempdir()?;
+    let root = td.path();
+
+    fs::create_dir_all(root.join("boot"))?;
+    fs::create_dir_all(root.join("sysroot"))?;
+
+    let usr_bin = root.join("usr/bin");
+    fs::create_dir_all(&usr_bin)?;
+    let hello = usr_bin.join("hello");
+    fs::write(&hello, b"#!/bin/sh\necho hello\n")?;
+    fs::set_permissions(&hello, fs::Permissions::from_mode(0o755))?;
+
+    // Kernel layout that find_kernel() expects
+    let kver = "6.1.0-test";
+    let mod_dir = root.join("usr/lib/modules").join(kver);
+    fs::create_dir_all(&mod_dir)?;
+    fs::write(mod_dir.join("vmlinuz"), b"fake-vmlinuz")?;
+    let initramfs = mod_dir.join("initramfs.img");
+    write_old_cpio_initramfs(&initramfs)?;
+
+    // ukify reads --os-release @usr/lib/os-release relative to the rootfs cwd
+    let os_release_dir = root.join("usr/lib");
+    fs::create_dir_all(&os_release_dir)?;
+    fs::write(
+        os_release_dir.join("os-release"),
+        b"ID=test\nNAME=Test\nVERSION_ID=1\n",
+    )?;
+
+    let root_str = root.to_str().unwrap();
+
+    // ── Part 1: compare V1 vs V2 digest via compute-composefs-digest ──────────
+    let sh = Shell::new()?;
+
+    let digest_v2 = cmd!(
+        sh,
+        "bootc container compute-composefs-digest {root_str} --erofs-version=v2"
+    )
+    .read()?;
+    let digest_v1 = cmd!(
+        sh,
+        "bootc container compute-composefs-digest {root_str} --erofs-version=v1"
+    )
+    .read()?;
+
+    let digest_v2 = digest_v2.trim();
+    let digest_v1 = digest_v1.trim();
+
+    assert_eq!(
+        digest_v2.as_bytes().len(),
+        128,
+        "V2 digest must be 128 hex chars"
+    );
+    assert_eq!(
+        digest_v1.as_bytes().len(),
+        128,
+        "V1 digest must be 128 hex chars"
+    );
+    assert!(
+        digest_v2.chars().all(|c| c.is_ascii_hexdigit()),
+        "V2 digest contains non-hex chars: {digest_v2}"
+    );
+    assert!(
+        digest_v1.chars().all(|c| c.is_ascii_hexdigit()),
+        "V1 digest contains non-hex chars: {digest_v1}"
+    );
+    assert_ne!(
+        digest_v1, digest_v2,
+        "V1 and V2 EROFS digests must differ (they use different on-disk layouts)"
+    );
+
+    let fake_bin = td.path().join("fake-bin");
+    fs::create_dir(&fake_bin)?;
+    let fake_ukify = fake_bin.join("ukify");
+    fs::write(
+        &fake_ukify,
+        "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$UKIFY_ARGS\"\n",
+    )?;
+    fs::set_permissions(&fake_ukify, fs::Permissions::from_mode(0o755))?;
+    let ukify_args = td.path().join("ukify-args");
+    let path_with_fake_ukify = format!("{}:{}", fake_bin.display(), std::env::var("PATH")?);
+
+    // The default producer emits both kargs without probing the initramfs.
+    // This checks producer output only; it does not assert that either karg
+    // identifies an image booted with a particular initramfs.
+    let default_auto = Command::new("bootc")
+        .env("PATH", &path_with_fake_ukify)
+        .env("UKIFY_ARGS", &ukify_args)
+        .args(["container", "ukify", "--rootfs", root_str])
+        .output()?;
+    assert!(
+        default_auto.status.success(),
+        "default producer failed: {}",
+        String::from_utf8_lossy(&default_auto.stderr)
+    );
+    let args = fs::read_to_string(&ukify_args)?;
+    let cmdline = args
+        .lines()
+        .skip_while(|arg| *arg != "--cmdline")
+        .nth(1)
+        .context("fake ukify did not receive --cmdline")?;
+    let v1 = cmdline.find("composefs.digest=v1-sha512-12:").unwrap();
+    let v2 = cmdline.find("composefs=").unwrap();
+    assert!(v1 < v2, "expected ordered V1 then V2 kargs: {cmdline}");
+
+    // An old initramfs has no composefs capability marker. Explicit V2 is
+    // still usable because selecting V2 does not depend on that artifact.
+    let explicit_v2 = Command::new("bootc")
+        .env("PATH", &path_with_fake_ukify)
+        .env("UKIFY_ARGS", &ukify_args)
+        .args([
+            "container",
+            "ukify",
+            "--rootfs",
+            root_str,
+            "--erofs-version=v2",
+        ])
+        .output()?;
+    assert!(
+        explicit_v2.status.success(),
+        "explicit V2 failed for an old initramfs: {}",
+        String::from_utf8_lossy(&explicit_v2.stderr)
+    );
+    let args = fs::read_to_string(&ukify_args)?;
+    let cmdline = args
+        .lines()
+        .skip_while(|arg| *arg != "--cmdline")
+        .nth(1)
+        .context("fake ukify did not receive --cmdline for explicit V2")?;
+    assert!(
+        cmdline.contains("composefs=") && !cmdline.contains("composefs.digest=v1-sha512-12:"),
+        "explicit V2 should pass only the V2 karg: {cmdline}"
+    );
+
+    Ok(())
+}
+
 /// Tests that should be run in a default container image.
 #[context("Container tests")]
 pub(crate) fn run(testargs: libtest_mimic::Arguments) -> Result<()> {
@@ -364,6 +537,10 @@ pub(crate) fn run(testargs: libtest_mimic::Arguments) -> Result<()> {
         new_test("system-reinstall --help", test_system_reinstall_help),
         new_test("container export tar", test_container_export_tar),
         new_test("compute-composefs-digest", test_compute_composefs_digest),
+        new_test(
+            "container-ukify-erofs-versions",
+            test_container_ukify_erofs_versions,
+        ),
     ];
 
     libtest_mimic::run(&testargs, tests.into()).exit()

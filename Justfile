@@ -27,8 +27,8 @@ mod bcvk 'bcvk.just'
 #   sealed  → requires boot_type=uki and filesystem with fsverity (ext4/btrfs)
 #   uki     → requires bootloader=systemd
 
-# Output image name
-base_img := "localhost/bootc"
+# Output image name (override with BOOTC_image to isolate worktree images)
+base_img := env("BOOTC_image", "localhost/bootc")
 # Synthetic upgrade image for testing
 upgrade_img := base_img + "-upgrade"
 # Base image with tmt dependencies added, used as the boot source for upgrade tests
@@ -43,6 +43,8 @@ filesystem := env("BOOTC_filesystem", "ext4")
 boot_type := env("BOOTC_boot_type", "bls")
 # Only used for composefs tests
 seal_state := env("BOOTC_seal_state", "unsealed")
+# Only used for composefs UKI tests: "v1" or "v2"
+erofs_version := env("BOOTC_erofs_version", "v1")
 # Baseconfigs to inject into the image for testing (e.g. "etc-transient" or "root-transient")
 baseconfigs := env("BOOTC_baseconfigs", "")
 # Base container image to build from
@@ -75,6 +77,7 @@ base_buildargs := generic_buildargs + " " + _extra_src_args \
                   + " --build-arg=boot_type=" + boot_type \
                   + " --build-arg=seal_state=" + seal_state \
                   + " --build-arg=filesystem=" + filesystem \
+                  + " --build-arg=erofs_version=" + erofs_version \
                   + " --build-arg=baseconfigs=" + baseconfigs
 buildargs := base_buildargs \
              + " --cap-add=all --security-opt=label=type:container_runtime_t --device /dev/fuse" \
@@ -250,6 +253,7 @@ test-upgrade *ARGS: build _build-upgrade-source-image
             --karg=enforcing=0)
     fi
     cargo xtask run-tmt --env=BOOTC_variant={{variant}} \
+        --env=BOOTC_erofs_version={{erofs_version}} \
         --env=BOOTC_test_upgrade_image={{base_img}} \
         --upgrade-image={{base_img}} \
         "${composefs_args[@]}" \
@@ -290,7 +294,7 @@ test-container-export: build
 # Run tmt tests without rebuilding (for fast iteration)
 [group('testing')]
 test-tmt-nobuild *ARGS:
-    cargo xtask run-tmt --env=BOOTC_variant={{variant}} {{_baseconfigs_env}} --upgrade-image={{upgrade_img}} {{base_img}} {{ARGS}}
+    cargo xtask run-tmt --env=BOOTC_variant={{variant}} --env=BOOTC_erofs_version={{erofs_version}} {{_baseconfigs_env}} --upgrade-image={{upgrade_img}} {{base_img}} {{ARGS}}
 
 # Run readonly tests with a baseconfig baked into the image at build time.
 # Requires composefs variant. Example: just variant=composefs test-tmt-baseconfig root-transient
@@ -300,6 +304,7 @@ test-tmt-baseconfig baseconfig *ARGS:
     just variant=composefs baseconfigs={{baseconfig}} _build-upgrade-image
     cargo xtask run-tmt \
         --env=BOOTC_variant=composefs \
+        --env=BOOTC_erofs_version={{erofs_version}} \
         --env=BOOTC_baseconfigs={{baseconfig}} \
         --upgrade-image={{upgrade_img}} \
         --composefs-backend \
@@ -508,6 +513,8 @@ _build-upgrade-image:
         --build-arg "boot_type={{boot_type}}" \
         --build-arg "seal_state={{seal_state}}" \
         --build-arg "filesystem={{filesystem}}" \
+        --build-arg "base={{base_img}}" \
+        --build-arg "erofs_version={{erofs_version}}" \
         --secret=id=secureboot_key,src=target/test-secureboot/db.key \
         --secret=id=secureboot_cert,src=target/test-secureboot/db.crt \
         "${extra_args[@]}" \

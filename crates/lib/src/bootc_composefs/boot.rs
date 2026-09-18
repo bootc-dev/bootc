@@ -76,13 +76,15 @@ use cap_std_ext::{
     dirext::CapStdExtDirExt,
 };
 use clap::ValueEnum;
+use composefs::erofs::format::FormatVersion;
 use composefs::fs::read_file;
 use composefs::fsverity::{FsVerityHashValue, Sha512HashValue};
 use composefs::tree::{FileSystem, RegularFile};
 use composefs_boot::bootloader::{
     BootEntry as ComposefsBootEntry, EFI_ADDON_DIR_EXT, EFI_ADDON_FILE_EXT, EFI_EXT, PEType,
-    UsrLibModulesVmlinuz, get_boot_resources,
+    UsrLibModulesVmlinuz,
 };
+use composefs_boot::cmdline::{KARG_COMPOSEFS_DIGEST, KARG_V2};
 use composefs_boot::{
     cmdline::ComposefsCmdline as ComposefsBootCmdline, os_release::OsReleaseInfo, uki,
 };
@@ -90,14 +92,14 @@ use composefs_ctl::composefs;
 use composefs_ctl::composefs_boot;
 use composefs_ctl::composefs_oci;
 use fn_error_context::context;
-use linux_kernel_cmdline::utf8::{Cmdline, Parameter};
+use linux_kernel_cmdline::utf8::{Cmdline, Parameter, ParameterKey};
 use ostree_ext::composefs::dumpfile;
 use rustix::{mount::MountFlags, path::Arg};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::bootc_composefs::state::{get_booted_bls, write_composefs_state};
-use crate::bootc_composefs::status::ComposefsCmdline;
+use crate::bootc_composefs::status::build_composefs_karg;
 use crate::bootc_kargs::compute_new_kargs;
 use crate::composefs_consts::{TYPE1_BOOT_DIR_PREFIX, TYPE1_ENT_PATH, TYPE1_ENT_PATH_STAGED};
 use crate::parsers::bls_config::{BLSConfig, BLSConfigType, EFIKey};
@@ -158,11 +160,52 @@ pub(crate) const BOOTC_UKI_DIR: &str = "EFI/Linux/bootc";
 pub(crate) const GLOBAL_UKI_ADDONS_DIR: &str = "loader/addons";
 
 #[derive(thiserror::Error, Debug)]
-#[error("The UKI has the wrong composefs= parameter (is '{actual}', should be '{expected}')")]
-pub(crate) struct UKIDigestMismatch {
-    pub actual: String,
-    pub expected: String,
-    pub uki_name: Option<String>,
+pub(crate) enum UKIDigestMismatch {
+    #[error("The UKI has the wrong composefs= parameter (is '{actual}', should be '{expected}')")]
+    DigestParameter {
+        actual: String,
+        expected: String,
+        uki_name: Option<String>,
+    },
+    #[error(
+        "The UKI '{uki_name}' embedded composefs= digest ({actual:?}) doesn't match any of \
+         {combinations_tried} supported xattr filtering mode/EROFS format version combinations. \
+         The image may be corrupt, or was built with an incompatible composefs-rs version."
+    )]
+    UnsupportedCompatibility {
+        actual: Sha512HashValue,
+        uki_name: String,
+        combinations_tried: usize,
+    },
+}
+
+impl UKIDigestMismatch {
+    fn digest_parameter(actual: String, expected: String, uki_name: Option<String>) -> Self {
+        Self::DigestParameter {
+            actual,
+            expected,
+            uki_name,
+        }
+    }
+
+    fn unsupported_compatibility(
+        actual: Sha512HashValue,
+        uki_name: String,
+        combinations_tried: usize,
+    ) -> Self {
+        Self::UnsupportedCompatibility {
+            actual,
+            uki_name,
+            combinations_tried,
+        }
+    }
+
+    fn uki_name(&self) -> Option<&str> {
+        match self {
+            Self::DigestParameter { uki_name, .. } => uki_name.as_deref(),
+            Self::UnsupportedCompatibility { uki_name, .. } => Some(uki_name),
+        }
+    }
 }
 
 pub(crate) fn print_uki_dumpfile_diff(
@@ -171,8 +214,7 @@ pub(crate) fn print_uki_dumpfile_diff(
     fs: &FileSystem<Sha512HashValue>,
 ) {
     let dumpfile_name = mismatch
-        .uki_name
-        .as_ref()
+        .uki_name()
         .and_then(|x| x.strip_suffix(EFI_EXT).map(|x| format!("{x}.dump")));
 
     let Some(dumpfile_name) = &dumpfile_name else {
@@ -227,6 +269,20 @@ pub(crate) fn print_uki_dumpfile_diff(
     }
 }
 
+/// Print the dumpfile diff when a UKI digest mismatch is about to escape.
+pub(crate) fn print_uki_dumpfile_diff_on_mismatch<T>(
+    result: Result<T>,
+    repo: &ComposefsRepository,
+    fs: &FileSystem<Sha512HashValue>,
+) -> Result<T> {
+    if let Err(error) = &result {
+        if let Some(mismatch) = error.downcast_ref::<UKIDigestMismatch>() {
+            print_uki_dumpfile_diff(mismatch, repo, fs);
+        }
+    }
+    result
+}
+
 fn read_regular_file(
     file: &RegularFile<Sha512HashValue>,
     repo: &ComposefsRepository,
@@ -259,7 +315,7 @@ fn read_dumpfile_from_fs(
 
 pub(crate) enum BootSetupType<'a> {
     /// For initial setup, i.e. install to-disk
-    Setup((&'a RootSetup, &'a State, &'a PostFetchState)),
+    Setup((&'a RootSetup, &'a State, &'a PostFetchState, bool)),
     /// For `bootc upgrade`
     Upgrade((&'a Storage, &'a BootedComposefs, &'a Host)),
 }
@@ -657,6 +713,15 @@ struct BLSEntryPath {
     config_path: Utf8PathBuf,
 }
 
+/// Replace either karg spelling to ensure only the selected EROFS format remains.
+fn replace_composefs_karg(cmdline: &mut Cmdline, new_karg: &str) -> Result<()> {
+    cmdline.remove(&ParameterKey::from(KARG_V2));
+    cmdline.remove(&ParameterKey::from(KARG_COMPOSEFS_DIGEST));
+    let parameter = Parameter::parse(new_karg).context("Parsing composefs kernel parameter")?;
+    cmdline.add_or_modify(&parameter);
+    Ok(())
+}
+
 /// Sets up and writes BLS entries and binaries (VMLinuz + Initrd) to disk
 ///
 /// # Returns
@@ -666,13 +731,14 @@ pub(crate) fn setup_composefs_bls_boot(
     setup_type: BootSetupType,
     repo: &crate::store::ComposefsRepository,
     id: &Sha512HashValue,
+    format_version: FormatVersion,
     entry: &ComposefsBootEntry<Sha512HashValue>,
     mounted_erofs: &Dir,
 ) -> Result<String> {
     let id_hex = id.to_hex();
 
     let (root_path, esp_device, mut cmdline_refs, bootloader) = match setup_type {
-        BootSetupType::Setup((root_setup, state, postfetch)) => {
+        BootSetupType::Setup((root_setup, state, postfetch, allow_missing_fsverity)) => {
             // root_setup.kargs has [root=UUID=<UUID>, "rw"]
             let mut cmdline_options = Cmdline::new();
 
@@ -685,8 +751,8 @@ pub(crate) fn setup_composefs_bls_boot(
             }
 
             let composefs_cmdline =
-                ComposefsCmdline::build(&id_hex, state.composefs_options.allow_missing_verity);
-            cmdline_options.extend(&Cmdline::from(&composefs_cmdline.to_string()));
+                build_composefs_karg(id.clone(), format_version, allow_missing_fsverity);
+            cmdline_options.extend(&Cmdline::from(&composefs_cmdline));
 
             // If there's a separate /boot partition, add a systemd.mount-extra
             // karg so systemd mounts it after reboot. This avoids writing to
@@ -732,14 +798,14 @@ pub(crate) fn setup_composefs_bls_boot(
                 _ => anyhow::bail!("Found NonEFI config"),
             };
 
-            // Copy all cmdline args, replacing only `composefs=`
-            let cfs_cmdline =
-                ComposefsCmdline::build(&id_hex, booted_cfs.cmdline.allow_missing_fsverity)
-                    .to_string();
-
-            let param = Parameter::parse(&cfs_cmdline)
-                .context("Failed to create 'composefs=' parameter")?;
-            cmdline.add_or_modify(&param);
+            replace_composefs_karg(
+                &mut cmdline,
+                &build_composefs_karg(
+                    id.clone(),
+                    format_version,
+                    booted_cfs.cmdline.allow_missing_fsverity,
+                ),
+            )?;
 
             // Locate ESP partition device by walking up to the root disk(s)
             let root_dev = bootc_blockdev::list_dev_by_dir(&storage.physical_root)?;
@@ -963,6 +1029,7 @@ struct UKIInfo {
     version: Option<String>,
     os_id: Option<String>,
     boot_digest: String,
+    composefs_digest: Sha512HashValue,
 }
 
 /// Determines the directory (under `mounted_efi`) that a PE binary should be written to.
@@ -1008,6 +1075,7 @@ fn write_pe_to_esp(
     file_path: &Utf8Path,
     pe_type: PEType,
     uki_id: &Sha512HashValue,
+    boot_ids: &[Sha512HashValue],
     missing_fsverity_allowed: bool,
     mounted_efi: impl AsRef<Path>,
 ) -> Result<Option<UKIInfo>> {
@@ -1033,16 +1101,21 @@ fn write_pe_to_esp(
 
         let composefs_info = ComposefsBootCmdline::<Sha512HashValue>::from_cmdline(&cmdline)
             .context("Parsing composefs=")?
-            .ok_or_else(|| anyhow::anyhow!("No composefs image in UKI cmdline"))?;
-        let composefs_cmdline = composefs_info.digest();
+            .ok_or_else(|| anyhow::anyhow!("No composefs digest in UKI cmdline"))?;
+        let composefs_digest = composefs_info.digest().clone();
         let missing_verity_allowed_cmdline = composefs_info.is_insecure();
+
+        validate_uki_fsverity_policy(
+            SessionRepositoryPolicy::from_allow_missing(missing_fsverity_allowed),
+            UkiRequestedVerityMode::from_insecure(missing_verity_allowed_cmdline),
+        )?;
 
         // If the UKI cmdline does not match what the user has passed as cmdline option
         // NOTE: This will only be checked for new installs and now upgrades/switches
         match missing_fsverity_allowed {
             true if !missing_verity_allowed_cmdline => {
                 tracing::warn!(
-                    "--allow-missing-fsverity passed as option but UKI cmdline does not support it"
+                    "--allow-missing-verity passed as option but UKI cmdline does not support it"
                 );
             }
 
@@ -1053,16 +1126,17 @@ fn write_pe_to_esp(
             _ => { /* no-op */ }
         }
 
-        let file_name = file_path.file_name();
-
-        if *composefs_cmdline != *uki_id {
-            return Err(UKIDigestMismatch {
-                actual: composefs_cmdline.to_hex(),
-                expected: uki_id.to_hex(),
-                uki_name: file_name.map(|x| x.to_string()),
-            }
+        if !boot_ids.contains(&composefs_digest) {
+            return Err(UKIDigestMismatch::digest_parameter(
+                composefs_digest.to_hex(),
+                uki_id.to_hex(),
+                file_path.file_name().map(|name| name.to_string()),
+            )
             .into());
         }
+        composefs_info
+            .validate_digest(boot_ids)
+            .context("Validating UKI composefs digest")?;
 
         uki_reader.seek(SeekFrom::Start(0))?;
         let osrel = uki::get_text_section_buffered(&mut uki_reader, ".osrel")?;
@@ -1079,6 +1153,7 @@ fn write_pe_to_esp(
             version: parsed_osrel.get_version(),
             os_id: parsed_osrel.get_value(&["ID"]),
             boot_digest,
+            composefs_digest,
         });
     }
 
@@ -1088,8 +1163,12 @@ fn write_pe_to_esp(
     let pe_dir = Dir::open_ambient_dir(&final_pe_path, ambient_authority())
         .with_context(|| format!("Opening {final_pe_path:?}"))?;
 
+    let pe_name_owned;
     let pe_name = match pe_type {
-        PEType::Uki => &get_uki_name(&uki_id.to_hex()),
+        PEType::Uki => {
+            pe_name_owned = get_uki_name(&boot_label.as_ref().unwrap().composefs_digest.to_hex());
+            &pe_name_owned
+        }
         PEType::UkiAddon | PEType::GlobalUkiAddon => file_path
             .components()
             .last()
@@ -1110,6 +1189,293 @@ fn write_pe_to_esp(
     .context("fsync")?;
 
     Ok(boot_label)
+}
+
+#[derive(Debug, Clone, Copy)]
+enum SessionRepositoryPolicy {
+    RequiresFsVerity,
+    AllowsMissingFsVerity,
+}
+
+impl SessionRepositoryPolicy {
+    fn from_allow_missing(allow_missing: bool) -> Self {
+        if allow_missing {
+            Self::AllowsMissingFsVerity
+        } else {
+            Self::RequiresFsVerity
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UkiRequestedVerityMode {
+    RequiresFsVerity,
+    AllowsMissingFsVerity,
+}
+
+impl UkiRequestedVerityMode {
+    fn from_insecure(insecure: bool) -> Self {
+        if insecure {
+            Self::AllowsMissingFsVerity
+        } else {
+            Self::RequiresFsVerity
+        }
+    }
+}
+
+/// Reject an insecure UKI before any persistent ESP state is created when the
+/// repository is configured to require fs-verity.  The repository policy is
+/// authoritative here: an image's `composefs=?` marker is only usable when
+/// the repository itself was opened with the explicit missing-verity option.
+fn validate_uki_fsverity_policy(
+    repository_policy: SessionRepositoryPolicy,
+    uki_mode: UkiRequestedVerityMode,
+) -> Result<()> {
+    if matches!(
+        (repository_policy, uki_mode),
+        (
+            SessionRepositoryPolicy::RequiresFsVerity,
+            UkiRequestedVerityMode::AllowsMissingFsVerity
+        )
+    ) {
+        anyhow::bail!(
+            "The UKI requests insecure composefs operation, but this repository requires fs-verity. Use --allow-missing-verity only when missing fs-verity is explicitly supported for this install."
+        );
+    }
+    Ok(())
+}
+
+fn uki_file_name(file_path: &Path) -> Result<String> {
+    let file_path = Utf8Path::from_path(file_path)
+        .ok_or_else(|| anyhow!("UKI path is not valid UTF-8: {file_path:?}"))?;
+    file_path
+        .file_name()
+        .map(str::to_owned)
+        .ok_or_else(|| anyhow!("Could not get UKI file name from {file_path}"))
+}
+
+/// Validate every primary UKI before any bootloader or ESP operation.  The
+/// write path repeats this check as a defense in depth, but must not be the
+/// first place where an image is inspected: addons and bootloader setup can
+/// otherwise leave persistent state behind before a later UKI fails.
+/// Inspect the primary UKIs without comparing their digest to a generated
+/// image.  This is used while choosing the durable repository policy, before
+/// the target repository exists.
+pub(crate) fn uki_fsverity_policy(
+    repo: &crate::store::ComposefsRepository,
+    entries: &[ComposefsBootEntry<Sha512HashValue>],
+) -> Result<Option<bool>> {
+    let mut policy = None;
+    for entry in entries {
+        let ComposefsBootEntry::Type2(entry) = entry else {
+            continue;
+        };
+        if !matches!(entry.pe_type, PEType::Uki) {
+            continue;
+        }
+        let mut reader = match &entry.file {
+            RegularFile::External(id, ..) | RegularFile::ExternalNoVerity(id, ..) => {
+                std::fs::File::from(repo.open_object(id)?)
+            }
+            RegularFile::Inline(..) | RegularFile::Sparse(..) => {
+                anyhow::bail!("UKI file is not a regular external object")
+            }
+        };
+        let cmdline = uki::get_cmdline_buffered(&mut reader).context("Getting UKI cmdline")?;
+        let Some(composefs) = ComposefsBootCmdline::<Sha512HashValue>::from_cmdline(&cmdline)
+            .context("Parsing composefs= in UKI")?
+        else {
+            anyhow::bail!(
+                "UKI {} has no composefs= cmdline",
+                entry.file_path.display()
+            );
+        };
+        let current = composefs.is_insecure();
+        if let Some(previous) = policy {
+            anyhow::ensure!(
+                previous == current,
+                "Primary UKIs request conflicting composefs fs-verity policies"
+            );
+        } else {
+            policy = Some(current);
+        }
+    }
+    Ok(policy)
+}
+
+fn prevalidate_uki_entries(
+    repo: &crate::store::ComposefsRepository,
+    entries: &[ComposefsBootEntry<Sha512HashValue>],
+    uki_id: &Sha512HashValue,
+    boot_ids: &[Sha512HashValue],
+    missing_fsverity_allowed: bool,
+) -> Result<()> {
+    for entry in entries {
+        let ComposefsBootEntry::Type2(entry) = entry else {
+            continue;
+        };
+        if !matches!(entry.pe_type, PEType::Uki) {
+            continue;
+        }
+
+        let mut uki_reader = match &entry.file {
+            RegularFile::External(id, ..) | RegularFile::ExternalNoVerity(id, ..) => {
+                std::fs::File::from(repo.open_object(id)?)
+            }
+            RegularFile::Inline(..) | RegularFile::Sparse(..) => {
+                anyhow::bail!("UKI file is not a regular external object")
+            }
+        };
+        let cmdline = uki::get_cmdline_buffered(&mut uki_reader).context("Getting UKI cmdline")?;
+        let composefs_info = ComposefsBootCmdline::<Sha512HashValue>::from_cmdline(&cmdline)
+            .context("Parsing composefs=")?
+            .ok_or_else(|| anyhow::anyhow!("No composefs digest in UKI cmdline"))?;
+        let composefs_digest = composefs_info.digest();
+
+        validate_uki_fsverity_policy(
+            SessionRepositoryPolicy::from_allow_missing(missing_fsverity_allowed),
+            UkiRequestedVerityMode::from_insecure(composefs_info.is_insecure()),
+        )?;
+
+        if !boot_ids.contains(composefs_digest) {
+            return Err(UKIDigestMismatch::digest_parameter(
+                composefs_digest.to_hex(),
+                uki_id.to_hex(),
+                Some(uki_file_name(&entry.file_path)?),
+            )
+            .into());
+        }
+        composefs_info
+            .validate_digest(boot_ids)
+            .context("Validating UKI composefs digest")?;
+    }
+    Ok(())
+}
+
+/// Scans `entries` for the primary UKI (`PEType::Uki`, not an addon) and
+/// extracts the `composefs=` digest embedded in its kernel cmdline.
+///
+/// Returns `Ok(None)` if there is no UKI entry (e.g. a BLS-only boot setup) —
+/// there's nothing to validate against in that case.
+///
+/// This mirrors the lookup [`write_pe_to_esp`] already does when writing the
+/// UKI to the ESP; it's factored out here so callers can validate (and
+/// repair) the freshly-generated boot image digest *before* it's used for
+/// mounting, well before `write_pe_to_esp`'s own (too-late-to-repair) check
+/// of the same thing runs.
+struct ExpectedComposefsDigest {
+    digest: Sha512HashValue,
+    uki_name: String,
+}
+
+fn find_expected_composefs_digest(
+    repo: &crate::store::ComposefsRepository,
+    entries: &[ComposefsBootEntry<Sha512HashValue>],
+) -> Result<Option<ExpectedComposefsDigest>> {
+    for entry in entries {
+        let ComposefsBootEntry::Type2(entry) = entry else {
+            continue;
+        };
+        if !matches!(entry.pe_type, PEType::Uki) {
+            continue;
+        }
+        let mut uki_reader = match &entry.file {
+            RegularFile::External(id, ..) | RegularFile::ExternalNoVerity(id, ..) => {
+                std::fs::File::from(repo.open_object(id)?)
+            }
+            RegularFile::Inline(..) | RegularFile::Sparse(..) => {
+                anyhow::bail!("UKI file is not a regular external object")
+            }
+        };
+        let cmdline = uki::get_cmdline_buffered(&mut uki_reader).context("Getting UKI cmdline")?;
+        let composefs_info = ComposefsBootCmdline::<Sha512HashValue>::from_cmdline(&cmdline)
+            .context("Parsing composefs=")?
+            .ok_or_else(|| anyhow::anyhow!("No composefs digest in UKI cmdline"))?;
+        let uki_name = uki_file_name(&entry.file_path)?;
+        return Ok(Some(ExpectedComposefsDigest {
+            digest: composefs_info.digest().clone(),
+            uki_name,
+        }));
+    }
+    Ok(None)
+}
+
+/// Validates that the freshly-generated boot image digest `computed_id`
+/// matches what's embedded in the UKI (if any), and if not, searches for an
+/// [`composefs_oci::XattrFiltering`] mode whose boot image digest does match
+/// via [`composefs_oci::find_matching_boot_image`], before giving up.
+///
+/// This handles images built with older (or newer) composefs-rs tooling
+/// that computed their embedded UKI `composefs=` digest using a different
+/// default xattr filtering mode than the one bootc's own build used.
+#[context("Verifying composefs digest against UKI")]
+pub(crate) fn ensure_correct_composefs_digest(
+    repo: &Arc<crate::store::ComposefsRepository>,
+    manifest_digest: &composefs_oci::OciDigest,
+    computed_id: Sha512HashValue,
+    entries: &[ComposefsBootEntry<Sha512HashValue>],
+) -> Result<Sha512HashValue> {
+    let Some(expected) =
+        find_expected_composefs_digest(repo, entries).context("Checking UKI composefs digest")?
+    else {
+        // No UKI (e.g. a BLS-only setup); nothing to cross-check.
+        return Ok(computed_id);
+    };
+    if expected.digest == computed_id {
+        // The UKI's expected digest already matches; no repair needed.
+        return Ok(computed_id);
+    }
+    // The UKI was built with a different xattr filtering mode and/or EROFS
+    // format version than the one bootc's own build used. Search for one
+    // whose boot image digest does match, for backward compatibility with
+    // older or newer image tooling.
+    tracing::info!(
+        "Freshly computed composefs digest ({computed_id:?}) doesn't match the digest \
+         embedded in the UKI ({:?}); searching for an xattr filtering mode and/or \
+         EROFS format version whose boot image matches, for backward compatibility with \
+         older or newer image tooling",
+        expected.digest,
+    );
+    let mismatch =
+        UKIDigestMismatch::unsupported_compatibility(expected.digest.clone(), expected.uki_name, 0);
+    resolve_boot_image_match(
+        mismatch,
+        composefs_oci::find_matching_boot_image(repo, manifest_digest, &expected.digest),
+    )
+}
+
+/// Interprets the result of searching for a boot image whose digest matches
+/// `expected` (see [`composefs_oci::find_matching_boot_image`]): uses the
+/// matching mode's digest if one was found, or fails with an error listing
+/// every combination tried if not.
+///
+/// Factored out from [`ensure_correct_composefs_digest`] purely so this
+/// decision logic can be unit tested without a real repo or UKI fixture.
+fn resolve_boot_image_match(
+    mismatch: UKIDigestMismatch,
+    find_matching_result: Result<composefs_oci::BootImageMatch<Sha512HashValue>>,
+) -> Result<Sha512HashValue> {
+    match find_matching_result.context(
+        "Searching for a boot image xattr filtering mode/format version matching the UKI digest",
+    )? {
+        composefs_oci::BootImageMatch::Found {
+            mode,
+            version,
+            digest,
+        } => {
+            tracing::info!(
+                "Boot image built with {mode:?} xattr filtering (EROFS {version:?}) matches \
+                 the UKI; using it"
+            );
+            Ok(digest)
+        }
+        composefs_oci::BootImageMatch::NotFound(tried) => match mismatch {
+            UKIDigestMismatch::UnsupportedCompatibility {
+                actual, uki_name, ..
+            } => Err(UKIDigestMismatch::unsupported_compatibility(actual, uki_name, tried).into()),
+            _ => unreachable!("compatibility search always creates an unsupported mismatch"),
+        },
+    }
 }
 
 #[context("Writing Grub menuentry")]
@@ -1200,16 +1566,18 @@ fn write_grub_uki_menuentry(
 fn write_systemd_uki_config(
     esp_dir: &Dir,
     setup_type: &BootSetupType,
-    boot_label: UKIInfo,
+    boot_label: String,
+    version: Option<String>,
+    os_id: Option<String>,
     id: &Sha512HashValue,
     bootloader: &Bootloader,
 ) -> Result<()> {
-    let os_id = boot_label.os_id.as_deref().unwrap_or("bootc");
+    let os_id = os_id.as_deref().unwrap_or("bootc");
     let primary_sort_key = primary_sort_key(os_id);
 
     let mut bls_conf = BLSConfig::default();
     bls_conf
-        .with_title(boot_label.boot_label)
+        .with_title(boot_label)
         .with_cfg(BLSConfigType::EFI {
             key: EFIKey::for_bootloader(
                 format!("/{BOOTC_UKI_DIR}/{}", get_uki_name(&id.to_hex())).into(),
@@ -1217,7 +1585,7 @@ fn write_systemd_uki_config(
             ),
         })
         .with_sort_key(primary_sort_key.clone())
-        .with_version(boot_label.version.unwrap_or_else(|| id.to_hex()));
+        .with_version(version.unwrap_or_else(|| id.to_hex()));
 
     let (entries_dir, booted_bls) = match setup_type {
         BootSetupType::Setup(..) => {
@@ -1274,11 +1642,12 @@ pub(crate) fn setup_composefs_uki_boot(
     setup_type: BootSetupType,
     repo: &crate::store::ComposefsRepository,
     id: &Sha512HashValue,
+    boot_ids: &[Sha512HashValue],
     entries: Vec<ComposefsBootEntry<Sha512HashValue>>,
-) -> Result<String> {
+) -> Result<(String, Sha512HashValue)> {
     let (root_path, esp_device, bootloader, missing_fsverity_allowed, uki_addons) = match setup_type
     {
-        BootSetupType::Setup((root_setup, state, postfetch)) => {
+        BootSetupType::Setup((root_setup, state, postfetch, allow_missing_fsverity)) => {
             state.require_no_kargs_for_uki()?;
 
             // Locate ESP partition device by walking up to the root disk(s)
@@ -1288,7 +1657,7 @@ pub(crate) fn setup_composefs_uki_boot(
                 root_setup.physical_root_path.clone(),
                 esp_part.path(),
                 postfetch.detected_bootloader.clone(),
-                state.composefs_options.allow_missing_verity,
+                allow_missing_fsverity,
                 state.composefs_options.uki_addon.as_ref(),
             )
         }
@@ -1314,6 +1683,8 @@ pub(crate) fn setup_composefs_uki_boot(
             )
         }
     };
+
+    prevalidate_uki_entries(repo, &entries, id, boot_ids, missing_fsverity_allowed)?;
 
     let esp_mount = mount_esp_writable(&esp_device).context("Mounting ESP")?;
 
@@ -1361,6 +1732,7 @@ pub(crate) fn setup_composefs_uki_boot(
                     utf8_file_path,
                     entry.pe_type,
                     &id,
+                    boot_ids,
                     missing_fsverity_allowed,
                     esp_mount.dir.path(),
                 )?;
@@ -1375,19 +1747,31 @@ pub(crate) fn setup_composefs_uki_boot(
     let uki_info =
         uki_info.ok_or_else(|| anyhow::anyhow!("Failed to get version and boot label from UKI"))?;
 
-    let boot_digest = uki_info.boot_digest.clone();
+    let UKIInfo {
+        boot_label,
+        version,
+        os_id,
+        boot_digest,
+        composefs_digest: deploy_id,
+    } = uki_info;
 
     match bootloader.kind()? {
         BootloaderKind::GRUBClassic => {
-            write_grub_uki_menuentry(root_path, &setup_type, uki_info.boot_label, id, &esp_device)?
+            write_grub_uki_menuentry(root_path, &setup_type, boot_label, &deploy_id, &esp_device)?
         }
 
-        BootloaderKind::BLSCompatible => {
-            write_systemd_uki_config(&esp_mount.fd, &setup_type, uki_info, id, &bootloader)?
-        }
+        BootloaderKind::BLSCompatible => write_systemd_uki_config(
+            &esp_mount.fd,
+            &setup_type,
+            boot_label,
+            version,
+            os_id,
+            &deploy_id,
+            &bootloader,
+        )?,
     };
 
-    Ok(boot_digest)
+    Ok((boot_digest, deploy_id))
 }
 
 /// A composefs image attached to a temporary directory with the ESP and a
@@ -1603,24 +1987,27 @@ pub(crate) async fn setup_composefs_boot(
 
     let repo = Arc::new(repo);
 
-    // Generate the bootable EROFS image (idempotent).
-    let id = composefs_oci::generate_boot_image(
-        &repo,
-        &pull_result.manifest_digest,
-        &Default::default(),
-    )
-    .context("Generating bootable EROFS image")?;
+    let crate::bootc_composefs::repo::BootImage { id, fs, entries } =
+        crate::bootc_composefs::repo::prepare_boot_image(&repo, pull_result)?;
 
-    // Reconstruct the OCI filesystem to discover boot entries (kernel, initramfs, etc.).
-    let fs = composefs_oci::image::create_filesystem(
-        &*repo,
-        &pull_result.config_digest,
-        Some(&pull_result.config_verity),
-        &Default::default(),
-    )
-    .context("Creating composefs filesystem for boot entry discovery")?;
-    let entries =
-        get_boot_resources(&fs, &*repo).context("Extracting boot entries from OCI image")?;
+    // Digest recovery above may have generated a boot image in a format that
+    // was not present initially. Read the refs after recovery so UKI
+    // validation accepts the selected image as well as both standard refs.
+    let oci_img =
+        composefs_oci::oci_image::OciImage::open(&*repo, &pull_result.manifest_digest, None)
+            .context("Opening OCI image to read boot image refs")?;
+    let boot_id_v1 = oci_img.boot_image_ref_v1().cloned();
+    let boot_id_v2 = oci_img.boot_image_ref_v2().cloned();
+    let boot_ids = accepted_boot_image_ids(boot_id_v1.clone(), boot_id_v2.clone(), &id);
+
+    // Validate only the new artifact before touching the ESP. Existing ESP
+    // corruption is not scanned here; it is reconciled by the normal boot
+    // entry write/GC paths rather than being allowed to block a fresh install.
+    print_uki_dumpfile_diff_on_mismatch(
+        prevalidate_uki_entries(&repo, &entries, &id, &boot_ids, allow_missing_fsverity),
+        &repo,
+        &fs,
+    )?;
 
     let composefs_mnt_fd = repo
         .mount(&id.to_hex())
@@ -1727,38 +2114,38 @@ pub(crate) async fn setup_composefs_boot(
         )
     })?;
 
-    let boot_digest = match boot_type {
-        BootType::Bls => setup_composefs_bls_boot(
-            BootSetupType::Setup((&root_setup, &state, &postfetch)),
-            &repo,
-            &id,
-            entry,
-            mounted_root.dir(),
-        )?,
-        BootType::Uki => {
-            let uki_setup_result = setup_composefs_uki_boot(
-                BootSetupType::Setup((&root_setup, &state, &postfetch)),
+    let (provisional_deploy_id, provisional_format) = match boot_id_v1.as_ref() {
+        Some(v1) => (v1.clone(), FormatVersion::V1),
+        None => (id.clone(), repo.erofs_version()),
+    };
+    let (boot_digest, deploy_id) = match boot_type {
+        BootType::Bls => (
+            setup_composefs_bls_boot(
+                BootSetupType::Setup((&root_setup, &state, &postfetch, allow_missing_fsverity)),
                 &repo,
-                &id,
+                &provisional_deploy_id,
+                provisional_format,
+                entry,
+                mounted_root.dir(),
+            )?,
+            provisional_deploy_id,
+        ),
+        BootType::Uki => print_uki_dumpfile_diff_on_mismatch(
+            setup_composefs_uki_boot(
+                BootSetupType::Setup((&root_setup, &state, &postfetch, allow_missing_fsverity)),
+                &repo,
+                &provisional_deploy_id,
+                &boot_ids,
                 entries,
-            );
-
-            match uki_setup_result {
-                Ok(boot_digest) => boot_digest,
-                Err(e) => match e.downcast::<UKIDigestMismatch>() {
-                    Ok(mismatch) => {
-                        print_uki_dumpfile_diff(&mismatch, &repo, &fs);
-                        return Err(mismatch.into());
-                    }
-                    Err(e) => Err(e)?,
-                },
-            }
-        }
+            ),
+            &repo,
+            &fs,
+        )?,
     };
 
     write_composefs_state(
         &root_setup.physical_root_path,
-        &id,
+        &deploy_id,
         &crate::spec::ImageReference::from(state.target_imgref.clone()),
         None,
         boot_type,
@@ -1771,9 +2158,48 @@ pub(crate) async fn setup_composefs_boot(
     Ok(())
 }
 
+/// Return every boot image digest that is valid for UKI verification.
+///
+/// A digest selected by xattr/format recovery is not necessarily exposed by
+/// the default V1/V2 refs. Keep it in the accepted set, and deduplicate all
+/// values so equal refs are handled consistently.
+pub(crate) fn accepted_boot_image_ids(
+    boot_id_v1: Option<Sha512HashValue>,
+    boot_id_v2: Option<Sha512HashValue>,
+    selected: &Sha512HashValue,
+) -> Vec<Sha512HashValue> {
+    let mut ids = Vec::with_capacity(3);
+    for id in [boot_id_v1, boot_id_v2]
+        .into_iter()
+        .flatten()
+        .chain(Some(selected.clone()))
+    {
+        if !ids.contains(&id) {
+            ids.push(id);
+        }
+    }
+    ids
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use composefs::erofs::format::FormatVersion;
+
+    #[test]
+    fn test_replace_composefs_karg() {
+        let mut cmdline =
+            Cmdline::from("root=UUID=abc composefs=old composefs.digest=v1-sha512-12:stale");
+        replace_composefs_karg(
+            &mut cmdline,
+            "composefs.digest=v1-sha512-12:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        )
+        .unwrap();
+        let rendered = cmdline.to_string();
+        assert!(!rendered.contains("composefs=old"));
+        assert!(!rendered.contains(":stale"));
+        assert!(rendered.contains("root=UUID=abc"));
+    }
 
     #[test]
     fn test_pe_output_dir() {
@@ -1927,5 +2353,140 @@ mod tests {
             rhel > fedora,
             "RHEL should sort before Fedora in descending order"
         );
+    }
+
+    /// A distinct, non-`EMPTY` digest to use as "the other" digest in
+    /// `resolve_boot_image_match` tests.
+    fn other_digest() -> Sha512HashValue {
+        Sha512HashValue::from_hex("aa".repeat(64)).unwrap()
+    }
+
+    #[test]
+    fn test_resolve_boot_image_match() {
+        let expected = other_digest();
+        let uki_name = "uki.efi";
+        // 2 xattr filtering modes x 2 EROFS format versions.
+        let combinations_tried = 4;
+
+        #[derive(Copy, Clone)]
+        enum FindMatching {
+            Found,
+            NotFound,
+            Errors,
+        }
+
+        let cases = [
+            (FindMatching::Found, true, vec![]),
+            (
+                FindMatching::NotFound,
+                false,
+                vec![
+                    uki_name.into(),
+                    format!("{expected:?}"),
+                    format!("doesn't match any of {combinations_tried} supported"),
+                ],
+            ),
+            (
+                FindMatching::Errors,
+                false,
+                vec![
+                    "search blew up".to_string(),
+                    "Searching for a boot image xattr filtering mode/format version matching \
+                     the UKI digest"
+                        .to_string(),
+                ],
+            ),
+        ];
+
+        for (find_matching, should_succeed, want_substrings) in cases {
+            let find_matching_result = match find_matching {
+                FindMatching::Found => Ok(composefs_oci::BootImageMatch::Found {
+                    mode: composefs_oci::XattrFiltering::KeepUserXattrs,
+                    version: FormatVersion::V2,
+                    digest: expected.clone(),
+                }),
+                FindMatching::NotFound => {
+                    Ok(composefs_oci::BootImageMatch::NotFound(combinations_tried))
+                }
+                FindMatching::Errors => Err(anyhow::anyhow!("search blew up")),
+            };
+            let mismatch =
+                UKIDigestMismatch::unsupported_compatibility(expected.clone(), uki_name.into(), 0);
+            let result = resolve_boot_image_match(mismatch, find_matching_result);
+            if should_succeed {
+                assert_eq!(result.unwrap(), expected);
+                continue;
+            }
+            let error = result.unwrap_err();
+            let msg = format!("{error:#}");
+            for want in &want_substrings {
+                assert!(msg.contains(want), "expected {msg:?} to contain {want:?}");
+            }
+            if matches!(find_matching, FindMatching::NotFound) {
+                let mismatch = error.downcast_ref::<UKIDigestMismatch>().unwrap();
+                assert_eq!(mismatch.uki_name(), Some(uki_name));
+            } else {
+                assert!(error.downcast_ref::<UKIDigestMismatch>().is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn test_accepted_boot_image_ids_includes_selected_and_deduplicates() {
+        let v1 = Sha512HashValue::EMPTY;
+        let v2 = other_digest();
+        let selected = Sha512HashValue::from_hex("bb".repeat(64)).unwrap();
+
+        let ids = accepted_boot_image_ids(Some(v1.clone()), Some(v2.clone()), &selected);
+        assert_eq!(ids, vec![v1.clone(), v2.clone(), selected.clone()]);
+
+        assert_eq!(
+            accepted_boot_image_ids(Some(v1.clone()), Some(v1.clone()), &v1),
+            vec![v1.clone()]
+        );
+        assert_eq!(
+            accepted_boot_image_ids(Some(v1.clone()), Some(selected.clone()), &selected),
+            vec![v1, selected]
+        );
+    }
+
+    #[test]
+    fn test_uki_fsverity_policy() {
+        let cases = [
+            (
+                SessionRepositoryPolicy::AllowsMissingFsVerity,
+                UkiRequestedVerityMode::RequiresFsVerity,
+                true,
+            ),
+            (
+                SessionRepositoryPolicy::AllowsMissingFsVerity,
+                UkiRequestedVerityMode::AllowsMissingFsVerity,
+                true,
+            ),
+            (
+                SessionRepositoryPolicy::RequiresFsVerity,
+                UkiRequestedVerityMode::RequiresFsVerity,
+                true,
+            ),
+            (
+                SessionRepositoryPolicy::RequiresFsVerity,
+                UkiRequestedVerityMode::AllowsMissingFsVerity,
+                false,
+            ),
+        ];
+
+        for (repository_policy, uki_mode, should_pass) in cases {
+            let result = validate_uki_fsverity_policy(repository_policy, uki_mode);
+            assert_eq!(
+                result.is_ok(),
+                should_pass,
+                "policy result for repository_policy={repository_policy:?}, uki_mode={uki_mode:?}"
+            );
+            if !should_pass {
+                let message = format!("{:#}", result.unwrap_err());
+                assert!(message.contains("requires fs-verity"));
+                assert!(message.contains("allow-missing-verity"));
+            }
+        }
     }
 }

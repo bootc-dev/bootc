@@ -7,12 +7,93 @@ do provide feedback on them.
 
 The composefs backend is an experimental alternative storage backend that uses [composefs-rs](https://github.com/composefs/composefs-rs) instead of ostree for storing and managing bootc system deployments.
 
-**Status**: Experimental, but close to stabilization! We are committed to in-place upgrades from all systems deployed since bootc 1.16.0.
+**Status: experimental.** New composefs repositories and UKIs use EROFS V1 by
+default, while retaining a V2 compatibility path. This is not a general
+compatibility promise for every older bootc release or existing composefs
+installation. The tested compatibility claim is limited to the bootc 1.16.0
+fixtures described in [Stabilization status](#stabilization-status).
 
-The composefs backend supports two distinct levels of integrity guarantee, controlled by whether fsverity is strictly enforced on the root filesystem (i.e. whether the image was built with `--allow-missing-verity`):
+Root filesystem verification and boot-artifact authentication are separate:
 
-- **Sealed**: The composefs digest is baked into the kernel command line of a UKI and *required* to match at boot.
-- **Unsealed**: fsverity enforcement is optional, so composefs still provides content-addressed, deduplicated storage and garbage collection, but without a guarantee that the root filesystem matches what was signed. Unsealed composefs most commonly boots via a traditional `vmlinuz`/`initramfs.img` and a BLS boot entry, but a UKI built with `--allow-missing-verity` is *also* unsealed in this sense — packaging as a UKI is a boot convenience here, not by itself a security boundary. See [Bootloader Support](#bootloader-support) below.
+- A **strict fs-verity policy** requires verified composefs objects. A `?`
+  marker in the composefs kernel arguments permits missing fs-verity instead.
+  Both UKI and traditional kernel/initramfs+BLS installations can require
+  fs-verity on supported filesystems.
+- A **sealed UKI deployment** combines strict root verification with a signed
+  UKI authenticated by Secure Boot. The UKI contains the trusted root digest.
+  A BLS entry or an unsigned UKI does not provide that same authentication,
+  even when root filesystem verification is strict.
+
+Building a UKI with `--allow-missing-verity` adds the `?` marker. Merely
+disabling Secure Boot does not add it or disable root filesystem verification.
+
+## EROFS V1 transition and compatibility
+
+EROFS V1 is the default for newly initialized composefs repositories.
+`bootc container ukify` now emits V1 followed by a V2 fallback by default; it
+does not probe the initramfs with `lsinitrd`. V1 uses the C-tool-compatible kernel argument
+`composefs.digest=v1-sha512-12:<digest>`. V2 is the legacy composefs-rs format
+and uses `composefs=<digest>`. Both digests are SHA-512 values, but they name
+different EROFS encodings and must not be substituted for one another.
+
+When building a UKI with the default V1, bootc computes both values and puts
+the V1 argument first and the V2 argument second. A current initramfs tries
+candidates in command-line order, so it selects V1 when its image is present.
+
+When updating bootc in an image, **regenerate its initramfs before generating
+the UKI**. Retaining an old initramfs while updating bootc is outside the
+supported upgrade procedure.
+
+For an existing bootc 1.16.0 UKI deployment:
+
+1. Build the replacement image with updated bootc and a regenerated initramfs.
+   Generate a new UKI with the default dual-digest output. For a sealed
+   deployment, sign it with a key trusted by the existing machine. For a
+   deployment permitting missing fs-verity, retain that policy when generating
+   the UKI with `--allow-missing-verity`.
+2. Publish the replacement image at the deployment's configured image
+   reference, then run `bootc upgrade` on the old deployment and reboot.
+3. The old client stages V2. The replacement image's new initramfs boots that
+   V2 fallback with matching deployment state. A subsequent upgrade staged by
+   the current client can select V1.
+
+This procedure has been tested with the exact bootc 1.16.0 UKI fixtures in
+both strict/sealed and missing-verity-permitted modes, including persistence,
+rollback, and GC. It is not evidence for arbitrary earlier versions or for
+historical BLS migration; those combinations need separate testing.
+
+The only historical release in the tested compatibility scope is bootc 1.16.0.
+Other historical releases, including v1.9's SHA-256 V2 identity, are not part
+of this compatibility contract.
+
+New repositories are configured to retain V1 as the default and V2 as an
+additional format. Existing repositories retain the format configuration
+recorded in their metadata when opened; they are not silently reinitialized
+as V1 repositories. A successful fallback still requires the matching V2
+image and an initramfs able to mount it. Missing images, malformed or
+unrecognized kernel arguments, fs-verity policy rejection, or a UKI digest
+that does not match the repository are boot/staging failures, not a safe
+conversion to another digest.
+
+For controlled V2 UKI generation, the supported CLI spelling is:
+
+```bash
+bootc container ukify --erofs-version=v2 ...
+```
+
+That produces only the V2 `composefs=` argument; it does not add a V1
+fallback. The same `--erofs-version=v1` or `--erofs-version=v2` option is
+available on the hidden `bootc container compute-composefs-digest` helpers.
+The selected format must match images committed to the repository.
+
+For the existing TMT build tests, `BOOTC_erofs_version=v1` or
+`BOOTC_erofs_version=v2` selects the image format and is forwarded by
+`just test-tmt-nobuild`; use the same setting for the base and synthetic
+upgrade images. It is not an install-time flag: installation consumes the
+UKI already in the image. Current tests cover current-client-to-current-client
+same-format upgrades, not the old-client bridge. There is no supported BLS
+install-time V2 control; the format is selected when the image and its boot
+artifacts are built.
 
 ## Storage and repository structure
 
@@ -20,15 +101,29 @@ Unlike the ostree backend, which keeps its repository at `/ostree/repo`, the com
 
 - `/composefs`: The [composefs-rs repository](https://github.com/composefs/composefs-rs/blob/main/crates/composefs/src/repository_format.rs) (mode `0700`), containing:
   - `objects/`: content-addressed file storage, keyed by SHA-512 fsverity digest and shared via reflink (`FICLONE`) where the filesystem supports it
-  - `images/`: EROFS images describing each deployment's root filesystem metadata
+  - `images/`: EROFS images describing each deployment's root filesystem metadata; a transition repository can contain both the V1 and V2 images for one root filesystem
   - `streams/`: OCI manifest, config, and layer splitstreams captured during image pulls
   - `bootc/storage/`: the `containers-storage:` instance backing logically bound images, reflink-shared with the composefs object store
-- `/state/deploy/<deployment-id>/`: Persistent per-deployment state, one directory per deployment (named after its composefs digest):
+- `/state/deploy/<deployment-id>/`: Persistent per-deployment state, one directory per deployment (named after the deployment identity selected while staging):
   - `etc/`: a writable copy of the deployment's `/etc`, bind-mounted onto the booted root's `/etc`
   - `var`: a symlink to the shared `/state/os/default/var`, bind-mounted onto the booted root's `/var`
   - `<deployment-id>.origin`: an INI file recording the image reference, boot type (BLS or UKI) and digest, and the OCI manifest digest (the latter is what keeps a deployment's objects alive across garbage collection)
 
-Although composefs-rs supports other fsverity hash algorithms, bootc currently hardcodes `SHA-512` for the repository (see `Algorithm::SHA512` at every repository init/open call site, and the `ComposefsRepository` type alias in `crates/lib/src/store/mod.rs`). This is why deployment and object identifiers throughout this document (and in `bootc status`) are 128-character hex strings.
+Although composefs-rs supports other fsverity hash algorithms, bootc currently hardcodes `SHA-512` for the repository. This is why EROFS image IDs and object identifiers are 128-character hex strings.
+
+Several identifiers appear together but have different purposes:
+
+- The OCI manifest digest identifies the pulled container content and is recorded in the origin data; it is used to retain pull objects for garbage collection.
+- A V1 or V2 EROFS/fs-verity digest identifies one bootable EROFS image. It is the value checked by the corresponding UKI kernel argument and is the root mount identity.
+- The state-directory deployment ID identifies the writable `/etc` and `/var`
+  state attached to a staged deployment. In the V1 transition it may be the
+  preferred V1 boot image identity. Do not infer it from an arbitrary V2
+  fallback digest or treat it as the OCI manifest digest.
+
+This separation is important during fallback: an older client may boot the V2
+root image and its existing state, while a later current-client upgrade can
+select the V1 root image and the state directory selected for that deployment.
+The repository's multiple boot-image IDs do not alias state directories.
 
 There is no `/ostree/repo`; the composefs backend doesn't use the ostree repository at all. A minimal `/ostree` directory is still created, but only to hold a compatibility symlink (`ostree/bootc -> ../composefs/bootc`) so that existing tooling expecting `/usr/lib/bootc/storage` to resolve through `ostree/bootc` keeps working.
 
@@ -81,12 +176,13 @@ valid use case is to temporarily disable it in order to test a change locally
 on e.g. one machine, then re-enable it later. However at the current time it
 is not yet streamlined to regenerate the UKI locally.
 
-Note this is a different, independent weakening from `--allow-missing-verity`
-(see [Overview](#overview) above): disabling Secure Boot only removes firmware
-verification of the UKI's own signature, while the fsverity digest of the root
-filesystem is still enforced. Building with `--allow-missing-verity` instead
-disables that digest enforcement itself, which is what actually makes an image
-unsealed regardless of whether Secure Boot is enabled.
+Note this is a different, independent weakening from
+`--allow-missing-verity` (see [Overview](#overview) above): disabling Secure
+Boot only removes firmware verification of the UKI's own signature, while the
+fsverity digest of the root filesystem is still enforced. The
+`--allow-missing-verity` option makes verification optional for that UKI build;
+it is not the only context in which an installation can be described as
+unsealed.
 
 ### Build Pattern: Split the Kernel, Then Generate the UKI in a Separate Stage
 
@@ -152,6 +248,10 @@ This is the recommended way to build a UKI for a bootc image. It computes the co
 - `--rootfs <PATH>`: Root filesystem to operate on (default: `/`)
 - `--kernel-dir <PATH>`: Directory containing `vmlinuz`/`initramfs.img`, named `/parent/<kernel-version>`. Needed when the kernel has already been split out of `--rootfs`, e.g. via `split-kernel-and-rootfs`
 - `--allow-missing-verity`: Make fsverity validation optional, for filesystems that don't support it (e.g. XFS)
+- `--erofs-version <v1|v2>`: Select the EROFS digest format. The default and
+  explicit `v1` produce V1 followed by a V2 fallback; explicit `v2` produces
+  only the legacy V2 digest. This command does not probe the initramfs. See
+  [EROFS V1 transition and compatibility](#erofs-v1-transition-and-compatibility).
 - `--write-dumpfile-to <PATH>`: Write a composefs dumpfile for debugging
 
 ### The `bootc container compute-composefs-digest` Command
@@ -165,6 +265,7 @@ A lower-level primitive, used internally by `ukify` above, that computes just th
 **Options:**
 
 - `PATH`: Path to the filesystem root (default: `/target`)
+- `--erofs-version <v1|v2>`: EROFS format for the computed digest (default: `v1`)
 - `--write-dumpfile-to <PATH>`: Generate a dumpfile for debugging
 
 > **Note**: This command is currently hidden from `--help` output as it's part of the experimental composefs feature set.
@@ -195,24 +296,82 @@ See [CONTRIBUTING.md](https://github.com/bootc-dev/bootc/blob/main/CONTRIBUTING.
 
 Whenever the container image has a UKI, bootc automatically selects the composefs backend during installation (see [Prerequisites](#prerequisites) above for the currently-supported UKI + systemd-boot configuration for building sealed images). Note that having a UKI does not by itself make an install sealed — that also depends on whether fsverity enforcement is on, per [Overview](#overview) above.
 
-Composefs installs using a traditional `vmlinuz`/`initramfs.img` layout instead of a UKI are always unsealed, and can use either `bootupd` (GRUB) or systemd-boot, the same as the ostree backend. See [bootloaders.md](bootloaders.md) for the general bootloader selection rules. Under the hood, bootc writes standard BLS boot entries for both UKI and traditional kernels; see the [composefs boot module documentation](https://github.com/bootc-dev/bootc/blob/main/crates/lib/src/bootc_composefs/boot.rs) for details on how entry filenames and sort-keys are chosen to sort correctly on both GRUB and systemd-boot.
+Traditional composefs installs use a `vmlinuz`/`initramfs.img` layout. They can
+require fs-verity, but do not provide the signed-UKI authentication described
+above. They can use either `bootupd` (GRUB) or systemd-boot, the
+same as the ostree backend. A UKI install is a separate boot path: the UKI
+contains the kernel, initramfs, and command line, and its integrity policy is
+determined independently of the BLS entry used to select it. See
+[bootloaders.md](bootloaders.md) for the general bootloader selection rules.
+Under the hood, bootc writes standard BLS boot entries for both paths; see the
+[composefs boot module documentation](https://github.com/bootc-dev/bootc/blob/main/crates/lib/src/bootc_composefs/boot.rs)
+for entry naming and sorting details.
 
 ## Installation
 
 There is a `--composefs-backend` option for `bootc install` to explicitly select a composefs backend apart from sealed images; this is not as heavily tested yet.
 
-## Known Issues
+## Stabilization status
 
 The composefs backend is experimental; on-disk formats are subject to change.
 
-### Stability blockers
+This core-focused candidate contains the V1/V2 repository, UKI, initramfs, and
+install changes.
 
-- [Dual EROFS v1/v2 generation](https://github.com/bootc-dev/bootc/pull/2248) and https://github.com/bootc-dev/bootc/pull/2353
+### Evidence recorded so far
 
-### Important
+- Unit tests cover default V1 UKI argument ordering, explicit V2 UKI output,
+  candidate selection, and V1/V2 digest generation.
+- Initial repository-policy verification in test plan 23 passed for strict
+  UKIs and UKIs containing `?`. The test checks fs-verity on the installed
+  target's repository metadata and the installed UKI arguments, rather than
+  inspecting the running installer's repository. This verifies initial
+  installation policy, not historical migration compatibility.
+- The bootc 1.16.0 old-stager UKI bridge passed in both strict/sealed and
+  missing-verity-permitted modes. Each run booted current userspace via V2,
+  then upgraded to V1, preserved `/etc` and `/var`, rolled back, and checked
+  composefs GC. The images contained regenerated current initramfs. Historical
+  BLS migration has not been established by these runs.
+- These are opt-in, fixture-driven TMT tests, not fully automated CI coverage:
+  the fixture build recipe currently depends on ignored one-off files. Making
+  fixture production reproducible remains tracked work before treating this as
+  generally provisioned regression coverage.
+- Sealed CentOS 10 V1/V2 tests and a strict-policy downgrade-rejection control
+  were reported as passing on the combined tree. The CentOS 9 sealed-upgrade
+  case was deliberately skipped, so it is not evidence of compatibility.
 
-- Extended install APIs: Ability to cleanly implement anaconda %post and osbuild post mutations and general post-install pre-reboot; right now some tools just mount the deployment directory (note this one also relates to [APIs in general](https://github.com/bootc-dev/bootc/issues/522))
-- [zstd:chunked pull failures](https://github.com/bootc-dev/bootc/issues/2408): Images pushed with `--compression-format zstd:chunked` currently fail to pull on the composefs backend ("unexpected EOF reading tar entry"). A [decode fix](https://github.com/composefs/composefs-rs/pull/381) is in flight in composefs-rs and reaches bootc with the next composefs-rs update; until then publishers should use plain zstd (or gzip).
+The verified paths do not expand the compatibility contract beyond the exact
+bootc 1.16.0 fixtures and configurations tested above.
+
+### Remaining blockers before calling this stable
+
+1. **Make fixture production reproducible.** Replace the ignored one-off
+   fixture build inputs with a maintained recipe. Do not expand the
+   compatibility claim beyond combinations actually tested.
+2. **Exercise recovery and retention failures.** Add the missing xattr
+   recovery fixture and assess corruption and garbage-collection paths,
+   including references from both V1 and V2 boot entries. Acceptance requires
+   a defined, tested outcome for missing/corrupt images and state, with no
+   deletion of a live fallback image or its required state.
+3. **Resolve signature-enforcement persistence.** The required semantics are
+   still an OSTree/user decision: trust the local source, preserve target
+   enforcement, and optionally run a fetch check without forcing installation
+   online. Acceptance requires tests of those semantics and rejection of an
+   insecure UKI under a strict target policy.
+
+### Pending work that is not, by itself, a stability blocker
+
+- **V2 test controls:** `BOOTC_erofs_version` is a TMT image-build control,
+  not an install API. The verified historical bridge coverage remains opt-in
+  until fixture production is reproducible.
+- **Signature source work:** the source/persistence investigation is pending;
+  the policy semantics above are the required behavior, not a claim that all
+  persistence machinery is complete.
+- [zstd:chunked pull failures](https://github.com/bootc-dev/bootc/issues/2408):
+  images pushed with `--compression-format zstd:chunked` currently fail to
+  pull on the composefs backend ("unexpected EOF reading tar entry"). Until a
+  composefs-rs decode fix is incorporated and validated, publishers should use
+  plain zstd or gzip.
 
 ## Related issues
 
