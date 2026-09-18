@@ -2260,33 +2260,11 @@ async fn run_from_opt(opt: Opt) -> Result<CliExitStatus> {
                 kernel_dir,
                 args,
             } => {
-                let kernel = match kernel_dir {
-                    Some(kernel_dir) => {
-                        let kver = kernel_dir
-                            .components()
-                            .last()
-                            .ok_or_else(|| anyhow::anyhow!("Could not determine kernel version"))?;
-
-                        Some(crate::kernel::KernelInternal {
-                            kernel: crate::kernel::Kernel {
-                                unified: false,
-                                version: kver.to_string(),
-                            },
-                            k_type: crate::kernel::KernelType::Vmlinuz {
-                                path: kernel_dir.join("vmlinuz"),
-                                initramfs: kernel_dir.join("initramfs.img"),
-                            },
-                        })
-                    }
-
-                    None => None,
-                };
-
                 crate::ukify::build_ukify(
                     &rootfs,
                     &kargs,
                     &args,
-                    kernel,
+                    kernel_dir.as_deref(),
                     allow_missing_verity,
                     erofs_version,
                     write_dumpfile_to.as_deref(),
