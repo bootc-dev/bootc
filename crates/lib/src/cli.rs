@@ -523,6 +523,35 @@ pub(crate) enum ContainerOpts {
         #[clap(last = true)]
         args: Vec<OsString>,
     },
+    /// Build an Android boot or ukiboot image using aboot-update.
+    Aboot {
+        /// Operate on the provided rootfs.
+        #[clap(long, default_value = "/")]
+        rootfs: Utf8PathBuf,
+
+        /// Additional kernel arguments to append to the cmdline.
+        /// Can be specified multiple times.
+        /// This is a temporary workaround and will be removed.
+        #[clap(long = "karg", hide = true)]
+        kargs: Vec<String>,
+
+        /// Make fs-verity validation optional in case the filesystem doesn't support it
+        #[clap(long)]
+        allow_missing_verity: bool,
+
+        /// Write a dumpfile to this path
+        #[clap(long)]
+        write_dumpfile_to: Option<Utf8PathBuf>,
+
+        /// The directory containing vmlinuz and initramfs.img.
+        /// Must be of the format /parent/$kernel_version.
+        #[clap(long)]
+        kernel_dir: Option<Utf8PathBuf>,
+
+        /// Output directory. Defaults to $rootfs/boot.
+        #[clap(long)]
+        out: Option<Utf8PathBuf>,
+    },
     /// Export container filesystem as a tar archive.
     ///
     /// This command exports the container filesystem in a bootable format with proper
@@ -2271,6 +2300,24 @@ async fn run_from_opt(opt: Opt) -> Result<CliExitStatus> {
                 )
                 .await
             }
+            ContainerOpts::Aboot {
+                rootfs,
+                kargs,
+                allow_missing_verity,
+                write_dumpfile_to,
+                kernel_dir,
+                out,
+            } => {
+                crate::aboot::build_aboot(
+                    &rootfs,
+                    &kargs,
+                    kernel_dir.as_deref(),
+                    out.as_deref(),
+                    allow_missing_verity,
+                    write_dumpfile_to.as_deref(),
+                )
+                .await
+            }
             ContainerOpts::Export {
                 format,
                 target,
@@ -2881,6 +2928,20 @@ mod tests {
                 "{args:?}"
             );
         }
+
+        assert!(matches!(
+            Opt::parse_including_static([
+                "bootc",
+                "container",
+                "aboot",
+                "--karg",
+                "root=LABEL=root",
+                "--out",
+                "/out",
+            ]),
+            Opt::Container(ContainerOpts::Aboot { kargs, out, .. })
+                if kargs == ["root=LABEL=root"] && out.as_deref() == Some(Utf8Path::new("/out"))
+        ));
     }
 
     #[test]
