@@ -7,8 +7,18 @@
 use anyhow::Result;
 use camino::Utf8Path;
 use fn_error_context::context;
+use xshell::Cmd;
 
 use crate::{Bootloader, SealState};
+
+/// Remove inherited library search paths before launching a VM.
+///
+/// Build tooling can augment `LD_LIBRARY_PATH`, and libvirt may propagate it
+/// to the host QEMU process, where it can cause incompatible libraries to be
+/// loaded. Keep that environment out of `bcvk libvirt run` consistently.
+pub(crate) fn sanitize_bcvk_libvirt_run(cmd: Cmd<'_>) -> Cmd<'_> {
+    cmd.env_remove("LD_LIBRARY_PATH")
+}
 
 /// Default directory for secure boot test keys.
 const DEFAULT_SB_KEYS_DIR: &str = "target/test-secureboot";

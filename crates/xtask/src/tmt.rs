@@ -39,7 +39,7 @@ const ENV_BOOTC_BRIDGE_IMAGE: &str = "BOOTC_bridge_image";
 const DISTRO_CENTOS_9: &str = "centos-9";
 
 // Import the argument types from xtask.rs
-use crate::bcvk::BcvkInstallOpts;
+use crate::bcvk::{BcvkInstallOpts, sanitize_bcvk_libvirt_run};
 use crate::{RunTmtArgs, SealState, TmtProvisionArgs, out_of_sync_error};
 
 /// Generate a random alphanumeric suffix for VM names
@@ -619,10 +619,10 @@ pub(crate) fn run_tmt(sh: &Shell, args: &RunTmtArgs) -> Result<()> {
 
         // Launch VM with bcvk
         let firmware_args_slice = firmware_args.as_slice();
-        let launch_result = cmd!(
+        let launch_result = sanitize_bcvk_libvirt_run(cmd!(
             sh,
             "bcvk libvirt run --name {vm_name} --detach {firmware_args_slice...} {COMMON_INST_ARGS...} {plan_bcvk_opts...} {log_dir_args...} {image}"
-        )
+        ))
         .run()
         .context("Launching VM with bcvk");
 
@@ -900,10 +900,10 @@ pub(crate) fn tmt_provision(sh: &Shell, args: &TmtProvisionArgs) -> Result<()> {
     // Launch VM with bcvk
     // Use ds=iid-datasource-none to disable cloud-init for faster boot
     let firmware_args_slice = firmware_args.as_slice();
-    cmd!(
+    sanitize_bcvk_libvirt_run(cmd!(
         sh,
         "bcvk libvirt run --name {vm_name} --detach {firmware_args_slice...} {COMMON_INST_ARGS...} {image}"
-    )
+    ))
     .run()
     .context("Launching VM with bcvk")?;
 
