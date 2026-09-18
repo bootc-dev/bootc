@@ -320,7 +320,7 @@ execute:
   extra-skip_if_ostree: true
 
 /plan-49-composefs-1-16-bridge:
-  summary: Test the bootc 1.16 composefs UKI bridge
+  summary: Test bootc 1.16 old-stager migration for sealed and unsealed UKIs
   enabled: false
   discover:
     how: fmf

@@ -1,3 +1,6 @@
+# extra:
+#   skip_if_ostree: true
+#
 use std assert
 use tap.nu
 

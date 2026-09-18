@@ -199,7 +199,7 @@ check:
   test: nu booted/test-composefs-uki-dumpfile.nu
 
 /test-49-composefs-1-16-bridge:
-  summary: Test the bootc 1.16 composefs UKI bridge
+  summary: Test bootc 1.16 old-stager migration for sealed and unsealed UKIs
   duration: 45m
   enabled: false
   adjust:

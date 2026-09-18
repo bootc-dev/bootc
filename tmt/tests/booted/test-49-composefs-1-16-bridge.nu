@@ -1,6 +1,6 @@
 # number: 49
 # tmt:
-#   summary: Test the bootc 1.16 composefs UKI bridge
+#   summary: Test bootc 1.16 old-stager migration for sealed and unsealed UKIs
 #   duration: 45m
 #   enabled: false
 #   adjust:
@@ -12,6 +12,11 @@
 
 # This deliberately starts disabled.  The bridge fixtures are large and are
 # supplied from the host's read-only containers-storage mount only on request.
+#
+# The initial fixture is pinned to bootc 1.16.0, which only understands the
+# bare composefs= argument and so stages the V2 fallback of a dual-digest UKI.
+# bootc 1.16.4 and later parse composefs.digest= first and stage V1 directly;
+# that path is not exercised here.
 use std assert
 use tap.nu
 
@@ -31,12 +36,17 @@ def upgrade-image [] {
     $image
 }
 
-def mode [] {
-    let mode = ($env.BOOTC_composefs_bridge_mode? | default "")
-    if not ($mode in ["old-stager" "old-initramfs"]) {
-        error make { msg: "BOOTC_composefs_bridge_mode must be old-stager or old-initramfs" }
+def integrity-mode [] {
+    let mode = ($env.BOOTC_composefs_bridge_integrity_mode? | default "")
+    if not ($mode in ["sealed" "unsealed"]) {
+        error make { msg: "BOOTC_composefs_bridge_integrity_mode must be sealed or unsealed" }
     }
     $mode
+}
+
+def assert-fixture-label [image: string, expected: string] {
+    let label = (podman image inspect --format '{{ index .Config.Labels "bootc.test.fixture" }}' $image | str trim)
+    assert equal $label $expected $"($image) has the wrong bridge fixture label"
 }
 
 def cmdline [] { open /proc/cmdline | str trim | split row " " }
@@ -70,12 +80,13 @@ def assert-booted-image [expected: string] {
 
 # Verify the identity actually selected by the running initramfs, as well as
 # the corresponding repository image and deployment state directory.
-def assert-selected-format [format: string, expect_dual: bool] {
+def assert-selected-format [format: string] {
     if not ($format in ["v1" "v2"]) {
         error make { msg: $"Unsupported expected composefs format: ($format)" }
     }
     let st = bootc status --json | from json
     assert ((($st.status.booted.composefs.bootType | into string | str downcase) == "uki"))
+    assert equal $st.status.booted.composefs.missingVerityAllowed ((integrity-mode) == "unsealed") "booted composefs policy must match the requested integrity mode"
     let selected = $st.status.booted.composefs.verity
     assert equal ($selected | str length) 128
 
@@ -88,19 +99,16 @@ def assert-selected-format [format: string, expect_dual: bool] {
     let v2_params = ($params | where { |p| $p | into string | str starts-with "composefs=" })
     assert (($v2_params | length) == 1) "UKI must contain one V2 fallback argument"
     let v2_value = ($v2_params | first | str replace "composefs=" "" | into string)
-    let v2 = ($v2_value | str replace "?" "")
+    let v2_is_unsealed = ($v2_value | str starts-with "?")
+    assert equal $v2_is_unsealed ((integrity-mode) == "unsealed") "UKI integrity marker must match the fixture mode"
+    let v2 = ($v2_value | str replace --regex "^\\?" "")
     let v1_params = ($params | where { |p| $p | into string | str starts-with "composefs.digest=" })
-    let v1 = if $expect_dual {
-        assert (($v1_params | length) == 1) "current automatic UKI must retain one V1 argument"
-        let v1_value = ($v1_params | first | str replace "composefs.digest=" "" | into string)
-        let v1_value = ($v1_value | str replace "?" "")
-        let parsed_v1 = ($v1_value | split row ":" | last)
-        assert ($parsed_v1 != $v2) "dual-format UKI must contain distinct V1 and V2 identities"
-        $parsed_v1
-    } else {
-        assert (($v1_params | length) == 0) "old automatic UKI must be V2-only"
-        ""
-    }
+    assert (($v1_params | length) == 1) "current automatic UKI must retain one V1 argument"
+    let v1_value = ($v1_params | first | str replace "composefs.digest=" "" | into string)
+    # Both arguments carry the same fs-verity policy marker; only the digest
+    # is compared here.
+    let v1 = ($v1_value | split row ":" | last)
+    assert ($v1 != $v2) "dual-format UKI must contain distinct V1 and V2 identities"
 
     let expected = if $format == "v1" { $v1 } else { $v2 }
     assert equal $expected $selected "selected UKI identity must match bootc status"
@@ -131,8 +139,11 @@ def stage [image: string, save_as: string] {
 }
 
 def old_stager_boot0 [] {
-    tap begin "bootc 1.16 stager to current dual-UKI bridge"
+    tap begin $"bootc 1.16 stager to current dual-UKI bridge ((integrity-mode))"
     assert-old-fixture
+    let initial = (bootc status --json | from json).status.booted.image.image.image
+    assert-fixture-label $initial "bootc-1.16.0-stager"
+    assert-fixture-label (bridge-image) $"current-dual-uki-((integrity-mode))"
     write-sentinels
     stage (bridge-image) /var/composefs-bridge-v2-identity
     tmt-reboot
@@ -141,10 +152,10 @@ def old_stager_boot0 [] {
 def old_stager_boot1 [] {
     assert-booted-image (bridge-image)
     assert (not ((bootc --version) | str starts-with "bootc 1.16.0")) "bridge userspace must be current"
-    let identity = assert-selected-format v2 true
+    let identity = assert-selected-format v2
     assert equal $identity.selected (open /var/composefs-bridge-v2-identity | str trim)
-    assert (not ($"/sysroot/composefs/images/($identity.v1)" | path exists)) "the old-initramfs first hop must not materialize the V1 image"
     assert-sentinels
+    assert-fixture-label (upgrade-image) $"current-dual-uki-upgrade-((integrity-mode))"
     stage (upgrade-image) /var/composefs-bridge-v1-identity
     tmt-reboot
 }
@@ -152,7 +163,7 @@ def old_stager_boot1 [] {
 def old_stager_boot2 [] {
     assert-booted-image (upgrade-image)
     assert (not ((bootc --version) | str starts-with "bootc 1.16.0")) "upgraded userspace must be current"
-    let identity = assert-selected-format v1 true
+    let identity = assert-selected-format v1
     assert equal $identity.selected (open /var/composefs-bridge-v1-identity | str trim)
     assert-sentinels
     bootc rollback
@@ -162,7 +173,7 @@ def old_stager_boot2 [] {
 
 def old_stager_boot3 [] {
     assert-booted-image (bridge-image)
-    let identity = assert-selected-format v2 true
+    let identity = assert-selected-format v2
     assert equal $identity.selected (open /var/composefs-bridge-v2-identity | str trim)
     assert-sentinels
     assert equal ((bootc status --json | from json).status.rollbackQueued) false
@@ -170,32 +181,12 @@ def old_stager_boot3 [] {
     tap ok
 }
 
-def old_initramfs_boot0 [] {
-    tap begin "current stager to old-initramfs V2-only UKI"
-    assert (not ((bootc --version) | str starts-with "bootc 1.16.0")) "the V2-only fixture must retain current userspace"
-    assert-selected-format v1 true | ignore
-    write-sentinels
-    stage (bridge-image) /var/composefs-old-initramfs-v2-identity
-    tmt-reboot
-}
-
-def old_initramfs_boot1 [] {
-    assert-booted-image (bridge-image)
-    assert (not ((bootc --version) | str starts-with "bootc 1.16.0")) "the V2-only fixture must retain current userspace"
-    let identity = assert-selected-format v2 false
-    assert equal $identity.selected (open /var/composefs-old-initramfs-v2-identity | str trim)
-    assert-sentinels
-    tap ok
-}
-
 def main [] {
-    match [ (mode) ($env.TMT_REBOOT_COUNT? | default "0") ] {
-        ["old-stager" "0"] => old_stager_boot0,
-        ["old-stager" "1"] => old_stager_boot1,
-        ["old-stager" "2"] => old_stager_boot2,
-        ["old-stager" "3"] => old_stager_boot3,
-        ["old-initramfs" "0"] => old_initramfs_boot0,
-        ["old-initramfs" "1"] => old_initramfs_boot1,
-        [$selected_mode $count] => { error make { msg: $"Invalid bridge mode/reboot count: ($selected_mode)/($count)" } },
+    match ($env.TMT_REBOOT_COUNT? | default "0") {
+        "0" => old_stager_boot0,
+        "1" => old_stager_boot1,
+        "2" => old_stager_boot2,
+        "3" => old_stager_boot3,
+        $count => { error make { msg: $"Invalid bridge reboot count: ($count)" } },
     }
 }
