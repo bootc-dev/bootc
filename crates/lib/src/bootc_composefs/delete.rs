@@ -154,6 +154,7 @@ fn delete_depl_boot_entries(
             BootType::Uki => {
                 remove_grub_menucfg_entry(&deployment.deployment.verity, boot_dir, deleting_staged)
             }
+            BootType::Aboot => anyhow::bail!("aboot deletion is not implemented"),
         },
 
         BootloaderKind::BLSCompatible => {
