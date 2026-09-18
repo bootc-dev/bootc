@@ -39,6 +39,8 @@ preserving the pending upgrade while layering the kargs change on top.
 This command requires ostree >= 2026.1 with `bootconfig-extra` support
 for preserving extension BLS keys through staged deployment roundtrips.
 On older ostree versions, the command will exit with an error.
+ostree >= 2026.5 is needed for the source keys to survive when another
+tool (e.g. `rpm-ostree kargs`) re-stages before the reboot.
 
 # EXAMPLES
 
