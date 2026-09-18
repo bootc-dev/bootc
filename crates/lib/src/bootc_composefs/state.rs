@@ -227,7 +227,7 @@ pub(crate) fn update_boot_digest_in_origin(
 /// * `deployment_id`     - Unique SHA512 hash identifier for this deployment
 /// * `imgref`            - Container image reference for the deployment
 /// * `staged`            - Whether this is a staged deployment (writes to transient state dir)
-/// * `boot_type`         - Boot loader type (`Bls` or `Uki`)
+/// * `boot_type`         - Boot artifact type (`Bls`, `Uki`, or `Aboot`)
 /// * `boot_digest`       - Optional boot digest for verification
 /// * `manifest_digest`   - OCI manifest content digest, stored in the origin file so the
 ///                         manifest+config can be retrieved from the composefs repo later

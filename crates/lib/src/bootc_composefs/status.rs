@@ -714,6 +714,7 @@ fn set_soft_reboot_capability(
         }
 
         BootType::Uki => set_reboot_capable_uki_deployments(storage, booted_cmdline, host),
+        BootType::Aboot => Ok(()),
     }
 }
 
@@ -1074,6 +1075,7 @@ async fn composefs_deployment_status_from(
 
                     (is_rollback_queued, None, Some(menuentries))
                 }
+                BootType::Aboot => anyhow::bail!("aboot status is not implemented"),
             },
 
             // We will have BLS stuff and the UKI stuff in the same DIR
