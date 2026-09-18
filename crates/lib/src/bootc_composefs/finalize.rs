@@ -145,6 +145,7 @@ pub(crate) async fn composefs_backend_finalize(
                 rename_exchange_bls_entries(&entries_dir)?;
             }
             BootType::Uki => finalize_staged_grub_uki(boot_dir)?,
+            BootType::Aboot => anyhow::bail!("aboot finalization is not implemented"),
         },
 
         BootloaderKind::BLSCompatible => {

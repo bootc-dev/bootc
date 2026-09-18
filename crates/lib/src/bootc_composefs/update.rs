@@ -200,6 +200,7 @@ pub(crate) fn validate_update(
                         .context("Removing staged grub user config")?;
                 }
             }
+            BootType::Aboot => anyhow::bail!("aboot update cleanup is not implemented"),
         },
 
         BootloaderKind::BLSCompatible => rm_staged_type1_ent(boot_dir)?,
@@ -309,6 +310,10 @@ pub(crate) async fn do_upgrade(
     let Some(entry) = entries.iter().next() else {
         anyhow::bail!("No boot entries!");
     };
+    let boot_type = BootType::from(entry);
+    if boot_type == BootType::Aboot {
+        anyhow::bail!("aboot boot setup is not implemented");
+    }
 
     let mounted_fs = Dir::reopen_dir(
         &repo
@@ -327,8 +332,6 @@ pub(crate) async fn do_upgrade(
         print_unmergable_paths(&diff, &mut std::io::stderr());
         anyhow::bail!("Merge conflicts found in etc");
     }
-
-    let boot_type = BootType::from(entry);
 
     let (provisional_deploy_id, provisional_format) = (id.clone(), repo.erofs_version());
 
@@ -356,6 +359,7 @@ pub(crate) async fn do_upgrade(
             &repo,
             &oci_fs,
         )?,
+        BootType::Aboot => anyhow::bail!("aboot boot setup is not implemented"),
     };
 
     // `repo` holds its own flock(LOCK_SH) on /sysroot/composefs, taken out by

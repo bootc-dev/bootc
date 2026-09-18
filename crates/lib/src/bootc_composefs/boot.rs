@@ -327,6 +327,7 @@ pub enum BootType {
     #[default]
     Bls,
     Uki,
+    Aboot,
 }
 
 impl ::std::fmt::Display for BootType {
@@ -334,6 +335,7 @@ impl ::std::fmt::Display for BootType {
         let s = match self {
             BootType::Bls => "bls",
             BootType::Uki => "uki",
+            BootType::Aboot => "aboot",
         };
 
         write!(f, "{}", s)
@@ -347,6 +349,7 @@ impl TryFrom<&str> for BootType {
         match value {
             "bls" => Ok(Self::Bls),
             "uki" => Ok(Self::Uki),
+            "aboot" => Ok(Self::Aboot),
             unrecognized => Err(anyhow::anyhow!(
                 "Unrecognized boot option: '{unrecognized}'"
             )),
@@ -360,6 +363,7 @@ impl From<&ComposefsBootEntry<Sha512HashValue>> for BootType {
             ComposefsBootEntry::Type1(..) => Self::Bls,
             ComposefsBootEntry::Type2(..) => Self::Uki,
             ComposefsBootEntry::UsrLibModulesVmLinuz(..) => Self::Bls,
+            ComposefsBootEntry::Aboot(..) => Self::Aboot,
         }
     }
 }
@@ -882,6 +886,7 @@ pub(crate) fn setup_composefs_bls_boot(
     let (bls_config, boot_digest, os_id) = match &entry {
         ComposefsBootEntry::Type1(..) => anyhow::bail!("Found Type1 entries in /boot"),
         ComposefsBootEntry::Type2(..) => anyhow::bail!("Found UKI"),
+        ComposefsBootEntry::Aboot(..) => anyhow::bail!("Found aboot payload"),
 
         ComposefsBootEntry::UsrLibModulesVmLinuz(usr_lib_modules_vmlinuz) => {
             let boot_digest = compute_boot_digest(usr_lib_modules_vmlinuz, &repo)
@@ -1805,6 +1810,7 @@ pub(crate) fn setup_composefs_uki_boot(
             ComposefsBootEntry::UsrLibModulesVmLinuz(..) => {
                 tracing::debug!("Skipping vmlinuz in /usr/lib/modules")
             }
+            ComposefsBootEntry::Aboot(..) => anyhow::bail!("Found aboot payload"),
 
             ComposefsBootEntry::Type2(entry) => {
                 // If --uki-addon is not passed, we don't install any addon (whether
@@ -2103,6 +2109,15 @@ pub(crate) async fn setup_composefs_boot(
         entries,
     } = crate::bootc_composefs::repo::prepare_boot_image(&repo, pull_result)?;
 
+    let Some(entry) = entries.iter().next() else {
+        anyhow::bail!("No boot entries!");
+    };
+
+    let boot_type = BootType::from(entry);
+    if boot_type == BootType::Aboot {
+        bail!("aboot boot setup is not implemented");
+    }
+
     let composefs_mnt_fd = repo
         .mount(&id.to_hex())
         .context("Failed to mount composefs image")?;
@@ -2196,12 +2211,6 @@ pub(crate) async fn setup_composefs_boot(
         })?;
     }
 
-    let Some(entry) = entries.iter().next() else {
-        anyhow::bail!("No boot entries!");
-    };
-
-    let boot_type = BootType::from(entry);
-
     let repo = Arc::try_unwrap(repo).map_err(|_| {
         anyhow::anyhow!(
             "BUG: Arc<Repository> still has other references after boot image generation"
@@ -2232,6 +2241,7 @@ pub(crate) async fn setup_composefs_boot(
             &repo,
             &fs,
         )?,
+        BootType::Aboot => anyhow::bail!("aboot boot setup is not implemented"),
     };
 
     write_composefs_state(

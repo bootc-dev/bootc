@@ -260,6 +260,7 @@ pub(crate) async fn composefs_rollback(
             BootType::Uki => {
                 rollback_grub_uki_entries(boot_dir)?;
             }
+            BootType::Aboot => anyhow::bail!("aboot rollback is not implemented"),
         },
 
         BootloaderKind::BLSCompatible => {

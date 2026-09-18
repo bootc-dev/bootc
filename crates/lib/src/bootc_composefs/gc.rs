@@ -308,6 +308,7 @@ pub(crate) async fn composefs_gc(
                 delete_kernel_initrd(storage, &get_type1_dir_name(verity), gc_opts.dry_run)?
             }
             BootType::Uki => delete_uki(storage, verity, gc_opts.dry_run)?,
+            BootType::Aboot => anyhow::bail!("aboot garbage collection is not implemented"),
         }
     }
 

@@ -392,6 +392,7 @@ pub(crate) async fn prepend_custom_prefix(
                 handle_bls_conf(storage, cfs_cmdline, boot_dir, true)?;
             }
         },
+        BootType::Aboot => anyhow::bail!("aboot backwards compatibility is not implemented"),
     };
 
     Ok(())
