@@ -428,6 +428,8 @@ pub(crate) fn get_status(
         .map(|d| d.unlocked())
         .and_then(crate::spec::deployment_unlocked_state_to_usr_overlay);
 
+    let live_bound_images = crate::applylive::read_state_from_host()?;
+
     let mut host = Host::new(spec);
     host.status = HostStatus {
         staged,
@@ -437,6 +439,7 @@ pub(crate) fn get_status(
         rollback_queued,
         ty,
         usr_overlay,
+        live_bound_images,
         // Set by callers that have storage context (e.g. get_host).
         read_only: false,
     };
@@ -731,6 +734,7 @@ fn human_render_slot(
 
     // Show /usr overlay status
     write_usr_overlay(&mut out, slot, host_status, prefix_len)?;
+    write_live_bound_images(&mut out, slot, host_status, prefix_len)?;
 
     if verbose {
         // Show additional information in verbose mode similar to rpm-ostree
@@ -790,6 +794,26 @@ fn write_usr_overlay(
     Ok(())
 }
 
+/// Helper function to render live-applied bound images
+fn write_live_bound_images(
+    mut out: impl Write,
+    slot: Option<Slot>,
+    host_status: &crate::spec::HostStatus,
+    prefix_len: usize,
+) -> Result<()> {
+    // Only the booted deployment can have live-applied content
+    if !matches!(slot, Some(Slot::Booted)) {
+        return Ok(());
+    }
+    if let Some(live) = host_status.live_bound_images.as_ref() {
+        write_row_name(&mut out, "Live bound images", prefix_len)?;
+        let n = live.images.iter().filter(|i| i.quadlet.is_some()).count();
+        let short = live.checksum.get(..12).unwrap_or(&live.checksum);
+        writeln!(out, "{n} definition(s) applied from {short}")?;
+    }
+    Ok(())
+}
+
 /// Output a rendering of a non-container boot entry.
 fn human_render_slot_ostree(
     mut out: impl Write,
@@ -818,6 +842,7 @@ fn human_render_slot_ostree(
 
     // Show /usr overlay status
     write_usr_overlay(&mut out, slot, host_status, prefix_len)?;
+    write_live_bound_images(&mut out, slot, host_status, prefix_len)?;
 
     if verbose {
         // Show additional information in verbose mode similar to rpm-ostree
