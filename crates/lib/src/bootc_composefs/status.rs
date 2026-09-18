@@ -4,7 +4,9 @@ use anyhow::{Context, Result};
 use bootc_mount::inspect_filesystem;
 use composefs_ctl::composefs::erofs::format::FormatVersion;
 use composefs_ctl::composefs::fsverity::{FsVerityHashValue, Sha512HashValue};
-use composefs_ctl::composefs_boot::cmdline::ComposefsCmdline as BootComposefsCmdline;
+use composefs_ctl::composefs_boot::cmdline::{
+    ComposefsCmdline as BootComposefsCmdline, KARG_COMPOSEFS_DIGEST, KARG_V2,
+};
 use composefs_ctl::composefs_oci;
 use composefs_oci::OciImage;
 use fn_error_context::context;
@@ -20,9 +22,8 @@ use crate::{
         utils::{compute_store_boot_digest_for_uki, get_uki_cmdline},
     },
     composefs_consts::{
-        COMPOSEFS_CMDLINE, COMPOSEFS_DIGEST_CMDLINE, ORIGIN_KEY_BOOT_DIGEST, ORIGIN_KEY_IMAGE,
-        ORIGIN_KEY_MANIFEST_DIGEST, TYPE1_ENT_PATH, TYPE1_ENT_PATH_STAGED, USER_CFG,
-        USER_CFG_STAGED,
+        ORIGIN_KEY_BOOT_DIGEST, ORIGIN_KEY_IMAGE, ORIGIN_KEY_MANIFEST_DIGEST, TYPE1_ENT_PATH,
+        TYPE1_ENT_PATH_STAGED, USER_CFG, USER_CFG_STAGED,
     },
     install::EFI_LOADER_INFO,
     parsers::{
@@ -92,14 +93,38 @@ impl ComposefsCmdline {
     }
 
     /// Search for either supported composefs kernel command line parameter.
-    pub(crate) fn find_in_cmdline(cmdline: &Cmdline) -> Option<Self> {
-        let parsed = BootComposefsCmdline::<Sha512HashValue>::from_cmdline(cmdline).ok()??;
-        Some(Self {
+    pub(crate) fn find_in_cmdline(cmdline: &Cmdline) -> Result<Option<Self>> {
+        let Some(parsed) = BootComposefsCmdline::<Sha512HashValue>::from_cmdline(cmdline)
+            .context("Parsing composefs kernel command line")?
+        else {
+            return Ok(None);
+        };
+        Ok(Some(Self {
             allow_missing_fsverity: parsed.is_insecure(),
             digest: parsed.digest().to_hex().into(),
             is_transient: false,
-        })
+        }))
     }
+}
+
+fn reconcile_composefs_cmdline_with_mount_source(
+    mut cmdline: ComposefsCmdline,
+    mount_source: &str,
+) -> Result<ComposefsCmdline> {
+    let (verity, is_transient) = if let Some(v) = mount_source.strip_prefix("composefs:") {
+        (v, false)
+    } else if let Some(v) = mount_source.strip_prefix("transient:composefs=") {
+        (v, true)
+    } else {
+        anyhow::bail!("Root not mounted using composefs (source: {mount_source})")
+    };
+
+    let mount_cmdline = ComposefsCmdline::new(verity);
+    if *mount_cmdline.digest != *cmdline.digest {
+        cmdline.digest = mount_cmdline.digest;
+    }
+    cmdline.is_transient = is_transient;
+    Ok(cmdline)
 }
 
 /// Render a composefs karg that identifies the EROFS format of `digest`.
@@ -120,11 +145,7 @@ pub(crate) fn build_composefs_karg(
 impl std::fmt::Display for ComposefsCmdline {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let allow_missing_fsverity = if self.allow_missing_fsverity { "?" } else { "" };
-        write!(
-            f,
-            "{}={}{}",
-            COMPOSEFS_CMDLINE, allow_missing_fsverity, self.digest
-        )
+        write!(f, "{}={}{}", KARG_V2, allow_missing_fsverity, self.digest)
     }
 }
 
@@ -166,45 +187,17 @@ pub(crate) fn composefs_booted() -> Result<Option<&'static ComposefsCmdline>> {
         return Ok(v.as_ref());
     }
     let cmdline = Cmdline::from_proc()?;
-    let Some(v) = ComposefsCmdline::find_in_cmdline(&cmdline) else {
+    let Some(v) = ComposefsCmdline::find_in_cmdline(&cmdline)? else {
         return Ok(None);
     };
 
     // Find the source of / mountpoint as the cmdline doesn't change on soft-reboot
     let root_mnt = inspect_filesystem("/".into())?;
 
-    // The mount source encodes the composefs digest in one of two formats:
-    //   - Normal boot:    "composefs:<hash>"
-    //   - Transient root: "transient:composefs=<hash>"
-    // Strip either prefix to get the digest and record whether the root is
-    // transient, then compare the digest with the cmdline value to detect
-    // soft-reboots into a different deployment.
-    let (verity_from_mount_src, is_transient) =
-        if let Some(v) = root_mnt.source.strip_prefix("composefs:") {
-            (v, false)
-        } else if let Some(v) = root_mnt.source.strip_prefix("transient:composefs=") {
-            (v, true)
-        } else {
-            anyhow::bail!(
-                "Root not mounted using composefs (source: {})",
-                root_mnt.source
-            )
-        };
-
-    let r = if *verity_from_mount_src != *v.digest {
-        // soft rebooted into another deployment
-        CACHED_DIGEST_VALUE.get_or_init(|| {
-            let mut c = ComposefsCmdline::new(verity_from_mount_src);
-            c.is_transient = is_transient;
-            Some(c)
-        })
-    } else {
-        CACHED_DIGEST_VALUE.get_or_init(|| {
-            let mut c = v;
-            c.is_transient = is_transient;
-            Some(c)
-        })
-    };
+    // The mount source is authoritative after a soft reboot, while the
+    // parsed command line retains policy such as allow-missing-fsverity.
+    let reconciled = reconcile_composefs_cmdline_with_mount_source(v, &root_mnt.source)?;
+    let r = CACHED_DIGEST_VALUE.get_or_init(|| Some(reconciled));
 
     Ok(r.as_ref())
 }
@@ -740,8 +733,7 @@ fn find_bls_entry<'a>(
 /// Compares cmdline `first` and `second` skipping either composefs karg spelling.
 fn compare_cmdline_skip_cfs(first: &Cmdline<'_>, second: &Cmdline<'_>) -> bool {
     for param in first {
-        if param.key() == COMPOSEFS_CMDLINE.into() || param.key() == COMPOSEFS_DIGEST_CMDLINE.into()
-        {
+        if param.key() == KARG_V2.into() || param.key() == KARG_COMPOSEFS_DIGEST.into() {
             continue;
         }
 
@@ -1181,7 +1173,7 @@ mod tests {
     }
 
     #[test]
-    fn test_build_composefs_karg() {
+    fn test_build_composefs_karg() -> Result<()> {
         let hex = "ab".repeat(64);
         let digest = || Sha512HashValue::from_hex(&hex).unwrap();
 
@@ -1196,12 +1188,14 @@ mod tests {
 
         let cmdline = Cmdline::from(format!("composefs.digest=v1-sha512-12:{hex}"));
         assert_eq!(
-            ComposefsCmdline::find_in_cmdline(&cmdline)
-                .unwrap()
+            ComposefsCmdline::find_in_cmdline(&cmdline)?
+                .expect("composefs argument should be present")
                 .digest
                 .as_ref(),
             hex
         );
+
+        Ok(())
     }
 
     #[test]
@@ -1581,55 +1575,123 @@ mod tests {
     }
 
     #[test]
-    fn test_find_in_cmdline() {
+    fn test_find_in_cmdline() -> Result<()> {
         const DIGEST: &str = "8b7df143d91c716ecfa5fc1730022f6b421b05cedee8fd52b1fc65a96030ad528b7df143d91c716ecfa5fc1730022f6b421b05cedee8fd52b1fc65a96030ad52";
 
-        // Test case: cmdline contains composefs parameter
-        let cmdline = Cmdline::from(format!("root=UUID=abc123 rw composefs={}", DIGEST));
-        let result = ComposefsCmdline::find_in_cmdline(&cmdline);
-        assert!(result.is_some());
-        let cfs = result.unwrap();
-        assert_eq!(cfs.digest.as_ref(), DIGEST);
-        assert!(!cfs.allow_missing_fsverity);
+        let cases = [
+            ("absent", "root=UUID=abc123 rw quiet", None, false),
+            ("legacy", "composefs={DIGEST}", Some(DIGEST), false),
+            (
+                "v1",
+                "composefs.digest=v1-sha512-12:{DIGEST}",
+                Some(DIGEST),
+                false,
+            ),
+            (
+                "dual",
+                "composefs={DIGEST} composefs.digest=v1-sha512-12:{DIGEST}",
+                Some(DIGEST),
+                false,
+            ),
+            ("legacy-insecure", "composefs=?{DIGEST}", Some(DIGEST), true),
+            ("malformed", "composefs=not-a-digest", None, false),
+        ];
 
-        // Test case: cmdline contains composefs parameter with allow_missing_fsverity
-        let cmdline = Cmdline::from(format!("root=UUID=abc123 rw composefs=?{}", DIGEST));
-        let result = ComposefsCmdline::find_in_cmdline(&cmdline);
-        assert!(result.is_some());
-        let cfs = result.unwrap();
-        assert_eq!(cfs.digest.as_ref(), DIGEST);
-        assert!(cfs.allow_missing_fsverity);
+        for (name, input, expected_digest, insecure) in cases {
+            let input = input.replace("{DIGEST}", DIGEST);
+            let result = ComposefsCmdline::find_in_cmdline(&Cmdline::from(input));
+            if name == "malformed" {
+                let error = match result {
+                    Err(error) => error,
+                    Ok(_) => panic!("malformed composefs argument must fail"),
+                };
+                assert!(
+                    format!("{error:#}").contains("Parsing composefs kernel command line"),
+                    "{error:#}"
+                );
+                assert!(format!("{error:#}").contains("composefs="), "{error:#}");
+            } else if let Some(expected_digest) = expected_digest {
+                let cfs = result?.expect("composefs argument should be present");
+                assert_eq!(cfs.digest.as_ref(), expected_digest);
+                assert_eq!(cfs.allow_missing_fsverity, insecure);
+            } else {
+                assert!(result?.is_none(), "{name} should not match");
+            }
+        }
 
-        // Test case: cmdline does not contain composefs parameter
-        let cmdline = Cmdline::from("root=UUID=abc123 rw quiet");
-        let result = ComposefsCmdline::find_in_cmdline(&cmdline);
-        assert!(result.is_none());
+        Ok(())
+    }
 
-        // Test case: empty cmdline
-        let cmdline = Cmdline::from("");
-        let result = ComposefsCmdline::find_in_cmdline(&cmdline);
-        assert!(result.is_none());
+    #[test]
+    fn test_reconcile_composefs_cmdline_with_mount_source() -> Result<()> {
+        let digest_v1 = "ab".repeat(64);
+        let digest_v2 = "cd".repeat(64);
+        let cases = [
+            (
+                "preferred V1, actual V2, strict",
+                format!("composefs.digest=v1-sha512-12:{digest_v1}"),
+                format!("composefs:{digest_v2}"),
+                digest_v2.as_str(),
+                false,
+                false,
+            ),
+            (
+                "preferred V2, actual V2, allow missing, transient",
+                format!("composefs=?{digest_v1}"),
+                format!("transient:composefs={digest_v2}"),
+                digest_v2.as_str(),
+                true,
+                true,
+            ),
+            (
+                "matching digest, strict, normal",
+                format!("composefs={digest_v1}"),
+                format!("composefs:{digest_v1}"),
+                digest_v1.as_str(),
+                false,
+                false,
+            ),
+            (
+                "matching digest, allow missing, transient",
+                format!("composefs=?{digest_v1}"),
+                format!("transient:composefs={digest_v1}"),
+                digest_v1.as_str(),
+                true,
+                true,
+            ),
+        ];
 
-        // Test case: cmdline with other parameters and composefs at different positions
-        let cmdline = Cmdline::from(format!("quiet composefs={} loglevel=3", DIGEST));
-        let result = ComposefsCmdline::find_in_cmdline(&cmdline);
-        assert!(result.is_some());
-        let cfs = result.unwrap();
-        assert_eq!(cfs.digest.as_ref(), DIGEST);
-        assert!(!cfs.allow_missing_fsverity);
+        for (
+            name,
+            cmdline,
+            mount_source,
+            expected_digest,
+            expected_allow_missing,
+            expected_transient,
+        ) in cases
+        {
+            let parsed = ComposefsCmdline::find_in_cmdline(&Cmdline::from(cmdline))?
+                .unwrap_or_else(|| panic!("{name}: composefs argument should be present"));
+            let reconciled = reconcile_composefs_cmdline_with_mount_source(parsed, &mount_source)?;
+            assert_eq!(reconciled.digest.as_ref(), expected_digest, "{name}");
+            assert_eq!(
+                reconciled.allow_missing_fsverity, expected_allow_missing,
+                "{name}"
+            );
+            assert_eq!(reconciled.is_transient, expected_transient, "{name}");
+        }
 
-        // Test case: cmdline with composefs at the beginning
-        let cmdline = Cmdline::from(format!("composefs=?{} root=UUID=abc123 quiet", DIGEST));
-        let result = ComposefsCmdline::find_in_cmdline(&cmdline);
-        assert!(result.is_some());
-        let cfs = result.unwrap();
-        assert_eq!(cfs.digest.as_ref(), DIGEST);
-        assert!(cfs.allow_missing_fsverity);
+        let parsed = ComposefsCmdline::new(&digest_v1);
+        let error = match reconcile_composefs_cmdline_with_mount_source(parsed, "ext4") {
+            Ok(_) => panic!("invalid mount source must fail"),
+            Err(error) => error,
+        };
+        assert!(
+            format!("{error:#}").contains("Root not mounted using composefs (source: ext4)"),
+            "{error:#}"
+        );
 
-        // Test case: cmdline with similar parameter names (should not match)
-        let cmdline = Cmdline::from(format!("composefs_backup={} root=UUID=abc123", DIGEST));
-        let result = ComposefsCmdline::find_in_cmdline(&cmdline);
-        assert!(result.is_none());
+        Ok(())
     }
 
     use crate::testutils::fake_digest_version;

@@ -19,8 +19,8 @@ use crate::spec::BootloaderKind;
 use crate::{
     bootc_composefs::{
         boot::{
-            BootSetupType, BootType, accepted_boot_image_ids, print_uki_dumpfile_diff_on_mismatch,
-            setup_composefs_bls_boot, setup_composefs_uki_boot,
+            BootSetupType, BootType, print_uki_dumpfile_diff_on_mismatch, setup_composefs_bls_boot,
+            setup_composefs_uki_boot,
         },
         gc::composefs_gc,
         repo::pull_composefs_repo,
@@ -279,6 +279,7 @@ pub(crate) async fn do_upgrade(
         repo,
         entries,
         id,
+        boot_ids,
         manifest_digest,
         fs: oci_fs,
     } = pull_composefs_repo(
@@ -329,18 +330,7 @@ pub(crate) async fn do_upgrade(
 
     let boot_type = BootType::from(entry);
 
-    let manifest_oci_digest: composefs_oci::OciDigest = manifest_digest
-        .parse()
-        .with_context(|| format!("Parsing manifest digest {manifest_digest}"))?;
-    let oci_img = composefs_oci::oci_image::OciImage::open(&repo, &manifest_oci_digest, None)
-        .context("Opening OCI image to read boot image refs")?;
-    let boot_id_v1 = oci_img.boot_image_ref_v1().cloned();
-    let boot_id_v2 = oci_img.boot_image_ref_v2().cloned();
-    let (provisional_deploy_id, provisional_format) = match boot_id_v1.as_ref() {
-        Some(v1) => (v1.clone(), FormatVersion::V1),
-        None => (id.clone(), repo.erofs_version()),
-    };
-    let boot_ids = accepted_boot_image_ids(boot_id_v1, boot_id_v2, &id);
+    let (provisional_deploy_id, provisional_format) = (id.clone(), repo.erofs_version());
 
     let (boot_digest, deploy_id) = match boot_type {
         BootType::Bls => (

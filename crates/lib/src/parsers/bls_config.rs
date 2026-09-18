@@ -233,7 +233,7 @@ impl BLSConfig {
                     .as_ref()
                     .ok_or_else(|| anyhow::anyhow!("No options"))?;
 
-                let cfs_cmdline = ComposefsCmdline::find_in_cmdline(&Cmdline::from(&options))
+                let cfs_cmdline = ComposefsCmdline::find_in_cmdline(&Cmdline::from(&options))?
                     .ok_or_else(|| anyhow::anyhow!("No composefs= or composefs.digest= param"))?;
 
                 Ok(cfs_cmdline.digest.to_string())

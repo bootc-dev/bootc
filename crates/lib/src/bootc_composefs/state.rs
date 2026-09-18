@@ -83,7 +83,7 @@ pub(crate) fn get_booted_bls(boot_dir: &Dir, booted_cfs: &BootedComposefs) -> Re
                     anyhow::bail!("options not found in bls config")
                 };
 
-                let cfs_cmdline = ComposefsCmdline::find_in_cmdline(&Cmdline::from(opts))
+                let cfs_cmdline = ComposefsCmdline::find_in_cmdline(&Cmdline::from(opts))?
                     .ok_or_else(|| anyhow::anyhow!("composefs param not found in cmdline"))?;
 
                 if cfs_cmdline.digest == booted_cfs.cmdline.digest {

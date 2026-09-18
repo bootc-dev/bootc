@@ -189,7 +189,11 @@ use serde::{Deserialize, Serialize};
 use self::baseline::InstallBlockDeviceOpts;
 use crate::bootc_composefs::status::ComposefsCmdline;
 use crate::bootc_composefs::{
-    boot::setup_composefs_boot, repo::initialize_composefs_repository,
+    boot::setup_composefs_boot,
+    repo::{
+        finalize_fresh_repository_policy, initialize_composefs_repository,
+        pull_install_composefs_repository, tag_pulled_image, validate_repository_policy,
+    },
     status::get_container_manifest_and_config,
 };
 use crate::bootc_kargs::{INITRD_ARG_PREFIX, ROOTFLAGS_KEY};
@@ -609,10 +613,13 @@ pub(crate) struct InstallPrintConfigurationOpts {
 /// Global state captured from the container.
 #[derive(Debug, Clone)]
 pub(crate) struct SourceInfo {
-    /// Image reference we'll pull from (today always containers-storage: type)
+    /// Original image reference, retained for user-facing output and origin data.
     pub(crate) imageref: ostree_container::ImageReference,
-    /// The digest to use for pulls
+    /// Manifest digest reported by `podman inspect`, if this is a running
+    /// container.  This is not the image's containers-storage config ID.
     pub(crate) digest: Option<String>,
+    /// Running container's immutable containers-storage config ID, if any.
+    pub(crate) host_image_id: Option<String>,
     /// Whether or not SELinux appears to be enabled in the source commit
     pub(crate) selinux: bool,
     /// Whether the source is available in the host mount namespace
@@ -646,6 +653,8 @@ pub(crate) struct State {
 
     // If Some, then --composefs_native is passed
     pub(crate) composefs_options: InstallComposefsOpts,
+    pub(crate) composefs_fsverity_supported: bool,
+    pub(crate) allow_missing_verity_explicit: bool,
 }
 
 // Shared read-only global state
@@ -818,6 +827,12 @@ impl FromStr for MountSpec {
 }
 
 impl SourceInfo {
+    /// Return the source reference used by composefs.  Host-container imports
+    /// must use the config ID rather than the mutable human-facing tag.
+    pub(crate) fn composefs_fetch_reference(&self) -> ostree_container::ImageReference {
+        composefs_fetch_reference(&self.imageref, self.host_image_id.as_deref())
+    }
+
     // Inspect container information and convert it to an ostree image reference
     // that pulls from containers-storage.
     #[context("Gathering source info from container env")]
@@ -837,14 +852,19 @@ impl SourceInfo {
         };
         tracing::debug!("Finding digest for image ID {}", container_info.imageid);
         let digest = crate::podman::imageid_to_digest(&container_info.imageid)?;
-
-        Self::new(imageref, Some(digest), root, true)
+        Self::new(
+            imageref,
+            Some(digest),
+            Some(container_info.imageid.clone()),
+            root,
+            true,
+        )
     }
 
     #[context("Creating source info from a given imageref")]
     pub(crate) fn from_imageref(imageref: &str, root: &Dir) -> Result<Self> {
         let imageref = ostree_container::ImageReference::try_from(imageref)?;
-        Self::new(imageref, None, root, false)
+        Self::new(imageref, None, None, root, false)
     }
 
     fn have_selinux_from_repo(root: &Dir) -> Result<bool> {
@@ -867,6 +887,7 @@ impl SourceInfo {
     fn new(
         imageref: ostree_container::ImageReference,
         digest: Option<String>,
+        host_image_id: Option<String>,
         root: &Dir,
         in_host_mountns: bool,
     ) -> Result<Self> {
@@ -878,10 +899,23 @@ impl SourceInfo {
         Ok(Self {
             imageref,
             digest,
+            host_image_id,
             selinux,
             in_host_mountns,
         })
     }
+}
+
+fn composefs_fetch_reference(
+    imageref: &ostree_container::ImageReference,
+    host_image_id: Option<&str>,
+) -> ostree_container::ImageReference {
+    host_image_id
+        .map(|config_id| ostree_container::ImageReference {
+            transport: ostree_container::Transport::ContainerStorage,
+            name: config_id.to_owned(),
+        })
+        .unwrap_or_else(|| imageref.clone())
 }
 
 pub(crate) fn print_configuration(opts: InstallPrintConfigurationOpts) -> Result<()> {
@@ -1577,6 +1611,7 @@ async fn prepare_install(
     target_fs: Option<FilesystemEnum>,
 ) -> Result<Arc<State>> {
     tracing::trace!("Preparing install");
+    let allow_missing_verity_explicit = composefs_options.allow_missing_verity;
     let rootfs = cap_std::fs::Dir::open_ambient_dir("/", cap_std::ambient_authority())
         .context("Opening /")?;
 
@@ -1740,6 +1775,7 @@ async fn prepare_install(
             .and_then(|c| c.filesystem_root())
             .and_then(|r| r.fstype))
         .ok_or_else(|| anyhow::anyhow!("No root filesystem specified"))?;
+    let composefs_fsverity_supported = root_filesystem.supports_fsverity();
 
     let mut is_uki = false;
 
@@ -1753,10 +1789,12 @@ async fn prepare_install(
     match kernel {
         Some(k) => match k.k_type {
             crate::kernel::KernelType::Uki { cmdline, .. } => {
-                let allow_missing_fsverity = cmdline.is_some_and(|cmd| {
-                    ComposefsCmdline::find_in_cmdline(&cmd)
+                let allow_missing_fsverity = if let Some(cmdline) = cmdline {
+                    ComposefsCmdline::find_in_cmdline(&cmdline)?
                         .is_some_and(|cfs_cmdline| cfs_cmdline.allow_missing_fsverity)
-                });
+                } else {
+                    false
+                };
 
                 if !allow_missing_fsverity {
                     anyhow::ensure!(
@@ -1831,6 +1869,8 @@ async fn prepare_install(
         host_is_container,
         composefs_required,
         composefs_options,
+        composefs_fsverity_supported,
+        allow_missing_verity_explicit,
     });
 
     Ok(state)
@@ -2049,51 +2089,62 @@ async fn install_to_filesystem_impl(
     }
 
     if state.composefs_options.composefs_backend {
-        // Pre-flight disk space check for native composefs install path.
-        {
-            let imgref = &state.source.imageref;
-            let img_manifest_config = get_container_manifest_and_config(&imgref).await?;
-            crate::store::ensure_composefs_dir(&rootfs.physical_root)?;
-            // Use init_path since the repo may not exist yet during install.
-            // Generate both V1 and V2 EROFS images (see initialize_composefs_repository);
-            // this config must match the one used there since it re-inits the same repo.
-            let allow_missing_fsverity = state.composefs_options.allow_missing_verity;
-            let config =
-                crate::bootc_composefs::repo::composefs_repository_config(allow_missing_fsverity);
-            let (cfs_repo, _created) = crate::store::ComposefsRepository::init_path(
+        let fetch_ref = state.source.composefs_fetch_reference();
+        let manifest = get_container_manifest_and_config(&fetch_ref).await?;
+        // A capable filesystem gets a strict provisional repository.  The
+        // imported image is inspected below; only a fresh repository may then
+        // atomically adopt the image's explicit relaxed policy.
+        let provisional_relaxed = !state.composefs_fsverity_supported;
+        let fetch_imgref = Some(fetch_ref.clone().into());
+        let initialized = initialize_composefs_repository(state, rootfs, provisional_relaxed)?;
+        crate::deploy::check_disk_space_composefs(
+            &initialized.repo,
+            &manifest.manifest,
+            &ImageReference {
+                image: fetch_ref.name.clone(),
+                transport: fetch_ref.transport.to_string(),
+                signature: None,
+            },
+        )?;
+        let pull_result = pull_install_composefs_repository(
+            state,
+            rootfs,
+            &initialized.repo,
+            state.target_opts.unified_storage_exp,
+            fetch_imgref.as_ref(),
+        )
+        .await?;
+        let uki_policy =
+            crate::bootc_composefs::repo::inspect_uki_policy(&initialized.repo, &pull_result)?;
+
+        let requested_relaxed = crate::bootc_composefs::repo::final_repository_policy(
+            uki_policy,
+            state.composefs_options.allow_missing_verity,
+        );
+        if !initialized.created {
+            validate_repository_policy(
+                initialized.repository_insecure,
+                requested_relaxed,
+                state.allow_missing_verity_explicit,
+            )?;
+        } else if !requested_relaxed && provisional_relaxed {
+            anyhow::bail!(
+                "Initial UKI requires fs-verity, but the target filesystem does not support it"
+            );
+        }
+        // Repository handles retain LOCK_SH, so no Arc may remain before the
+        // fresh-policy replacement below takes LOCK_EX.
+        drop(initialized.repo);
+        if initialized.created && requested_relaxed && !provisional_relaxed {
+            finalize_fresh_repository_policy(
                 &rootfs.physical_root,
-                crate::store::COMPOSEFS,
-                config,
-            )?;
-            crate::bootc_composefs::repo::validate_repository_policy(
-                &cfs_repo,
-                allow_missing_fsverity,
-            )?;
-            crate::deploy::check_disk_space_composefs(
-                &cfs_repo,
-                &img_manifest_config.manifest,
-                &crate::spec::ImageReference {
-                    image: imgref.name.clone(),
-                    transport: imgref.transport.to_string(),
-                    signature: None,
-                },
+                crate::bootc_composefs::repo::composefs_repository_config(false),
             )?;
         }
-        let pull_result = initialize_composefs_repository(
-            state,
-            rootfs,
-            state.composefs_options.allow_missing_verity,
-            state.target_opts.unified_storage_exp,
-        )
-        .await?;
+        let allow_missing_verity = requested_relaxed;
+        tag_pulled_image(&rootfs.physical_root, &pull_result)?;
 
-        setup_composefs_boot(
-            rootfs,
-            state,
-            &pull_result,
-            state.composefs_options.allow_missing_verity,
-        )
-        .await?;
+        setup_composefs_boot(rootfs, state, &pull_result, allow_missing_verity).await?;
 
         // Label composefs objects as /usr so they get usr_t rather than
         // default_t (which has no policy match).
@@ -3003,6 +3054,28 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(c.block_opts.device, "/dev/vda");
+    }
+
+    #[test]
+    fn source_fetch_reference_uses_config_id_for_host_images() {
+        let cases = [
+            (
+                "containers-storage:localhost/os:latest",
+                Some("sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"),
+                "containers-storage:sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            ),
+            (
+                "docker://quay.io/example/os:latest",
+                None,
+                "docker://quay.io/example/os:latest",
+            ),
+            ("oci:/tmp/image", None, "oci:/tmp/image"),
+        ];
+        for (original, config_id, expected) in cases {
+            let original = original.parse().unwrap();
+            let fetched = composefs_fetch_reference(&original, config_id);
+            assert_eq!(fetched.to_string(), expected);
+        }
     }
 
     #[test]
