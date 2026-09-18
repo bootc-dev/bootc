@@ -204,7 +204,8 @@
       "type": "string",
       "enum": [
         "Bls",
-        "Uki"
+        "Uki",
+        "Aboot"
       ]
     },
     "Bootloader": {
