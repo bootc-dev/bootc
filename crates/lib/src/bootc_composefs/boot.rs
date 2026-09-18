@@ -592,6 +592,13 @@ pub(crate) fn compute_boot_digest_uki<R: Read + Seek>(uki_reader: &mut R) -> Res
     hasher.update(&vmlinuz).context("hashing vmlinuz")?;
     hasher.update(&initramfs).context("hashing initrd")?;
 
+    uki_reader.seek(SeekFrom::Start(0))?;
+    match uki::get_section_buffered(uki_reader, ".dtb") {
+        Ok(data) => hasher.update(&data).context("hashing dtb")?,
+        Err(uki::UkiError::MissingSection(_)) => {}
+        Err(error) => return Err(error.into()),
+    }
+
     let digest: &[u8] = &hasher.finish().context("Finishing digest")?;
 
     Ok(hex::encode(digest))
