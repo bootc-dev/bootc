@@ -326,4 +326,5 @@ execute:
     test:
       - /tmt/tests/tests/test-49-switch-target-imgref
   extra-skip_if_ostree: true
+  extra-fixme_skip_if_uki: true
 # END GENERATED PLANS

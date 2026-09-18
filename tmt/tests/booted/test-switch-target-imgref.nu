@@ -4,11 +4,18 @@
 #   duration: 30m
 # extra:
 #   skip_if_ostree: true
+#   fixme_skip_if_uki: true
 #
 # Verify that `bootc switch --target-imgref` fetches the image from the given
 # source (here a local containers-storage copy) but persists the *decoupled*
 # reference as the origin for subsequent upgrades (issue #2464), on the
 # composefs backend.
+#
+# Skipped on UKI: the test switches to a freshly derived image, whose composefs
+# digest won't match the one sealed into the booted UKI, so the switch is
+# rejected before the origin is ever recorded (same limitation as
+# test-composefs-gc). The decoupling logic is boot-type agnostic and is covered
+# on the BLS composefs matrix.
 use std assert
 use tap.nu
 
