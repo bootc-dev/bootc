@@ -16,7 +16,8 @@
 #   3. Three devices, partial ESP: Three disks, ESP on disk1+disk3 only
 #
 # Reboot 2:
-#   4. Single device (no LVM): ESP + root partition on a single disk
+#   4. Single device (no LVM): ESP + root partition on a single disk;
+#      also checks that non-bootloader ESP content is preserved
 #   5. No ESP anywhere: Two disks with no ESP; install should fail gracefully
 #
 # This validates the fix for https://github.com/bootc-dev/bootc/issues/481
@@ -155,6 +156,17 @@ def validate_esp [esp_partition: string] {
     if $efi_contents == 0 {
         error make {msg: $"ESP validation failed: EFI directory is empty on ($esp_partition)"}
     }
+}
+
+# Mount an ESP partition, run a closure on the mountpoint, and unmount it
+def with_esp [esp_partition: string, f: closure] {
+    let esp_mount = "/var/mnt/esp_seed"
+    mkdir $esp_mount
+    mount $esp_partition $esp_mount
+    let r = (do $f $esp_mount)
+    umount $esp_mount
+    rmdir $esp_mount
+    $r
 }
 
 # Run bootc install to-existing-root from within the container image under test
@@ -356,8 +368,15 @@ def test_single_device_no_lvm [] {
         mkdir $mountpoint
         mount $"($loop1)p2" $mountpoint
 
-        # Create boot directory
-        mkdir $"($mountpoint)/boot"
+        # Create /boot/efi so the ESP gets mounted and cleaned
+        mkdir $"($mountpoint)/boot/efi"
+
+        # Seed non-bootloader content (as on Asahi) and a stale bootloader dir
+        with_esp $"($loop1)p1" {|esp|
+            mkdir $"($esp)/m1n1" $"($esp)/EFI/stale"
+            "m1n1" | save $"($esp)/m1n1/boot.bin"
+            "stale" | save $"($esp)/EFI/stale/x.efi"
+        }
 
         # Show block device hierarchy
         lsblk --pairs --paths --inverse --output NAME,TYPE $"($loop1)p2"
@@ -366,6 +385,12 @@ def test_single_device_no_lvm [] {
 
         # Validate ESP was installed correctly
         validate_esp $"($loop1)p1"
+        let r = (with_esp $"($loop1)p1" {|esp| {
+            m1n1: ($"($esp)/m1n1/boot.bin" | path exists)
+            stale: ($"($esp)/EFI/stale" | path exists)
+        }})
+        assert $r.m1n1 "m1n1/boot.bin was removed from the ESP"
+        assert (not $r.stale) "EFI/stale was not removed from the ESP"
     } catch {|e|
         cleanup_simple $loop1 $mountpoint
         rm -f $disk1
