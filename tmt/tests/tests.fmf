@@ -197,3 +197,8 @@ check:
   summary: Test composefs UKI dumpfile diff print
   duration: 30m
   test: nu booted/test-composefs-uki-dumpfile.nu
+
+/test-49-switch-target-imgref:
+  summary: switch --target-imgref records a decoupled origin (composefs)
+  duration: 30m
+  test: nu booted/test-switch-target-imgref.nu

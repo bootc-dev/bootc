@@ -63,6 +63,16 @@ Soft reboot allows faster system restart by avoiding full hardware reboot when p
 
     Default: registry
 
+**--target-imgref**=*TARGET_IMGREF*
+
+    Specify the image to record as the origin for subsequent updates
+
+**--target-transport**=*TARGET_TRANSPORT*
+
+    The transport for `--target-imgref`; e.g. registry, oci, oci-archive, docker-daemon, containers-storage.  Defaults to `registry`
+
+    Default: registry
+
 **--download-only**
 
     Download and stage the update without applying it

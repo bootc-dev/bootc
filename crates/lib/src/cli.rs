@@ -165,6 +165,22 @@ pub(crate) struct SwitchOpts {
     #[clap(long, default_value = "registry")]
     pub(crate) transport: String,
 
+    /// Specify the image to record as the origin for subsequent updates.
+    ///
+    /// By default the image is fetched from `--transport`/`<TARGET>` and that same
+    /// reference is also persisted as the origin used for future `bootc upgrade`s.
+    /// Use this to decouple the two: the image is still fetched now from
+    /// `--transport`/`<TARGET>` (e.g. a local `containers-storage` copy loaded via
+    /// `podman load`), but the origin recorded for subsequent updates is this
+    /// reference instead (e.g. the normal registry pull spec).
+    #[clap(long, conflicts_with_all = ["from_downloaded", "mutate_in_place"])]
+    pub(crate) target_imgref: Option<String>,
+
+    /// The transport for `--target-imgref`; e.g. registry, oci, oci-archive,
+    /// docker-daemon, containers-storage.  Defaults to `registry`.
+    #[clap(long, default_value = "registry")]
+    pub(crate) target_transport: String,
+
     #[clap(flatten)]
     pub(crate) download_opts: DownloadOnlyOpts,
 
@@ -1495,6 +1511,27 @@ pub(crate) fn imgref_for_switch(opts: &SwitchOpts) -> Result<ImageReference> {
     return Ok(target);
 }
 
+/// Build the optional `--target-imgref` for `switch`; this is the reference that will
+/// be recorded as the origin for subsequent updates, decoupled from the source the
+/// image is fetched from now. Returns `None` when `--target-imgref` was not provided.
+pub(crate) fn target_imgref_for_switch(
+    opts: &SwitchOpts,
+) -> Result<Option<ostree_container::OstreeImageReference>> {
+    let Some(name) = opts.target_imgref.as_deref() else {
+        return Ok(None);
+    };
+    let transport = ostree_container::Transport::try_from(opts.target_transport.as_str())?;
+    let imgref = ostree_container::ImageReference {
+        transport,
+        name: name.to_string(),
+    };
+    let sigverify = sigpolicy_from_opt(opts.enforce_container_sigpolicy);
+    Ok(Some(ostree_container::OstreeImageReference {
+        sigverify,
+        imgref,
+    }))
+}
+
 /// Implementation of the `bootc switch` CLI command for ostree backend.
 #[context("Switching (ostree)")]
 async fn switch_ostree(
@@ -1517,7 +1554,16 @@ async fn switch_ostree(
         .await;
     }
 
-    let target = imgref_for_switch(&opts)?;
+    // The source we fetch the image from right now.
+    let source = imgref_for_switch(&opts)?;
+    // Optional decoupled reference to persist as the origin for subsequent updates.
+    let target_imgref = target_imgref_for_switch(&opts)?;
+    // What we record in the spec/origin for future upgrades: the `--target-imgref`
+    // if given, otherwise the same reference we're fetching from.
+    let origin_ref = match target_imgref.as_ref() {
+        Some(t) => ImageReference::from(t.clone()),
+        None => source.clone(),
+    };
     let prog: ProgressWriter = opts.progress.try_into()?;
     let cancellable = gio::Cancellable::NONE;
 
@@ -1525,11 +1571,15 @@ async fn switch_ostree(
 
     let new_spec = {
         let mut new_spec = host.spec.clone();
-        new_spec.image = Some(target.clone());
+        new_spec.image = Some(origin_ref.clone());
         new_spec
     };
 
-    if new_spec == host.spec {
+    // Only take the unchanged fast path when the pull source is also the origin.
+    // With `--target-imgref` the source is decoupled from the persisted origin, so a
+    // switch from a different source keeping the same origin (issue #2464) must still
+    // run the pull even though `new_spec == host.spec`.
+    if target_imgref.is_none() && new_spec == host.spec {
         println!("Image specification is unchanged.");
         if opts.apply && host.status.staged.is_some() {
             crate::reboot::reboot()?;
@@ -1549,11 +1599,13 @@ async fn switch_ostree(
     tracing::info!(
         message_id = SWITCH_JOURNAL_ID,
         bootc.old_image_reference = old_image,
-        bootc.new_image_reference = &target.image,
-        bootc.new_image_transport = &target.transport,
+        bootc.new_image_reference = &origin_ref.image,
+        bootc.new_image_transport = &origin_ref.transport,
+        bootc.source_image_reference = &source.image,
+        bootc.source_image_transport = &source.transport,
         "Switching from image {} to {}",
         old_image,
-        target.image
+        origin_ref.image
     );
 
     let new_spec = RequiredHostSpec::from_spec(&new_spec)?;
@@ -1564,14 +1616,14 @@ async fn switch_ostree(
     let use_unified = if opts.unified_storage_exp {
         true
     } else {
-        crate::deploy::image_exists_in_unified_storage(storage, &target).await?
+        crate::deploy::image_exists_in_unified_storage(storage, &source).await?
     };
 
     let fetched = if use_unified {
         crate::deploy::pull_unified(
             repo,
-            &target,
-            None,
+            &source,
+            target_imgref.as_ref(),
             opts.quiet,
             prog.clone(),
             storage,
@@ -1581,8 +1633,8 @@ async fn switch_ostree(
     } else {
         crate::deploy::pull(
             repo,
-            &target,
-            None,
+            &source,
+            target_imgref.as_ref(),
             opts.quiet,
             prog.clone(),
             Some(&booted_ostree.deployment),
@@ -2720,6 +2772,74 @@ mod tests {
             Opt::parse_including_static(["bootc", "status", "-v"]),
             Opt::Status(StatusOpts { verbose: true, .. })
         ));
+    }
+
+    #[test]
+    fn test_parse_switch_target_imgref() {
+        // Without --target-imgref, source and origin are the same reference.
+        let o = Opt::try_parse_from([
+            "bootc",
+            "switch",
+            "--transport",
+            "containers-storage",
+            "localhost/someimage",
+        ])
+        .unwrap();
+        let opts = match o {
+            Opt::Switch(opts) => opts,
+            o => panic!("Expected switch opts, not {o:?}"),
+        };
+        assert_eq!(opts.transport, "containers-storage");
+        assert!(opts.target_imgref.is_none());
+        assert!(target_imgref_for_switch(&opts).unwrap().is_none());
+        let source = imgref_for_switch(&opts).unwrap();
+        assert_eq!(source.transport, "containers-storage");
+        assert_eq!(source.image, "localhost/someimage");
+
+        // With --target-imgref, the image is fetched from --transport/<TARGET> but the
+        // origin recorded for upgrades is the (registry, by default) target imgref.
+        let o = Opt::try_parse_from([
+            "bootc",
+            "switch",
+            "--transport",
+            "containers-storage",
+            "--target-imgref",
+            "quay.io/example/os:latest",
+            "localhost/someimage",
+        ])
+        .unwrap();
+        let opts = match o {
+            Opt::Switch(opts) => opts,
+            o => panic!("Expected switch opts, not {o:?}"),
+        };
+        assert_eq!(
+            opts.target_imgref.as_deref(),
+            Some("quay.io/example/os:latest")
+        );
+        assert_eq!(opts.target_transport, "registry");
+        let source = imgref_for_switch(&opts).unwrap();
+        assert_eq!(source.transport, "containers-storage");
+        assert_eq!(source.image, "localhost/someimage");
+        let target = target_imgref_for_switch(&opts).unwrap().unwrap();
+        assert_eq!(
+            target.imgref.transport,
+            ostree_container::Transport::Registry
+        );
+        assert_eq!(target.imgref.name, "quay.io/example/os:latest");
+
+        // --target-imgref performs a real pull; --mutate-in-place performs none, so the
+        // combination is rejected rather than silently ignoring --target-imgref.
+        assert!(
+            Opt::try_parse_from([
+                "bootc",
+                "switch",
+                "--mutate-in-place",
+                "--target-imgref",
+                "quay.io/example/os:latest",
+                "localhost/someimage",
+            ])
+            .is_err()
+        );
     }
 
     #[test]
