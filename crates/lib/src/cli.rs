@@ -841,6 +841,8 @@ pub(crate) enum InternalsOpts {
     },
     /// Ensure that a composefs repository is initialized
     TestComposefs,
+    /// Record the booted aboot slot in persistent deployment state.
+    ComposefsAbootReconcile,
     /// Loopback device cleanup helper (internal use only)
     LoopbackCleanupHelper {
         /// Device path to clean up
@@ -2444,6 +2446,14 @@ async fn run_from_opt(opt: Opt) -> Result<CliExitStatus> {
         }
         Opt::Status(opts) => super::status::status(opts).await,
         Opt::Internals(opts) => match opts {
+            InternalsOpts::ComposefsAbootReconcile => {
+                let storage = get_storage().await?;
+                ensure!(
+                    matches!(storage.kind()?, BootedStorageKind::Composefs(_)),
+                    "Aboot reconciliation requires the composefs backend"
+                );
+                Ok(())
+            }
             InternalsOpts::SystemdGenerator {
                 normal_dir,
                 early_dir: _,

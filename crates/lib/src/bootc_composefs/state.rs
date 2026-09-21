@@ -64,6 +64,17 @@ pub(crate) fn read_origin(sysroot: &Dir, deployment_id: &str) -> Result<Option<t
     Ok(Some(ini))
 }
 
+pub(crate) fn read_boot_type(sysroot: &Dir, deployment_id: &str) -> Result<Option<BootType>> {
+    Sha512HashValue::from_hex(deployment_id).context("Invalid deployment digest")?;
+    let Some(origin) = read_origin(sysroot, deployment_id)? else {
+        return Ok(None);
+    };
+    origin
+        .get::<String>(ORIGIN_KEY_BOOT, ORIGIN_KEY_BOOT_TYPE)
+        .map(|value| BootType::try_from(value.as_str()))
+        .transpose()
+}
+
 pub(crate) fn get_booted_bls(boot_dir: &Dir, booted_cfs: &BootedComposefs) -> Result<BLSConfig> {
     let sorted_entries = get_sorted_type1_boot_entries(boot_dir, true)?;
 
