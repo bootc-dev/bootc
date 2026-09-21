@@ -37,7 +37,11 @@ fn list_state_dirs(sysroot: &Dir) -> Result<Vec<String>> {
     let state = sysroot
         .open_dir(STATE_DIR_RELATIVE)
         .context("Opening state dir")?;
+    list_deployment_state_dirs(&state)
+}
 
+/// List the per-deployment directories in an opened composefs state directory.
+pub(crate) fn list_deployment_state_dirs(state: &Dir) -> Result<Vec<String>> {
     let mut dirs = vec![];
 
     for dir in state.entries_utf8()? {

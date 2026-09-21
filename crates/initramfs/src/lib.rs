@@ -67,9 +67,9 @@ fn mount_setattr(fd: impl AsFd, flags: libc::c_int, attr: &MountAttr) -> Result<
     Ok(())
 }
 
-/// Set mount to readonly
+/// Set a detached mount tree read-only without reopening its path.
 #[context("Setting mount readonly")]
-fn set_mount_readonly(fd: impl AsFd) -> Result<()> {
+pub fn set_mount_readonly(fd: impl AsFd) -> Result<()> {
     let attr = MountAttr {
         attr_set: MOUNT_ATTR_RDONLY,
         attr_clr: 0,
@@ -77,6 +77,18 @@ fn set_mount_readonly(fd: impl AsFd) -> Result<()> {
         userns_fd: 0,
     };
     mount_setattr(fd, libc::AT_EMPTY_PATH, &attr)
+}
+
+/// Set a mount and every mount below it read-only.
+#[context("Setting mount tree readonly")]
+pub fn set_mount_tree_readonly(fd: impl AsFd) -> Result<()> {
+    let attr = MountAttr {
+        attr_set: MOUNT_ATTR_RDONLY,
+        attr_clr: 0,
+        propagation: 0,
+        userns_fd: 0,
+    };
+    mount_setattr(fd, libc::AT_EMPTY_PATH | libc::AT_RECURSIVE, &attr)
 }
 
 /// Types of mounts supported by the configuration
@@ -111,12 +123,15 @@ pub struct MountConfig {
     pub transient: bool,
 }
 
+/// The setup-root configuration, see `bootc-setup-root-conf(5)`.
 #[derive(Debug, Deserialize, Default, PartialEq)]
-struct Config {
+pub struct Config {
+    /// How `/etc` is mounted
     #[serde(default)]
-    etc: MountConfig,
+    pub etc: MountConfig,
+    /// How `/var` is mounted
     #[serde(default)]
-    var: MountConfig,
+    pub var: MountConfig,
     #[serde(default)]
     root: RootConfig,
 }

@@ -224,8 +224,6 @@ const ALONGSIDE_ROOT_MOUNT: &str = "/target";
 pub(crate) const DESTRUCTIVE_CLEANUP: &str = "etc/bootc-destructive-cleanup";
 /// This is an ext4 special directory we need to ignore.
 const LOST_AND_FOUND: &str = "lost+found";
-/// The filename of the composefs EROFS superblock; TODO move this into ostree
-const OSTREE_COMPOSEFS_SUPER: &str = ".ostree.cfs";
 /// The mount path for selinux
 const SELINUXFS: &str = "/sys/fs/selinux";
 /// The mount path for uefi
@@ -1277,11 +1275,14 @@ async fn install_container(
             .with_context(|| format!("Recursive SELinux relabeling of {d}"))?;
         }
 
-        if let Some(cfs_super) = root.open_optional(OSTREE_COMPOSEFS_SUPER)? {
+        if let Some(cfs_super) = root.open_optional(ostree_prepareroot::COMPOSEFS_IMAGE)? {
             let label = crate::lsm::require_label(policy, "/usr".into(), 0o644)?;
             crate::lsm::set_security_selinux(cfs_super.as_fd(), label.as_bytes())?;
         } else {
-            tracing::warn!("Missing {OSTREE_COMPOSEFS_SUPER}; composefs is not enabled?");
+            tracing::warn!(
+                "Missing {}; composefs is not enabled?",
+                ostree_prepareroot::COMPOSEFS_IMAGE
+            );
         }
     }
 
