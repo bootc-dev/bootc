@@ -44,6 +44,19 @@ impl Slot {
     }
 }
 
+pub(crate) fn slot_deployments(sysroot: &Dir) -> Result<Vec<Sha512HashValue>> {
+    let mut deployments = Vec::new();
+    for slot in [Slot::A, Slot::B] {
+        let Some(deployment) = read_slot(sysroot, slot)? else {
+            continue;
+        };
+        if !deployments.contains(&deployment) {
+            deployments.push(deployment);
+        }
+    }
+    Ok(deployments)
+}
+
 pub(crate) fn lock(run: &Dir) -> Result<OwnedFd> {
     let fd = openat(
         run,
@@ -229,6 +242,20 @@ mod tests {
             record_booted(&root, &Cmdline::from("androidboot.slot_suffix=_a"), &digest).is_err()
         );
         assert!(record_booted(&root, &Cmdline::from(""), "../invalid").is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn deployments_deduplicates_slots() -> Result<()> {
+        let root = tempdir(ambient_authority())?;
+        let digest = "aa".repeat(64);
+        deployment(&root, &digest, "aboot")?;
+        record_booted(&root, &Cmdline::from("androidboot.slot_suffix=_a"), &digest)?;
+        record_booted(&root, &Cmdline::from("androidboot.slot_suffix=_b"), &digest)?;
+        assert_eq!(
+            slot_deployments(&root)?,
+            vec![Sha512HashValue::from_hex(digest)?]
+        );
         Ok(())
     }
 
