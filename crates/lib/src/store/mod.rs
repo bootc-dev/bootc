@@ -659,6 +659,21 @@ pub(crate) struct CachedImageStatus {
 }
 
 impl Storage {
+    #[cfg(test)]
+    pub(crate) fn new_composefs_for_test(physical_root: &Dir, run: &Dir) -> Result<Self> {
+        Ok(Self {
+            physical_root: physical_root.try_clone()?,
+            physical_root_path: Utf8PathBuf::from("/sysroot"),
+            is_ro: false,
+            boot_dir: None,
+            esp: None,
+            run: run.try_clone()?,
+            ostree: Default::default(),
+            composefs: Default::default(),
+            imgstore: Default::default(),
+        })
+    }
+
     /// Create a new storage accessor from an existing ostree sysroot.
     ///
     /// This is used for non-booted scenarios (e.g., `bootc install`) where

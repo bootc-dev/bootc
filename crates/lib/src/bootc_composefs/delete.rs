@@ -229,6 +229,10 @@ pub(crate) async fn delete_composefs_deployment(
         anyhow::bail!("Cannot delete currently booted deployment");
     }
 
+    if booted.boot_type == BootType::Aboot {
+        anyhow::bail!("aboot deployment deletion is not implemented");
+    }
+
     let all_depls = host.all_composefs_deployments()?;
 
     let depl_to_del = all_depls
