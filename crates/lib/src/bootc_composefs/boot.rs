@@ -2078,53 +2078,12 @@ fn get_secureboot_keys(fs: &Dir, p: &str) -> Result<Option<SecurebootKeys>> {
     }));
 }
 
-#[context("Setting up composefs boot")]
-pub(crate) async fn setup_composefs_boot(
+fn install_composefs_bootloader(
     root_setup: &RootSetup,
     state: &State,
-    pull_result: &composefs_oci::PullResult<Sha512HashValue>,
-    allow_missing_fsverity: bool,
+    postfetch: &PostFetchState,
+    mounted_root: &MountedImageRoot,
 ) -> Result<()> {
-    const COMPOSEFS_BOOT_SETUP_JOURNAL_ID: &str = "1f0e9d8c7b6a5f4e3d2c1b0a9f8e7d6c5";
-
-    tracing::info!(
-        message_id = COMPOSEFS_BOOT_SETUP_JOURNAL_ID,
-        bootc.operation = "boot_setup",
-        bootc.config_digest = %pull_result.config_digest,
-        bootc.allow_missing_fsverity = allow_missing_fsverity,
-        "Setting up composefs boot",
-    );
-
-    let mut repo = open_composefs_repo(&root_setup.physical_root)?;
-    if allow_missing_fsverity {
-        repo.set_insecure();
-    }
-
-    let repo = Arc::new(repo);
-
-    let crate::bootc_composefs::repo::BootImage {
-        id,
-        boot_ids,
-        fs,
-        entries,
-    } = crate::bootc_composefs::repo::prepare_boot_image(&repo, pull_result)?;
-
-    let Some(entry) = entries.iter().next() else {
-        anyhow::bail!("No boot entries!");
-    };
-
-    let boot_type = BootType::from(entry);
-    if boot_type == BootType::Aboot {
-        bail!("aboot boot setup is not implemented");
-    }
-
-    let composefs_mnt_fd = repo
-        .mount(&id.to_hex())
-        .context("Failed to mount composefs image")?;
-    let mounted_root = MountedImageRoot::new(composefs_mnt_fd, &root_setup.device_info)?;
-
-    let postfetch = PostFetchState::new(state, mounted_root.dir())?;
-
     let boot_uuid = root_setup
         .get_boot_uuid()?
         .or(root_setup.rootfs_uuid.as_deref())
@@ -2210,6 +2169,57 @@ pub(crate) async fn setup_composefs_boot(
             )
         })?;
     }
+    Ok(())
+}
+
+#[context("Setting up composefs boot")]
+pub(crate) async fn setup_composefs_boot(
+    root_setup: &RootSetup,
+    state: &State,
+    pull_result: &composefs_oci::PullResult<Sha512HashValue>,
+    allow_missing_fsverity: bool,
+) -> Result<()> {
+    const COMPOSEFS_BOOT_SETUP_JOURNAL_ID: &str = "1f0e9d8c7b6a5f4e3d2c1b0a9f8e7d6c5";
+
+    tracing::info!(
+        message_id = COMPOSEFS_BOOT_SETUP_JOURNAL_ID,
+        bootc.operation = "boot_setup",
+        bootc.config_digest = %pull_result.config_digest,
+        bootc.allow_missing_fsverity = allow_missing_fsverity,
+        "Setting up composefs boot",
+    );
+
+    let mut repo = open_composefs_repo(&root_setup.physical_root)?;
+    if allow_missing_fsverity {
+        repo.set_insecure();
+    }
+
+    let repo = Arc::new(repo);
+
+    let crate::bootc_composefs::repo::BootImage {
+        id,
+        boot_ids,
+        fs,
+        entries,
+    } = crate::bootc_composefs::repo::prepare_boot_image(&repo, pull_result)?;
+
+    let Some(entry) = entries.iter().next() else {
+        anyhow::bail!("No boot entries!");
+    };
+
+    let boot_type = BootType::from(entry);
+    if boot_type == BootType::Aboot {
+        bail!("aboot boot setup is not implemented");
+    }
+
+    let composefs_mnt_fd = repo
+        .mount(&id.to_hex())
+        .context("Failed to mount composefs image")?;
+    let mounted_root = MountedImageRoot::new(composefs_mnt_fd, &root_setup.device_info)?;
+
+    let postfetch = PostFetchState::new(state, mounted_root.dir())?;
+
+    install_composefs_bootloader(root_setup, state, &postfetch, &mounted_root)?;
 
     let repo = Arc::try_unwrap(repo).map_err(|_| {
         anyhow::anyhow!(
