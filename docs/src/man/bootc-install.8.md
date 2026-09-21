@@ -40,6 +40,7 @@ When installing with `systemd-boot`, bootc can let `systemd-boot` can handle enr
 <!-- BEGIN GENERATED SUBCOMMANDS -->
 | Command | Description |
 |---------|-------------|
+| **bootc install mount** | Mount an installed deployment into a caller-owned directory |
 | **bootc install to-disk** | Install to the target block device |
 | **bootc install to-filesystem** | Install to an externally created filesystem structure |
 | **bootc install to-existing-root** | Install to the host root filesystem |
@@ -52,4 +53,3 @@ When installing with `systemd-boot`, bootc can let `systemd-boot` can handle enr
 # VERSION
 
 <!-- VERSION PLACEHOLDER -->
-
