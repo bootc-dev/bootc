@@ -895,6 +895,9 @@ pub(crate) enum LoaderEntriesOpts {
     SetOptionsForSource(SetOptionsForSourceOpts),
 }
 
+/// The name of the `bootc loader-entries` subcommand.
+const LOADER_ENTRIES_SUBCOMMAND: &str = "loader-entries";
+
 #[derive(Debug, clap::Subcommand, PartialEq, Eq)]
 pub(crate) enum StateOpts {
     /// Remove all ostree deployments from this system
@@ -1003,7 +1006,10 @@ pub(crate) enum Opt {
     /// Operations on Boot Loader Specification (BLS) entries.
     ///
     /// Manage kernel arguments from multiple independent sources.
-    #[clap(subcommand)]
+    //
+    // Unavailable on hosts whose ostree lacks `bootconfig-extra` support;
+    // see `apply_host_feature_gates`.
+    #[clap(subcommand, name = LOADER_ENTRIES_SUBCOMMAND)]
     LoaderEntries(LoaderEntriesOpts),
     /// Execute the given command in the host mount namespace
     #[clap(hide = true)]
@@ -1920,14 +1926,86 @@ impl Opt {
             };
             if let Some(base_args) = mapped {
                 let base_args = base_args.iter().map(OsString::from);
-                return Opt::parse_from(base_args.chain(args.map(|i| i.into())));
+                return Opt::parse_from_host(base_args.chain(args.map(|i| i.into())));
             }
             Some(first)
         } else {
             None
         };
-        Opt::parse_from(first.into_iter().chain(args.map(|i| i.into())))
+        Opt::parse_from_host(first.into_iter().chain(args.map(|i| i.into())))
     }
+
+    /// Equivalent to [`clap::Parser::parse_from`], but with host feature gates
+    /// applied so that `--help` and error output only advertise what this host
+    /// supports, and gated subcommands are rejected before being dispatched.
+    ///
+    /// [`Opt::command`] always describes the full CLI; it is what documentation
+    /// and shell completions are generated from, so those don't vary with the
+    /// ostree version on the build host.
+    fn parse_from_host<I>(args: I) -> Self
+    where
+        I: IntoIterator,
+        I::Item: Into<OsString> + Clone,
+    {
+        use clap::FromArgMatches;
+        let args: Vec<OsString> = args.into_iter().map(Into::into).collect();
+        let bootconfig_extra = crate::loader_entries::ostree_supports_bootconfig_extra();
+        let host_command = || apply_host_feature_gates(Opt::command(), bootconfig_extra);
+        // A gated subcommand is rejected whatever its arguments, `--help`
+        // included, with a distinct exit status so that a caller probing for
+        // the feature can tell "unsupported here" from a usage error.
+        if host_feature_gate_rejects(&args, bootconfig_extra) {
+            let err = host_command().error(
+                clap::error::ErrorKind::InvalidSubcommand,
+                crate::loader_entries::unsupported_ostree_error(),
+            );
+            // Only stderr can fail here, and we're exiting anyway.
+            let _ = err.print();
+            std::process::exit(EXIT_UNAVAILABLE);
+        }
+        let mut matches = host_command().get_matches_from(args);
+        match Self::from_arg_matches_mut(&mut matches) {
+            Ok(opt) => opt,
+            Err(e) => e.format(&mut host_command()).exit(),
+        }
+    }
+}
+
+/// Exit status when a subcommand is unavailable because the running host
+/// lacks the feature behind it (see [`host_feature_gate_rejects`]).  Distinct
+/// from a usage error (2) and a runtime failure (1) so that a caller probing
+/// for the feature, as TuneD does with
+/// `bootc loader-entries set-options-for-source --help`, can tell
+/// "not supported here" from "failed".  77 is the status test harnesses use
+/// for "skipped".
+pub const EXIT_UNAVAILABLE: i32 = 77;
+
+/// Hide subcommands whose backing functionality is missing on the running
+/// host from `--help`.  Invoking one is rejected before parsing by
+/// [`host_feature_gate_rejects`].
+///
+/// `bootconfig_extra` is whether the host ostree supports `bootconfig-extra`,
+/// which `loader-entries` requires; see
+/// [`crate::loader_entries::ostree_supports_bootconfig_extra`].
+fn apply_host_feature_gates(cmd: clap::Command, bootconfig_extra: bool) -> clap::Command {
+    if bootconfig_extra {
+        return cmd;
+    }
+    cmd.mut_subcommand(LOADER_ENTRIES_SUBCOMMAND, |c| c.hide(true))
+}
+
+/// Whether `args` (argv, including argv0) invoke a subcommand that
+/// [`apply_host_feature_gates`] made unavailable.  The top-level command has
+/// no options that take a value, so the first non-option argument is the
+/// subcommand name.
+fn host_feature_gate_rejects(args: &[OsString], bootconfig_extra: bool) -> bool {
+    if bootconfig_extra {
+        return false;
+    }
+    args.iter()
+        .skip(1)
+        .find(|a| !a.to_string_lossy().starts_with('-'))
+        .is_some_and(|a| a.as_os_str() == OsStr::new(LOADER_ENTRIES_SUBCOMMAND))
 }
 
 /// Internal (non-generic/monomorphized) primary CLI entrypoint
@@ -2910,6 +2988,76 @@ mod tests {
             let s = String::from_utf8(buf).expect("completion should be utf8");
             for w in &want {
                 assert!(s.contains(w), "{shell:?} completion missing {w}");
+            }
+        }
+    }
+
+    #[test]
+    fn test_host_feature_gates() {
+        // The full CLI (used for docs and completions) always advertises the command.
+        let full = Opt::command();
+        let sub = full
+            .find_subcommand(LOADER_ENTRIES_SUBCOMMAND)
+            .expect("loader-entries subcommand");
+        assert!(!sub.is_hide_set());
+
+        let invocation = [
+            "bootc",
+            LOADER_ENTRIES_SUBCOMMAND,
+            "set-options-for-source",
+            "--source",
+            "tuned",
+        ];
+
+        // (host ostree supports bootconfig-extra, expect subcommand available)
+        for (supported, expect_available) in [(true, true), (false, false)] {
+            let cmd = apply_host_feature_gates(Opt::command(), supported);
+            let visible: Vec<_> = cmd
+                .get_subcommands()
+                .filter(|c| !c.is_hide_set())
+                .map(clap::Command::get_name)
+                .collect();
+            assert_eq!(
+                visible.contains(&LOADER_ENTRIES_SUBCOMMAND),
+                expect_available,
+                "bootconfig_extra={supported}: {visible:?}"
+            );
+
+            // Any invocation of the gated subcommand, including the `--help`
+            // probe TuneD uses, is rejected before parsing on unsupported
+            // hosts (with EXIT_UNAVAILABLE); everything else is left to clap.
+            let argv = |a: &[&str]| a.iter().map(OsString::from).collect::<Vec<_>>();
+            for gated in [
+                argv(&["bootc", LOADER_ENTRIES_SUBCOMMAND, "--help"]),
+                argv(&[
+                    "bootc",
+                    LOADER_ENTRIES_SUBCOMMAND,
+                    "set-options-for-source",
+                    "--help",
+                ]),
+                argv(&invocation),
+            ] {
+                assert_eq!(
+                    host_feature_gate_rejects(&gated, supported),
+                    !expect_available,
+                    "bootconfig_extra={supported}: {gated:?}"
+                );
+            }
+            for other in [
+                argv(&["bootc", "status"]),
+                argv(&["bootc", "--version"]),
+                argv(&["bootc"]),
+            ] {
+                assert!(!host_feature_gate_rejects(&other, supported), "{other:?}");
+            }
+
+            // With the gate open the invocation parses normally.
+            if expect_available {
+                let opt = <Opt as clap::FromArgMatches>::from_arg_matches(
+                    &cmd.clone().try_get_matches_from(invocation).unwrap(),
+                )
+                .unwrap();
+                assert!(matches!(opt, Opt::LoaderEntries(_)));
             }
         }
     }

@@ -38,7 +38,11 @@ preserving the pending upgrade while layering the kargs change on top.
 
 This command requires ostree >= 2026.1 with `bootconfig-extra` support
 for preserving extension BLS keys through staged deployment roundtrips.
-On older ostree versions, the command will exit with an error.
+On older ostree versions, **bootc loader-entries** is unavailable: it is
+omitted from **bootc --help**, and invoking it (including with **--help**)
+prints an error and exits with status 77, distinct from usage errors (2)
+and other failures (1). Callers can probe for the feature by checking the
+exit status of **bootc loader-entries set-options-for-source --help**.
 
 # EXAMPLES
 
