@@ -45,7 +45,7 @@ clap_mangen = { version = "0.3.0" }
 # pulls), which drags in rustls-webpki/untrusted/webpki-root-certs whose
 # licenses aren't in our cargo-deny allow list. Re-enable once that's sorted.
 # See: https://github.com/bootc-dev/bootc/pull/2295
-composefs-ctl = { git = "https://github.com/composefs/composefs-rs", tag = "v0.9.2", default-features = false, features = [
+composefs-ctl = { git = "https://github.com/composefs/composefs-rs", branch = "aboot-support", default-features = false, features = [
     "pre-6.15",
     "pre-6.16",
     "oci",
@@ -85,10 +85,6 @@ tracing-journald = "0.3.1"
 uzers = "0.12"
 linux-kernel-cmdline = { version = "0.1.1", features = ["serde"] }
 xshell = "0.2.6"
-
-# To develop against a local composefs-rs checkout, add a [patch] section at the end of this file:
-# [patch."https://github.com/composefs/composefs-rs"]
-# composefs-ctl = { path = "/composefs-rs/crates/composefs-ctl" }
 
 # See https://github.com/coreos/cargo-vendor-filterer
 [workspace.metadata.vendor-filter]
@@ -131,4 +127,3 @@ todo = "deny"
 # to trigger, and among the least valuable to fix.
 needless_borrow = "allow"
 needless_borrows_for_generic_args = "allow"
-

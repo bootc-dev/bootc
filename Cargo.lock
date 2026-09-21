@@ -781,7 +781,7 @@ checksum = "55b672471b4e9f9e95499ea597ff64941a309b2cdbffcc46f2cc5e2d971fd335"
 [[package]]
 name = "composefs"
 version = "0.9.2"
-source = "git+https://github.com/composefs/composefs-rs?tag=v0.9.2#f720d6c79ac6b082fb1e182eed3b291f88e2a7f4"
+source = "git+https://github.com/composefs/composefs-rs?branch=aboot-support#62e7cb888f6d97b97e7b03d1b2f64236c6e84656"
 dependencies = [
  "anyhow",
  "composefs-ioctls",
@@ -802,13 +802,13 @@ dependencies = [
  "xxhash-rust",
  "zerocopy",
  "zlink-core",
- "zstd 0.13.3",
+ "zstd 0.14.0",
 ]
 
 [[package]]
 name = "composefs-boot"
 version = "0.9.2"
-source = "git+https://github.com/composefs/composefs-rs?tag=v0.9.2#f720d6c79ac6b082fb1e182eed3b291f88e2a7f4"
+source = "git+https://github.com/composefs/composefs-rs?branch=aboot-support#62e7cb888f6d97b97e7b03d1b2f64236c6e84656"
 dependencies = [
  "anyhow",
  "composefs",
@@ -824,7 +824,7 @@ dependencies = [
 [[package]]
 name = "composefs-ctl"
 version = "0.9.2"
-source = "git+https://github.com/composefs/composefs-rs?tag=v0.9.2#f720d6c79ac6b082fb1e182eed3b291f88e2a7f4"
+source = "git+https://github.com/composefs/composefs-rs?branch=aboot-support#62e7cb888f6d97b97e7b03d1b2f64236c6e84656"
 dependencies = [
  "anyhow",
  "cap-std-ext",
@@ -853,7 +853,7 @@ dependencies = [
 [[package]]
 name = "composefs-fuse"
 version = "0.9.2"
-source = "git+https://github.com/composefs/composefs-rs?tag=v0.9.2#f720d6c79ac6b082fb1e182eed3b291f88e2a7f4"
+source = "git+https://github.com/composefs/composefs-rs?branch=aboot-support#62e7cb888f6d97b97e7b03d1b2f64236c6e84656"
 dependencies = [
  "anyhow",
  "composefs",
@@ -868,7 +868,7 @@ dependencies = [
 [[package]]
 name = "composefs-ioctls"
 version = "0.9.2"
-source = "git+https://github.com/composefs/composefs-rs?tag=v0.9.2#f720d6c79ac6b082fb1e182eed3b291f88e2a7f4"
+source = "git+https://github.com/composefs/composefs-rs?branch=aboot-support#62e7cb888f6d97b97e7b03d1b2f64236c6e84656"
 dependencies = [
  "rustix",
  "thiserror 2.0.20",
@@ -877,7 +877,7 @@ dependencies = [
 [[package]]
 name = "composefs-oci"
 version = "0.9.2"
-source = "git+https://github.com/composefs/composefs-rs?tag=v0.9.2#f720d6c79ac6b082fb1e182eed3b291f88e2a7f4"
+source = "git+https://github.com/composefs/composefs-rs?branch=aboot-support#62e7cb888f6d97b97e7b03d1b2f64236c6e84656"
 dependencies = [
  "anyhow",
  "async-compression",
@@ -893,6 +893,7 @@ dependencies = [
  "fn-error-context",
  "hex",
  "indicatif",
+ "oci-delta",
  "ocidir",
  "rustix",
  "serde",
@@ -904,13 +905,13 @@ dependencies = [
  "tracing",
  "zlink",
  "zlink-core",
- "zstd 0.13.3",
+ "zstd 0.14.0",
 ]
 
 [[package]]
 name = "composefs-splitdirfdstream"
 version = "0.9.2"
-source = "git+https://github.com/composefs/composefs-rs?tag=v0.9.2#f720d6c79ac6b082fb1e182eed3b291f88e2a7f4"
+source = "git+https://github.com/composefs/composefs-rs?branch=aboot-support#62e7cb888f6d97b97e7b03d1b2f64236c6e84656"
 dependencies = [
  "openssl",
  "rand 0.10.3",
@@ -923,7 +924,7 @@ dependencies = [
 [[package]]
 name = "composefs-storage"
 version = "0.9.2"
-source = "git+https://github.com/composefs/composefs-rs?tag=v0.9.2#f720d6c79ac6b082fb1e182eed3b291f88e2a7f4"
+source = "git+https://github.com/composefs/composefs-rs?branch=aboot-support#62e7cb888f6d97b97e7b03d1b2f64236c6e84656"
 dependencies = [
  "anyhow",
  "base64 0.23.0",
@@ -942,7 +943,7 @@ dependencies = [
  "toml",
  "tracing",
  "zlink",
- "zstd 0.13.3",
+ "zstd 0.14.0",
 ]
 
 [[package]]
@@ -2394,6 +2395,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ff76201f031d8863c38aa7f905eca4f53abbfa15f609db4277d44cd8938f33fe"
 dependencies = [
  "memchr",
+]
+
+[[package]]
+name = "oci-delta"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fc185feabe86ac78e5c4ae8b800078f257621ba652cd426d516a846aed93b543"
+dependencies = [
+ "anyhow",
+ "flate2",
+ "hex",
+ "oci-spec",
+ "openssl",
+ "zstd 0.13.3",
 ]
 
 [[package]]
