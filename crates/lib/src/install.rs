@@ -1569,6 +1569,9 @@ async fn verify_target_fetch(
     Ok(())
 }
 
+/// Carries the content of `--root-ssh-authorized-keys` across re-execs; see `prepare_install`.
+const ROOT_SSH_AUTHORIZED_KEYS_ENV: &str = "_BOOTC_ROOT_SSH_AUTHORIZED_KEYS";
+
 /// Preparation for an install; validates and prepares some (thereafter immutable) global state.
 async fn prepare_install(
     mut config_opts: InstallConfigOpts,
@@ -1695,6 +1698,28 @@ async fn prepare_install(
         anyhow::bail!("Bootloader set to none is not supported with the composefs backend");
     }
 
+    // Read the file eagerly so we error out early, and before the mount changes
+    // below hide a file bind mounted under e.g. /tmp. We may re-exec further down
+    // and run this again with those mounts in place, so carry the content across
+    // via the environment.
+    let root_ssh_authorized_keys = config_opts
+        .root_ssh_authorized_keys
+        .as_ref()
+        .map(|p| -> Result<String> {
+            use std::env::VarError;
+            match std::env::var(ROOT_SSH_AUTHORIZED_KEYS_ENV) {
+                // Set by our parent; further re-execs inherit our environment
+                Ok(v) => Ok(v),
+                Err(VarError::NotPresent) => {
+                    let v = std::fs::read_to_string(p).with_context(|| format!("Reading {p}"))?;
+                    bootc_utils::reexec::set_reexec_env(ROOT_SSH_AUTHORIZED_KEYS_ENV, &v);
+                    Ok(v)
+                }
+                Err(e) => Err(e).with_context(|| format!("Parsing {ROOT_SSH_AUTHORIZED_KEYS_ENV}")),
+            }
+        })
+        .transpose()?;
+
     // We need to access devices that are set up by the host udev
     bootc_mount::ensure_mirrored_host_mount("/dev")?;
     // We need to read our own container image (and any logically bound images)
@@ -1806,14 +1831,6 @@ async fn prepare_install(
         }
         r
     };
-
-    // Eagerly read the file now to ensure we error out early if e.g. it doesn't exist,
-    // instead of much later after we're 80% of the way through an install.
-    let root_ssh_authorized_keys = config_opts
-        .root_ssh_authorized_keys
-        .as_ref()
-        .map(|p| std::fs::read_to_string(p).with_context(|| format!("Reading {p}")))
-        .transpose()?;
 
     // Create our global (read-only) state which gets wrapped in an Arc
     // so we can pass it to worker threads too. Right now this just
