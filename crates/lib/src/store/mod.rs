@@ -477,8 +477,7 @@ impl BootedStorage {
                     let lock = aboot::lock(&run)?;
                     let kernel_cmdline = std::fs::read_to_string("/proc/cmdline")
                         .context("Reading kernel command line")?;
-                    aboot::record_booted(
-                        &physical_root,
+                    aboot::AbootState::open(&physical_root)?.record_booted(
                         &linux_kernel_cmdline::utf8::Cmdline::from(kernel_cmdline.as_str()),
                         &cmdline.digest,
                     )?;

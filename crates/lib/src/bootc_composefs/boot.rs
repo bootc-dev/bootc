@@ -1513,7 +1513,8 @@ pub(crate) fn ensure_correct_composefs_digest(
     let Some(expected) =
         find_expected_composefs_digest(repo, entries).context("Checking UKI composefs digest")?
     else {
-        // No UKI (e.g. a BLS-only setup); nothing to cross-check.
+        // No UKI. Aboot digests are validated against the expected image IDs
+        // from this pull when the payload is installed or staged.
         return Ok(RecoveredBootImage {
             id: computed_id,
             expected_ids,
@@ -2220,9 +2221,50 @@ fn image_bootloader(entry: &ComposefsBootEntry<Sha512HashValue>) -> Option<Bootl
     }
 }
 
+fn validate_composefs_aboot_payload(
+    id: &Sha512HashValue,
+    boot_ids: &ExpectedBootImageIds,
+    encoding: AbootEncoding,
+    payload: &[u8],
+    allow_missing_fsverity: bool,
+) -> Result<String> {
+    let (cmdline, boot_digest) = compute_aboot_boot_digest(encoding, payload)?;
+    validate_aboot_composefs_candidates(id, boot_ids, &cmdline, allow_missing_fsverity)?;
+    Ok(boot_digest)
+}
+
+fn validate_aboot_composefs_candidates(
+    id: &Sha512HashValue,
+    boot_ids: &ExpectedBootImageIds,
+    cmdline: &str,
+    allow_missing_fsverity: bool,
+) -> Result<()> {
+    let candidates = parse_uki_composefs_candidates(cmdline)
+        .context("Parsing composefs kernel arguments in aboot image")?;
+    let insecure = uki_candidates_policy(&candidates)?;
+    validate_uki_candidates(&candidates, boot_ids, None)?;
+    ensure!(
+        primary_uki_candidate(&candidates).digest == *id,
+        "aboot primary composefs digest does not match the selected boot image"
+    );
+    ensure!(
+        !insecure || allow_missing_fsverity,
+        "The aboot image requests insecure composefs operation, but this repository requires fs-verity"
+    );
+    match (allow_missing_fsverity, insecure) {
+        (true, false) => tracing::warn!(
+            "--allow-missing-fsverity was requested but the aboot image requires fs-verity"
+        ),
+        _ => {}
+    }
+
+    Ok(())
+}
+
 fn setup_composefs_aboot_boot(
     repo: &ComposefsRepository,
     id: &Sha512HashValue,
+    boot_ids: &ExpectedBootImageIds,
     entry: &ComposefsBootEntry<Sha512HashValue>,
     allow_missing_fsverity: bool,
 ) -> Result<String> {
@@ -2230,20 +2272,49 @@ fn setup_composefs_aboot_boot(
         bail!("Expected an aboot boot entry")
     };
     let payload = read_aboot_payload(entry, repo)?;
-    let (cmdline, boot_digest) = compute_aboot_boot_digest(entry.encoding, &payload)?;
-    let composefs = ComposefsBootCmdline::<Sha512HashValue>::from_cmdline(&cmdline)
-        .context("Parsing composefs=")?
-        .ok_or_else(|| anyhow!("No composefs image in aboot command line"))?;
-    composefs.validate_digest([id])?;
-    match (allow_missing_fsverity, composefs.is_insecure()) {
-        (true, false) => tracing::warn!(
-            "--allow-missing-fsverity was requested but the aboot image requires fs-verity"
-        ),
-        (false, true) => tracing::warn!("aboot image permits booting without fs-verity"),
-        _ => {}
-    }
+    validate_composefs_aboot_payload(
+        id,
+        boot_ids,
+        entry.encoding,
+        &payload,
+        allow_missing_fsverity,
+    )
+}
 
-    Ok(boot_digest)
+pub(crate) struct PreparedAbootArtifacts {
+    pub(crate) boot_digest: String,
+    pub(crate) payload: Box<[u8]>,
+    pub(crate) vbmeta: Option<Box<[u8]>>,
+}
+
+pub(crate) fn prepare_composefs_aboot_update(
+    repo: &ComposefsRepository,
+    id: &Sha512HashValue,
+    boot_ids: &ExpectedBootImageIds,
+    entry: &ComposefsBootEntry<Sha512HashValue>,
+    allow_missing_fsverity: bool,
+) -> Result<PreparedAbootArtifacts> {
+    let ComposefsBootEntry::Aboot(entry) = entry else {
+        bail!("Expected an aboot boot entry")
+    };
+    let payload = read_aboot_payload(entry, repo)?;
+    let boot_digest = validate_composefs_aboot_payload(
+        id,
+        boot_ids,
+        entry.encoding,
+        &payload,
+        allow_missing_fsverity,
+    )?;
+    let vbmeta = entry
+        .vbmeta
+        .as_ref()
+        .map(|artifact| read_file(&artifact.file, repo).context("Reading vbmeta payload"))
+        .transpose()?;
+    Ok(PreparedAbootArtifacts {
+        boot_digest,
+        payload,
+        vbmeta,
+    })
 }
 
 fn install_composefs_bootloader(
@@ -2431,7 +2502,7 @@ pub(crate) async fn setup_composefs_boot(
             &fs,
         )?,
         BootType::Aboot => (
-            setup_composefs_aboot_boot(&repo, &id, entry, allow_missing_fsverity)?,
+            setup_composefs_aboot_boot(&repo, &id, &boot_ids, entry, allow_missing_fsverity)?,
             provisional_deploy_id,
         ),
     };
@@ -2440,7 +2511,7 @@ pub(crate) async fn setup_composefs_boot(
         &root_setup.physical_root_path,
         &deploy_id,
         &crate::spec::ImageReference::from(state.target_imgref.clone()),
-        None,
+        false,
         boot_type,
         boot_digest,
         &pull_result.manifest_digest.to_string(),
@@ -2818,6 +2889,32 @@ mod tests {
             insecure: false,
             format,
         }
+    }
+
+    #[test]
+    fn test_aboot_composefs_candidates() {
+        let v1 = Sha512HashValue::EMPTY;
+        let v2 = other_digest();
+        let ids = ExpectedBootImageIds {
+            v1: vec![v1.clone()],
+            v2: vec![v2.clone()],
+        };
+        let dual = format!(
+            "{} {}",
+            uki_v1(v1.clone(), false),
+            uki_v2(v2.clone(), false)
+        );
+        assert!(validate_aboot_composefs_candidates(&v1, &ids, &dual, false).is_ok());
+        let stale_fallback = format!(
+            "{} {}",
+            uki_v1(v1.clone(), false),
+            uki_v2(Sha512HashValue::from_hex("bb".repeat(64)).unwrap(), false)
+        );
+        assert!(validate_aboot_composefs_candidates(&v1, &ids, &stale_fallback, false).is_err());
+        assert!(validate_aboot_composefs_candidates(&v2, &ids, &dual, false).is_err());
+        let insecure = format!("{} {}", uki_v1(v1.clone(), true), uki_v2(v2, true));
+        assert!(validate_aboot_composefs_candidates(&v1, &ids, &insecure, false).is_err());
+        assert!(validate_aboot_composefs_candidates(&v1, &ids, &insecure, true).is_ok());
     }
 
     #[test]

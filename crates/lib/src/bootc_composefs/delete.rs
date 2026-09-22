@@ -5,9 +5,11 @@ use cap_std_ext::{cap_std::fs::Dir, dirext::CapStdExtDirExt};
 
 use crate::{
     bootc_composefs::{
+        aboot,
         boot::{BootType, get_efi_uuid_source},
         gc::{GCOpts, composefs_gc},
         rollback::{composefs_rollback, rename_exchange_user_cfg},
+        state::remove_staged_deployment,
         status::{get_composefs_status, get_sorted_grub_uki_boot_entries},
     },
     composefs_consts::{
@@ -154,7 +156,7 @@ fn delete_depl_boot_entries(
             BootType::Uki => {
                 remove_grub_menucfg_entry(&deployment.deployment.verity, boot_dir, deleting_staged)
             }
-            BootType::Aboot => anyhow::bail!("aboot deletion is not implemented"),
+            BootType::Aboot => anyhow::bail!("Unexpected aboot deployment in boot-entry deletion"),
         },
 
         BootloaderKind::BLSCompatible => {
@@ -229,10 +231,6 @@ pub(crate) async fn delete_composefs_deployment(
         anyhow::bail!("Cannot delete currently booted deployment");
     }
 
-    if booted.boot_type == BootType::Aboot {
-        anyhow::bail!("aboot deployment deletion is not implemented");
-    }
-
     let all_depls = host.all_composefs_deployments()?;
 
     let depl_to_del = all_depls
@@ -265,7 +263,14 @@ pub(crate) async fn delete_composefs_deployment(
 
     tracing::info!("Deleting {kind}deployment '{deployment_id}'");
 
-    delete_depl_boot_entries(&depl_to_del, &storage, deleting_staged)?;
+    if booted.boot_type == BootType::Aboot {
+        aboot::AbootState::open(&storage.physical_root)?.delete_deployment(deployment_id)?;
+        if deleting_staged {
+            remove_staged_deployment()?;
+        }
+    } else {
+        delete_depl_boot_entries(&depl_to_del, &storage, deleting_staged)?;
+    }
 
     composefs_gc(
         storage,

@@ -335,7 +335,9 @@ pub(crate) async fn composefs_gc(
                 delete_kernel_initrd(storage, &get_type1_dir_name(verity), gc_opts.dry_run)?
             }
             BootType::Uki => delete_uki(storage, verity, gc_opts.dry_run)?,
-            BootType::Aboot => anyhow::bail!("aboot garbage collection is not implemented"),
+            BootType::Aboot => {
+                anyhow::bail!("Aboot artifact unexpectedly reached boot binary garbage collection")
+            }
         }
     }
 
@@ -704,13 +706,12 @@ mod tests {
         for digest in [&booted, &rollback, &orphan] {
             write_aboot_origin(&root, digest)?;
         }
-        aboot::record_booted(
-            &root,
+        let mut aboot_state = aboot::AbootState::open(&root)?;
+        aboot_state.record_booted(
             &linux_kernel_cmdline::utf8::Cmdline::from("androidboot.slot_suffix=_a"),
             &booted,
         )?;
-        aboot::record_booted(
-            &root,
+        aboot_state.record_booted(
             &linux_kernel_cmdline::utf8::Cmdline::from("androidboot.slot_suffix=_b"),
             &rollback,
         )?;

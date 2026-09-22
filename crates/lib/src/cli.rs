@@ -43,9 +43,11 @@ use crate::bootc_composefs::delete::delete_composefs_deployment;
 use crate::bootc_composefs::gc::{GCOpts, composefs_gc};
 use crate::bootc_composefs::soft_reboot::{prepare_soft_reboot_composefs, reset_soft_reboot};
 use crate::bootc_composefs::{
+    aboot,
     digest::{compute_composefs_digest, new_temp_composefs_repo},
     finalize::{composefs_backend_finalize, get_etc_diff},
     rollback::composefs_rollback,
+    service::start_finalize_stated_svc,
     state::composefs_usr_overlay,
     switch::switch_composefs,
     update::upgrade_composefs,
@@ -2448,10 +2450,21 @@ async fn run_from_opt(opt: Opt) -> Result<CliExitStatus> {
         Opt::Internals(opts) => match opts {
             InternalsOpts::ComposefsAbootReconcile => {
                 let storage = get_storage().await?;
+                let digest = match storage.kind()? {
+                    BootedStorageKind::Composefs(booted) => booted.cmdline.digest.to_string(),
+                    BootedStorageKind::Ostree(_) => {
+                        anyhow::bail!("Aboot reconciliation requires the composefs backend")
+                    }
+                };
                 ensure!(
-                    matches!(storage.kind()?, BootedStorageKind::Composefs(_)),
-                    "Aboot reconciliation requires the composefs backend"
+                    crate::bootc_composefs::state::read_boot_type(&storage.physical_root, &digest)?
+                        == Some(crate::bootc_composefs::boot::BootType::Aboot),
+                    "Aboot reconciliation requires an aboot deployment"
                 );
+                let mut state = aboot::AbootState::open(&storage.physical_root)?;
+                if state.reconcile(&digest)? {
+                    start_finalize_stated_svc()?;
+                }
                 Ok(())
             }
             InternalsOpts::SystemdGenerator {
