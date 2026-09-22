@@ -97,7 +97,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::bootc_composefs::state::{get_booted_bls, write_composefs_state};
-use crate::bootc_composefs::status::ComposefsCmdline;
+use crate::bootc_composefs::status::{ComposefsCmdline, get_sorted_staged_type1_boot_entries};
 use crate::bootc_kargs::compute_new_kargs;
 use crate::composefs_consts::{TYPE1_BOOT_DIR_PREFIX, TYPE1_ENT_PATH, TYPE1_ENT_PATH_STAGED};
 use crate::parsers::bls_config::{BLSConfig, BLSConfigType, EFIKey};
@@ -445,6 +445,49 @@ pub(crate) fn secondary_sort_key(os_id: &str) -> String {
     format!("bootc-{os_id}-{SORTKEY_PRIORITY_SECONDARY}")
 }
 
+/// The OS id that [`primary_sort_key`] or [`secondary_sort_key`] encoded in
+/// an entry's sort key, or "bootc" for an entry without one.
+pub(crate) fn os_id_from_sort_key(entry: &BLSConfig) -> &str {
+    entry
+        .sort_key
+        .as_deref()
+        .and_then(|key| key.strip_prefix("bootc-"))
+        .and_then(|key| {
+            key.strip_suffix(&format!("-{SORTKEY_PRIORITY_PRIMARY}"))
+                .or_else(|| key.strip_suffix(&format!("-{SORTKEY_PRIORITY_SECONDARY}")))
+        })
+        .unwrap_or("bootc")
+}
+
+/// Write `primary` as the default entry and `secondary`, if any, as the one
+/// after it into `entries_dir`, named for Grub's ordering, and sync the
+/// directory.
+pub(crate) fn write_type1_entries(
+    entries_dir: &Dir,
+    os_id: &str,
+    primary: &BLSConfig,
+    secondary: Option<&BLSConfig>,
+) -> Result<()> {
+    entries_dir.atomic_write(
+        type1_entry_conf_file_name(os_id, &primary.version(), FILENAME_PRIORITY_PRIMARY),
+        primary.to_string().as_bytes(),
+    )?;
+
+    if let Some(secondary) = secondary {
+        entries_dir.atomic_write(
+            type1_entry_conf_file_name(os_id, &secondary.version(), FILENAME_PRIORITY_SECONDARY),
+            secondary.to_string().as_bytes(),
+        )?;
+    }
+
+    let owned_fd = entries_dir
+        .reopen_as_ownedfd()
+        .context("Reopening as owned fd")?;
+    rustix::fs::fsync(owned_fd).context("fsync")?;
+
+    Ok(())
+}
+
 /// Returns the name of the directory where we store Type1 boot entries
 pub(crate) fn get_type1_dir_name(depl_verity: &str) -> String {
     format!("{TYPE1_BOOT_DIR_PREFIX}{depl_verity}")
@@ -671,7 +714,11 @@ pub(crate) fn setup_composefs_bls_boot(
 ) -> Result<String> {
     let id_hex = id.to_hex();
 
-    let (root_path, esp_device, mut cmdline_refs, bootloader) = match setup_type {
+    // The tree whose kargs.d the new one is diffed against; the booted root
+    // unless building on a staged deployment
+    let mut base_root: Option<Dir> = None;
+
+    let (root_path, esp_device, mut cmdline_refs, bootloader, inherited_extra) = match setup_type {
         BootSetupType::Setup((root_setup, state, postfetch)) => {
             // root_setup.kargs has [root=UUID=<UUID>, "rw"]
             let mut cmdline_options = Cmdline::new();
@@ -712,6 +759,7 @@ pub(crate) fn setup_composefs_bls_boot(
                 esp_part.path(),
                 cmdline_options,
                 postfetch.detected_bootloader.clone(),
+                std::collections::HashMap::new(),
             )
         }
 
@@ -719,7 +767,40 @@ pub(crate) fn setup_composefs_bls_boot(
             let bootloader = host.require_composefs_booted()?.bootloader.clone();
 
             let boot_dir = storage.require_boot_dir()?;
-            let current_cfg = get_booted_bls(&boot_dir, booted_cfs)?;
+
+            // Build on the pending entry when a deployment is staged, so a
+            // change staged earlier in this boot (`bootc loader-entries
+            // set-options-for-source`, a switch) is not lost when this one
+            // replaces it, as rpm-ostree and the ostree backend do.  kargs.d
+            // is then diffed against that deployment's tree rather than the
+            // booted one.
+            let staged_cfg = match host.status.staged {
+                Some(_) => get_sorted_staged_type1_boot_entries(&boot_dir, true)?
+                    .into_iter()
+                    .next(),
+                None => None,
+            };
+            base_root = Some(
+                match staged_cfg
+                    .as_ref()
+                    .map(|cfg| cfg.get_verity())
+                    .transpose()?
+                {
+                    Some(verity) if *verity != *booted_cfs.cmdline.digest => Dir::reopen_dir(
+                        &repo.mount(&verity).context("Mounting staged deployment")?,
+                    )?,
+                    _ => Dir::open_ambient_dir("/", ambient_authority()).context("Opening root")?,
+                },
+            );
+            let current_cfg = match staged_cfg {
+                Some(cfg) => cfg,
+                None => get_booted_bls(&boot_dir, booted_cfs)?,
+            };
+
+            // Extension keys (e.g. `x-options-source-*` written by
+            // `loader-entries set-options-for-source`) belong to the machine,
+            // not the image: carry them into the new entry like `options`.
+            let inherited_extra = current_cfg.extra.clone();
 
             let mut cmdline = match current_cfg.cfg_type {
                 BLSConfigType::NonEFI { options, .. } => {
@@ -750,19 +831,14 @@ pub(crate) fn setup_composefs_bls_boot(
                 esp_dev.path(),
                 cmdline,
                 bootloader,
+                inherited_extra,
             )
         }
     };
 
     let is_upgrade = matches!(setup_type, BootSetupType::Upgrade(..));
 
-    let current_root = if is_upgrade {
-        Some(&Dir::open_ambient_dir("/", ambient_authority()).context("Opening root")? as &Dir)
-    } else {
-        None
-    };
-
-    compute_new_kargs(mounted_erofs, current_root, &mut cmdline_refs)?;
+    compute_new_kargs(mounted_erofs, base_root.as_ref(), &mut cmdline_refs)?;
 
     let (entry_paths, _tmpdir_guard) = match bootloader.kind()? {
         BootloaderKind::GRUBClassic => {
@@ -842,6 +918,7 @@ pub(crate) fn setup_composefs_bls_boot(
                 .with_title(title)
                 .with_version(version)
                 .with_sort_key(sort_key)
+                .with_extra(inherited_extra)
                 .with_cfg(BLSConfigType::NonEFI {
                     linux: entry_paths
                         .abs_entries_path
@@ -937,23 +1014,12 @@ pub(crate) fn setup_composefs_bls_boot(
     let loader_entries_dir = Dir::open_ambient_dir(&config_path, ambient_authority())
         .with_context(|| format!("Opening {config_path:?}"))?;
 
-    loader_entries_dir.atomic_write(
-        type1_entry_conf_file_name(&os_id, &bls_config.version(), FILENAME_PRIORITY_PRIMARY),
-        bls_config.to_string().as_bytes(),
+    write_type1_entries(
+        &loader_entries_dir,
+        &os_id,
+        &bls_config,
+        booted_bls.as_ref(),
     )?;
-
-    if let Some(booted_bls) = booted_bls {
-        loader_entries_dir.atomic_write(
-            type1_entry_conf_file_name(&os_id, &booted_bls.version(), FILENAME_PRIORITY_SECONDARY),
-            booted_bls.to_string().as_bytes(),
-        )?;
-    }
-
-    let owned_loader_entries_fd = loader_entries_dir
-        .reopen_as_ownedfd()
-        .context("Reopening as owned fd")?;
-
-    rustix::fs::fsync(owned_loader_entries_fd).context("fsync")?;
 
     Ok(boot_digest)
 }
@@ -1927,5 +1993,58 @@ mod tests {
             rhel > fedora,
             "RHEL should sort before Fedora in descending order"
         );
+    }
+    #[test]
+    fn test_os_id_from_sort_key() {
+        let cases = [
+            (Some(primary_sort_key("fedora")), "fedora"),
+            (Some(secondary_sort_key("fedora-coreos")), "fedora-coreos"),
+            (Some("something-else".to_string()), "bootc"),
+            (None, "bootc"),
+        ];
+        for (sort_key, expected) in cases {
+            let mut entry = BLSConfig::default();
+            entry.sort_key = sort_key.clone();
+            assert_eq!(os_id_from_sort_key(&entry), expected, "{sort_key:?}");
+        }
+    }
+
+    #[test]
+    fn test_write_type1_entries() -> Result<()> {
+        let td = cap_std_ext::cap_tempfile::tempdir(ambient_authority())?;
+        let entry = |sort_key: String, options: &str| {
+            let mut e = BLSConfig::default();
+            e.with_title("t".into())
+                .with_version("43".into())
+                .with_sort_key(sort_key)
+                .with_cfg(BLSConfigType::NonEFI {
+                    linux: "/vmlinuz".into(),
+                    initrd: vec!["/initrd".into()],
+                    options: Some(linux_kernel_cmdline::utf8::CmdlineOwned::from(
+                        options.to_string(),
+                    )),
+                });
+            e
+        };
+        let primary = entry(primary_sort_key("fedora"), "root=/dev/a nohz=full");
+        let secondary = entry(secondary_sort_key("fedora"), "root=/dev/a");
+
+        write_type1_entries(&td, "fedora", &primary, Some(&secondary))?;
+
+        let mut names: Vec<_> = td
+            .entries()?
+            .map(|e| e.unwrap().file_name().to_str().unwrap().to_string())
+            .collect();
+        names.sort();
+        assert_eq!(names, ["bootc_fedora-43-0.conf", "bootc_fedora-43-1.conf"]);
+        let written = crate::parsers::bls_config::parse_bls_config(
+            &td.read_to_string("bootc_fedora-43-1.conf")?,
+        )?;
+        assert_eq!(written, primary);
+        let written = crate::parsers::bls_config::parse_bls_config(
+            &td.read_to_string("bootc_fedora-43-0.conf")?,
+        )?;
+        assert_eq!(written, secondary);
+        Ok(())
     }
 }

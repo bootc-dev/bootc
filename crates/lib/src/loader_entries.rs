@@ -11,23 +11,23 @@
 
 use anyhow::{Context, Result, ensure};
 use fn_error_context::context;
-use linux_kernel_cmdline::utf8::{Cmdline, CmdlineOwned};
+use linux_kernel_cmdline::utf8::{Cmdline, CmdlineOwned, Parameter};
 use ostree::{gio, glib};
 use ostree_ext::ostree;
 use std::collections::BTreeMap;
 
 /// The BLS extension key prefix for source-tracked options.
-const OPTIONS_SOURCE_KEY_PREFIX: &str = "x-options-source-";
+pub(crate) const OPTIONS_SOURCE_KEY_PREFIX: &str = "x-options-source-";
 
 /// A validated source name (alphanumeric + hyphens + underscores, non-empty).
 ///
 /// This is a newtype wrapper around `String` that enforces validation at
 /// construction time. See <https://lexi-lambda.github.io/blog/2019/11/05/parse-don-t-validate/>.
-struct SourceName(String);
+pub(crate) struct SourceName(String);
 
 impl SourceName {
     /// Parse and validate a source name.
-    fn parse(source: &str) -> Result<Self> {
+    pub(crate) fn parse(source: &str) -> Result<Self> {
         ensure!(!source.is_empty(), "Source name must not be empty");
         ensure!(
             source
@@ -39,7 +39,7 @@ impl SourceName {
     }
 
     /// The BLS key for this source (e.g., `x-options-source-tuned`).
-    fn bls_key(&self) -> String {
+    pub(crate) fn bls_key(&self) -> String {
         format!("{OPTIONS_SOURCE_KEY_PREFIX}{}", self.0)
     }
 }
@@ -59,7 +59,7 @@ impl std::fmt::Display for SourceName {
 
 /// Extract source options from BLS entry content. Parses `x-options-source-*` keys
 /// from the raw BLS text since the ostree BootconfigParser doesn't expose key iteration.
-fn extract_source_options_from_bls(content: &str) -> BTreeMap<String, CmdlineOwned> {
+pub(crate) fn extract_source_options_from_bls(content: &str) -> BTreeMap<String, CmdlineOwned> {
     let mut sources = BTreeMap::new();
     for line in content.lines() {
         let line = line.trim();
@@ -85,34 +85,50 @@ fn extract_source_options_from_bls(content: &str) -> BTreeMap<String, CmdlineOwn
 ///
 /// The algorithm:
 /// 1. Start with the current options line
-/// 2. Remove all options that belong to the old value of the specified source
-/// 3. Add the new options for the specified source
+/// 2. Replace the options that belong to the old value of the specified source,
+///    in place, with the new options for that source
 ///
-/// Options not tracked by any source are preserved as-is.
-fn compute_merged_options(
+/// Options not tracked by any source are preserved as-is, in their original
+/// position.  Keeping positions stable matters: for parameters where the last
+/// occurrence wins, moving a source's options to the end would change their
+/// meaning, and re-applying an unchanged source would otherwise produce a
+/// different string and look like a change.
+pub(crate) fn compute_merged_options(
     current_options: &str,
     source_options: &BTreeMap<String, CmdlineOwned>,
     target_source: &SourceName,
     new_options: Option<&str>,
 ) -> CmdlineOwned {
-    let mut merged = CmdlineOwned::from(current_options.to_owned());
+    let current = Cmdline::from(current_options);
+    let old_params: Vec<Parameter> = source_options
+        .get(&**target_source)
+        .map(|old| old.iter().collect())
+        .unwrap_or_default();
+    let new_cmdline = new_options.filter(|v| !v.is_empty()).map(Cmdline::from);
+    let new_params: Vec<String> = new_cmdline
+        .iter()
+        .flat_map(|c| c.iter())
+        .map(|p| p.to_string())
+        .collect();
 
-    // Remove old options from the target source (if it was previously tracked)
-    if let Some(old_source_opts) = source_options.get(&**target_source) {
-        for param in old_source_opts.iter() {
-            merged.remove_exact(&param);
+    let mut merged: Vec<String> = Vec::new();
+    let mut inserted = false;
+    for param in current.iter() {
+        if old_params.contains(&param) {
+            // First old parameter: emit the new ones here; drop the rest.
+            if !inserted {
+                merged.extend(new_params.iter().cloned());
+                inserted = true;
+            }
+            continue;
         }
+        merged.push(param.to_string());
+    }
+    if !inserted {
+        merged.extend(new_params);
     }
 
-    // Add new options for the target source
-    if let Some(new_opts) = new_options.filter(|v| !v.is_empty()) {
-        let new_cmdline = Cmdline::from(new_opts);
-        for param in new_cmdline.iter() {
-            merged.add(&param);
-        }
-    }
-
-    merged
+    CmdlineOwned::from(merged.join(" "))
 }
 
 /// Read x-options-source-* keys from the staged deployment data file.
@@ -556,7 +572,40 @@ x-options-source-admin nohz=full
                 ],
                 "tuned",
                 Some("nohz=full"),
-                "root=UUID=abc rw rd.driver.pre=vfio-pci nohz=full",
+                "root=UUID=abc rw nohz=full rd.driver.pre=vfio-pci",
+            ),
+            (
+                "re-applying an unchanged source is a no-op even when followed by other options",
+                "root=UUID=abc rw nohz=on rcu_nocbs=2-7 cross1=a rpmarg=yes",
+                &[
+                    ("tuned", "nohz=on rcu_nocbs=2-7"),
+                    ("crosstest", "cross1=a"),
+                ],
+                "tuned",
+                Some("nohz=on rcu_nocbs=2-7"),
+                "root=UUID=abc rw nohz=on rcu_nocbs=2-7 cross1=a rpmarg=yes",
+            ),
+            (
+                "updating a source keeps its position",
+                "root=UUID=abc rw nohz=on rcu_nocbs=2-7 cross1=a rpmarg=yes",
+                &[
+                    ("tuned", "nohz=on rcu_nocbs=2-7"),
+                    ("crosstest", "cross1=a"),
+                ],
+                "tuned",
+                Some("nohz=on skew_tick=1"),
+                "root=UUID=abc rw nohz=on skew_tick=1 cross1=a rpmarg=yes",
+            ),
+            (
+                "removing a source keeps the order of the rest",
+                "root=UUID=abc rw nohz=on cross1=a rcu_nocbs=2-7 rpmarg=yes",
+                &[
+                    ("tuned", "nohz=on rcu_nocbs=2-7"),
+                    ("crosstest", "cross1=a"),
+                ],
+                "tuned",
+                None,
+                "root=UUID=abc rw cross1=a rpmarg=yes",
             ),
         ];
 

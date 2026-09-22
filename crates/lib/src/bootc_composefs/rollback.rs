@@ -8,8 +8,7 @@ use ocidir::cap_std::ambient_authority;
 use rustix::fs::{AtFlags, RenameFlags, fsync, renameat_with};
 
 use crate::bootc_composefs::boot::{
-    BootType, FILENAME_PRIORITY_PRIMARY, FILENAME_PRIORITY_SECONDARY, primary_sort_key,
-    secondary_sort_key, type1_entry_conf_file_name,
+    BootType, os_id_from_sort_key, primary_sort_key, secondary_sort_key, write_type1_entries,
 };
 use crate::bootc_composefs::status::{get_composefs_status, get_sorted_type1_boot_entries};
 use crate::composefs_consts::{
@@ -136,16 +135,14 @@ fn rollback_composefs_entries(host: &Host, boot_dir: &Dir, bootloader: Bootloade
     assert!(all_configs.len() == 2);
 
     // For rollback: previous gets primary sort-key, booted gets secondary sort-key
-    // Use "bootc" as default os_id for rollback scenarios
-    // TODO: Extract actual os_id from deployment
-    let os_id = "bootc";
+    let os_id = os_id_from_sort_key(&all_configs[0]).to_string();
 
     // This is the currently booted deployment - it should become secondary
     // OR if rollback was queued, it would become primary
-    all_configs[0].sort_key = Some(primary_sort_key(os_id));
+    all_configs[0].sort_key = Some(primary_sort_key(&os_id));
     // This is the previous deployment - it should become primary (rollback target)
     // OR if rollback was queued, it would become secondary
-    all_configs[1].sort_key = Some(secondary_sort_key(os_id));
+    all_configs[1].sort_key = Some(secondary_sort_key(&os_id));
 
     // Ostree will drop any staged deployment on rollback
     // We follow the same approach for now
@@ -182,28 +179,13 @@ fn rollback_composefs_entries(host: &Host, boot_dir: &Dir, bootloader: Bootloade
         .open_dir(TYPE1_ENT_PATH_STAGED)
         .context("Opening staged entries dir")?;
 
-    // Write the BLS configs in there
-    for cfg in all_configs {
-        // After rollback: previous deployment becomes primary, booted becomes secondary
-        let priority = if cfg.sort_key == Some(secondary_sort_key(os_id)) {
-            FILENAME_PRIORITY_SECONDARY
-        } else {
-            FILENAME_PRIORITY_PRIMARY
-        };
-
-        let file_name = type1_entry_conf_file_name(os_id, &cfg.version(), priority);
-
-        rollback_entries_dir
-            .atomic_write(&file_name, cfg.to_string())
-            .with_context(|| format!("Writing to {file_name}"))?;
-    }
-
-    let rollback_entries_dir = rollback_entries_dir
-        .reopen_as_ownedfd()
-        .context("Reopening as owned fd")?;
-
-    // Should we sync after every write?
-    fsync(rollback_entries_dir).context("fsync")?;
+    // After rollback: previous deployment becomes primary, booted becomes secondary
+    write_type1_entries(
+        &rollback_entries_dir,
+        &os_id,
+        &all_configs[0],
+        Some(&all_configs[1]),
+    )?;
 
     // Atomically exchange "entries" <-> "entries.rollback"
     let dir = boot_dir.open_dir("loader").context("Opening loader dir")?;

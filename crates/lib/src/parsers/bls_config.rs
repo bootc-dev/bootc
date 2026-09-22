@@ -199,7 +199,6 @@ impl BLSConfig {
         self.sort_key = Some(new_val);
         self
     }
-    #[allow(dead_code)]
     pub(crate) fn with_extra(&mut self, new_val: HashMap<String, String>) -> &mut Self {
         self.extra = new_val;
         self

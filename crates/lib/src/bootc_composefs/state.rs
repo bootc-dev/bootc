@@ -33,9 +33,9 @@ use crate::parsers::bls_config::{BLSConfigType, EFIKey};
 use crate::store::{BootedComposefs, Storage};
 use crate::{
     composefs_consts::{
-        COMPOSEFS_STAGED_DEPLOYMENT_FNAME, COMPOSEFS_TRANSIENT_STATE_DIR, ORIGIN_KEY_BOOT,
-        ORIGIN_KEY_BOOT_DIGEST, ORIGIN_KEY_BOOT_TYPE, ORIGIN_KEY_IMAGE, ORIGIN_KEY_MANIFEST_DIGEST,
-        SHARED_VAR_PATH, STATE_DIR_RELATIVE,
+        COMPOSEFS_CMDLINE, COMPOSEFS_STAGED_DEPLOYMENT_FNAME, COMPOSEFS_TRANSIENT_STATE_DIR,
+        ORIGIN_KEY_BOOT, ORIGIN_KEY_BOOT_DIGEST, ORIGIN_KEY_BOOT_TYPE, ORIGIN_KEY_IMAGE,
+        ORIGIN_KEY_MANIFEST_DIGEST, SHARED_VAR_PATH, STATE_DIR_RELATIVE,
     },
     parsers::bls_config::BLSConfig,
     spec::ImageReference,
@@ -64,38 +64,89 @@ pub(crate) fn read_origin(sysroot: &Dir, deployment_id: &str) -> Result<Option<t
     Ok(Some(ini))
 }
 
+/// Whether `entry` boots the deployment identified by `booted_cfs`.
+fn entry_has_verity(entry: &BLSConfig, booted_cfs: &ComposefsCmdline) -> Result<bool> {
+    match &entry.cfg_type {
+        BLSConfigType::EFI { key } => {
+            let path = match key {
+                EFIKey::Efi(path) | EFIKey::Uki(path) => path,
+            };
+            Ok(path.as_str().contains(&*booted_cfs.digest))
+        }
+
+        BLSConfigType::NonEFI { options, .. } => {
+            let Some(opts) = options else {
+                anyhow::bail!("options not found in bls config")
+            };
+
+            let cfs_cmdline = ComposefsCmdline::find_in_cmdline(&Cmdline::from(opts))
+                .ok_or_else(|| anyhow::anyhow!("composefs param not found in cmdline"))?;
+
+            Ok(cfs_cmdline.digest == booted_cfs.digest)
+        }
+
+        BLSConfigType::Unknown => anyhow::bail!("Unknown BLS Config type"),
+    }
+}
+
+/// The number of `options` parameters when every one of them is on
+/// `kernel_cmdline`, else `None`.  `composefs=` is skipped: after a soft
+/// reboot the command line still names the previous deployment.
+fn options_on_cmdline(options: &Cmdline, kernel_cmdline: &Cmdline) -> Option<usize> {
+    let mut n = 0;
+    for param in options {
+        if param.key() == COMPOSEFS_CMDLINE.into() {
+            continue;
+        }
+        let present = kernel_cmdline
+            .iter()
+            .any(|k| k.key() == param.key() && k.value() == param.value());
+        if !present {
+            return None;
+        }
+        n += 1;
+    }
+    Some(n)
+}
+
+/// Pick the entry the running kernel was booted from.
+///
+/// Entries are matched by their `composefs=` digest.  A kernel-argument
+/// change (`bootc loader-entries set-options-for-source`) keeps the previous
+/// entry of the booted deployment as its rollback, so several entries can
+/// share the digest; then the one whose `options` are all on the kernel
+/// command line wins, and among those the largest set, so an entry that only
+/// lacks an added argument is not mistaken for the booted one.  When none
+/// matches, the first candidate in `entries` order is returned.
+pub(crate) fn select_booted_bls<'a>(
+    entries: impl IntoIterator<Item = &'a BLSConfig>,
+    booted_cfs: &ComposefsCmdline,
+    kernel_cmdline: &Cmdline,
+) -> Result<Option<&'a BLSConfig>> {
+    let mut best: Option<(&BLSConfig, Option<usize>)> = None;
+    for entry in entries {
+        if !entry_has_verity(entry, booted_cfs)? {
+            continue;
+        }
+        let score = entry
+            .get_cmdline()
+            .ok()
+            .and_then(|options| options_on_cmdline(options, kernel_cmdline));
+        match best {
+            Some((_, current)) if score <= current => {}
+            _ => best = Some((entry, score)),
+        }
+    }
+    Ok(best.map(|(entry, _)| entry))
+}
+
 pub(crate) fn get_booted_bls(boot_dir: &Dir, booted_cfs: &BootedComposefs) -> Result<BLSConfig> {
     let sorted_entries = get_sorted_type1_boot_entries(boot_dir, true)?;
+    let kernel_cmdline = Cmdline::from_proc()?;
 
-    for entry in sorted_entries {
-        match &entry.cfg_type {
-            BLSConfigType::EFI { key } => {
-                let path = match key {
-                    EFIKey::Efi(path) | EFIKey::Uki(path) => path,
-                };
-                if path.as_str().contains(&*booted_cfs.cmdline.digest) {
-                    return Ok(entry);
-                }
-            }
-
-            BLSConfigType::NonEFI { options, .. } => {
-                let Some(opts) = options else {
-                    anyhow::bail!("options not found in bls config")
-                };
-
-                let cfs_cmdline = ComposefsCmdline::find_in_cmdline(&Cmdline::from(opts))
-                    .ok_or_else(|| anyhow::anyhow!("composefs param not found in cmdline"))?;
-
-                if cfs_cmdline.digest == booted_cfs.cmdline.digest {
-                    return Ok(entry);
-                }
-            }
-
-            BLSConfigType::Unknown => anyhow::bail!("Unknown BLS Config type"),
-        };
-    }
-
-    Err(anyhow::anyhow!("Booted BLS not found"))
+    select_booted_bls(&sorted_entries, booted_cfs.cmdline, &kernel_cmdline)?
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("Booted BLS not found"))
 }
 
 /// Mounts an EROFS image and copies the pristine /etc and /var to the deployment's /etc and /var.
@@ -214,6 +265,25 @@ pub(crate) fn update_boot_digest_in_origin(
     )
 }
 
+/// Record `staged` as the deployment to finalize at shutdown
+#[context("Recording staged deployment")]
+pub(crate) fn write_staged_deployment(staged: &StagedDeployment) -> Result<()> {
+    std::fs::create_dir_all(COMPOSEFS_TRANSIENT_STATE_DIR)
+        .with_context(|| format!("Creating {COMPOSEFS_TRANSIENT_STATE_DIR}"))?;
+
+    let staged_depl_dir = Dir::open_ambient_dir(COMPOSEFS_TRANSIENT_STATE_DIR, ambient_authority())
+        .with_context(|| format!("Opening {COMPOSEFS_TRANSIENT_STATE_DIR}"))?;
+
+    staged_depl_dir
+        .atomic_write(
+            COMPOSEFS_STAGED_DEPLOYMENT_FNAME,
+            staged
+                .to_canon_json_vec()
+                .context("Failed to serialize staged deployment JSON")?,
+        )
+        .with_context(|| format!("Writing to {COMPOSEFS_STAGED_DEPLOYMENT_FNAME}"))
+}
+
 /// Creates and populates the composefs state directory for a deployment.
 ///
 /// This function sets up the state directory structure and configuration files
@@ -308,21 +378,7 @@ pub(crate) async fn write_composefs_state(
         .context("Failed to write to .origin file")?;
 
     if let Some(staged) = staged {
-        std::fs::create_dir_all(COMPOSEFS_TRANSIENT_STATE_DIR)
-            .with_context(|| format!("Creating {COMPOSEFS_TRANSIENT_STATE_DIR}"))?;
-
-        let staged_depl_dir =
-            Dir::open_ambient_dir(COMPOSEFS_TRANSIENT_STATE_DIR, ambient_authority())
-                .with_context(|| format!("Opening {COMPOSEFS_TRANSIENT_STATE_DIR}"))?;
-
-        staged_depl_dir
-            .atomic_write(
-                COMPOSEFS_STAGED_DEPLOYMENT_FNAME,
-                staged
-                    .to_canon_json_vec()
-                    .context("Failed to serialize staged deployment JSON")?,
-            )
-            .with_context(|| format!("Writing to {COMPOSEFS_STAGED_DEPLOYMENT_FNAME}"))?;
+        write_staged_deployment(&staged)?;
     }
 
     Ok(())
@@ -373,5 +429,53 @@ pub(crate) fn get_composefs_usr_overlay_status() -> Result<Option<FilesystemOver
         }))
     } else {
         Ok(None)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parsers::bls_config::parse_bls_config;
+
+    const DIGEST: &str = "aaaa";
+    const OTHER: &str = "bbbb";
+
+    fn entry(options: &str) -> BLSConfig {
+        parse_bls_config(&format!(
+            "title t\nversion 1\nlinux /vmlinuz\ninitrd /initrd\noptions {options}\n"
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn select_booted_bls_prefers_the_entry_matching_the_cmdline() -> Result<()> {
+        let booted = ComposefsCmdline::new(DIGEST);
+        let other = entry(&format!("root=/dev/a rw composefs={OTHER} nohz=full"));
+        let old = entry(&format!("root=/dev/a rw composefs={DIGEST}"));
+        let new = entry(&format!("root=/dev/a rw composefs={DIGEST} nohz=full"));
+        let entries = vec![other.clone(), old.clone(), new.clone()];
+
+        let cases = [
+            // The added argument is on the cmdline: the larger set wins even
+            // though the smaller one is a subset too.
+            (
+                format!("BOOT_IMAGE=/vmlinuz root=/dev/a rw composefs={DIGEST} nohz=full"),
+                &new,
+            ),
+            // Rolled back to the entry without it.
+            (format!("root=/dev/a rw composefs={DIGEST}"), &old),
+            // Soft reboot: composefs= still names the previous deployment.
+            (format!("root=/dev/a rw composefs={OTHER} nohz=full"), &new),
+            // Nothing matches: first candidate with the digest.
+            ("root=/dev/b rw".to_string(), &old),
+        ];
+        for (cmdline, expected) in cases {
+            let picked = select_booted_bls(&entries, &booted, &Cmdline::from(&cmdline))?
+                .unwrap_or_else(|| panic!("no entry for {cmdline}"));
+            assert_eq!(picked, expected, "cmdline {cmdline}");
+        }
+
+        assert!(select_booted_bls(&[other], &booted, &Cmdline::from("x"))?.is_none());
+        Ok(())
     }
 }

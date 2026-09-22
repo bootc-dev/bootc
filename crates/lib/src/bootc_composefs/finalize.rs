@@ -95,45 +95,17 @@ pub(crate) async fn composefs_backend_finalize(
         "Staged deployment is not a composefs deployment"
     ))?;
 
-    // Mount the booted EROFS image to get pristine etc
-    let sysroot_fd = storage.physical_root.reopen_as_ownedfd()?;
-    let composefs_fd = mount_composefs_image(
-        &sysroot_fd,
-        &booted_composefs.verity,
-        booted_cfs.cmdline.allow_missing_fsverity,
-    )?;
-
-    let erofs_tmp_mnt = TempMount::mount_fd(&composefs_fd)?;
-
-    // Perform the /etc merge
-    let pristine_etc =
-        Dir::open_ambient_dir(erofs_tmp_mnt.dir.path().join("etc"), ambient_authority())?;
-    let current_etc = Dir::open_ambient_dir("/etc", ambient_authority())?;
-
-    let new_etc_path = Path::new(STATE_DIR_ABS)
-        .join(&staged_composefs.verity)
-        .join("etc");
-
-    let new_etc = Dir::open_ambient_dir(new_etc_path, ambient_authority())?;
-
-    let (pristine_files, current_files, new_files) =
-        traverse_etc(&pristine_etc, &current_etc, Some(&new_etc))?;
-
-    let new_files =
-        new_files.ok_or_else(|| anyhow::anyhow!("Failed to get dirtree for new etc"))?;
-
-    let diff = compute_diff(&pristine_files, &current_files, &new_files)?;
-    merge(&current_etc, &current_files, &new_etc, &new_files, &diff)?;
-
-    // Remove /etc/.updated from the new deployment so that ConditionNeedsUpdate=|/etc
-    // services (systemd-sysusers, systemd-tmpfiles) run on the first boot, mirroring
-    // what ostree does in sysroot_finalize_deployment.
-    new_etc
-        .remove_file_optional(".updated")
-        .context("Removing /etc/.updated from staged deployment")?;
-
-    // Unmount EROFS
-    drop(erofs_tmp_mnt);
+    // A kernel-argument change stages the booted deployment itself with a new
+    // entry (`bootc loader-entries set-options-for-source`); it shares the
+    // state directory, so there is no /etc to merge, only entries to swap.
+    if staged_composefs.verity != booted_composefs.verity {
+        merge_etc(
+            storage,
+            booted_cfs,
+            &booted_composefs.verity,
+            &staged_composefs.verity,
+        )?;
+    }
 
     let boot_dir = storage.require_boot_dir()?;
 
@@ -163,6 +135,51 @@ pub(crate) async fn composefs_backend_finalize(
         },
     )
     .await?;
+
+    Ok(())
+}
+
+/// Three-way merge the booted /etc into the staged deployment's state directory
+#[context("Merging /etc into staged deployment")]
+fn merge_etc(
+    storage: &Storage,
+    booted_cfs: &BootedComposefs,
+    booted_verity: &str,
+    staged_verity: &str,
+) -> Result<()> {
+    // Mount the booted EROFS image to get pristine etc
+    let sysroot_fd = storage.physical_root.reopen_as_ownedfd()?;
+    let composefs_fd = mount_composefs_image(
+        &sysroot_fd,
+        booted_verity,
+        booted_cfs.cmdline.allow_missing_fsverity,
+    )?;
+
+    let erofs_tmp_mnt = TempMount::mount_fd(&composefs_fd)?;
+
+    let pristine_etc =
+        Dir::open_ambient_dir(erofs_tmp_mnt.dir.path().join("etc"), ambient_authority())?;
+    let current_etc = Dir::open_ambient_dir("/etc", ambient_authority())?;
+
+    let new_etc_path = Path::new(STATE_DIR_ABS).join(staged_verity).join("etc");
+
+    let new_etc = Dir::open_ambient_dir(new_etc_path, ambient_authority())?;
+
+    let (pristine_files, current_files, new_files) =
+        traverse_etc(&pristine_etc, &current_etc, Some(&new_etc))?;
+
+    let new_files =
+        new_files.ok_or_else(|| anyhow::anyhow!("Failed to get dirtree for new etc"))?;
+
+    let diff = compute_diff(&pristine_files, &current_files, &new_files)?;
+    merge(&current_etc, &current_files, &new_etc, &new_files, &diff)?;
+
+    // Remove /etc/.updated from the new deployment so that ConditionNeedsUpdate=|/etc
+    // services (systemd-sysusers, systemd-tmpfiles) run on the first boot, mirroring
+    // what ostree does in sysroot_finalize_deployment.
+    new_etc
+        .remove_file_optional(".updated")
+        .context("Removing /etc/.updated from staged deployment")?;
 
     Ok(())
 }

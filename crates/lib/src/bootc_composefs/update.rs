@@ -518,7 +518,21 @@ pub(crate) async fn upgrade_composefs(
 
     // Check if we already have this update staged
     // Or if we have another staged deployment with a different image
-    let staged_image = host.status.staged.as_ref().and_then(|i| i.image.as_ref());
+    //
+    // A kernel-argument change stages the booted deployment itself; that is
+    // not an update, and do_upgrade() builds on its pending entry.
+    let kargs_only_staged = host
+        .status
+        .staged
+        .as_ref()
+        .and_then(|s| s.composefs.as_ref())
+        .is_some_and(|s| *s.verity == *composefs.cmdline.digest);
+    let staged_image = host
+        .status
+        .staged
+        .as_ref()
+        .filter(|_| !kargs_only_staged)
+        .and_then(|i| i.image.as_ref());
 
     if let Some(staged_image) = staged_image {
         // We have a staged image and it has the same digest as the currently booted image's latest
