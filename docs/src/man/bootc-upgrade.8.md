@@ -73,6 +73,10 @@ Soft reboot allows faster system restart by avoiding full hardware reboot when p
 
     Upgrade to a different tag of the currently booted image
 
+**--from-delta**=*PATH*
+
+    Upgrade from a local oci-delta artifact instead of the network
+
 <!-- END GENERATED OPTIONS -->
 
 # EXAMPLES

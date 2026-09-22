@@ -6,7 +6,8 @@ use crate::{
         status::get_composefs_status,
         update::{
             DoUpgradeOpts, UpdateAction, apply_upgrade_from_downloaded, do_upgrade,
-            is_image_pulled, validate_update,
+            ensure_delta_source_present, is_image_pulled, lookup_config_splitstream,
+            validate_update,
         },
     },
     cli::{SwitchOpts, imgref_for_switch},
@@ -25,6 +26,8 @@ pub(crate) async fn switch_composefs(
         .await
         .context("Getting composefs deployment status")?;
 
+    let delta = crate::delta::open_opt(opts.from_delta.as_deref()).await?;
+
     let prog: ProgressWriter = opts.progress.clone().try_into()?;
 
     let mut do_upgrade_opts = DoUpgradeOpts {
@@ -34,6 +37,7 @@ pub(crate) async fn switch_composefs(
         use_unified: false,
         quiet: opts.quiet,
         prog,
+        delta: delta.as_ref(),
     };
 
     if opts.download_opts.from_downloaded {
@@ -41,6 +45,9 @@ pub(crate) async fn switch_composefs(
     }
 
     let target = imgref_for_switch(&opts)?;
+    if let Some(delta) = delta.as_ref() {
+        delta.validate_image_reference(&target)?;
+    }
 
     let new_spec = {
         let mut new_spec = host.spec.clone();
@@ -92,14 +99,29 @@ pub(crate) async fn switch_composefs(
         booted_unified || target_unified
     };
 
-    let (image, img_config) = is_image_pulled(repo, &target_imgref).await?;
+    // With a delta the target is whatever the delta says it is, and we can look
+    // it up locally; without one we have to ask the registry.
+    let (image, manifest) = match &delta {
+        Some(delta) => {
+            crate::delta::reject_unified_storage(delta, do_upgrade_opts.use_unified)?;
+            ensure_delta_source_present(repo, delta)?;
+            (
+                lookup_config_splitstream(repo, delta.target_manifest().config().digest())?,
+                delta.target_manifest().clone(),
+            )
+        }
+        None => {
+            let (image, img_config, _) = is_image_pulled(repo, &target_imgref).await?;
+            (image, img_config.manifest)
+        }
+    };
 
     if let Some(cfg_verity) = image {
         let action = validate_update(
             storage,
             booted_cfs,
             &host,
-            img_config.manifest.config().digest().as_ref(),
+            manifest.config().digest().as_ref(),
             &cfg_verity,
             true,
         )?;
@@ -117,7 +139,7 @@ pub(crate) async fn switch_composefs(
                     &host,
                     &target_imgref,
                     &do_upgrade_opts,
-                    &img_config.manifest,
+                    &manifest,
                 )
                 .await;
             }
@@ -130,7 +152,7 @@ pub(crate) async fn switch_composefs(
         &host,
         &target_imgref,
         &do_upgrade_opts,
-        &img_config.manifest,
+        &manifest,
     )
     .await?;
 
