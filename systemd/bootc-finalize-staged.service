@@ -20,7 +20,7 @@ Description=Composefs Finalize Staged Deployment
 Documentation=man:bootc(1)
 DefaultDependencies=no
 
-RequiresMountsFor=/sysroot
+RequiresMountsFor=/sysroot /boot
 After=local-fs.target
 Before=basic.target final.target
 # We want to make sure the transaction logs are persisted to disk:
