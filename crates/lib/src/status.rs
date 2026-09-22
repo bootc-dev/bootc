@@ -687,6 +687,7 @@ fn human_render_slot(
     let prefix = match slot {
         Some(Slot::Staged) => "  Staged image".into(),
         Some(Slot::Booted) => format!("{} Booted image", crate::glyph::Glyph::BlackCircle),
+        Some(Slot::Rollback) if host_status.rollback_queued => "  Rollback image (queued)".into(),
         Some(Slot::Rollback) => "  Rollback image".into(),
         _ => "   Other image".into(),
     };
@@ -803,6 +804,7 @@ fn human_render_slot_ostree(
     let prefix = match slot {
         Some(Slot::Staged) => "  Staged ostree".into(),
         Some(Slot::Booted) => format!("{} Booted ostree", crate::glyph::Glyph::BlackCircle),
+        Some(Slot::Rollback) if host_status.rollback_queued => "  Rollback ostree (queued)".into(),
         Some(Slot::Rollback) => "  Rollback ostree".into(),
         _ => " Other ostree".into(),
     };
@@ -842,11 +844,13 @@ fn human_render_slot_composefs(
     slot: Slot,
     entry: &crate::spec::BootEntry,
     erofs_verity: &str,
+    rollback_queued: bool,
 ) -> Result<()> {
     // TODO consider rendering more ostree stuff here like rpm-ostree status does
     let prefix = match slot {
         Slot::Staged => "  Staged composefs".into(),
         Slot::Booted => format!("{} Booted composefs", crate::glyph::Glyph::BlackCircle),
+        Slot::Rollback if rollback_queued => "  Rollback composefs (queued)".into(),
         Slot::Rollback => "  Rollback composefs".into(),
     };
     let prefix_len = prefix.len();
@@ -890,7 +894,13 @@ fn human_readable_output_booted(mut out: impl Write, host: &Host, verbose: bool)
                     verbose,
                 )?;
             } else if let Some(composefs) = &host_status.composefs {
-                human_render_slot_composefs(&mut out, slot_name, host_status, &composefs.verity)?;
+                human_render_slot_composefs(
+                    &mut out,
+                    slot_name,
+                    host_status,
+                    &composefs.verity,
+                    host.status.rollback_queued,
+                )?;
             } else {
                 writeln!(out, "Current {slot_name} state is unknown")?;
             }
@@ -1110,6 +1120,36 @@ mod tests {
                      Commit: f9fa3a553ceaaaf30cf85bfe7eed46a822f7b8fd7e14c1e3389cbc3f6d27f791
         "};
         similar_asserts::assert_eq!(w, expected);
+    }
+
+    #[test]
+    fn test_human_readable_queued_rollback() -> Result<()> {
+        let mut host: Host =
+            serde_yaml::from_str(include_str!("fixtures/spec-staged-booted.yaml"))?;
+        let entry = host.status.staged.take().unwrap();
+        let image = entry.image.as_ref().unwrap();
+
+        for (queued, expected) in [
+            (false, "  Rollback image: quay.io/example/someimage:latest"),
+            (
+                true,
+                "  Rollback image (queued): quay.io/example/someimage:latest",
+            ),
+        ] {
+            host.status.rollback_queued = queued;
+            let mut output = Vec::new();
+            human_render_slot(
+                &mut output,
+                Some(Slot::Rollback),
+                &entry,
+                image,
+                &host.status,
+                false,
+            )?;
+            let output = String::from_utf8(output)?;
+            assert_eq!(output.lines().next(), Some(expected));
+        }
+        Ok(())
     }
 
     #[test]
