@@ -1042,7 +1042,7 @@ pub(crate) enum Opt {
 /// TODO use <https://github.com/ostreedev/ostree/pull/2779> once
 /// we can depend on a new enough ostree
 #[context("Ensuring mountns")]
-pub(crate) fn ensure_self_unshared_mount_namespace() -> Result<()> {
+pub(crate) fn ensure_self_unshared_mount_namespace(reexec_env: &[(&str, &str)]) -> Result<()> {
     let uid = rustix::process::getuid();
     if !uid.is_root() {
         tracing::debug!("Not root, assuming no need to unshare");
@@ -1072,6 +1072,7 @@ pub(crate) fn ensure_self_unshared_mount_namespace() -> Result<()> {
     bootc_utils::reexec::reexec_with_guardenv(
         recurse_env,
         &["unshare", "-m", "--propagation=slave", "--"],
+        reexec_env,
     )
 }
 
@@ -1229,8 +1230,8 @@ pub(crate) fn prepare_for_write() -> Result<()> {
         anyhow::bail!("Detected container; this command requires a booted host system.");
     }
     crate::cli::require_root(false)?;
-    ensure_self_unshared_mount_namespace()?;
-    if crate::lsm::selinux_enabled() && !crate::lsm::selinux_ensure_install()? {
+    ensure_self_unshared_mount_namespace(&[])?;
+    if crate::lsm::selinux_enabled() && !crate::lsm::selinux_ensure_install(&[])? {
         tracing::debug!("Do not have install_t capabilities");
     }
     ENTERED.store(true, Ordering::SeqCst);

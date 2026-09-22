@@ -91,7 +91,7 @@ fn test_install_t() -> Result<bool> {
 /// However, if you maintain a bootc operating system with SELinux, you should from
 /// the start ensure that /usr/bin/bootc has the correct capabilities.
 #[context("Ensuring selinux install_t type")]
-pub(crate) fn selinux_ensure_install() -> Result<bool> {
+pub(crate) fn selinux_ensure_install(reexec_env: &[(&str, &str)]) -> Result<bool> {
     let guardenv = "_bootc_selinuxfs_mounted";
     let current = get_current_security_context()?;
     tracing::debug!("Current security context is {current}");
@@ -131,8 +131,7 @@ pub(crate) fn selinux_ensure_install() -> Result<bool> {
     let mut cmd = Command::new(&tmpf);
     cmd.env(guardenv, tmpf);
     cmd.env(bootc_utils::reexec::ORIG, srcpath);
-    cmd.args(std::env::args_os().skip(1));
-    cmd.arg0(bootc_utils::NAME);
+    bootc_utils::reexec::prepare_reexec(&mut cmd, reexec_env);
     cmd.log_debug();
     Err(anyhow::Error::msg(cmd.exec()).context("execve"))
 }
@@ -177,10 +176,12 @@ impl Drop for SetEnforceGuard {
 /// Try to enter the install_t domain, but if we can't do that, then
 /// just setenforce 0.
 #[context("Ensuring selinux install_t type")]
-pub(crate) fn selinux_ensure_install_or_setenforce() -> Result<Option<SetEnforceGuard>> {
+pub(crate) fn selinux_ensure_install_or_setenforce(
+    reexec_env: &[(&str, &str)],
+) -> Result<Option<SetEnforceGuard>> {
     // If the process already has install_t, exit early
     // Note that this may re-exec the entire process
-    if selinux_ensure_install()? {
+    if selinux_ensure_install(reexec_env)? {
         return Ok(None);
     }
     let g = if std::env::var_os("BOOTC_SETENFORCE0_FALLBACK").is_some() {

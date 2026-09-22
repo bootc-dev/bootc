@@ -1406,6 +1406,7 @@ impl SELinuxFinalState {
 pub(crate) fn reexecute_self_for_selinux_if_needed(
     srcdata: &SourceInfo,
     override_disable_selinux: bool,
+    reexec_env: &[(&str, &str)],
 ) -> Result<SELinuxFinalState> {
     // If the target state has SELinux enabled, we need to check the host state.
     if srcdata.selinux {
@@ -1422,7 +1423,7 @@ pub(crate) fn reexecute_self_for_selinux_if_needed(
             // so let's just fall through to that.
             setup_sys_mount("selinuxfs", SELINUXFS)?;
             // This will re-execute the current process (once).
-            let g = crate::lsm::selinux_ensure_install_or_setenforce()?;
+            let g = crate::lsm::selinux_ensure_install_or_setenforce(reexec_env)?;
             SELinuxFinalState::Enabled(g)
         } else {
             SELinuxFinalState::HostDisabled
@@ -1569,6 +1570,9 @@ async fn verify_target_fetch(
     Ok(())
 }
 
+/// Carries the content of `--root-ssh-authorized-keys` across re-execs; see `prepare_install`.
+const ROOT_SSH_AUTHORIZED_KEYS_ENV: &str = "_BOOTC_ROOT_SSH_AUTHORIZED_KEYS";
+
 /// Preparation for an install; validates and prepares some (thereafter immutable) global state.
 async fn prepare_install(
     mut config_opts: InstallConfigOpts,
@@ -1695,6 +1699,31 @@ async fn prepare_install(
         anyhow::bail!("Bootloader set to none is not supported with the composefs backend");
     }
 
+    // Read the file eagerly so we error out early, and before the mount changes
+    // below hide a file bind mounted under e.g. /tmp. We may re-exec further down
+    // and run this again with those mounts in place, so pass the content to the
+    // re-exec'd child via the environment.
+    let root_ssh_authorized_keys = config_opts
+        .root_ssh_authorized_keys
+        .as_ref()
+        .map(|p| -> Result<String> {
+            use std::env::VarError;
+            match std::env::var(ROOT_SSH_AUTHORIZED_KEYS_ENV) {
+                // Set by our parent
+                Ok(v) => Ok(v),
+                Err(VarError::NotPresent) => {
+                    std::fs::read_to_string(p).with_context(|| format!("Reading {p}"))
+                }
+                Err(e) => Err(e).with_context(|| format!("Parsing {ROOT_SSH_AUTHORIZED_KEYS_ENV}")),
+            }
+        })
+        .transpose()?;
+    let reexec_env: Vec<(&str, &str)> = root_ssh_authorized_keys
+        .as_deref()
+        .map(|v| (ROOT_SSH_AUTHORIZED_KEYS_ENV, v))
+        .into_iter()
+        .collect();
+
     // We need to access devices that are set up by the host udev
     bootc_mount::ensure_mirrored_host_mount("/dev")?;
     // We need to read our own container image (and any logically bound images)
@@ -1721,13 +1750,14 @@ async fn prepare_install(
     // Even though we require running in a container, the mounts we create should be specific
     // to this process, so let's enter a private mountns to avoid leaking them.
     if !external_source && std::env::var_os("BOOTC_SKIP_UNSHARE").is_none() {
-        super::cli::ensure_self_unshared_mount_namespace()?;
+        super::cli::ensure_self_unshared_mount_namespace(&reexec_env)?;
     }
 
     setup_sys_mount("efivarfs", EFIVARFS)?;
 
     // Now, deal with SELinux state.
-    let selinux_state = reexecute_self_for_selinux_if_needed(&source, config_opts.disable_selinux)?;
+    let selinux_state =
+        reexecute_self_for_selinux_if_needed(&source, config_opts.disable_selinux, &reexec_env)?;
     tracing::debug!("SELinux state: {selinux_state:?}");
 
     println!("Installing image: {:#}", &target_imgref);
@@ -1806,14 +1836,6 @@ async fn prepare_install(
         }
         r
     };
-
-    // Eagerly read the file now to ensure we error out early if e.g. it doesn't exist,
-    // instead of much later after we're 80% of the way through an install.
-    let root_ssh_authorized_keys = config_opts
-        .root_ssh_authorized_keys
-        .as_ref()
-        .map(|p| std::fs::read_to_string(p).with_context(|| format!("Reading {p}")))
-        .transpose()?;
 
     // Create our global (read-only) state which gets wrapped in an Arc
     // so we can pass it to worker threads too. Right now this just
