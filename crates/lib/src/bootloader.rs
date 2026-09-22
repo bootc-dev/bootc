@@ -309,6 +309,14 @@ pub(crate) fn install_systemd_boot(
         // write it.  Redirect into /tmp (a tmpfs mounted by MountedImageRoot)
         // so the write succeeds and is automatically discarded.
         .env("KERNEL_INSTALL_CONF_ROOT", KERNEL_INSTALL_CONF_ROOT)
+        // If systemd thinks it's inside of a chroot, it will fall
+        // back to "graceful" mode.  This means that bootctl will exit
+        // 0 even if bootloader installation doesn't go as expected,
+        // and we don't want that.  Explicitly disable chroot
+        // detection.
+        //
+        // See: https://github.com/bootc-dev/bootc/issues/2486
+        .env("SYSTEMD_IN_CHROOT", "0")
         .log_debug()
         // Capture stderr so bootctl error messages appear in our error chain.
         .run_capture_stderr()?;
