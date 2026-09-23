@@ -499,6 +499,9 @@ pub const TMP: &str = "7ec6f557-3bc5-4aca-b293-16ef5df639d1";
 /// Generic Linux filesystem data partition
 pub const LINUX_DATA: &str = "0fc63daf-8483-4772-8e79-3d69d8477de4";
 
+/// BIOS boot partition
+pub const BIOS_BOOT: &str = "21686148-6449-6e6f-744e-656564454649";
+
 // ============================================================================
 // ARCHITECTURE-SPECIFIC HELPERS
 // ============================================================================

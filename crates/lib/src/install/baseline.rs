@@ -214,6 +214,10 @@ struct RepartPartition {
     /// versions, in c9s
     #[serde(default)]
     partno: Option<u32>,
+    #[serde(default)]
+    raw_size: u64,
+    #[serde(default)]
+    raw_padding: u64,
     #[allow(dead_code)]
     fs: Option<String>,
 }
@@ -253,9 +257,12 @@ fn systemd_repart(
     device: &Device,
     root_size: Option<u64>,
     rootfs: Option<Filesystem>,
+    generic_image: bool,
 ) -> Result<PartitionLayout> {
     // Dry-run to check what partitions would be created
-    let dry_partitions = systemd_repart_run(device, true)?;
+    // Send `generic_image` as false so that we can see ALL defined
+    // partitions
+    let dry_partitions = systemd_repart_run(device, false, true)?;
 
     if dry_partitions.is_empty() {
         anyhow::bail!("systemd-repart returned empty partitions");
@@ -267,17 +274,45 @@ fn systemd_repart(
 
     if has_root {
         // Root partition is defined in repart.d config, run for real
-        let partitions = systemd_repart_run(device, false)?;
+        let partitions = systemd_repart_run(device, generic_image, false)?;
         let layout = parse_repart_layout(&partitions)?;
         return Ok(layout);
     }
 
     // Root partition is not defined, create defintion for the root part
     let mut root_conf = String::from("[Partition]\nType=root\n");
-    if let Some(size_mib) = root_size {
-        writeln!(root_conf, "SizeMinBytes={size_mib}M")?;
-        writeln!(root_conf, "SizeMaxBytes={size_mib}M")?;
-    }
+
+    match root_size {
+        Some(size_mib) => {
+            writeln!(root_conf, "SizeMinBytes={size_mib}M")?;
+            writeln!(root_conf, "SizeMaxBytes={size_mib}M")?;
+        }
+        None => {
+            let mb = 1024 * 1024;
+            // Save 64 MB as partition headroom for GPT headers
+            let partition_headroom = 64 * mb;
+
+            // Installing to a disk, compute the root ptn size
+            // by taking all other partitions into account
+            //
+            // We're doing this to accomodate for partitions that are
+            // supposed to be crated on first boot, like home,var,swap etc
+            let space_taken = dry_partitions
+                .iter()
+                .fold(0u64, |acc, x| acc + x.raw_size + x.raw_padding);
+            let root_size_mib = (device.size - space_taken - partition_headroom) / mb;
+
+            tracing::debug!(
+                "space_taken: {} M, device.size: {} M, Root Size: {root_size_mib} M",
+                space_taken / mb,
+                device.size / mb
+            );
+
+            writeln!(root_conf, "SizeMinBytes={root_size_mib}M")?;
+            writeln!(root_conf, "SizeMaxBytes={root_size_mib}M")?;
+        }
+    };
+
     match rootfs {
         Some(fs) => writeln!(root_conf, "Format={fs}")?,
         None => {
@@ -289,8 +324,9 @@ fn systemd_repart(
     std::fs::write("/run/repart.d/50-root.conf", &root_conf)
         .context("Writing root repart config")?;
 
-    let partitions = systemd_repart_run(device, false)?;
+    let partitions = systemd_repart_run(device, generic_image, false)?;
     let layout = parse_repart_layout(&partitions)?;
+
     Ok(layout)
 }
 
@@ -298,7 +334,11 @@ fn systemd_repart(
 /// `dry_run`: if true, no changes are written to disk.
 /// `definitions`: if set, uses `--definitions=` and `--empty=allow`;
 /// otherwise uses the default config search paths with `--empty=force`.
-fn systemd_repart_run(device: &Device, dry_run: bool) -> Result<Vec<RepartPartition>> {
+fn systemd_repart_run(
+    device: &Device,
+    generic_image: bool,
+    dry_run: bool,
+) -> Result<Vec<RepartPartition>> {
     let mut cmd = Command::new("systemd-repart");
 
     // Enable fsverity for ext4
@@ -318,6 +358,18 @@ fn systemd_repart_run(device: &Device, dry_run: bool) -> Result<Vec<RepartPartit
         "--root=/",
     ]);
 
+    // If generic image, only run repart definitions that we absolutely
+    // require, (BIOS/ESP and root). Others can run at first boot since we
+    // don't know if the user would want to run those on this disk itself
+    // or if this disk would be used to create an AMI/VHD and a separate disk
+    // would be used for the other partitions
+    if generic_image {
+        cmd.arg(format!(
+            "--include-partitions=root,esp,{}",
+            crate::discoverable_partition_specification::BIOS_BOOT
+        ));
+    }
+
     cmd.arg(device.path());
 
     let output = cmd.output().context("Failed to run systemd-repart")?;
@@ -325,6 +377,14 @@ fn systemd_repart_run(device: &Device, dry_run: bool) -> Result<Vec<RepartPartit
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         anyhow::bail!("systemd-repart failed: {stderr}");
+    }
+
+    if !dry_run {
+        tracing::debug!(
+            "Partitions ({}): {}",
+            if dry_run { "Dry Run" } else { "Actual" },
+            std::str::from_utf8(&output.stdout).unwrap_or("Failed to serialize output as UTF-8")
+        );
     }
 
     serde_json::from_slice(&output.stdout).with_context(|| {
@@ -544,7 +604,12 @@ pub(crate) fn install_create_rootfs(
     std::fs::create_dir_all(bootfs)?;
 
     let layout = if use_systemd_repart {
-        systemd_repart(&device, root_size, opts.filesystem)?
+        systemd_repart(
+            &device,
+            root_size,
+            opts.filesystem,
+            state.config_opts.generic_image,
+        )?
     } else {
         sfdisk(
             &device,
