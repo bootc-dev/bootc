@@ -12,6 +12,9 @@ env:
   CARGO_TERM_COLOR: always
   LIBVIRT_DEFAULT_URI: "qemu:///session"
   DEV_IMAGE: ghcr.io/bootc-dev/dev-bootc
+  # Retry parameters for `just build-fetch` (transient Koji/Copr/quay.io failures)
+  BOOTC_CI_RETRIES: "10"
+  BOOTC_CI_DELAY: "60"
 
 jobs:
   # Build and publish container images to ghcr.io
@@ -40,6 +43,9 @@ jobs:
             BUILDROOTBASE=$(just pullspec-for-os buildroot-base ${{ matrix.test_os }})
             echo "BOOTC_buildroot_base=${BUILDROOTBASE}" >> $GITHUB_ENV
           fi
+
+      - name: Fetch external dependencies (with retry)
+        run: just build-fetch
 
       - name: Build container
         # TODO: Also consider building + publishing an image that is just "base + bootc"
