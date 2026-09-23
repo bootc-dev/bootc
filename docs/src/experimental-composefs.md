@@ -290,10 +290,6 @@ The composefs backend is experimental; on-disk formats are subject to change.
 - How container signature enforcement carries over from installation into the
   installed system is not settled yet.
 - Extended install APIs: Ability to cleanly implement anaconda %post and osbuild post mutations and general post-install pre-reboot; right now some tools just mount the deployment directory (note this one also relates to [APIs in general](https://github.com/bootc-dev/bootc/issues/522))
-- [zstd:chunked pull failures](https://github.com/bootc-dev/bootc/issues/2408):
-  images pushed with `--compression-format zstd:chunked` currently fail to
-  pull on the composefs backend ("unexpected EOF reading tar entry"). Until a
-  composefs-rs decode fix is incorporated, publish with plain zstd or gzip.
 
 ## Related issues
 
