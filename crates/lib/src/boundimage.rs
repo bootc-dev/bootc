@@ -6,7 +6,7 @@
 //! is considered ready.
 
 use anyhow::{Context, Result};
-use camino::Utf8Path;
+use camino::{Utf8Path, Utf8PathBuf};
 use cap_std_ext::cap_std::fs::Dir;
 use cap_std_ext::dirext::CapStdExtDirExt;
 use fn_error_context::context;
@@ -18,17 +18,28 @@ use crate::store::Storage;
 
 /// The path in a root for bound images; this directory should only contain
 /// symbolic links to `.container` or `.image` files.
-const BOUND_IMAGE_DIR: &str = "usr/lib/bootc/bound-images.d";
+pub(crate) const BOUND_IMAGE_DIR: &str = "usr/lib/bootc/bound-images.d";
 
 /// A subset of data parsed from a `.image` or `.container` file with
 /// the minimal information necessary to fetch the image.
 ///
 /// In the future this may be extended to include e.g. certificates or
 /// other pull options.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct BoundImage {
     pub(crate) image: String,
     pub(crate) auth_file: Option<String>,
+}
+
+/// A bound image definition together with the quadlet file that defines it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BoundImageSpec {
+    pub(crate) image: BoundImage,
+    /// Path of the quadlet file relative to the root, e.g.
+    /// `usr/share/containers/systemd/foo.container`.
+    pub(crate) path: Utf8PathBuf,
+    /// The raw contents of the quadlet file.
+    pub(crate) contents: String,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -70,6 +81,39 @@ pub(crate) fn query_bound_images_for_deployment(
 
 #[context("Querying bound images")]
 pub(crate) fn query_bound_images(root: &Dir) -> Result<Vec<BoundImage>> {
+    let specs = query_bound_image_specs(root)?;
+    Ok(specs.into_iter().map(|s| s.image).collect())
+}
+
+/// Lexically resolve the target of a symlink in `dir` (relative to the root)
+/// to a root-relative path, without following any further symlinks. Like
+/// `RESOLVE_IN_ROOT` (which is how the file is actually read), `..` at the
+/// root stays at the root.
+fn resolve_link_target(dir: &Utf8Path, target: &Utf8Path) -> Result<Utf8PathBuf> {
+    let mut ret = Utf8PathBuf::new();
+    let base = if target.is_absolute() {
+        Utf8Path::new("")
+    } else {
+        dir
+    };
+    for component in base.components().chain(target.components()) {
+        use camino::Utf8Component::*;
+        match component {
+            RootDir | CurDir => {}
+            ParentDir => {
+                ret.pop();
+            }
+            Normal(n) => ret.push(n),
+            Prefix(_) => anyhow::bail!("Unexpected path prefix: {target}"),
+        }
+    }
+    Ok(ret)
+}
+
+/// Like [`query_bound_images`], but also returns the path and contents
+/// of the quadlet file defining each image.
+#[context("Querying bound image specs")]
+pub(crate) fn query_bound_image_specs(root: &Dir) -> Result<Vec<BoundImageSpec>> {
     let spec_dir = BOUND_IMAGE_DIR;
     let Some(bound_images_dir) = root.open_dir_optional(spec_dir)? else {
         tracing::debug!("Missing {spec_dir}");
@@ -112,7 +156,19 @@ pub(crate) fn query_bound_images(root: &Dir) -> Result<Vec<BoundImage>> {
             _ => anyhow::bail!("Invalid file extension: {file_name}"),
         }?;
 
-        bound_images.push(bound_image);
+        // Record where the quadlet actually lives, so callers can relate it
+        // to podman's quadlet search directories.
+        let target = bound_images_dir
+            .read_link_contents(file_name)
+            .with_context(|| format!("Reading link {path}"))?;
+        let target = Utf8PathBuf::try_from(target).context("Non-UTF8 symlink target")?;
+        let target = resolve_link_target(Utf8Path::new(spec_dir), &target)?;
+
+        bound_images.push(BoundImageSpec {
+            image: bound_image,
+            path: target,
+            contents: file_contents,
+        });
     }
 
     Ok(bound_images)
@@ -294,6 +350,32 @@ mod tests {
         assert_eq!(images[0].image, "quay.io/bar/bar:latest");
         assert_eq!(images[1].image, "quay.io/foo/foo:latest");
 
+        // The specs should record the resolved quadlet path and contents
+        let mut specs = query_bound_image_specs(td).unwrap();
+        specs.sort_by(|a, b| a.path.cmp(&b.path));
+        assert_eq!(specs.len(), 2);
+        assert_eq!(specs[0].path, format!("{CONTAINER_IMAGE_DIR}/bar.image"));
+        assert_eq!(specs[0].image.image, "quay.io/bar/bar:latest");
+        assert!(specs[0].contents.contains("quay.io/bar/bar:latest"));
+        assert_eq!(specs[1].path, format!("{CONTAINER_IMAGE_DIR}/foo.image"));
+
+        // Relative symlinks are resolved relative to the bound images directory
+        td.symlink(
+            "../../../share/containers/systemd/bar.image",
+            format!("{BOUND_IMAGE_DIR}/relative.image"),
+        )
+        .unwrap();
+        let specs = query_bound_image_specs(td).unwrap();
+        assert_eq!(specs.len(), 3);
+        assert!(
+            specs
+                .iter()
+                .all(|s| s.path == format!("{CONTAINER_IMAGE_DIR}/bar.image")
+                    || s.path == format!("{CONTAINER_IMAGE_DIR}/foo.image"))
+        );
+        td.remove_file(format!("{BOUND_IMAGE_DIR}/relative.image"))
+            .unwrap();
+
         // Invalid symlink should return an error
         td.symlink("./blah", format!("{BOUND_IMAGE_DIR}/blah.image"))
             .unwrap();
@@ -306,6 +388,28 @@ mod tests {
         assert!(query_bound_images(td).is_err());
 
         Ok(())
+    }
+
+    #[test]
+    fn test_resolve_link_target() {
+        let d = Utf8Path::new("usr/lib/bootc/bound-images.d");
+        assert_eq!(
+            resolve_link_target(d, "/usr/share/containers/systemd/foo.image".into()).unwrap(),
+            "usr/share/containers/systemd/foo.image"
+        );
+        assert_eq!(
+            resolve_link_target(d, "../../../share/containers/systemd/foo.image".into()).unwrap(),
+            "usr/share/containers/systemd/foo.image"
+        );
+        assert_eq!(
+            resolve_link_target(d, "./foo.image".into()).unwrap(),
+            "usr/lib/bootc/bound-images.d/foo.image"
+        );
+        // Excess `..` is clamped at the root, matching RESOLVE_IN_ROOT
+        assert_eq!(
+            resolve_link_target(d, "../../../../../../foo.image".into()).unwrap(),
+            "foo.image"
+        );
     }
 
     #[test]

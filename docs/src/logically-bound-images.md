@@ -56,6 +56,48 @@ Images are fetched using the global bootc pull secret by default (`/etc/ostree/a
 The bootc image store is owned by bootc; images will be garbage collected when they are no longer referenced
 by a file in `/usr/lib/bootc/bound-images.d`.
 
+## Applying changes without a reboot (experimental)
+
+The container images for logically bound images live in a single bootc-owned
+storage shared by all deployments, so after a `bootc upgrade` or `bootc switch`
+the new images are already on disk. What is tied to a deployment is only the
+*definition*: the symlink in `/usr/lib/bootc/bound-images.d` and the quadlet
+file it references, which the running system reads from its own `/usr`.
+
+If the staged deployment differs from the booted one *only* in bound image
+definitions, they can be applied to the running system without a reboot:
+
+```
+bootc apply-live bound-images
+```
+
+This writes the changed quadlet files to `/run/containers/systemd/`, which
+podman gives precedence over `/etc` and `/usr`, reloads systemd and restarts
+the affected `.container` units (removed units are stopped). Pass `--dry-run`
+to see what would change, or `--no-restart` to write the definitions without
+touching any units; a later plain invocation restarts the units still
+pending, as does re-running after a failed restart.
+
+If the staged deployment contains any other change, the command fails and
+lists the out-of-scope paths; a reboot is required to apply it. Note that a
+locally modified quadlet in `/etc/containers/systemd` that also changed in
+the image is reported this way, since the local copy wins in `/etc`.
+
+Because `/run` is transient, the override disappears on the next boot, at
+which point the staged deployment's own content applies. (A soft reboot
+preserves `/run`; the override is cleared when one is prepared.) The applied
+state is shown in `bootc status` and recorded in `/run/bootc/apply-live/`;
+images recorded there are protected from garbage collection until reboot,
+even if the staged deployment is discarded (for example by `bootc rollback`).
+
+Limitations: only the `.container` or `.image` file referenced from
+`bound-images.d` is applied. Quadlet drop-ins (`*.container.d/`) and other
+referenced quadlet files (`.volume`, `.network`, `.pod`) are not copied, and
+changes to them are treated as out of scope. A `.container` unit that
+references a changed `.image` is not restarted unless its own file changed.
+Removed units are stopped but not masked, so a dependency could start them
+again until reboot. Only supported on ostree-backed systems.
+
 ## Installation
 
 Logically bound images must be present in the default container store (`/var/lib/containers`) when invoking

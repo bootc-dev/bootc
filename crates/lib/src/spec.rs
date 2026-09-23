@@ -426,6 +426,42 @@ impl Display for FilesystemOverlay {
     }
 }
 
+/// A logically bound image definition that was applied to the running
+/// system by `bootc apply-live bound-images`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveBoundImage {
+    /// The container image reference
+    pub image: String,
+    /// The quadlet file written under `/run/containers/systemd`, if any
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
+    pub quadlet: Option<String>,
+    /// The systemd unit generated from the quadlet, if any
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
+    pub unit: Option<String>,
+    /// True if the unit has not yet been restarted with this definition
+    /// (e.g. `--no-restart` was used, or the restart failed). Re-running
+    /// `bootc apply-live bound-images` will retry it.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    #[serde(default)]
+    pub pending: bool,
+}
+
+/// Logically bound image definitions applied to the running system without
+/// a reboot. This state lives in `/run` and is discarded on reboot.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveBoundImages {
+    /// The ostree commit checksum of the deployment the definitions came from
+    pub checksum: String,
+    /// The deployment serial
+    pub deploy_serial: u32,
+    /// The applied definitions
+    pub images: Vec<LiveBoundImage>,
+}
+
 /// The status of the host system
 #[derive(Debug, Clone, Serialize, Default, Deserialize, PartialEq, Eq, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -450,6 +486,12 @@ pub struct HostStatus {
 
     /// The state of the overlay mounted on /usr
     pub usr_overlay: Option<FilesystemOverlay>,
+
+    /// Logically bound image definitions applied live to the booted
+    /// deployment via `bootc apply-live bound-images`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
+    pub live_bound_images: Option<LiveBoundImages>,
 
     /// Set to true if the physical root (`/sysroot`) is on a read-only medium
     /// (e.g. a live ISO) and so cannot be mutated; commands that would change

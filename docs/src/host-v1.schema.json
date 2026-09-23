@@ -317,6 +317,17 @@
             }
           ]
         },
+        "liveBoundImages": {
+          "description": "Logically bound image definitions applied live to the booted\ndeployment via `bootc apply-live bound-images`.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LiveBoundImages"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "otherDeployments": {
           "description": "Other deployments (i.e. pinned)",
           "type": "array",
@@ -483,6 +494,65 @@
         "image",
         "imageDigest",
         "architecture"
+      ]
+    },
+    "LiveBoundImage": {
+      "description": "A logically bound image definition that was applied to the running\nsystem by `bootc apply-live bound-images`.",
+      "type": "object",
+      "properties": {
+        "image": {
+          "description": "The container image reference",
+          "type": "string"
+        },
+        "pending": {
+          "description": "True if the unit has not yet been restarted with this definition\n(e.g. `--no-restart` was used, or the restart failed). Re-running\n`bootc apply-live bound-images` will retry it.",
+          "type": "boolean"
+        },
+        "quadlet": {
+          "description": "The quadlet file written under `/run/containers/systemd`, if any",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "unit": {
+          "description": "The systemd unit generated from the quadlet, if any",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "image"
+      ]
+    },
+    "LiveBoundImages": {
+      "description": "Logically bound image definitions applied to the running system without\na reboot. This state lives in `/run` and is discarded on reboot.",
+      "type": "object",
+      "properties": {
+        "checksum": {
+          "description": "The ostree commit checksum of the deployment the definitions came from",
+          "type": "string"
+        },
+        "deploySerial": {
+          "description": "The deployment serial",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "images": {
+          "description": "The applied definitions",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/LiveBoundImage"
+          }
+        }
+      },
+      "required": [
+        "checksum",
+        "deploySerial",
+        "images"
       ]
     },
     "ObjectMeta": {
