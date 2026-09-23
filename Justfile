@@ -108,23 +108,7 @@ build: package _keygen && _pull-lbi-images
 build-fetch: _keygen package
     #!/bin/bash
     set -euo pipefail
-    retries=${BOOTC_CI_RETRIES:-3}
-    delay=${BOOTC_CI_DELAY:-30}
-    retry() {
-        local attempt
-        for attempt in $(seq 1 "$retries"); do
-            echo "--- Attempt ${attempt}/${retries}: $*"
-            if "$@"; then
-                return 0
-            fi
-            if [ "$attempt" -lt "$retries" ]; then
-                echo "--- Attempt ${attempt} failed, retrying in ${delay}s..."
-                sleep "$delay"
-            fi
-        done
-        echo "--- All ${retries} attempts failed: $*" >&2
-        return 1
-    }
+    {{_retry_fn}}
     # Pull the base images explicitly so failures are retried cleanly
     # before we even start the container build.
     retry podman pull -q {{base}}
@@ -465,6 +449,29 @@ sysext:
 # ============================================================================
 # Internal helpers (prefixed with _)
 # ============================================================================
+
+# Shell helper for the fetch recipes: `retry CMD...` reruns CMD on failure
+# to paper over transient network errors. Tunable via BOOTC_CI_RETRIES and
+# BOOTC_CI_DELAY (seconds).
+_retry_fn := '''
+retries=${BOOTC_CI_RETRIES:-3}
+delay=${BOOTC_CI_DELAY:-30}
+retry() {
+    local attempt
+    for attempt in $(seq 1 "$retries"); do
+        echo "--- Attempt ${attempt}/${retries}: $*"
+        if "$@"; then
+            return 0
+        fi
+        if [ "$attempt" -lt "$retries" ]; then
+            echo "--- Attempt ${attempt} failed, retrying in ${delay}s..."
+            sleep "$delay"
+        fi
+    done
+    echo "--- All ${retries} attempts failed: $*" >&2
+    return 1
+}
+'''
 
 _pull-lbi-images:
     podman pull -q --retry 5 --retry-delay 5s {{lbi_images}}
