@@ -117,8 +117,11 @@ pub(crate) struct InitializedComposefs {
     pub(crate) repository_insecure: bool,
 }
 
-pub(crate) fn final_repository_policy(uki_policy: Option<bool>, requested_relaxed: bool) -> bool {
-    uki_policy == Some(true) || (uki_policy.is_none() && requested_relaxed)
+pub(crate) fn final_repository_policy(
+    artifact_policy: Option<bool>,
+    requested_relaxed: bool,
+) -> bool {
+    artifact_policy == Some(true) || (artifact_policy.is_none() && requested_relaxed)
 }
 
 /// Enforce the durable repository policy after inspecting the imported image.
@@ -136,7 +139,7 @@ pub(crate) fn validate_repository_policy(
     }
     if !repository_insecure && requested_relaxed && !allow_missing_verity_explicit {
         anyhow::bail!(
-            "Initial insecure UKI conflicts with the existing strict composefs repository; explicitly pass --allow-missing-verity to permit this session"
+            "Initial insecure boot artifact conflicts with the existing strict composefs repository; explicitly pass --allow-missing-verity to permit this session"
         );
     }
     Ok(())
@@ -375,10 +378,10 @@ pub(crate) fn prepare_boot_image(
     })
 }
 
-/// Inspect UKI policy without generating or recovering a boot image.  Boot
+/// Inspect boot artifact policy without generating or recovering a boot image. Boot
 /// image generation is deferred until the durable repository policy has been
 /// finalized and the normal boot setup path runs.
-pub(crate) fn inspect_uki_policy(
+pub(crate) fn inspect_boot_artifact_policy(
     repo: &Arc<crate::store::ComposefsRepository>,
     pull_result: &PullResult<Sha512HashValue>,
 ) -> Result<Option<bool>> {
@@ -388,9 +391,9 @@ pub(crate) fn inspect_uki_policy(
         Some(&pull_result.config_verity),
         &composefs_oci::OciTransformOptions::default(),
     )
-    .context("Creating composefs filesystem for UKI policy inspection")?;
+    .context("Creating composefs filesystem for boot artifact policy inspection")?;
     let entries = get_boot_resources(&fs, &**repo).context("Extracting boot entries")?;
-    crate::bootc_composefs::boot::uki_fsverity_policy(repo, &entries)
+    crate::bootc_composefs::boot::boot_artifact_fsverity_policy(repo, &entries)
 }
 
 /// Pull an image directly into the composefs repository via skopeo.
