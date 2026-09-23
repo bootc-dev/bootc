@@ -278,7 +278,9 @@ jobs:
         with:
           name: packages-${{ matrix.test_os }}
           path: target/packages/*.rpm
-          retention-days: 1
+          # Test jobs download these from this run; keep them long enough
+          # that re-running a flaked job on an older PR still works.
+          retention-days: 7
 
       # Unit tests don't depend on the variant/filesystem/bootloader/boot_type/seal_state
       # axes used by the test-integration matrix below, so we run them once per OS here
