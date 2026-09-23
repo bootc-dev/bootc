@@ -83,6 +83,7 @@
 
 - [bootc image](bootc-experimental-image.7.md)
 - [composefs backend](bootc-experimental-composefs.7.md)
+- [composefs aboot support](bootc-experimental-composefs-aboot.7.md)
 - [`man bootc-composefs-finalize-staged`](man/bootc-composefs-finalize-staged.8.md)
 - [unified storage](bootc-experimental-unified-storage.7.md)
 - [`man bootc-root-setup.service`](man/bootc-root-setup.service.5.md)
