@@ -206,3 +206,8 @@ check:
   - when: composefs_bridge == true
     enabled: true
   test: nu booted/test-49-composefs-1-16-bridge.nu
+
+/test-50-switch-zstd-chunked:
+  summary: Switch to an image with zstd:chunked compressed layers
+  duration: 30m
+  test: nu booted/test-switch-zstd-chunked.nu
