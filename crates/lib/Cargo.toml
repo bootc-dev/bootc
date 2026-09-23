@@ -94,8 +94,9 @@ rhsm = []
 # SELinux support, via libselinux. Without it bootc treats SELinux as disabled
 # on the host, for distributions that don't use SELinux (or ship libselinux).
 selinux = ["dep:selinux"]
-# Implementation detail of man page generation.
-docgen = ["clap_mangen"]
+# Implementation detail of man page generation. The man pages document the
+# whole CLI, so this also enables install-to-disk.
+docgen = ["clap_mangen", "install-to-disk"]
 
 [build-dependencies]
 cargo_metadata = "0.23"
