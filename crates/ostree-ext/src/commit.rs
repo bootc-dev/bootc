@@ -11,6 +11,7 @@ use cap_std_ext::cap_std;
 use cap_std_ext::dirext::CapStdExtDirExt;
 use std::path::Path;
 use std::path::PathBuf;
+use std::time::Duration;
 use tokio::task;
 
 /// Directories for which we will always remove all content.
@@ -99,10 +100,29 @@ pub fn prepare_ostree_commit_in_nonstrict(root: &Dir) -> Result<()> {
     clean_paths_in(root, rootdev)
 }
 
+/// Printed by `ostree container commit` to point users at its replacement.
+const CONTAINER_COMMIT_NOTICE: &str = "\
+------------------------------------------------------------------------
+NOTE: `ostree container commit` is deprecated; `bootc container lint` is
+the supported way to check a bootc container image. Please add
+`RUN bootc container lint` as the final step of your Containerfile.
+------------------------------------------------------------------------";
+
+/// How long to pause after [`CONTAINER_COMMIT_NOTICE`], so it stands out in build logs.
+const CONTAINER_COMMIT_NOTICE_DELAY: Duration = Duration::from_secs(5);
+
+/// Write the deprecation notice for `ostree container commit`.
+fn write_container_commit_notice(mut out: impl std::io::Write) -> Result<()> {
+    writeln!(out, "{CONTAINER_COMMIT_NOTICE}").context("Writing ostree container commit notice")?;
+    Ok(())
+}
+
 /// Entrypoint to the commit procedures, initially we just
 /// have one validation but we expect more in the future.
 pub(crate) async fn container_commit() -> Result<()> {
     task::spawn_blocking(move || {
+        write_container_commit_notice(std::io::stderr().lock())?;
+        std::thread::sleep(CONTAINER_COMMIT_NOTICE_DELAY);
         require_ostree_container()?;
         let rootdir = Dir::open_ambient_dir("/", cap_std::ambient_authority())?;
         prepare_ostree_commit_in(&rootdir)
@@ -175,6 +195,18 @@ mod tests {
         assert!(td.try_exists(var)?);
         assert!(td.try_exists(nested)?);
 
+        Ok(())
+    }
+
+    #[test]
+    fn container_commit_notice() -> Result<()> {
+        let mut out = Vec::new();
+        write_container_commit_notice(&mut out)?;
+        let out = String::from_utf8(out)?;
+        assert_eq!(out, format!("{CONTAINER_COMMIT_NOTICE}\n"));
+        for needle in ["deprecated", "RUN bootc container lint"] {
+            assert!(out.contains(needle), "missing {needle:?} in {out:?}");
+        }
         Ok(())
     }
 }
