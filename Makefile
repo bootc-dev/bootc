@@ -130,6 +130,8 @@ validate:
 	cargo test --no-run
 	(cd crates/ostree-ext && cargo check --no-default-features)
 	(cd crates/lib && cargo check --no-default-features)
+	(cd crates/cli && cargo check --no-default-features)
+	cargo test -p bootc-lib --no-default-features --no-run
 	cargo clippy -- $(CLIPPY_CONFIG)
 	env RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps --document-private-items
 .PHONY: validate

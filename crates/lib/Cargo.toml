@@ -51,7 +51,7 @@ regex = { workspace = true }
 rustix = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
-selinux = { workspace = true }
+selinux = { workspace = true, optional = true }
 tempfile = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["io-std", "time", "process", "rt", "net"] }
@@ -83,7 +83,7 @@ static_assertions = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 
 [features]
-default = ["install-to-disk"]
+default = ["install-to-disk", "selinux"]
 # This feature enables `bootc install to-disk`, which is considered just a "demo"
 # or reference installer; we expect most nontrivial use cases to be using
 # `bootc install to-filesystem`.
@@ -91,6 +91,9 @@ install-to-disk = []
 # This featuares enables `bootc internals publish-rhsm-facts` to integrate with
 # Red Hat Subscription Manager
 rhsm = []
+# SELinux support, via libselinux. Without it bootc treats SELinux as disabled
+# on the host, for distributions that don't use SELinux (or ship libselinux).
+selinux = ["dep:selinux"]
 # Implementation detail of man page generation.
 docgen = ["clap_mangen"]
 
