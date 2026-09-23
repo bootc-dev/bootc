@@ -28,6 +28,11 @@ Before=basic.target final.target
 After=systemd-journal-flush.service
 Conflicts=final.target
 
+# Start the hold unit and ensure it stays active throughout this
+# service.
+Wants=bootc-finalize-staged-hold.service
+After=bootc-finalize-staged-hold.service
+
 [Service]
 Type=oneshot
 RemainAfterExit=yes

@@ -212,6 +212,19 @@ pub(crate) struct SwitchOpts {
     pub(crate) progress: ProgressOptions,
 }
 
+/// Finalize a staged composefs deployment.
+///
+/// This is invoked at shutdown by `bootc-finalize-staged.service`.
+#[derive(Debug, Parser, PartialEq, Eq)]
+pub(crate) struct ComposefsFinalizeStagedOpts {
+    /// Hold /boot open until terminated, instead of finalizing.
+    ///
+    /// This is used by `bootc-finalize-staged-hold.service` to keep an
+    /// automounted /boot from expiring while a deployment is staged.
+    #[clap(long)]
+    pub(crate) hold: bool,
+}
+
 /// Options controlling rollback
 #[derive(Debug, Parser, PartialEq, Eq)]
 pub(crate) struct RollbackOpts {
@@ -1066,7 +1079,7 @@ pub(crate) enum Opt {
     #[clap(subcommand)]
     #[clap(hide = true)]
     Internals(InternalsOpts),
-    ComposefsFinalizeStaged,
+    ComposefsFinalizeStaged(ComposefsFinalizeStagedOpts),
     /// Diff current /etc configuration versus default
     #[clap(hide = true)]
     ConfigDiff,
@@ -2714,14 +2727,23 @@ async fn run_from_opt(opt: Opt) -> Result<CliExitStatus> {
             }
         },
 
-        Opt::ComposefsFinalizeStaged => {
-            let storage = &get_storage().await?;
-            match storage.kind()? {
-                BootedStorageKind::Ostree(_) => {
-                    anyhow::bail!("ComposefsFinalizeStaged is only supported for composefs backend")
-                }
-                BootedStorageKind::Composefs(booted_cfs) => {
-                    composefs_backend_finalize(storage, &booted_cfs).await
+        Opt::ComposefsFinalizeStaged(opts) => {
+            if opts.hold {
+                // Must happen before loading storage: the hold has to stay in
+                // the root mount namespace, and must not depend on anything
+                // but /boot.
+                crate::bootc_composefs::finalize::hold_boot()
+            } else {
+                let storage = &get_storage().await?;
+                match storage.kind()? {
+                    BootedStorageKind::Ostree(_) => {
+                        anyhow::bail!(
+                            "ComposefsFinalizeStaged is only supported for composefs backend"
+                        )
+                    }
+                    BootedStorageKind::Composefs(booted_cfs) => {
+                        composefs_backend_finalize(storage, &booted_cfs).await
+                    }
                 }
             }
         }
@@ -2870,6 +2892,17 @@ mod tests {
             Opt::parse_including_static(["bootc", "status", "-v"]),
             Opt::Status(StatusOpts { verbose: true, .. })
         ));
+
+        for (args, hold) in [
+            (&["bootc", "composefs-finalize-staged"][..], false),
+            (&["bootc", "composefs-finalize-staged", "--hold"][..], true),
+        ] {
+            assert_eq!(
+                Opt::parse_including_static(args),
+                Opt::ComposefsFinalizeStaged(ComposefsFinalizeStagedOpts { hold }),
+                "{args:?}"
+            );
+        }
     }
 
     #[test]
