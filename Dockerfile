@@ -134,8 +134,9 @@ ARG boot_type
 ARG seal_state
 ARG bootloader
 # All network-fetching operations: package installs from distro repos, Copr, Koji.
-# Separated so `just build-fetch --target=fetch` can be retried independently on
-# transient network failures without re-running the configuration phase.
+# Separated so `just build-fetch` can retry this (and the `tools` stage below)
+# independently on transient network failures without re-running the
+# configuration phase.
 RUN --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
     --mount=type=bind,from=src,src=/src/hack,target=/run/hack <<-EOF
     set -ex

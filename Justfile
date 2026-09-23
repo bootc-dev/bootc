@@ -96,8 +96,8 @@ build: package _keygen && _pull-lbi-images
 
 # Fetch all external dependencies with a retry loop.
 #
-# This runs `podman build --target=fetch` for both the main image and the
-# upgrade-source image, retrying on transient network failures (Koji 503s,
+# This pulls the base images and builds the network-fetching stages of
+# both the main image and the upgrade-source image, retrying on transient network failures (Koji 503s,
 # Copr outages, quay.io blips, etc.).  In CI this runs as its own step
 # before `just build` / `just test-upgrade` so that flakes don't require
 # re-queueing the entire PR.
@@ -105,13 +105,10 @@ build: package _keygen && _pull-lbi-images
 # The retry parameters can be overridden via environment variables:
 #   BOOTC_CI_RETRIES=10 BOOTC_CI_DELAY=60 just build-fetch
 [group('core')]
-build-fetch: _keygen package
+build-fetch: _keygen _package-fetch package
     #!/bin/bash
     set -euo pipefail
     {{_retry_fn}}
-    # Pull the base images explicitly so failures are retried cleanly
-    # before we even start the container build.
-    retry podman pull -q {{base}}
     retry podman pull -q {{buildroot_base}}
     # Pull LBI images (also fetched later by _pull-lbi-images, but doing it
     # here means a failure is retried rather than aborting the full build).
@@ -121,12 +118,13 @@ build-fetch: _keygen package
 
     pkg_path=$(realpath target/packages)
 
-    # Build the network-heavy fetch stage of the main image.  If this
-    # succeeds, `just build` will get a cache hit on the fetch layer and
-    # run entirely offline.
+    # Build the network-heavy stages of the main image: `tools` derives
+    # from `fetch` and additionally installs the sealing tools, and is
+    # always needed (via `sdboot-signed`).  If this succeeds, `just build`
+    # will get a cache hit on these layers and run entirely offline.
     # Note: buildargs (not base_buildargs) is needed here because the
     # target-base stage requires --cap-add/--security-opt for bwrap.
-    retry podman build {{_nocache_arg}} --build-context "packages=${pkg_path}" --target=fetch {{buildargs}} .
+    retry podman build {{_nocache_arg}} --build-context "packages=${pkg_path}" --target=tools {{buildargs}} .
     # Same for the upgrade-source image used by test-upgrade.
     retry podman build {{_nocache_arg}} --build-arg=base={{base}} \
         --target=fetch -f tmt/tests/Dockerfile.upgrade-source .
@@ -473,8 +471,26 @@ retry() {
 }
 '''
 
+# Fetch the network dependencies of `package` with retries: the base image
+# and the `buildroot` stage (distro packages via install-buildroot, crates
+# via cargo fetch). A subsequent `just package` then gets a cache hit on
+# the buildroot and only does offline work.
+_package-fetch:
+    #!/bin/bash
+    set -euo pipefail
+    {{_retry_fn}}
+    retry podman pull -q {{base}}
+    if test -n "${BOOTC_SKIP_PACKAGE:-}"; then
+        exit 0
+    fi
+    local_deps_args=$(just _local-deps-args)
+    retry podman build {{base_buildargs}} --target=buildroot $local_deps_args .
+
 _pull-lbi-images:
-    podman pull -q --retry 5 --retry-delay 5s {{lbi_images}}
+    #!/bin/bash
+    set -euo pipefail
+    {{_retry_fn}}
+    retry podman pull -q --retry 5 --retry-delay 5s {{lbi_images}}
 
 _git-build-vars:
     #!/bin/bash
