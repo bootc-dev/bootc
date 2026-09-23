@@ -12,6 +12,7 @@ use crate::bootc_composefs::boot::{
     secondary_sort_key, type1_entry_conf_file_name,
 };
 use crate::bootc_composefs::status::{get_composefs_status, get_sorted_type1_boot_entries};
+use crate::bootc_composefs::utils::stage_non_manged_bls_entries;
 use crate::composefs_consts::{
     COMPOSEFS_STAGED_DEPLOYMENT_FNAME, COMPOSEFS_TRANSIENT_STATE_DIR, TYPE1_ENT_PATH_STAGED,
 };
@@ -198,6 +199,8 @@ fn rollback_composefs_entries(host: &Host, boot_dir: &Dir, bootloader: Bootloade
             .with_context(|| format!("Writing to {file_name}"))?;
     }
 
+    stage_non_manged_bls_entries(boot_dir, &rollback_entries_dir)?;
+
     let rollback_entries_dir = rollback_entries_dir
         .reopen_as_ownedfd()
         .context("Reopening as owned fd")?;
@@ -275,4 +278,71 @@ pub(crate) async fn composefs_rollback(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use anyhow::{Ok, Result};
+    use cap_std_ext::{cap_std, dirext::CapStdExtDirExt};
+
+    use crate::k8sapitypes::Resource;
+    use crate::spec::Bootloader;
+    use crate::{bootc_composefs::rollback::rollback_composefs_entries, spec::Host};
+
+    #[test]
+    fn test_rollback_composefs_entries() -> Result<()> {
+        let tempdir = cap_std_ext::cap_tempfile::tempdir(cap_std::ambient_authority())?;
+
+        let entry1 = r#"
+            title Fedora 42.20250623.3.1 (CoreOS)
+            version fedora-42.0
+            sort-key 1
+            linux /boot/7e11ac46e3e022053e7226a20104ac656bf72d1a84e3a398b7cce70e9df188b6/vmlinuz-5.14.10
+            initrd /boot/7e11ac46e3e022053e7226a20104ac656bf72d1a84e3a398b7cce70e9df188b6/initramfs-5.14.10.img
+            options root=UUID=abc123 rw composefs=7e11ac46e3e022053e7226a20104ac656bf72d1a84e3a398b7cce70e9df188b6
+        "#;
+        let entry2 = r#"
+            title Fedora 41.20250214.2.0 (CoreOS)
+            version fedora-42.0
+            sort-key 2
+            efi /EFI/Linux/f7415d75017a12a387a39d2281e033a288fc15775108250ef70a01dcadb93346.efi
+            options root=UUID=abc123 rw composefs=febdf62805de2ae7b6b597f2a9775d9c8a753ba1e5f09298fc8fbe0b0d13bf01
+        "#;
+        let entry3 = r#"
+            title Test
+            version 1
+            sort-key 9
+            efi /EFI/boot/test.efi
+        "#;
+
+        tempdir.create_dir_all("loader/entries")?;
+        tempdir.atomic_write("loader/entries/bootc_entry1.conf", entry1)?;
+        tempdir.atomic_write("loader/entries/bootc_entry2.conf", entry2)?;
+        tempdir.atomic_write("loader/entries/entry3.conf", entry3)?;
+
+        let host = Host {
+            resource: Resource {
+                api_version: Default::default(),
+                kind: Default::default(),
+                metadata: Default::default(),
+            },
+            spec: Default::default(),
+            status: Default::default(),
+        };
+        let bootloader = Bootloader::None;
+
+        rollback_composefs_entries(&host, &tempdir, bootloader)?;
+
+        assert!(tempdir.exists("loader/entries"));
+        assert!(tempdir.exists("loader/entries/bootc_bootc-fedora-42.0-0.conf"));
+        assert!(tempdir.exists("loader/entries/bootc_bootc-fedora-42.0-1.conf"));
+        assert!(tempdir.exists("loader/entries/entry3.conf"));
+
+        assert_eq!(
+            str::from_utf8(&tempdir.read("loader/entries/entry3.conf")?[..])?,
+            entry3
+        );
+
+        Ok(())
+    }
 }

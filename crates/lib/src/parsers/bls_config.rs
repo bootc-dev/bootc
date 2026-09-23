@@ -868,6 +868,34 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn test_boot_artifact_verity_efi_no_prefix() -> Result<()> {
+        let input = r#"
+            title Test
+            version 1
+            efi /EFI/boot/test.efi
+        "#;
+        let config = parse_bls_config(&input)?;
+
+        let result = config.get_verity();
+        assert!(result.is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn test_boot_artifact_verity_efi_no_extension() -> Result<()> {
+        let input = r#"
+            title      Test
+            version    1
+            efi        /EFI/boot/test
+        "#;
+        let config = parse_bls_config(&input)?;
+
+        let result = config.get_verity();
+        assert!(result.is_err());
+        Ok(())
+    }
+
     /// Test that Non-EFI boot_artifact_name fails when linux path has no parent
     #[test]
     fn test_boot_artifact_name_non_efi_no_parent() {
