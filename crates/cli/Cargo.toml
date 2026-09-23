@@ -15,7 +15,7 @@ platforms = ["*-unknown-linux-gnu"]
 
 [dependencies]
 # Internal crates
-bootc-lib = { version = "1.16", path = "../lib" }
+bootc-lib = { version = "1.16", path = "../lib", default-features = false }
 bootc-utils = { package = "bootc-internal-utils", path = "../utils", version = "1.16.14" }
 
 # Workspace dependencies
@@ -24,6 +24,13 @@ anyhow = { workspace = true }
 log = { workspace = true }
 tokio = { workspace = true, features = ["macros"] }
 tracing = { workspace = true }
+
+[features]
+# Forward bootc-lib's defaults (it's a dependency without default features), so
+# that `--no-default-features` works for the binary too.
+default = ["bootc-lib/default"]
+install-to-disk = ["bootc-lib/install-to-disk"]
+selinux = ["bootc-lib/selinux"]
 
 [lints]
 workspace = true
