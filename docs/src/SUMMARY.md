@@ -67,6 +67,7 @@
 
 - [bootc image](experimental-bootc-image.md)
 - [composefs backend](experimental-composefs.md)
+- [composefs aboot support](experimental-composefs-aboot.md)
 - [unified storage](experimental-unified-storage.md)
 - [`man bootc-root-setup.service`](man/bootc-root-setup.service.5.md)
 - [`man bootc-setup-root-conf.toml`](man/bootc-setup-root-conf.5.md)
