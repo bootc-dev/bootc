@@ -430,7 +430,10 @@ pub(crate) enum ContainerOpts {
         no_truncate: bool,
     },
     /// Output the bootable composefs digest for a directory.
-    #[clap(hide = true)]
+    ///
+    /// This is the digest that `bootc container ukify` embeds in the kernel
+    /// command line of a UKI. It is useful for scripting and debugging outside
+    /// of that flow.
     ComputeComposefsDigest {
         /// Path to the filesystem root
         #[clap(default_value = "/target")]
@@ -473,7 +476,7 @@ pub(crate) enum ContainerOpts {
     /// and RHEL derivatives ship.
     ///
     /// Example:
-    ///   bootc container split-kernel-rootfs --rootfs /target-rootfs --output /out
+    ///   bootc container split-kernel-and-rootfs --rootfs /target-rootfs --output /out
     SplitKernelAndRootfs {
         /// Operate on the provided rootfs
         #[clap(long, default_value = "/")]

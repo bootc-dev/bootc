@@ -42,7 +42,7 @@ Key paths:
 - `/sysroot/ostree/repo/` - OSTree repository
 - `/sysroot/ostree/deploy/<stateroot>/` - Deployment directories
 
-### Composefs Backend (experimental)
+### Composefs Backend
 
 Uses [composefs-rs](https://github.com/containers/composefs-rs) directly,
 enabling native UKI support and sealed images with fsverity integrity.

@@ -28,9 +28,6 @@ when it is present on the host image.  Image authors can therefore ship the
 file at this path in their container image and rebuild the initramfs with a
 plain `dracut --force`; no `--include` flags are needed.
 
-**NOTE**: The composefs backend and this configuration file are experimental
-and subject to change without notice.
-
 # SECTIONS
 
 ## `[root]`

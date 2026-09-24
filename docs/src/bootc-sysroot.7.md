@@ -1,7 +1,8 @@
 # Filesystem: Physical /sysroot
 
-The bootc project uses [ostree](https://github.com/ostreedev/ostree/) as a backend,
+By default, bootc uses [ostree](https://github.com/ostreedev/ostree/) as a backend,
 and maps fetched container images to a [deployment](https://ostreedev.github.io/ostree/deployment/).
+The layout of the composefs backend is described [below](#composefs-backend-storage).
 
 ## stateroot
 

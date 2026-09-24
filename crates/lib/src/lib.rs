@@ -39,7 +39,7 @@
 //!
 //! ## Storage Backends
 //!
-//! - [`bootc_composefs`] - Composefs backend implementation (experimental)
+//! - [`bootc_composefs`] - Composefs backend implementation
 //! - The OSTree backend is implemented via `ostree-ext` and the [`store`] module
 //!
 //! ## Filesystem and Boot

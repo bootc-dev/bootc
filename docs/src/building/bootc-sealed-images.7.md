@@ -47,7 +47,7 @@ valid use case is to temporarily disable it in order to test a change locally
 on e.g. one machine, then re-enable it later. However at the current time it
 is not yet streamlined to regenerate the UKI locally.
 
-This is independent of `--allow-missing-verity` (see [Overview](../bootc-composefs.7.md#overview)),
+This is independent of [`--allow-missing-verity`](../bootc-composefs.7.md#overview),
 which instead makes fs-verity on the root filesystem optional.
 
 ### Build Pattern: Split the Kernel, Then Generate the UKI in a Separate Stage
@@ -132,7 +132,7 @@ A lower-level primitive, used internally by `ukify` above, that computes just th
 - `--erofs-version <v1|v2>`: EROFS format for the computed digest (default: `v1`)
 - `--write-dumpfile-to <PATH>`: Generate a dumpfile for debugging
 
-> **Note**: This command is currently hidden from `--help` output as it's part of the experimental composefs feature set.
+See also [bootc-container-compute-composefs-digest(8)](../man/bootc-container-compute-composefs-digest.8.md).
 
 ### Final Image Structure
 

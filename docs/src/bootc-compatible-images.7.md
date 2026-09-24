@@ -23,7 +23,7 @@ The Linux kernel (and optionally initramfs) is embedded in the container image; 
 
 ### Kernel (sealed UKI)
 
-For the composefs backend, the UKI must be located at `/boot/EFI/Linux/$kver.efi`.
+For the composefs backend, the UKI must be located at `/boot/EFI/Linux/$kver.efi`. See [sealed images](building/bootc-sealed-images.7.md).
 
 ### /ostree symlink and `bootc container lint`
 

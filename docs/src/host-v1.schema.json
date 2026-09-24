@@ -216,7 +216,7 @@
           "const": "grub"
         },
         {
-          "description": "Use Grub for confidential clusters as the bootloader",
+          "description": "Use Grub for confidential clusters as the bootloader (experimental)",
           "type": "string",
           "const": "grub-cc"
         },

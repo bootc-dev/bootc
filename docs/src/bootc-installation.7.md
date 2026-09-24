@@ -121,7 +121,7 @@ merge precedence, and the available configuration fields.
 ### The storage backend
 
 The storage backend is determined by the image. It is installed with the
-[experimental composefs backend](bootc-composefs.7.md) when it
+[composefs backend](bootc-composefs.7.md) when it
 ships a UKI, or when it matches both of these rules:
 
 - it ships `/usr/lib/composefs/setup-root-conf.toml` (which may be empty; see
@@ -145,7 +145,19 @@ For more information, see [Image building and configuration guidance](building/b
 
 ## composefs backend
 
-There is a `--composefs-backend` option for `bootc install` to explicitly select a composefs backend apart from sealed images; this is not as heavily tested yet.
+The [storage backend](#the-storage-backend) is selected by the image; see
+[composefs backend](bootc-composefs.7.md) and [sealed images](building/bootc-sealed-images.7.md).
+
+With a traditional kernel and initramfs, the initramfs of a composefs image
+must also include bootc's dracut module (`51bootc`), which mounts the composefs
+root. That module is not enabled by default: the reference
+[baseimage](https://github.com/bootc-dev/bootc/tree/main/baseimage) configuration
+enables it, and other base images need to as well; see
+[bootc-root-setup.service(5)](man/bootc-root-setup.service.5.md).
+
+On a root filesystem without fs-verity support (such as XFS), fs-verity is
+made optional automatically for a traditional kernel install;
+`--allow-missing-verity` does this explicitly.
 
 ## More advanced installation with `to-filesystem`
 

@@ -144,8 +144,8 @@ etc.
 
 ### Building and testing with the composefs backend
 
-bootc has two storage backends: `ostree` (default, production) and `composefs`
-(experimental). The composefs backend has several axes of configuration:
+bootc has two storage backends: `ostree` and `composefs`.
+The composefs backend has several axes of configuration:
 
 | Variable | Values | Notes |
 |---|---|---|
