@@ -206,7 +206,7 @@ just validate-composefs-digest
 The `build-sealed` target generates test Secure Boot keys in
 `target/test-secureboot/` and builds a complete sealed image with all
 the sealed composefs settings. See
-[experimental-composefs.md](docs/src/bootc-experimental-composefs.7.md) for
+[sealed images](docs/src/building/bootc-sealed-images.7.md) for
 more information on sealed images.
 
 

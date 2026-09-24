@@ -76,3 +76,30 @@ is recommended, along with an `ExecStartPre=mount -o remount,rw /sysroot`.
 ### Detecting bootc/ostree systems
 
 See the [package managers](bootc-package-managers.7.md) section on "Detecting image based systems".
+
+## composefs backend storage
+
+Unlike the ostree backend, which keeps its repository at `/ostree/repo`, the composefs backend splits its on-disk state across two top-level directories in the physical sysroot:
+
+- `/composefs`: The [composefs-rs repository](https://github.com/composefs/composefs-rs/blob/main/crates/composefs/src/repository_format.rs) (mode `0700`), containing:
+  - `objects/`: content-addressed file storage, keyed by SHA-512 fs-verity digest and shared via reflink (`FICLONE`) where the filesystem supports it
+  - `images/`: EROFS images describing each deployment's root filesystem metadata, possibly in both [formats](bootc-composefs.7.md#erofs-formats)
+  - `streams/`: OCI manifest, config, and layer splitstreams captured during image pulls
+  - `bootc/storage/`: the `containers-storage:` instance backing logically bound images, reflink-shared with the composefs object store
+- `/state/deploy/<deployment-id>/`: Persistent per-deployment state, one directory per deployment (see below for how it is named):
+  - `etc/`: a writable copy of the deployment's `/etc`, bind-mounted onto the booted root's `/etc`
+  - `var`: a symlink to the shared `/state/os/default/var`, bind-mounted onto the booted root's `/var`
+  - `<deployment-id>.origin`: an INI file recording the image reference, boot type (BLS or UKI) and digest, and the OCI manifest digest (the latter is what keeps a deployment's objects alive across garbage collection)
+
+Although composefs-rs supports other fs-verity hash algorithms, bootc currently hardcodes `SHA-512` for the repository. This is why EROFS image IDs and object identifiers are 128-character hex strings.
+
+Three kinds of digest show up here and are easy to confuse. The OCI manifest
+digest names the pulled container image (see the origin file above). An EROFS
+digest names one bootable image under `images/` and is what the kernel command
+line refers to; a deployment may have one of each format. The deployment ID names the
+state directory; it is the digest of the boot image selected when the
+deployment was staged.
+
+There is no `/ostree/repo`; the composefs backend doesn't use the ostree repository at all. A minimal `/ostree` directory is still created, but only to hold a compatibility symlink (`ostree/bootc -> ../composefs/bootc`) so that existing tooling expecting `/usr/lib/bootc/storage` to resolve through `ostree/bootc` keeps working.
+
+Transient, not-yet-finalized deployment state (used while staging an update before reboot) lives under `/run/composefs/staged-deployment` and is never persisted to disk.

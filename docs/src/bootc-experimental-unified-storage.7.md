@@ -133,7 +133,7 @@ podman --storage-opt=additionalimagestore=/usr/lib/bootc/storage run localhost/b
 
 ## Relationship to composefs backend
 
-Unified storage is complementary to the [composefs backend](bootc-experimental-composefs.7.md).
+Unified storage is complementary to the [composefs backend](bootc-composefs.7.md).
 While unified storage changes *how images are pulled* (using containers/storage),
 the composefs backend changes *how the filesystem is stored and verified*.
 

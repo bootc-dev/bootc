@@ -121,7 +121,7 @@ merge precedence, and the available configuration fields.
 ### The storage backend
 
 The storage backend is determined by the image. It is installed with the
-[experimental composefs backend](bootc-experimental-composefs.7.md) when it
+[experimental composefs backend](bootc-composefs.7.md) when it
 ships a UKI, or when it matches both of these rules:
 
 - it ships `/usr/lib/composefs/setup-root-conf.toml` (which may be empty; see
@@ -142,6 +142,10 @@ systems and distributions that will ship unconfigured images.  An
 unconfigured image does not have a default password or SSH key, etc.
 
 For more information, see [Image building and configuration guidance](building/bootc-building-images.7.md).
+
+## composefs backend
+
+There is a `--composefs-backend` option for `bootc install` to explicitly select a composefs backend apart from sealed images; this is not as heavily tested yet.
 
 ## More advanced installation with `to-filesystem`
 

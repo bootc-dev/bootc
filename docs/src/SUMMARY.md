@@ -14,6 +14,7 @@
 - [Users, groups, SSH keys](building/bootc-users-and-groups.7.md)
 - [`man bootc-sysusers-shadow-sync.service`](man/bootc-sysusers-shadow-sync.service.5.md)
 - [Kernel arguments](building/bootc-kernel-arguments.7.md)
+- [Sealed images](building/bootc-sealed-images.7.md)
 - [Secrets](building/bootc-secrets.7.md)
 - [Management Services](building/bootc-management-services.7.md)
 
@@ -69,6 +70,7 @@
 - [Filesystem](bootc-filesystem.7.md)
 - [Filesystem: sysroot](bootc-sysroot.7.md)
 - [Container storage](bootc-container-storage.7.md)
+- [composefs backend](bootc-composefs.7.md)
 - [Bootloader](bootc-bootloaders.7.md)
 - [`man bootc-loader-entries`](man/bootc-loader-entries.8.md)
 - [`man bootc-loader-entries-set-options-for-source`](man/bootc-loader-entries-set-options-for-source.8.md)
@@ -81,7 +83,6 @@
 # Experimental features
 
 - [bootc image](bootc-experimental-image.7.md)
-- [composefs backend](bootc-experimental-composefs.7.md)
 - [`man bootc-composefs-finalize-staged`](man/bootc-composefs-finalize-staged.8.md)
 - [unified storage](bootc-experimental-unified-storage.7.md)
 - [`man bootc-root-setup.service`](man/bootc-root-setup.service.5.md)
