@@ -12,6 +12,7 @@ use fn_error_context::context;
 use bootc_mount as mount;
 
 use crate::bootc_composefs::boot::{MountedImageRoot, SecurebootKeys};
+use crate::spec::Bootloader;
 use crate::utils;
 
 /// The name of the mountpoint for efi (as a subdirectory of /boot, or at the toplevel)
@@ -95,15 +96,17 @@ pub(crate) fn supports_bootupd(root: &Dir) -> Result<bool> {
     Ok(r)
 }
 
-/// Check whether the target bootupd supports `--filesystem`.
-///
-/// Runs `bootupctl backend install --help` and looks for `--filesystem` in the
-/// output. When `chroot_target` is set the command runs inside a chroot
-/// (via [`ChrootCmd`]) so we probe the binary from the target image.
-fn bootupd_supports_filesystem(chroot_target: Option<&Utf8Path>) -> Result<bool> {
+fn bootupd_install_help(chroot_target: Option<&Utf8Path>) -> Result<String> {
+    static STATUS: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+    if let Some(s) = STATUS.get() {
+        return Ok(s.clone());
+    };
+
     let help_args = ["bootupctl", "backend", "install", "--help"];
+
     let output = if let Some(target_root) = chroot_target {
-        ChrootCmd::new(target_root)
+        ChrootCmd::new(&target_root)
             .set_default_path()
             .run_get_string(help_args)?
     } else {
@@ -112,6 +115,17 @@ fn bootupd_supports_filesystem(chroot_target: Option<&Utf8Path>) -> Result<bool>
             .log_debug()
             .run_get_string()?
     };
+
+    Ok(STATUS.get_or_init(|| output).to_string())
+}
+
+/// Check whether the target bootupd supports `--filesystem`.
+///
+/// Runs `bootupctl backend install --help` and looks for `--filesystem` in the
+/// output. When `chroot_target` is set the command runs inside a chroot
+/// (via [`ChrootCmd`]) so we probe the binary from the target image.
+fn bootupd_supports_filesystem(chroot_target: Option<&Utf8Path>) -> Result<bool> {
+    let output = bootupd_install_help(chroot_target)?;
 
     let use_filesystem = output.contains("--filesystem");
 
@@ -122,6 +136,23 @@ fn bootupd_supports_filesystem(chroot_target: Option<&Utf8Path>) -> Result<bool>
     }
 
     Ok(use_filesystem)
+}
+
+/// Check whether the target bootupd supports `--bootloader` for installs
+/// Caches the result of the first call; callers must use the same chroot_target
+#[context("Checking if bootupd supports bootloader flag")]
+pub(crate) fn bootupd_supports_bootloader_flag(chroot_target: Option<&Utf8Path>) -> Result<bool> {
+    let output = bootupd_install_help(chroot_target)?;
+
+    let supports_bootloader = output.contains("--bootloader");
+
+    if supports_bootloader {
+        tracing::debug!("bootupd supports --bootloader");
+    } else {
+        tracing::debug!("bootupd does not support --bootloader");
+    }
+
+    Ok(supports_bootloader)
 }
 
 /// Install the bootloader via bootupd.
@@ -151,6 +182,7 @@ pub(crate) fn install_via_bootupd(
     configopts: &crate::install::InstallConfigOpts,
     chroot_target: Option<&Utf8Path>,
     bind_boot_path: Option<&Utf8Path>,
+    bootloader: Option<Bootloader>,
 ) -> Result<()> {
     let verbose = std::env::var_os("BOOTC_BOOTLOADER_DEBUG").map(|_| "-vvvv");
     // bootc defaults to only targeting the platform boot method.
@@ -183,6 +215,11 @@ pub(crate) fn install_via_bootupd(
     if let Some(ref opts) = bootupd_opts {
         bootupd_args.extend(opts.iter().copied());
     }
+
+    if let Some(b) = bootloader {
+        bootupd_args.push("--bootloader");
+        bootupd_args.push(b.as_str());
+    };
 
     // When the target bootupd lacks --filesystem support, fall back to the
     // legacy --device flag.  For --device we need the whole-disk device path

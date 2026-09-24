@@ -1947,6 +1947,7 @@ async fn install_with_sysroot(
                     &state.config_opts,
                     Some(chroot_target.as_path()),
                     Some(bind_boot_path.as_path()),
+                    None,
                 )?;
             }
             Bootloader::Systemd | Bootloader::GrubCC => {
