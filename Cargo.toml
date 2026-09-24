@@ -98,6 +98,8 @@ tier = "2"
 all-features = true
 exclude-crate-paths = [ { name = "libz-sys", exclude = "src/zlib" },
                         { name = "libz-sys", exclude = "src/zlib-ng" },
+                        # Use the system PCRE2 library instead of vendoring its bundled sources.
+                        { name = "pcre2-sys", exclude = "upstream" },
                         # rustix includes pre-generated assembly for linux_raw, which we don't use
                         { name = "rustix", exclude = "src/imp/linux_raw" },
                         # Test files that include binaries
