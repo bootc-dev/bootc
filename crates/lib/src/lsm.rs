@@ -131,8 +131,7 @@ pub(crate) fn selinux_ensure_install() -> Result<bool> {
     let mut cmd = Command::new(&tmpf);
     cmd.env(guardenv, tmpf);
     cmd.env(bootc_utils::reexec::ORIG, srcpath);
-    cmd.args(std::env::args_os().skip(1));
-    cmd.arg0(bootc_utils::NAME);
+    bootc_utils::reexec::prepare_reexec(&mut cmd);
     cmd.log_debug();
     Err(anyhow::Error::msg(cmd.exec()).context("execve"))
 }

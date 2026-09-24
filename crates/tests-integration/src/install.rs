@@ -102,7 +102,8 @@ pub(crate) fn run_alongside(image: &str, mut testargs: libtest_mimic::Arguments)
                 let tmp_keys = tmpd.path().join("test_authorized_keys");
                 let tmp_keys = tmp_keys.to_str().unwrap();
                 std::fs::write(&tmp_keys, b"ssh-ed25519 ABC0123 testcase@example.com")?;
-                cmd!(sh, "sudo {BASE_ARGS...} {target_args...} -v {tmp_keys}:/test_authorized_keys {image} bootc install to-filesystem --acknowledge-destructive --karg=foo=bar --replace=alongside --root-ssh-authorized-keys=/test_authorized_keys /target").run()?;
+                // Mount under /tmp, which the install later covers with a tmpfs
+                cmd!(sh, "sudo {BASE_ARGS...} {target_args...} -v {tmp_keys}:/tmp/test_authorized_keys {image} bootc install to-filesystem --acknowledge-destructive --karg=foo=bar --replace=alongside --root-ssh-authorized-keys=/tmp/test_authorized_keys /target").run()?;
 
                 // Also test install finalize here
                 cmd!(
