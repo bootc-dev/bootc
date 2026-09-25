@@ -81,7 +81,8 @@ base_buildargs := generic_buildargs + " " + _extra_src_args \
                   + " --build-arg=baseconfigs=" + baseconfigs
 buildargs := base_buildargs \
              + " --cap-add=all --security-opt=label=type:container_runtime_t --device /dev/fuse" \
-             + " --secret=id=secureboot_key,src=target/test-secureboot/db.key --secret=id=secureboot_cert,src=target/test-secureboot/db.crt"
+             + " --secret=id=secureboot_key,src=target/test-secureboot/db.key --secret=id=secureboot_cert,src=target/test-secureboot/db.crt" \
+             + " --build-context=secureboot=target/test-secureboot"
 
 # ============================================================================
 # Core workflows - the main targets most developers will use
@@ -517,6 +518,7 @@ _build-upgrade-image:
         --build-arg "erofs_version={{erofs_version}}" \
         --secret=id=secureboot_key,src=target/test-secureboot/db.key \
         --secret=id=secureboot_cert,src=target/test-secureboot/db.crt \
+        --build-context=secureboot=target/test-secureboot \
         "${extra_args[@]}" \
         -t {{upgrade_img}} \
         -f tmt/tests/Dockerfile.upgrade \
