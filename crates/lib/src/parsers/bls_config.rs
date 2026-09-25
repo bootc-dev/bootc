@@ -13,7 +13,7 @@ use std::fmt::Display;
 use uapi_version::Version;
 
 use crate::bootc_composefs::status::ComposefsCmdline;
-use crate::bootloader::bootctl_systemd_version;
+use crate::bootloader::systemd_version;
 use crate::composefs_consts::{TYPE1_BOOT_DIR_PREFIX, UKI_NAME_PREFIX};
 use crate::spec::Bootloader;
 
@@ -40,7 +40,7 @@ impl EFIKey {
             EFIKey::Efi(path)
         } else {
             // Check systemd version for non-GrubCC bootloaders
-            match bootctl_systemd_version() {
+            match systemd_version() {
                 Ok(version) if version >= SYSTEMD_UKI_MIN_VERSION => EFIKey::Uki(path),
                 _ => EFIKey::Efi(path),
             }
