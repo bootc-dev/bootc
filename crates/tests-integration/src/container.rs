@@ -114,17 +114,11 @@ pub(crate) fn test_bootc_upgrade() -> Result<()> {
     Ok(())
 }
 
+/// This is a single test because it adds a drop-in to /run/bootc/install,
+/// which would race with any other test loading the install configuration:
+/// libtest runs tests in parallel, and a file that vanishes between the
+/// directory scan and the read fails `print-configuration`.
 pub(crate) fn test_bootc_install_config() -> Result<()> {
-    let sh = &xshell::Shell::new()?;
-    let config = cmd!(sh, "bootc install print-configuration").read()?;
-    let config: serde_json::Value =
-        serde_json::from_str(&config).context("Parsing install config")?;
-    // check that it parses okay, but also ensure kargs is not available here (only via --all)
-    assert!(config.get("kargs").is_none());
-    Ok(())
-}
-
-pub(crate) fn test_bootc_install_config_all() -> Result<()> {
     #[derive(Deserialize)]
     #[serde(rename_all = "kebab-case")]
     struct TestOstreeConfig {
@@ -152,6 +146,12 @@ pub(crate) fn test_bootc_install_config_all() -> Result<()> {
     }
 
     let sh = &xshell::Shell::new()?;
+    let config = cmd!(sh, "bootc install print-configuration").read()?;
+    let config: serde_json::Value =
+        serde_json::from_str(&config).context("Parsing install config")?;
+    // check that it parses okay, but also ensure kargs is not available here (only via --all)
+    assert!(config.get("kargs").is_none());
+
     let config = cmd!(sh, "bootc install print-configuration --all").read()?;
     let config: TestInstallConfig =
         serde_json::from_str(&config).context("Parsing install config")?;
@@ -531,7 +531,6 @@ pub(crate) fn run(testargs: libtest_mimic::Arguments) -> Result<()> {
         new_test("variant-base-crosscheck", test_variant_base_crosscheck),
         new_test("bootc upgrade", test_bootc_upgrade),
         new_test("install config", test_bootc_install_config),
-        new_test("printconfig --all", test_bootc_install_config_all),
         new_test("status", test_bootc_status),
         new_test("container inspect", test_bootc_container_inspect),
         new_test("system-reinstall --help", test_system_reinstall_help),
