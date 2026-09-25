@@ -47,17 +47,18 @@ use crate::bootc_composefs::{
     finalize::{composefs_backend_finalize, get_etc_diff},
     rollback::composefs_rollback,
     state::composefs_usr_overlay,
-    switch::switch_composefs,
-    update::upgrade_composefs,
+    status::get_composefs_status,
+    switch::{switch_composefs, switch_composefs_to},
+    update::{DoUpgradeOpts, upgrade_composefs},
 };
 use crate::deploy::{MergeState, RequiredHostSpec};
 use crate::podstorage::set_additional_image_store;
 use crate::progress_jsonl::{ProgressWriter, RawProgressFd};
 use crate::spec::FilesystemOverlayAccessMode;
-use crate::spec::Host;
 use crate::spec::ImageReference;
+use crate::spec::{Host, HostSpec};
 use crate::status::get_host;
-use crate::store::{BootedOstree, Storage};
+use crate::store::{BootedComposefs, BootedOstree, Storage};
 use crate::store::{BootedStorage, BootedStorageKind};
 use crate::utils::sigpolicy_from_opt;
 use crate::{bootc_composefs, lints};
@@ -1763,6 +1764,39 @@ async fn rollback(opts: &RollbackOpts) -> Result<()> {
     }
 }
 
+/// Read the edited host definition for `bootc edit`, either from `filename` or
+/// by spawning an editor on the current one, and validate it with
+/// [`validate_edited_spec`].
+fn edited_host_spec(filename: Option<&str>, host: &Host) -> Result<Option<HostSpec>> {
+    let new_host: Host = if let Some(filename) = filename {
+        let f = std::fs::File::open(filename).with_context(|| format!("Opening {filename}"))?;
+        serde_yaml::from_reader(std::io::BufReader::new(f))
+            .with_context(|| format!("Parsing {filename}"))?
+    } else {
+        let tmpf = tempfile::NamedTempFile::with_suffix(".yaml")?;
+        serde_yaml::to_writer(std::io::BufWriter::new(tmpf.as_file()), host)?;
+        crate::utils::spawn_editor(&tmpf)?;
+        tmpf.as_file().seek(std::io::SeekFrom::Start(0))?;
+        serde_yaml::from_reader(&mut tmpf.as_file()).context("Parsing edited host")?
+    };
+
+    let r = validate_edited_spec(&host.spec, new_host.spec)?;
+    if r.is_none() {
+        println!("Edit cancelled, no changes made.");
+    }
+    Ok(r)
+}
+
+/// Returns `None` if the edited spec is unchanged; otherwise the new spec,
+/// after checking that it is a supported transition from the current one.
+fn validate_edited_spec(current: &HostSpec, new: HostSpec) -> Result<Option<HostSpec>> {
+    if &new == current {
+        return Ok(None);
+    }
+    current.verify_transition(&new)?;
+    Ok(Some(new))
+}
+
 /// Implementation of the `bootc edit` CLI command for ostree backend.
 #[context("Editing spec (ostree)")]
 async fn edit_ostree(
@@ -1773,31 +1807,18 @@ async fn edit_ostree(
     let repo = &booted_ostree.repo();
     let (_, host) = crate::status::get_status(booted_ostree)?;
 
-    let new_host: Host = if let Some(filename) = opts.filename {
-        let mut r = std::io::BufReader::new(std::fs::File::open(filename)?);
-        serde_yaml::from_reader(&mut r)?
-    } else {
-        let tmpf = tempfile::NamedTempFile::with_suffix(".yaml")?;
-        serde_yaml::to_writer(std::io::BufWriter::new(tmpf.as_file()), &host)?;
-        crate::utils::spawn_editor(&tmpf)?;
-        tmpf.as_file().seek(std::io::SeekFrom::Start(0))?;
-        serde_yaml::from_reader(&mut tmpf.as_file())?
-    };
-
-    if new_host.spec == host.spec {
-        println!("Edit cancelled, no changes made.");
+    let Some(new_spec) = edited_host_spec(opts.filename.as_deref(), &host)? else {
         return Ok(());
-    }
-    host.spec.verify_transition(&new_host.spec)?;
-    let new_spec = RequiredHostSpec::from_spec(&new_host.spec)?;
-
-    let prog = ProgressWriter::default();
+    };
 
     // We only support two state transitions right now; switching the image,
     // or flipping the bootloader ordering.
-    if host.spec.boot_order != new_host.spec.boot_order {
+    if host.spec.boot_order != new_spec.boot_order {
         return crate::deploy::rollback(storage).await;
     }
+
+    let new_spec = RequiredHostSpec::from_spec(&new_spec)?;
+    let prog = ProgressWriter::default();
 
     let fetched = crate::deploy::pull(
         repo,
@@ -1820,6 +1841,47 @@ async fn edit_ostree(
     Ok(())
 }
 
+/// Implementation of the `bootc edit` CLI command for composefs backend.
+#[context("Editing spec (composefs)")]
+async fn edit_composefs(
+    opts: EditOpts,
+    storage: &Storage,
+    booted_cfs: &BootedComposefs,
+) -> Result<()> {
+    let host = get_composefs_status(storage, booted_cfs)
+        .await
+        .context("Getting composefs deployment status")?;
+
+    let Some(new_spec) = edited_host_spec(opts.filename.as_deref(), &host)? else {
+        return Ok(());
+    };
+
+    // As for ostree, the supported transitions are flipping the boot order
+    // (a rollback) or changing the image; verify_transition rejected doing both.
+    if host.spec.boot_order != new_spec.boot_order {
+        return composefs_rollback(storage, booted_cfs).await;
+    }
+
+    let new_spec = RequiredHostSpec::from_spec(&new_spec)?;
+    let do_upgrade_opts = DoUpgradeOpts {
+        apply: false,
+        soft_reboot: None,
+        download_only: false,
+        use_unified: false,
+        quiet: opts.quiet,
+        prog: ProgressWriter::default(),
+    };
+    switch_composefs_to(
+        storage,
+        booted_cfs,
+        &host,
+        new_spec.image.clone(),
+        do_upgrade_opts,
+        false,
+    )
+    .await
+}
+
 /// Implementation of the `bootc edit` CLI command.
 #[context("Editing spec")]
 async fn edit(opts: EditOpts) -> Result<()> {
@@ -1828,8 +1890,8 @@ async fn edit(opts: EditOpts) -> Result<()> {
         BootedStorageKind::Ostree(booted_ostree) => {
             edit_ostree(opts, storage, &booted_ostree).await
         }
-        BootedStorageKind::Composefs(_) => {
-            anyhow::bail!("Edit is not yet supported for composefs backend")
+        BootedStorageKind::Composefs(booted_cfs) => {
+            edit_composefs(opts, storage, &booted_cfs).await
         }
     }
 }
@@ -2780,6 +2842,43 @@ async fn run_from_opt(opt: Opt) -> Result<CliExitStatus> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_validate_edited_spec() {
+        use crate::spec::BootOrder;
+
+        let host: Host =
+            serde_yaml::from_str(include_str!("fixtures/spec-staged-rollback.yaml")).unwrap();
+        let current = &host.spec;
+        let other_image = || ImageReference {
+            image: "quay.io/example/other:latest".into(),
+            transport: "registry".into(),
+            signature: None,
+        };
+        let spec = |image: Option<ImageReference>, boot_order| HostSpec { image, boot_order };
+
+        // (edited spec, whether a change is expected, or None for an error)
+        let cases = [
+            (current.clone(), Some(false)),
+            (spec(Some(other_image()), BootOrder::Default), Some(true)),
+            (spec(current.image.clone(), BootOrder::Rollback), Some(true)),
+            (spec(None, BootOrder::Default), Some(true)),
+            (spec(Some(other_image()), BootOrder::Rollback), None),
+        ];
+        for (new, expected) in cases {
+            let r = validate_edited_spec(current, new.clone());
+            match expected {
+                Some(changed) => {
+                    let r = r.unwrap();
+                    assert_eq!(r.is_some(), changed, "{new:?}");
+                    if let Some(r) = r {
+                        assert_eq!(r, new);
+                    }
+                }
+                None => assert!(r.is_err(), "{new:?}"),
+            }
+        }
+    }
 
     #[test]
     fn test_callname() {

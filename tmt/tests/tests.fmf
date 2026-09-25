@@ -206,3 +206,8 @@ check:
   - when: composefs_bridge == true
     enabled: true
   test: nu booted/test-49-composefs-1-16-bridge.nu
+
+/test-50-edit:
+  summary: Test bootc edit for image changes and rollback
+  duration: 30m
+  test: nu booted/test-edit.nu
