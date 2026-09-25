@@ -290,7 +290,7 @@ pub(crate) fn install_systemd_boot(
     if configopts.generic_image {
         bootctl_args.push("--no-variables");
         // `--random-seed` was only added to `bootctl install` in systemd 257.
-        let systemd_version = bootctl_systemd_version()?;
+        let systemd_version = systemd_version()?;
         if systemd_version >= BOOTCTL_RANDOM_SEED_MIN_VERSION {
             bootctl_args.extend(["--random-seed", "no"]);
         } else {
@@ -361,15 +361,19 @@ pub(crate) fn install_systemd_boot(
     Ok(())
 }
 
-#[context("Querying bootctl version")]
-pub(crate) fn bootctl_systemd_version() -> Result<u32> {
+/// Query the major version of systemd via `systemctl --version`, caching the
+/// result so it can be shared across callers (bootctl, systemd-repart, etc.).
+#[context("Querying systemd version")]
+pub(crate) fn systemd_version() -> Result<u32> {
     static VERSION: OnceLock<u32> = OnceLock::new();
 
     if let Some(v) = VERSION.get() {
         return Ok(*v);
     };
 
-    let out = Command::new("bootctl").arg("--version").run_get_string()?;
+    let out = Command::new("systemctl")
+        .arg("--version")
+        .run_get_string()?;
     let v = parse_systemd_version(&out).context("Failed to parse version to integer")?;
 
     let version = VERSION.get_or_init(|| v);
@@ -379,7 +383,7 @@ pub(crate) fn bootctl_systemd_version() -> Result<u32> {
 
 /// Parse the systemd major version from `bootctl --version` output, whose first
 /// line looks like `systemd 259 (259.5-0ubuntu3)`.
-fn parse_systemd_version(output: &str) -> Result<u32> {
+pub(crate) fn parse_systemd_version(output: &str) -> Result<u32> {
     output
         .split_whitespace()
         .nth(1)

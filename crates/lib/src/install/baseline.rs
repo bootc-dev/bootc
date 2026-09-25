@@ -31,6 +31,8 @@ use super::RW_KARG;
 use super::RootSetup;
 use super::State;
 use super::config::Filesystem;
+use crate::bootloader::systemd_version;
+use crate::discoverable_partition_specification::BIOS_BOOT;
 use crate::task::Task;
 #[cfg(feature = "install-to-disk")]
 use bootc_mount::is_mounted_in_pid1_mountns;
@@ -220,6 +222,8 @@ struct RepartPartition {
     raw_padding: u64,
     #[allow(dead_code)]
     fs: Option<String>,
+    /// The file used to generate this partition
+    file: String,
 }
 
 fn can_use_systemd_repart() -> bool {
@@ -250,6 +254,83 @@ fn can_use_systemd_repart() -> bool {
     return has_config;
 }
 
+/// The first systemd version that supports `systemd-repart --include-partitions=`.
+const REPART_INCLUDE_PARTITIONS_MIN_VERSION: u32 = 253;
+
+/// The first systemd version whose systemd-repart honors the
+/// `SYSTEMD_REPART_MKFS_OPTIONS_<FSTYPE>` environment variable (used to enable
+/// ext4 fs-verity). Older versions silently ignore it.
+const REPART_MKFS_OPTIONS_MIN_VERSION: u32 = 254;
+
+/// Directory we assemble the filtered set of repart.d definitions into when
+/// emulating `--include-partitions=` on systemd older than
+/// [`REPART_INCLUDE_PARTITIONS_MIN_VERSION`].
+const REPART_FILTERED_DEFINITIONS_DIR: &str = "/tmp/repart.d";
+
+/// The repart.d configuration search directories, in descending priority. A
+/// definition present in a higher-priority directory masks a same-named one
+/// below it (matching systemd's own semantics).
+const REPART_CONFIG_DIRS: &[&str] = &[
+    "/etc/repart.d",
+    "/run/repart.d",
+    "/usr/local/lib/repart.d",
+    "/usr/lib/repart.d",
+];
+
+/// Whether we must emulate `--include-partitions=` by pre-filtering the
+/// definitions ourselves
+fn need_filtered_definitions(generic_image: bool) -> Result<bool> {
+    Ok(generic_image && systemd_version()? < REPART_INCLUDE_PARTITIONS_MIN_VERSION)
+}
+
+/// Whether a partition (as reported by systemd-repart) is one we must create
+/// even for a generic image: root, ESP or BIOS boot.
+fn repart_partition_is_required(part: &RepartPartition) -> bool {
+    let ptype = part.partition_type.as_str();
+    ptype.starts_with("root")
+        || ptype.starts_with("esp")
+        || ptype == "bios"
+        || ptype.eq_ignore_ascii_case(BIOS_BOOT)
+}
+
+/// Collect the repart.d definitions for the partitions we require (root, ESP
+/// and BIOS boot) into [`REPART_FILTERED_DEFINITIONS_DIR`].
+///
+/// systemd < 253 does not support the `--include-partitions=` option, so instead
+/// we point systemd-repart at a directory containing only the definitions we want
+/// it to act on
+fn collect_repart_definitions(dry_partitions: &[RepartPartition]) -> Result<()> {
+    let dest_dir = Path::new(REPART_FILTERED_DEFINITIONS_DIR);
+    // Start from a clean directory so stale definitions from a previous run
+    // don't leak in.
+    if dest_dir.exists() {
+        std::fs::remove_dir_all(dest_dir)
+            .with_context(|| format!("Removing {REPART_FILTERED_DEFINITIONS_DIR}"))?;
+    }
+
+    std::fs::create_dir_all(dest_dir)
+        .with_context(|| format!("Creating {REPART_FILTERED_DEFINITIONS_DIR}"))?;
+
+    for part in dry_partitions {
+        if !repart_partition_is_required(part) {
+            continue;
+        }
+
+        // Older version of systemd-repart does not provide the full path to the file
+        // so we need to search one by one
+        let src = REPART_CONFIG_DIRS
+            .iter()
+            .map(|d| Path::new(d).join(&part.file))
+            .find(|p| p.exists())
+            .ok_or_else(|| anyhow::anyhow!("Could not find repart.d definition {}", part.file))?;
+
+        std::fs::copy(&src, dest_dir.join(&part.file))
+            .with_context(|| format!("Copying repart.d definition {}", src.display()))?;
+    }
+
+    Ok(())
+}
+
 /// Create partitions using systemd-repart
 /// Assumes we have systemd-repart definitions
 #[context("Running systemd-repart")]
@@ -274,6 +355,10 @@ fn systemd_repart(
 
     if has_root {
         // Root partition is defined in repart.d config, run for real
+        if need_filtered_definitions(generic_image)? {
+            collect_repart_definitions(&dry_partitions)?;
+        }
+
         let partitions = systemd_repart_run(device, generic_image, false)?;
         let layout = parse_repart_layout(&partitions)?;
         return Ok(layout);
@@ -320,9 +405,19 @@ fn systemd_repart(
         }
     }
 
-    std::fs::create_dir_all("/run/repart.d").context("Creating /run/repart.d")?;
-    std::fs::write("/run/repart.d/50-root.conf", &root_conf)
-        .context("Writing root repart config")?;
+    if need_filtered_definitions(generic_image)? {
+        collect_repart_definitions(&dry_partitions)?;
+
+        std::fs::write(
+            Path::new(REPART_FILTERED_DEFINITIONS_DIR).join("50-root.conf"),
+            &root_conf,
+        )
+        .context("Writing root repart config to filtered definitions")?;
+    } else {
+        std::fs::create_dir_all("/run/repart.d").context("Creating /run/repart.d")?;
+        std::fs::write("/run/repart.d/50-root.conf", &root_conf)
+            .context("Writing root repart config")?;
+    }
 
     let partitions = systemd_repart_run(device, generic_image, false)?;
     let layout = parse_repart_layout(&partitions)?;
@@ -343,6 +438,8 @@ fn systemd_repart_run(
 
     // Enable fsverity for ext4
     // btrfs has fsverity enabled out of the box
+    //
+    // NOTE: systemd < v254 doesn't support this
     cmd.env("SYSTEMD_REPART_MKFS_OPTIONS_EXT4", "-O verity");
 
     let dry_run_arg = if dry_run {
@@ -364,10 +461,13 @@ fn systemd_repart_run(
     // or if this disk would be used to create an AMI/VHD and a separate disk
     // would be used for the other partitions
     if generic_image {
-        cmd.arg(format!(
-            "--include-partitions=root,esp,{}",
-            crate::discoverable_partition_specification::BIOS_BOOT
-        ));
+        if need_filtered_definitions(generic_image)? {
+            // Older systemd lacks --include-partitions; act only on the
+            // pre-filtered definitions collected by collect_repart_definitions.
+            cmd.arg(format!("--definitions={REPART_FILTERED_DEFINITIONS_DIR}"));
+        } else {
+            cmd.arg(format!("--include-partitions=root,esp,{BIOS_BOOT}"));
+        }
     }
 
     cmd.arg(device.path());
@@ -744,6 +844,17 @@ pub(crate) fn install_create_rootfs(
         let u = root_device.uuid.as_ref().ok_or_else(|| {
             anyhow::anyhow!("Root device created by repart has no filesystem UUID")
         })?;
+
+        // systemd < v254 (e.g. c9s) doesn't honor SYSTEMD_REPART_MKFS_OPTIONS_EXT4
+        // so enable verity ourselves
+        if systemd_version()? < REPART_MKFS_OPTIONS_MIN_VERSION && root_filesystem == "ext4" {
+            tracing::debug!("Manually enabling fs-verity on root partition");
+
+            Command::new("tune2fs")
+                .args(["-O", "verity", root_device.path().as_str()])
+                .run_inherited()
+                .context("Running tune2fs enabling fs-verity")?;
+        }
 
         u.parse::<uuid::Uuid>()
             .with_context(|| format!("Parsing root fs UUID {u}"))?
