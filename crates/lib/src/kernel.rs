@@ -132,6 +132,54 @@ pub(crate) fn find_kernel(root: &Dir) -> Result<Option<KernelInternal>> {
     Ok(None)
 }
 
+/// Files that distributions ship next to `vmlinuz` in `/usr/lib/modules/<kver>/`
+/// which belong to that kernel binary, and so must travel with it.
+///
+/// - `.vmlinuz.hmac`: the kernel's HMAC, which dracut's `fips` module checks
+///   at boot in FIPS mode. Shipped by Fedora and RHEL derivatives' kernel
+///   packages; ostree and Fedora's grub2 kernel-install plugin install it next
+///   to the kernel as `.vmlinuz-<kver>.hmac`.
+///
+/// This is deliberately limited to companions of the kernel binary. Userspace
+/// metadata such as `config`, `System.map` or `symvers.xz` stays in the rootfs,
+/// where tools look for it. ostree also installs a `devicetree` file or `dtb/`
+/// directory and an `aboot.img` from this directory, but those are separate
+/// boot inputs rather than companions of `vmlinuz`, so they are left alone.
+pub(crate) const KERNEL_COMPANION_FILES: &[&str] = &[".vmlinuz.hmac"];
+
+/// Move the kernel out of `root` into `output/<kver>/`.
+///
+/// The kernel is written as `vmlinuz` and the initramfs as `initramfs.img`,
+/// along with any [`KERNEL_COMPANION_FILES`] present, under the same names.
+/// UKIs are not supported. Returns the kernel version.
+pub(crate) fn split_kernel(root: &Dir, output: &Dir) -> Result<String> {
+    let kernel = find_kernel(root)?.ok_or_else(|| anyhow::anyhow!("No kernel found in rootfs"))?;
+    let KernelType::Vmlinuz { path, initramfs } = &kernel.k_type else {
+        anyhow::bail!("UKIs are not supported");
+    };
+    let kver = kernel.kernel.version;
+
+    output
+        .create_dir_all(&kver)
+        .with_context(|| format!("Creating {kver} in output directory"))?;
+    let dest = output.open_dir(&kver)?;
+
+    root.rename(path, &dest, "vmlinuz")
+        .with_context(|| format!("Moving {path}"))?;
+    root.rename(initramfs, &dest, "initramfs.img")
+        .with_context(|| format!("Moving {initramfs}"))?;
+
+    for &name in KERNEL_COMPANION_FILES {
+        let src = path.with_file_name(name);
+        match root.rename(&src, &dest, name) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            r => r.with_context(|| format!("Moving {src}"))?,
+        }
+    }
+
+    Ok(kver)
+}
+
 /// Returns the path to the first UKI found in the container root, if any.
 ///
 /// Looks in `/boot/EFI/Linux/*.efi`. If multiple UKIs are present, returns
@@ -240,6 +288,63 @@ mod tests {
         // UKI should take precedence
         assert_eq!(kernel_internal.kernel.version, "fedora-6.12.0");
         assert!(kernel_internal.kernel.unified);
+        Ok(())
+    }
+
+    #[test]
+    fn test_split_kernel() -> Result<()> {
+        const KVER: &str = "6.12.0-100.fc41.x86_64";
+        let moddir = format!("usr/lib/modules/{KVER}");
+        // Userspace metadata that distributions also put here; it must stay.
+        const STAYS: &[&str] = &["modules.dep", "config", "System.map"];
+        // Companion files are optional: try none, each one alone, and all of them.
+        let cases = std::iter::once(&[][..])
+            .chain(KERNEL_COMPANION_FILES.chunks(1))
+            .chain(std::iter::once(KERNEL_COMPANION_FILES));
+        for present in cases {
+            let root = cap_tempfile::tempdir(cap_std::ambient_authority())?;
+            let output = cap_tempfile::tempdir(cap_std::ambient_authority())?;
+            root.create_dir_all(&moddir)?;
+            root.atomic_write(format!("{moddir}/vmlinuz"), b"kernel")?;
+            root.atomic_write(format!("{moddir}/initramfs.img"), b"initramfs")?;
+            for name in STAYS.iter().chain(present) {
+                root.atomic_write(format!("{moddir}/{name}"), name)?;
+            }
+
+            assert_eq!(split_kernel(&root, &output)?, KVER);
+
+            let mut remaining: Vec<_> = root
+                .read_dir(&moddir)?
+                .map(|e| e.map(|e| e.file_name()))
+                .collect::<std::io::Result<_>>()?;
+            remaining.sort();
+            let mut expected = STAYS.to_vec();
+            expected.sort();
+            assert_eq!(remaining, expected, "{present:?}");
+
+            let dest = output.open_dir(KVER)?;
+            assert_eq!(dest.read("vmlinuz")?, b"kernel");
+            assert_eq!(dest.read("initramfs.img")?, b"initramfs");
+            for &name in KERNEL_COMPANION_FILES {
+                if present.contains(&name) {
+                    assert_eq!(dest.read(name)?, name.as_bytes(), "{name}");
+                } else {
+                    assert!(!dest.try_exists(name)?, "{name}");
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_split_kernel_uki() -> Result<()> {
+        let root = cap_tempfile::tempdir(cap_std::ambient_authority())?;
+        let output = cap_tempfile::tempdir(cap_std::ambient_authority())?;
+        root.create_dir_all("boot/EFI/Linux")?;
+        root.atomic_write("boot/EFI/Linux/fedora-6.12.0.efi", &create_minimal_pe())?;
+        assert!(split_kernel(&root, &output).is_err());
+        // An empty rootfs has no kernel at all
+        assert!(split_kernel(&output, &root).is_err());
         Ok(())
     }
 
