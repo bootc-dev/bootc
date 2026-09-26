@@ -3048,6 +3048,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg(feature = "install-to-disk")]
     fn install_opts_serializable() {
         let c: InstallToDiskOpts = serde_json::from_value(serde_json::json!({
             "device": "/dev/vda"

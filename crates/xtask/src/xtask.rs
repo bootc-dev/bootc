@@ -69,7 +69,12 @@ struct Cli {
 #[derive(Debug, Subcommand)]
 enum Commands {
     /// Generate man pages
-    Manpages,
+    Manpages {
+        /// Extra options for cargo when building bootc, after `--`
+        /// (e.g. `-- --no-default-features --features install-to-disk`)
+        #[arg(last = true)]
+        cargo_options: Vec<String>,
+    },
     /// Update or check generated files
     UpdateGenerated {
         #[command(subcommand)]
@@ -367,7 +372,7 @@ fn try_main() -> Result<()> {
     let sh = xshell::Shell::new()?;
 
     match cli.command {
-        Commands::Manpages => man::generate_man_pages(&sh),
+        Commands::Manpages { cargo_options } => man::generate_man_pages(&sh, &cargo_options),
         Commands::UpdateGenerated { command } => match command {
             UpdateGeneratedCommands::Direct { check } => {
                 if check {

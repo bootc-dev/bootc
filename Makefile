@@ -40,16 +40,26 @@ CARGO_FEATURES_DEFAULT ?= $(shell . /usr/lib/os-release; \
   echo $$features)
 # You can set this to override all cargo features, including the defaults
 CARGO_FEATURES ?= $(CARGO_FEATURES_DEFAULT)
+# The cargo options for building bootc, used by both `bin` and `manpages`.
+# Override it for more control; for example, to build without the default
+# `selinux` feature (which links libselinux):
+#   make bin CARGO_OPTIONS='--no-default-features --features "install-to-disk pre-6.15"'
+# Note --no-default-features applies to every crate in the workspace, so it
+# also drops e.g. the initramfs crate's default `pre-6.15` unless it is listed
+# again. The unit test targets (install-unit-tests) don't use this and always
+# build with the default features.
+CARGO_OPTIONS ?= --features "$(CARGO_FEATURES)"
 
 # Build all binaries
 .PHONY: bin
 bin: manpages
-	cargo build --release --features "$(CARGO_FEATURES)" --bins
+	cargo build --release $(CARGO_OPTIONS) --bins
 
-# Note this cargo build is run without features (such as rhsm)
+# The docgen feature this adds implies install-to-disk, so the man pages
+# document the full CLI regardless of CARGO_OPTIONS.
 .PHONY: manpages
 manpages:
-	cargo run --release --package xtask -- manpages
+	cargo run --release --package xtask -- manpages -- $(CARGO_OPTIONS)
 
 .PHONY: completion
 completion: bin
@@ -130,6 +140,8 @@ validate:
 	cargo test --no-run
 	(cd crates/ostree-ext && cargo check --no-default-features)
 	(cd crates/lib && cargo check --no-default-features)
+	(cd crates/cli && cargo check --no-default-features)
+	cargo test -p bootc-lib --no-default-features --no-run
 	cargo clippy -- $(CLIPPY_CONFIG)
 	env RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps --document-private-items
 .PHONY: validate

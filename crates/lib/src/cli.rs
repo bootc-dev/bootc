@@ -738,6 +738,7 @@ pub(crate) enum UkiSubcommands {
 }
 
 /// Subcommands for `bootc internals selinux`.
+#[cfg(feature = "selinux")]
 #[derive(Debug, clap::Subcommand, PartialEq, Eq)]
 pub(crate) enum SelinuxOpts {
     /// Exit successfully when PATH is unlabeled; otherwise exit with status 1.
@@ -748,6 +749,7 @@ pub(crate) enum SelinuxOpts {
     },
 }
 
+#[cfg(feature = "selinux")]
 fn parse_absolute_path(value: &str) -> std::result::Result<Utf8PathBuf, String> {
     let path = Utf8PathBuf::from(value);
     if path.is_absolute() {
@@ -778,6 +780,7 @@ pub(crate) enum InternalsOpts {
     },
     #[clap(subcommand)]
     Fsverity(FsverityOpts),
+    #[cfg(feature = "selinux")]
     #[clap(subcommand)]
     Selinux(SelinuxOpts),
     /// Perform consistency checking.
@@ -1922,6 +1925,7 @@ pub enum CliExitStatus {
     PredicateFalse,
 }
 
+#[cfg(feature = "selinux")]
 fn is_unlabeled_exit_status(
     state: crate::lsm::SELinuxLabelState,
     path: &Utf8Path,
@@ -2472,6 +2476,7 @@ async fn run_from_opt(opt: Opt) -> Result<CliExitStatus> {
                     Ok(())
                 }
             },
+            #[cfg(feature = "selinux")]
             InternalsOpts::Selinux(SelinuxOpts::IsUnlabeled { path }) => {
                 ensure!(crate::lsm::selinux_enabled(), "SELinux is not enabled");
                 let path = path
@@ -2906,6 +2911,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "selinux")]
     fn test_parse_selinux_is_unlabeled() {
         let opt = Opt::try_parse_from([
             "bootc",
@@ -2927,6 +2933,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "selinux")]
     fn test_is_unlabeled_exit_status() {
         let path = Utf8Path::new("probe");
         let cases = [
