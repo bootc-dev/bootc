@@ -331,4 +331,11 @@ execute:
     enabled: true
   extra-try_bind_storage: true
   extra-skip_if_ostree: true
+
+/plan-50-edit:
+  summary: Test bootc edit for image changes and rollback
+  discover:
+    how: fmf
+    test:
+      - /tmt/tests/tests/test-50-edit
 # END GENERATED PLANS
