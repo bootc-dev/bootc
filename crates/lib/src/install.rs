@@ -1949,7 +1949,12 @@ async fn install_with_sysroot(
                     Some(bind_boot_path.as_path()),
                 )?;
             }
-            Bootloader::Systemd | Bootloader::GrubCC => {
+            Bootloader::Systemd => {
+                anyhow::bail!(
+                    "systemd-boot is not supported with the ostree backend; use --composefs-backend to enable systemd-boot"
+                );
+            }
+            Bootloader::GrubCC => {
                 anyhow::bail!("bootupd is required for ostree-based installs");
             }
             Bootloader::None => {
