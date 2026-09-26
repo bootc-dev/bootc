@@ -251,6 +251,9 @@ EORUN
 
 # This image signs systemd-boot using our key, and writes the resulting binary into /out
 FROM tools as sdboot-signed
+# The certificate is also a build secret, but secrets aren't part of the layer
+# cache key. Copying it in makes the signing below rebuild when it changes.
+COPY --from=secureboot db.crt /usr/lib/bootc-test/secureboot-db.crt
 # The secureboot key and cert are passed via Justfile
 # We write the signed binary into /out
 # Note: /out already contains systemd-boot-unsigned RPM from initialize-sealing-tools
@@ -258,6 +261,7 @@ RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp
     --mount=type=secret,id=secureboot_key \
     --mount=type=secret,id=secureboot_cert <<EORUN
 set -xeuo pipefail
+sha256sum /usr/lib/bootc-test/secureboot-db.crt
 
 # Extract the unsigned systemd-boot binary from the downloaded RPM
 # Work around https://github.com/bootc-dev/bootc/issues/1896
@@ -359,6 +363,9 @@ ARG erofs_version=auto
 RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
     --mount=type=bind,from=packages,src=/,target=/run/packages \
     rpm -Uvh --oldpackage --replacepkgs --nosignature /run/packages/bootc-*.rpm
+# The certificate is also a build secret, but secrets aren't part of the layer
+# cache key. Copying it in makes the signing below rebuild when it changes.
+COPY --from=secureboot db.crt /usr/lib/bootc-test/secureboot-db.crt
 RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
     --mount=type=secret,id=secureboot_key \
     --mount=type=secret,id=secureboot_cert \
@@ -366,6 +373,7 @@ RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp
     --mount=type=bind,from=packaging,src=/,target=/run/packaging \
     --mount=type=bind,from=base-penultimate,src=/,target=/run/target <<EORUN
 set -xeuo pipefail
+sha256sum /usr/lib/bootc-test/secureboot-db.crt
 
 allow_missing_verity=()
 

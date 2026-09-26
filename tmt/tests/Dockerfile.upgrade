@@ -44,6 +44,9 @@ RUN --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
 # container ukify command it provides is needed for seal-uki.
 FROM tools AS sealed-upgrade-uki
 ARG boot_type seal_state filesystem erofs_version
+# The certificate is also a build secret, but secrets aren't part of the layer
+# cache key. Copying it in makes the signing below rebuild when it changes.
+COPY --from=secureboot db.crt /usr/lib/bootc-test/secureboot-db.crt
 RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
     --mount=type=secret,id=secureboot_key \
     --mount=type=secret,id=secureboot_cert \
@@ -51,6 +54,7 @@ RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp
     --mount=type=bind,from=kernel,src=/,target=/run/kernel \
     --mount=type=bind,from=upgrade-base,src=/,target=/run/target <<EORUN
 set -xeuo pipefail
+sha256sum /usr/lib/bootc-test/secureboot-db.crt
 
 allow_missing_verity=()
 
