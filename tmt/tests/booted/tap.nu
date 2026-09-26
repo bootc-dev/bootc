@@ -85,7 +85,7 @@ rm -vrf /usr/lib/bootc/bound-images.d
 "
 }
 
-export def make_uki_containerfile [containerfile: string, --erofs-version: string = ""] {
+export def make_uki_containerfile [containerfile: string, --erofs-version: string = "", --addon-cmds: string = ""] {
     let erofs_version = if $erofs_version == "" {
         selected_erofs_version
     } else {
@@ -142,6 +142,8 @@ export def make_uki_containerfile [containerfile: string, --erofs-version: strin
                   --write-dumpfile-to /out/${kver}.dump \\
                   --seal-state ($seal_state) \\
                   --erofs-version ($erofs_version)
+
+                ($addon_cmds)
         EOF
 
         FROM base-final

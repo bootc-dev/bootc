@@ -331,4 +331,12 @@ execute:
     enabled: true
   extra-try_bind_storage: true
   extra-skip_if_ostree: true
+
+/plan-50-composefs-uki-addons:
+  summary: Test composefs UKI Addons
+  discover:
+    how: fmf
+    test:
+      - /tmt/tests/tests/test-50-composefs-uki-addons
+  extra-skip_if_ostree: true
 # END GENERATED PLANS
