@@ -205,8 +205,9 @@ Set the environment variable `BOOTC_DIRECT_IO=on` to create the loopback device 
 
 This is a variant of `install to-filesystem`, which maximizes convenience for using
 an existing Linux system, converting it into the target container image.  Note that
-the `/boot` (and `/boot/efi`) partitions *will be reinitialized* - so this is a
-somewhat destructive operation for the existing Linux installation.
+the `/boot` partition and the `EFI/` and `loader/` directories of the ESP
+*will be reinitialized* - so this is a somewhat destructive operation for the
+existing Linux installation. Other ESP content (e.g. Asahi's `m1n1/`) is preserved.
 
 Also, because the filesystem is reused, it's required that the target system kernel
 support the root storage setup already initialized.

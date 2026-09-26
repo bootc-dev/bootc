@@ -2383,17 +2383,25 @@ fn remove_all_in_dir_no_xdev(d: &Dir, mount_err: bool) -> Result<()> {
         let name = entry.file_name();
         let etype = entry.file_type()?;
         if etype == FileType::dir() {
-            if let Some(subdir) = d.open_dir_noxdev(&name)? {
-                remove_all_in_dir_no_xdev(&subdir, mount_err)?;
-                d.remove_dir(&name)?;
-            } else if mount_err {
-                anyhow::bail!("Found unexpected mount point {name:?}");
-            }
+            remove_dir_no_xdev(d, &name, mount_err)?;
         } else {
             d.remove_file_optional(&name)?;
         }
     }
     anyhow::Ok(())
+}
+
+/// Recursively remove the directory `name` in `d`, without crossing devices.
+/// A mount point is left alone, or is an error if `mount_err` is true.
+fn remove_dir_no_xdev(d: &Dir, name: impl AsRef<Path>, mount_err: bool) -> Result<()> {
+    let name = name.as_ref();
+    if let Some(subdir) = d.open_dir_noxdev(name)? {
+        remove_all_in_dir_no_xdev(&subdir, mount_err)?;
+        d.remove_dir(name)?;
+    } else if mount_err {
+        anyhow::bail!("Found unexpected mount point {name:?}");
+    }
+    Ok(())
 }
 
 #[context("Removing boot directory content except loader dir on ostree")]
@@ -2420,16 +2428,28 @@ fn remove_all_except_loader_dirs(bootdir: &Dir, is_ostree: bool) -> Result<()> {
 
         let etype = entry.file_type()?;
         if etype == FileType::dir() {
-            // Open the directory and remove its contents
-            if let Some(subdir) = bootdir.open_dir_noxdev(&file_name)? {
-                remove_all_in_dir_no_xdev(&subdir, false)
-                    .with_context(|| format!("Removing directory contents: {}", file_name))?;
-                bootdir.remove_dir(&file_name)?;
-            }
+            remove_dir_no_xdev(bootdir, file_name, false)
+                .with_context(|| format!("Removing directory: {file_name}"))?;
         } else {
             bootdir
                 .remove_file_optional(&file_name)
                 .with_context(|| format!("Removing file: {}", file_name))?;
+        }
+    }
+    Ok(())
+}
+
+/// Remove the bootloader dirs (bootupd/grub, systemd-boot) from the ESP.
+/// Other content, e.g. Asahi's `m1n1/` and `vendorfw/`, may be firmware
+/// or earlier boot stages we cannot recreate, so it is preserved.
+// TODO: be more selective, e.g. keep other OSes' `EFI/<vendor>` and
+// non-bootc `loader/` entries, and drop old Type #1 kernels (see #2243).
+#[context("Removing bootloader content from EFI system partition")]
+fn clean_esp_bootloader_dirs(efidir: &Dir) -> Result<()> {
+    for name in ["EFI", "loader"] {
+        if efidir.try_exists(name)? {
+            remove_dir_no_xdev(efidir, name, false)
+                .with_context(|| format!("Removing directory: {name}"))?;
         }
     }
     Ok(())
@@ -2449,13 +2469,12 @@ fn clean_boot_directories(rootfs: &Dir, rootfs_path: &Utf8Path, is_ostree: bool)
     // This should not remove /boot/efi note.
     remove_all_except_loader_dirs(&bootdir, is_ostree).context("Emptying /boot")?;
 
-    // TODO: we should also support not wiping the ESP.
     if ARCH_USES_EFI {
         if let Some(efidir) = bootdir
             .open_dir_optional(crate::bootloader::EFI_DIR)
             .context("Opening /boot/efi")?
         {
-            remove_all_in_dir_no_xdev(&efidir, false).context("Emptying EFI system partition")?;
+            clean_esp_bootloader_dirs(&efidir)?;
         }
     }
 
@@ -3152,6 +3171,32 @@ mod tests {
         remove_all_in_dir_no_xdev(&td, true).unwrap();
 
         assert_eq!(td.entries()?.count(), 0);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_clean_esp_bootloader_dirs() -> Result<()> {
+        let td = cap_std_ext::cap_tempfile::TempDir::new(cap_std::ambient_authority())?;
+
+        td.create_dir_all("EFI/BOOT")?;
+        td.write("EFI/BOOT/BOOTAA64.EFI", b"shim")?;
+        td.create_dir_all("loader/entries")?;
+        td.write("loader/entries/foo.conf", b"entry")?;
+        // Asahi content which must survive
+        td.create_dir_all("m1n1")?;
+        td.write("m1n1/boot.bin", b"m1n1")?;
+        td.write("ubootefi.var", b"efivars")?;
+
+        clean_esp_bootloader_dirs(&td)?;
+        assert!(!td.exists("EFI"));
+        assert!(!td.exists("loader"));
+        assert_eq!(td.read("m1n1/boot.bin")?, b"m1n1");
+        assert_eq!(td.read("ubootefi.var")?, b"efivars");
+
+        // Idempotent
+        clean_esp_bootloader_dirs(&td)?;
+        assert_eq!(td.entries()?.count(), 2);
 
         Ok(())
     }
