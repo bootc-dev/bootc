@@ -63,6 +63,8 @@
 //! - [`linux-kernel-cmdline`](../linux_kernel_cmdline/index.html) - Cmdline parsing
 //! - [`etc-merge`](../etc_merge/index.html) - `/etc` three-way merge
 
+mod aboot;
+mod boot_artifact;
 mod bootc_composefs;
 pub(crate) mod bootc_kargs;
 mod bootloader;

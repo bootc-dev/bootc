@@ -7,6 +7,9 @@ do provide feedback on them.
 
 The composefs backend is an experimental alternative storage backend that uses [composefs-rs](https://github.com/composefs/composefs-rs) instead of ostree for storing and managing bootc system deployments.
 
+For Android A/B boot images and ukiboot on this backend, see
+[experimental composefs aboot support](experimental-composefs-aboot.md).
+
 The composefs backend has two independent integrity controls:
 
 - **fs-verity enforcement.** By default every object in the composefs
@@ -95,7 +98,7 @@ Unlike the ostree backend, which keeps its repository at `/ostree/repo`, the com
 - `/state/deploy/<deployment-id>/`: Persistent per-deployment state, one directory per deployment (see below for how it is named):
   - `etc/`: a writable copy of the deployment's `/etc`, bind-mounted onto the booted root's `/etc`
   - `var`: a symlink to the shared `/state/os/default/var`, bind-mounted onto the booted root's `/var`
-  - `<deployment-id>.origin`: an INI file recording the image reference, boot type (BLS or UKI) and digest, and the OCI manifest digest (the latter is what keeps a deployment's objects alive across garbage collection)
+  - `<deployment-id>.origin`: an INI file recording the image reference, boot type (BLS, UKI, or aboot) and digest, and the OCI manifest digest (the latter is what keeps a deployment's objects alive across garbage collection)
 
 Although composefs-rs supports other fs-verity hash algorithms, bootc currently hardcodes `SHA-512` for the repository. This is why EROFS image IDs and object identifiers are 128-character hex strings.
 
@@ -108,7 +111,10 @@ deployment was staged.
 
 There is no `/ostree/repo`; the composefs backend doesn't use the ostree repository at all. A minimal `/ostree` directory is still created, but only to hold a compatibility symlink (`ostree/bootc -> ../composefs/bootc`) so that existing tooling expecting `/usr/lib/bootc/storage` to resolve through `ostree/bootc` keeps working.
 
-Transient, not-yet-finalized deployment state (used while staging an update before reboot) lives under `/run/composefs/staged-deployment` and is never persisted to disk.
+The transient view of a staged deployment lives under
+`/run/composefs/staged-deployment`. Aboot additionally persists pending and
+attempted state so an interrupted A/B update can be reconciled after reboot;
+see [aboot update state](experimental-composefs-aboot.md#updates-rollback-and-recovery).
 
 ## How Sealed Images Work
 
@@ -271,6 +277,9 @@ See [CONTRIBUTING.md](https://github.com/bootc-dev/bootc/blob/main/CONTRIBUTING.
 Whenever the container image has a UKI, bootc automatically selects the composefs backend during installation (see [Prerequisites](#prerequisites) above for the currently-supported UKI + systemd-boot configuration for building sealed images). Note that having a UKI does not by itself make an install sealed — that also depends on whether fs-verity enforcement is on, per [Overview](#overview) above.
 
 Composefs installs using a traditional `vmlinuz`/`initramfs.img` layout instead of a UKI can enforce fs-verity, but are never sealed, since nothing authenticates the root digest. They can use either `bootupd` (GRUB) or systemd-boot, the same as the ostree backend. See [bootloaders.md](bootloaders.md) for the general bootloader selection rules. Under the hood, bootc writes standard BLS boot entries for both UKI and traditional kernels; see the [composefs boot module documentation](https://github.com/bootc-dev/bootc/blob/main/crates/lib/src/bootc_composefs/boot.rs) for details on how entry filenames and sort-keys are chosen to sort correctly on both GRUB and systemd-boot.
+
+Android A/B boot images use a separate [aboot boot path](experimental-composefs-aboot.md)
+instead of BLS entries; a real aboot install does not have an ESP.
 
 ## Installation
 

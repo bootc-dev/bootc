@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use camino::Utf8PathBuf;
-use cap_std_ext::{cap_std::fs::Dir, dirext::CapStdExtDirExt};
+use cap_std_ext::cap_std::fs::Dir;
 use composefs::erofs::format::FormatVersion;
 use composefs::fsverity::{FsVerityHashValue, Sha512HashValue};
 use composefs_boot::BootOps;
@@ -18,15 +18,17 @@ use crate::bootc_composefs::gc::GCOpts;
 use crate::spec::BootloaderKind;
 use crate::{
     bootc_composefs::{
+        aboot,
         boot::{
-            BootSetupType, BootType, print_uki_dumpfile_diff_on_mismatch, setup_composefs_bls_boot,
+            BootSetupType, BootType, prepare_composefs_aboot_update,
+            print_uki_dumpfile_diff_on_mismatch, setup_composefs_bls_boot,
             setup_composefs_uki_boot,
         },
         gc::composefs_gc,
         repo::pull_composefs_repo,
         service::start_finalize_stated_svc,
         soft_reboot::prepare_soft_reboot_composefs,
-        state::write_composefs_state,
+        state::{write_composefs_state, write_staged_deployment},
         status::{
             ImgConfigManifest, StagedDeployment, get_bootloader, get_composefs_status,
             get_container_manifest_and_config, get_imginfo,
@@ -184,25 +186,26 @@ pub(crate) fn validate_update(
     }
 
     let booted = host.require_composefs_booted()?;
-    let boot_dir = storage.require_boot_dir()?;
-
-    // Remove staged bootloader entries, if any
-    // GC should take care of the UKI PEs and other binaries
-    match get_bootloader()?.kind()? {
-        BootloaderKind::GRUBClassic => match booted.boot_type {
-            BootType::Bls => rm_staged_type1_ent(boot_dir)?,
-
-            BootType::Uki => {
-                let grub = boot_dir.open_dir("grub2").context("Opening grub dir")?;
-
-                if grub.exists(USER_CFG_STAGED) {
-                    grub.remove_file(USER_CFG_STAGED)
-                        .context("Removing staged grub user config")?;
+    if booted.boot_type == BootType::Aboot {
+        ensure_no_aboot_attempt(storage)?;
+    } else {
+        // Remove staged bootloader entries, if any
+        // GC should take care of the UKI PEs and other binaries
+        let boot_dir = storage.require_boot_dir()?;
+        match get_bootloader()?.kind()? {
+            BootloaderKind::GRUBClassic => match booted.boot_type {
+                BootType::Bls => rm_staged_type1_ent(boot_dir)?,
+                BootType::Uki => {
+                    let grub = boot_dir.open_dir("grub2").context("Opening grub dir")?;
+                    if grub.exists(USER_CFG_STAGED) {
+                        grub.remove_file(USER_CFG_STAGED)
+                            .context("Removing staged grub user config")?;
+                    }
                 }
-            }
-        },
-
-        BootloaderKind::BLSCompatible => rm_staged_type1_ent(boot_dir)?,
+                BootType::Aboot => unreachable!(),
+            },
+            BootloaderKind::BLSCompatible => rm_staged_type1_ent(boot_dir)?,
+        }
     }
 
     // Remove state directories for either serialisation of the same rootfs.
@@ -221,6 +224,19 @@ pub(crate) fn validate_update(
     }
 
     Ok(UpdateAction::Proceed)
+}
+
+fn ensure_no_aboot_attempt(storage: &Storage) -> Result<()> {
+    let state = aboot::AbootState::open(&storage.physical_root)?;
+    anyhow::ensure!(
+        state.read_attempted()?.is_none(),
+        "An attempted aboot update has not been reconciled"
+    );
+    anyhow::ensure!(
+        state.queued_rollback()?.is_none(),
+        "An aboot rollback is queued"
+    );
+    Ok(())
 }
 
 /// This is just an intersection of SwitchOpts and UpgradeOpts
@@ -270,6 +286,11 @@ pub(crate) async fn do_upgrade(
     opts: &DoUpgradeOpts,
     manifest: &ostree_ext::oci_spec::image::ImageManifest,
 ) -> Result<()> {
+    // Unpulled images bypass validate_update(), so check aboot state here too.
+    if host.require_composefs_booted()?.boot_type == BootType::Aboot {
+        ensure_no_aboot_attempt(storage)?;
+    }
+
     // Pre-flight disk space check before pulling.
     crate::deploy::check_disk_space_composefs(&*booted_cfs.repo, manifest, imgref)?;
 
@@ -309,6 +330,14 @@ pub(crate) async fn do_upgrade(
     let Some(entry) = entries.iter().next() else {
         anyhow::bail!("No boot entries!");
     };
+    let boot_type = BootType::from(entry);
+    let booted_type = host.require_composefs_booted()?.boot_type;
+    if boot_type == BootType::Aboot || booted_type == BootType::Aboot {
+        anyhow::ensure!(
+            boot_type == booted_type,
+            "Cannot switch between aboot and non-aboot boot layouts"
+        );
+    }
 
     let mounted_fs = Dir::reopen_dir(
         &repo
@@ -328,9 +357,8 @@ pub(crate) async fn do_upgrade(
         anyhow::bail!("Merge conflicts found in etc");
     }
 
-    let boot_type = BootType::from(entry);
-
     let (provisional_deploy_id, provisional_format) = (id.clone(), repo.erofs_version());
+    let mut aboot_artifacts = None;
 
     let (boot_digest, deploy_id) = match boot_type {
         BootType::Bls => (
@@ -356,6 +384,18 @@ pub(crate) async fn do_upgrade(
             &repo,
             &oci_fs,
         )?,
+        BootType::Aboot => {
+            let prepared = prepare_composefs_aboot_update(
+                &repo,
+                &id,
+                &boot_ids,
+                entry,
+                booted_cfs.cmdline.allow_missing_fsverity,
+            )?;
+            let boot_digest = prepared.boot_digest.clone();
+            aboot_artifacts = Some(prepared);
+            (boot_digest, provisional_deploy_id)
+        }
     };
 
     // `repo` holds its own flock(LOCK_SH) on /sysroot/composefs, taken out by
@@ -381,13 +421,25 @@ pub(crate) async fn do_upgrade(
         &Utf8PathBuf::from("/sysroot"),
         &deploy_id,
         imgref,
-        Some(staged_state),
+        true,
         boot_type,
         boot_digest,
         &manifest_digest,
         booted_cfs.cmdline.allow_missing_fsverity,
     )
     .await?;
+
+    if let Some(artifacts) = aboot_artifacts {
+        let mut state = aboot::AbootState::open(&storage.physical_root)?;
+        let pending = state.stage_artifacts(
+            &staged_state.depl_id,
+            staged_state.finalization_locked,
+            &artifacts.payload,
+            artifacts.vbmeta.as_deref(),
+        )?;
+        state.write_pending(&pending)?;
+    }
+    write_staged_deployment(&staged_state)?;
 
     // We take into account the staged bootloader entries so this won't remove
     // the currently staged entry
@@ -428,37 +480,27 @@ pub(crate) async fn apply_upgrade_from_downloaded(
         return Ok(());
     }
 
+    let staged_id = &staged.require_composefs()?.verity;
+    if host.require_composefs_booted()?.boot_type == BootType::Aboot {
+        let mut state = aboot::AbootState::open(&storage.physical_root)?;
+        let pending = state.unlock_pending(staged_id)?;
+        write_staged_deployment(&pending.staged())?;
+    } else {
+        let staged_depl_dir =
+            Dir::open_ambient_dir(COMPOSEFS_TRANSIENT_STATE_DIR, ambient_authority())
+                .context("Opening transient state directory")?;
+        let current = staged_depl_dir
+            .read_to_string(COMPOSEFS_STAGED_DEPLOYMENT_FNAME)
+            .context("Reading staged file")?;
+        let mut new_staged: StagedDeployment =
+            serde_json::from_str(&current).context("Deserialzing staged file")?;
+        new_staged.finalization_locked = false;
+        write_staged_deployment(&new_staged)?;
+    }
+
     start_finalize_stated_svc()?;
 
-    let staged_depl_dir = Dir::open_ambient_dir(COMPOSEFS_TRANSIENT_STATE_DIR, ambient_authority())
-        .context("Opening transient state directory")?;
-
-    let current = staged_depl_dir
-        .read_to_string(COMPOSEFS_STAGED_DEPLOYMENT_FNAME)
-        .context("Reading staged file")?;
-
-    let mut new_staged: StagedDeployment =
-        serde_json::from_str(&current).context("Deserialzing staged file")?;
-
-    // Make the staged deployment not download_only
-    new_staged.finalization_locked = false;
-
-    staged_depl_dir
-        .atomic_replace_with(
-            COMPOSEFS_STAGED_DEPLOYMENT_FNAME,
-            |f| -> std::io::Result<()> {
-                serde_json::to_writer(f, &new_staged).map_err(std::io::Error::from)
-            },
-        )
-        .context("Writing staged file")?;
-
-    return apply_upgrade(
-        storage,
-        composefs,
-        &staged.require_composefs()?.verity,
-        &do_upgrade_opts,
-    )
-    .await;
+    return apply_upgrade(storage, composefs, staged_id, &do_upgrade_opts).await;
 }
 
 #[context("Upgrading composefs")]

@@ -4,9 +4,9 @@
 //! images, supporting both traditional kernels (with separate vmlinuz/initrd) and
 //! Unified Kernel Images (UKI).
 
-use std::path::Path;
+use std::{io::Read, path::Path};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use camino::Utf8PathBuf;
 use cap_std_ext::cap_std::fs::Dir;
 use cap_std_ext::dirext::CapStdExtDirExt;
@@ -165,6 +165,79 @@ fn find_uki_path(root: &Dir) -> Result<Option<Utf8PathBuf>> {
         .map(|filename| Utf8PathBuf::from(format!("boot/{EFI_LINUX}/{filename}"))))
 }
 
+/// The boot artifact type reported by `bootc container inspect`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum ContainerImageType {
+    Aboot,
+    AbootEfi,
+    Uki,
+    Vmlinuz,
+}
+
+impl ContainerImageType {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Aboot => "aboot",
+            Self::AbootEfi => "aboot-efi",
+            Self::Uki => "UKI",
+            Self::Vmlinuz => "vmlinuz",
+        }
+    }
+}
+
+fn aboot_type_at(dir: &Dir, path: &Path) -> Result<ContainerImageType> {
+    let mut file = dir
+        .open(path)
+        .with_context(|| format!("Opening aboot payload {}", path.display()))?;
+    let mut magic = [0; 8];
+    file.read_exact(&mut magic)
+        .with_context(|| format!("Reading aboot payload {}", path.display()))?;
+    if &magic == b"ANDROID!" {
+        Ok(ContainerImageType::Aboot)
+    } else if magic.starts_with(b"MZ") {
+        Ok(ContainerImageType::AbootEfi)
+    } else {
+        bail!("Unknown aboot payload format at {}", path.display())
+    }
+}
+
+pub(crate) fn find_aboot_type(root: &Dir) -> Result<Option<ContainerImageType>> {
+    if let Some(modules) = root.open_dir_optional("usr/lib/modules")? {
+        for entry in modules.entries()? {
+            let entry = entry?;
+            if !entry.file_type()?.is_dir() {
+                continue;
+            }
+            let path = Path::new(&entry.file_name()).join("aboot.img");
+            if modules
+                .symlink_metadata_optional(&path)?
+                .is_some_and(|metadata| metadata.is_file())
+            {
+                return aboot_type_at(&modules, &path).map(Some);
+            }
+        }
+    }
+    let Some(boot) = root.open_dir_optional("boot")? else {
+        return Ok(None);
+    };
+    for entry in boot.entries()? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let Some(version) = name
+            .to_str()
+            .and_then(|name| name.strip_prefix("aboot-"))
+            .and_then(|name| name.strip_suffix(".img"))
+        else {
+            continue;
+        };
+        if !version.is_empty() && entry.file_type()?.is_file() {
+            return aboot_type_at(&boot, Path::new(&name)).map(Some);
+        }
+    }
+    Ok(None)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -175,6 +248,41 @@ mod tests {
     fn test_find_kernel_none() -> Result<()> {
         let tempdir = cap_tempfile::tempdir(cap_std::ambient_authority())?;
         assert!(find_kernel(&tempdir)?.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn test_find_aboot_type() -> Result<()> {
+        let tempdir = cap_tempfile::tempdir(cap_std::ambient_authority())?;
+        assert_eq!(find_aboot_type(&tempdir)?, None);
+
+        tempdir.create_dir_all("boot/aboot-directory.img")?;
+        tempdir.atomic_write("boot/aboot-.img", b"")?;
+        tempdir.atomic_write("boot/aboot-1.0", b"")?;
+        assert_eq!(find_aboot_type(&tempdir)?, None);
+
+        tempdir.atomic_write("boot/aboot-1.0.img", b"ANDROID!")?;
+        assert_eq!(find_aboot_type(&tempdir)?, Some(ContainerImageType::Aboot));
+        tempdir.atomic_write("boot/aboot-1.0.img", b"MZpayload")?;
+        assert_eq!(
+            find_aboot_type(&tempdir)?,
+            Some(ContainerImageType::AbootEfi)
+        );
+        tempdir.atomic_write("boot/aboot-1.0.img", b"invalid!")?;
+        assert!(find_aboot_type(&tempdir).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn test_find_aboot_type_modules() -> Result<()> {
+        let tempdir = cap_tempfile::tempdir(cap_std::ambient_authority())?;
+        tempdir.create_dir_all("usr/lib/modules/1.0")?;
+        assert_eq!(find_aboot_type(&tempdir)?, None);
+        tempdir.atomic_write("usr/lib/modules/1.0/aboot.img", b"MZpayload")?;
+        assert_eq!(
+            find_aboot_type(&tempdir)?,
+            Some(ContainerImageType::AbootEfi)
+        );
         Ok(())
     }
 

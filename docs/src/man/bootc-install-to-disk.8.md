@@ -168,6 +168,7 @@ set `discoverable-partitions = true` in their install configuration
     - grub
     - grub-cc
     - systemd
+    - ukiboot
     - none
 
 **--via-loopback**

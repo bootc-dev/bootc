@@ -1,6 +1,6 @@
 use std::{io::Read, sync::OnceLock};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, ensure};
 use bootc_mount::inspect_filesystem;
 use composefs_ctl::composefs::erofs::format::FormatVersion;
 use composefs_ctl::composefs::fsverity::{FsVerityHashValue, Sha512HashValue};
@@ -16,9 +16,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     bootc_composefs::{
+        aboot,
         boot::BootType,
         selinux::are_selinux_policies_compatible,
-        state::{get_composefs_usr_overlay_status, read_origin},
+        state::{get_composefs_usr_overlay_status, read_boot_type, read_origin},
         utils::{compute_store_boot_digest_for_uki, get_uki_cmdline},
     },
     composefs_consts::{
@@ -333,8 +334,8 @@ fn get_sorted_type1_boot_entries_helper(
             // For grub and grub-cc, sort by filename in descending order
             // See: https://github.com/bootc-dev/bootc/issues/2221
             Bootloader::Grub | Bootloader::GrubCC => b.filename.cmp(&a.filename),
-            Bootloader::None => {
-                unreachable!("Bootloader checked during installation should not have been none")
+            Bootloader::Ukiboot | Bootloader::None => {
+                unreachable!("Bootloader checked during installation does not use BLS entries")
             }
         };
 
@@ -619,6 +620,7 @@ fn boot_entry_from_composefs_deployment(
     origin: tini::Ini,
     verity: &str,
     missing_verity_allowed: bool,
+    bootloader: Bootloader,
 ) -> Result<BootEntry> {
     let image = match origin.get::<String>("origin", ORIGIN_CONTAINER) {
         Some(img_name_from_config) => {
@@ -668,7 +670,7 @@ fn boot_entry_from_composefs_deployment(
         composefs: Some(crate::spec::BootEntryComposefs {
             verity: verity.into(),
             boot_type,
-            bootloader: get_bootloader()?,
+            bootloader,
             boot_digest,
             missing_verity_allowed,
         }),
@@ -714,6 +716,7 @@ fn set_soft_reboot_capability(
         }
 
         BootType::Uki => set_reboot_capable_uki_deployments(storage, booted_cmdline, host),
+        BootType::Aboot => Ok(()),
     }
 }
 
@@ -920,12 +923,119 @@ fn rollback_queued_from_first_entry(
     }
 }
 
+fn read_staged_deployment() -> Result<Option<StagedDeployment>> {
+    let path = format!("{COMPOSEFS_TRANSIENT_STATE_DIR}/{COMPOSEFS_STAGED_DEPLOYMENT_FNAME}");
+    let contents = match std::fs::read_to_string(&path) {
+        Ok(contents) => contents,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err).with_context(|| format!("Reading {path}")),
+    };
+    serde_json::from_str(&contents)
+        .with_context(|| format!("Parsing {path}"))
+        .map(Some)
+}
+
+fn aboot_entry(storage: &Storage, verity: &str, missing_verity_allowed: bool) -> Result<BootEntry> {
+    let origin = read_origin(&storage.physical_root, verity)?
+        .ok_or_else(|| anyhow::anyhow!("No origin file for aboot deployment {verity}"))?;
+    let entry = boot_entry_from_composefs_deployment(
+        storage,
+        origin,
+        verity,
+        missing_verity_allowed,
+        Bootloader::None,
+    )?;
+    ensure!(
+        entry.require_composefs()?.boot_type == BootType::Aboot,
+        "Slot references non-aboot deployment {verity}"
+    );
+    Ok(entry)
+}
+
+fn composefs_aboot_status(storage: &Storage, cmdline: &ComposefsCmdline) -> Result<Host> {
+    let state = aboot::AbootState::open(&storage.physical_root)?;
+    let staged = match state.read_pending()? {
+        Some(pending) => Some(pending.staged()),
+        None => read_staged_deployment()?,
+    };
+    composefs_aboot_status_from(storage, &state, cmdline, staged.as_ref())
+}
+
+fn composefs_aboot_status_from(
+    storage: &Storage,
+    state: &aboot::AbootState<'_>,
+    cmdline: &ComposefsCmdline,
+    staged: Option<&StagedDeployment>,
+) -> Result<Host> {
+    let mut host = Host::new(HostSpec {
+        image: None,
+        boot_order: BootOrder::Default,
+    });
+
+    host.status.booted = Some(aboot_entry(
+        storage,
+        &cmdline.digest,
+        cmdline.allow_missing_fsverity,
+    )?);
+
+    if let Some(staged) = staged.filter(|s| s.depl_id != *cmdline.digest) {
+        let mut entry = aboot_entry(storage, &staged.depl_id, cmdline.allow_missing_fsverity)?;
+        entry.download_only = staged.finalization_locked;
+        host.status.staged = Some(entry);
+    }
+
+    let mut seen = vec![cmdline.digest.to_string()];
+    if let Some(staged) = host.status.staged.as_ref() {
+        seen.push(staged.require_composefs()?.verity.clone());
+    }
+    for deployment in state.slot_deployments()? {
+        let verity = deployment.to_hex();
+        if seen.contains(&verity) {
+            continue;
+        }
+        seen.push(verity.clone());
+        let entry = aboot_entry(storage, &verity, cmdline.allow_missing_fsverity)?;
+        if host.status.rollback.is_none() {
+            host.status.rollback = Some(entry);
+        } else {
+            host.status.other_deployments.push(entry);
+        }
+    }
+
+    if let Some(queued) = state.queued_rollback()? {
+        let rollback =
+            host.status.rollback.as_ref().ok_or_else(|| {
+                anyhow::anyhow!("Queued aboot rollback deployment is unavailable")
+            })?;
+        ensure!(
+            rollback.require_composefs()?.verity == queued,
+            "Queued aboot rollback does not match the rollback deployment"
+        );
+        host.status.rollback_queued = true;
+        host.spec.boot_order = BootOrder::Rollback;
+    }
+
+    host.spec.image = host
+        .status
+        .staged
+        .as_ref()
+        .or(host.status.booted.as_ref())
+        .and_then(|entry| entry.image.as_ref())
+        .map(|image| image.image.clone());
+    host.status.usr_overlay = get_composefs_usr_overlay_status().ok().flatten();
+    Ok(host)
+}
+
 #[context("Getting composefs deployment status")]
 async fn composefs_deployment_status_from(
     storage: &Storage,
     cmdline: &ComposefsCmdline,
 ) -> Result<Host> {
     let booted_composefs_digest = &cmdline.digest;
+
+    if read_boot_type(&storage.physical_root, booted_composefs_digest)? == Some(BootType::Aboot) {
+        return composefs_aboot_status(storage, cmdline);
+    }
 
     let boot_dir = storage.require_boot_dir()?;
 
@@ -939,20 +1049,10 @@ async fn composefs_deployment_status_from(
 
     let mut host = Host::new(host_spec);
 
-    let staged_deployment = match std::fs::File::open(format!(
-        "{COMPOSEFS_TRANSIENT_STATE_DIR}/{COMPOSEFS_STAGED_DEPLOYMENT_FNAME}"
-    )) {
-        Ok(mut f) => {
-            let mut s = String::new();
-            f.read_to_string(&mut s)?;
-
-            Ok(Some(s))
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(e),
-    }?;
+    let staged_deployment = read_staged_deployment()?;
 
     let mut boot_type: Option<BootType> = None;
+    let bootloader = get_bootloader()?;
 
     // Boot entries from deployments that are neither booted nor staged deployments
     // Rollback deployment is in here, but may also contain stale deployment entries
@@ -982,6 +1082,7 @@ async fn composefs_deployment_status_from(
             ini,
             &verity_digest,
             cmdline.allow_missing_fsverity,
+            bootloader,
         )?;
 
         // SAFETY: boot_entry.composefs will always be present
@@ -1005,10 +1106,8 @@ async fn composefs_deployment_status_from(
         }
 
         if let Some(staged_deployment) = &staged_deployment {
-            let staged_depl = serde_json::from_str::<StagedDeployment>(&staged_deployment)?;
-
-            if verity_digest == staged_depl.depl_id {
-                boot_entry.download_only = staged_depl.finalization_locked;
+            if verity_digest == staged_deployment.depl_id {
+                boot_entry.download_only = staged_deployment.finalization_locked;
                 host.status.staged = Some(boot_entry);
                 continue;
             }
@@ -1073,6 +1172,9 @@ async fn composefs_deployment_status_from(
                         .contains(booted_composefs_digest.as_ref());
 
                     (is_rollback_queued, None, Some(menuentries))
+                }
+                BootType::Aboot => {
+                    anyhow::bail!("Aboot deployment unexpectedly reached GRUB status handling")
                 }
             },
 
@@ -1153,13 +1255,112 @@ async fn composefs_deployment_status_from(
 mod tests {
     use cap_std_ext::{cap_std, dirext::CapStdExtDirExt};
 
+    use crate::bootc_composefs::aboot;
     use crate::bootc_composefs::boot::{
         FILENAME_PRIORITY_PRIMARY, FILENAME_PRIORITY_SECONDARY, primary_sort_key,
         secondary_sort_key, type1_entry_conf_file_name,
     };
+    use crate::composefs_consts::{ABOOT_STATE_DIR, STATE_DIR_RELATIVE};
     use crate::parsers::grub_menuconfig::MenuentryBody;
 
     use super::*;
+
+    fn write_aboot_origin(root: &Dir, digest: &str) -> Result<()> {
+        let path = format!("{STATE_DIR_RELATIVE}/{digest}");
+        root.create_dir_all(&path)?;
+        root.atomic_write(
+            format!("{path}/{digest}.origin"),
+            "[boot]\nboot_type=aboot\ndigest=boot-digest\n",
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn aboot_status_from_slots() -> Result<()> {
+        let root = cap_std_ext::cap_tempfile::tempdir(cap_std::ambient_authority())?;
+        root.create_dir("run")?;
+        let run = root.open_dir("run")?;
+        let storage = Storage::new_composefs_for_test(&root, &run)?;
+        let a = "aa".repeat(64);
+        let b = "bb".repeat(64);
+        let staged_id = "cc".repeat(64);
+        for digest in [&a, &b, &staged_id] {
+            write_aboot_origin(&root, digest)?;
+        }
+        let mut aboot_state = aboot::AbootState::open(&root)?;
+        aboot_state.record_booted(&Cmdline::from("androidboot.slot_suffix=_a"), &a)?;
+        aboot_state.record_booted(&Cmdline::from("androidboot.slot_suffix=_b"), &b)?;
+
+        let cmdline = ComposefsCmdline::new(&a);
+        let host = composefs_aboot_status_from(&storage, &aboot_state, &cmdline, None)?;
+        let booted = host.require_composefs_booted()?;
+        assert_eq!(booted.verity, a);
+        assert_eq!(booted.boot_type, BootType::Aboot);
+        assert_eq!(booted.bootloader, Bootloader::None);
+        assert_eq!(
+            host.status
+                .rollback
+                .as_ref()
+                .unwrap()
+                .require_composefs()?
+                .verity,
+            b
+        );
+        assert!(host.status.staged.is_none());
+        assert!(host.status.other_deployments.is_empty());
+        assert!(!host.status.rollback_queued);
+
+        aboot_state.queue_rollback(&b)?;
+        let host = composefs_aboot_status_from(&storage, &aboot_state, &cmdline, None)?;
+        assert!(host.status.rollback_queued);
+        assert_eq!(host.spec.boot_order, BootOrder::Rollback);
+        aboot_state.clear_rollback()?;
+
+        let staged = StagedDeployment {
+            depl_id: staged_id.clone(),
+            finalization_locked: true,
+        };
+        let host = composefs_aboot_status_from(&storage, &aboot_state, &cmdline, Some(&staged))?;
+        let staged_entry = host.status.staged.as_ref().unwrap();
+        assert_eq!(staged_entry.require_composefs()?.verity, staged_id);
+        assert!(staged_entry.download_only);
+        assert_eq!(
+            host.status
+                .rollback
+                .as_ref()
+                .unwrap()
+                .require_composefs()?
+                .verity,
+            b
+        );
+
+        let staged = StagedDeployment {
+            depl_id: b.clone(),
+            finalization_locked: false,
+        };
+        let host = composefs_aboot_status_from(&storage, &aboot_state, &cmdline, Some(&staged))?;
+        assert_eq!(
+            host.status
+                .staged
+                .as_ref()
+                .unwrap()
+                .require_composefs()?
+                .verity,
+            b
+        );
+        assert!(host.status.rollback.is_none());
+
+        root.atomic_write(format!("{ABOOT_STATE_DIR}/slots/b"), "invalid")?;
+        let host = composefs_aboot_status_from(&storage, &aboot_state, &cmdline, None)?;
+        assert!(host.status.rollback.is_none());
+        assert_eq!(host.list_deployments().len(), 1);
+
+        let pending = aboot_state.stage_artifacts(&staged_id, true, b"boot", None)?;
+        aboot_state.write_pending(&pending)?;
+        let host = composefs_aboot_status(&storage, &cmdline)?;
+        assert!(host.status.staged.as_ref().unwrap().download_only);
+        Ok(())
+    }
 
     #[test]
     fn test_composefs_parsing() {

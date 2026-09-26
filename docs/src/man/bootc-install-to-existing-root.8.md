@@ -224,6 +224,7 @@ of migrating the fstab entries. See the "Injecting kernel arguments" section abo
     - grub
     - grub-cc
     - systemd
+    - ukiboot
     - none
 
 **--acknowledge-destructive**

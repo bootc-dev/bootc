@@ -213,6 +213,26 @@ pub(crate) struct GCOpts {
     pub(crate) prune_repo: bool,
 }
 
+fn orphaned_state_dirs<'a>(
+    state_dirs: &'a [String],
+    live_deployments: &[&str],
+    bootloader_entries: &[BootloaderEntry],
+    is_aboot: bool,
+) -> Vec<&'a String> {
+    state_dirs
+        .iter()
+        .filter(|state| {
+            if is_aboot {
+                !live_deployments.contains(&state.as_str())
+            } else {
+                !bootloader_entries
+                    .iter()
+                    .any(|entry| &entry.fsverity == *state)
+            }
+        })
+        .collect()
+}
+
 /// 1. List all bootloader entries
 /// 2. List all EROFS images
 /// 3. List all state directories
@@ -280,8 +300,15 @@ pub(crate) async fn composefs_gc(
 
     let sysroot = &storage.physical_root;
 
-    let bootloader_entries = list_bootloader_entries(storage)?;
-    let boot_binaries = collect_boot_binaries(storage)?;
+    let is_aboot = booted_cfs_status.boot_type == BootType::Aboot;
+    let (bootloader_entries, boot_binaries) = if is_aboot {
+        (Vec::new(), Vec::new())
+    } else {
+        (
+            list_bootloader_entries(storage)?,
+            collect_boot_binaries(storage)?,
+        )
+    };
 
     tracing::debug!("bootloader_entries: {bootloader_entries:?}");
     tracing::debug!("boot_binaries: {boot_binaries:?}");
@@ -308,6 +335,9 @@ pub(crate) async fn composefs_gc(
                 delete_kernel_initrd(storage, &get_type1_dir_name(verity), gc_opts.dry_run)?
             }
             BootType::Uki => delete_uki(storage, verity, gc_opts.dry_run)?,
+            BootType::Aboot => {
+                anyhow::bail!("Aboot artifact unexpectedly reached boot binary garbage collection")
+            }
         }
     }
 
@@ -323,18 +353,34 @@ pub(crate) async fn composefs_gc(
 
     let staged = &host.status.staged;
 
-    // State dirs without a bootloader entry are from interrupted deployments.
-    let orphaned_state_dirs: Vec<_> = state_dirs
-        .iter()
-        .filter(|s| !bootloader_entries.iter().any(|entry| &entry.fsverity == *s))
-        .collect();
+    let live_deployments = host
+        .list_deployments()
+        .into_iter()
+        .map(|deployment| {
+            deployment
+                .require_composefs()
+                .map(|cfs| cfs.verity.as_str())
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    // State dirs without a live reference are from interrupted deployments.
+    let orphaned_state_dirs = orphaned_state_dirs(
+        &state_dirs,
+        &live_deployments,
+        &bootloader_entries,
+        is_aboot,
+    );
 
     // Bootloader entries without a state dir are from interrupted cleanups.
-    let orphaned_boot_entries: Vec<_> = bootloader_entries
-        .iter()
-        .map(|entry| &entry.fsverity)
-        .filter(|verity| !state_dirs.contains(verity))
-        .collect();
+    let orphaned_boot_entries: Vec<_> = if is_aboot {
+        Vec::new()
+    } else {
+        bootloader_entries
+            .iter()
+            .map(|entry| &entry.fsverity)
+            .filter(|verity| !state_dirs.contains(verity))
+            .collect()
+    };
 
     let all_orphans: Vec<_> = orphaned_state_dirs
         .iter()
@@ -501,10 +547,10 @@ pub(crate) async fn composefs_gc(
 
     let (mut objects_bytes, mut objects_removed) = (0, 0);
 
-    // Now GC the UKI/UKI Addons from `.boot` EROFS if we have them
-    // These won't be GC'd by the above `repo.gc` as the EROFS have
-    // `/boot` masked
-    for verity in all_orphans {
+    // Now GC the UKI/UKI Addons from `.boot` EROFS if we have them.
+    // Aboot artifacts may share repository objects and are left to repository GC.
+    // These won't be GC'd by the above `repo.gc` as the EROFS have `/boot` masked.
+    for verity in all_orphans.iter().copied().filter(|_| !is_aboot) {
         let verity_to_sha = Sha512HashValue::from_hex(verity);
 
         let Ok(verity_to_sha) = verity_to_sha else {
@@ -608,7 +654,85 @@ pub(crate) async fn composefs_gc(
 mod tests {
     use super::*;
     use crate::bootc_composefs::status::list_type1_entries;
+    use crate::bootc_composefs::{aboot, status::ComposefsCmdline};
+    use crate::composefs_consts::STATE_DIR_RELATIVE;
+    use crate::store::ComposefsRepository;
     use crate::testutils::{ChangeType, TestRoot};
+    use cap_std_ext::{cap_std::ambient_authority, cap_tempfile::tempdir};
+    use composefs_ctl::composefs::repository::RepositoryConfig;
+
+    fn write_aboot_origin(root: &Dir, digest: &str) -> Result<()> {
+        let path = format!("{STATE_DIR_RELATIVE}/{digest}");
+        root.create_dir_all(&path)?;
+        root.atomic_write(
+            format!("{path}/{digest}.origin"),
+            "[boot]\nboot_type=aboot\ndigest=boot-digest\n",
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn aboot_orphans_only_unreferenced_state() {
+        let state = ["booted".into(), "rollback".into(), "invalid".into()];
+        let live = ["booted", "rollback"];
+        let orphans = orphaned_state_dirs(&state, &live, &[], true);
+        assert_eq!(
+            orphans.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+            ["invalid"]
+        );
+
+        let live = ["booted"];
+        let orphans = orphaned_state_dirs(&state, &live, &[], true);
+        assert_eq!(
+            orphans.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+            ["rollback", "invalid"]
+        );
+    }
+
+    #[tokio::test]
+    async fn aboot_gc_uses_status_roots() -> Result<()> {
+        let root = tempdir(ambient_authority())?;
+        root.create_dir_all("composefs")?;
+        root.create_dir("run")?;
+        let repo_dir = root.open_dir("composefs")?;
+        let config = RepositoryConfig::new(composefs_ctl::composefs::fsverity::Algorithm::SHA512)
+            .set_insecure();
+        let (repo, _) = ComposefsRepository::init_path(&repo_dir, ".", config)?;
+        let repo = std::sync::Arc::new(repo);
+        let storage = Storage::new_composefs_for_test(&root, &root.open_dir("run")?)?;
+        let booted = "aa".repeat(64);
+        let rollback = "bb".repeat(64);
+        let orphan = "cc".repeat(64);
+        for digest in [&booted, &rollback, &orphan] {
+            write_aboot_origin(&root, digest)?;
+        }
+        let mut aboot_state = aboot::AbootState::open(&root)?;
+        aboot_state.record_booted(
+            &linux_kernel_cmdline::utf8::Cmdline::from("androidboot.slot_suffix=_a"),
+            &booted,
+        )?;
+        aboot_state.record_booted(
+            &linux_kernel_cmdline::utf8::Cmdline::from("androidboot.slot_suffix=_b"),
+            &rollback,
+        )?;
+        let cmdline = Box::leak(Box::new(ComposefsCmdline::new(&booted)));
+        let booted_cfs = BootedComposefs { repo, cmdline };
+
+        composefs_gc(
+            &storage,
+            &booted_cfs,
+            GCOpts {
+                dry_run: false,
+                prune_repo: true,
+            },
+        )
+        .await?;
+
+        assert!(root.try_exists(format!("{STATE_DIR_RELATIVE}/{booted}"))?);
+        assert!(root.try_exists(format!("{STATE_DIR_RELATIVE}/{rollback}"))?);
+        assert!(!root.try_exists(format!("{STATE_DIR_RELATIVE}/{orphan}"))?);
+        Ok(())
+    }
 
     #[test]
     fn test_image_refs_match_v2_when_v1_is_present() {

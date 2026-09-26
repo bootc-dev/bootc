@@ -43,9 +43,11 @@ use crate::bootc_composefs::delete::delete_composefs_deployment;
 use crate::bootc_composefs::gc::{GCOpts, composefs_gc};
 use crate::bootc_composefs::soft_reboot::{prepare_soft_reboot_composefs, reset_soft_reboot};
 use crate::bootc_composefs::{
+    aboot,
     digest::{compute_composefs_digest, new_temp_composefs_repo},
     finalize::{composefs_backend_finalize, get_etc_diff},
     rollback::composefs_rollback,
+    service::start_finalize_stated_svc,
     state::composefs_usr_overlay,
     switch::switch_composefs,
     update::upgrade_composefs,
@@ -523,6 +525,35 @@ pub(crate) enum ContainerOpts {
         #[clap(last = true)]
         args: Vec<OsString>,
     },
+    /// Build an Android boot or ukiboot image using aboot-update.
+    Aboot {
+        /// Operate on the provided rootfs.
+        #[clap(long, default_value = "/")]
+        rootfs: Utf8PathBuf,
+
+        /// Additional kernel arguments to append to the cmdline.
+        /// Can be specified multiple times.
+        /// This is a temporary workaround and will be removed.
+        #[clap(long = "karg", hide = true)]
+        kargs: Vec<String>,
+
+        /// Make fs-verity validation optional in case the filesystem doesn't support it
+        #[clap(long)]
+        allow_missing_verity: bool,
+
+        /// Write a dumpfile to this path
+        #[clap(long)]
+        write_dumpfile_to: Option<Utf8PathBuf>,
+
+        /// The directory containing vmlinuz and initramfs.img.
+        /// Must be of the format /parent/$kernel_version.
+        #[clap(long)]
+        kernel_dir: Option<Utf8PathBuf>,
+
+        /// Output directory. Defaults to $rootfs/boot.
+        #[clap(long)]
+        out: Option<Utf8PathBuf>,
+    },
     /// Export container filesystem as a tar archive.
     ///
     /// This command exports the container filesystem in a bootable format with proper
@@ -812,6 +843,8 @@ pub(crate) enum InternalsOpts {
     },
     /// Ensure that a composefs repository is initialized
     TestComposefs,
+    /// Record the booted aboot slot in persistent deployment state.
+    ComposefsAbootReconcile,
     /// Loopback device cleanup helper (internal use only)
     LoopbackCleanupHelper {
         /// Device path to clean up
@@ -2260,35 +2293,31 @@ async fn run_from_opt(opt: Opt) -> Result<CliExitStatus> {
                 kernel_dir,
                 args,
             } => {
-                let kernel = match kernel_dir {
-                    Some(kernel_dir) => {
-                        let kver = kernel_dir
-                            .components()
-                            .last()
-                            .ok_or_else(|| anyhow::anyhow!("Could not determine kernel version"))?;
-
-                        Some(crate::kernel::KernelInternal {
-                            kernel: crate::kernel::Kernel {
-                                unified: false,
-                                version: kver.to_string(),
-                            },
-                            k_type: crate::kernel::KernelType::Vmlinuz {
-                                path: kernel_dir.join("vmlinuz"),
-                                initramfs: kernel_dir.join("initramfs.img"),
-                            },
-                        })
-                    }
-
-                    None => None,
-                };
-
                 crate::ukify::build_ukify(
                     &rootfs,
                     &kargs,
                     &args,
-                    kernel,
+                    kernel_dir.as_deref(),
                     allow_missing_verity,
                     erofs_version,
+                    write_dumpfile_to.as_deref(),
+                )
+                .await
+            }
+            ContainerOpts::Aboot {
+                rootfs,
+                kargs,
+                allow_missing_verity,
+                write_dumpfile_to,
+                kernel_dir,
+                out,
+            } => {
+                crate::aboot::build_aboot(
+                    &rootfs,
+                    &kargs,
+                    kernel_dir.as_deref(),
+                    out.as_deref(),
+                    allow_missing_verity,
                     write_dumpfile_to.as_deref(),
                 )
                 .await
@@ -2419,6 +2448,25 @@ async fn run_from_opt(opt: Opt) -> Result<CliExitStatus> {
         }
         Opt::Status(opts) => super::status::status(opts).await,
         Opt::Internals(opts) => match opts {
+            InternalsOpts::ComposefsAbootReconcile => {
+                let storage = get_storage().await?;
+                let digest = match storage.kind()? {
+                    BootedStorageKind::Composefs(booted) => booted.cmdline.digest.to_string(),
+                    BootedStorageKind::Ostree(_) => {
+                        anyhow::bail!("Aboot reconciliation requires the composefs backend")
+                    }
+                };
+                ensure!(
+                    crate::bootc_composefs::state::read_boot_type(&storage.physical_root, &digest)?
+                        == Some(crate::bootc_composefs::boot::BootType::Aboot),
+                    "Aboot reconciliation requires an aboot deployment"
+                );
+                let mut state = aboot::AbootState::open(&storage.physical_root)?;
+                if state.reconcile(&digest)? {
+                    start_finalize_stated_svc()?;
+                }
+                Ok(())
+            }
             InternalsOpts::SystemdGenerator {
                 normal_dir,
                 early_dir: _,
@@ -2903,6 +2951,20 @@ mod tests {
                 "{args:?}"
             );
         }
+
+        assert!(matches!(
+            Opt::parse_including_static([
+                "bootc",
+                "container",
+                "aboot",
+                "--karg",
+                "root=LABEL=root",
+                "--out",
+                "/out",
+            ]),
+            Opt::Container(ContainerOpts::Aboot { kargs, out, .. })
+                if kargs == ["root=LABEL=root"] && out.as_deref() == Some(Utf8Path::new("/out"))
+        ));
     }
 
     #[test]
