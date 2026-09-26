@@ -331,4 +331,11 @@ execute:
     enabled: true
   extra-try_bind_storage: true
   extra-skip_if_ostree: true
+
+/plan-51-install-repart:
+  summary: Test bootc install to-disk with systemd-repart partitioning
+  discover:
+    how: fmf
+    test:
+      - /tmt/tests/tests/test-51-install-repart
 # END GENERATED PLANS

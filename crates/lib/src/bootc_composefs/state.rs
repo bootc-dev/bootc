@@ -329,7 +329,7 @@ pub(crate) async fn write_composefs_state(
 }
 
 pub(crate) fn composefs_usr_overlay(access_mode: FilesystemOverlayAccessMode) -> Result<()> {
-    let status = get_composefs_usr_overlay_status()?;
+    let status = get_usr_overlay_status()?;
     if status.is_some() {
         println!("An overlayfs is already mounted on /usr");
         return Ok(());
@@ -351,7 +351,7 @@ pub(crate) fn composefs_usr_overlay(access_mode: FilesystemOverlayAccessMode) ->
     Ok(())
 }
 
-pub(crate) fn get_composefs_usr_overlay_status() -> Result<Option<FilesystemOverlay>> {
+pub(crate) fn get_usr_overlay_status() -> Result<Option<FilesystemOverlay>> {
     let usr = Dir::open_ambient_dir("/usr", ambient_authority()).context("Opening /usr")?;
     let is_usr_mounted = usr
         .is_mountpoint(".")
