@@ -4,9 +4,11 @@ runs:
   using: 'composite'
   steps:
     - name: Set up Python
+      id: python
       uses: actions/setup-python@v6
       with:
         python-version: '3.12.14'
+        update-environment: false
     - name: Install tmt
       shell: bash
       run: |
@@ -16,4 +18,5 @@ runs:
         # https://github.com/teemtee/tmt/issues/5068); bump deliberately.
         # renovate: datasource=pypi depName=tmt
         export VERSION=1.78.0
-        pip install --user "tmt[provision-virtual]==${VERSION}"
+        "${{ steps.python.outputs.python-path }}" -m pip install --user "tmt[provision-virtual]==${VERSION}"
+        echo "$HOME/.local/bin" >> "$GITHUB_PATH"

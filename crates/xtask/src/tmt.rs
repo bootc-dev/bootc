@@ -39,7 +39,7 @@ const ENV_BOOTC_BRIDGE_IMAGE: &str = "BOOTC_bridge_image";
 const DISTRO_CENTOS_9: &str = "centos-9";
 
 // Import the argument types from xtask.rs
-use crate::bcvk::BcvkInstallOpts;
+use crate::bcvk::{BcvkInstallOpts, sanitize_bcvk_libvirt_run};
 use crate::{RunTmtArgs, SealState, TmtProvisionArgs, out_of_sync_error};
 
 /// Generate a random alphanumeric suffix for VM names
@@ -230,6 +230,7 @@ fn verify_ssh_connectivity(sh: &Shell, port: u16, key_path: &Utf8Path) -> Result
     use std::time::Duration;
 
     let port_str = port.to_string();
+    let mut last_error = None;
     for attempt in 1..=SSH_CONNECTIVITY_MAX_ATTEMPTS {
         // Test with a complex command like TMT uses (exports + whoami)
         // Use IdentitiesOnly=yes to prevent ssh-agent from offering other keys
@@ -237,14 +238,15 @@ fn verify_ssh_connectivity(sh: &Shell, port: u16, key_path: &Utf8Path) -> Result
             sh,
             "ssh -i {key_path} -p {port_str} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 -o IdentitiesOnly=yes root@localhost 'export TEST=value; whoami'"
         )
-        .ignore_stderr()
-        .read();
+        .ignore_status()
+        .output();
 
-        match &result {
-            Ok(output) if output.trim() == "root" => {
+        match result {
+            Ok(output) if output.status.success() && output.stdout.trim_ascii() == b"root" => {
                 return Ok(());
             }
-            _ => {}
+            Ok(output) => last_error = ssh_stderr_diagnostic(&output.stderr),
+            Err(err) => last_error = Some(format!("failed to execute ssh: {err}")),
         }
 
         if attempt % 10 == 0 {
@@ -259,10 +261,18 @@ fn verify_ssh_connectivity(sh: &Shell, port: u16, key_path: &Utf8Path) -> Result
         }
     }
 
+    let diagnostic = last_error
+        .filter(|error| !error.is_empty())
+        .unwrap_or_else(|| "no SSH diagnostic was captured".to_owned());
     anyhow::bail!(
-        "SSH connectivity check failed after {} attempts",
+        "SSH connectivity check failed after {} attempts: {diagnostic}",
         SSH_CONNECTIVITY_MAX_ATTEMPTS
     )
+}
+
+fn ssh_stderr_diagnostic(stderr: &[u8]) -> Option<String> {
+    let diagnostic = String::from_utf8_lossy(stderr).trim().to_owned();
+    (!diagnostic.is_empty()).then_some(diagnostic)
 }
 
 #[derive(Debug, Default)]
@@ -609,10 +619,10 @@ pub(crate) fn run_tmt(sh: &Shell, args: &RunTmtArgs) -> Result<()> {
 
         // Launch VM with bcvk
         let firmware_args_slice = firmware_args.as_slice();
-        let launch_result = cmd!(
+        let launch_result = sanitize_bcvk_libvirt_run(cmd!(
             sh,
             "bcvk libvirt run --name {vm_name} --detach {firmware_args_slice...} {COMMON_INST_ARGS...} {plan_bcvk_opts...} {log_dir_args...} {image}"
-        )
+        ))
         .run()
         .context("Launching VM with bcvk");
 
@@ -890,10 +900,10 @@ pub(crate) fn tmt_provision(sh: &Shell, args: &TmtProvisionArgs) -> Result<()> {
     // Launch VM with bcvk
     // Use ds=iid-datasource-none to disable cloud-init for faster boot
     let firmware_args_slice = firmware_args.as_slice();
-    cmd!(
+    sanitize_bcvk_libvirt_run(cmd!(
         sh,
         "bcvk libvirt run --name {vm_name} --detach {firmware_args_slice...} {COMMON_INST_ARGS...} {image}"
-    )
+    ))
     .run()
     .context("Launching VM with bcvk")?;
 
@@ -1431,6 +1441,21 @@ fn generate_integration() -> Result<(String, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_ssh_stderr_diagnostic() {
+        let cases = [
+            (
+                b"connection refused\n".as_slice(),
+                Some("connection refused"),
+            ),
+            (b" \t\n".as_slice(), None),
+        ];
+
+        for (stderr, expected) in cases {
+            assert_eq!(ssh_stderr_diagnostic(stderr).as_deref(), expected);
+        }
+    }
 
     #[test]
     fn test_boot_context_values() {
