@@ -463,7 +463,9 @@ pub(crate) enum ContainerOpts {
     ///
     /// This command extracts the kernel (vmlinuz and initramfs.img) from the
     /// container rootfs and moves them to a separate output directory, organized
-    /// by kernel version
+    /// by kernel version. Files that belong to the kernel binary are moved
+    /// along with it, currently the FIPS HMAC file (.vmlinuz.hmac) that Fedora
+    /// and RHEL derivatives ship.
     ///
     /// Example:
     ///   bootc container split-kernel-rootfs --rootfs /target-rootfs --output /out
@@ -2142,38 +2144,12 @@ async fn run_from_opt(opt: Opt) -> Result<CliExitStatus> {
                 Ok(())
             }
             ContainerOpts::SplitKernelAndRootfs { rootfs, output } => {
-                use crate::kernel::{KernelType, find_kernel};
-
-                let root = Dir::open_ambient_dir(&rootfs, ambient_authority())?;
-
-                let kernel_internal = find_kernel(&root)?
-                    .ok_or_else(|| anyhow::anyhow!("No kernel found in rootfs"))?;
-
-                if kernel_internal.kernel.unified {
-                    anyhow::bail!("UKIs are not supported");
-                }
-
-                match &kernel_internal.k_type {
-                    KernelType::Vmlinuz { path, initramfs } => {
-                        let kver = &kernel_internal.kernel.version;
-                        let kernel_output_dir = output.join(kver);
-                        std::fs::create_dir_all(&kernel_output_dir)?;
-
-                        let vmlinuz_src = rootfs.join(path);
-                        let initramfs_src = rootfs.join(initramfs);
-                        let vmlinuz_dst = kernel_output_dir.join("vmlinuz");
-                        let initramfs_dst = kernel_output_dir.join("initramfs.img");
-
-                        std::fs::rename(&vmlinuz_src, &vmlinuz_dst).context("Moving vmlinuz")?;
-                        std::fs::rename(&initramfs_src, &initramfs_dst)
-                            .context("Moving initramfs")?;
-                    }
-
-                    KernelType::Uki { .. } => {
-                        anyhow::bail!("UKIs are not supported");
-                    }
-                }
-
+                let root = Dir::open_ambient_dir(&rootfs, ambient_authority())
+                    .with_context(|| format!("Opening {rootfs}"))?;
+                std::fs::create_dir_all(&output).with_context(|| format!("Creating {output}"))?;
+                let output = Dir::open_ambient_dir(&output, ambient_authority())
+                    .with_context(|| format!("Opening {output}"))?;
+                crate::kernel::split_kernel(&root, &output)?;
                 Ok(())
             }
             ContainerOpts::ComputeComposefsDigest {
