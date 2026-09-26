@@ -85,6 +85,7 @@ mod lints;
 mod loader_entries;
 mod lsm;
 pub(crate) mod metadata;
+mod mount;
 mod parsers;
 mod podman;
 pub(crate) mod podman_client;

@@ -177,4 +177,92 @@ if $source_is_uki {
     }
 }
 
+# Exercise `bootc install mount` on the installed disk. This plan runs in its
+# own disposable VM, so there is no cleanup on failure.
+def mount_options [path: string] {
+    findmnt --json --mountpoint $path --output OPTIONS | from json | get filesystems.0.options | split row ","
+}
+
+def assert_write_denied [path: string] {
+    let result = (do { ^touch $path } | complete)
+    assert ($result.exit_code != 0) $"write unexpectedly succeeded at ($path)"
+}
+
+let loop = (losetup --find --show --partscan ./disk.img | str trim)
+let sysroot = "/var/mnt/install-mount-sysroot"
+let dest = "/var/mnt/install-mount-dest"
+mkdir $sysroot $dest
+mount (discover_target_partitions $loop).root $sysroot
+
+# A deployment selector is mandatory, so that more can be added later.
+let result = (do { ^bootc install mount --sysroot $sysroot $dest } | complete)
+assert ($result.exit_code != 0) "install mount without --latest must fail"
+assert ($result.stderr | str contains "--latest") $"unexpected error: ($result.stderr)"
+
+# Like mount(8), a non-empty target is used anyway (with a warning).
+"hidden" | save ($dest | path join preexisting)
+# --read-only covers the persistent state too.
+let result = (do { ^bootc install mount --sysroot $sysroot --latest --read-only $dest } | complete)
+assert equal $result.exit_code 0 $"install mount failed: ($result.stderr)"
+assert ($result.stderr | str contains "not empty") $"expected a non-empty warning: ($result.stderr)"
+assert (not ($dest | path join preexisting | path exists)) "the mount must hide the target's contents"
+# Both backends mount the root from the deployment's composefs image, as the
+# initramfs does; for OSTree that is its .ostree.cfs.
+let root = (findmnt --json --mountpoint $dest --output FSTYPE,SOURCE | from json | get filesystems.0)
+assert equal $root.fstype "overlay" $"deployment root must be composefs: ($root | to nuon)"
+assert ($root.source | str starts-with "composefs:") $"deployment root must be composefs: ($root | to nuon)"
+for path in [$dest ($dest | path join etc) ($dest | path join var)] {
+    assert ("ro" in (mount_options $path)) $"($path) must be mounted read-only"
+}
+for path in [root-sentinel usr/sentinel etc/sentinel var/sentinel] {
+    assert_write_denied ($dest | path join $path)
+}
+umount -R $dest
+rm ($dest | path join preexisting)
+
+# By default only /etc and /var are writable.
+bootc install mount --sysroot $sysroot --latest $dest
+assert ("ro" in (mount_options $dest)) "deployment root must stay read-only"
+for path in [($dest | path join etc) ($dest | path join var)] {
+    assert ("rw" in (mount_options $path)) $"($path) must be mounted read-write"
+}
+for path in [root-sentinel usr/sentinel] {
+    assert_write_denied ($dest | path join $path)
+}
+"etc sentinel" | save ($dest | path join etc/sentinel)
+"var sentinel" | save ($dest | path join var/sentinel)
+umount -R $dest
+
+# The writes must land in the deployment's persistent state on the sysroot.
+let state = if (tap is_composefs) {
+    {deployments: "state/deploy", var: "state/os/default/var"}
+} else {
+    {deployments: "ostree/deploy/default/deploy", var: "ostree/deploy/default/var"}
+}
+let deployment = (ls ($sysroot | path join $state.deployments) | where type == dir | get name | first)
+assert equal (open ($deployment | path join etc/sentinel)) "etc sentinel"
+assert equal (open ($sysroot | path join $state.var sentinel)) "var sentinel"
+
+# /etc follows prepare-root's etc.transient: a throwaway overlay of /usr/etc
+# instead of the persistent copy.  The composefs equivalent is baked into the
+# image, so only OSTree can toggle it here.
+if not (tap is_composefs) {
+    bootc install mount --sysroot $sysroot --latest $dest
+    mkdir ($dest | path join etc/ostree)
+    "[etc]\ntransient = true\n" | save -f ($dest | path join etc/ostree/prepare-root.conf)
+    umount -R $dest
+
+    bootc install mount --sysroot $sysroot --latest $dest
+    let etc = ($dest | path join etc)
+    let fstype = (findmnt --json --mountpoint $etc --output FSTYPE | from json | get filesystems.0.fstype)
+    assert equal $fstype "overlay" "transient /etc must be an overlay"
+    assert (not ($etc | path join sentinel | path exists)) "transient /etc must not show the persistent copy"
+    "transient" | save ($etc | path join transient-sentinel)
+    umount -R $dest
+    assert (not ($deployment | path join etc/transient-sentinel | path exists)) "transient /etc writes must not persist"
+}
+
+umount $sysroot
+losetup -d $loop
+
 tap ok

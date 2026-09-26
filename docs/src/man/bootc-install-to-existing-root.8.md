@@ -28,33 +28,14 @@ configuration files:
 
 If you need to inject new configuration files (such as custom `/etc/fstab` entries,
 systemd mount units, or other configuration) into the newly installed system before
-rebooting, you can find the deployment directory in the ostree repository structure.
-The new deployment is located at:
-
-```
-/ostree/deploy/<stateroot>/deploy/<checksum>.<serial>/
-```
-
-Where `<stateroot>` defaults to `default` unless you specified a different
-value with `--stateroot`.
-
-To find the path to the newly installed deployment:
+rebooting, mount it with **bootc-install-mount**(8) and modify it through the
+mounted view. For example, to add a systemd mount unit:
 
 ```bash
-# Get the full deployment path directly
-DEPLOY_PATH=$(ostree admin --sysroot=/target --print-current-dir)
-```
-
-This will return the full path, for example:
-`/target/ostree/deploy/default/deploy/807f233831a03d315289a4ba29c1670d8bd326d4569eabee7a84f25327997307.0`
-
-You can then modify files in that deployment. For example, to add systemd mount units:
-
-```bash
-# Get deployment path
-DEPLOY_PATH=$(ostree admin --sysroot=/target --print-current-dir)
-# Add a systemd mount unit
-vi ${DEPLOY_PATH}/etc/systemd/system/data.mount
+mkdir /mnt/installed
+bootc install mount --sysroot /target --latest /mnt/installed
+vi /mnt/installed/etc/systemd/system/data.mount
+umount -R /mnt/installed
 ```
 
 #### Injecting kernel arguments for local state
