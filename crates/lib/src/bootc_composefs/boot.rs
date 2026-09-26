@@ -320,6 +320,39 @@ pub(crate) enum BootSetupType<'a> {
     Upgrade((&'a Storage, &'a BootedComposefs, &'a Host)),
 }
 
+impl BootSetupType<'_> {
+    /// The directory holding GRUB's configuration and the BLS entries: `boot`
+    /// in the target root at install time. On a booted system, it's
+    /// `/sysroot/boot`, or `/boot` if that's a separate boot partition.
+    fn grub_boot_path(&self) -> Result<Utf8PathBuf> {
+        match self {
+            Self::Setup((root_setup, ..)) => Ok(root_setup.physical_root_path.join(BOOT)),
+            Self::Upgrade((storage, ..)) => Ok(storage.require_grub_boot_path()?.to_owned()),
+        }
+    }
+}
+
+/// The absolute path GRUB resolves the kernels and initramfses in BLS entries
+/// against: the root of the filesystem holding `grub_boot_path`.
+fn grub_bls_abs_entries_path(grub_boot_path: &Utf8Path) -> Result<Utf8PathBuf> {
+    let (Some(parent), Some(name)) = (grub_boot_path.parent(), grub_boot_path.file_name()) else {
+        anyhow::bail!("Invalid boot path {grub_boot_path}");
+    };
+    let parent = Dir::open_ambient_dir(parent, ambient_authority())
+        .with_context(|| format!("Opening {parent}"))?;
+    // If "boot" is a partition, we want the paths to be absolute to "/"
+    let is_mountpoint = parent
+        .is_mountpoint(name)
+        .with_context(|| format!("Checking if {grub_boot_path} is a mountpoint"))?;
+    // We can be fairly sure that the kernels we target support `statx`
+    let root = Utf8Path::new("/");
+    Ok(if is_mountpoint == Some(true) {
+        root.to_owned()
+    } else {
+        root.join(BOOT)
+    })
+}
+
 #[derive(
     ValueEnum, Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize, Default, JsonSchema,
 )]
@@ -744,7 +777,7 @@ pub(crate) fn setup_composefs_bls_boot(
 ) -> Result<String> {
     let id_hex = id.to_hex();
 
-    let (root_path, esp_device, mut cmdline_refs, bootloader) = match setup_type {
+    let (esp_device, mut cmdline_refs, bootloader) = match setup_type {
         BootSetupType::Setup((root_setup, state, postfetch, allow_missing_fsverity)) => {
             // root_setup.kargs has [root=UUID=<UUID>, "rw"]
             let mut cmdline_options = Cmdline::new();
@@ -781,7 +814,6 @@ pub(crate) fn setup_composefs_bls_boot(
             let esp_part = root_setup.device_info.find_first_colocated_esp()?;
 
             (
-                root_setup.physical_root_path.clone(),
                 esp_part.path(),
                 cmdline_options,
                 postfetch.detected_bootloader.clone(),
@@ -818,12 +850,7 @@ pub(crate) fn setup_composefs_bls_boot(
             let root_dev = bootc_blockdev::list_dev_by_dir(&storage.physical_root)?;
             let esp_dev = root_dev.find_first_colocated_esp()?;
 
-            (
-                Utf8PathBuf::from("/sysroot"),
-                esp_dev.path(),
-                cmdline,
-                bootloader,
-            )
+            (esp_dev.path(), cmdline, bootloader)
         }
     };
 
@@ -839,24 +866,17 @@ pub(crate) fn setup_composefs_bls_boot(
 
     let (entry_paths, _tmpdir_guard) = match bootloader.kind()? {
         BootloaderKind::GRUBClassic => {
-            let root = Dir::open_ambient_dir(&root_path, ambient_authority())
-                .context("Opening root path")?;
+            let boot_path = setup_type.grub_boot_path()?;
 
             // Grub wants the paths to be absolute against the mounted drive that the kernel +
             // initrd live in
-            //
-            // If "boot" is a partition, we want the paths to be absolute to "/"
-            let entries_path = match root.is_mountpoint("boot")? {
-                Some(true) => "/",
-                // We can be fairly sure that the kernels we target support `statx`
-                Some(false) | None => "/boot",
-            };
+            let abs_entries_path = grub_bls_abs_entries_path(&boot_path)?;
 
             (
                 BLSEntryPath {
-                    entries_path: root_path.join("boot"),
-                    config_path: root_path.join("boot"),
-                    abs_entries_path: entries_path.into(),
+                    entries_path: boot_path.clone(),
+                    config_path: boot_path,
+                    abs_entries_path,
                 },
                 None,
             )
@@ -1591,13 +1611,12 @@ fn resolve_boot_image_match(
 
 #[context("Writing Grub menuentry")]
 fn write_grub_uki_menuentry(
-    root_path: Utf8PathBuf,
     setup_type: &BootSetupType,
     boot_label: String,
     id: &Sha512HashValue,
     esp_device: &String,
 ) -> Result<()> {
-    let boot_dir = root_path.join("boot");
+    let boot_dir = setup_type.grub_boot_path()?;
     create_dir_all(&boot_dir).context("Failed to create boot dir")?;
 
     let is_upgrade = matches!(setup_type, BootSetupType::Upgrade(..));
@@ -1756,8 +1775,7 @@ pub(crate) fn setup_composefs_uki_boot(
     boot_ids: &ExpectedBootImageIds,
     entries: Vec<ComposefsBootEntry<Sha512HashValue>>,
 ) -> Result<(String, Sha512HashValue)> {
-    let (root_path, esp_device, bootloader, missing_fsverity_allowed, uki_addons) = match setup_type
-    {
+    let (esp_device, bootloader, missing_fsverity_allowed, uki_addons) = match setup_type {
         BootSetupType::Setup((root_setup, state, postfetch, allow_missing_fsverity)) => {
             state.require_no_kargs_for_uki()?;
 
@@ -1765,7 +1783,6 @@ pub(crate) fn setup_composefs_uki_boot(
             let esp_part = root_setup.device_info.find_first_colocated_esp()?;
 
             (
-                root_setup.physical_root_path.clone(),
                 esp_part.path(),
                 postfetch.detected_bootloader.clone(),
                 allow_missing_fsverity,
@@ -1774,7 +1791,6 @@ pub(crate) fn setup_composefs_uki_boot(
         }
 
         BootSetupType::Upgrade((storage, booted_cfs, host)) => {
-            let sysroot = Utf8PathBuf::from("/sysroot"); // Still needed for root_path
             let bootloader = host.require_composefs_booted()?.bootloader.clone();
 
             // Locate ESP partition device by walking up to the root disk(s)
@@ -1782,7 +1798,6 @@ pub(crate) fn setup_composefs_uki_boot(
             let esp_dev = root_dev.find_first_colocated_esp()?;
 
             (
-                sysroot,
                 esp_dev.path(),
                 bootloader,
                 booted_cfs.cmdline.allow_missing_fsverity,
@@ -1866,7 +1881,7 @@ pub(crate) fn setup_composefs_uki_boot(
 
     match bootloader.kind()? {
         BootloaderKind::GRUBClassic => {
-            write_grub_uki_menuentry(root_path, &setup_type, boot_label, &deploy_id, &esp_device)?
+            write_grub_uki_menuentry(&setup_type, boot_label, &deploy_id, &esp_device)?
         }
 
         BootloaderKind::BLSCompatible => write_systemd_uki_config(
@@ -2274,6 +2289,22 @@ pub(crate) fn expected_boot_image_ids(
 mod tests {
     use super::*;
     use composefs::erofs::format::FormatVersion;
+
+    #[test]
+    fn test_grub_bls_abs_entries_path() -> Result<()> {
+        let td = tempfile::tempdir()?;
+        let td = Utf8Path::from_path(td.path()).unwrap();
+        let boot = td.join(BOOT);
+        std::fs::create_dir(&boot)?;
+        // boot on the root filesystem
+        assert_eq!(grub_bls_abs_entries_path(&boot)?, "/boot");
+        // A separate filesystem
+        assert_eq!(grub_bls_abs_entries_path(Utf8Path::new("/proc"))?, "/");
+        // Nothing to check
+        assert!(grub_bls_abs_entries_path(Utf8Path::new("/")).is_err());
+        assert!(grub_bls_abs_entries_path(&td.join("nonexistent/boot")).is_err());
+        Ok(())
+    }
 
     #[test]
     fn test_replace_composefs_karg() {
