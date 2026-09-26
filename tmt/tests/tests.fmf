@@ -216,3 +216,11 @@ check:
   summary: Test bootc install to-disk with systemd-repart partitioning
   duration: 30m
   test: nu booted/test-install-repart.nu
+
+/test-57-composefs-separate-boot:
+  summary: Test composefs with GRUB and a separate /boot partition
+  duration: 60m
+  require:
+  - dosfstools
+  - e2fsprogs
+  test: nu booted/test-composefs-separate-boot.nu

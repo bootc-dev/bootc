@@ -346,4 +346,13 @@ execute:
     how: fmf
     test:
       - /tmt/tests/tests/test-52-install-repart
+
+/plan-57-composefs-separate-boot:
+  summary: Test composefs with GRUB and a separate /boot partition
+  discover:
+    how: fmf
+    test:
+      - /tmt/tests/tests/test-57-composefs-separate-boot
+  extra-skip_if_ostree: true
+  extra-fixme_skip_if_uki: true
 # END GENERATED PLANS
