@@ -9,6 +9,8 @@ On EFI, it installs GRUB with shim in front of it, and since 0.3.0 can install g
 
 When you run `bootc install`, it invokes `bootupctl backend install` to install the bootloader to the target disk or filesystem. The specific bootloader configuration is determined by the container image and the target system's hardware.
 
+`bootc` considers bootupd present only when `bootupctl` is available to the installing environment and the image carries the update payload that `bootupctl backend generate-update-metadata` writes to `/usr/lib/bootupd/updates`, so an image that installs bootupd must run that command as part of its build. Without it, bootupd is not detected at all. Automatic selection then picks systemd-boot, and an explicit `--bootloader grub` cannot install GRUB either: depending on the bootupd version and the firmware, bootupd fails, or skips its components and reports success without installing a bootloader.
+
 Currently, `bootc` only runs `bootupd` during the installation process. It does **not** automatically run `bootupctl update` to update the bootloader after installation. This means that bootloader updates must be handled separately, typically by the user or an automated system update process.
 
 ## systemd-boot
