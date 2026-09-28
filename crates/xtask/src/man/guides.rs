@@ -2,14 +2,16 @@
 
 use anyhow::{Context, Result, ensure};
 use camino::{Utf8Path, Utf8PathBuf};
-use pulldown_cmark::{Event, Parser, Tag, TagEnd};
+use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 use serde::Deserialize;
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
+    ops::Range,
 };
 
 const DOCS_SRC: &str = "docs/src";
+const BOOK_URL: &str = "https://bootc.dev/bootc/";
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -18,6 +20,7 @@ struct Manifest {
 }
 
 pub(super) struct Page {
+    pub source: String,
     pub name: String,
     pub section: u8,
 }
@@ -26,10 +29,15 @@ impl Page {
     pub fn filename(&self) -> String {
         format!("{}.{}", self.name, self.section)
     }
+
+    fn reference(&self) -> String {
+        format!("**{}**({})", self.name, self.section)
+    }
 }
 
 pub(super) struct Inventory {
     pub pages: Vec<Page>,
+    names: BTreeMap<String, String>,
 }
 
 fn sources_in(
@@ -155,7 +163,11 @@ impl Inventory {
                 mapped.insert(source.clone());
                 (name.clone(), 7)
             };
-            let page = Page { name, section };
+            let page = Page {
+                source,
+                name,
+                section,
+            };
             ensure!(
                 outputs.insert(page.filename()),
                 "Duplicate manual output: {}",
@@ -174,8 +186,92 @@ impl Inventory {
             .filter(|p| !mapped.contains(*p))
             .collect();
         ensure!(extra.is_empty(), "Unused guide mappings: {extra:?}");
-        Ok(Self { pages })
+        let names = pages
+            .iter()
+            .map(|p| (p.source.clone(), p.reference()))
+            .collect();
+        let result = Self { pages, names };
+        // Validate internal Markdown links even in website-only builds;
+        // mdBook otherwise tolerates missing pages.
+        for page in &result.pages {
+            let content = &sources[&page.source];
+            result.rewrite_links(content, &page.source)?;
+        }
+        Ok(result)
     }
+
+    /// Change only link spans, not the surrounding Markdown. A Markdown parser
+    /// handles multiline/reference links and avoids links in inline/fenced code.
+    pub fn rewrite_links(&self, body: &str, source: &str) -> Result<(String, BTreeSet<String>)> {
+        let mut replacements = Vec::new();
+        let mut references = BTreeSet::new();
+        let mut link: Option<(String, Range<usize>, Option<Range<usize>>)> = None;
+        for (event, span) in Parser::new_ext(body, Options::ENABLE_TABLES).into_offset_iter() {
+            match event {
+                Event::Start(Tag::Link { dest_url, .. }) => {
+                    link = Some((dest_url.into_string(), span, None));
+                }
+                Event::End(TagEnd::Link) => {
+                    let (destination, whole, label) =
+                        link.take().context("Unmatched Markdown link")?;
+                    let label = label.map(|r| &body[r]).unwrap_or("");
+                    let replacement = if destination.starts_with('#') {
+                        Some(label.to_string())
+                    } else if destination.contains(':') || destination.starts_with('/') {
+                        None
+                    } else {
+                        let split = destination.find(['#', '?']).unwrap_or(destination.len());
+                        let (path, suffix) = destination.split_at(split);
+                        let path = normalize_link_path(source, path)?;
+                        if let Some(reference) = self.names.get(&path) {
+                            references.insert(reference.clone());
+                            Some(format!("{label} (see {reference})"))
+                        } else if path.ends_with(".md") {
+                            anyhow::bail!("Unmapped local link in {source}: {destination}");
+                        } else {
+                            // Generated rustdoc and schemas are online artifacts,
+                            // not narrative Markdown chapters or offline manuals.
+                            Some(format!("[{label}]({BOOK_URL}{path}{suffix})"))
+                        }
+                    };
+                    if let Some(replacement) = replacement {
+                        replacements.push((whole, replacement));
+                    }
+                }
+                _ => {
+                    if let Some((_, _, label)) = &mut link {
+                        if let Some(label) = label {
+                            label.start = label.start.min(span.start);
+                            label.end = label.end.max(span.end);
+                        } else {
+                            *label = Some(span);
+                        }
+                    }
+                }
+            }
+        }
+        let mut output = body.to_string();
+        for (span, replacement) in replacements.into_iter().rev() {
+            output.replace_range(span, &replacement);
+        }
+        Ok((output, references))
+    }
+}
+
+fn normalize_link_path(source: &str, destination: &str) -> Result<String> {
+    let mut parts: Vec<&str> = source.split('/').collect();
+    parts.pop();
+    for part in destination.split('/') {
+        match part {
+            "" | "." => (),
+            ".." => {
+                ensure!(!parts.is_empty(), "Link escapes docs/src: {destination}");
+                parts.pop();
+            }
+            _ => parts.push(part),
+        }
+    }
+    Ok(parts.join("/"))
 }
 
 #[cfg(test)]
@@ -272,6 +368,59 @@ mod tests {
             .unwrap()
             .push_str("\nNow it has content.\n");
         assert!(Inventory::from_sources(MANIFEST, sources).is_err());
+    }
+
+    #[test]
+    fn parsed_links_preserve_formatting_and_code() {
+        let inventory = Inventory::from_sources(MANIFEST, sources()).unwrap();
+        for (input, expected) in [
+            (
+                "[guide](../intro.md#details)",
+                "guide (see **bootc-overview**(7))",
+            ),
+            (
+                "[**guide**\nlabel](../intro.md)",
+                "**guide**\nlabel (see **bootc-overview**(7))",
+            ),
+            (
+                "[guide][g]\n\n[g]: ../intro.md\n",
+                "guide (see **bootc-overview**(7))\n\n[g]: ../intro.md\n",
+            ),
+            ("[`bootc`](bootc.8.md)", "`bootc` (see **bootc**(8))"),
+            ("[local](#details)", "local"),
+            (
+                "[web](https://example.com/a(b))",
+                "[web](https://example.com/a(b))",
+            ),
+            (
+                "[email](mailto:bootc@example.com)",
+                "[email](mailto:bootc@example.com)",
+            ),
+            (
+                "[api](../internals/api.html#section)",
+                "[api](https://bootc.dev/bootc/internals/api.html#section)",
+            ),
+            ("`[code](../missing.md)`", "`[code](../missing.md)`"),
+            (
+                "~~~~md\n[code](../missing.md)\n~~~~\n",
+                "~~~~md\n[code](../missing.md)\n~~~~\n",
+            ),
+        ] {
+            let (actual, _) = inventory.rewrite_links(input, "man/bootc.8.md").unwrap();
+            assert_eq!(actual, expected, "{input}");
+        }
+        let (_, refs) = inventory
+            .rewrite_links("[guide](../intro.md)", "man/bootc.8.md")
+            .unwrap();
+        assert_eq!(refs, BTreeSet::from(["**bootc-overview**(7)".into()]));
+    }
+
+    #[test]
+    fn missing_or_escaping_doc_links_fail() {
+        let inventory = Inventory::from_sources(MANIFEST, sources()).unwrap();
+        for link in ["[bad](missing.md)", "[bad](../../intro.md)"] {
+            assert!(inventory.rewrite_links(link, "intro.md").is_err());
+        }
     }
 
     #[test]
