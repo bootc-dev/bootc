@@ -2,7 +2,7 @@
 
 As noted in other chapters, the bootc project currently
 depends on the [ostree project](https://github.com/ostreedev/ostree/)
-for storing the base container image. Additionally there is a [containers/storage](https://github.com/containers/storage) instance for [logically bound images](logically-bound-images.md).
+for storing the base container image. Additionally there is a [containers/storage](https://github.com/containers/storage) instance for [logically bound images](bootc-logically-bound-images.7.md).
 
 However, bootc is intending to be a "fresh, new container-native interface",
 and ostree is an implementation detail.
@@ -23,7 +23,7 @@ is very important for achieving correct semantics.
 
 When run *as a container* (e.g. as part of a container build), the
 filesystem is fully mutable in order to allow derivation to work.
-For more on container builds, see [build guidance](building/guidance.md).
+For more on container builds, see [build guidance](building/bootc-building-images.7.md).
 
 The rest of this document describes the state of the system when
 "deployed" to a physical or virtual machine, and managed by `bootc`.
@@ -38,7 +38,7 @@ For more information, see [this tracker issue](https://github.com/bootc-dev/boot
 
 When the system is fully booted, it is into the equivalent of a `chroot`.
 The "physical" host root filesystem will be mounted at `/sysroot`.
-For more on this, see [filesystem: sysroot](filesystem-sysroot.md).
+For more on this, see [filesystem: sysroot](bootc-sysroot.7.md).
 
 This `chroot` filesystem is called a "deployment root". All the remaining
 filesystem paths below are part of a deployment root which is used as a
@@ -98,7 +98,7 @@ influenced by the initial image version.  This can lead to problems
 where e.g. a change to `/etc/sudoers` (to give one simple example)
 would require external intervention to apply.
 
-For more on configuration file best practices, see [Building](building/guidance.md).
+For more on configuration file best practices, see [Building](building/bootc-building-images.7.md).
 
 To emphasize again, it's recommended to enable `etc.transient` if possible, though
 when using that you may need to store some machine-specific state in e.g. the
@@ -145,13 +145,13 @@ particular OS or distribution. Consult your OS/distribution documentation for
 guidance on confext and sysext.
 
 For per-host configuration, use the patterns described in
-[Building images: Configuration](building/guidance.md#configuration) instead:
+[Building images: Configuration](building/bootc-building-images.7.md#configuration) instead:
 image-embedded configuration (prefer `/usr` where possible), persistent `/etc`
 with day-2 configuration management tools, or machine-local kernel arguments
 via `rpm-ostree kargs` or `/usr/lib/bootc/kargs.d`.
 
 For more on the design rationale, see
-[Relationship with systemd "particles"](relationship-particles.md).
+[Relationship with systemd "particles"](bootc-systemd-particles.7.md).
 
 ## `/var`
 
@@ -208,7 +208,7 @@ other toplevels such as `/usr`.
 Some software (especially "3rd party" deb/rpm packages) expect to be able to write to
 a subdirectory of `/opt` such as `/opt/examplepkg`.
 
-See [building images](building/guidance.md) for recommendations on how to build
+See [building images](building/bootc-building-images.7.md) for recommendations on how to build
 container images and adjust the filesystem for cases like this.
 
 However, for some use cases, it may be easier to allow some level of mutability.
@@ -375,7 +375,7 @@ Both transient root and state overlays above provide ways for packages
 that install in `/opt` to operate. However, for maximum immutability the
 best approach is simply to symlink just the parts of the `/opt` needed
 into `/var`. See the section on `/opt` in [Image building and configuration
-guidance](building/guidance.md) for a more concrete example.
+guidance](building/bootc-building-images.7.md) for a more concrete example.
 
 ## Increased filesystem integrity with fsverity
 
@@ -412,7 +412,7 @@ want a "transient etc" model.
 
 #### Does not apply to logically bound images
 
-The [logically bound images](logically-bound-images.md) store is currently
+The [logically bound images](bootc-logically-bound-images.7.md) store is currently
 implemented using a separate mechanism and configuring fsverity
 for the bootc storage has no effect on it.
 

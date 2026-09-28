@@ -190,7 +190,7 @@ change a system group's GID, see
 
 ### Machine-local state for users
 
-At this point, it is important to understand the [filesystem](../filesystem.md)
+At this point, it is important to understand the [filesystem](../bootc-filesystem.7.md)
 layout - the default is up to the base image.
 
 The default Linux concept of a user has data stored in both `/etc` (`/etc/passwd`, `/etc/shadow` and groups)

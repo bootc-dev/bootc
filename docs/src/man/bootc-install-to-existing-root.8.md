@@ -109,7 +109,7 @@ servers. Migrate the authoritative configuration, such as NetworkManager
 connection profiles or resolver drop-ins, into the configuration used by the
 new system. If both systems intentionally use a hand-managed static file, it
 may instead be selectively migrated. See
-[DNS and `/etc/resolv.conf`](../building/dns.md) for details.
+[DNS and `/etc/resolv.conf`](../building/bootc-dns.7.md) for details.
 
 **Note:** For filesystem mounts from `/etc/fstab` in the old system, consider
 using kernel arguments (via `systemd.mount-extra`) injected before reboot instead

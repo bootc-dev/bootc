@@ -65,7 +65,7 @@ rpm-ostree. Hence, when using a container source, `rpm-ostree upgrade` and
 - The ostree project never tried to have an opinionated "install" mechanism,
   but bootc does with `bootc install to-filesystem`
 - Bootc has additional features such as `/usr/lib/bootc/kargs.d` and
-  [logically bound images](logically-bound-images.md).
+  [logically bound images](bootc-logically-bound-images.7.md).
 
 ### Client side changes
 

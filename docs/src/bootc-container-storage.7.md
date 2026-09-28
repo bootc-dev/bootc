@@ -4,7 +4,7 @@ The bootc project uses [ostree](https://github.com/ostreedev/ostree/) and specif
 the [ostree-rs-ext](https://github.com/ostreedev/ostree-rs-ext/) Rust library
 which handles storage of container images on top of an ostree-based system for
 the booted host, and additionally there is a
-[containers/storage](https://github.com/containers/storage) instance for [logically bound images](logically-bound-images.md).
+[containers/storage](https://github.com/containers/storage) instance for [logically bound images](bootc-logically-bound-images.7.md).
 
 ## Architecture
 
@@ -62,7 +62,7 @@ This is implemented in the [ostree-rs-ext/container module](https://docs.rs/ostr
 
 ### SELinux labeling
 
-See the SELinux section of [Image layout](bootc-images.md).
+See the SELinux section of [Image layout](bootc-compatible-images.7.md).
 
 ### Origin files
 
@@ -85,4 +85,4 @@ This is what is referenced by the `ostree=` kernel commandline.
 
 ## Logically bound images
 
-In addition to the base image, bootc supports [logically bound images](logically-bound-images.md).
+In addition to the base image, bootc supports [logically bound images](bootc-logically-bound-images.7.md).

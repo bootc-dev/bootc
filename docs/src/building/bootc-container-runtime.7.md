@@ -17,7 +17,7 @@ Crucially, besides setting up some mounts, bootc itself does not act as any kind
 This distinction also applies to DNS configuration. A container runtime may
 inject `/etc/resolv.conf` while building or running a container, but it is not
 present to do so after a bootc image boots. See
-[DNS and `/etc/resolv.conf`](dns.md).
+[DNS and `/etc/resolv.conf`](bootc-dns.7.md).
 
 Another example of this: While one can add [Container configuration](https://github.com/opencontainers/image-spec/blob/main/config.md) metadata, `bootc` generally ignores that at runtime today.
 
@@ -92,4 +92,4 @@ system is deployed.
 ## SELinux
 
 For more on the intersection of SELinux and current bootc (OSTree container)
-images, see [bootc images - SELinux](../bootc-images.md#SELinux).
+images, see [bootc images - SELinux](../bootc-compatible-images.7.md#SELinux).

@@ -31,7 +31,7 @@ This is [a bug](https://github.com/bootc-dev/bootc/issues/2256): currently a `/o
 
 ## composefs backend
 
-There are no strict additional basic filesystem/layout requirements for images which plan to deploy with composefs. However, see also [bootloaders](bootloaders.md).
+There are no strict additional basic filesystem/layout requirements for images which plan to deploy with composefs. However, see also [bootloaders](bootc-bootloaders.7.md).
 
 ## ostree backend
 

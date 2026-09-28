@@ -10,7 +10,7 @@ Tracking issue: <https://github.com/bootc-dev/bootc/issues/20>
 Unified storage is the goal of having all storage for bootc be "unified" with the storage
 used by a container runtime, such as podman.
 
-Currently, bootc uses either ostree or composefs. [Logically bound images](logically-bound-images.md)
+Currently, bootc uses either ostree or composefs. [Logically bound images](bootc-logically-bound-images.7.md)
 use the podman container storage.
 
 ## Goals
@@ -133,7 +133,7 @@ podman --storage-opt=additionalimagestore=/usr/lib/bootc/storage run localhost/b
 
 ## Relationship to composefs backend
 
-Unified storage is complementary to the [composefs backend](experimental-composefs.md).
+Unified storage is complementary to the [composefs backend](bootc-experimental-composefs.7.md).
 While unified storage changes *how images are pulled* (using containers/storage),
 the composefs backend changes *how the filesystem is stored and verified*.
 
@@ -180,7 +180,7 @@ unified storage model is documented in the rustdoc comments of the relevant sour
 - **Progress reporting**: Pull progress from podman is not yet integrated
   with bootc's progress reporting
 - **Garbage collection**: Images in bootc storage are garbage collected based
-  on deployment references; see [logically-bound-images.md](logically-bound-images.md)
+  on deployment references; see [logically-bound-images.md](bootc-logically-bound-images.7.md)
   for details
 
 ## Related issues

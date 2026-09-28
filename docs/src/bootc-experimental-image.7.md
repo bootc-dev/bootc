@@ -7,7 +7,7 @@ Tracking issue: <https://github.com/bootc-dev/bootc/issues/690>
 
 ## Using `bootc image copy-to-storage`
 
-This experimental command is intended to aid in [booting local builds](booting-local-builds.md).
+This experimental command is intended to aid in [booting local builds](bootc-local-builds.7.md).
 
 Invoking this command will default to copying the booted container image into the `containers-storage:`
 area as used by e.g. `podman`, under the image tag `localhost/bootc` by default. It can

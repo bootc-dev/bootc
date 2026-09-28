@@ -85,7 +85,7 @@ part of the admin experience.
 
 The `podstorage` module implements bootc's own `containers-storage:` instance
 at `/sysroot/ostree/bootc/storage/` (symlinked to `/usr/lib/bootc/storage/`).
-This supports [Logically Bound Images](logically-bound-images.md) with proper
+This supports [Logically Bound Images](bootc-logically-bound-images.7.md) with proper
 lifecycle management and garbage collection tied to deployments.
 
 ## Rustdoc API Documentation

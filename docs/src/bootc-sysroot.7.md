@@ -29,7 +29,7 @@ operate on the physical root.
 
 ### bootc-owned container storage
 
-For [logically bound images](logically-bound-images.md),
+For [logically bound images](bootc-logically-bound-images.7.md),
 bootc maintains a dedicated [containers/storage](https://github.com/containers/storage)
 instance using the `overlay` backend (the same type of thing that backs `/var/lib/containers`).
 
@@ -75,4 +75,4 @@ is recommended, along with an `ExecStartPre=mount -o remount,rw /sysroot`.
 
 ### Detecting bootc/ostree systems
 
-See the [package managers](package-managers.md) section on "Detecting image based systems".
+See the [package managers](bootc-package-managers.7.md) section on "Detecting image based systems".

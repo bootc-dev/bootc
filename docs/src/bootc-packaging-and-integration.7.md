@@ -121,7 +121,7 @@ This installs:
 ## Base image content
 
 Alongside building the binary here, you may also want to prepare
-a base image. For that, see [bootc-images](bootc-images.md).
+a base image. For that, see [bootc-images](bootc-compatible-images.7.md).
 
 ## Additional Resources
 

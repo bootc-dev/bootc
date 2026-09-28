@@ -14,7 +14,7 @@ There are some overlaps between `bootc` and `ignition` and `zincati` however; se
 [this pull request](https://github.com/coreos/fedora-coreos-docs/pull/540) for more information.
 
 For other derivatives such as the ["Atomic desktops"](https://gitlab.com/fedora/ostree), see
-discussion of [relationships](relationships.md) which particularly covers interactions with rpm-ostree.
+discussion of [relationships](bootc-relationships.7.md) which particularly covers interactions with rpm-ostree.
 
 ## Other
 

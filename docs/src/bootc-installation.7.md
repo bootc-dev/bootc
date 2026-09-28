@@ -124,7 +124,7 @@ The bootc project aims to support generic/general-purpose operating
 systems and distributions that will ship unconfigured images.  An
 unconfigured image does not have a default password or SSH key, etc.
 
-For more information, see [Image building and configuration guidance](building/guidance.md).
+For more information, see [Image building and configuration guidance](building/bootc-building-images.7.md).
 
 ## More advanced installation with `to-filesystem`
 
@@ -140,7 +140,7 @@ The `bootc install to-disk` command is effectively:
 There may be a bit more involved here; for example configuring
 `--block-setup tpm2-luks` will configure the root filesystem
 with LUKS bound to the TPM2 chip, currently via [systemd-cryptenroll](https://www.freedesktop.org/software/systemd/man/systemd-cryptenroll.html#).
-**We don't recommend this for new deployments**; see [Disk encryption (e.g. LUKS)](filesystem-encryption.md)
+**We don't recommend this for new deployments**; see [Disk encryption (e.g. LUKS)](bootc-filesystem-encryption.7.md)
 for why, and for the recommended approach of setting up encryption
 independently of bootc via `systemd-cryptsetup` or Ignition.
 
@@ -438,7 +438,7 @@ If you're building tooling that uses `bootc install to-filesystem`, you should:
 
 On a bootc system, the "physical root" is different from
 the "logical root" of the booted container. For more on
-that, see [filesystem](filesystem.md). This section
+that, see [filesystem](bootc-filesystem.7.md). This section
 is about how the physical root filesystem is discovered.
 
 Systems using systemd will often default to using
@@ -468,7 +468,7 @@ for legacy `/etc/fstab` references for `/` to use
 
 ## Configuring machine-local state
 
-Per the [filesystem](filesystem.md) section, `/etc` and `/var` are
+Per the [filesystem](bootc-filesystem.7.md) section, `/etc` and `/var` are
 machine-local state by default. To inject additional content after installation,
 use `bootc install mount --sysroot /path/to/target --latest /mnt/installed`
 and mutate `/mnt/installed/etc` or `/mnt/installed/var`. This is the

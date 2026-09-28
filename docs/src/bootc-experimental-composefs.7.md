@@ -270,7 +270,7 @@ See [CONTRIBUTING.md](https://github.com/bootc-dev/bootc/blob/main/CONTRIBUTING.
 
 Whenever the container image has a UKI, bootc automatically selects the composefs backend during installation (see [Prerequisites](#prerequisites) above for the currently-supported UKI + systemd-boot configuration for building sealed images). Note that having a UKI does not by itself make an install sealed — that also depends on whether fs-verity enforcement is on, per [Overview](#overview) above.
 
-Composefs installs using a traditional `vmlinuz`/`initramfs.img` layout instead of a UKI can enforce fs-verity, but are never sealed, since nothing authenticates the root digest. They can use either `bootupd` (GRUB) or systemd-boot, the same as the ostree backend. See [bootloaders.md](bootloaders.md) for the general bootloader selection rules. Under the hood, bootc writes standard BLS boot entries for both UKI and traditional kernels; see the [composefs boot module documentation](https://github.com/bootc-dev/bootc/blob/main/crates/lib/src/bootc_composefs/boot.rs) for details on how entry filenames and sort-keys are chosen to sort correctly on both GRUB and systemd-boot.
+Composefs installs using a traditional `vmlinuz`/`initramfs.img` layout instead of a UKI can enforce fs-verity, but are never sealed, since nothing authenticates the root digest. They can use either `bootupd` (GRUB) or systemd-boot, the same as the ostree backend. See [bootloaders.md](bootc-bootloaders.7.md) for the general bootloader selection rules. Under the hood, bootc writes standard BLS boot entries for both UKI and traditional kernels; see the [composefs boot module documentation](https://github.com/bootc-dev/bootc/blob/main/crates/lib/src/bootc_composefs/boot.rs) for details on how entry filenames and sort-keys are chosen to sort correctly on both GRUB and systemd-boot.
 
 ## Installation
 
@@ -305,8 +305,8 @@ The composefs backend is experimental; on-disk formats are subject to change.
 
 ## Additional Resources
 
-- See [filesystem.md](filesystem.md) for information about composefs in the standard ostree backend
-- See [bootloaders.md](bootloaders.md) for bootloader configuration details
+- See [filesystem.md](bootc-filesystem.7.md) for information about composefs in the standard ostree backend
+- See [bootloaders.md](bootc-bootloaders.7.md) for bootloader configuration details
 - [composefs-rs](https://github.com/composefs/composefs-rs) - The underlying composefs implementation
 - [composefs-rs repository format](https://github.com/composefs/composefs-rs/blob/main/crates/composefs/src/repository_format.rs) - Detailed on-disk layout of the `/composefs` repository
 - [Unified Kernel Images specification](https://uapi-group.org/specifications/specs/unified_kernel_image/)

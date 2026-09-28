@@ -21,7 +21,7 @@ the image.
 When the image is installed and booted, there is no outer Podman or other
 container runtime to recreate these files. The network stack included in the
 image is responsible for generating the booted host's resolver configuration.
-See [Container runtime vs bootc runtime](bootc-runtime.md) for more about this
+See [Container runtime vs bootc runtime](bootc-container-runtime.7.md) for more about this
 distinction.
 
 In particular:
@@ -159,7 +159,7 @@ Content that the *image* provides for `/etc/resolv.conf` should reach it
 through a symlink created by a `systemd-tmpfiles` rule, not as a regular file
 in the image: `/etc` is three-way merged across upgrades, and once a regular
 file there has been modified locally a later image default no longer takes
-effect (see [Filesystem: `/etc`](../filesystem.md#etc)). The target depends on
+effect (see [Filesystem: `/etc`](../bootc-filesystem.7.md#etc)). The target depends on
 the policy:
 
 - a file under `/run` when the resolver is dynamic -- this is what the

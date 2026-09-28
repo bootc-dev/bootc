@@ -30,7 +30,7 @@ do *not* automatically apply the update in addition.
 ## Soft Reboot
 
 For shared `--apply` and `--soft-reboot` behavior, see
-[Soft reboots](../upgrades.md#soft-reboots).
+[Soft reboots](../bootc-upgrades.7.md#soft-reboots).
 
 # OPTIONS
 

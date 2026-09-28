@@ -163,7 +163,7 @@ Without `--apply`, `--soft-reboot` prepares the deployment but does not restart
 the system immediately. Without `--soft-reboot`, `--apply` requests a regular
 reboot.
 
-The [experimental composefs backend](experimental-composefs.md) currently
+The [experimental composefs backend](bootc-experimental-composefs.7.md) currently
 differs: both modes fail if systemd lacks soft-reboot support. If the target
 deployment is not soft-reboot capable, `auto` leaves it staged without
 restarting, even with `--apply`; it does not automatically fall back to a

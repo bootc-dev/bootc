@@ -27,7 +27,7 @@ images have all parts of the filesystem (e.g. `/usr` in particular) as fully
 mutable state, and writing there is encouraged (see below).
 
 When "deployed" to a physical or virtual machine, the container image
-files are read-only by default; for more, see [filesystem](../filesystem.md).
+files are read-only by default; for more, see [filesystem](../bootc-filesystem.7.md).
 
 ## Installing software
 
@@ -90,7 +90,7 @@ on a package-based system.
 ## Users and groups
 
 Note that the above `postgresql` today will allocate a user;
-this leads to the topic of [users, groups and SSH keys](users-and-groups.md).
+this leads to the topic of [users, groups and SSH keys](bootc-users-and-groups.7.md).
 
 ## Configuration
 
@@ -110,7 +110,7 @@ or `/etc`.  systemd has long advocated and supported
 a model where `/usr` (e.g. `/usr/lib/systemd/system`)
 contains content owned by the operating system image.
 
-`/etc` is machine-local state.  However, per [filesystem.md](../filesystem.md)
+`/etc` is machine-local state.  However, per [filesystem.md](../bootc-filesystem.7.md)
 it's important to note that the underlying OSTree
 system performs a 3-way merge of `/etc`, so changes you
 make in the container image to e.g. `/etc/postgresql.conf`
@@ -119,7 +119,7 @@ locally.
 
 Resolver configuration has an additional interaction with the container
 runtime used to build the image. See
-[DNS and `/etc/resolv.conf`](dns.md) for the recommended approach.
+[DNS and `/etc/resolv.conf`](bootc-dns.7.md) for the recommended approach.
 
 ### Prefer using drop-in directories
 
@@ -149,7 +149,7 @@ for example, although this can run afoul of SELinux labeling.
 
 ### Secrets
 
-There is a dedicated document for [secrets](secrets.md),
+There is a dedicated document for [secrets](bootc-secrets.7.md),
 which is a special case of configuration.
 
 ## Handling read-only vs writable locations

@@ -99,7 +99,7 @@ situation and inform the user that the changes will be ephemeral.
 ## Persistent changes
 
 A bootc system by default *does* have a writable, persistent data store that holds
-multiple container image versions (more in [filesystem](filesystem.md)).
+multiple container image versions (more in [filesystem](bootc-filesystem.7.md)).
 
 Systems such as [rpm-ostree](https://github.com/coreos/rpm-ostree/) implement
 a "hybrid" mechanism where packages can be persistently layered and re-applied;
@@ -108,5 +108,5 @@ the system effectively does a "local build", unioning the intermediate filesyste
 One aspect of how rpm-ostree implements this is by caching individual unpacked RPMs as ostree commits
 in the ostree repo.
 
-This section will be expanded later; you may also be able to find more information in [booting local builds](booting-local-builds.md).
+This section will be expanded later; you may also be able to find more information in [booting local builds](bootc-local-builds.7.md).
 

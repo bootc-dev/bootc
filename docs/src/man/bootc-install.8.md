@@ -16,7 +16,7 @@ The `bootc install` flow turns a container image into a bootable system,
 including filesystem, bootloader, and update metadata setup. It is not
 simply a copy of the container filesystem.
 
-See [Installing bootc compatible images](../bootc-install.md) for the
+See [Installing bootc compatible images](../bootc-installation.7.md) for the
 installation model, prerequisites, and end-to-end examples. This reference
 documents the command and its subcommands.
 

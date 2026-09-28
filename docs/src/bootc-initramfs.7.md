@@ -69,7 +69,7 @@ exact dracut modules and arguments depend on the base image and the content
 being added.
 
 Build the image locally and deploy it exactly as any other local build; see
-[Booting local builds](booting-local-builds.md) for building against the booted
+[Booting local builds](bootc-local-builds.7.md) for building against the booted
 image, the `containers-storage` transport, and automating the rebuild. Rebuild
 and switch to this derived image whenever either the base image or the
 machine-specific configuration changes.
@@ -93,7 +93,7 @@ well, so inspect the pending changes before running it. Therefore, do not use
 `rpm-ostree initramfs --enable` for this workflow if the system is intended to
 continue receiving updates through bootc; use a derived container image
 instead. See also
-[Relationship with rpm-ostree](relationships.md#relationship-with-rpm-ostree).
+[Relationship with rpm-ostree](bootc-relationships.7.md#relationship-with-rpm-ostree).
 
 ## Future direction
 

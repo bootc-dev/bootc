@@ -39,7 +39,7 @@ example `tpm2-luks` requires one, since GRUB and most bootloaders
 can't read a LUKS-encrypted `/boot`. If yours does, pass
 `--boot-mount-spec` to `to-filesystem` so bootc knows where to
 install boot assets. See
-[More advanced installation with `to-filesystem`](bootc-install.md#more-advanced-installation-with-to-filesystem).
+[More advanced installation with `to-filesystem`](bootc-installation.7.md#more-advanced-installation-with-to-filesystem).
 
 ### Root filesystem discovery
 

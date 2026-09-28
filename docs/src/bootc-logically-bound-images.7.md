@@ -61,7 +61,7 @@ by a file in `/usr/lib/bootc/bound-images.d`.
 ## Installation
 
 Logically bound images must be present in the default container store (`/var/lib/containers`) when invoking
-[bootc install](bootc-install.md); the images will be copied into the target system and present
+[bootc install](bootc-installation.7.md); the images will be copied into the target system and present
 directly at boot, alongside the bootc base image.
 
 ## Limitations
