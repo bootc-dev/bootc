@@ -39,7 +39,8 @@ WantedBy=multi-user.target
 EOT
 
 # Link the service to run at startup
-RUN ln -s /usr/lib/systemd/system/management-client.service /usr/lib/systemd/system/multi-user.target.wants/management-client.service
+RUN ln -s /usr/lib/systemd/system/management-client.service \
+    /usr/lib/systemd/system/multi-user.target.wants/management-client.service
 
 # Store the credentials in a file to be used by the systemd service
 RUN echo -e "CLIENT_ACTIVATION_KEY=${activation_key}" > /etc/management-client/.credentials
@@ -48,4 +49,3 @@ RUN echo -e "CLIENT_ACTIVATION_KEY=${activation_key}" > /etc/management-client/.
 # The systemd service will remove this file after the registration completes the first time
 RUN touch /etc/management-client/.run_next_boot
 ```
-

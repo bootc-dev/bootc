@@ -31,7 +31,8 @@ you can pass `--authfile` to set the bootc authfile explicitly;
 for example
 
 ```bash
-echo <somepassword> | podman login --authfile /run/ostree/auth.json -u someuser --password-stdin
+echo <somepassword> | podman login \
+  --authfile /run/ostree/auth.json -u someuser --password-stdin
 ```
 
 This pattern of using the ephemeral location in `/run` can work

@@ -60,7 +60,10 @@ to an existing system and install your container image. Failure to run
 Here's an example of using `bootc install` (root/elevated permission required):
 
 ```bash
-podman run --rm --privileged --pid=host --ipc=host -v /var/lib/containers:/var/lib/containers -v /dev:/dev --security-opt label=type:unconfined_t <image> bootc install to-disk /path/to/disk
+podman run --rm --privileged --pid=host --ipc=host \
+  -v /var/lib/containers:/var/lib/containers -v /dev:/dev \
+  --security-opt label=type:unconfined_t \
+  <image> bootc install to-disk /path/to/disk
 ```
 
 Note that while `--privileged` is used, this command will not perform any
@@ -200,7 +203,11 @@ process, you can create a raw disk image that you can boot via virtualization. R
 
 ```bash
 truncate -s 10G myimage.raw
-podman run --rm --privileged --pid=host --ipc=host --security-opt label=type:unconfined_t -v /dev:/dev -v /var/lib/containers:/var/lib/containers -v .:/output <yourimage> bootc install to-disk --generic-image --via-loopback /output/myimage.raw
+podman run --rm --privileged --pid=host --ipc=host \
+  --security-opt label=type:unconfined_t -v /dev:/dev \
+  -v /var/lib/containers:/var/lib/containers -v .:/output \
+  <yourimage> bootc install to-disk --generic-image \
+  --via-loopback /output/myimage.raw
 ```
 
 Notice that we use `--generic-image` for this use case.
@@ -220,10 +227,11 @@ support the root storage setup already initialized.
 The core command should look like this (root/elevated permission required):
 
 ```bash
-podman run --rm --privileged -v /dev:/dev -v /var/lib/containers:/var/lib/containers -v /:/target \
-             --pid=host --security-opt label=type:unconfined_t \
-             <image> \
-             bootc install to-existing-root
+podman run --rm --privileged -v /dev:/dev \
+  -v /var/lib/containers:/var/lib/containers -v /:/target \
+  --pid=host --security-opt label=type:unconfined_t \
+  <image> \
+  bootc install to-existing-root
 ```
 
 It is assumed in this command that the target rootfs is passed via `-v /:/target` at this time.

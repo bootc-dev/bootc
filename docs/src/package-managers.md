@@ -70,7 +70,8 @@ Error: Transaction test error:
 ```
 
 ```
-$ podman run --read-only --rm --tmpfs /var -ti debian /bin/sh -c 'apt update && apt -y install strace'
+$ podman run --read-only --rm --tmpfs /var -ti debian \
+    /bin/sh -c 'apt update && apt -y install strace'
 ...
 dpkg: error processing archive /var/cache/apt/archives/libunwind8_1.6.2-3_amd64.deb (--unpack):
  unable to clean up mess surrounding './usr/lib/x86_64-linux-gnu/libunwind-coredump.so.0.0.0' before installing another version: Read-only file system
@@ -79,7 +80,8 @@ dpkg: error processing archive /var/cache/apt/archives/libunwind8_1.6.2-3_amd64.
 These errors message are misleading and confusing for the user. A more useful error may look like e.g.:
 
 ```
-$ podman run --read-only --rm --tmpfs /var -ti debian /bin/sh -c 'apt update && apt -y install strace'
+$ podman run --read-only --rm --tmpfs /var -ti debian \
+    /bin/sh -c 'apt update && apt -y install strace'
 error: read-only /usr detected, refusing to operate. See `man apt-image-based` for more information.
 ```
 
@@ -107,5 +109,4 @@ One aspect of how rpm-ostree implements this is by caching individual unpacked R
 in the ostree repo.
 
 This section will be expanded later; you may also be able to find more information in [booting local builds](booting-local-builds.md).
-
 

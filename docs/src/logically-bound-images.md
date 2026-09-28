@@ -34,8 +34,10 @@ FROM quay.io/myorg/myimage:latest
 COPY ./my-app.image /usr/share/containers/systemd/my-app.image
 COPY ./another-app.container /usr/share/containers/systemd/another-app.container
 
-RUN ln -s /usr/share/containers/systemd/my-app.image /usr/lib/bootc/bound-images.d/my-app.image && \
-    ln -s /usr/share/containers/systemd/another-app.container /usr/lib/bootc/bound-images.d/another-app.container
+RUN ln -s /usr/share/containers/systemd/my-app.image \
+    /usr/lib/bootc/bound-images.d/my-app.image && \
+    ln -s /usr/share/containers/systemd/another-app.container \
+    /usr/lib/bootc/bound-images.d/another-app.container
 ```
 
 In the `.container` definition, you should use:
