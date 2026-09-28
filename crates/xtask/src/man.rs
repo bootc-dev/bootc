@@ -12,6 +12,46 @@ use xshell::{Shell, cmd};
 
 use crate::out_of_sync_error;
 
+fn convert_markdown(sh: &Shell, markdown: &str, output: &Utf8Path) -> Result<()> {
+    // Temporary and generated files never belong in docs/src.
+    let mut input = tempfile::NamedTempFile::new_in(output.parent().unwrap())?;
+    input.write_all(markdown.as_bytes())?;
+    let input = input.path();
+    cmd!(sh, "go-md2man -in {input} -out {output}")
+        .run()
+        .with_context(|| format!("Generating {output}"))?;
+    // A source newline inside inline code can leave a leading apostrophe
+    // unescaped by go-md2man. Roff treats it as a request and drops the line.
+    let rendered = fs::read_to_string(output)?;
+    let escaped = escape_roff_apostrophes(&rendered);
+    if escaped != rendered {
+        fs::write(output, escaped)?;
+    }
+    Ok(())
+}
+
+fn escape_roff_apostrophes(content: &str) -> String {
+    let mut result = String::new();
+    for line in content.split_inclusive('\n') {
+        if line.starts_with('\'') {
+            result.push_str("\\&");
+        }
+        result.push_str(line);
+    }
+    result
+}
+
+fn reference_markdown(content: &str, name: &str, section: u8, version: &str) -> String {
+    // go-md2man consumes the first H1 as its title, not a body heading.
+    // Supply it from the filename so NAME remains visible and the header
+    // identifies the actual manual instead of displaying NAME().
+    format!(
+        "# {} {section}\n\n{}",
+        name.to_ascii_uppercase(),
+        content.replace("<!-- VERSION PLACEHOLDER -->", version)
+    )
+}
+
 /// Represents a CLI option extracted from the JSON dump
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CliOption {
@@ -473,31 +513,9 @@ pub fn generate_man_pages(sh: &Shell) -> Result<()> {
 
         // Read markdown content and replace version placeholders
         let content = fs::read_to_string(&path).with_context(|| format!("Reading {path:?}"))?;
-        let content_with_version = content.replace("<!-- VERSION PLACEHOLDER -->", &version);
-
-        // Check if we need to regenerate by comparing input and output modification times
-        let should_regenerate = if let (Ok(input_meta), Ok(output_meta)) =
-            (fs::metadata(&path), fs::metadata(&output_file))
-        {
-            input_meta.modified().unwrap_or(std::time::UNIX_EPOCH)
-                > output_meta.modified().unwrap_or(std::time::UNIX_EPOCH)
-        } else {
-            // If output doesn't exist or we can't get metadata, regenerate
-            true
-        };
-
-        if should_regenerate {
-            // Create temporary file with version-replaced content
-            let mut tmpf = tempfile::NamedTempFile::new_in(path.parent().unwrap())?;
-            tmpf.write_all(content_with_version.as_bytes())?;
-            let tmpf = tmpf.path();
-
-            cmd!(sh, "go-md2man -in {tmpf} -out {output_file}")
-                .run()
-                .with_context(|| format!("Converting {} to man page", path.display()))?;
-
-            println!("Generated {}", output_file);
-        }
+        let markdown = reference_markdown(&content, base_name, section, &version);
+        convert_markdown(sh, &markdown, &output_file)?;
+        println!("Generated {}", output_file);
     }
 
     // Apply post-processing fixes for apostrophe handling
@@ -780,4 +798,52 @@ fn apply_man_page_fixes(sh: &Shell, dir: &Utf8Path) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod rendering_tests {
+    use super::*;
+
+    #[test]
+    fn leading_apostrophe_is_text_not_a_roff_request() {
+        let input = ".TH BOOTC 8\nDon't change normal prose.\n'wheel' in /etc/group\\fR).\n";
+        let expected = ".TH BOOTC 8\nDon't change normal prose.\n\\&'wheel' in /etc/group\\fR).\n";
+        assert_eq!(escape_roff_apostrophes(input), expected);
+        assert_eq!(escape_roff_apostrophes(expected), expected);
+    }
+
+    #[test]
+    fn reference_title_and_version_do_not_change_prose() {
+        let input = "# NAME\n\nbootc - Don't lose apostrophes or `code`\n\n# VERSION\n\n<!-- VERSION PLACEHOLDER -->\n";
+        for (name, section) in [("bootc", 8), ("bootc-config", 5)] {
+            let rendered = reference_markdown(input, name, section, "v-test");
+            assert_eq!(
+                rendered,
+                format!(
+                    "# {} {section}\n\n{}",
+                    name.to_ascii_uppercase(),
+                    input.replace("<!-- VERSION PLACEHOLDER -->", "v-test")
+                )
+            );
+            assert!(reference_markdown(input, name, section, "v-next").contains("v-next"));
+        }
+    }
+
+    #[test]
+    fn boolean_options_do_not_gain_values() {
+        let options = [CliOption {
+            long: "apply".into(),
+            short: None,
+            value_name: None,
+            default: None,
+            help: "Don't delay".into(),
+            possible_values: vec!["true".into(), "false".into()],
+            required: false,
+            is_boolean: true,
+        }];
+        assert_eq!(
+            format_options_as_markdown(&options, &[]),
+            "**--apply**\n\n    Don't delay\n\n"
+        );
+    }
 }
