@@ -9,6 +9,7 @@ use std::{
     fs,
     ops::Range,
 };
+use xshell::Shell;
 
 const DOCS_SRC: &str = "docs/src";
 const BOOK_URL: &str = "https://bootc.dev/bootc/";
@@ -23,6 +24,7 @@ pub(super) struct Page {
     pub source: String,
     pub name: String,
     pub section: u8,
+    group: String,
 }
 
 impl Page {
@@ -121,7 +123,7 @@ impl Inventory {
         let mut outputs = BTreeSet::from(["bootc-docs.7".to_string()]);
         let mut pages = Vec::new();
         let mut mapped = BTreeSet::new();
-        for (_group, source) in chapters(&summary) {
+        for (group, source) in chapters(&summary) {
             ensure!(
                 seen.insert(source.clone()),
                 "Duplicate navigation entry: {source}"
@@ -167,6 +169,7 @@ impl Inventory {
                 source,
                 name,
                 section,
+                group,
             };
             ensure!(
                 outputs.insert(page.filename()),
@@ -191,8 +194,8 @@ impl Inventory {
             .map(|p| (p.source.clone(), p.reference()))
             .collect();
         let result = Self { pages, names };
-        // Validate internal Markdown links even in website-only builds;
-        // mdBook otherwise tolerates missing pages.
+        // Validate all internal Markdown links and terminal-only transformations
+        // even in website-only builds; mdBook otherwise tolerates missing pages.
         for page in &result.pages {
             let content = &sources[&page.source];
             result.rewrite_links(content, &page.source)?;
@@ -259,6 +262,50 @@ impl Inventory {
         }
         Ok((output, references))
     }
+
+    pub fn generate_guides(&self, sh: &Shell, output: &Utf8Path, version: &str) -> Result<()> {
+        let expected = self
+            .pages
+            .iter()
+            .filter(|p| p.section == 7)
+            .map(Page::filename)
+            .chain(["bootc-docs.7".to_string()])
+            .collect();
+        prune_stale_guides(output, &expected)?;
+        let mut index = String::from(
+            "# BOOTC-DOCS 7\n\n## NAME\n\nbootc-docs - Guide to bootc documentation\n\n## DESCRIPTION\n\nThe documentation shipped with bootc: guides in section 7, commands in section 8, and configuration and services in section 5. The groups below follow the website navigation.\n",
+        );
+        let mut group = "";
+        for page in &self.pages {
+            let content = fs::read_to_string(Utf8Path::new(DOCS_SRC).join(&page.source))?;
+            let (title, body) = title_and_body(&content)?;
+            if page.group != group {
+                group = &page.group;
+                index.push_str(&format!("\n## {group}\n\n"));
+            }
+            let description = if page.section == 7 {
+                title.to_string()
+            } else {
+                reference_description(body)
+            };
+            index.push_str(&format!("- {} - {description}\n", page.reference()));
+            if page.section != 7 {
+                continue;
+            }
+            let adapted = adapt_guide_markdown_for_man(body)?;
+            let (body, mut references) = self.rewrite_links(&adapted, &page.source)?;
+            references.extend(["**bootc**(8)".to_string(), "**bootc-docs**(7)".to_string()]);
+            let markdown = format!(
+                "# {} 7\n\n## NAME\n\n{} - {title}\n\n## DESCRIPTION\n\n{body}\n\n## SEE ALSO\n\n{}\n\n## VERSION\n\n{version}\n",
+                page.name.to_ascii_uppercase(),
+                page.name,
+                references.into_iter().collect::<Vec<_>>().join(", ")
+            );
+            super::convert_markdown(sh, &markdown, &output.join(page.filename()))?;
+        }
+        index.push_str(&format!("\n## VERSION\n\n{version}\n"));
+        super::convert_markdown(sh, &index, &output.join("bootc-docs.7"))
+    }
 }
 
 fn normalize_link_path(source: &str, destination: &str) -> Result<String> {
@@ -275,6 +322,37 @@ fn normalize_link_path(source: &str, destination: &str) -> Result<String> {
         }
     }
     Ok(parts.join("/"))
+}
+
+fn reference_description(body: &str) -> String {
+    let paragraph = body
+        .trim_start()
+        .lines()
+        .take_while(|line| !line.trim().is_empty())
+        .map(str::trim)
+        .collect::<Vec<_>>()
+        .join(" ");
+    paragraph
+        .split_once(" - ")
+        .map(|(_, description)| description.to_string())
+        .unwrap_or(paragraph)
+}
+
+// target/man is build output, and bootc-*.7 is owned by this generator.
+// Remove obsolete guide artifacts so the Makefile's wildcard cannot install them.
+fn prune_stale_guides(output: &Utf8Path, expected: &BTreeSet<String>) -> Result<()> {
+    for entry in fs::read_dir(output)? {
+        let path = Utf8PathBuf::from_path_buf(entry?.path())
+            .map_err(|_| anyhow::anyhow!("Non-UTF-8 output path"))?;
+        let filename = path.file_name().context("Invalid output filename")?;
+        if filename.starts_with("bootc-")
+            && path.extension() == Some("7")
+            && !expected.contains(filename)
+        {
+            fs::remove_file(&path).with_context(|| format!("Removing stale guide {path}"))?;
+        }
+    }
+    Ok(())
 }
 
 // Use parsed spans so fences inside examples remain examples, and equivalent
@@ -408,6 +486,8 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["bootc-overview.7", "bootc.8"]
         );
+        assert_eq!(inventory.pages[0].group, "Guides");
+        assert_eq!(inventory.pages[1].group, "Commands");
     }
 
     #[test]
@@ -538,6 +618,7 @@ mod tests {
         assert_eq!(title, "A guide");
         assert_eq!(body, "Content.\n\n## Subtopic\n");
     }
+
     #[test]
     fn diagrams_and_tables_have_terminal_text() {
         let input = "```mermaid\nflowchart TD\nbootc --- image[\"containers/storage\"]\n```\n\n| Mode | Method |\n|---|---|\n| `to-disk` | UUID |\n";
@@ -562,5 +643,33 @@ mod tests {
         ] {
             assert!(adapt_guide_markdown_for_man(bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn reference_index_keeps_wrapped_name_paragraphs() {
+        assert_eq!(
+            reference_description(
+                "\nbootc-install - Install to an externally\ncreated filesystem\n\n# OPTIONS\n"
+            ),
+            "Install to an externally created filesystem"
+        );
+        assert_eq!(
+            reference_description("bootc-config.toml\n\n# DESCRIPTION\n"),
+            "bootc-config.toml"
+        );
+    }
+
+    #[test]
+    fn stale_guides_removed_without_touching_references() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = Utf8Path::from_path(tmp.path()).unwrap();
+        for name in ["bootc-current.7", "bootc-stale.7", "bootc.8", "other.7"] {
+            fs::write(dir.join(name), "test").unwrap();
+        }
+        prune_stale_guides(dir, &BTreeSet::from(["bootc-current.7".into()])).unwrap();
+        assert!(dir.join("bootc-current.7").exists());
+        assert!(!dir.join("bootc-stale.7").exists());
+        assert!(dir.join("bootc.8").exists());
+        assert!(dir.join("other.7").exists());
     }
 }

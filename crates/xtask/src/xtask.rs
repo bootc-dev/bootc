@@ -70,6 +70,8 @@ struct Cli {
 enum Commands {
     /// Generate man pages
     Manpages,
+    /// Generate section 7 guide man pages without building the bootc CLI
+    GuideManpages,
     /// Check website and installed manual coverage without building the bootc CLI
     CheckDocs,
     /// Update or check generated files
@@ -370,6 +372,7 @@ fn try_main() -> Result<()> {
 
     match cli.command {
         Commands::Manpages => man::generate_man_pages(&sh),
+        Commands::GuideManpages => man::generate_guide_man_pages(&sh),
         Commands::CheckDocs => man::check_docs(),
         Commands::UpdateGenerated { command } => match command {
             UpdateGeneratedCommands::Direct { check } => {

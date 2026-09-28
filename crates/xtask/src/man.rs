@@ -24,6 +24,15 @@ pub fn check_docs() -> Result<()> {
     Ok(())
 }
 
+/// Render narrative guides without rebuilding the bootc CLI.
+pub fn generate_guide_man_pages(sh: &Shell) -> Result<()> {
+    let inventory = guides::Inventory::load()?;
+    let output = Utf8Path::new("target/man");
+    sh.create_dir(output)?;
+    inventory.generate_guides(sh, output, &get_package_version()?)?;
+    apply_man_page_fixes(sh, output)
+}
+
 fn convert_markdown(sh: &Shell, markdown: &str, output: &Utf8Path) -> Result<()> {
     // Temporary and generated files never belong in docs/src.
     let mut input = tempfile::NamedTempFile::new_in(output.parent().unwrap())?;
@@ -485,6 +494,7 @@ pub fn sync_all_man_pages(sh: &Shell) -> Result<()> {
 /// Generate man pages from hand-written markdown sources
 #[context("Generating manpages")]
 pub fn generate_man_pages(sh: &Shell) -> Result<()> {
+    let inventory = guides::Inventory::load()?;
     let man_src_dir = Utf8Path::new("docs/src/man");
     let man_output_dir = Utf8Path::new("target/man");
 
@@ -529,6 +539,8 @@ pub fn generate_man_pages(sh: &Shell) -> Result<()> {
         convert_markdown(sh, &markdown, &output_file)?;
         println!("Generated {}", output_file);
     }
+
+    inventory.generate_guides(sh, man_output_dir, &version)?;
 
     // Apply post-processing fixes for apostrophe handling
     apply_man_page_fixes(sh, man_output_dir)?;
