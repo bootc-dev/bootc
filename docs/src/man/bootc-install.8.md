@@ -12,21 +12,13 @@ Install the running container to a target.
 
 ## Understanding installations
 
-OCI containers are effectively layers of tarballs with JSON for
-metadata; they cannot be booted directly. The `bootc install` flow is
-a highly opinionated method to take the contents of the container image
-and install it to a target block device (or an existing filesystem) in
-such a way that it can be booted.
+The `bootc install` flow turns a container image into a bootable system,
+including filesystem, bootloader, and update metadata setup. It is not
+simply a copy of the container filesystem.
 
-For example, a Linux partition table and filesystem is used, and the
-bootloader and kernel embedded in the container image are also prepared.
-
-A bootc installed container currently uses OSTree as a backend, and this
-sets it up such that a subsequent `bootc upgrade` can perform in-place
-updates.
-
-An installation is not simply a copy of the container filesystem, but
-includes other setup and metadata.
+See [Installing bootc compatible images](../bootc-install.md) for the
+installation model, prerequisites, and end-to-end examples. This reference
+documents the command and its subcommands.
 
 ## Secure Boot Keys
 

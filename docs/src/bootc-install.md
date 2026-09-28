@@ -9,11 +9,11 @@ or virtualized), one needs a few key components:
 - kernel (and optionally initramfs)
 - root filesystem (xfs/ext4/btrfs etc.)
 
-The bootloader state is managed by the external [bootupd](https://github.com/coreos/bootupd/)
-project which abstracts over bootloader installs and upgrades.  The invocation of
-`bootc install` will always run `bootupd` to handle bootloader installation
-to the target disk.   The default expectation is that bootloader contents and install logic
-come from the container image in a `bootc` based system.
+Bootloader installation depends on the platform and selected bootloader.
+For example, GRUB installation uses [bootupd](https://github.com/coreos/bootupd/),
+while systemd-boot uses `bootctl` and s390x uses `zipl`. Bootloader installation
+can also be disabled. The default expectation is that bootloader contents
+and install logic come from the container image in a `bootc` based system.
 
 The Linux kernel (and optionally initramfs) is embedded in the container image; the canonical location
 is `/usr/lib/modules/$kver/vmlinuz`, and the initramfs should be in `initramfs.img`
@@ -113,12 +113,10 @@ create a file named `/usr/lib/bootc/install/00-<osname>.toml` with the contents 
 type = "xfs"
 ```
 
-Configuration files found in this directory will be merged, with higher alphanumeric values
-taking precedence.  If for example you are building a derived container image from the above OS,
-you could create a `50-myos.toml`  that sets `type = "btrfs"` which will override the
-prior setting.
-
-For other available options, see [bootc-install-config](man/bootc-install-config.5.md).
+For example, a derived image can supply `50-myos.toml` with
+`type = "btrfs"` to override this default.
+See [bootc-install-config](man/bootc-install-config.5.md) for file discovery,
+merge precedence, and the available configuration fields.
 
 ## Installing an "unconfigured" image
 

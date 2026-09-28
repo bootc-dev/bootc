@@ -119,13 +119,14 @@ pub(crate) struct UpgradeOpts {
 
     /// Restart or reboot into the new target image.
     ///
-    /// Currently, this always reboots. Future versions may support userspace-only restart.
+    /// Use --soft-reboot to request a userspace-only restart when supported.
     #[clap(long, conflicts_with = "check")]
     pub(crate) apply: bool,
 
     /// Configure soft reboot behavior.
     ///
-    /// 'required' fails if soft reboot unavailable, 'auto' falls back to regular reboot.
+    /// 'required' fails if soft reboot is unavailable; 'auto' uses it when possible.
+    /// See bootc-upgrades(7) for backend-specific fallback behavior.
     #[clap(long = "soft-reboot", conflicts_with = "check")]
     pub(crate) soft_reboot: Option<SoftRebootMode>,
 
@@ -152,13 +153,14 @@ pub(crate) struct SwitchOpts {
 
     /// Restart or reboot into the new target image.
     ///
-    /// Currently, this always reboots. Future versions may support userspace-only restart.
+    /// Use --soft-reboot to request a userspace-only restart when supported.
     #[clap(long)]
     pub(crate) apply: bool,
 
     /// Configure soft reboot behavior.
     ///
-    /// 'required' fails if soft reboot unavailable, 'auto' falls back to regular reboot.
+    /// 'required' fails if soft reboot is unavailable; 'auto' uses it when possible.
+    /// See bootc-upgrades(7) for backend-specific fallback behavior.
     #[clap(long = "soft-reboot")]
     pub(crate) soft_reboot: Option<SoftRebootMode>,
 

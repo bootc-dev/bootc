@@ -8,7 +8,7 @@ updates from a registry and booting into them, while supporting rollback.
 
 This will query the container image source and queue an updated container image for the next boot.
 
-This is backed today by ostree, implementing an A/B style upgrade system.
+With the default OSTree backend, this implements an A/B style upgrade system.
 Changes to the base image are staged, and the running system is not
 changed by default.
 
@@ -148,6 +148,27 @@ host SSH keys and home directories.
 
 Man page: [bootc-switch](man/bootc-switch.8.md).
 
+## Soft reboots
+
+Soft reboot restarts userspace without restarting the kernel, avoiding a full
+hardware reboot. On the OSTree backend, `bootc upgrade` and `bootc switch`
+support these `--soft-reboot` modes:
+
+- `required`: Fails if the target deployment is not soft-reboot capable.
+- `auto`: Prepares a soft reboot if the target deployment is capable;
+  otherwise, leaves it configured for a regular reboot.
+
+Use `--apply` to request an immediate restart after preparing the deployment.
+Without `--apply`, `--soft-reboot` prepares the deployment but does not restart
+the system immediately. Without `--soft-reboot`, `--apply` requests a regular
+reboot.
+
+The [experimental composefs backend](experimental-composefs.md) currently
+differs: both modes fail if systemd lacks soft-reboot support. If the target
+deployment is not soft-reboot capable, `auto` leaves it staged without
+restarting, even with `--apply`; it does not automatically fall back to a
+regular reboot in this case.
+
 ## Rollback
 
 There is a  `bootc rollback` verb, and associated declarative interface
@@ -155,5 +176,3 @@ accessible to tools via `bootc edit`.  This will swap the bootloader
 ordering to the previous boot entry.
 
 Man page: [bootc-rollback](man/bootc-rollback.8.md).
-
-
