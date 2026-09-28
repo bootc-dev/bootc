@@ -12,6 +12,18 @@ use xshell::{Shell, cmd};
 
 use crate::out_of_sync_error;
 
+mod guides;
+
+/// Validate one-to-one website and installed manual coverage.
+pub fn check_docs() -> Result<()> {
+    let inventory = guides::Inventory::load()?;
+    println!(
+        "Validated {} canonical pages for website and manuals",
+        inventory.pages.len()
+    );
+    Ok(())
+}
+
 fn convert_markdown(sh: &Shell, markdown: &str, output: &Utf8Path) -> Result<()> {
     // Temporary and generated files never belong in docs/src.
     let mut input = tempfile::NamedTempFile::new_in(output.parent().unwrap())?;

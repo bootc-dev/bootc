@@ -29,6 +29,8 @@ xshell = { workspace = true }
 # Crate-specific dependencies
 cargo_metadata = "0.23"
 mandown = "1.1.0"
+# Parse source links without round-tripping Markdown through roff/HTML.
+pulldown-cmark = "0.13"
 rand = "0.10"
 serde_yaml = "0.9"
 tar = "0.4"

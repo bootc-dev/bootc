@@ -4333,6 +4333,7 @@ dependencies = [
  "itertools 0.15.0",
  "mandown",
  "owo-colors",
+ "pulldown-cmark",
  "rand 0.10.3",
  "serde",
  "serde_json",

@@ -12,6 +12,7 @@
 - [Container runtime vs bootc runtime](building/bootc-runtime.md)
 - [DNS and resolv.conf](building/dns.md)
 - [Users, groups, SSH keys](building/users-and-groups.md)
+- [`man bootc-sysusers-shadow-sync.service`](man/bootc-sysusers-shadow-sync.service.5.md)
 - [Kernel arguments](building/kernel-arguments.md)
 - [Secrets](building/secrets.md)
 - [Management Services](building/management-services.md)
@@ -25,6 +26,9 @@
 - [Booting local builds](booting-local-builds.md)
 - [Managing the initramfs after installation](initramfs.md)
 - [`man bootc`](man/bootc.8.md)
+- [`man bootc-config`](man/bootc-config.5.md)
+- [`man bootc-config-diff`](man/bootc-config-diff.8.md)
+- [`man bootc-edit`](man/bootc-edit.8.md)
 - [`man bootc-status`](man/bootc-status.8.md)
 - [`man bootc-upgrade`](man/bootc-upgrade.8.md)
 - [`man bootc-switch`](man/bootc-switch.8.md)
@@ -44,11 +48,19 @@
 - [`man bootc-install-to-filesystem`](man/bootc-install-to-filesystem.8.md)
 - [`man bootc-install-to-existing-root`](man/bootc-install-to-existing-root.8.md)
 - [`man bootc-install-mount`](man/bootc-install-mount.8.md)
+- [`man bootc-install-finalize`](man/bootc-install-finalize.8.md)
+- [`man bootc-install-ensure-completion`](man/bootc-install-ensure-completion.8.md)
+- [`man bootc-install-print-configuration`](man/bootc-install-print-configuration.8.md)
+- [`man system-reinstall-bootc`](man/system-reinstall-bootc.8.md)
 - [`man bootc-destructive-cleanup.service`](man/bootc-destructive-cleanup.service.5.md)
 
 # Bootc usage in containers
 
 - [Read-only when in a default container](bootc-in-container.md)
+- [`man bootc-container`](man/bootc-container.8.md)
+- [`man bootc-container-inspect`](man/bootc-container-inspect.8.md)
+- [`man bootc-container-split-kernel-and-rootfs`](man/bootc-container-split-kernel-and-rootfs.8.md)
+- [`man bootc-container-ukify`](man/bootc-container-ukify.8.md)
 - [`man bootc-container-lint`](man/bootc-container-lint.8.md)
 
 # Architecture
@@ -58,6 +70,8 @@
 - [Filesystem: sysroot](filesystem-sysroot.md)
 - [Container storage](filesystem-storage.md)
 - [Bootloader](bootloaders.md)
+- [`man bootc-loader-entries`](man/bootc-loader-entries.8.md)
+- [`man bootc-loader-entries-set-options-for-source`](man/bootc-loader-entries-set-options-for-source.8.md)
 - [Disk encryption (e.g. LUKS)](filesystem-encryption.md)
 
 # Security
@@ -68,6 +82,7 @@
 
 - [bootc image](experimental-bootc-image.md)
 - [composefs backend](experimental-composefs.md)
+- [`man bootc-composefs-finalize-staged`](man/bootc-composefs-finalize-staged.8.md)
 - [unified storage](experimental-unified-storage.md)
 - [`man bootc-root-setup.service`](man/bootc-root-setup.service.5.md)
 - [`man bootc-setup-root-conf.toml`](man/bootc-setup-root-conf.5.md)
