@@ -491,61 +491,26 @@ pub fn sync_all_man_pages(sh: &Shell) -> Result<()> {
     Ok(())
 }
 
-/// Generate man pages from hand-written markdown sources
+/// Generate manuals from the same canonical Markdown used by the website.
 #[context("Generating manpages")]
 pub fn generate_man_pages(sh: &Shell) -> Result<()> {
     let inventory = guides::Inventory::load()?;
-    let man_src_dir = Utf8Path::new("docs/src/man");
-    let man_output_dir = Utf8Path::new("target/man");
-
-    // Ensure output directory exists
-    sh.create_dir(man_output_dir)
-        .with_context(|| format!("Creating {man_output_dir}"))?;
-
-    // First, sync the markdown files with current CLI options
+    let output = Utf8Path::new("target/man");
+    sh.create_dir(output)?;
     sync_all_man_pages(sh)?;
-
-    // Get version for replacement during generation
     let version = get_package_version()?;
 
-    // Convert each markdown file to man page format
-    for entry in fs::read_dir(man_src_dir).context("Reading manpages")? {
-        let entry = entry?;
-        let path = entry.path();
-
-        if path.extension().and_then(|s| s.to_str()) != Some("md") {
-            continue;
-        }
-
-        let filename = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .ok_or_else(|| anyhow::anyhow!("Invalid filename"))?;
-
-        // Parse section from filename (e.g., bootc.8, bootc-config.5)
-        // All man page files must have a section number
-        let (base_name, section) = filename
-            .rsplit_once('.')
-            .and_then(|(name, section_str)| {
-                section_str.parse::<u8>().ok().map(|section| (name, section))
-            })
-            .ok_or_else(|| anyhow::anyhow!("Man page filename must include section number (e.g., bootc.8.md, bootc-config.5.md): {}.md", filename))?;
-
-        let output_file = man_output_dir.join(format!("{}.{}", base_name, section));
-
-        // Read markdown content and replace version placeholders
-        let content = fs::read_to_string(&path).with_context(|| format!("Reading {path:?}"))?;
-        let markdown = reference_markdown(&content, base_name, section, &version);
-        convert_markdown(sh, &markdown, &output_file)?;
-        println!("Generated {}", output_file);
+    for page in inventory.pages.iter().filter(|p| p.section != 7) {
+        let source = Utf8Path::new("docs/src").join(&page.source);
+        let content = fs::read_to_string(&source)?;
+        let (content, _) = inventory.rewrite_links(&content, &page.source)?;
+        // Always regenerate: version and linked manual names can change even
+        // when the source Markdown's mtime does not.
+        let content = reference_markdown(&content, &page.name, page.section, &version);
+        convert_markdown(sh, &content, &output.join(page.filename()))?;
     }
-
-    inventory.generate_guides(sh, man_output_dir, &version)?;
-
-    // Apply post-processing fixes for apostrophe handling
-    apply_man_page_fixes(sh, man_output_dir)?;
-
-    Ok(())
+    inventory.generate_guides(sh, output, &version)?;
+    apply_man_page_fixes(sh, output)
 }
 
 /// Get version from Cargo.toml
@@ -691,6 +656,7 @@ TODO: Add practical examples showing how to use this command.
 /// Fails with an error if any file would change, similar to `cargo fmt --check`.
 #[context("Checking man pages")]
 pub fn check_manpages(sh: &Shell) -> Result<()> {
+    check_docs()?;
     let cli_structure = extract_cli_json(sh)?;
 
     // First: check no man pages are missing

@@ -67,8 +67,9 @@ install: completion
 	ln -s "$(STORAGE_RELATIVE_PATH)" "$(DESTDIR)$(prefix)/lib/bootc/storage"
 	install -D -m 0755 crates/cli/bootc-generator-stub $(DESTDIR)$(prefix)/lib/systemd/system-generators/bootc-systemd-generator 
 	install -d $(DESTDIR)$(prefix)/lib/bootc/install
-	install -D -m 0644 -t $(DESTDIR)$(prefix)/share/man/man5 target/man/*.5; \
-	install -D -m 0644 -t $(DESTDIR)$(prefix)/share/man/man8 target/man/*.8; \
+	install -D -m 0644 -t $(DESTDIR)$(prefix)/share/man/man5 target/man/*.5
+	install -D -m 0644 -t $(DESTDIR)$(prefix)/share/man/man7 target/man/*.7
+	install -D -m 0644 -t $(DESTDIR)$(prefix)/share/man/man8 target/man/*.8
 	install -D -m 0644 target/completion/bootc.bash $(DESTDIR)$(prefix)/share/bash-completion/completions/bootc
 	install -D -m 0644 target/completion/bootc.elvish $(DESTDIR)$(prefix)/share/elvish/lib/bootc.elv
 	install -D -m 0644 target/completion/bootc.fish $(DESTDIR)$(prefix)/share/fish/vendor_completions.d/bootc.fish
