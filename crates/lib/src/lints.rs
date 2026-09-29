@@ -28,6 +28,7 @@ use ostree_ext::ostree_prepareroot;
 use serde::Serialize;
 
 use crate::bootc_composefs::boot::EFI_LINUX;
+use crate::bootc_composefs::image::is_composefs_native;
 
 /// Create a default WalkConfiguration with noxdev enabled.
 ///
@@ -597,20 +598,6 @@ fn check_composefs(dir: &Dir, _config: &LintExecutionConfig) -> LintResult {
     lint_ok()
 }
 
-/// The setup-root configuration, relative to the root directory.
-fn setup_root_conf_path() -> &'static str {
-    bootc_initramfs_setup::SETUP_ROOT_CONF_PATH.trim_start_matches('/')
-}
-
-/// Whether the image is intended to be deployed only with the composefs
-/// backend, which is signaled by the presence of a setup-root configuration
-/// file (even if empty).
-fn is_composefs_native(root: &Dir) -> Result<bool> {
-    Ok(root
-        .symlink_metadata_optional(setup_root_conf_path())?
-        .is_some())
-}
-
 /// Check for a few files and directories we expect in the base image.
 fn check_baseimage_root_norecurse(dir: &Dir, _config: &LintExecutionConfig) -> LintResult {
     // Check /sysroot
@@ -974,6 +961,7 @@ mod tests {
     use std::sync::LazyLock;
 
     use super::*;
+    use crate::bootc_composefs::image::setup_root_conf_path;
 
     static ALTROOT_LINTS: LazyLock<usize> = LazyLock::new(|| {
         LINTS
