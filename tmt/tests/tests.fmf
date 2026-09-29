@@ -224,3 +224,8 @@ check:
   - dosfstools
   - e2fsprogs
   test: nu booted/test-composefs-separate-boot.nu
+
+/test-60-install-composefs-native:
+  summary: Test that composefs-native images default to the composefs backend
+  duration: 45m
+  test: nu booted/test-install-composefs-native.nu

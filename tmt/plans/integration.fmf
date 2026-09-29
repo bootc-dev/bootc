@@ -355,4 +355,12 @@ execute:
       - /tmt/tests/tests/test-57-composefs-separate-boot
   extra-skip_if_ostree: true
   extra-fixme_skip_if_uki: true
+
+/plan-60-install-composefs-native:
+  summary: Test that composefs-native images default to the composefs backend
+  discover:
+    how: fmf
+    test:
+      - /tmt/tests/tests/test-60-install-composefs-native
+  extra-fixme_skip_if_uki: true
 # END GENERATED PLANS
