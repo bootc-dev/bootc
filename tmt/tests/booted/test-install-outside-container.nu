@@ -262,6 +262,82 @@ if not (tap is_composefs) {
     assert (not ($deployment | path join etc/transient-sentinel | path exists)) "transient /etc writes must not persist"
 }
 
+# --latest follows the default boot entry rather than counting deployments.
+let esp = "/var/mnt/install-mount-esp"
+mkdir $esp
+mount (discover_target_partitions $loop).esp $esp
+if (tap is_composefs) {
+    # Point every boot entry at a deployment that does not exist: the mount
+    # must then fail, naming it, whichever bootloader reads which entries.
+    let id = ($deployment | path basename)
+    let missing = ($id | str replace -a -r "." "f")
+    let entries = ([
+        (glob $"($sysroot)/boot/loader/entries/*.conf")
+        (glob $"($sysroot)/boot/grub2/user.cfg")
+        (glob $"($esp)/loader/entries/*.conf")
+    ] | flatten)
+    assert (($entries | length) > 0) "the installation must have boot entries"
+    for f in $entries { open --raw $f | into binary | decode utf-8 | str replace -a $id $missing | save -f $f }
+    let assert_follows_entries = {|result: record, desc: string|
+        assert ($result.exit_code != 0) $"install mount must follow the default boot entry \(($desc)\)"
+        assert ($result.stderr | str contains $missing) $"unexpected error \(($desc)\): ($result.stderr)"
+    }
+    # With neither --esp nor a mounted ESP, it is discovered from the disk.
+    do $assert_follows_entries (do { ^bootc install mount --sysroot $sysroot --latest $dest } | complete) "discovered"
+    do $assert_follows_entries (do { ^bootc install mount --sysroot $sysroot --esp $esp --latest $dest } | complete) "--esp"
+    # A mounted /boot/efi comes before discovery: an empty one hides the
+    # entries BLS bootloaders (systemd-boot, grub-cc) keep on the ESP,
+    # leaving the sole deployment.
+    let entries_on_esp = ((glob $"($esp)/loader/entries/*.conf" | length) > 0)
+    let efi = ($sysroot | path join efi)
+    let boot_efi = ($sysroot | path join boot/efi)
+    mkdir $efi $boot_efi
+    mount -t tmpfs tmpfs $boot_efi
+    let result = (do { ^bootc install mount --sysroot $sysroot --latest $dest } | complete)
+    if $entries_on_esp {
+        assert equal $result.exit_code 0 $"install mount must read the ESP at /boot/efi: ($result.stderr)"
+        umount -R $dest
+    } else {
+        do $assert_follows_entries $result "empty /boot/efi"
+    }
+    # And a mounted /efi comes before /boot/efi.
+    mount --bind $esp $efi
+    do $assert_follows_entries (do { ^bootc install mount --sysroot $sysroot --latest $dest } | complete) "/efi"
+    umount $efi $boot_efi
+    for f in $entries { open --raw $f | into binary | decode utf-8 | str replace -a $missing $id | save -f $f }
+    bootc install mount --sysroot $sysroot --esp $esp --latest $dest
+    assert equal (open ($dest | path join etc/sentinel)) "etc sentinel"
+    umount -R $dest
+} else {
+    # --latest must pick OSTree's default deployment. Use more than ten, so
+    # that sorting the entries by file name (ostree-10 before ostree-9) would
+    # pick the wrong one.
+    # Drop the etc.transient config from above, so /etc is the persistent
+    # copy again and can carry a marker per deployment.
+    rm ($deployment | path join etc/ostree/prepare-root.conf)
+    let csum = ($deployment | path basename | split row "." | first)
+    for _ in 1..10 {
+        ostree admin deploy --sysroot $sysroot --os default --retain $csum
+    }
+    let deployments = (ls ($sysroot | path join $state.deployments) | where type == dir | get name)
+    assert equal ($deployments | length) 11
+    # Each deployment of the same commit is told apart by its serial; the
+    # newest (serial 10) is the default until set-default moves another one
+    # (index 5 in newest-first order, serial 5) to the front.
+    for d in $deployments {
+        $d | path basename | split row "." | last | save -f ($d | path join etc/which)
+    }
+    for case in [[default expected]; [null "10"] [5 "5"]] {
+        if $case.default != null {
+            ostree admin set-default --sysroot $sysroot $case.default
+        }
+        bootc install mount --sysroot $sysroot --latest $dest
+        assert equal (open ($dest | path join etc/which)) $case.expected
+        umount -R $dest
+    }
+}
+umount $esp
+
 umount $sysroot
 losetup -d $loop
 
