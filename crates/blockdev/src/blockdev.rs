@@ -507,6 +507,39 @@ pub fn list_dev_by_dir(dir: &Dir) -> Result<Device> {
     list_dev(&Utf8PathBuf::from(source))
 }
 
+/// The statfs magic of ZFS (`ZFS_SUPER_MAGIC` in OpenZFS), which libc lacks.
+const ZFS_SUPER_MAGIC: u32 = 0x2fc12fc1;
+
+/// Whether a filesystem with the given `st_dev` and statfs magic is backed by
+/// a block device.
+///
+/// The kernel gives filesystems without one (virtiofs, NFS, tmpfs,
+/// overlayfs, ...) an anonymous device number, whose major is 0. btrfs and
+/// ZFS get anonymous device numbers too (btrfs one per subvolume) even though
+/// they sit on block devices, so those are recognized by their magic.
+fn is_block_backed(st_dev: u64, fs_magic: u32) -> bool {
+    rustix::fs::major(st_dev) != 0
+        || fs_magic == libc::BTRFS_SUPER_MAGIC as u32
+        || fs_magic == ZFS_SUPER_MAGIC
+}
+
+/// List the device containing the filesystem mounted at the given directory,
+/// or `None` if that filesystem is not backed by a block device (such as
+/// virtiofs, NFS, tmpfs or overlayfs).
+///
+/// As with [`list_dev_by_dir`], `dir` must be the root of a mount.
+#[context("Finding block device backing directory")]
+pub fn list_dev_by_dir_optional(dir: &Dir) -> Result<Option<Device>> {
+    let st_dev = rustix::fs::fstat(dir)?.st_dev;
+    // Filesystem magic numbers are 32 bits; f_type's width varies by arch.
+    let fs_magic = rustix::fs::fstatfs(dir)?.f_type as u32;
+    if !is_block_backed(st_dev, fs_magic) {
+        tracing::debug!("No block device: st_dev={st_dev:#x} f_type={fs_magic:#x}");
+        return Ok(None);
+    }
+    list_dev_by_dir(dir).map(Some)
+}
+
 /// Determine whether the block device backing the filesystem mounted at the
 /// given directory is physically read-only.
 ///
@@ -756,6 +789,36 @@ fn parse_partition_number_from_suffix(parent_path: &str, esp_path: &str) -> Opti
 #[cfg(test)]
 mod test {
     use super::*;
+
+    #[test]
+    fn test_is_block_backed() {
+        use rustix::fs::makedev;
+        // Filesystem magic numbers are 32 bits; see list_dev_by_dir_optional.
+        let cases = [
+            (makedev(252, 3), libc::XFS_SUPER_MAGIC as u32, true),
+            (makedev(253, 0), libc::EXT4_SUPER_MAGIC as u32, true),
+            (makedev(0, 38), libc::BTRFS_SUPER_MAGIC as u32, true),
+            (makedev(0, 51), ZFS_SUPER_MAGIC, true),
+            (makedev(0, 29), libc::FUSE_SUPER_MAGIC as u32, false),
+            (makedev(0, 52), libc::NFS_SUPER_MAGIC as u32, false),
+            (makedev(0, 40), libc::OVERLAYFS_SUPER_MAGIC as u32, false),
+            (makedev(0, 23), libc::TMPFS_MAGIC as u32, false),
+        ];
+        for (st_dev, fs_magic, expected) in cases {
+            assert_eq!(
+                is_block_backed(st_dev, fs_magic),
+                expected,
+                "st_dev={st_dev:#x} f_type={fs_magic:#x}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_list_dev_by_dir_optional_procfs() -> Result<()> {
+        let proc = Dir::open_ambient_dir("/proc", cap_std_ext::cap_std::ambient_authority())?;
+        assert!(list_dev_by_dir_optional(&proc)?.is_none());
+        Ok(())
+    }
 
     #[test]
     fn test_parse_size_mib() {
