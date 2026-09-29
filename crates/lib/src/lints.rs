@@ -765,7 +765,7 @@ Any content here in the container image will be masked at runtime.
     check_boot,
 );
 fn check_boot(root: &Dir, config: &LintExecutionConfig) -> LintResult {
-    let Some(d) = root.open_dir_optional("boot")? else {
+    let Some(d) = root.open_dir_optional(crate::install::BOOT)? else {
         return lint_err("Missing /boot directory");
     };
 

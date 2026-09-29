@@ -118,7 +118,7 @@ use crate::{
 };
 use crate::{parsers::grub_menuconfig::MenuEntry, store::BootedComposefs};
 
-use crate::install::{RootSetup, State};
+use crate::install::{BOOT, RootSetup, State};
 
 /// Contains the EFP's filesystem UUID. Used by grub
 pub(crate) const EFI_UUID_FILE: &str = "efiuuid.cfg";
@@ -304,7 +304,7 @@ fn read_dumpfile_from_fs(
     let root = fs.as_dir();
     let dumpfile_os = std::ffi::OsStr::new(dumpfile_name);
 
-    if let Ok(boot_dir) = root.get_directory_ref("boot".as_ref()) {
+    if let Ok(boot_dir) = root.get_directory_ref(BOOT.as_ref()) {
         if let Ok(file) = boot_dir.get_file(dumpfile_os) {
             return read_regular_file(file, repo);
         }
@@ -2134,7 +2134,7 @@ pub(crate) async fn setup_composefs_boot(
         // which is otherwise mounted at the composefs root's own /boot) and
         // an empty `boot/efi` directory for its EFI component to discover
         // and mount the real ESP into, exactly as it would on ostree.
-        let bind_boot_path = root_setup.physical_root_path.join("boot");
+        let bind_boot_path = root_setup.physical_root_path.join(BOOT);
         crate::bootloader::install_via_bootupd(
             &root_setup.device_info,
             &root_setup.physical_root_path,

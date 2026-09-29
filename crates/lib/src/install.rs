@@ -966,8 +966,8 @@ async fn initialize_ostree_root(state: &State, root_setup: &RootSetup) -> Result
     }
 
     // And also label /boot AKA xbootldr, if it exists
-    if rootfs_dir.try_exists("boot")? {
-        crate::lsm::ensure_dir_labeled(rootfs_dir, "boot", None, 0o755.into(), sepolicy)?;
+    if rootfs_dir.try_exists(BOOT)? {
+        crate::lsm::ensure_dir_labeled(rootfs_dir, BOOT, None, 0o755.into(), sepolicy)?;
     }
 
     // Build the list of ostree repo config options: defaults + install config
@@ -1264,7 +1264,7 @@ async fn install_container(
     if let Some(policy) = sepolicy {
         let deployment_root_meta = root.dir_metadata()?;
         let deployment_root_devino = (deployment_root_meta.dev(), deployment_root_meta.ino());
-        for d in ["ostree", "boot"] {
+        for d in ["ostree", BOOT] {
             let mut pathbuf = Utf8PathBuf::from(d);
             crate::lsm::ensure_dir_labeled_recurse(
                 &root_setup.physical_root,
@@ -1972,7 +1972,7 @@ async fn install_with_sysroot(
                     .clone()
                     .unwrap_or(rootfs.physical_root_path.clone());
                 let chroot_target = root_path.join(deployment_path.as_str());
-                let bind_boot_path = root_path.join("boot");
+                let bind_boot_path = root_path.join(BOOT);
                 crate::bootloader::install_via_bootupd(
                     &rootfs.device_info,
                     &root_path,
@@ -2226,7 +2226,7 @@ async fn install_to_filesystem_impl(
 
     // Finalize mounted filesystems
     if !rootfs.skip_finalize {
-        let bootfs = rootfs.boot.as_ref().map(|_| ("boot", "boot"));
+        let bootfs = rootfs.boot.as_ref().map(|_| ("boot", BOOT));
         for (fsname, fs) in std::iter::once(("root", ".")).chain(bootfs) {
             finalize_filesystem(fsname, &rootfs.physical_root, fs)?;
         }
@@ -2785,7 +2785,7 @@ pub(crate) async fn install_to_filesystem(
         if spec.is_empty() {
             None
         } else {
-            Some(MountSpec::new(&spec, "/boot"))
+            Some(MountSpec::new(&spec, &format!("/{BOOT}")))
         }
     } else {
         // Read /etc/fstab to get boot entry, but only use it if it's UUID-based
@@ -2795,7 +2795,7 @@ pub(crate) async fn install_to_filesystem(
             .or_else(|| {
                 boot_uuid
                     .as_deref()
-                    .map(|boot_uuid| MountSpec::new_uuid_src(boot_uuid, "/boot"))
+                    .map(|boot_uuid| MountSpec::new_uuid_src(boot_uuid, &format!("/{BOOT}")))
             })
     };
     // Ensure that we mount /boot readonly because it's really owned by bootc/ostree
@@ -2921,7 +2921,7 @@ fn read_boot_fstab_entry(root: &Dir) -> Result<Option<MountSpec>> {
         let spec = MountSpec::from_str(line)?;
 
         // Check if this is a /boot entry
-        if spec.target == "/boot" {
+        if spec.target == format!("/{BOOT}") {
             return Ok(Some(spec));
         }
     }

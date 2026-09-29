@@ -25,6 +25,7 @@ use clap::ValueEnum;
 use fn_error_context::context;
 use serde::{Deserialize, Serialize};
 
+use super::BOOT;
 use super::MountSpec;
 use super::RUN_BOOTC;
 use super::RW_KARG;
@@ -879,7 +880,7 @@ pub(crate) fn install_create_rootfs(
     let bootarg = bootsrc.as_deref().map(|bootsrc| format!("boot={bootsrc}"));
     let boot = bootsrc.map(|bootsrc| MountSpec {
         source: bootsrc,
-        target: "/boot".into(),
+        target: format!("/{BOOT}"),
         fstype: MountSpec::AUTO.into(),
         options: Some("ro".into()),
     });
@@ -919,14 +920,14 @@ pub(crate) fn install_create_rootfs(
     let target_rootfs = Dir::open_ambient_dir(&physical_root_path, cap_std::ambient_authority())?;
     crate::lsm::ensure_dir_labeled(&target_rootfs, "", Some("/".into()), 0o755.into(), sepolicy)?;
     let physical_root = Dir::open_ambient_dir(&physical_root_path, cap_std::ambient_authority())?;
-    let bootfs = physical_root_path.join("boot");
+    let bootfs = physical_root_path.join(BOOT);
     // Create the underlying mount point directory, which should be labeled
-    crate::lsm::ensure_dir_labeled(&target_rootfs, "boot", None, 0o755.into(), sepolicy)?;
+    crate::lsm::ensure_dir_labeled(&target_rootfs, BOOT, None, 0o755.into(), sepolicy)?;
     if let Some(bootdev) = bootdev {
         bootc_mount::mount_typed(&bootdev.path(), fstype, &bootfs)?;
     }
     // And we want to label the root mount of /boot
-    crate::lsm::ensure_dir_labeled(&target_rootfs, "boot", None, 0o755.into(), sepolicy)?;
+    crate::lsm::ensure_dir_labeled(&target_rootfs, BOOT, None, 0o755.into(), sepolicy)?;
 
     // Create the EFI system partition, if applicable
     if let Some(esp_partno) = layout.esp_partno {

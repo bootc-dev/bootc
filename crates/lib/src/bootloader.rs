@@ -46,7 +46,7 @@ const BOOTCTL_RANDOM_SEED_MIN_VERSION: u32 = 257;
 /// in place (bootupd will overwrite them during installation).
 // TODO: clean all ESPs on multi-device setups
 pub(crate) fn mount_esp_part(root: &Dir, root_path: &Utf8Path, is_ostree: bool) -> Result<()> {
-    let efi_path = Utf8Path::new("boot").join(crate::bootloader::EFI_DIR);
+    let efi_path = Utf8Path::new(crate::install::BOOT).join(crate::bootloader::EFI_DIR);
     let Some(esp_fd) = root
         .open_dir_optional(&efi_path)
         .context("Opening /boot/efi")?

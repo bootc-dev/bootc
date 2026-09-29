@@ -536,7 +536,7 @@ pub(crate) async fn composefs_gc(
         let boot_dump = composefs_ctl::dump_files(
             &booted_cfs.repo,
             &non_bootable_img.id.to_hex(),
-            &vec![std::path::PathBuf::from("/boot")],
+            &vec![std::path::Path::new("/").join(crate::install::BOOT)],
             false,
         )
         .context("Getting dump for /boot")?;
