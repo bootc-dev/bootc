@@ -217,19 +217,19 @@ of migrating the fstab entries. See the "Injecting kernel arguments" section abo
 
 **--composefs-backend**
 
-    If true, composefs backend is used, else ostree backend is used
+    Use the composefs backend instead of ostree. This is the default for images with a UKI, and for images with /usr/lib/composefs/setup-root-conf.toml and no ostree prepare-root.conf
 
     Default: false
 
 **--allow-missing-verity**
 
-    Make fs-verity validation optional in case the filesystem doesn't support it
+    Make fs-verity validation optional in case the filesystem doesn't support it (composefs backend only)
 
     Default: false
 
 **--uki-addon**=*UKI_ADDON*
 
-    Name of the UKI addons to install without the ".efi.addon" suffix. This option can be provided multiple times if multiple addons are to be installed
+    Name of the UKI addons to install without the ".efi.addon" suffix. This option can be provided multiple times if multiple addons are to be installed (composefs backend only)
 
 <!-- END GENERATED OPTIONS -->
 

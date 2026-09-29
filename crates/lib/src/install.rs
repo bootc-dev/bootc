@@ -397,21 +397,47 @@ pub(crate) struct InstallConfigOpts {
 
 #[derive(Debug, Default, Clone, clap::Parser, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct InstallComposefsOpts {
-    /// If true, composefs backend is used, else ostree backend is used
+    /// Use the composefs backend instead of ostree. This is the default for images with a UKI,
+    /// and for images with /usr/lib/composefs/setup-root-conf.toml and no ostree prepare-root.conf
     #[clap(long, default_value_t)]
     #[serde(default)]
     pub(crate) composefs_backend: bool,
 
     /// Make fs-verity validation optional in case the filesystem doesn't support it
-    #[clap(long, default_value_t, requires = "composefs_backend")]
+    /// (composefs backend only)
+    #[clap(long, default_value_t)]
     #[serde(default)]
     pub(crate) allow_missing_verity: bool,
 
     /// Name of the UKI addons to install without the ".efi.addon" suffix.
-    /// This option can be provided multiple times if multiple addons are to be installed.
-    #[clap(long, requires = "composefs_backend")]
+    /// This option can be provided multiple times if multiple addons are to be installed
+    /// (composefs backend only).
+    #[clap(long)]
     #[serde(default)]
     pub(crate) uki_addon: Option<Vec<String>>,
+}
+
+impl InstallComposefsOpts {
+    /// Check that the options fit together, once `composefs_backend` says
+    /// whether the composefs backend is used (passed, or selected by the image).
+    pub(crate) fn validate(&self, bootloader: Option<&Bootloader>) -> Result<()> {
+        if self.composefs_backend {
+            anyhow::ensure!(
+                !matches!(bootloader, Some(Bootloader::None)),
+                "Bootloader set to none is not supported with the composefs backend"
+            );
+        } else {
+            anyhow::ensure!(
+                !self.allow_missing_verity,
+                "--allow-missing-verity requires the composefs backend"
+            );
+            anyhow::ensure!(
+                self.uki_addon.is_none(),
+                "--uki-addon requires the composefs backend"
+            );
+        }
+        Ok(())
+    }
 }
 
 #[cfg(feature = "install-to-disk")]
@@ -635,7 +661,7 @@ pub(crate) struct State {
     pub(crate) target_opts: InstallTargetOpts,
     pub(crate) target_imgref: ostree_container::OstreeImageReference,
     #[allow(dead_code)]
-    pub(crate) prepareroot_config: HashMap<String, String>,
+    pub(crate) ostree_prepareroot_config: HashMap<String, String>,
     pub(crate) install_config: Option<config::InstallConfiguration>,
     /// The parsed contents of the authorized_keys (not the file path)
     pub(crate) root_ssh_authorized_keys: Option<String>,
@@ -1004,7 +1030,7 @@ async fn initialize_ostree_root(state: &State, root_setup: &RootSetup) -> Result
 
     let repo_verity_state = ostree_ext::fsverity::is_verity_enabled(&repo)?;
     let prepare_root_composefs = state
-        .prepareroot_config
+        .ostree_prepareroot_config
         .get("composefs.enabled")
         .map(|v| ComposefsState::from_str(&v))
         .transpose()?
@@ -1724,15 +1750,33 @@ async fn prepare_install(
 
     tracing::debug!("Composefs required: {composefs_required}");
 
-    if composefs_required {
-        composefs_options.composefs_backend = true;
-    }
+    // ostree's prepare-root.conf is read from the running root even with
+    // --source-imgref, like the install configuration: tools such as
+    // bootc-image-builder run bootc from the image they install. Convert the
+    // keyfile to a hashmap because GKeyFile isnt Send for probably bad reasons.
+    let ostree_prepareroot_config = ostree_prepareroot::load_config_from_root(&rootfs)?
+        .map(|kf| -> Result<HashMap<String, String>> {
+            let mut r = HashMap::new();
+            for grp in kf.groups() {
+                for key in kf.keys(&grp)? {
+                    let key = key.as_str();
+                    let value = kf.value(&grp, key)?;
+                    r.insert(format!("{grp}.{key}"), value.to_string());
+                }
+            }
+            Ok(r)
+        })
+        .transpose()?;
 
-    if composefs_options.composefs_backend
-        && matches!(config_opts.bootloader, Some(Bootloader::None))
-    {
-        anyhow::bail!("Bootloader set to none is not supported with the composefs backend");
-    }
+    // A UKI requires the composefs backend, and a composefs-native image
+    // without ostree's configuration defaults to it.
+    let composefs_default = crate::bootc_composefs::image::defaults_to_composefs_backend(
+        &rootfs,
+        ostree_prepareroot_config.is_some(),
+    )?;
+    tracing::debug!("Composefs default: {composefs_default}");
+    composefs_options.composefs_backend |= composefs_required || composefs_default;
+    composefs_options.validate(config_opts.bootloader.as_ref())?;
 
     // Read the file eagerly so we error out early, and before the mount changes
     // below hide a file bind mounted under e.g. /tmp. We may re-exec further down
@@ -1867,18 +1911,15 @@ async fn prepare_install(
         }
     }
 
-    // Convert the keyfile to a hashmap because GKeyFile isnt Send for probably bad reasons.
-    let prepareroot_config = {
-        let kf = ostree_prepareroot::require_config_from_root(&rootfs)?;
-        let mut r = HashMap::new();
-        for grp in kf.groups() {
-            for key in kf.keys(&grp)? {
-                let key = key.as_str();
-                let value = kf.value(&grp, key)?;
-                r.insert(format!("{grp}.{key}"), value.to_string());
-            }
-        }
-        r
+    // Only the ostree backend uses prepare-root.conf, and composefs-native
+    // images needn't have one.
+    let ostree_prepareroot_config = match ostree_prepareroot_config {
+        Some(c) => c,
+        None if composefs_options.composefs_backend => HashMap::new(),
+        None => anyhow::bail!(
+            "Failed to find {} in /usr/lib or /etc",
+            ostree_prepareroot::CONF_PATH
+        ),
     };
 
     // Create our global (read-only) state which gets wrapped in an Arc
@@ -1891,7 +1932,7 @@ async fn prepare_install(
         target_opts,
         target_imgref,
         install_config,
-        prepareroot_config,
+        ostree_prepareroot_config,
         root_ssh_authorized_keys,
         container_root: rootfs,
         tempdir,
@@ -3078,6 +3119,33 @@ pub(crate) async fn install_finalize(target: &Utf8Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_composefs_opts_validate() {
+        let addon = || Some(vec!["addon".to_string()]);
+        // (composefs_backend, allow_missing_verity, uki_addon, bootloader, valid)
+        let cases = [
+            (false, false, None, None, true),
+            (false, false, None, Some(Bootloader::None), true),
+            (false, true, None, None, false),
+            (false, false, addon(), None, false),
+            (true, false, None, None, true),
+            (true, true, addon(), Some(Bootloader::Systemd), true),
+            (true, false, None, Some(Bootloader::None), false),
+        ];
+        for (composefs_backend, allow_missing_verity, uki_addon, bootloader, valid) in cases {
+            let opts = InstallComposefsOpts {
+                composefs_backend,
+                allow_missing_verity,
+                uki_addon,
+            };
+            assert_eq!(
+                opts.validate(bootloader.as_ref()).is_ok(),
+                valid,
+                "{opts:?} {bootloader:?}"
+            );
+        }
+    }
 
     #[test]
     #[cfg(feature = "install-to-disk")]
