@@ -76,6 +76,10 @@ For shared `--apply` and `--soft-reboot` behavior, see
 
     Retain reference to currently booted image
 
+**--from-delta**=*PATH*
+
+    Switch using a local oci-delta artifact instead of the network
+
 <!-- END GENERATED OPTIONS -->
 
 # EXAMPLES

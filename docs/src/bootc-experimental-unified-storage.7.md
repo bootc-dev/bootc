@@ -182,6 +182,9 @@ unified storage model is documented in the rustdoc comments of the relevant sour
 - **Garbage collection**: Images in bootc storage are garbage collected based
   on deployment references; see [logically-bound-images.md](bootc-logically-bound-images.7.md)
   for details
+- **Delta imports**: Delta imports builds layers directly in the composefs repo, and
+  there is currently no operation to allow pusing from the composefs repo to the
+  bootc container storage.
 
 ## Related issues
 
