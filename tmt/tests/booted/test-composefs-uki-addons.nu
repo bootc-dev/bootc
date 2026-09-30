@@ -127,6 +127,13 @@ def third_boot [] {
 
     assert ($result_local.exit_code != 0) "Two composefs cmdline should've been rejected"
 
+    # Requesting a CLI addon that isn't present in the image must fail the switch
+    let missing_addon = (do {
+        bootc switch --transport containers-storage --uki-addon does-not-exist localhost/bootc-uki-addons-3
+    } | complete)
+    assert ($missing_addon.exit_code != 0) "Switch requesting a non-existent UKI addon should fail"
+
+
     # This should update the global cmdline because we have the same name
     # Also this shouldn't include the local cmdline addon so we're good and this should pass
     bootc switch --transport containers-storage --uki-addon berserk-cmdline localhost/bootc-uki-addons-3

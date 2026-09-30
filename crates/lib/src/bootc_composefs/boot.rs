@@ -1827,8 +1827,14 @@ pub(crate) fn setup_composefs_uki_boot(
     boot_ids: &ExpectedBootImageIds,
     entries: Vec<ComposefsBootEntry<Sha512HashValue>>,
 ) -> Result<(String, Sha512HashValue)> {
-    let (root_path, esp_device, bootloader, missing_fsverity_allowed, uki_addons) = match setup_type
-    {
+    let (
+        root_path,
+        esp_device,
+        bootloader,
+        missing_fsverity_allowed,
+        uki_addons_via_cli,
+        installed_uki_addons,
+    ) = match setup_type {
         BootSetupType::Setup((root_setup, state, postfetch, allow_missing_fsverity)) => {
             state.require_no_kargs_for_uki()?;
 
@@ -1861,6 +1867,7 @@ pub(crate) fn setup_composefs_uki_boot(
                 postfetch.detected_bootloader.clone(),
                 allow_missing_fsverity,
                 addons,
+                vec![],
             )
         }
 
@@ -1874,20 +1881,30 @@ pub(crate) fn setup_composefs_uki_boot(
 
             // These are the currently installed addons which we will update automatically
             // if we find in the new image
-            let mut installed_addons = list_installed_uki_addons(storage)?;
+            //
+            // Only keep addons referenced by the current deployment
+            let installed_addons = list_installed_uki_addons(storage)?
+                .into_iter()
+                .filter(|addon| match &addon.addon_type {
+                    UkiAddonType::Scoped { depl_id } => *depl_id == *booted_cfs.cmdline.digest,
+                    UkiAddonType::Global => true,
+                })
+                .collect::<Vec<_>>();
 
             let target_depl_id = id.to_hex();
 
+            let mut addons_via_cli: Vec<UkiAddonsList> = vec![];
+
             if let Some(addons) = &uki_addon_opts {
                 for addon in addons.global.iter().flatten() {
-                    installed_addons.push(UkiAddonsList {
+                    addons_via_cli.push(UkiAddonsList {
                         name: addon.into(),
                         addon_type: UkiAddonType::Global,
                     });
                 }
 
                 for addon in addons.scoped.iter().flatten() {
-                    installed_addons.push(UkiAddonsList {
+                    addons_via_cli.push(UkiAddonsList {
                         name: addon.into(),
                         addon_type: UkiAddonType::Scoped {
                             depl_id: target_depl_id.clone(),
@@ -1896,26 +1913,51 @@ pub(crate) fn setup_composefs_uki_boot(
                 }
             }
 
-            // Only keep addons referenced by the current deployment
-            let installed_addons = installed_addons
-                .into_iter()
-                .filter(|addon| match &addon.addon_type {
-                    UkiAddonType::Scoped { depl_id } => {
-                        *depl_id == *booted_cfs.cmdline.digest || *depl_id == target_depl_id
-                    }
-                    UkiAddonType::Global => true,
-                })
-                .collect::<Vec<_>>();
-
             (
                 sysroot,
                 esp_dev.path(),
                 bootloader,
                 booted_cfs.cmdline.allow_missing_fsverity,
+                addons_via_cli,
                 installed_addons,
             )
         }
     };
+
+    // An addon requested explicitly on the CLI must exist in the image; bail
+    // immediately if one is missing, before we touch the ESP. Addons carried
+    // forward on upgrade/switch may be absent from the new image, which is fine.
+    for addon in &uki_addons_via_cli {
+        let is_global = matches!(addon.addon_type, UkiAddonType::Global);
+
+        let found = entries.iter().any(|entry| {
+            let ComposefsBootEntry::Type2(entry) = entry else {
+                return false;
+            };
+
+            if matches!(entry.pe_type, PEType::Uki) {
+                return false;
+            }
+
+            let entry_is_global = matches!(entry.pe_type, PEType::GlobalUkiAddon);
+
+            entry_is_global == is_global
+                && entry
+                    .file_path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .and_then(|n| n.strip_suffix(EFI_ADDON_FILE_EXT))
+                    == Some(addon.name.as_str())
+        });
+
+        if !found {
+            let kind = if is_global { "global" } else { "scoped" };
+            anyhow::bail!(
+                "Requested {kind} UKI addon '{}' was not found in the image",
+                addon.name
+            );
+        }
+    }
 
     let esp_mount = mount_esp_writable(&esp_device).context("Mounting ESP")?;
 
@@ -1950,16 +1992,18 @@ pub(crate) fn setup_composefs_uki_boot(
 
                     let addon_name =
                         addon_name.strip_suffix(EFI_ADDON_FILE_EXT).ok_or_else(|| {
-                            anyhow::anyhow!("UKI addon doesn't end with {EFI_ADDON_DIR_EXT}")
+                            anyhow::anyhow!("UKI addon doesn't end with {EFI_ADDON_FILE_EXT}")
                         })?;
 
                     match entry.pe_type {
                         PEType::Uki => unreachable!("Outer match should've only caught UKI Addons"),
                         PEType::UkiAddon => {
-                            let found = uki_addons.iter().any(|addon| {
-                                matches!(addon.addon_type, UkiAddonType::Scoped { .. })
-                                    && addon.name == addon_name
-                            });
+                            let found = uki_addons_via_cli.iter().chain(&installed_uki_addons).any(
+                                |addon| {
+                                    matches!(addon.addon_type, UkiAddonType::Scoped { .. })
+                                        && addon.name == addon_name
+                                },
+                            );
 
                             if !found {
                                 tracing::info!("Not installing found UKI Addon: {addon_name}");
@@ -1967,10 +2011,12 @@ pub(crate) fn setup_composefs_uki_boot(
                             }
                         }
                         PEType::GlobalUkiAddon => {
-                            let found = uki_addons.iter().any(|addon| {
-                                matches!(addon.addon_type, UkiAddonType::Global)
-                                    && addon.name == addon_name
-                            });
+                            let found = uki_addons_via_cli.iter().chain(&installed_uki_addons).any(
+                                |addon| {
+                                    matches!(addon.addon_type, UkiAddonType::Global)
+                                        && addon.name == addon_name
+                                },
+                            );
 
                             if !found {
                                 tracing::info!(
