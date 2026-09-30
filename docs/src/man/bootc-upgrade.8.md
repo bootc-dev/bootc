@@ -67,6 +67,10 @@ For shared `--apply` and `--soft-reboot` behavior, see
 
     Upgrade to a different tag of the currently booted image
 
+**--from-delta**=*PATH*
+
+    Upgrade from a local oci-delta artifact instead of the network
+
 <!-- END GENERATED OPTIONS -->
 
 # EXAMPLES

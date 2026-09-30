@@ -33,6 +33,7 @@
 //! ## Container and Image Handling
 //!
 //! - [`image`] - Image operations and queries
+//! - [`delta`] - oci-delta artifacts (`--from-delta`)
 //! - [`boundimage`] - Logically Bound Images (LBIs)
 //! - [`podstorage`] - bootc-owned container storage (`/usr/lib/bootc/storage`)
 //! - [`podman`] - Podman command helpers
@@ -71,6 +72,7 @@ pub mod cli;
 mod composefs_consts;
 mod container_export;
 mod containerenv;
+pub(crate) mod delta;
 pub(crate) mod deploy;
 mod discoverable_partition_specification;
 pub(crate) mod fsck;
