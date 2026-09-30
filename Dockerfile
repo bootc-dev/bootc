@@ -89,6 +89,14 @@ RUN --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
         --install system-reinstall-bootc \
         --add-dir /var/add-dir/usr \
         --manifest=standard /target-rootfs
+
+    # Composefs test images signal the backend the way composefs-native images
+    # are meant to (see bootc-installation(7)): inject-baseconfig ships
+    # setup-root-conf.toml, and there must be no ostree prepare-root.conf, so
+    # that `bootc install` picks composefs without --composefs-backend.
+    if [[ "${variant}" == composefs* ]]; then
+        rm -vf /target-rootfs/usr/lib/ostree/prepare-root.conf /target-rootfs/etc/ostree/prepare-root.conf
+    fi
 EOF
 
 RUN --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp <<EOF 
@@ -334,6 +342,12 @@ set -xeuo pipefail
 
 if [[ "${bootloader}" == "systemd" ]]; then
   /run/packaging/switch-to-sdboot /run/sdboot-signed
+fi
+
+# Composefs test images are installed without --composefs-backend (see
+# target-base), and so without --bootloader too, which bcvk only takes with it.
+if [[ "${variant}" == composefs* ]]; then
+  printf '[install]\nbootloader = "%s"\n' "${bootloader}" > /usr/lib/bootc/install/80-composefs-bootloader.toml
 fi
 
 if [[ "${boot_type}" == "uki" ]]; then

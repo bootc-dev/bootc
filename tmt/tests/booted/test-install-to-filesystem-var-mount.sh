@@ -171,7 +171,6 @@ COMPOSEFS_BACKEND_PARAMS=()
 KARGS=("--karg=root=UUID=$ROOT_UUID")
 
 if [[ $is_composefs != "null" ]]; then
-    COMPOSEFS_BACKEND_PARAMS+=("--composefs-backend")
     COMPOSEFS_BACKEND_PARAMS+=("--bootloader" "${bootloader}")
 
     tune2fs -O verity /dev/BL/var02

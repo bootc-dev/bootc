@@ -12,7 +12,12 @@
 # `bootc install` run from that image without `--composefs-backend`, both
 # as a self-install and with --source-imgref (as bootc-image-builder does).
 # An image with both files is still installed with ostree. This runs on the
-# ostree variant too, where nothing else selects composefs.
+# ostree variant too, where nothing else selects composefs; on the composefs
+# variant, every test's install already relies on this default.
+#
+# TODO: This doesn't depend on the booted host; move it into a dedicated
+# install test suite, sharing the install-in-test code with the other install
+# tests: https://github.com/cgwalters-forge/tracker/issues/249
 
 use std assert
 use tap.nu
@@ -65,7 +70,9 @@ def main [] {
 
     bootc image copy-to-storage
     build $NATIVE "RUN rm -f /usr/lib/ostree/prepare-root.conf /etc/ostree/prepare-root.conf"
-    build $BOTH ""
+    # On the composefs variant, localhost/bootc is itself composefs-native: it
+    # has no prepare-root.conf, and configures its composefs bootloader.
+    build $BOTH "RUN printf '[composefs]\\nenabled = yes\\n' > /usr/lib/ostree/prepare-root.conf && rm -f /usr/lib/bootc/install/80-composefs-bootloader.toml"
 
     assert equal (install $NATIVE) "composefs" "composefs-native self-install"
     let src = $"--source-imgref=containers-storage:($NATIVE)"

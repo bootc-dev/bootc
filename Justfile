@@ -228,8 +228,7 @@ test-composefs bootloader filesystem boot_type seal_state *ARGS:
         filesystem={{filesystem}} \
         boot_type={{boot_type}} \
         seal_state={{seal_state}} \
-            test-tmt --composefs-backend \
-                --bootloader={{bootloader}} \
+            test-tmt \
                 --filesystem={{filesystem}} \
                 --seal-state={{seal_state}} \
                 --boot-type={{boot_type}} \
@@ -246,6 +245,8 @@ test-upgrade *ARGS: build _build-upgrade-source-image
     set -xeuo pipefail
     composefs_args=()
     if [[ "{{variant}}" = composefs ]]; then
+        # Unlike the composefs test images, the published base image doesn't
+        # select the composefs backend itself, and its bootc may predate that.
         composefs_args=(--composefs-backend \
             --bootloader={{bootloader}} \
             --filesystem={{filesystem}} \
@@ -308,8 +309,6 @@ test-tmt-baseconfig baseconfig *ARGS:
         --env=BOOTC_erofs_version={{erofs_version}} \
         --env=BOOTC_baseconfigs={{baseconfig}} \
         --upgrade-image={{upgrade_img}} \
-        --composefs-backend \
-        --bootloader={{bootloader}} \
         --filesystem={{filesystem}} \
         --boot-type={{boot_type}} \
         --seal-state={{seal_state}} \

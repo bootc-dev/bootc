@@ -552,7 +552,7 @@ jobs:
           cargo xtask run-tmt \
             --env=BOOTC_variant=composefs \
             --env=BOOTC_baseconfigs=${{ matrix.baseconfigs }} \
-            --composefs-backend --bootloader=grub --filesystem=ext4 \
+            --filesystem=ext4 \
             --seal-state=unsealed --boot-type=bls \
             --upgrade-image=localhost/bootc-upgrade \
             localhost/bootc readonly

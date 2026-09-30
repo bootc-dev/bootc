@@ -229,8 +229,9 @@ impl Display for SealState {
 /// Arguments for run-tmt command.
 ///
 /// The composefs-related fields can be set via CLI flags or via the standard
-/// `BOOTC_*` environment variables used by the Justfile.  When `BOOTC_variant`
-/// is set to `composefs`, `--composefs-backend` is implied automatically.
+/// `BOOTC_*` environment variables used by the Justfile.  `BOOTC_variant=composefs`
+/// selects the composefs plans, but doesn't pass `--composefs-backend` to bcvk:
+/// those test images select the composefs backend themselves.
 #[derive(Debug, Args)]
 pub(crate) struct RunTmtArgs {
     /// Image name (e.g., "localhost/bootc")
@@ -278,10 +279,18 @@ pub(crate) struct RunTmtArgs {
     #[arg(long)]
     pub(crate) preserve_vm: bool,
 
-    /// Use composefs backend.  Also implied when BOOTC_variant=composefs.
+    /// Install with `--composefs-backend` (and `--bootloader`), for images that
+    /// don't select the composefs backend themselves.
     #[arg(long)]
     pub(crate) composefs_backend: bool,
 
+    /// Whether the image is installed with the composefs backend: set by
+    /// `--composefs-backend` or `BOOTC_variant=composefs`.
+    #[arg(skip)]
+    pub(crate) composefs: bool,
+
+    /// Only passed to bcvk with `--composefs-backend`; composefs test images
+    /// configure it themselves.
     #[arg(long, env = "BOOTC_bootloader")]
     pub(crate) bootloader: Option<Bootloader>,
 
@@ -308,15 +317,13 @@ pub(crate) struct RunTmtArgs {
 }
 
 impl RunTmtArgs {
-    /// Derive composefs_backend from BOOTC_variant if not explicitly set.
+    /// Derive `composefs` from `--composefs-backend` and BOOTC_variant, from
+    /// the environment or passed to the tests with `--env` (as the Justfile does).
     pub(crate) fn resolve_composefs(&mut self) {
-        if !self.composefs_backend {
-            if let Ok(v) = std::env::var("BOOTC_variant") {
-                if v == "composefs" {
-                    self.composefs_backend = true;
-                }
-            }
-        }
+        const COMPOSEFS_VARIANT: &str = "BOOTC_variant=composefs";
+        self.composefs = self.composefs_backend
+            || std::env::var("BOOTC_variant").is_ok_and(|v| v == "composefs")
+            || self.env.iter().any(|e| e == COMPOSEFS_VARIANT);
     }
 }
 

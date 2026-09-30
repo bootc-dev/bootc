@@ -10,24 +10,24 @@ BASE_DIR="${1:-/}"
 VARIANT="${2:-}"
 BASECONFIGS="${3:-}"
 
-# No-op if no baseconfigs specified
-if [ -z "${BASECONFIGS}" ]; then
-  exit 0
-fi
-
 # setup-root-conf.toml is composefs-specific; ostree uses prepare-root.conf
 # which has a different (INI) format and different option names.
 case "${VARIANT}" in
   composefs*)
     TARGET="${BASE_DIR}/usr/lib/composefs/setup-root-conf.toml"
+    # Always ship it, even empty: it marks the image as composefs-native, so
+    # `bootc install` picks the composefs backend without --composefs-backend.
+    mkdir -p "$(dirname "${TARGET}")"
+    touch "${TARGET}"
     ;;
   *)
-    echo "inject-baseconfig: baseconfigs not supported for variant '${VARIANT}'" >&2
-    exit 1
+    if [ -n "${BASECONFIGS}" ]; then
+      echo "inject-baseconfig: baseconfigs not supported for variant '${VARIANT}'" >&2
+      exit 1
+    fi
+    exit 0
     ;;
 esac
-
-mkdir -p "$(dirname "${TARGET}")"
 
 # Split on commas and process each token
 IFS=',' read -ra TOKENS <<< "${BASECONFIGS}"

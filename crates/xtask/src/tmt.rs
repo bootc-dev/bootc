@@ -400,6 +400,7 @@ pub(crate) fn run_tmt(sh: &Shell, args: &RunTmtArgs) -> Result<()> {
 
     let bcvk_opts = BcvkInstallOpts {
         composefs_backend: args.composefs_backend,
+        composefs: args.composefs,
         bootloader: args.bootloader.clone(),
         filesystem: args.filesystem.clone(),
         seal_state: args.seal_state.clone(),
@@ -459,7 +460,7 @@ pub(crate) fn run_tmt(sh: &Shell, args: &RunTmtArgs) -> Result<()> {
         plans.retain(|plan| filter_args.iter().any(|arg| plan.contains(arg.as_str())));
     }
 
-    if args.composefs_backend {
+    if args.composefs {
         plans.retain(|plan| {
             !plan_metadata
                 .iter()

@@ -54,7 +54,7 @@ let base_args = $"bootc install to-disk --disable-selinux --via-loopback --sourc
 let install_cmd = if (tap is_composefs) {
     let st = bootc status --json | from json
     let bootloader = ($st.status.booted.composefs.bootloader | str downcase)
-    $"($base_args) --composefs-backend --bootloader=($bootloader) --filesystem ext4 ./disk.img"
+    $"($base_args) --bootloader=($bootloader) --filesystem ext4 ./disk.img"
 } else {
     $"($base_args) --filesystem xfs ./disk.img"
 }

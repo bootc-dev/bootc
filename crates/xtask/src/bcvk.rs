@@ -19,7 +19,13 @@ const DEFAULT_SB_KEYS_DIR: &str = "target/test-secureboot";
 /// or populate fields directly.
 #[derive(Debug, Default)]
 pub(crate) struct BcvkInstallOpts {
+    /// Pass `--composefs-backend` (and `--bootloader`, which bcvk only
+    /// takes with it). Images that select the composefs backend themselves,
+    /// like bootc's composefs test images, don't need it.
     pub(crate) composefs_backend: bool,
+    /// Whether the image is installed with the composefs backend, with or
+    /// without `composefs_backend`.
+    pub(crate) composefs: bool,
     pub(crate) bootloader: Option<Bootloader>,
     pub(crate) filesystem: Option<String>,
     pub(crate) seal_state: Option<SealState>,
@@ -29,7 +35,8 @@ pub(crate) struct BcvkInstallOpts {
 impl BcvkInstallOpts {
     /// Build from `BOOTC_*` environment variables.
     ///
-    /// `BOOTC_variant=composefs` implies `composefs_backend = true`.
+    /// `BOOTC_variant=composefs` implies `composefs_backend = true`, since the
+    /// dev VM may fall back to a stock base image.
     pub(crate) fn from_env() -> Self {
         let composefs_backend = std::env::var("BOOTC_variant")
             .map(|v| v == "composefs")
@@ -55,6 +62,7 @@ impl BcvkInstallOpts {
 
         Self {
             composefs_backend,
+            composefs: composefs_backend,
             bootloader,
             filesystem,
             seal_state,
@@ -65,15 +73,19 @@ impl BcvkInstallOpts {
     /// Return the install-related args for `bcvk libvirt run`.
     ///
     /// This covers `--composefs-backend`, `--filesystem`, `--bootloader`,
-    /// and `--karg` flags.  Note that `--bootloader` and `--filesystem`
-    /// are only valid when `--composefs-backend` is also set (bcvk
-    /// enforces this via a clap `requires` relationship).
+    /// and `--karg` flags.  Note that `--bootloader` is only valid when
+    /// `--composefs-backend` is also set (bcvk enforces this via a clap
+    /// `requires` relationship).
     pub(crate) fn install_args(&self) -> Vec<String> {
         let mut args = Vec::new();
         if self.composefs_backend {
             args.push("--composefs-backend".into());
+        }
+        if self.composefs_backend || self.composefs {
             let fs = self.filesystem.as_deref().unwrap_or("ext4");
             args.push(format!("--filesystem={fs}"));
+        }
+        if self.composefs_backend {
             if let Some(b) = &self.bootloader {
                 args.push(format!("--bootloader={b}"));
             }
@@ -118,6 +130,44 @@ impl BcvkInstallOpts {
             // "Security Violation".  Sealed images work because they enroll
             // custom test keys and use a test-signed systemd-boot.
             Ok(vec!["--firmware=uefi-insecure".into()])
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_install_args() {
+        // (composefs_backend, composefs) => expected args
+        let cases: &[(bool, bool, &[&str])] = &[
+            (false, false, &[]),
+            // A composefs-native image selects the backend itself
+            (false, true, &["--filesystem=xfs"]),
+            (
+                true,
+                true,
+                &[
+                    "--composefs-backend",
+                    "--filesystem=xfs",
+                    "--bootloader=systemd",
+                ],
+            ),
+        ];
+        for &(composefs_backend, composefs, expected) in cases {
+            let opts = BcvkInstallOpts {
+                composefs_backend,
+                composefs,
+                bootloader: Some(Bootloader::Systemd),
+                filesystem: Some("xfs".into()),
+                ..Default::default()
+            };
+            assert_eq!(
+                opts.install_args(),
+                expected,
+                "composefs_backend={composefs_backend} composefs={composefs}"
+            );
         }
     }
 }
