@@ -77,7 +77,10 @@ def main [] {
     assert equal (install $NATIVE) "composefs" "composefs-native self-install"
     let src = $"--source-imgref=containers-storage:($NATIVE)"
     assert equal (install $NATIVE $src) "composefs" "composefs-native with --source-imgref"
-    assert equal (install $BOTH) "ostree" "image with both configurations"
+    # The ostree backend needs bootupd, which images built for systemd-boot drop
+    if (which bootupctl | is-not-empty) {
+        assert equal (install $BOTH) "ostree" "image with both configurations"
+    }
 
     podman rmi $NATIVE $BOTH
     tap ok
