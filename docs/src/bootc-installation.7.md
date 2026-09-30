@@ -118,6 +118,23 @@ For example, a derived image can supply `50-myos.toml` with
 See [bootc-install-config](man/bootc-install-config.5.md) for file discovery,
 merge precedence, and the available configuration fields.
 
+### The storage backend
+
+The storage backend is determined by the image. It is installed with the
+[experimental composefs backend](bootc-experimental-composefs.7.md) when it
+ships a UKI, or when it matches both of these rules:
+
+- it ships `/usr/lib/composefs/setup-root-conf.toml` (which may be empty; see
+  [bootc-setup-root-conf.toml(5)](man/bootc-setup-root-conf.5.md));
+- it has no ostree `prepare-root.conf`, in either `/usr/lib/ostree` or `/etc/ostree`.
+
+Any other image is installed with ostree. `bootc container lint` uses the same
+`setup-root-conf.toml` marker to stop requiring the ostree-specific parts of
+an image, such as the `/ostree` symlink.
+
+Like the install configuration, these files are read from the root `bootc` runs
+in, also with `--source-imgref`.
+
 ## Installing an "unconfigured" image
 
 The bootc project aims to support generic/general-purpose operating

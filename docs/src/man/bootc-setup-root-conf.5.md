@@ -16,11 +16,12 @@ mounted.
 If the file does not exist all options take their documented defaults.
 
 The presence of this file (even if empty) also marks the image as
-composefs-native; `bootc container lint` then no longer requires the
-`/ostree` symlink or the ostree `prepare-root.conf` composefs configuration
-used by the ostree backend.
-If the image also has no ostree `prepare-root.conf`, `bootc install`
-defaults to the composefs backend, without `--composefs-backend`.
+composefs-native, which decides the storage backend `bootc install` uses:
+if the image also has no ostree `prepare-root.conf`, it is installed with
+the composefs backend, and otherwise with ostree (see
+[bootc-installation(7)](../bootc-installation.7.md)). `bootc container lint`
+then also no longer requires the `/ostree` symlink or the ostree
+`prepare-root.conf` composefs configuration used by the ostree backend.
 
 The `51bootc` dracut module installs this file into the initramfs automatically
 when it is present on the host image.  Image authors can therefore ship the
