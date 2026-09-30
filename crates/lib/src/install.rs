@@ -1725,6 +1725,7 @@ async fn prepare_install(
     disk_install: bool,
 ) -> Result<Arc<State>> {
     tracing::trace!("Preparing install");
+
     let allow_missing_verity_explicit = composefs_options.allow_missing_verity;
     let rootfs = cap_std::fs::Dir::open_ambient_dir("/", cap_std::ambient_authority())
         .context("Opening /")?;
@@ -1872,6 +1873,13 @@ async fn prepare_install(
     )?;
 
     composefs_options.validate_bound_images(config_opts.bound_images, &rootfs)?;
+
+    if !composefs_options.composefs_backend
+        && (composefs_options.uki_addon_opts.scoped.is_some()
+            || composefs_options.uki_addon_opts.global.is_some())
+    {
+        anyhow::bail!("UKI Addons are only supported on composefs backends");
+    }
 
     // Read the file eagerly so we error out early, and before the mount changes
     // below hide a file bind mounted under e.g. /tmp. We may re-exec further down
