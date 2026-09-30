@@ -1,9 +1,10 @@
+use std::io::{Seek, SeekFrom};
 use std::path::Path;
 
 use anyhow::{Context, Result};
 use bootc_mount::tempmount::TempMount;
 use camino::Utf8PathBuf;
-use cap_std_ext::cap_std::fs::Dir;
+use cap_std_ext::{cap_std::fs::Dir, dirext::CapStdExtDirExt};
 use fn_error_context::context;
 use ostree_ext::{
     composefs::fsverity::{FsVerityHashValue, Sha512HashValue},
@@ -292,7 +293,37 @@ pub(crate) fn handle_addon_cli_cmd(
             // before creating directories
             let addon_path = verify_addon_exists(&cfs_boot_dir, addon_name, *addon_type)?;
 
-            match addon_type {
+            // Make sure this addon doesn't contain a composefs= or composefs.digest= cmdline
+            let mut addon_file = composefs
+                .fd
+                .open(&addon_path)
+                .with_context(|| format!("Opening UKI Addon at {addon_path}"))?;
+
+            // UKI Addon might not even have a cmdline
+            let cmdline = uki::get_cmdline_buffered(&mut addon_file);
+
+            match cmdline {
+                Ok(ref cmdline_str) => {
+                    let cfs_cmdline_info =
+                        ComposefsBootCmdline::<Sha512HashValue>::from_cmdline(cmdline_str)
+                            .context("Parsing composefs=")?;
+
+                    if let Some(cfs_cmdline) = cfs_cmdline_info {
+                        anyhow::bail!(
+                            "composefs cmdline {cfs_cmdline:?} found in UKI Addon {addon_name}. Refusing to add"
+                        );
+                    }
+                }
+                Err(uki::UkiError::MissingSection(..)) => {
+                    // This is fine, no cmdline section
+                    // so it's just a no op
+                }
+                Err(e) => {
+                    return Err(e).context("Getting UKI cmdline");
+                }
+            };
+
+            let (dest_dir, dest_name) = match addon_type {
                 UkiAddonScope::Global => {
                     esp.fd
                         .create_dir_all(GLOBAL_UKI_ADDONS_DIR)
@@ -303,14 +334,7 @@ pub(crate) fn handle_addon_cli_cmd(
                         .open_dir(GLOBAL_UKI_ADDONS_DIR)
                         .context("Opening global addons dir")?;
 
-                    composefs
-                        .fd
-                        .copy(
-                            addon_path,
-                            &global_addons_dir,
-                            get_global_uki_addon_name(addon_name),
-                        )
-                        .context("Copying global addon")?;
+                    (global_addons_dir, get_global_uki_addon_name(addon_name))
                 }
                 UkiAddonScope::Scoped => {
                     let dir_path = Path::new(BOOTC_UKI_DIR)
@@ -325,12 +349,24 @@ pub(crate) fn handle_addon_cli_cmd(
                         .open_dir(&dir_path)
                         .context("Opening addons directory")?;
 
-                    composefs
-                        .fd
-                        .copy(addon_path, &to_dir, get_scoped_uki_addon_name(addon_name))
-                        .context("Copying addon")?;
+                    (to_dir, get_scoped_uki_addon_name(addon_name))
                 }
-            }
+            };
+
+            addon_file
+                .seek(SeekFrom::Start(0))
+                .context("Seeking to start of addon")?;
+
+            dest_dir
+                .atomic_replace_with(&dest_name, |writer| std::io::copy(&mut addon_file, writer))
+                .with_context(|| format!("Writing addon {dest_name}"))?;
+
+            rustix::fs::fsync(
+                dest_dir
+                    .reopen_as_ownedfd()
+                    .context("Reopening as owned fd")?,
+            )
+            .context("fsync")?;
         }
         UkiAddonCliOpts::ListReferenced { json } => {
             let referenced =
