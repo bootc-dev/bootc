@@ -200,6 +200,14 @@ def fourth_boot [] {
     let failed = (do { bootc uki-addon remove nonexistent-addon } | complete)
     assert ($failed.exit_code != 0)
 
+    # Adding an addon that carries a composefs= cmdline should be rejected.
+    let cfs_add = (do { bootc uki-addon add local-cfs-cmdline scoped } | complete)
+    assert ($cfs_add.exit_code != 0) "Adding an addon containing composefs= should be rejected"
+
+    # The rejected add must not have installed anything
+    let addons_after_reject = bootc uki-addon list --json | from json
+    assert (($addons_after_reject | length) == 2)
+
     tap ok
 }
 
