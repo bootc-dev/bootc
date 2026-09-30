@@ -13,6 +13,7 @@ rust-version = "1.85.0"
 include = ["/src", "/build.rs", "LICENSE-APACHE", "LICENSE-MIT"]
 
 [dependencies]
+oci-delta = "0.1.1"
 # Internal crates
 bootc-blockdev = { package = "bootc-internal-blockdev", path = "../blockdev", version = "1.17.1" }
 linux-kernel-cmdline = { workspace = true }
