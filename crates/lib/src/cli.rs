@@ -140,6 +140,13 @@ pub(crate) struct UpgradeOpts {
     #[clap(long)]
     pub(crate) tag: Option<String>,
 
+    /// Upgrade from a local oci-delta artifact instead of the network.
+    ///
+    /// The delta must have been created against an image that is already
+    /// present on this system.
+    #[clap(long, value_name = "PATH", conflicts_with_all = ["check", "from_downloaded", "tag"])]
+    pub(crate) from_delta: Option<Utf8PathBuf>,
+
     #[clap(flatten)]
     pub(crate) progress: ProgressOptions,
 }
@@ -201,6 +208,19 @@ pub(crate) struct SwitchOpts {
     /// logically bound images.
     #[clap(long = "experimental-unified-storage", hide = true)]
     pub(crate) unified_storage_exp: bool,
+
+    /// Switch using a local oci-delta artifact instead of the network.
+    ///
+    /// The delta must have been created against an image that is already
+    /// present on this system.
+    #[clap(long, value_name = "PATH", conflicts_with_all = [
+        "from_downloaded",
+        "transport",
+        "mutate_in_place",
+        "unified_storage_exp",
+        "enforce_container_sigpolicy",
+    ])]
+    pub(crate) from_delta: Option<Utf8PathBuf>,
 
     /// Target image to use for the next boot.
     /// Required unless `--from-downloaded` is present.
@@ -1342,6 +1362,8 @@ async fn upgrade(
     storage: &Storage,
     booted_ostree: &BootedOstree<'_>,
 ) -> Result<()> {
+    crate::delta::reject_unsupported(opts.from_delta.as_deref())?;
+
     let repo = &booted_ostree.repo();
 
     let host = crate::status::get_status(booted_ostree)?.1;
@@ -1569,6 +1591,8 @@ async fn switch_ostree(
     storage: &Storage,
     booted_ostree: &BootedOstree<'_>,
 ) -> Result<()> {
+    crate::delta::reject_unsupported(opts.from_delta.as_deref())?;
+
     let (_, host) = crate::status::get_status(booted_ostree)?;
 
     if opts.download_opts.from_downloaded {
@@ -2793,6 +2817,41 @@ mod tests {
                 case,
                 callname_from_argv0(OsStr::new(case)),
                 "Handling ident case {case}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_parse_from_delta() {
+        let o =
+            Opt::try_parse_from(["bootc", "switch", "--from-delta", "/d", "quay.io/e/x"]).unwrap();
+        match o {
+            Opt::Switch(o) => assert_eq!(o.from_delta.as_deref().unwrap(), "/d"),
+            o => panic!("Expected switch opts, not {o:?}"),
+        }
+
+        // A delta carries its own image content; anything that says where else
+        // to get that content, or that asks for a check we can't perform, must
+        // be rejected rather than silently ignored.
+        let conflicting: &[&[&str]] = &[
+            &["switch", "--transport=oci-archive", "quay.io/e/x"],
+            &["switch", "--mutate-in-place", "quay.io/e/x"],
+            &["switch", "--experimental-unified-storage", "quay.io/e/x"],
+            &["switch", "--enforce-container-sigpolicy", "quay.io/e/x"],
+            &["upgrade", "--check"],
+            &["upgrade", "--tag=other"],
+        ];
+        for args in conflicting {
+            let (subcommand, rest) = args.split_first().unwrap();
+            let mut full = vec!["bootc", subcommand, "--from-delta", "/d"];
+            full.extend_from_slice(rest);
+            let err = Opt::try_parse_from(&full)
+                .err()
+                .unwrap_or_else(|| panic!("{args:?}: expected a conflict"));
+            assert_eq!(
+                err.kind(),
+                clap::error::ErrorKind::ArgumentConflict,
+                "{args:?}: {err}"
             );
         }
     }
