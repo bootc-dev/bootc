@@ -1660,6 +1660,14 @@ async fn prepare_install(
     target_fs: Option<FilesystemEnum>,
 ) -> Result<Arc<State>> {
     tracing::trace!("Preparing install");
+
+    if !composefs_options.composefs_backend
+        && (composefs_options.uki_addon_opts.scoped.is_some()
+            || composefs_options.uki_addon_opts.global.is_some())
+    {
+        anyhow::bail!("UKI Addons are only supported on composefs backends");
+    }
+
     let allow_missing_verity_explicit = composefs_options.allow_missing_verity;
     let rootfs = cap_std::fs::Dir::open_ambient_dir("/", cap_std::ambient_authority())
         .context("Opening /")?;

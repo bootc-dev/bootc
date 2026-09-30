@@ -1781,6 +1781,10 @@ async fn switch(opts: SwitchOpts) -> Result<()> {
     let storage = &get_storage().await?;
     match storage.kind()? {
         BootedStorageKind::Ostree(booted_ostree) => {
+            if opts.uki_addon_opts.scoped.is_some() || opts.uki_addon_opts.global.is_some() {
+                anyhow::bail!("UKI Addon options are only supported for composefs backend");
+            }
+
             switch_ostree(opts, storage, &booted_ostree).await
         }
         BootedStorageKind::Composefs(booted_cfs) => {
@@ -2140,6 +2144,11 @@ async fn run_from_opt(opt: Opt) -> Result<CliExitStatus> {
             let storage = &get_storage().await?;
             match storage.kind()? {
                 BootedStorageKind::Ostree(booted_ostree) => {
+                    if opts.uki_addon_opts.scoped.is_some() || opts.uki_addon_opts.global.is_some()
+                    {
+                        anyhow::bail!("UKI Addon options are only supported for composefs backend");
+                    }
+
                     upgrade(opts, storage, &booted_ostree).await
                 }
                 BootedStorageKind::Composefs(booted_cfs) => {
