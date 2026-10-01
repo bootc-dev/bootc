@@ -31,7 +31,7 @@ use indoc::indoc;
 use ocidir::cap_std::ambient_authority;
 use ostree::gio;
 use ostree_container::store::PrepareResult;
-use ostree_ext::container as ostree_container;
+use ostree_ext::{container as ostree_container, containers_image_proxy};
 
 use ostree_ext::keyfileext::KeyFileExt;
 use ostree_ext::ostree;
@@ -247,6 +247,11 @@ pub(crate) struct SwitchOpts {
     // This is kinda unfortunate that we can't gate this only for composefs systems
     #[clap(flatten)]
     pub(crate) uki_addon_opts: UkiAddonOpts,
+
+    /// The image to use for subsequent upgrades
+    /// Useful when switching to an, say containers-storage, image
+    /// but subsequent updates are to be pulled from registry
+    pub(crate) target_imgref: Option<String>,
 }
 
 /// Finalize a staged composefs deployment.
@@ -1673,6 +1678,21 @@ async fn upgrade(
     Ok(())
 }
 
+#[context("Getting target imgref for switch")]
+pub(crate) fn target_imgref_for_switch(opts: &SwitchOpts) -> Result<Option<ImageReference>> {
+    let Some(target_imgref) = &opts.target_imgref else {
+        return Ok(None);
+    };
+
+    let imgref = containers_image_proxy::ImageReference::try_from(target_imgref.as_str())
+        .with_context(|| format!("Parsing imgref {target_imgref}"))?;
+
+    let sigverify = sigpolicy_from_opt(opts.enforce_container_sigpolicy);
+    let target = ostree_container::OstreeImageReference { sigverify, imgref };
+
+    Ok(Some(ImageReference::from(target)))
+}
+
 #[context("Getting imgref for switch")]
 pub(crate) fn imgref_for_switch(opts: &SwitchOpts) -> Result<ImageReference> {
     let transport = ostree_container::Transport::try_from(opts.transport.as_str())?;
@@ -1868,6 +1888,7 @@ async fn switch(opts: SwitchOpts) -> Result<()> {
         println!("Updated {deployid} to pull from {target}");
         return Ok(());
     }
+
     let storage = &get_storage().await?;
     match storage.kind()? {
         BootedStorageKind::Ostree(booted_ostree) => {

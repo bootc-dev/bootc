@@ -10,7 +10,7 @@ use crate::{
             validate_update,
         },
     },
-    cli::{SwitchOpts, imgref_for_switch},
+    cli::{SwitchOpts, imgref_for_switch, target_imgref_for_switch},
     progress_jsonl::ProgressWriter,
     store::{BootedComposefs, Storage},
 };
@@ -117,6 +117,8 @@ pub(crate) async fn switch_composefs(
         }
     };
 
+    let final_target_imgref = target_imgref_for_switch(&opts)?;
+
     if let Some(cfg_verity) = image {
         let action = validate_update(
             storage,
@@ -139,6 +141,7 @@ pub(crate) async fn switch_composefs(
                     booted_cfs,
                     &host,
                     &target_imgref,
+                    final_target_imgref.as_ref(),
                     &do_upgrade_opts,
                     &manifest,
                 )
@@ -152,6 +155,7 @@ pub(crate) async fn switch_composefs(
         booted_cfs,
         &host,
         &target_imgref,
+        final_target_imgref.as_ref(),
         &do_upgrade_opts,
         &manifest,
     )
