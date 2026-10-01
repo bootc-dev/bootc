@@ -283,7 +283,7 @@ pub(crate) enum SoftRebootMode {
 pub(crate) struct StatusOpts {
     /// Output in JSON format.
     ///
-    /// Superceded by the `format` option.
+    /// Superseded by the `format` option.
     #[clap(long, hide = true)]
     pub(crate) json: bool,
 

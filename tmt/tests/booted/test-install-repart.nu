@@ -196,7 +196,7 @@ EOF
     verify_part_layout_second_boot
 
     # Now run systemd-repart on the disk again to simulate what would happen on first boot
-    print "Runnin systemd-repart to simulate first boot"
+    print "Running systemd-repart to simulate first boot"
     (
       podman run --privileged --rm
       -v /dev:/dev

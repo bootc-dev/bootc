@@ -516,7 +516,7 @@ mod tests {
 
     #[test]
     fn test_remap_etc() {
-        // These shouldn't change. Test etcc to verify we're not doing string matching.
+        // These shouldn't change. Test etc to verify we're not doing string matching.
         let unchanged = ["", "foo", "/etcc/foo", "../etc/baz"];
         for x in unchanged {
             similar_asserts::assert_eq!(x, remap_etc_path(x.into()).as_str());

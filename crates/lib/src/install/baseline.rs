@@ -364,7 +364,7 @@ fn systemd_repart(
         return Ok(layout);
     }
 
-    // Root partition is not defined, create defintion for the root part
+    // Root partition is not defined, create definition for the root part
     let mut root_conf = String::from("[Partition]\nType=root\n");
 
     match root_size {
@@ -380,7 +380,7 @@ fn systemd_repart(
             // Installing to a disk, compute the root ptn size
             // by taking all other partitions into account
             //
-            // We're doing this to accomodate for partitions that are
+            // We're doing this to accommodate for partitions that are
             // supposed to be crated on first boot, like home,var,swap etc
             let space_taken = dry_partitions
                 .iter()

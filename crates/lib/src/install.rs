@@ -2187,7 +2187,7 @@ async fn install_to_filesystem_impl(
 
         // For s390x, we set zipl as the bootloader
         // this needs to be done after the ostree commit is deployed,
-        // as we don't want zipl to run during the initial ostree deployement.
+        // as we don't want zipl to run during the initial ostree deployment.
         if cfg!(target_arch = "s390x") {
             Command::new("ostree")
                 .args([

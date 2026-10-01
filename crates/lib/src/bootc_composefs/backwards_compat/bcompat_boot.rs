@@ -175,7 +175,7 @@ fn stage_bls_entry_changes(
         .unwrap_or("bootc");
 
     // to not add duplicate transactions since we share BLS entries
-    // across deployements
+    // across deployments
     let mut fixed = vec![];
     let mut new_bls_entries = vec![];
 

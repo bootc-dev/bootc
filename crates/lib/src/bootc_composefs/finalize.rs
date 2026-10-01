@@ -153,7 +153,7 @@ pub(crate) async fn composefs_backend_finalize(
         }
     };
 
-    // Now that we have successfully updated bootloader entires, we can GC the unreferenced ones
+    // Now that we have successfully updated bootloader entries, we can GC the unreferenced ones
     // We do not prune the composefs repository here though
     composefs_gc(
         storage,

@@ -438,7 +438,7 @@ pub(crate) async fn apply_upgrade_from_downloaded(
         .context("Reading staged file")?;
 
     let mut new_staged: StagedDeployment =
-        serde_json::from_str(&current).context("Deserialzing staged file")?;
+        serde_json::from_str(&current).context("Deserializing staged file")?;
 
     // Make the staged deployment not download_only
     new_staged.finalization_locked = false;

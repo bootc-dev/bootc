@@ -86,12 +86,12 @@ pub(crate) async fn prepare_soft_reboot_composefs(
 
     let all_deployments = host.all_composefs_deployments()?;
 
-    let requred_deployment = all_deployments
+    let required_deployment = all_deployments
         .iter()
         .find(|entry| entry.deployment.verity == *deployment_id)
         .ok_or_else(|| anyhow::anyhow!("Deployment '{deployment_id}' not found"))?;
 
-    if !requred_deployment.soft_reboot_capable {
+    if !required_deployment.soft_reboot_capable {
         match soft_reboot_mode {
             SoftRebootMode::Required => {
                 anyhow::bail!("Cannot soft-reboot to deployment with a different kernel state")

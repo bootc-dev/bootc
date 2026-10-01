@@ -1090,8 +1090,8 @@ async fn composefs_deployment_status_from(
             }
         };
 
-    // Determine rollback deployment by matching extra deployment boot entries against entires read from /boot
-    // This collects verity digest across bls and grub enties, we should just have one of them, but still works
+    // Determine rollback deployment by matching extra deployment boot entries against entries read from /boot
+    // This collects verity digest across bls and grub entries, we should just have one of them, but still works
     //
     // We want this ordered, so we have a vector here
     let bootloader_configured_verity = sorted_bls_config

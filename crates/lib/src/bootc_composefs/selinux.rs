@@ -94,7 +94,7 @@ fn get_selinux_policy_for_deployment(
     let type_ = selinux_config
         .lines()
         .find(|l| l.starts_with(SELINUX_TYPE))
-        .ok_or_else(|| anyhow::anyhow!("Falied to find SELINUXTYPE"))?
+        .ok_or_else(|| anyhow::anyhow!("Failed to find SELINUXTYPE"))?
         .split("=")
         .nth(1)
         .ok_or_else(|| anyhow::anyhow!("Failed to parse SELINUXTYPE"))?
