@@ -118,7 +118,7 @@ def setup_disk_with_root [
     udevadm settle
 
     mkfs.vfat -F 32 $"($loop)p1"
-    mkfs.ext4 -q $"($loop)p2"
+    mkfs.ext4 -q -O verity $"($loop)p2"
 
     $loop
 }
@@ -206,7 +206,7 @@ def test_single_esp [] {
         let lv_path = $"/dev/($vg_name)/test_lv"
 
         # Create filesystem and mount
-        mkfs.ext4 -q $lv_path
+        mkfs.ext4 -q -O verity $lv_path
         mkdir $mountpoint
         mount $lv_path $mountpoint
 
@@ -259,7 +259,7 @@ def test_dual_esp [] {
         let lv_path = $"/dev/($vg_name)/test_lv"
 
         # Create filesystem and mount
-        mkfs.ext4 -q $lv_path
+        mkfs.ext4 -q -O verity $lv_path
         mkdir $mountpoint
         mount $lv_path $mountpoint
 
@@ -314,7 +314,7 @@ def test_three_devices_partial_esp [] {
         let lv_path = $"/dev/($vg_name)/test_lv"
 
         # Create filesystem and mount
-        mkfs.ext4 -q $lv_path
+        mkfs.ext4 -q -O verity $lv_path
         mkdir $mountpoint
         mount $lv_path $mountpoint
 
@@ -401,7 +401,7 @@ def test_no_esp_failure [] {
         let lv_path = $"/dev/($vg_name)/test_lv"
 
         # Create filesystem and mount
-        mkfs.ext4 -q $lv_path
+        mkfs.ext4 -q -O verity $lv_path
         mkdir $mountpoint
         mount $lv_path $mountpoint
 
