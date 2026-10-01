@@ -327,6 +327,7 @@ pub(crate) async fn do_upgrade(
     booted_cfs: &BootedComposefs,
     host: &Host,
     imgref: &ImageReference,
+    target_imgref: Option<&ImageReference>,
     opts: &DoUpgradeOpts<'_>,
     manifest: &ostree_ext::oci_spec::image::ImageManifest,
 ) -> Result<()> {
@@ -481,7 +482,7 @@ pub(crate) async fn do_upgrade(
     write_composefs_state(
         &Utf8PathBuf::from("/sysroot"),
         &deploy_id,
-        imgref,
+        target_imgref.unwrap_or(imgref),
         false,
         boot_type,
         boot_digest,
@@ -748,6 +749,7 @@ pub(crate) async fn upgrade_composefs(
                         composefs,
                         &host,
                         booted_imgref,
+                        None,
                         &do_upgrade_opts,
                         &manifest,
                     )
@@ -780,6 +782,7 @@ pub(crate) async fn upgrade_composefs(
                     composefs,
                     &host,
                     booted_imgref,
+                    None,
                     &do_upgrade_opts,
                     &manifest,
                 )
@@ -800,6 +803,7 @@ pub(crate) async fn upgrade_composefs(
         composefs,
         &host,
         booted_imgref,
+        None,
         &do_upgrade_opts,
         &manifest,
     )
