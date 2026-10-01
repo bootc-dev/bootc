@@ -120,9 +120,9 @@ jobs:
               || [[ "$EVENT" == "pull_request" && "$MERGE_QUEUE_ENABLED" != "true" ]] \
               || echo "$LABELS" | jq -e 'index("ci/merge")' > /dev/null; }; then
             # Full suite: all OSes
-            echo 'package_os_matrix=["fedora-44","fedora-45","fedora-46","centos-9","centos-10"]' >> "$GITHUB_OUTPUT"
-            echo 'integration_os_matrix=["fedora-44","centos-9","centos-10"]' >> "$GITHUB_OUTPUT"
-            echo 'upgrade_os_matrix=["fedora-44","centos-10"]' >> "$GITHUB_OUTPUT"
+            echo 'package_os_matrix=["fedora-45","centos-9","centos-10"]' >> "$GITHUB_OUTPUT"
+            echo 'integration_os_matrix=["fedora-45","centos-9","centos-10"]' >> "$GITHUB_OUTPUT"
+            echo 'upgrade_os_matrix=["fedora-45","centos-10"]' >> "$GITHUB_OUTPUT"
             echo 'run_heavy=true' >> "$GITHUB_OUTPUT"
           elif [[ "$DOCS_ONLY" != "true" ]] && echo "$LABELS" | jq -e 'index("ci/tier-1")' > /dev/null; then
             # Tier-1 only: centos-10
@@ -255,8 +255,6 @@ jobs:
         test_os: ${{ fromJson(needs.compute-ci-level.outputs.package_os_matrix) }}
 
     runs-on: ubuntu-26.04
-    # Rawhide is best-effort; don't let it block merges
-    continue-on-error: ${{ matrix.test_os == 'fedora-46' }}
 
     steps:
       - uses: actions/checkout@v7
@@ -335,9 +333,7 @@ jobs:
           - variant: ostree
             bootloader: systemd
 
-          # For now only have grub-cc tests in F44
-          - test_os: fedora-45
-            bootloader: grub-cc
+          # For now only have grub-cc tests in Fedora latest stable
           - test_os: centos-9
             bootloader: grub-cc
           - test_os: centos-10
@@ -445,10 +441,6 @@ jobs:
       matrix:
         test_os: ${{ fromJson(needs.compute-ci-level.outputs.upgrade_os_matrix) }}
         variant: [ostree, composefs]
-        # TODO: Re-enable this after 1.16.8 is released
-        exclude:
-          - test_os: fedora-44
-            variant: composefs
 
     runs-on: ubuntu-26.04
 
