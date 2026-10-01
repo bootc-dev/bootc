@@ -1817,32 +1817,24 @@ async fn prepare_install(
     //
     // NOTE: This isn't really 100% accurate 100% of the time as the cmdline can be in an addon
     if let Some(root_filesystem) = root_filesystem {
-        match kernel {
-            Some(k) => match k.k_type {
-                crate::kernel::KernelType::Uki { cmdline, .. } => {
-                    let allow_missing_fsverity = if let Some(cmdline) = cmdline {
-                        ComposefsCmdline::find_in_cmdline(&cmdline)?
-                            .is_some_and(|cfs_cmdline| cfs_cmdline.allow_missing_fsverity)
-                    } else {
-                        false
-                    };
-                    // >>>>>>> 626befdf (install: Handle root filesystem)
+        if let Some(k) = kernel
+            && let crate::kernel::KernelType::Uki { cmdline, .. } = k.k_type
+        {
+            let allow_missing_fsverity = match cmdline {
+                Some(cmdline) => ComposefsCmdline::find_in_cmdline(&cmdline)?
+                    .is_some_and(|cfs_cmdline| cfs_cmdline.allow_missing_fsverity),
+                None => false,
+            };
 
-                    if !allow_missing_fsverity {
-                        anyhow::ensure!(
-                            root_filesystem.supports_fsverity(),
-                            "Specified filesystem {root_filesystem} does not support fs-verity"
-                        );
-                    }
+            if !allow_missing_fsverity {
+                anyhow::ensure!(
+                    root_filesystem.supports_fsverity(),
+                    "Specified filesystem {root_filesystem} does not support fs-verity"
+                );
+            }
 
-                    composefs_options.allow_missing_verity = allow_missing_fsverity;
-                    is_uki = true;
-                }
-
-                crate::kernel::KernelType::Vmlinuz { .. } => {}
-            },
-
-            None => {}
+            composefs_options.allow_missing_verity = allow_missing_fsverity;
+            is_uki = true;
         }
 
         // If `--allow-missing-verity` is already passed via CLI, don't modify
