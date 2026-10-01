@@ -38,6 +38,7 @@ For guides to building, installing, and managing bootable images, see
 | **bootc container** | Operations which can be executed as part of a container build |
 | **bootc loader-entries** | Operations on Boot Loader Specification (BLS) entries |
 | **bootc composefs-finalize-staged** | Finalize a staged composefs deployment |
+| **bootc uki-addon** | Perform operations related to UKI Addons |
 
 <!-- END GENERATED SUBCOMMANDS -->
 

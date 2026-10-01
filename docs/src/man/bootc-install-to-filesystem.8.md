@@ -136,9 +136,13 @@ is currently expected to be empty by default.
 
     Default: false
 
-**--uki-addon**=*UKI_ADDON*
+**--uki-addon**=*SCOPED*
 
-    Name of the UKI addons to install without the ".efi.addon" suffix. This option can be provided multiple times if multiple addons are to be installed
+    Name of the local/scoped UKI addons to install without the ".efi.addon" suffix
+
+**--global-uki-addon**=*GLOBAL*
+
+    Name of the global UKI addons to install without the ".efi.addon" suffix
 
 <!-- END GENERATED OPTIONS -->
 
