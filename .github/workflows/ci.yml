@@ -108,6 +108,19 @@ jobs:
             echo "enabled=false" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Verify Fedora latest version
+        run: |
+          # Dynamically verify what Fedora version is "latest" from the container image
+          LATEST_VERSION=$(skopeo inspect --no-tags docker://quay.io/fedora/fedora:latest | jq -r '.Labels."org.opencontainers.image.version" // .Labels.version')
+          echo "Fedora latest container version: $LATEST_VERSION"
+
+          # Verify it matches our hard-coded version (45)
+          if [[ "$LATEST_VERSION" != "45" ]]; then
+            echo "::warning::Fedora latest is now version $LATEST_VERSION, but CI is configured for fedora-45. Consider updating the matrix."
+          else
+            echo "✓ Fedora latest version matches CI configuration (45)"
+          fi
+
       - name: Compute OS matrices
         id: matrix
         run: |
