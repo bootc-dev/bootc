@@ -334,9 +334,7 @@ jobs:
           - variant: ostree
             bootloader: systemd
 
-          # For now only have grub-cc tests in F44
-          - test_os: fedora-45
-            bootloader: grub-cc
+          # For now only have grub-cc tests in F45
           - test_os: centos-9
             bootloader: grub-cc
           - test_os: centos-10
