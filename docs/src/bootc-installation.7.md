@@ -477,8 +477,9 @@ All repart.d definitions are passed to systemd-repart together so that it can
 plan a correct layout with proper space allocation across all partitions.
 
 If the image's repart.d definitions do **not** include a root partition
-(`Type=root`), bootc automatically injects one into `/run/repart.d/` before
-invoking systemd-repart.  The generated root partition definition:
+(`Type=root`), bootc generates one and passes it to systemd-repart along with
+the image's definitions, without writing to `/run/repart.d/`.  The generated
+root partition definition:
 
 - Uses `Type=root` (architecture-specific DPS GUID is resolved by systemd-repart)
 - Applies `Format=<fs>` from the configured root filesystem type
