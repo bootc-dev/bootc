@@ -6,6 +6,8 @@
 //! other more complex flows should set things up externally and use `bootc install to-filesystem`.
 
 use std::borrow::Cow;
+use std::ffi::OsStr;
+use std::ffi::OsString;
 use std::fmt::Display;
 use std::fmt::Write as _;
 use std::io::Write;
@@ -259,14 +261,7 @@ fn can_use_systemd_repart() -> bool {
         return false;
     }
 
-    let repart_config_dirs = [
-        Path::new("/etc/repart.d"),
-        Path::new("/run/repart.d"),
-        Path::new("/usr/local/lib/repart.d"),
-        Path::new("/usr/lib/repart.d"),
-    ];
-
-    let has_config = repart_config_dirs.iter().any(|d| {
+    let has_config = REPART_CONFIG_DIRS.iter().map(Path::new).any(|d| {
         d.is_dir()
             && d.read_dir()
                 .ok()
@@ -284,20 +279,23 @@ const REPART_INCLUDE_PARTITIONS_MIN_VERSION: u32 = 253;
 /// ext4 fs-verity). Older versions silently ignore it.
 const REPART_MKFS_OPTIONS_MIN_VERSION: u32 = 254;
 
-/// Directory we assemble the filtered set of repart.d definitions into when
-/// emulating `--include-partitions=` on systemd older than
-/// [`REPART_INCLUDE_PARTITIONS_MIN_VERSION`].
-const REPART_FILTERED_DEFINITIONS_DIR: &str = "/tmp/repart.d";
+/// The repart.d directory for definitions generated at runtime. bootc does
+/// not write there: in `to-disk` it may be the host's.
+const REPART_RUNTIME_DIR: &str = "/run/repart.d";
 
 /// The repart.d configuration search directories, in descending priority. A
 /// definition present in a higher-priority directory masks a same-named one
 /// below it (matching systemd's own semantics).
 const REPART_CONFIG_DIRS: &[&str] = &[
     "/etc/repart.d",
-    "/run/repart.d",
+    REPART_RUNTIME_DIR,
     "/usr/local/lib/repart.d",
     "/usr/lib/repart.d",
 ];
+
+/// The name of the root partition definition we generate when the image's
+/// repart.d definitions have none.
+const REPART_GENERATED_ROOT_NAME: &str = "50-root.conf";
 
 /// Whether we must emulate `--include-partitions=` by pre-filtering the
 /// definitions ourselves
@@ -315,7 +313,7 @@ fn repart_partition_is_required(part: &RepartPartition) -> bool {
         || ptype.eq_ignore_ascii_case(BIOS_BOOT)
 }
 
-/// Collect the selected repart.d definitions into dest_dir.
+/// Collect the selected repart.d definitions into dest_dir, a fresh directory.
 ///
 /// systemd < 253 does not support the `--include-partitions=` option, so instead
 /// we point systemd-repart at a directory containing only the definitions we want
@@ -325,13 +323,6 @@ fn collect_repart_definitions(
     dest_dir: &Path,
     filter: impl Fn(&RepartPartition) -> bool,
 ) -> Result<()> {
-    // Start from a clean directory so stale definitions from a previous run
-    // don't leak in.
-    if dest_dir.exists() {
-        std::fs::remove_dir_all(dest_dir)
-            .with_context(|| format!("Removing {}", dest_dir.display()))?;
-    }
-
     std::fs::create_dir_all(dest_dir)
         .with_context(|| format!("Creating {}", dest_dir.display()))?;
 
@@ -358,6 +349,17 @@ fn collect_repart_definitions(
     Ok(())
 }
 
+/// Write the repart.d definition or drop-in `name` into `dir`, creating parent
+/// directories as needed.
+fn write_repart_file(dir: &Path, name: &str, conf: &str) -> Result<()> {
+    let path = dir.join(name);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("Creating {}", parent.display()))?;
+    }
+    std::fs::write(&path, conf).with_context(|| format!("Writing {}", path.display()))
+}
+
 /// Create partitions using systemd-repart
 /// Assumes we have systemd-repart definitions
 #[context("Running systemd-repart")]
@@ -370,7 +372,7 @@ fn systemd_repart(
     // Dry-run to check what partitions would be created
     // Send `generic_image` as false so that we can see ALL defined
     // partitions
-    let dry_partitions = systemd_repart_run(device, false, true, None)?;
+    let dry_partitions = systemd_repart_run(device, false, true, RepartDefinitions::Image)?;
 
     if dry_partitions.is_empty() {
         anyhow::bail!("systemd-repart returned empty partitions");
@@ -382,15 +384,20 @@ fn systemd_repart(
 
     if has_root {
         // Root partition is defined in repart.d config, run for real
-        if need_filtered_definitions(generic_image)? {
+        let filtered;
+        let definitions = if need_filtered_definitions(generic_image)? {
+            filtered =
+                tempfile::tempdir().context("Creating a directory for repart.d definitions")?;
             collect_repart_definitions(
                 &dry_partitions,
-                Path::new(REPART_FILTERED_DEFINITIONS_DIR),
+                filtered.path(),
                 repart_partition_is_required,
             )?;
-        }
-
-        let partitions = systemd_repart_run(device, generic_image, false, None)?;
+            RepartDefinitions::Only(filtered.path())
+        } else {
+            RepartDefinitions::Image
+        };
+        let partitions = systemd_repart_run(device, generic_image, false, definitions)?;
         let layout = parse_repart_layout(&partitions)?;
         return Ok(layout);
     }
@@ -436,38 +443,85 @@ fn systemd_repart(
         }
     }
 
-    if need_filtered_definitions(generic_image)? {
+    // Not in /run/repart.d, which may be the host's
+    let generated = tempfile::tempdir().context("Creating a directory for repart.d definitions")?;
+    let definitions = if need_filtered_definitions(generic_image)? {
+        // The run then reads only this directory, so it needs the copies too
         collect_repart_definitions(
             &dry_partitions,
-            Path::new(REPART_FILTERED_DEFINITIONS_DIR),
+            generated.path(),
             repart_partition_is_required,
         )?;
-
-        std::fs::write(
-            Path::new(REPART_FILTERED_DEFINITIONS_DIR).join("50-root.conf"),
-            &root_conf,
-        )
-        .context("Writing root repart config to filtered definitions")?;
+        RepartDefinitions::Only(generated.path())
     } else {
-        std::fs::create_dir_all("/run/repart.d").context("Creating /run/repart.d")?;
-        std::fs::write("/run/repart.d/50-root.conf", &root_conf)
-            .context("Writing root repart config")?;
-    }
+        RepartDefinitions::WithGenerated(generated.path())
+    };
+    write_repart_file(generated.path(), REPART_GENERATED_ROOT_NAME, &root_conf)?;
 
-    let partitions = systemd_repart_run(device, generic_image, false, None)?;
+    let partitions = systemd_repart_run(device, generic_image, false, definitions)?;
     let layout = parse_repart_layout(&partitions)?;
 
     Ok(layout)
 }
 
+/// Which repart.d definitions a systemd-repart run reads.
+#[derive(Debug, Clone, Copy)]
+enum RepartDefinitions<'a> {
+    /// The image's, from the standard search paths.
+    Image,
+    /// The image's plus those generated in this directory, which take the
+    /// priority of [`REPART_RUNTIME_DIR`].
+    WithGenerated(&'a Path),
+    /// Only those in this directory, such as the copies a generic image needs
+    /// on systemd < 253 (see [`need_filtered_definitions`]).
+    Only(&'a Path),
+}
+
+impl RepartDefinitions<'_> {
+    /// The systemd-repart arguments that select these definitions, and for a
+    /// generic image the partitions to create.
+    fn args(self, generic_image: bool) -> Vec<OsString> {
+        let definitions = |dir: &OsStr| {
+            let mut arg = OsString::from("--definitions=");
+            arg.push(dir);
+            arg
+        };
+        let mut args = Vec::new();
+        match self {
+            // With a generic image, callers pass copies of just the definitions
+            // to act on this way where systemd lacks --include-partitions=.
+            Self::Only(dir) => args.push(definitions(dir.as_os_str())),
+            Self::Image | Self::WithGenerated(_) => {
+                if let Self::WithGenerated(generated) = self {
+                    for dir in REPART_CONFIG_DIRS {
+                        if *dir == REPART_RUNTIME_DIR {
+                            args.push(definitions(generated.as_os_str()));
+                        }
+                        args.push(definitions(OsStr::new(dir)));
+                    }
+                }
+                // If generic image, only run repart definitions that we absolutely
+                // require, (BIOS/ESP and root). Others can run at first boot since we
+                // don't know if the user would want to run those on this disk itself
+                // or if this disk would be used to create an AMI/VHD and a separate disk
+                // would be used for the other partitions
+                if generic_image {
+                    args.push(format!("--include-partitions=root,esp,{BIOS_BOOT}").into());
+                }
+            }
+        }
+        args
+    }
+}
+
 /// Run systemd-repart on the device and return the parsed JSON output.
 /// `dry_run`: if true, no changes are written to disk.
-/// `definitions`: if set, uses that directory instead of the default search paths.
+/// `definitions`: which repart.d definitions to read.
 fn systemd_repart_run(
     device: &Device,
     generic_image: bool,
     dry_run: bool,
-    definitions: Option<&Path>,
+    definitions: RepartDefinitions,
 ) -> Result<Vec<RepartPartition>> {
     let mut cmd = Command::new("systemd-repart");
 
@@ -490,23 +544,7 @@ fn systemd_repart_run(
         "--root=/",
     ]);
 
-    // If generic image, only run repart definitions that we absolutely
-    // require, (BIOS/ESP and root). Others can run at first boot since we
-    // don't know if the user would want to run those on this disk itself
-    // or if this disk would be used to create an AMI/VHD and a separate disk
-    // would be used for the other partitions
-    if let Some(definitions) = definitions {
-        cmd.arg(format!("--definitions={}", definitions.display()));
-    } else if generic_image {
-        if need_filtered_definitions(generic_image)? {
-            // Older systemd lacks --include-partitions; act only on the
-            // pre-filtered definitions collected by collect_repart_definitions.
-            cmd.arg(format!("--definitions={REPART_FILTERED_DEFINITIONS_DIR}"));
-        } else {
-            cmd.arg(format!("--include-partitions=root,esp,{BIOS_BOOT}"));
-        }
-    }
-
+    cmd.args(definitions.args(generic_image));
     cmd.arg(device.path());
 
     let output = cmd.output().context("Failed to run systemd-repart")?;
@@ -646,7 +684,7 @@ fn image_repart_partitions(
     if !can_use_systemd_repart() {
         return Ok(Vec::new());
     }
-    let partitions = systemd_repart_run(device, false, true, None)?;
+    let partitions = systemd_repart_run(device, false, true, RepartDefinitions::Image)?;
     validate_repart_boot_layout(&partitions, layout)?;
     Ok(partitions)
 }
@@ -760,7 +798,7 @@ fn aboot_repart_definitions(
     if let Some(size) = root_size {
         root.push_str(&format!("SizeMinBytes={size}M\nSizeMaxBytes={size}M\n"));
     }
-    definitions.push(("50-root.conf".into(), root));
+    definitions.push((REPART_GENERATED_ROOT_NAME.into(), root));
     Ok(definitions)
 }
 
@@ -786,7 +824,12 @@ fn systemd_repart_aboot(
             .with_context(|| format!("Creating generated repart definition {name}"))?
             .write_all(config.as_bytes())?;
     }
-    let partitions = systemd_repart_run(device, false, false, Some(definitions.path()))?;
+    let partitions = systemd_repart_run(
+        device,
+        false,
+        false,
+        RepartDefinitions::Only(definitions.path()),
+    )?;
     parse_repart_layout(&partitions)
 }
 
@@ -1402,5 +1445,41 @@ mod tests {
             assert!(aboot_repart_definitions(layout, None, None, &[]).is_err());
         }
         Ok(())
+    }
+
+    #[test]
+    fn test_repart_definitions_args() {
+        use RepartDefinitions::{Image, Only, WithGenerated};
+        let include = format!("--include-partitions=root,esp,{BIOS_BOOT}");
+        let with_generated = [
+            "--definitions=/etc/repart.d",
+            "--definitions=/tmp/generated",
+            "--definitions=/run/repart.d",
+            "--definitions=/usr/local/lib/repart.d",
+            "--definitions=/usr/lib/repart.d",
+        ];
+        let generated = WithGenerated(Path::new("/tmp/generated"));
+        let copies = Only(Path::new("/tmp/copies"));
+        let cases = [
+            (Image, false, vec![]),
+            (Image, true, vec![include.as_str()]),
+            (generated, false, with_generated.to_vec()),
+            (
+                generated,
+                true,
+                [&with_generated[..], &[include.as_str()]].concat(),
+            ),
+            // Already just the definitions to act on
+            (copies, false, vec!["--definitions=/tmp/copies"]),
+            (copies, true, vec!["--definitions=/tmp/copies"]),
+        ];
+        for (definitions, generic_image, expected) in cases {
+            let expected = expected.into_iter().map(OsString::from).collect::<Vec<_>>();
+            assert_eq!(
+                definitions.args(generic_image),
+                expected,
+                "{definitions:?}, generic image: {generic_image}"
+            );
+        }
     }
 }
