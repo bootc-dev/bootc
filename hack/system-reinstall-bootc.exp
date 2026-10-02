@@ -3,7 +3,13 @@
 # Set a timeout
 set timeout 600
 
-spawn system-reinstall-bootc localhost/bootc
+set image [lindex $argv 0]
+
+if { $image != "" } {
+    spawn system-reinstall-bootc $image
+} else {
+    spawn system-reinstall-bootc
+}
 
 expect {
     "Then you can login as * using those keys. \\\[Y/n\\\]" {

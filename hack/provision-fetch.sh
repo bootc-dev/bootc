@@ -51,7 +51,7 @@ esac
 grep -Ev -e '^#' packages.txt | xargs dnf install --allowerasing -y
 
 if test $cloudinit = 1; then
-  dnf -y install cloud-init
+  dnf -y install --allowerasing cloud-init
 fi
 
 # Temporary: upgrade ostree to 2026.1 for bootconfig-extra support
