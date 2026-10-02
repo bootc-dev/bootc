@@ -114,8 +114,13 @@ fn check_resolvconf(storage: &Storage) -> FsckResult {
     if ostree.booted_deployment().is_none() {
         return fsck_ok();
     }
-    // Read usr/etc/resolv.conf directly.
     let usr = Dir::open_ambient_dir("/usr", cap_std::ambient_authority())?;
+    check_resolvconf_in(&usr)
+}
+
+/// The resolv.conf check proper, on the `/usr` directory `usr`.
+fn check_resolvconf_in(usr: &Dir) -> FsckResult {
+    // Read usr/etc/resolv.conf directly.
     let Some(meta) = usr.symlink_metadata_optional("etc/resolv.conf")? else {
         return fsck_ok();
     };
