@@ -154,6 +154,7 @@ bootc has two storage backends: `ostree` (default, production) and `composefs`
 | `boot_type` | `bls`, `uki` | UKI embeds the composefs digest |
 | `seal_state` | `unsealed`, `sealed` | Sealed signs the UKI for Secure Boot |
 | `filesystem` | `ext4`, `btrfs`, `xfs` | xfs lacks fsverity, incompatible with sealed |
+| `sdboot_shim` | unset, `1` | Keep bootupd and shim; the distro-signed systemd-boot is installed through bootupd |
 
 These are controlled via `BOOTC_`-prefixed environment variables.
 Using environment variables (rather than `just` command-line overrides)
@@ -176,6 +177,10 @@ The constraints are:
 - `sealed` requires `boot_type=uki` (the digest lives in the UKI cmdline)
 - `sealed` requires `filesystem` with fsverity support (`ext4` or `btrfs`)
 - `uki` requires `bootloader=systemd`
+- `sdboot_shim=1` requires `bootloader=systemd`, `seal_state=unsealed` and a
+  base whose bootupd accepts `--bootloader systemd` (0.3.0 or newer) and whose
+  signed `systemd-boot-<arch>` package is laid out as a bootupd component, such
+  as Fedora 45 and rawhide
 
 Common workflows:
 
