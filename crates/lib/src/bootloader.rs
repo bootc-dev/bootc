@@ -1,4 +1,5 @@
 use std::fs::create_dir_all;
+use std::io::Read;
 use std::process::Command;
 use std::sync::OnceLock;
 
@@ -8,6 +9,7 @@ use camino::Utf8Path;
 use cap_std_ext::cap_std::fs::Dir;
 use cap_std_ext::dirext::CapStdExtDirExt;
 use fn_error_context::context;
+use serde::Deserialize;
 
 use bootc_mount as mount;
 
@@ -95,6 +97,66 @@ pub(crate) fn supports_bootupd(root: &Dir) -> Result<bool> {
     Ok(r)
 }
 
+/// bootupd's update metadata for its EFI component, written by
+/// `bootupctl backend generate-update-metadata`.
+const BOOTUPD_EFI_METADATA: &str = "usr/lib/bootupd/updates/EFI.json";
+
+/// The part of bootupd's EFI update metadata that bootc reads: since bootupd
+/// 0.2.30 it names every EFI component found in the image.
+#[derive(Debug, Deserialize)]
+struct BootupdEfiMetadata {
+    #[serde(default)]
+    versions: Option<Vec<BootupdComponentVersion>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BootupdComponentVersion {
+    name: String,
+}
+
+/// The bootloaders with a component in bootupd's EFI update metadata.
+///
+/// Component names map to bootloaders the way bootupd itself maps them:
+/// `grub2`, `grub-cc` and `systemd-boot`. Anything else, such as shim, belongs
+/// to no bootloader. Metadata written by bootupd before 0.2.30 names no
+/// components at all, which yields an empty list.
+fn parse_bootupd_bootloaders(metadata: &str) -> Result<Vec<crate::spec::Bootloader>> {
+    use crate::spec::Bootloader;
+    let metadata: BootupdEfiMetadata =
+        serde_json::from_str(metadata).context("Parsing bootupd EFI update metadata")?;
+    Ok(metadata
+        .versions
+        .into_iter()
+        .flatten()
+        .filter_map(|component| match component.name.as_str() {
+            "grub2" => Some(Bootloader::Grub),
+            "grub-cc" => Some(Bootloader::GrubCC),
+            "systemd-boot" => Some(Bootloader::Systemd),
+            _ => None,
+        })
+        .collect())
+}
+
+/// The bootloaders with a component in the image's bootupd update metadata.
+///
+/// bootc cannot ask bootupd for this from an unbooted image: there,
+/// `bootupctl status --json` only names the BIOS and EFI components. So it
+/// reads the metadata bootupd itself derives its install candidates from.
+/// Empty when there is no EFI metadata (no bootupd, or a BIOS-only payload)
+/// or when it predates bootupd naming its components.
+// FIXME: This reads a bootupd-internal file, and parse_bootupd_bootloaders
+// mirrors bootupd's Bootloader::try_from_efi_component_name. Replace both with
+// a bootupd query once one can answer this for an unbooted root.
+#[context("Reading bootupd EFI update metadata")]
+pub(crate) fn bootupd_available_bootloaders(root: &Dir) -> Result<Vec<crate::spec::Bootloader>> {
+    let Some(mut file) = root.open_optional(BOOTUPD_EFI_METADATA)? else {
+        return Ok(Vec::new());
+    };
+    let mut metadata = String::new();
+    file.read_to_string(&mut metadata)?;
+    parse_bootupd_bootloaders(&metadata)
+}
+
 /// The flags in a clap help line's leading option column: `--flag` for
 /// `--flag <VAL>`, or `-f` and `--flag` for `-f, --flag <VAL>`. Description
 /// lines have none.
@@ -161,7 +223,7 @@ fn bootupd_install_help(chroot_target: Option<&Utf8Path>) -> Result<String> {
 
 /// What the target bootupd's `backend install` accepts, from its help.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct BootupdInstallSupport {
+pub(crate) struct BootupdInstallSupport {
     /// `--filesystem`, which lets bootupd find the backing devices itself.
     filesystem: bool,
     /// The bootloaders `--bootloader` accepts. Empty when bootupd has no such
@@ -173,7 +235,7 @@ struct BootupdInstallSupport {
 impl BootupdInstallSupport {
     /// Parse the help of `bootupctl backend install`. bootupd's `--bootloader`
     /// values are the names [`crate::spec::Bootloader`]'s `Display` produces.
-    fn parse(help: &str) -> Self {
+    pub(crate) fn parse(help: &str) -> Self {
         use crate::spec::Bootloader;
         let values = help_flag_values(help, "--bootloader").unwrap_or_default();
         let bootloaders = [Bootloader::Grub, Bootloader::GrubCC, Bootloader::Systemd]
@@ -187,8 +249,13 @@ impl BootupdInstallSupport {
     }
 
     /// Probe the target bootupd, see [`bootupd_install_help`].
-    fn probe(chroot_target: Option<&Utf8Path>) -> Result<Self> {
+    pub(crate) fn probe(chroot_target: Option<&Utf8Path>) -> Result<Self> {
         Ok(Self::parse(&bootupd_install_help(chroot_target)?))
+    }
+
+    /// Whether bootupd can be asked to install `bootloader`.
+    pub(crate) fn accepts(&self, bootloader: crate::spec::Bootloader) -> bool {
+        self.bootloaders.contains(&bootloader)
     }
 }
 
@@ -209,7 +276,7 @@ fn bootupd_bootloader_arg(
     bootloader: crate::spec::Bootloader,
 ) -> Result<Option<String>> {
     use crate::spec::Bootloader;
-    if support.bootloaders.contains(&bootloader) {
+    if support.accepts(bootloader) {
         return Ok(Some(bootloader.to_string()));
     }
     match bootloader {
@@ -280,6 +347,9 @@ fn bootupd_target_args(
 /// and looks for an empty `boot/efi` directory there to discover and mount
 /// the real ESP into.
 ///
+/// `support` is what the target bootupd accepts, when the caller has already
+/// probed it; otherwise it is probed here.
+///
 /// `bootloader` is passed on as `--bootloader` when the target bootupd accepts
 /// it, see [`bootupd_bootloader_arg`] for what that guarantees. It takes
 /// precedence over any `default_bootloader` recorded in the image's bootupd
@@ -297,12 +367,21 @@ pub(crate) fn install_via_bootupd(
     bind_boot_path: Option<&Utf8Path>,
     bootloader: crate::spec::Bootloader,
     components: BootupdComponents,
+    support: Option<&BootupdInstallSupport>,
 ) -> Result<()> {
     let verbose = std::env::var_os("BOOTC_BOOTLOADER_DEBUG").map(|_| "-vvvv");
 
-    // Probe the target bootupd's install options once, up front.
-    let support = BootupdInstallSupport::probe(chroot_target)?;
-    let bootloader_arg = bootupd_bootloader_arg(&support, bootloader)?;
+    // Probe the target bootupd's install options once, up front, unless the
+    // caller already has.
+    let probed;
+    let support = match support {
+        Some(support) => support,
+        None => {
+            probed = BootupdInstallSupport::probe(chroot_target)?;
+            &probed
+        }
+    };
+    let bootloader_arg = bootupd_bootloader_arg(support, bootloader)?;
 
     // When not running inside the target container (through `--src-imgref`) we
     // run bootupctl from the deployment via a chroot ([`ChrootCmd`]).
@@ -666,6 +745,38 @@ mod tests {
                 "{flag} in {help:?}"
             );
         }
+    }
+
+    #[test]
+    fn test_parse_bootupd_bootloaders() {
+        use crate::spec::Bootloader;
+        // As written by `bootupctl backend generate-update-metadata`.
+        let cases = [
+            // bootupd 0.2.30 and newer name every component; shim belongs to
+            // no bootloader.
+            (
+                r#"{"timestamp":"2026-09-30T10:07:13Z","version":"grub2-1:2.12-64.fc44,shim-16.1-5,systemd-boot-259.9-1.fc44","versions":[{"name":"grub2","rpm_evr":"1:2.12-64.fc44"},{"name":"shim","rpm_evr":"16.1-5"},{"name":"systemd-boot","rpm_evr":"259.9-1.fc44"}],"default-bootloader":null}"#,
+                vec![Bootloader::Grub, Bootloader::Systemd],
+            ),
+            (
+                r#"{"timestamp":"2026-06-10T09:52:58Z","version":"grub-cc-1:2.12-59.fc45,grub2-1:2.12-58.fc44,shim-16.1-5","versions":[{"name":"grub-cc","rpm_evr":"1:2.12-59.fc45"},{"name":"grub2","rpm_evr":"1:2.12-58.fc44"},{"name":"shim","rpm_evr":"16.1-5"}]}"#,
+                vec![Bootloader::GrubCC, Bootloader::Grub],
+            ),
+            // bootupd's own type is optional, so it may serialize as null.
+            (
+                r#"{"timestamp":"2026-01-01T00:00:00Z","version":"grub2-1:2.12-1.fc43","versions":null}"#,
+                vec![],
+            ),
+            // bootupd before 0.2.30 wrote no component list.
+            (
+                r#"{"timestamp":"2025-01-01T00:00:00Z","version":"grub2-1:2.06-1.fc40,shim-15.8-1"}"#,
+                vec![],
+            ),
+        ];
+        for (metadata, expected) in cases {
+            assert_eq!(parse_bootupd_bootloaders(metadata).unwrap(), expected);
+        }
+        assert!(parse_bootupd_bootloaders("not json").is_err());
     }
 
     #[test]

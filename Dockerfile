@@ -172,13 +172,11 @@ RUN --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
         dnf install -y "${pkgs_to_install[@]}"
     fi
 
-    # Currently dnf installs grub-cc at /usr/lib/efi/grub2/1:2.12-60.eln156/EFI/eln/cc/grubx64-cc.efi
-    # which is less than ideal because: 
-    # - the "cc" subdirectory
-    # - no support for installing grub-cc in bootupd
-    #
-    # So we move the binary to /usr/lib/grub-cc/grub-cc.efi so we have a predictale location from which
-    # we can copy the EFI binary to the ESP
+    # The grub-cc package ships its binary inside the grub2 component, e.g.
+    # /usr/lib/efi/grub2/<evr>/EFI/fedora/cc/grubx64-cc.efi, and bootupd only
+    # installs grub-cc from a component of its own. So bootc asks bootupd for
+    # GRUB and then swaps in the binary, which we stage at the predictable
+    # /usr/lib/grub-cc/grub-cc.efi (BootloaderInstallMethod::BootupdGrubCcSwap).
     if [[ "$bootloader" == "grub-cc" ]]; then
         mkdir /var/grub-cc
         rpm2archive /var/grub-cc.rpm | tar -xvz -C /var/grub-cc

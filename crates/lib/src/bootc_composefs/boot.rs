@@ -2088,6 +2088,94 @@ fn get_secureboot_keys(fs: &Dir, p: &str) -> Result<Option<SecurebootKeys>> {
     }));
 }
 
+/// How the composefs install puts the bootloader on the ESP.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BootloaderInstallMethod {
+    /// `bootupctl backend install`, asked for this bootloader.
+    Bootupd(Bootloader),
+    /// bootupd installs GRUB, and bootc then swaps in the grub-cc binary the
+    /// image stages at `usr/lib/grub-cc/grub-cc.efi` (bootc's own test images
+    /// do). This covers images whose bootupd cannot install grub-cc itself; the
+    /// grub-cc packages available today ship the binary inside the grub2
+    /// component.
+    BootupdGrubCcSwap,
+    /// A bare `bootctl install` of systemd-boot.
+    Bootctl,
+}
+
+impl BootloaderInstallMethod {
+    /// The bootloader to ask bootupd for and which of its components to
+    /// install, or `None` when bootupd is not used. Only GRUB also boots from
+    /// BIOS; grub-cc does not, also when it is swapped in after bootupd
+    /// installed GRUB.
+    fn bootupd_request(self) -> Option<(Bootloader, BootupdComponents)> {
+        match self {
+            Self::Bootupd(Bootloader::Grub) => Some((Bootloader::Grub, BootupdComponents::Auto)),
+            Self::Bootupd(bootloader) => Some((bootloader, BootupdComponents::Efi)),
+            Self::BootupdGrubCcSwap => Some((Bootloader::Grub, BootupdComponents::Efi)),
+            Self::Bootctl => None,
+        }
+    }
+}
+
+/// What the image's bootupd can install.
+#[derive(Debug)]
+struct BootupdCapabilities {
+    /// What its `backend install` accepts.
+    support: crate::bootloader::BootupdInstallSupport,
+    /// The bootloaders with a component in its update metadata.
+    available: Vec<Bootloader>,
+}
+
+/// Probe what the image's bootupd can install; `None` when the image ships no
+/// usable bootupd.
+#[context("Probing bootupd in the image")]
+fn probe_bootupd(mounted_root: &MountedImageRoot) -> Result<Option<BootupdCapabilities>> {
+    if !crate::bootloader::supports_bootupd(mounted_root.dir())?
+        || !crate::utils::have_executable_in_root(mounted_root.dir(), "bootupctl")?
+    {
+        return Ok(None);
+    }
+    let chroot_target = Utf8Path::from_path(mounted_root.root_path())
+        .ok_or_else(|| anyhow!("composefs tmpdir path is not valid UTF-8"))?;
+    Ok(Some(BootupdCapabilities {
+        support: crate::bootloader::BootupdInstallSupport::probe(Some(chroot_target))?,
+        available: crate::bootloader::bootupd_available_bootloaders(mounted_root.dir())?,
+    }))
+}
+
+/// Choose how to install the requested bootloader, given what the image's
+/// bootupd can do (`None` when the image ships none) and how many ESPs the
+/// target has.
+///
+/// bootupd can only be relied on for a bootloader other than GRUB when it
+/// accepts that bootloader for `--bootloader` and its metadata lists a
+/// component for it: bootupd 0.2.30 to 0.2.35 list components but cannot be
+/// asked for one, and packaged 0.2.36 builds accept only GRUB. bootupd also
+/// installs on every ESP of the target, while bootc writes the entries these
+/// bootloaders read to the first ESP only, so several ESPs keep the previous
+/// behaviour.
+fn choose_install_method(
+    requested: Bootloader,
+    bootupd: Option<&BootupdCapabilities>,
+    esps: usize,
+) -> BootloaderInstallMethod {
+    let bootupd_installs = |bootloader: Bootloader| {
+        esps == 1
+            && bootupd
+                .is_some_and(|c| c.support.accepts(bootloader) && c.available.contains(&bootloader))
+    };
+    match requested {
+        Bootloader::GrubCC if bootupd_installs(Bootloader::GrubCC) => {
+            BootloaderInstallMethod::Bootupd(Bootloader::GrubCC)
+        }
+        Bootloader::GrubCC => BootloaderInstallMethod::BootupdGrubCcSwap,
+        Bootloader::Grub => BootloaderInstallMethod::Bootupd(Bootloader::Grub),
+        // composefs installs reject `none` before getting here.
+        Bootloader::Systemd | Bootloader::None => BootloaderInstallMethod::Bootctl,
+    }
+}
+
 #[context("Setting up composefs boot")]
 pub(crate) async fn setup_composefs_boot(
     root_setup: &RootSetup,
@@ -2131,16 +2219,27 @@ pub(crate) async fn setup_composefs_boot(
         .or(root_setup.rootfs_uuid.as_deref())
         .ok_or_else(|| anyhow!("No uuid for boot/root"))?;
 
+    // Only grub-cc has more than one way to be installed, and none of them
+    // applies to s390x, which always uses zipl.
+    let (bootupd, esps) = match postfetch.detected_bootloader {
+        Bootloader::GrubCC if !cfg!(target_arch = "s390x") => (
+            probe_bootupd(&mounted_root)?,
+            root_setup
+                .device_info
+                .find_colocated_esps()?
+                .map_or(0, |esps| esps.len()),
+        ),
+        _ => (None, 0),
+    };
+    let method = choose_install_method(postfetch.detected_bootloader, bootupd.as_ref(), esps);
+
     if cfg!(target_arch = "s390x") {
         // TODO: Integrate s390x support into install_via_bootupd
         crate::bootloader::install_via_zipl(
             &root_setup.device_info.require_single_root()?,
             boot_uuid,
         )?;
-    } else if matches!(
-        postfetch.detected_bootloader,
-        Bootloader::Grub | Bootloader::GrubCC
-    ) {
+    } else if let Some((bootupd_bootloader, components)) = method.bootupd_request() {
         let chroot_target = Utf8Path::from_path(mounted_root.root_path())
             .ok_or_else(|| anyhow!("composefs tmpdir path is not valid UTF-8"))?;
         // Like the ostree backend, bind the physical root's real /boot (an
@@ -2151,14 +2250,6 @@ pub(crate) async fn setup_composefs_boot(
         // an empty `boot/efi` directory for its EFI component to discover
         // and mount the real ESP into, exactly as it would on ostree.
         let bind_boot_path = root_setup.physical_root_path.join(BOOT);
-        // The grub-cc packages available today put the binary inside the grub2
-        // component, so bootupd cannot install grub-cc from them: ask it for
-        // GRUB and swap the binary in afterwards (the FIXME below). grub-cc
-        // only boots from EFI, so install only that component either way.
-        let (bootupd_bootloader, components) = match postfetch.detected_bootloader {
-            Bootloader::GrubCC => (Bootloader::Grub, BootupdComponents::Efi),
-            bootloader => (bootloader, BootupdComponents::Auto),
-        };
         crate::bootloader::install_via_bootupd(
             &root_setup.device_info,
             &root_setup.physical_root_path,
@@ -2167,10 +2258,12 @@ pub(crate) async fn setup_composefs_boot(
             Some(bind_boot_path.as_path()),
             bootupd_bootloader,
             components,
+            bootupd.as_ref().map(|c| &c.support),
         )?;
 
-        // FIXME: Remove this hack once we have support in bootupd
-        if matches!(postfetch.detected_bootloader, Bootloader::GrubCC) {
+        // FIXME: Drop this, and BootloaderInstallMethod::BootupdGrubCcSwap,
+        // once grub-cc packages ship the binary as a bootupd component.
+        if method == BootloaderInstallMethod::BootupdGrubCcSwap {
             // bootupctl wrote this under the physical root's real /boot (via
             // the bind mount above), not under the composefs root.
             root_setup
@@ -2300,6 +2393,61 @@ pub(crate) fn expected_boot_image_ids(
 mod tests {
     use super::*;
     use composefs::erofs::format::FormatVersion;
+
+    #[test]
+    fn test_choose_install_method() {
+        use crate::spec::Bootloader::{Grub, GrubCC, Systemd};
+        use BootloaderInstallMethod::{Bootctl, Bootupd, BootupdGrubCcSwap as Swap};
+        let support = |help| crate::bootloader::BootupdInstallSupport::parse(help);
+        let current = support(include_str!("../fixtures/bootupctl-install-help-0.3.2.txt"));
+        let grub_only = support(include_str!(
+            "../fixtures/bootupctl-install-help-0.2.36.txt"
+        ));
+        let too_old = support(include_str!(
+            "../fixtures/bootupctl-install-help-0.2.35.txt"
+        ));
+        let caps = |support: &crate::bootloader::BootupdInstallSupport,
+                    available: &[Bootloader]| {
+            BootupdCapabilities {
+                support: support.clone(),
+                available: available.to_vec(),
+            }
+        };
+        // A current bootupd with and without a grub-cc component, a packaged
+        // 0.2.36 that accepts only GRUB, and 0.2.35, which lists components but
+        // cannot be asked for one.
+        let with_cc = caps(&current, &[GrubCC, Grub]);
+        let without_cc = caps(&current, &[Grub]);
+        let grub_only = caps(&grub_only, &[GrubCC, Grub]);
+        let too_old = caps(&too_old, &[GrubCC, Grub]);
+        let cases = [
+            (Grub, None, 1, Bootupd(Grub)),
+            (Grub, Some(&with_cc), 1, Bootupd(Grub)),
+            (Grub, Some(&too_old), 2, Bootupd(Grub)),
+            (GrubCC, Some(&with_cc), 1, Bootupd(GrubCC)),
+            (GrubCC, Some(&with_cc), 2, Swap),
+            (GrubCC, Some(&without_cc), 1, Swap),
+            (GrubCC, Some(&grub_only), 1, Swap),
+            (GrubCC, Some(&too_old), 1, Swap),
+            (GrubCC, None, 1, Swap),
+            (Systemd, Some(&with_cc), 1, Bootctl),
+            (Systemd, None, 1, Bootctl),
+        ];
+        for (requested, bootupd, esps, expected) in cases {
+            assert_eq!(
+                choose_install_method(requested, bootupd, esps),
+                expected,
+                "{requested} with {bootupd:?} and {esps} ESPs"
+            );
+        }
+        // What each method asks bootupd for. The swap asks for GRUB, but like
+        // grub-cc itself only on EFI.
+        use crate::bootloader::BootupdComponents::{Auto, Efi};
+        assert_eq!(Bootupd(Grub).bootupd_request(), Some((Grub, Auto)));
+        assert_eq!(Bootupd(GrubCC).bootupd_request(), Some((GrubCC, Efi)));
+        assert_eq!(Swap.bootupd_request(), Some((Grub, Efi)));
+        assert_eq!(Bootctl.bootupd_request(), None);
+    }
 
     #[test]
     fn test_grub_bls_abs_entries_path() -> Result<()> {
