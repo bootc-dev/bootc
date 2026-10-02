@@ -2,11 +2,12 @@
 //! see <https://jsonlines.org/>.
 
 use anyhow::Result;
+use bootc_utils::InheritedFd;
 use canon_json::CanonJsonSerialize;
 use schemars::JsonSchema;
 use serde::Serialize;
 use std::borrow::Cow;
-use std::os::fd::{FromRawFd, OwnedFd, RawFd};
+use std::os::fd::OwnedFd;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Instant;
@@ -138,18 +139,13 @@ pub enum Event<'t> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct RawProgressFd(RawFd);
+pub(crate) struct RawProgressFd(InheritedFd);
 
 impl FromStr for RawProgressFd {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<Self> {
-        let fd = s.parse::<u32>()?;
-        // Sanity check
-        if matches!(fd, 0..=2) {
-            anyhow::bail!("Cannot use fd {fd} for progress JSON")
-        }
-        Ok(Self(fd.try_into()?))
+        s.parse().map(Self)
     }
 }
 
@@ -191,9 +187,8 @@ impl From<Sender> for ProgressWriter {
 impl TryFrom<RawProgressFd> for ProgressWriter {
     type Error = anyhow::Error;
 
-    #[allow(unsafe_code)]
     fn try_from(fd: RawProgressFd) -> Result<Self> {
-        unsafe { OwnedFd::from_raw_fd(fd.0) }.try_into()
+        fd.0.into_owned()?.try_into()
     }
 }
 
