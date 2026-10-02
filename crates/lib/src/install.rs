@@ -2012,6 +2012,9 @@ async fn install_with_sysroot(
                     &state.config_opts,
                     Some(chroot_target.as_path()),
                     Some(bind_boot_path.as_path()),
+                    postfetch.detected_bootloader,
+                    crate::bootloader::BootupdComponents::Auto,
+                    None,
                 )?;
             }
             Bootloader::Systemd | Bootloader::GrubCC => {
@@ -2504,7 +2507,12 @@ fn remove_all_except_loader_dirs(bootdir: &Dir, is_ostree: bool) -> Result<()> {
     Ok(())
 }
 
-/// Remove the bootloader dirs (bootupd/grub, systemd-boot) from the ESP.
+/// bootupd's state file, which it keeps at the root of the ESP when it installs
+/// grub-cc or systemd-boot (for GRUB it lives in `/boot`).
+const BOOTUPD_ESP_STATE_FILE: &str = "bootupd-state.json";
+
+/// Remove the bootloader dirs (bootupd/grub, systemd-boot) from the ESP, and
+/// bootupd's state file, since bootupd refuses to install over an existing one.
 /// Other content, e.g. Asahi's `m1n1/` and `vendorfw/`, may be firmware
 /// or earlier boot stages we cannot recreate, so it is preserved.
 // TODO: be more selective, e.g. keep other OSes' `EFI/<vendor>` and
@@ -2517,6 +2525,9 @@ fn clean_esp_bootloader_dirs(efidir: &Dir) -> Result<()> {
                 .with_context(|| format!("Removing directory: {name}"))?;
         }
     }
+    efidir
+        .remove_file_optional(BOOTUPD_ESP_STATE_FILE)
+        .with_context(|| format!("Removing {BOOTUPD_ESP_STATE_FILE}"))?;
     Ok(())
 }
 
@@ -3276,6 +3287,7 @@ mod tests {
         td.write("EFI/BOOT/BOOTAA64.EFI", b"shim")?;
         td.create_dir_all("loader/entries")?;
         td.write("loader/entries/foo.conf", b"entry")?;
+        td.write(BOOTUPD_ESP_STATE_FILE, b"{}")?;
         // Asahi content which must survive
         td.create_dir_all("m1n1")?;
         td.write("m1n1/boot.bin", b"m1n1")?;
@@ -3284,6 +3296,7 @@ mod tests {
         clean_esp_bootloader_dirs(&td)?;
         assert!(!td.exists("EFI"));
         assert!(!td.exists("loader"));
+        assert!(!td.exists(BOOTUPD_ESP_STATE_FILE));
         assert_eq!(td.read("m1n1/boot.bin")?, b"m1n1");
         assert_eq!(td.read("ubootefi.var")?, b"efivars");
 

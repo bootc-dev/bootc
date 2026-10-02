@@ -121,7 +121,8 @@ jobs:
               || echo "$LABELS" | jq -e 'index("ci/merge")' > /dev/null; }; then
             # Full suite: all OSes
             echo 'package_os_matrix=["fedora-44","fedora-45","fedora-46","centos-9","centos-10"]' >> "$GITHUB_OUTPUT"
-            echo 'integration_os_matrix=["fedora-44","centos-9","centos-10"]' >> "$GITHUB_OUTPUT"
+            # fedora-45 and fedora-46 only run the systemd-shim leg, see the excludes below
+            echo 'integration_os_matrix=["fedora-44","fedora-45","fedora-46","centos-9","centos-10"]' >> "$GITHUB_OUTPUT"
             echo 'upgrade_os_matrix=["fedora-44","centos-10"]' >> "$GITHUB_OUTPUT"
             echo 'run_heavy=true' >> "$GITHUB_OUTPUT"
           elif [[ "$DOCS_ONLY" != "true" ]] && echo "$LABELS" | jq -e 'index("ci/tier-1")' > /dev/null; then
@@ -301,7 +302,7 @@ jobs:
         test_os: ${{ fromJson(needs.compute-ci-level.outputs.integration_os_matrix) }}
         variant: [ostree, composefs]
         filesystem: ["ext4", "xfs"]
-        bootloader: ["grub", "grub-cc", "systemd"]
+        bootloader: ["grub", "grub-cc", "systemd", "systemd-shim"]
         boot_type: ["bls", "uki"]
         seal_state: ["sealed", "unsealed"]
 
@@ -349,7 +350,38 @@ jobs:
           - bootloader: grub-cc
             seal_state: sealed
 
+          # systemd-boot behind shim, installed through bootupd: one composefs
+          # leg, unsealed BLS on ext4, on Fedora 45 and rawhide only, the
+          # tested OSes that ship a signed systemd-boot laid out as a bootupd
+          # component (rawhide is allowed to fail, as in the package job).
+          - variant: ostree
+            bootloader: systemd-shim
+          - bootloader: systemd-shim
+            seal_state: sealed
+          - bootloader: systemd-shim
+            boot_type: uki
+          - bootloader: systemd-shim
+            filesystem: xfs
+          - test_os: fedora-44
+            bootloader: systemd-shim
+          - test_os: centos-9
+            bootloader: systemd-shim
+          - test_os: centos-10
+            bootloader: systemd-shim
+          # and those two run nothing else
+          - test_os: fedora-45
+            bootloader: grub
+          - test_os: fedora-45
+            bootloader: systemd
+          - test_os: fedora-46
+            bootloader: grub
+          - test_os: fedora-46
+            bootloader: grub-cc
+          - test_os: fedora-46
+            bootloader: systemd
+
     runs-on: ubuntu-26.04
+    continue-on-error: ${{ matrix.test_os == 'fedora-46' }}
 
     steps:
       - uses: actions/checkout@v7
@@ -371,7 +403,14 @@ jobs:
 
           echo "BOOTC_variant=${{ matrix.variant }}" >> $GITHUB_ENV
           echo "BOOTC_filesystem=${{ matrix.filesystem }}" >> $GITHUB_ENV
-          echo "BOOTC_bootloader=${{ matrix.bootloader }}" >> $GITHUB_ENV
+          bootloader="${{ matrix.bootloader }}"
+          if [[ "${bootloader}" == systemd-shim ]]; then
+            # Not a bootc bootloader: systemd-boot, which the image's install
+            # config requests, installed through bootupd with shim in front of it
+            bootloader=systemd
+            echo "BOOTC_sdboot_shim=1" >> $GITHUB_ENV
+          fi
+          echo "BOOTC_bootloader=${bootloader}" >> $GITHUB_ENV
           echo "BOOTC_boot_type=${{ matrix.boot_type }}" >> $GITHUB_ENV
           echo "BOOTC_seal_state=${{ matrix.seal_state }}" >> $GITHUB_ENV
 
@@ -405,7 +444,7 @@ jobs:
       - name: Run TMT integration tests
         run: |
           if [[ "${{ matrix.variant }}" = composefs ]]; then
-            just test-composefs "${{ matrix.bootloader }}"  "${{ matrix.filesystem }}" "${{ matrix.boot_type }}" "${{ matrix.seal_state }}"
+            just test-composefs "$BOOTC_bootloader" "${{ matrix.filesystem }}" "${{ matrix.boot_type }}" "${{ matrix.seal_state }}"
           else
             just test-tmt integration
           fi
@@ -513,6 +552,9 @@ jobs:
         exclude:
           # centos-9 ships an older dracut that lacks the auto-install of setup-root-conf.toml
           - test_os: centos-9
+          # fedora-45 and fedora-46 are in the integration OS list only for the systemd-shim leg
+          - test_os: fedora-45
+          - test_os: fedora-46
 
     runs-on: ubuntu-26.04
 
