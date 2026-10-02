@@ -328,41 +328,54 @@ pub(crate) fn install_systemd_boot(
         // Capture stderr so bootctl error messages appear in our error chain.
         .run_capture_stderr()?;
 
-    if let Some(SecurebootKeys { dir, keys }) = autoenroll {
-        let esp_dir = prepared_root.open_esp_dir()?;
-        let keys_path = prepared_root
-            .root_path()
-            .join(prepared_root.esp_subdir)
-            .join(SYSTEMD_KEY_DIR);
-        create_dir_all(&keys_path).with_context(|| {
-            format!("Creating secureboot key directory {}", keys_path.display())
-        })?;
+    write_autoenroll_keys(prepared_root, autoenroll)
+}
 
-        let keys_dir = esp_dir
-            .open_dir(SYSTEMD_KEY_DIR)
-            .with_context(|| format!("Opening {SYSTEMD_KEY_DIR}"))?;
+/// Stage Secure Boot keys on the ESP for systemd-boot's setup-mode enrollment.
+///
+/// This is systemd-boot specific: the keys go in `loader/keys`, which only
+/// systemd-boot reads.
+#[context("Writing Secure Boot enrollment keys")]
+fn write_autoenroll_keys(
+    prepared_root: &MountedImageRoot,
+    autoenroll: Option<SecurebootKeys>,
+) -> Result<()> {
+    let Some(SecurebootKeys { dir, keys }) = autoenroll else {
+        return Ok(());
+    };
 
-        for filename in keys.iter() {
-            // Each key lives in a subdirectory, e.g. "PK/PK.auth".
-            // Create the per-key subdirectory before copying the file into it.
-            if let Some(parent) = filename.parent() {
-                if !parent.as_str().is_empty() {
-                    keys_dir
-                        .create_dir_all(parent)
-                        .with_context(|| format!("Creating key subdirectory {parent}"))?;
-                }
+    let esp_dir = prepared_root.open_esp_dir()?;
+    let keys_path = prepared_root
+        .root_path()
+        .join(prepared_root.esp_subdir)
+        .join(SYSTEMD_KEY_DIR);
+    create_dir_all(&keys_path)
+        .with_context(|| format!("Creating secureboot key directory {}", keys_path.display()))?;
+
+    let keys_dir = esp_dir
+        .open_dir(SYSTEMD_KEY_DIR)
+        .with_context(|| format!("Opening {SYSTEMD_KEY_DIR}"))?;
+
+    for filename in keys.iter() {
+        // Each key lives in a subdirectory, e.g. "PK/PK.auth".
+        // Create the per-key subdirectory before copying the file into it.
+        if let Some(parent) = filename.parent() {
+            if !parent.as_str().is_empty() {
+                keys_dir
+                    .create_dir_all(parent)
+                    .with_context(|| format!("Creating key subdirectory {parent}"))?;
             }
-            dir.copy(filename, &keys_dir, filename)
-                .with_context(|| format!("Copying secure boot key {filename:?}"))?;
-            println!(
-                "Wrote Secure Boot key: {}/{}",
-                keys_path.display(),
-                filename.as_str()
-            );
         }
-        if keys.is_empty() {
-            tracing::debug!("No Secure Boot keys provided for systemd-boot enrollment");
-        }
+        dir.copy(filename, &keys_dir, filename)
+            .with_context(|| format!("Copying secure boot key {filename:?}"))?;
+        println!(
+            "Wrote Secure Boot key: {}/{}",
+            keys_path.display(),
+            filename.as_str()
+        );
+    }
+    if keys.is_empty() {
+        tracing::debug!("No Secure Boot keys provided for systemd-boot enrollment");
     }
 
     Ok(())
