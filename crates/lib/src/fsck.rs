@@ -281,7 +281,7 @@ pub(crate) async fn fsck(storage: &Storage, mut output: impl std::io::Write) -> 
         };
         match r {
             Ok(Ok(())) => {
-                println!("ok: {name}");
+                writeln!(output, "ok: {name}")?;
             }
             Ok(Err(e)) => {
                 errors = true;
@@ -289,7 +289,7 @@ pub(crate) async fn fsck(storage: &Storage, mut output: impl std::io::Write) -> 
             }
             Err(e) => {
                 errors = true;
-                writeln!(output, "Unexpected runtime error in check {name}: {e}")?;
+                writeln!(output, "Unexpected runtime error in check {name}: {e:#}")?;
             }
         }
     }
