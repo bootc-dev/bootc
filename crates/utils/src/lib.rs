@@ -6,6 +6,8 @@ mod chroot;
 pub use chroot::*;
 mod command;
 pub use command::*;
+mod fd;
+pub use fd::*;
 mod iterators;
 pub use iterators::*;
 mod path;
