@@ -371,11 +371,15 @@ def test_single_device_no_lvm [] {
         # Create /boot/efi so the ESP gets mounted and cleaned
         mkdir $"($mountpoint)/boot/efi"
 
-        # Seed non-bootloader content (as on Asahi) and a stale bootloader dir
+        # Seed non-bootloader content (as on Asahi), a stale bootloader dir,
+        # and the state file a grub-cc or systemd-boot install through bootupd
+        # leaves at the ESP root. bootupd refuses to install while any such
+        # file exists, whatever its content.
         with_esp $"($loop1)p1" {|esp|
             mkdir $"($esp)/m1n1" $"($esp)/EFI/stale"
             "m1n1" | save $"($esp)/m1n1/boot.bin"
             "stale" | save $"($esp)/EFI/stale/x.efi"
+            "{}" | save $"($esp)/bootupd-state.json"
         }
 
         # Show block device hierarchy
@@ -388,9 +392,11 @@ def test_single_device_no_lvm [] {
         let r = (with_esp $"($loop1)p1" {|esp| {
             m1n1: ($"($esp)/m1n1/boot.bin" | path exists)
             stale: ($"($esp)/EFI/stale" | path exists)
+            state: ($"($esp)/bootupd-state.json" | path exists)
         }})
         assert $r.m1n1 "m1n1/boot.bin was removed from the ESP"
         assert (not $r.stale) "EFI/stale was not removed from the ESP"
+        assert (not $r.state) "bootupd-state.json was not removed from the ESP"
     } catch {|e|
         cleanup_simple $loop1 $mountpoint
         rm -f $disk1
