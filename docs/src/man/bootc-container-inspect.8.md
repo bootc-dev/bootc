@@ -18,6 +18,10 @@ The command outputs a JSON object with the following fields:
 - `kernel`: An object containing kernel information (or `null` if no kernel is found):
   - `version`: The kernel version identifier. For vmlinuz kernels, this is derived from the `/usr/lib/modules/<version>` directory name (equivalent to `uname -r`). For UKI images, this is the UKI filename without the `.efi` extension - which should usually be the same as the uname.
   - `unified`: A boolean indicating whether the kernel is packaged as a UKI (Unified Kernel Image).
+- `install-features`: An array of optional `bootc install` behaviors implemented by this bootc binary,
+  for tools that prepare a target for `bootc install to-filesystem`:
+  - `initialize-var-mounts`: Empty filesystems mounted at `/var` or below in the target are initialized
+    from the image's `/var` content. See **bootc-install-to-filesystem**(8).
 
 # OPTIONS
 
@@ -60,7 +64,10 @@ Example output (vmlinuz kernel):
   "kernel": {
     "version": "6.12.0-0.rc6.51.fc42.x86_64",
     "unified": false
-  }
+  },
+  "install-features": [
+    "initialize-var-mounts"
+  ]
 }
 ```
 
@@ -72,7 +79,10 @@ Example output (UKI):
   "kernel": {
     "version": "7e11ac46e3e022053e7226a20104ac656bf72d1a",
     "unified": true
-  }
+  },
+  "install-features": [
+    "initialize-var-mounts"
+  ]
 }
 ```
 

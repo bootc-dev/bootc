@@ -16,6 +16,26 @@ necessary platform partitions (such as the EFI system partition) are
 prepared and mounted by an external tool or script. The root filesystem
 is currently expected to be empty by default.
 
+Mount filesystems for `/var` or its subdirectories beneath *ROOT_PATH*
+before invoking this command. On a fresh installation, bootc initializes
+empty mounted trees from the image's initial `/var` contents, including
+nested mounts. Empty `lost+found` directories and directories needed to reach
+nested mountpoints do not prevent initialization. Within a tree being
+initialized, mountpoints must resolve to directories in the image, not
+symlinks. A mount for which the image has no content is left empty.
+Filesystems that bootc initializes or leaves empty are SELinux labeled and
+synced. Unlike the root filesystem, they are not remounted read-only.
+When a tree includes nested filesystems, regular files are copied independently
+instead of preserving hardlinks, which cannot span filesystems. Symbolic links,
+ownership, permissions, and extended attributes are preserved.
+
+If a mounted tree or any of its nested mounts already contains data, bootc
+preserves that entire tree without merging image contents into it. Alongside
+installations do not initialize external `/var` filesystems. This does not
+change upgrade semantics: subsequent image updates do not update `/var`.
+The caller remains responsible for configuring `/etc/fstab` or mount units
+so the filesystems are mounted at the same locations on subsequent boots.
+
 # OPTIONS
 
 <!-- BEGIN GENERATED OPTIONS -->

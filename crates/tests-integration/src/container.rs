@@ -35,6 +35,10 @@ pub(crate) fn test_bootc_container_inspect() -> Result<()> {
     assert!(kargs.iter().any(|arg| arg == "kargsd-othertest=2"));
     assert!(kargs.iter().any(|arg| arg == "testing-kargsd=3"));
 
+    // check advertised install features
+    let features = inspect.get("install-features").unwrap().as_array().unwrap();
+    assert!(features.iter().any(|f| f == "initialize-var-mounts"));
+
     // check kernel field
     let kernel = inspect
         .get("kernel")

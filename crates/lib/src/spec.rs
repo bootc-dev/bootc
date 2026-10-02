@@ -473,6 +473,9 @@ pub(crate) struct ContainerInspect {
     pub(crate) kargs: Vec<String>,
     /// Information about the kernel in the container image.
     pub(crate) kernel: Option<crate::kernel::Kernel>,
+    /// Optional `bootc install` behaviors implemented by this bootc binary,
+    /// for tools that prepare a target for `install to-filesystem`.
+    pub(crate) install_features: Vec<&'static str>,
 }
 
 impl Host {

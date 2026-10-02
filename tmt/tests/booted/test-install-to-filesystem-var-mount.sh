@@ -28,6 +28,14 @@ bootc image copy-to-storage
 cat > /tmp/Containerfile.drop-lbis <<'EOF'
 FROM localhost/bootc as base
 RUN rm -rf /usr/lib/bootc/bound-images.d/*
+RUN mkdir -p /var/lib/bootc-var-test/child && \
+    printf 'parent seed\n' > /var/lib/bootc-var-test/parent && \
+    printf 'child seed\n' > /var/lib/bootc-var-test/child/seed && \
+    chmod 0640 /var/lib/bootc-var-test/child/seed && \
+    chown 1001:1002 /var/lib/bootc-var-test/child/seed && \
+    ln /var/lib/bootc-var-test/child/seed /var/lib/bootc-var-test/crosslink && \
+    ln /var/lib/bootc-var-test/child/seed /var/lib/bootc-var-test/child/hardlink && \
+    ln -s seed /var/lib/bootc-var-test/child/symlink
 EOF
 
 is_composefs=$(bootc status --json | jq '.status.booted.composefs')
@@ -134,15 +142,17 @@ vgcreate BL "$LVM_PART"
 
 # Create logical volumes
 lvcreate -L 4G -n var02 BL
+lvcreate -L 256M -n child02 BL
 lvcreate -l 100%FREE -n root02 BL
 
 # Create filesystems on logical volumes
 mkfs.ext4 -F /dev/BL/var02
+mkfs.ext4 -F /dev/BL/child02
 mkfs.ext4 -F /dev/BL/root02
 
 # Get UUIDs for bootc install
 ROOT_UUID=$(blkid -s UUID -o value /dev/BL/root02)
-BOOT_UUID=$(blkid -s UUID -o value "$EFI_PART")
+BOOT_UUID=$(blkid -s UUID -o value "$BOOT_PART")
 
 # Mount the partitions
 mkdir -p /var/mnt/target
@@ -160,6 +170,8 @@ touch /var/mnt/target/boot/efi/EFI/fedora/grubx64.efi
 # Critical: Mount /var as a separate partition
 mkdir -p /var/mnt/target/var
 mount /dev/BL/var02 /var/mnt/target/var
+mkdir -p /var/mnt/target/var/lib/bootc-var-test/child
+mount /dev/BL/child02 /var/mnt/target/var/lib/bootc-var-test/child
 
 echo "Filesystem layout:"
 mount | grep /var/mnt/target || true
@@ -190,7 +202,6 @@ podman run \
     --security-opt label=type:unconfined_t \
     "$TARGET_IMAGE" \
     bootc install to-filesystem \
-        --disable-selinux \
         "${COMPOSEFS_BACKEND_PARAMS[@]}" \
         "${KARGS[@]}" \
         --root-mount-spec=UUID="$ROOT_UUID" \
@@ -221,5 +232,23 @@ else
     fi
 fi
 
+# Check the volume contents, not just successful deployment. The nested LV
+# must contain its own seed files rather than hide them on the parent LV.
+test "$(cat /var/mnt/target/var/lib/bootc-var-test/parent)" = 'parent seed'
+child=/var/mnt/target/var/lib/bootc-var-test/child
+test "$(cat "$child/seed")" = 'child seed'
+test "$(stat -c '%u:%g:%a' "$child/seed")" = '1001:1002:640'
+test "$(readlink "$child/symlink")" = seed
+test "$(cat "$child/hardlink")" = 'child seed'
+test "$(cat /var/mnt/target/var/lib/bootc-var-test/crosslink)" = 'child seed'
+if selinuxenabled; then
+    for path in /var /var/lib/bootc-var-test/child /var/lib/bootc-var-test/child/seed; do
+        test "$(stat -c '%C' "/var/mnt/target$path")" = "$(matchpathcon -n "$path")"
+    done
+fi
+umount "$child"
+test ! -e "$child/seed"
+mount /dev/BL/child02 "$child"
+test "$(cat "$child/seed")" = 'child seed'
 
 echo "Installation to-filesystem with separate /var mount succeeded!"

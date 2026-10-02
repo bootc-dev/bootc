@@ -990,7 +990,11 @@ pub(crate) fn container_inspect(
     let kargs = crate::bootc_kargs::get_kargs_in_root(&root, std::env::consts::ARCH)?;
     let kargs: Vec<String> = kargs.iter_str().map(|s| s.to_owned()).collect();
     let kernel = crate::kernel::find_kernel(&root)?.map(Into::into);
-    let inspect = crate::spec::ContainerInspect { kargs, kernel };
+    let inspect = crate::spec::ContainerInspect {
+        kargs,
+        kernel,
+        install_features: crate::install::INSTALL_FEATURES.to_vec(),
+    };
 
     // Determine output format: explicit --format wins, then --json, then default to human-readable
     let format = format.unwrap_or(if json {
@@ -1295,6 +1299,7 @@ mod tests {
                 version: "6.12.0-100.fc41.x86_64".into(),
                 unified: false,
             }),
+            install_features: vec![],
         };
         let mut w = Vec::new();
         container_inspect_print_human(&inspect, &mut w).unwrap();
@@ -1315,6 +1320,7 @@ mod tests {
                 version: "6.12.0-100.fc41.x86_64".into(),
                 unified: true,
             }),
+            install_features: vec![],
         };
         let mut w = Vec::new();
         container_inspect_print_human(&inspect, &mut w).unwrap();
@@ -1332,6 +1338,7 @@ mod tests {
         let inspect = crate::spec::ContainerInspect {
             kargs: vec!["console=ttyS0".into()],
             kernel: None,
+            install_features: vec![],
         };
         let mut w = Vec::new();
         container_inspect_print_human(&inspect, &mut w).unwrap();
