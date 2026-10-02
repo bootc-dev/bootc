@@ -101,6 +101,7 @@ use serde::{Deserialize, Serialize};
 use crate::bootc_composefs::state::{get_booted_bls, write_composefs_state};
 use crate::bootc_composefs::status::build_composefs_karg;
 use crate::bootc_kargs::compute_new_kargs;
+use crate::bootloader::BootupdComponents;
 use crate::composefs_consts::{TYPE1_BOOT_DIR_PREFIX, TYPE1_ENT_PATH, TYPE1_ENT_PATH_STAGED};
 use crate::parsers::bls_config::{BLSConfig, BLSConfigType, EFIKey};
 use crate::spec::BootloaderKind;
@@ -2150,12 +2151,22 @@ pub(crate) async fn setup_composefs_boot(
         // an empty `boot/efi` directory for its EFI component to discover
         // and mount the real ESP into, exactly as it would on ostree.
         let bind_boot_path = root_setup.physical_root_path.join(BOOT);
+        // The grub-cc packages available today put the binary inside the grub2
+        // component, so bootupd cannot install grub-cc from them: ask it for
+        // GRUB and swap the binary in afterwards (the FIXME below). grub-cc
+        // only boots from EFI, so install only that component either way.
+        let (bootupd_bootloader, components) = match postfetch.detected_bootloader {
+            Bootloader::GrubCC => (Bootloader::Grub, BootupdComponents::Efi),
+            bootloader => (bootloader, BootupdComponents::Auto),
+        };
         crate::bootloader::install_via_bootupd(
             &root_setup.device_info,
             &root_setup.physical_root_path,
             &state.config_opts,
             Some(chroot_target),
             Some(bind_boot_path.as_path()),
+            bootupd_bootloader,
+            components,
         )?;
 
         // FIXME: Remove this hack once we have support in bootupd

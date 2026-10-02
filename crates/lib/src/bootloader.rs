@@ -95,28 +95,57 @@ pub(crate) fn supports_bootupd(root: &Dir) -> Result<bool> {
     Ok(r)
 }
 
-/// Whether `bootupctl backend install --help` advertises `flag`.
+/// The flags in a clap help line's leading option column: `--flag` for
+/// `--flag <VAL>`, or `-f` and `--flag` for `-f, --flag <VAL>`. Description
+/// lines have none.
+fn help_line_flags(line: &str) -> impl Iterator<Item = &str> {
+    line.split_whitespace()
+        .take_while(|token| token.starts_with('-'))
+        .map(|token| token.trim_end_matches(','))
+}
+
+/// Whether the help of `bootupctl backend install` advertises `flag`.
 ///
 /// clap renders an option as `--flag <VAL>`, or `-f, --flag <VAL>` when it has a
 /// short form, always ahead of the description. Match only in that leading
 /// option column, and on a whole token: a flag named inside another option's
 /// prose is not support for it, and `--boot` is not `--bootloader`.
 fn help_advertises_flag(help: &str, flag: &str) -> bool {
-    help.lines().any(|line| {
-        line.split_whitespace()
-            .take_while(|token| token.starts_with('-'))
-            .any(|token| token.trim_end_matches(',') == flag)
-    })
+    help.lines()
+        .any(|line| help_line_flags(line).any(|f| f == flag))
 }
 
-/// The output of `bootupctl backend install --help` from the target bootupd.
+/// The values clap lists for `flag` as `[possible values: a, b]`, anywhere in
+/// that option's entry: on the option line itself in short help, or on a
+/// description line below it in long help. clap wraps long lines, so the
+/// entry is matched with its whitespace collapsed. `None` when `flag` is not
+/// advertised or lists no values.
+fn help_flag_values(help: &str, flag: &str) -> Option<Vec<String>> {
+    let mut lines = help
+        .lines()
+        .skip_while(|line| !help_line_flags(line).any(|f| f == flag));
+    let first = lines.next()?;
+    let entry = std::iter::once(first)
+        .chain(lines.take_while(|line| help_line_flags(line).next().is_none()))
+        .flat_map(str::split_whitespace)
+        .collect::<Vec<_>>()
+        .join(" ");
+    let (_, rest) = entry.split_once("[possible values: ")?;
+    let (values, _) = rest.split_once(']')?;
+    Some(values.split(',').map(|v| v.trim().to_owned()).collect())
+}
+
+/// The short help (`-h`) of `bootupctl backend install` from the target
+/// bootupd. Unlike `--help`, which switches to a list once the values have
+/// help text of their own, short help always lists an option's values inline
+/// as `[possible values: ...]`.
 ///
 /// When `chroot_target` is set the command runs inside a chroot (via
 /// [`ChrootCmd`]) so we probe the binary from the target image rather than the
 /// buildroot.
 #[context("Querying bootupd install options")]
 fn bootupd_install_help(chroot_target: Option<&Utf8Path>) -> Result<String> {
-    let help_args = ["bootupctl", "backend", "install", "--help"];
+    let help_args = ["bootupctl", "backend", "install", "-h"];
     let output = if let Some(target_root) = chroot_target {
         ChrootCmd::new(target_root)
             .set_default_path()
@@ -128,6 +157,106 @@ fn bootupd_install_help(chroot_target: Option<&Utf8Path>) -> Result<String> {
             .run_get_string()?
     };
     Ok(output)
+}
+
+/// What the target bootupd's `backend install` accepts, from its help.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BootupdInstallSupport {
+    /// `--filesystem`, which lets bootupd find the backing devices itself.
+    filesystem: bool,
+    /// The bootloaders `--bootloader` accepts. Empty when bootupd has no such
+    /// option (before 0.2.36) or lists no values for it. Packaged 0.2.36
+    /// builds accept only GRUB, although they advertise the option.
+    bootloaders: Vec<crate::spec::Bootloader>,
+}
+
+impl BootupdInstallSupport {
+    /// Parse the help of `bootupctl backend install`. bootupd's `--bootloader`
+    /// values are the names [`crate::spec::Bootloader`]'s `Display` produces.
+    fn parse(help: &str) -> Self {
+        use crate::spec::Bootloader;
+        let values = help_flag_values(help, "--bootloader").unwrap_or_default();
+        let bootloaders = [Bootloader::Grub, Bootloader::GrubCC, Bootloader::Systemd]
+            .into_iter()
+            .filter(|bootloader| values.contains(&bootloader.to_string()))
+            .collect();
+        Self {
+            filesystem: help_advertises_flag(help, "--filesystem"),
+            bootloaders,
+        }
+    }
+
+    /// Probe the target bootupd, see [`bootupd_install_help`].
+    fn probe(chroot_target: Option<&Utf8Path>) -> Result<Self> {
+        Ok(Self::parse(&bootupd_install_help(chroot_target)?))
+    }
+}
+
+/// The `--bootloader` value to pass to bootupd for `bootloader`, if any.
+///
+/// A bootupd that cannot be asked for GRUB, such as one from before 0.2.36,
+/// which has no `--bootloader`, is left to install what it finds, as before.
+/// Asking such a bootupd for anything else is an error rather than a silent
+/// GRUB install.
+///
+/// Only a bootupd that also accepts grub-cc or systemd limits the install to
+/// the bootloader it is asked for. Versions 0.2.30 to 0.2.35, which have no
+/// `--bootloader`, and a packaged 0.2.36 build that accepts only grub copy
+/// every component under usr/lib/efi, so another bootloader's component can
+/// overwrite GRUB's second stage.
+fn bootupd_bootloader_arg(
+    support: &BootupdInstallSupport,
+    bootloader: crate::spec::Bootloader,
+) -> Result<Option<String>> {
+    use crate::spec::Bootloader;
+    if support.bootloaders.contains(&bootloader) {
+        return Ok(Some(bootloader.to_string()));
+    }
+    match bootloader {
+        Bootloader::Grub => Ok(None),
+        Bootloader::None => bail!("BUG: bootupd invoked to install no bootloader"),
+        _ if support.bootloaders.is_empty() => {
+            bail!("bootupd in the image cannot be asked to install {bootloader}")
+        }
+        _ => {
+            let accepted = support
+                .bootloaders
+                .iter()
+                .map(|b| b.to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            bail!("bootupd in the image cannot install {bootloader}, only {accepted}")
+        }
+    }
+}
+
+/// Which of bootupd's components to install, unless the image is generic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BootupdComponents {
+    /// The ones for how the installing host booted, as bootupd's `--auto`
+    /// picks them: EFI or BIOS.
+    Auto,
+    /// Only EFI, for a bootloader that only boots from there.
+    Efi,
+}
+
+/// The bootupd arguments that select the components to install.
+///
+/// Generic images get every component, and bootupd skips those that cannot
+/// install the bootloader. Otherwise bootc targets only what this machine
+/// boots. A bootloader that only boots from EFI needs
+/// [`BootupdComponents::Efi`]: on an x86_64 host booted in BIOS/CSM mode,
+/// `--auto` picks BIOS, and bootupd then installs nothing on the ESP and still
+/// succeeds.
+fn bootupd_target_args(
+    generic_image: bool,
+    components: BootupdComponents,
+) -> &'static [&'static str] {
+    match components {
+        _ if generic_image => &[],
+        BootupdComponents::Auto => &["--update-firmware", "--auto"],
+        BootupdComponents::Efi => &["--update-firmware", "--component", "EFI"],
+    }
 }
 
 /// Install the bootloader via bootupd.
@@ -150,6 +279,15 @@ fn bootupd_install_help(chroot_target: Option<&Utf8Path>) -> Result<String> {
 /// `--write-uuid` from whatever filesystem is mounted at `<chroot>/boot`,
 /// and looks for an empty `boot/efi` directory there to discover and mount
 /// the real ESP into.
+///
+/// `bootloader` is passed on as `--bootloader` when the target bootupd accepts
+/// it, see [`bootupd_bootloader_arg`] for what that guarantees. It takes
+/// precedence over any `default_bootloader` recorded in the image's bootupd
+/// metadata, deliberately: bootc's own choice already governs the boot layout
+/// it writes (see [`crate::spec::BootloaderKind`]), so letting bootupd pick a
+/// different one would leave the two disagreeing.
+///
+/// `components` selects what to install, see [`bootupd_target_args`].
 #[context("Installing bootloader")]
 pub(crate) fn install_via_bootupd(
     device: &bootc_blockdev::Device,
@@ -157,13 +295,14 @@ pub(crate) fn install_via_bootupd(
     configopts: &crate::install::InstallConfigOpts,
     chroot_target: Option<&Utf8Path>,
     bind_boot_path: Option<&Utf8Path>,
+    bootloader: crate::spec::Bootloader,
+    components: BootupdComponents,
 ) -> Result<()> {
     let verbose = std::env::var_os("BOOTC_BOOTLOADER_DEBUG").map(|_| "-vvvv");
-    // bootc defaults to only targeting the platform boot method.
-    let bootupd_opts = (!configopts.generic_image).then_some(["--update-firmware", "--auto"]);
 
     // Probe the target bootupd's install options once, up front.
-    let help = bootupd_install_help(chroot_target)?;
+    let support = BootupdInstallSupport::probe(chroot_target)?;
+    let bootloader_arg = bootupd_bootloader_arg(&support, bootloader)?;
 
     // When not running inside the target container (through `--src-imgref`) we
     // run bootupctl from the deployment via a chroot ([`ChrootCmd`]).
@@ -189,8 +328,11 @@ pub(crate) fn install_via_bootupd(
         bootupd_args.push(v);
     }
 
-    if let Some(ref opts) = bootupd_opts {
-        bootupd_args.extend(opts.iter().copied());
+    bootupd_args.extend(bootupd_target_args(configopts.generic_image, components));
+    if let Some(name) = &bootloader_arg {
+        bootupd_args.extend(["--bootloader", name.as_str()]);
+    } else {
+        tracing::debug!("bootupd cannot be asked for {bootloader}, relying on its own choice");
     }
 
     // When the target bootupd lacks --filesystem support, fall back to the
@@ -199,7 +341,7 @@ pub(crate) fn install_via_bootupd(
     // parent via require_single_root().  (Older bootupd doesn't support
     // multiple backing devices anyway.)
     // Computed before building bootupd_args so the String lives long enough.
-    let root_device_path = if help_advertises_flag(&help, "--filesystem") {
+    let root_device_path = if support.filesystem {
         None
     } else {
         Some(device.require_single_root()?.path())
@@ -497,8 +639,8 @@ mod tests {
 
     #[test]
     fn test_help_advertises_flag() {
-        // Excerpted from `bootupctl backend install --help` of a recent and
-        // an old release.
+        // Excerpted from the help of `bootupctl backend install` of a recent
+        // and an old release.
         const NEW: &str = "      --filesystem <FILESYSTEM>\n      --bootloader <BOOTLOADER>\n";
         const OLD: &str = "      --device <DEVICE>\n";
         let cases = [
@@ -522,6 +664,116 @@ mod tests {
                 help_advertises_flag(help, flag),
                 expected,
                 "{flag} in {help:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_parse_install_help() {
+        use crate::spec::Bootloader::{Grub, GrubCC, Systemd};
+        // The help of real builds: `bootupctl backend install -h` of CentOS
+        // Stream 10's 0.2.35 and of Fedora's 0.3.2, which wraps at 100
+        // columns, and the long `--help` of Fedora's 0.2.36-3.fc46, with
+        // trailing whitespace trimmed. That 0.2.36 build was made from a crate
+        // without build.rs, so only GRUB is compiled in.
+        let cases = [
+            (
+                include_str!("fixtures/bootupctl-install-help-0.2.35.txt"),
+                true,
+                vec![],
+            ),
+            (
+                include_str!("fixtures/bootupctl-install-help-0.2.36.txt"),
+                true,
+                vec![Grub],
+            ),
+            (
+                include_str!("fixtures/bootupctl-install-help-0.3.2.txt"),
+                true,
+                vec![Grub, GrubCC, Systemd],
+            ),
+            // Short help renders the values on the option line.
+            (
+                "      --bootloader <BOOTLOADER>  The bootloader to use [possible values: grub, systemd]\n",
+                false,
+                vec![Grub, Systemd],
+            ),
+            // Values that clap wrapped onto the following lines.
+            (
+                "      --bootloader <BOOTLOADER>  The bootloader to use [possible\n                                 values: grub, grub-cc,\n                                 systemd]\n",
+                false,
+                vec![Grub, GrubCC, Systemd],
+            ),
+            // An option without listed values, and values that belong to the
+            // next option, accept nothing.
+            (
+                "      --bootloader <BOOTLOADER>\n          The bootloader to use\n      --component <C>\n          [possible values: grub]\n",
+                false,
+                vec![],
+            ),
+            ("      --device <DEVICE>\n", false, vec![]),
+        ];
+        for (help, filesystem, bootloaders) in cases {
+            assert_eq!(
+                BootupdInstallSupport::parse(help),
+                BootupdInstallSupport {
+                    filesystem,
+                    bootloaders,
+                },
+                "{help:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_bootupd_bootloader_arg() {
+        use crate::spec::Bootloader::{self, Grub, GrubCC, None as NoBootloader, Systemd};
+        let support = |bootloaders: &[Bootloader]| BootupdInstallSupport {
+            filesystem: true,
+            bootloaders: bootloaders.to_vec(),
+        };
+        let current = support(&[Grub, GrubCC, Systemd]);
+        let grub_only = support(&[Grub]);
+        let too_old = support(&[]);
+        // Ok(Some(value)), Ok(None) for bootupd's own choice, or Err(()).
+        let cases: [(&BootupdInstallSupport, Bootloader, Result<Option<&str>, ()>); 10] = [
+            (&current, Grub, Ok(Some("grub"))),
+            (&current, GrubCC, Ok(Some("grub-cc"))),
+            (&current, Systemd, Ok(Some("systemd"))),
+            (&current, NoBootloader, Err(())),
+            (&grub_only, Grub, Ok(Some("grub"))),
+            (&grub_only, Systemd, Err(())),
+            (&grub_only, GrubCC, Err(())),
+            (&too_old, Grub, Ok(None)),
+            (&too_old, Systemd, Err(())),
+            (&too_old, GrubCC, Err(())),
+        ];
+        for (support, bootloader, expected) in cases {
+            let arg = bootupd_bootloader_arg(support, bootloader);
+            assert_eq!(
+                arg.as_ref().map(|v| v.as_deref()).map_err(|_| ()),
+                expected,
+                "{bootloader} with {support:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_bootupd_target_args() {
+        use BootupdComponents::{Auto, Efi};
+        let auto: &[&str] = &["--update-firmware", "--auto"];
+        let efi: &[&str] = &["--update-firmware", "--component", "EFI"];
+        let cases = [
+            (false, Auto, auto),
+            (false, Efi, efi),
+            (true, Auto, &[][..]),
+            (true, Efi, &[][..]),
+        ];
+        for (generic_image, components, expected) in cases {
+            assert_eq!(
+                bootupd_target_args(generic_image, components),
+                expected,
+                "{components:?}, generic image: {generic_image}"
             );
         }
     }
