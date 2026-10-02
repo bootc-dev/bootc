@@ -949,10 +949,12 @@ fn container_inspect_print_human(
 
     if let Some(kernel) = &inspect.kernel {
         rows.push(("Kernel", kernel.version.clone()));
-        let kernel_type = if kernel.unified { "UKI" } else { "vmlinuz" };
-        rows.push(("Type", kernel_type.to_string()));
     } else {
         rows.push(("Kernel", "<none>".to_string()));
+    }
+
+    if let Some(image_type) = inspect.image_type {
+        rows.push(("Type", image_type.as_str().to_string()));
     }
 
     let kargs = if inspect.kargs.is_empty() {
@@ -989,8 +991,21 @@ pub(crate) fn container_inspect(
     )?;
     let kargs = crate::bootc_kargs::get_kargs_in_root(&root, std::env::consts::ARCH)?;
     let kargs: Vec<String> = kargs.iter_str().map(|s| s.to_owned()).collect();
-    let kernel = crate::kernel::find_kernel(&root)?.map(Into::into);
-    let inspect = crate::spec::ContainerInspect { kargs, kernel };
+    let kernel: Option<crate::kernel::Kernel> = crate::kernel::find_kernel(&root)?.map(Into::into);
+    let image_type = crate::kernel::find_aboot_type(&root)?.or_else(|| {
+        kernel.as_ref().map(|kernel| {
+            if kernel.unified {
+                crate::kernel::ContainerImageType::Uki
+            } else {
+                crate::kernel::ContainerImageType::Vmlinuz
+            }
+        })
+    });
+    let inspect = crate::spec::ContainerInspect {
+        kargs,
+        kernel,
+        image_type,
+    };
 
     // Determine output format: explicit --format wins, then --json, then default to human-readable
     let format = format.unwrap_or(if json {
@@ -1290,6 +1305,7 @@ mod tests {
     #[test]
     fn test_container_inspect_human_readable() {
         let inspect = crate::spec::ContainerInspect {
+            image_type: Some(crate::kernel::ContainerImageType::Vmlinuz),
             kargs: vec!["console=ttyS0".into(), "quiet".into()],
             kernel: Some(crate::kernel::Kernel {
                 version: "6.12.0-100.fc41.x86_64".into(),
@@ -1310,6 +1326,7 @@ mod tests {
     #[test]
     fn test_container_inspect_human_readable_uki() {
         let inspect = crate::spec::ContainerInspect {
+            image_type: Some(crate::kernel::ContainerImageType::Uki),
             kargs: vec![],
             kernel: Some(crate::kernel::Kernel {
                 version: "6.12.0-100.fc41.x86_64".into(),
@@ -1330,6 +1347,7 @@ mod tests {
     #[test]
     fn test_container_inspect_human_readable_no_kernel() {
         let inspect = crate::spec::ContainerInspect {
+            image_type: None,
             kargs: vec!["console=ttyS0".into()],
             kernel: None,
         };
@@ -1341,6 +1359,30 @@ mod tests {
              Kargs: console=ttyS0
         "};
         similar_asserts::assert_eq!(output, expected);
+    }
+
+    #[test]
+    fn test_container_inspect_human_readable_aboot() {
+        for (image_type, label) in [
+            (crate::kernel::ContainerImageType::Aboot, "aboot"),
+            (crate::kernel::ContainerImageType::AbootEfi, "aboot-efi"),
+        ] {
+            let inspect = crate::spec::ContainerInspect {
+                image_type: Some(image_type),
+                kargs: vec!["console=ttyS0".into()],
+                kernel: None,
+            };
+            let mut w = Vec::new();
+            container_inspect_print_human(&inspect, &mut w).unwrap();
+            let output = String::from_utf8(w).unwrap();
+            similar_asserts::assert_eq!(
+                output,
+                format!("Kernel: <none>\n  Type: {label}\n Kargs: console=ttyS0\n")
+            );
+            let json = serde_json::to_value(&inspect).unwrap();
+            assert_eq!(json["type"], label);
+            assert!(json.get("aboot").is_none());
+        }
     }
 
     #[test]

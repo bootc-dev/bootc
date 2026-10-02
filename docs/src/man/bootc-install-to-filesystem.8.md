@@ -122,6 +122,7 @@ is currently expected to be empty by default.
     - grub
     - grub-cc
     - systemd
+    - ukiboot
     - none
 
 **--composefs-backend**
