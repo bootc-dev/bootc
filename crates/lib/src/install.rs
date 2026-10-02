@@ -134,6 +134,7 @@
 //! - [`config`]: TOML configuration parsing and merging
 //! - [`completion`]: Post-installation hooks for external installers (Anaconda)
 //! - [`osconfig`]: SSH key injection and OS configuration
+//! - [`output`]: Machine-readable result for `--output-{json,pairs}-{path,fd}`
 //! - [`aleph`]: Installation provenance tracking (.bootc-aleph.json)
 //! - `osbuild`: Helper APIs for bootc-image-builder integration
 
@@ -146,6 +147,7 @@ pub(crate) mod completion;
 pub(crate) mod config;
 mod osbuild;
 pub(crate) mod osconfig;
+pub(crate) mod output;
 
 use std::collections::HashMap;
 use std::io::Write;
@@ -198,12 +200,14 @@ use crate::bootc_composefs::{
 };
 use crate::bootc_kargs::{INITRD_ARG_PREFIX, ROOTFLAGS_KEY};
 use crate::boundimage::{BoundImage, ResolvedBoundImage};
+use crate::composefs_consts::{SHARED_VAR_PATH, STATE_DIR_RELATIVE};
 use crate::containerenv::ContainerExecutionInfo;
 use crate::deploy::{
     MergeState, PreparedPullResult, PullProgress, prepare_for_pull, pull_from_prepared,
     retry_pull_operation,
 };
 use crate::install::config::Filesystem as FilesystemEnum;
+use crate::install::output::{InstallOutput, InstallOutputOpts, InstallResult};
 use crate::lsm;
 use crate::progress_jsonl::ProgressWriter;
 use crate::spec::{Bootloader, ImageReference};
@@ -212,6 +216,7 @@ use crate::store::Storage;
 use crate::task::Task;
 use crate::utils::sigpolicy_from_opt;
 use bootc_mount::Filesystem;
+use composefs_ctl::composefs::fsverity::FsVerityHashValue as _;
 use linux_kernel_cmdline::{bytes, utf8};
 
 /// The toplevel boot directory
@@ -468,6 +473,10 @@ pub(crate) struct InstallToDiskOpts {
     #[clap(flatten)]
     #[serde(flatten)]
     pub(crate) composefs_opts: InstallComposefsOpts,
+
+    #[clap(flatten)]
+    #[serde(skip)]
+    pub(crate) output_opts: InstallOutputOpts,
 }
 
 #[derive(ValueEnum, Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -546,6 +555,9 @@ pub(crate) struct InstallToFilesystemOpts {
 
     #[clap(flatten)]
     pub(crate) composefs_opts: InstallComposefsOpts,
+
+    #[clap(flatten)]
+    pub(crate) output_opts: InstallOutputOpts,
 }
 
 #[derive(Debug, Clone, clap::Parser, PartialEq, Eq)]
@@ -580,6 +592,9 @@ pub(crate) struct InstallToExistingRootOpts {
 
     #[clap(flatten)]
     pub(crate) composefs_opts: InstallComposefsOpts,
+
+    #[clap(flatten)]
+    pub(crate) output_opts: InstallOutputOpts,
 }
 
 #[derive(Debug, clap::Parser, PartialEq, Eq)]
@@ -1768,6 +1783,7 @@ async fn prepare_install(
     mut target_opts: InstallTargetOpts,
     mut composefs_options: InstallComposefsOpts,
     target_fs: Option<FilesystemEnum>,
+    output: Option<&InstallOutput>,
 ) -> Result<Arc<State>> {
     tracing::trace!("Preparing install");
     let allow_missing_verity_explicit = composefs_options.allow_missing_verity;
@@ -1930,10 +1946,12 @@ async fn prepare_install(
             }
         })
         .transpose()?;
+    let output_env = output.and_then(InstallOutput::reexec_env);
     let reexec_env: Vec<(&str, &str)> = root_ssh_authorized_keys
         .as_deref()
         .map(|v| (ROOT_SSH_AUTHORIZED_KEYS_ENV, v))
         .into_iter()
+        .chain(output_env.as_ref().map(|(k, v)| (*k, v.as_str())))
         .collect();
 
     // We need to access devices that are set up by the host udev
@@ -2071,6 +2089,11 @@ async fn prepare_install(
         allow_missing_verity_explicit,
     });
 
+    // We won't re-execute any more.
+    if let Some(output) = output {
+        output.set_cloexec()?;
+    }
+
     Ok(state)
 }
 
@@ -2108,7 +2131,7 @@ async fn install_with_sysroot(
     boot_uuid: &str,
     bound_images: BoundImages,
     has_ostree: bool,
-) -> Result<()> {
+) -> Result<InstallResult> {
     let ostree = storage.get_ostree()?;
     let c_storage = storage.get_ensure_imgstore()?;
 
@@ -2125,6 +2148,17 @@ async fn install_with_sysroot(
         .open_dir(&deployment_path)
         .context("Opening deployment dir")?;
     let postfetch = PostFetchState::new(state, &deployment_dir)?;
+
+    let stateroot = deployment.osname();
+    let result = InstallResult::new(
+        Backend::Ostree,
+        stateroot.to_string(),
+        deployment_path.as_str().into(),
+        format!("ostree/deploy/{stateroot}/var").into(),
+        postfetch.detected_bootloader,
+        &state.target_imgref,
+        aleph.digest,
+    );
 
     if cfg!(target_arch = "s390x") {
         // TODO: Integrate s390x support into install_via_bootupd
@@ -2175,7 +2209,7 @@ async fn install_with_sysroot(
         }
     }
 
-    Ok(())
+    Ok(result)
 }
 
 enum BoundImages {
@@ -2214,7 +2248,11 @@ impl BoundImages {
     }
 }
 
-async fn ostree_install(state: &State, rootfs: &RootSetup, cleanup: Cleanup) -> Result<()> {
+async fn ostree_install(
+    state: &State,
+    rootfs: &RootSetup,
+    cleanup: Cleanup,
+) -> Result<InstallResult> {
     // We verify this upfront because it's currently required by bootupd
     let boot_uuid = rootfs
         .get_boot_uuid()?
@@ -2226,10 +2264,10 @@ async fn ostree_install(state: &State, rootfs: &RootSetup, cleanup: Cleanup) -> 
 
     // Initialize the ostree sysroot (repo, stateroot, etc.)
 
-    {
+    let result = {
         let (sysroot, has_ostree) = initialize_ostree_root(state, rootfs).await?;
 
-        install_with_sysroot(
+        let result = install_with_sysroot(
             state,
             rootfs,
             &sysroot,
@@ -2252,19 +2290,20 @@ async fn ostree_install(state: &State, rootfs: &RootSetup, cleanup: Cleanup) -> 
 
         // We must drop the sysroot here in order to close any open file
         // descriptors.
+        result
     };
 
     // Run this on every install as the penultimate step
     install_finalize(&rootfs.physical_root_path).await?;
 
-    Ok(())
+    Ok(result)
 }
 
 async fn install_to_filesystem_impl(
     state: &State,
     rootfs: &mut RootSetup,
     cleanup: Cleanup,
-) -> Result<()> {
+) -> Result<InstallResult> {
     if matches!(state.selinux_state, SELinuxFinalState::ForceTargetDisabled) {
         rootfs.kargs.extend(&Cmdline::from("selinux=0"));
     }
@@ -2286,7 +2325,7 @@ async fn install_to_filesystem_impl(
         }
     }
 
-    if state.backend == Backend::Composefs {
+    let result = if state.backend == Backend::Composefs {
         let fetch_ref = state.source.composefs_fetch_reference();
         let manifest = get_container_manifest_and_config(&fetch_ref).await?;
         // A capable filesystem gets a strict provisional repository.  The
@@ -2342,7 +2381,8 @@ async fn install_to_filesystem_impl(
         let allow_missing_verity = requested_relaxed;
         tag_pulled_image(&rootfs.physical_root, &pull_result)?;
 
-        setup_composefs_boot(rootfs, state, &pull_result, allow_missing_verity).await?;
+        let boot_setup =
+            setup_composefs_boot(rootfs, state, &pull_result, allow_missing_verity).await?;
 
         // Label composefs objects as /usr so they get usr_t rather than
         // default_t (which has no policy match).
@@ -2356,8 +2396,18 @@ async fn install_to_filesystem_impl(
             )
             .context("SELinux labeling of composefs objects")?;
         }
+        InstallResult::new(
+            Backend::Composefs,
+            // The composefs backend has a single stateroot, see SHARED_VAR_PATH
+            ostree_ext::container::deploy::STATEROOT_DEFAULT.into(),
+            Utf8Path::new(STATE_DIR_RELATIVE).join(boot_setup.deployment_id.to_hex()),
+            SHARED_VAR_PATH.into(),
+            boot_setup.bootloader,
+            &state.target_imgref,
+            pull_result.manifest_digest.to_string(),
+        )
     } else {
-        ostree_install(state, rootfs, cleanup).await?;
+        let result = ostree_install(state, rootfs, cleanup).await?;
 
         // For s390x, we set zipl as the bootloader
         // this needs to be done after the ostree commit is deployed,
@@ -2376,7 +2426,8 @@ async fn install_to_filesystem_impl(
                 .run_capture_stderr()
                 .context("Setting bootloader config to zipl")?;
         }
-    }
+        result
+    };
 
     // As the very last step before filesystem finalization, do a full SELinux
     // relabel of the physical root filesystem.  Any files that are already
@@ -2398,7 +2449,7 @@ async fn install_to_filesystem_impl(
         }
     }
 
-    Ok(())
+    Ok(result)
 }
 
 fn installation_complete() {
@@ -2418,6 +2469,7 @@ pub(crate) async fn install_to_disk(mut opts: InstallToDiskOpts) -> Result<()> {
         .map(|s| s.as_str())
         .unwrap_or("none");
     let target_device = opts.block_opts.device.as_str();
+    let output = opts.output_opts.into_output();
 
     tracing::info!(
         message_id = INSTALL_DISK_JOURNAL_ID,
@@ -2457,6 +2509,7 @@ pub(crate) async fn install_to_disk(mut opts: InstallToDiskOpts) -> Result<()> {
         opts.target_opts,
         opts.composefs_opts,
         block_opts.filesystem,
+        output.as_ref(),
     )
     .await?;
 
@@ -2483,7 +2536,7 @@ pub(crate) async fn install_to_disk(mut opts: InstallToDiskOpts) -> Result<()> {
     // does for any other installer.
     let mut rootfs =
         MountedTarget::open(&disk.root_path)?.into_root_setup(disk.root_mount, None, false)?;
-    install_to_filesystem_impl(&state, &mut rootfs, Cleanup::Skip).await?;
+    let result = install_to_filesystem_impl(&state, &mut rootfs, Cleanup::Skip).await?;
 
     // Ensure any file descriptors etc. are closed.
     drop(rootfs);
@@ -2508,6 +2561,9 @@ pub(crate) async fn install_to_disk(mut opts: InstallToDiskOpts) -> Result<()> {
         tracing::warn!("Failed to consume state Arc");
     }
 
+    if let Some(output) = output {
+        output.write(&result)?;
+    }
     installation_complete();
 
     Ok(())
@@ -2769,6 +2825,7 @@ pub(crate) async fn install_to_filesystem(
         .map(|s| s.as_str())
         .unwrap_or("none");
     let target_path = opts.filesystem_opts.root_path.as_str();
+    let output = opts.output_opts.into_output();
 
     tracing::info!(
         message_id = INSTALL_FILESYSTEM_JOURNAL_ID,
@@ -2867,6 +2924,7 @@ pub(crate) async fn install_to_filesystem(
         opts.target_opts,
         opts.composefs_opts,
         Some(inspect.fstype.as_str().try_into()?),
+        output.as_ref(),
     )
     .await?;
 
@@ -2948,11 +3006,14 @@ pub(crate) async fn install_to_filesystem(
     };
     let mut rootfs = target.into_root_setup(root_info, boot_mount_spec, skip_finalize)?;
 
-    install_to_filesystem_impl(&state, &mut rootfs, cleanup).await?;
+    let result = install_to_filesystem_impl(&state, &mut rootfs, cleanup).await?;
 
     // Drop all data about the root except the path to ensure any file descriptors etc. are closed.
     drop(rootfs);
 
+    if let Some(output) = output {
+        output.write(&result)?;
+    }
     installation_complete();
 
     Ok(())
@@ -3001,6 +3062,7 @@ pub(crate) async fn install_to_existing_root(opts: InstallToExistingRootOpts) ->
         target_opts: opts.target_opts,
         config_opts: opts.config_opts,
         composefs_opts: opts.composefs_opts,
+        output_opts: opts.output_opts,
     };
 
     install_to_filesystem(opts, true, cleanup).await
