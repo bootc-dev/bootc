@@ -1,5 +1,5 @@
 use std::fs::create_dir_all;
-use std::process::Command;
+use std::process::{Command, Output};
 use std::sync::OnceLock;
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -8,6 +8,7 @@ use camino::Utf8Path;
 use cap_std_ext::cap_std::fs::Dir;
 use cap_std_ext::dirext::CapStdExtDirExt;
 use fn_error_context::context;
+use serde::Deserialize;
 
 use bootc_mount as mount;
 
@@ -95,6 +96,153 @@ pub(crate) fn supports_bootupd(root: &Dir) -> Result<bool> {
     Ok(r)
 }
 
+/// bootupd's update metadata for its EFI component, written by
+/// `bootupctl backend generate-update-metadata`.
+const BOOTUPD_EFI_METADATA: &str = "usr/lib/bootupd/updates/EFI.json";
+
+/// Where an image ships the EFI binaries bootupd installs, one directory per
+/// component: `usr/lib/efi/<component>/<version>/EFI`.
+const EFI_COMPONENTS: &str = "usr/lib/efi";
+
+/// Whether `efi_components`, the image's [`EFI_COMPONENTS`], has the component
+/// `name` with a payload, which bootupd looks for in `<version>/EFI` and does
+/// not follow symlinks to.
+fn has_efi_component(efi_components: &Dir, name: &str) -> Result<bool> {
+    let is_dir =
+        |metadata: Option<cap_std_ext::cap_std::fs::Metadata>| metadata.is_some_and(|m| m.is_dir());
+    if !is_dir(efi_components.symlink_metadata_optional(name)?) {
+        return Ok(false);
+    }
+    let component = efi_components.open_dir(name)?;
+    for version in component.entries()? {
+        let version = version?;
+        if version.file_type()?.is_dir()
+            && is_dir(version.open_dir()?.symlink_metadata_optional("EFI")?)
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// The bootloaders a bootupd without `backend list-bootloaders` can install
+/// from the image mounted at `root`, decided by that command's rules: a
+/// bootloader needs a component of its own in [`EFI_COMPONENTS`], next to a
+/// shim component, and the image needs EFI update metadata.
+///
+/// This only finds bootloaders in `usr/lib/efi`, which is where grub-cc and
+/// systemd-boot have to be, and not GRUB from an image without it.
+// FIXME: This mirrors bootupd's own rules. Drop it once bootc requires a
+// bootupd with `backend list-bootloaders`.
+#[context("Inspecting the image's bootupd payload")]
+fn bootupd_payload_bootloaders(root: &Dir) -> Result<Vec<crate::spec::Bootloader>> {
+    use crate::spec::Bootloader;
+    if !root.try_exists(BOOTUPD_EFI_METADATA)? {
+        return Ok(Vec::new());
+    }
+    let Some(efi_components) = root.open_dir_optional(EFI_COMPONENTS)? else {
+        return Ok(Vec::new());
+    };
+    if !has_efi_component(&efi_components, "shim")? {
+        return Ok(Vec::new());
+    }
+    let mut bootloaders = Vec::new();
+    for (bootloader, component) in [
+        (Bootloader::Grub, "grub2"),
+        (Bootloader::GrubCC, "grub-cc"),
+        (Bootloader::Systemd, "systemd-boot"),
+    ] {
+        if has_efi_component(&efi_components, component)? {
+            bootloaders.push(bootloader);
+        }
+    }
+    Ok(bootloaders)
+}
+
+/// What `bootupctl backend list-bootloaders --json` prints.
+#[derive(Debug, Deserialize)]
+struct BootupdListBootloaders {
+    /// The bootloaders `backend install --bootloader` can install from the
+    /// image, by the names that option takes.
+    bootloaders: Vec<String>,
+}
+
+/// The bootloaders in `bootupctl backend list-bootloaders --json` output.
+/// Names bootc does not know, from a newer bootupd, are left out.
+fn parse_bootupd_list_bootloaders(output: &str) -> Result<Vec<crate::spec::Bootloader>> {
+    let list: BootupdListBootloaders = serde_json::from_str(output)
+        .context("Parsing bootupctl backend list-bootloaders output")?;
+    Ok(list
+        .bootloaders
+        .iter()
+        .filter_map(|name| {
+            name.parse()
+                .inspect_err(|e| tracing::debug!("Ignoring a bootloader bootupd lists: {e}"))
+                .ok()
+        })
+        .collect())
+}
+
+/// The command that asks bootupd which bootloaders it can install. bootc only
+/// asks about bootloaders that only bootupd's EFI component installs, so it
+/// asks about that component alone.
+const BOOTUPD_LIST_BOOTLOADERS: [&str; 6] = [
+    "bootupctl",
+    "backend",
+    "list-bootloaders",
+    "--component",
+    "EFI",
+    "--json",
+];
+
+/// The exit code with which bootupd rejects a command it does not have, that
+/// of a clap usage error.
+const BOOTUPD_USAGE_ERROR: i32 = 2;
+
+/// The bootloaders [`BOOTUPD_LIST_BOOTLOADERS`] listed, from how it ended, or
+/// `None` when the bootupd that ran it does not have the command.
+fn parse_bootupd_list_output(output: &Output) -> Result<Option<Vec<crate::spec::Bootloader>>> {
+    if output.status.success() {
+        let stdout = std::str::from_utf8(&output.stdout)
+            .context("Reading bootupctl backend list-bootloaders output")?;
+        return parse_bootupd_list_bootloaders(stdout).map(Some);
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if output.status.code() == Some(BOOTUPD_USAGE_ERROR) {
+        tracing::debug!("bootupd has no backend list-bootloaders: {}", stderr.trim());
+        return Ok(None);
+    }
+    bail!(
+        "{} failed with {}: {}",
+        BOOTUPD_LIST_BOOTLOADERS.join(" "),
+        output.status,
+        stderr.trim()
+    )
+}
+
+/// The bootloaders the image's bootupd can install, mounted at `root` and run
+/// from the same root at `chroot_target`.
+///
+/// bootc asks the image's bootupd with `bootupctl backend list-bootloaders`;
+/// `bootupctl status --json` cannot tell from an unbooted image, where it only
+/// names the BIOS and EFI components. A bootupd without that command rejects
+/// it as unknown. bootupd 0.3.0 and newer can install grub-cc and
+/// systemd-boot even so, and for those bootc applies the command's rules
+/// itself, see [`bootupd_payload_bootloaders`].
+#[context("Querying the bootloaders bootupd can install")]
+pub(crate) fn bootupd_available_bootloaders(
+    root: &Dir,
+    chroot_target: &Utf8Path,
+) -> Result<Vec<crate::spec::Bootloader>> {
+    let output = ChrootCmd::new(chroot_target)
+        .set_default_path()
+        .output(BOOTUPD_LIST_BOOTLOADERS)?;
+    match parse_bootupd_list_output(&output)? {
+        Some(bootloaders) => Ok(bootloaders),
+        None => bootupd_payload_bootloaders(root),
+    }
+}
+
 /// The flags in a clap help line's leading option column: `--flag` for
 /// `--flag <VAL>`, or `-f` and `--flag` for `-f, --flag <VAL>`. Description
 /// lines have none.
@@ -161,7 +309,7 @@ fn bootupd_install_help(chroot_target: Option<&Utf8Path>) -> Result<String> {
 
 /// What the target bootupd's `backend install` accepts, from its help.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct BootupdInstallSupport {
+pub(crate) struct BootupdInstallSupport {
     /// `--filesystem`, which lets bootupd find the backing devices itself.
     filesystem: bool,
     /// The bootloaders `--bootloader` accepts. Empty when bootupd has no such
@@ -173,7 +321,7 @@ struct BootupdInstallSupport {
 impl BootupdInstallSupport {
     /// Parse the help of `bootupctl backend install`. bootupd's `--bootloader`
     /// values are the names [`crate::spec::Bootloader`]'s `Display` produces.
-    fn parse(help: &str) -> Self {
+    pub(crate) fn parse(help: &str) -> Self {
         use crate::spec::Bootloader;
         let values = help_flag_values(help, "--bootloader").unwrap_or_default();
         let bootloaders = [Bootloader::Grub, Bootloader::GrubCC, Bootloader::Systemd]
@@ -187,8 +335,13 @@ impl BootupdInstallSupport {
     }
 
     /// Probe the target bootupd, see [`bootupd_install_help`].
-    fn probe(chroot_target: Option<&Utf8Path>) -> Result<Self> {
+    pub(crate) fn probe(chroot_target: Option<&Utf8Path>) -> Result<Self> {
         Ok(Self::parse(&bootupd_install_help(chroot_target)?))
+    }
+
+    /// Whether bootupd can be asked to install `bootloader`.
+    pub(crate) fn accepts(&self, bootloader: crate::spec::Bootloader) -> bool {
+        self.bootloaders.contains(&bootloader)
     }
 }
 
@@ -209,7 +362,7 @@ fn bootupd_bootloader_arg(
     bootloader: crate::spec::Bootloader,
 ) -> Result<Option<String>> {
     use crate::spec::Bootloader;
-    if support.bootloaders.contains(&bootloader) {
+    if support.accepts(bootloader) {
         return Ok(Some(bootloader.to_string()));
     }
     match bootloader {
@@ -280,6 +433,9 @@ fn bootupd_target_args(
 /// and looks for an empty `boot/efi` directory there to discover and mount
 /// the real ESP into.
 ///
+/// `support` is what the target bootupd accepts, when the caller has already
+/// probed it; otherwise it is probed here.
+///
 /// `bootloader` is passed on as `--bootloader` when the target bootupd accepts
 /// it, see [`bootupd_bootloader_arg`] for what that guarantees. It takes
 /// precedence over any `default_bootloader` recorded in the image's bootupd
@@ -297,12 +453,21 @@ pub(crate) fn install_via_bootupd(
     bind_boot_path: Option<&Utf8Path>,
     bootloader: crate::spec::Bootloader,
     components: BootupdComponents,
+    support: Option<&BootupdInstallSupport>,
 ) -> Result<()> {
     let verbose = std::env::var_os("BOOTC_BOOTLOADER_DEBUG").map(|_| "-vvvv");
 
-    // Probe the target bootupd's install options once, up front.
-    let support = BootupdInstallSupport::probe(chroot_target)?;
-    let bootloader_arg = bootupd_bootloader_arg(&support, bootloader)?;
+    // Probe the target bootupd's install options once, up front, unless the
+    // caller already has.
+    let probed;
+    let support = match support {
+        Some(support) => support,
+        None => {
+            probed = BootupdInstallSupport::probe(chroot_target)?;
+            &probed
+        }
+    };
+    let bootloader_arg = bootupd_bootloader_arg(support, bootloader)?;
 
     // When not running inside the target container (through `--src-imgref`) we
     // run bootupctl from the deployment via a chroot ([`ChrootCmd`]).
@@ -692,6 +857,147 @@ mod tests {
                 "{flag} in {help:?}"
             );
         }
+    }
+
+    #[test]
+    fn test_bootupd_payload_bootloaders() -> Result<()> {
+        use crate::spec::Bootloader::{self, Grub, GrubCC, Systemd};
+        struct Case {
+            /// Components in usr/lib/efi with a payload
+            components: &'static [&'static str],
+            /// Components there without one
+            empty: &'static [&'static str],
+            /// Whether there is EFI update metadata
+            metadata: bool,
+            expected: &'static [Bootloader],
+        }
+        let cases = [
+            Case {
+                components: &["grub2", "shim", "systemd-boot"],
+                empty: &[],
+                metadata: true,
+                expected: &[Grub, Systemd],
+            },
+            Case {
+                components: &["grub-cc", "grub2", "shim"],
+                empty: &[],
+                metadata: true,
+                expected: &[Grub, GrubCC],
+            },
+            Case {
+                components: &["grub2", "shim"],
+                empty: &["systemd-boot"],
+                metadata: true,
+                expected: &[Grub],
+            },
+            // bootupd cannot install anything without shim, or metadata.
+            Case {
+                components: &["grub2", "systemd-boot"],
+                empty: &["shim"],
+                metadata: true,
+                expected: &[],
+            },
+            Case {
+                components: &["grub2", "shim", "systemd-boot"],
+                empty: &[],
+                metadata: false,
+                expected: &[],
+            },
+            // An image without usr/lib/efi
+            Case {
+                components: &[],
+                empty: &[],
+                metadata: true,
+                expected: &[],
+            },
+        ];
+        for case in cases {
+            let root =
+                cap_std_ext::cap_tempfile::tempdir(cap_std_ext::cap_std::ambient_authority())?;
+            if case.metadata {
+                root.create_dir_all(BOOTUPD_UPDATES)?;
+                root.write(BOOTUPD_EFI_METADATA, "{}")?;
+            }
+            for component in case.components {
+                root.create_dir_all(format!("{EFI_COMPONENTS}/{component}/1.0-1/EFI/fedora"))?;
+            }
+            for component in case.empty {
+                root.create_dir_all(format!("{EFI_COMPONENTS}/{component}/1.0-1"))?;
+            }
+            assert_eq!(
+                bootupd_payload_bootloaders(&root)?,
+                case.expected,
+                "{:?} and {:?} without payload, metadata: {}",
+                case.components,
+                case.empty,
+                case.metadata
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_bootupd_list_output() {
+        use crate::spec::Bootloader::{Grub, Systemd};
+        use std::os::unix::process::ExitStatusExt;
+        // A wait status as `waitpid` reports it
+        let output = |status: i32, stdout: &str, stderr: &str| Output {
+            status: std::process::ExitStatus::from_raw(status),
+            stdout: stdout.into(),
+            stderr: stderr.into(),
+        };
+        let listed = r#"{"bootloaders":["grub","systemd"],"default-bootloader":null}"#;
+        assert_eq!(
+            parse_bootupd_list_output(&output(0, listed, "")).unwrap(),
+            Some(vec![Grub, Systemd])
+        );
+        assert!(parse_bootupd_list_output(&output(0, "grub\n", "")).is_err());
+        // A bootupd without the command exits with clap's usage error.
+        let unknown = "error: unrecognized subcommand 'list-bootloaders'\n";
+        assert_eq!(
+            parse_bootupd_list_output(&output(2 << 8, "", unknown)).unwrap(),
+            None
+        );
+        // Any other failure is an error, with bootupd's message, as from a
+        // bootupd without an EFI component.
+        let failed =
+            "error: Listing the bootloaders of the update payload: Unknown component: EFI\n";
+        let err = parse_bootupd_list_output(&output(1 << 8, "", failed)).unwrap_err();
+        assert!(err.to_string().contains("Unknown component"), "{err}");
+        // As is being killed by a signal
+        assert!(parse_bootupd_list_output(&output(9, "", "")).is_err());
+    }
+
+    #[test]
+    fn test_parse_bootupd_list_bootloaders() {
+        use crate::spec::Bootloader::{Grub, GrubCC, Systemd};
+        // As printed by `bootupctl backend list-bootloaders --json`.
+        let cases = [
+            (
+                r#"{"bootloaders":["grub"],"default-bootloader":null}"#,
+                vec![Grub],
+            ),
+            (
+                r#"{"bootloaders":["grub","systemd"],"default-bootloader":"grub"}"#,
+                vec![Grub, Systemd],
+            ),
+            (
+                r#"{"bootloaders":["grub","grub-cc"],"default-bootloader":null}"#,
+                vec![Grub, GrubCC],
+            ),
+            (r#"{"bootloaders":[],"default-bootloader":null}"#, vec![]),
+            // A bootloader only a newer bootupd knows
+            (r#"{"bootloaders":["grub","other"]}"#, vec![Grub]),
+        ];
+        for (output, expected) in cases {
+            assert_eq!(
+                parse_bootupd_list_bootloaders(output).unwrap(),
+                expected,
+                "{output}"
+            );
+        }
+        assert!(parse_bootupd_list_bootloaders("not json").is_err());
+        assert!(parse_bootupd_list_bootloaders(r#"{"default-bootloader":null}"#).is_err());
     }
 
     #[test]

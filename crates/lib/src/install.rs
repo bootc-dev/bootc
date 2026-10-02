@@ -2152,6 +2152,7 @@ async fn install_with_sysroot(
                     Some(bind_boot_path.as_path()),
                     postfetch.detected_bootloader,
                     crate::bootloader::BootupdComponents::Auto,
+                    None,
                 )?;
             }
             Bootloader::Systemd | Bootloader::GrubCC | Bootloader::Ukiboot => {
