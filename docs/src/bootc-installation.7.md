@@ -474,7 +474,8 @@ directories, bootc falls back to its built-in sfdisk partitioning.
 ### Root partition handling
 
 All repart.d definitions are passed to systemd-repart together so that it can
-plan a correct layout with proper space allocation across all partitions.
+plan a correct layout with proper space allocation across all partitions,
+except as described under Firstboot definitions below.
 
 If the image's repart.d definitions do **not** include a root partition
 (`Type=root`), bootc generates one and passes it to systemd-repart along with
@@ -484,12 +485,15 @@ root partition definition:
 - Uses `Type=root` (architecture-specific DPS GUID is resolved by systemd-repart)
 - Applies `Format=<fs>` from the configured root filesystem type
 - Honours `--root-size` if specified (via `SizeMinBytes`/`SizeMaxBytes`)
-- Otherwise takes all remaining space on the disk
+- Otherwise is sized as systemd-repart plans it among all the image's
+  definitions, as if the image defined a root partition without a size: it
+  takes the space they leave, shared by `Weight=` with any of them that can
+  grow. Use `Weight=` in those definitions or `--root-size` to steer it.
 
 This means images can ship repart.d definitions for additional partitions
 (e.g. `/home`, swap, `/var`) without needing to also define root.
-All definitions run at install time so that systemd-repart can plan the
-layout with correct space allocation across all partitions.  This is
+All definitions are considered at install time so that systemd-repart can
+plan the layout with correct space allocation across all partitions.  This is
 important because the root filesystem is mounted read-only on bootc
 systems (`/sysroot` is ro), so systemd-repart cannot resize it after
 installation.
@@ -505,10 +509,15 @@ If none of these provide a filesystem type, the installation will fail.
 
 ### Firstboot definitions
 
-Images may include repart.d definitions for partitions beyond root, ESP,
-and xbootldr, for example `/home`, swap, or `/var`.  Because all definitions
-run at install time, systemd-repart allocates space for all of them during
-installation.
+Images may include repart.d definitions for partitions beyond root and the
+ESP, for example `/home`, swap, or `/var`.  Without `--generic-image`,
+systemd-repart creates all of them at install time.  With `--generic-image`
+(implied by `--via-loopback`) only root, the ESP and the BIOS boot partition
+are created at install time, and the others on first boot, in the space left
+for them.  When bootc generates root and no `--root-size` is given, it plans
+the layout with all definitions and pins these three partitions to their
+planned sizes, which leaves the space planned for the others.  Otherwise the
+image's definitions must keep them from growing into that space.
 
 ### DPS auto-mount and symlinked directories
 
