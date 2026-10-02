@@ -34,6 +34,7 @@ use super::State;
 use super::config::Filesystem;
 use crate::bootloader::systemd_version;
 use crate::discoverable_partition_specification::BIOS_BOOT;
+use crate::store::Backend;
 use crate::task::Task;
 #[cfg(feature = "install-to-disk")]
 use bootc_mount::is_mounted_in_pid1_mountns;
@@ -532,7 +533,7 @@ fn parse_repart_layout(partitions: &[RepartPartition]) -> Result<PartitionLayout
 fn sfdisk(
     device: &Device,
     root_size: Option<u64>,
-    composefs_backend: bool,
+    backend: Backend,
     requires_bootpart: bool,
 ) -> Result<PartitionLayout> {
     // Generate partitioning spec as input to sfdisk
@@ -566,10 +567,9 @@ fn sfdisk(
         let esp_guid = crate::discoverable_partition_specification::ESP;
         partno += 1;
 
-        let esp_size = if composefs_backend {
-            CFS_EFIPN_SIZE_MB
-        } else {
-            EFIPN_SIZE_MB
+        let esp_size = match backend {
+            Backend::Composefs => CFS_EFIPN_SIZE_MB,
+            Backend::Ostree => EFIPN_SIZE_MB,
         };
 
         writeln!(
@@ -715,7 +715,7 @@ pub(crate) fn install_create_rootfs(
         sfdisk(
             &device,
             root_size,
-            state.composefs_options.composefs_backend,
+            state.backend,
             block_setup.requires_bootpart(),
         )?
     };

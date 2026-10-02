@@ -207,6 +207,7 @@ use crate::install::config::Filesystem as FilesystemEnum;
 use crate::lsm;
 use crate::progress_jsonl::ProgressWriter;
 use crate::spec::{Bootloader, ImageReference};
+use crate::store::Backend;
 use crate::store::Storage;
 use crate::task::Task;
 use crate::utils::sigpolicy_from_opt;
@@ -675,7 +676,9 @@ pub(crate) struct State {
     #[allow(dead_code)]
     pub(crate) composefs_required: bool,
 
-    // If Some, then --composefs_native is passed
+    /// The storage backend to install, from --composefs-backend or the image.
+    /// This is what decides it, rather than `composefs_options`.
+    pub(crate) backend: Backend,
     pub(crate) composefs_options: InstallComposefsOpts,
     pub(crate) composefs_fsverity_supported: bool,
     pub(crate) allow_missing_verity_explicit: bool,
@@ -1777,6 +1780,11 @@ async fn prepare_install(
     tracing::debug!("Composefs default: {composefs_default}");
     composefs_options.composefs_backend |= composefs_required || composefs_default;
     composefs_options.validate(config_opts.bootloader.as_ref())?;
+    let backend = if composefs_options.composefs_backend {
+        Backend::Composefs
+    } else {
+        Backend::Ostree
+    };
 
     // Read the file eagerly so we error out early, and before the mount changes
     // below hide a file bind mounted under e.g. /tmp. We may re-exec further down
@@ -1882,8 +1890,7 @@ async fn prepare_install(
         }
 
         // If `--allow-missing-verity` is already passed via CLI, don't modify
-        if composefs_options.composefs_backend && !composefs_options.allow_missing_verity && !is_uki
-        {
+        if backend == Backend::Composefs && !composefs_options.allow_missing_verity && !is_uki {
             composefs_options.allow_missing_verity = !root_filesystem.supports_fsverity();
         }
     }
@@ -1907,7 +1914,7 @@ async fn prepare_install(
     // images needn't have one.
     let ostree_prepareroot_config = match ostree_prepareroot_config {
         Some(c) => c,
-        None if composefs_options.composefs_backend => HashMap::new(),
+        None if backend == Backend::Composefs => HashMap::new(),
         None => anyhow::bail!(
             "Failed to find {} in /usr/lib or /etc",
             ostree_prepareroot::CONF_PATH
@@ -1930,6 +1937,7 @@ async fn prepare_install(
         tempdir,
         host_is_container,
         composefs_required,
+        backend,
         composefs_options,
         // assume fs-verity is supported as that's the safer option
         composefs_fsverity_supported: root_filesystem
@@ -2153,7 +2161,7 @@ async fn install_to_filesystem_impl(
         }
     }
 
-    if state.composefs_options.composefs_backend {
+    if state.backend == Backend::Composefs {
         let fetch_ref = state.source.composefs_fetch_reference();
         let manifest = get_container_manifest_and_config(&fetch_ref).await?;
         // A capable filesystem gets a strict provisional repository.  The
