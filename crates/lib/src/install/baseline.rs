@@ -26,10 +26,8 @@ use fn_error_context::context;
 use serde::{Deserialize, Serialize};
 
 use super::BOOT;
-use super::MountSpec;
 use super::RUN_BOOTC;
-use super::RW_KARG;
-use super::RootSetup;
+use super::RootMountInfo;
 use super::State;
 use super::config::Filesystem;
 use crate::bootloader::systemd_version;
@@ -38,7 +36,6 @@ use crate::store::Backend;
 use crate::task::Task;
 #[cfg(feature = "install-to-disk")]
 use bootc_mount::is_mounted_in_pid1_mountns;
-use linux_kernel_cmdline::utf8::Cmdline;
 
 /// Check whether DPS auto-discovery is enabled.  When `true`,
 /// `root=UUID=` is omitted and `systemd-gpt-auto-generator` discovers
@@ -620,12 +617,24 @@ fn sfdisk(
     })
 }
 
+/// The filesystems [`install_create_rootfs`] created and mounted.
+#[cfg(feature = "install-to-disk")]
+pub(crate) struct DiskSetup {
+    /// Where the root filesystem is mounted, with /boot under it.
+    pub(crate) root_path: Utf8PathBuf,
+    /// How the installed system mounts its root.
+    pub(crate) root_mount: RootMountInfo,
+    /// The opened LUKS device of the root, to close after installing.
+    pub(crate) luks_device: Option<String>,
+}
+
+/// Partition the target device, then create and mount the filesystems.
 #[context("Creating rootfs")]
 #[cfg(feature = "install-to-disk")]
 pub(crate) fn install_create_rootfs(
     state: &State,
     opts: InstallBlockDeviceOpts,
-) -> Result<RootSetup> {
+) -> Result<DiskSetup> {
     let install_config = state.install_config.as_ref();
     let luks_name = "root";
     // Verify that the target is empty (if not already wiped in particular, but it's
@@ -814,31 +823,18 @@ pub(crate) fn install_create_rootfs(
         None
     };
 
-    let boot_uuid = match bootdev {
-        Some(bootdev) => {
-            let u = if layout.used_repart {
-                let u = bootdev
-                    .uuid
-                    .as_ref()
-                    .ok_or_else(|| anyhow::anyhow!("bootdev UUID not found"))?;
-
-                u.parse::<uuid::Uuid>()
-                    .with_context(|| format!("Parsing bootdev UUID {u}"))?
-            } else {
-                mkfs(
-                    &bootdev.path(),
-                    root_filesystem.as_str().try_into()?,
-                    "boot",
-                    opts.wipe,
-                    [],
-                )
-                .context("Initializing /boot")?
-            };
-
-            Some(u)
-        }
-        None => None,
-    };
+    // systemd-repart creates the filesystem itself; its UUID is found from
+    // the mount later, as for the root.
+    if let Some(bootdev) = bootdev.filter(|_| !layout.used_repart) {
+        mkfs(
+            &bootdev.path(),
+            root_filesystem.as_str().try_into()?,
+            "boot",
+            opts.wipe,
+            [],
+        )
+        .context("Initializing /boot")?;
+    }
 
     let root_uuid = if layout.used_repart {
         // systemd-repart creates filesystem, just read the UUID it assigned
@@ -876,50 +872,23 @@ pub(crate) fn install_create_rootfs(
             mkfs_options.iter().copied(),
         )?
     };
-    let bootsrc = boot_uuid.as_ref().map(|uuid| format!("UUID={uuid}"));
-    let bootarg = bootsrc.as_deref().map(|bootsrc| format!("boot={bootsrc}"));
-    let boot = bootsrc.map(|bootsrc| MountSpec {
-        source: bootsrc,
-        target: format!("/{BOOT}"),
-        fstype: MountSpec::AUTO.into(),
-        options: Some("ro".into()),
-    });
-
-    let mut kargs = Cmdline::new();
-
-    // Add root blockdev kargs (e.g., LUKS parameters)
-    if let Some(root_blockdev_kargs) = root_blockdev_kargs {
-        for karg in root_blockdev_kargs {
-            kargs.extend(&Cmdline::from(karg.as_str()));
-        }
-    }
-
-    // When discoverable-partitions is enabled, omit root= so that
-    // systemd-gpt-auto-generator discovers root by its DPS type GUID.
-    if discoverable {
-        kargs.extend(&Cmdline::from(RW_KARG));
-    } else {
-        let rootarg = format!("root=UUID={root_uuid}");
-        kargs.extend(&Cmdline::from(format!("{rootarg} {RW_KARG}")));
-    }
-
-    // Add boot= argument if present
-    if let Some(bootarg) = bootarg {
-        kargs.extend(&Cmdline::from(bootarg.as_str()));
-    }
-
-    // Add CLI kargs
-    if let Some(cli_kargs) = state.config_opts.karg.as_ref() {
-        for karg in cli_kargs {
-            kargs.extend(karg);
-        }
-    }
+    // Like the root mount spec and kargs an installer passes to `to-filesystem`
+    let root_mount = RootMountInfo {
+        // When discoverable-partitions is enabled, omit root= so that
+        // systemd-gpt-auto-generator discovers root by its DPS type GUID.
+        mount_spec: if discoverable {
+            String::new()
+        } else {
+            format!("UUID={root_uuid}")
+        },
+        // e.g. LUKS parameters
+        kargs: root_blockdev_kargs.unwrap_or_default(),
+    };
 
     let fstype = &root_filesystem.to_string();
     bootc_mount::mount_typed(&rootdev_path, fstype, &physical_root_path)?;
     let target_rootfs = Dir::open_ambient_dir(&physical_root_path, cap_std::ambient_authority())?;
     crate::lsm::ensure_dir_labeled(&target_rootfs, "", Some("/".into()), 0o755.into(), sepolicy)?;
-    let physical_root = Dir::open_ambient_dir(&physical_root_path, cap_std::ambient_authority())?;
     let bootfs = physical_root_path.join(BOOT);
     // Create the underlying mount point directory, which should be labeled
     crate::lsm::ensure_dir_labeled(&target_rootfs, BOOT, None, 0o755.into(), sepolicy)?;
@@ -943,19 +912,17 @@ pub(crate) fn install_create_rootfs(
         std::fs::create_dir(&efifs_path).context("Creating efi dir")?;
     }
 
+    // Let the new filesystems show up in udev, for the UUIDs that
+    // findmnt reports.
+    udev_settle()?;
+
     let luks_device = match block_setup {
         BlockSetup::Direct => None,
         BlockSetup::Tpm2Luks => Some(luks_name.to_string()),
     };
-    Ok(RootSetup {
+    Ok(DiskSetup {
+        root_path: physical_root_path,
+        root_mount,
         luks_device,
-        device_info: device,
-        physical_root_path,
-        physical_root,
-        target_root_path: None,
-        rootfs_uuid: Some(root_uuid.to_string()),
-        boot,
-        kargs,
-        skip_finalize: false,
     })
 }

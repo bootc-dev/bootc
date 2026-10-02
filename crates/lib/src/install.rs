@@ -1387,8 +1387,6 @@ pub(crate) fn exec_in_host_mountns(args: &[std::ffi::OsString]) -> Result<()> {
 
 #[derive(Debug)]
 pub(crate) struct RootSetup {
-    #[cfg(feature = "install-to-disk")]
-    luks_device: Option<String>,
     pub(crate) device_info: bootc_blockdev::Device,
     /// Absolute path to the location where we've mounted the physical
     /// root filesystem for the system we're installing.
@@ -1420,11 +1418,138 @@ impl RootSetup {
     pub(crate) fn boot_mount_spec(&self) -> Option<&MountSpec> {
         self.boot.as_ref()
     }
+}
 
-    // Drop any open file descriptors and return just the mount path and backing luks device, if any
+/// A root filesystem mounted for bootc to install to, by the caller of
+/// `to-filesystem` or by `to-disk` itself.
+struct MountedTarget {
+    /// The mount point given to bootc; with `--replace=alongside` onto an
+    /// ostree system, this is a deployment root rather than the physical root.
+    target_root_path: Utf8PathBuf,
+    target_rootfs_fd: Dir,
+    physical_root_path: Utf8PathBuf,
+    physical_root: Dir,
+    /// The mount of the physical root.
+    inspect: Filesystem,
+}
+
+impl MountedTarget {
+    /// A physical root filesystem mounted at `path`.
     #[cfg(feature = "install-to-disk")]
-    fn into_storage(self) -> (Utf8PathBuf, Option<String>) {
-        (self.physical_root_path, self.luks_device)
+    fn open(path: &Utf8Path) -> Result<Self> {
+        let physical_root = Dir::open_ambient_dir(path, cap_std::ambient_authority())
+            .with_context(|| format!("Opening target root directory {path}"))?;
+        Ok(Self {
+            target_root_path: path.to_owned(),
+            target_rootfs_fd: physical_root.try_clone()?,
+            physical_root_path: path.to_owned(),
+            physical_root,
+            inspect: bootc_mount::inspect_filesystem(path)?,
+        })
+    }
+
+    /// Work out the rest of what the installation needs to know about the
+    /// target from its mounts, given how the installed system mounts its root
+    /// and (if not found from the mounts) its /boot.  This is how it works for
+    /// any installer calling `to-filesystem`, `to-disk` included.
+    fn into_root_setup(
+        self,
+        root_info: RootMountInfo,
+        boot_mount_spec: Option<&str>,
+        skip_finalize: bool,
+    ) -> Result<RootSetup> {
+        let Self {
+            target_root_path,
+            target_rootfs_fd,
+            physical_root_path,
+            physical_root,
+            inspect,
+        } = self;
+        tracing::debug!("Root mount: {} {:?}", root_info.mount_spec, root_info.kargs);
+
+        let boot_is_mount = {
+            if let Some(boot_metadata) = target_rootfs_fd.symlink_metadata_optional(BOOT)? {
+                let root_dev = physical_root.dir_metadata()?.dev();
+                let boot_dev = boot_metadata.dev();
+                tracing::debug!("root_dev={root_dev} boot_dev={boot_dev}");
+                root_dev != boot_dev
+            } else {
+                tracing::debug!("No /{BOOT} directory found");
+                false
+            }
+        };
+        // Find the UUID of /boot because we need it for GRUB.
+        let boot_uuid = if boot_is_mount {
+            let boot_path = target_root_path.join(BOOT);
+            tracing::debug!("boot_path={boot_path}");
+            let u = bootc_mount::inspect_filesystem(&boot_path)
+                .with_context(|| format!("Inspecting /{BOOT}"))?
+                .uuid
+                .ok_or_else(|| anyhow!("No UUID found for /{BOOT}"))?;
+            Some(u)
+        } else {
+            None
+        };
+        tracing::debug!("boot UUID: {boot_uuid:?}");
+
+        // Find the real underlying backing device for the root.  This is currently just required
+        // for GRUB (BIOS) and in the future zipl (I think).
+        let device_info = {
+            let dev = bootc_blockdev::list_dev(Utf8Path::new(&inspect.source))?;
+            tracing::debug!("Target filesystem backing device: {}", dev.path());
+            dev
+        };
+
+        let mut boot = if let Some(spec) = boot_mount_spec {
+            // An empty boot mount spec signals to omit the mountspec kargs
+            // See https://github.com/bootc-dev/bootc/issues/1441
+            if spec.is_empty() {
+                None
+            } else {
+                Some(MountSpec::new(spec, &format!("/{BOOT}")))
+            }
+        } else {
+            // Read /etc/fstab to get boot entry, but only use it if it's UUID-based
+            // Otherwise fall back to boot_uuid
+            read_boot_fstab_entry(&physical_root)?
+                .filter(|spec| spec.get_source_uuid().is_some())
+                .or_else(|| {
+                    boot_uuid
+                        .as_deref()
+                        .map(|boot_uuid| MountSpec::new_uuid_src(boot_uuid, &format!("/{BOOT}")))
+                })
+        };
+        // Ensure that we mount /boot readonly because it's really owned by bootc/ostree
+        // and we don't want e.g. apt/dnf trying to mutate it.
+        if let Some(boot) = boot.as_mut() {
+            boot.push_option("ro");
+        }
+        // By default, we inject a boot= karg because things like FIPS compliance currently
+        // require checking in the initramfs.
+        let bootarg = boot.as_ref().map(|boot| format!("boot={}", &boot.source));
+
+        // If the root mount spec is empty, we omit the root= karg.
+        // https://github.com/bootc-dev/bootc/issues/1441
+        let rootarg =
+            (!root_info.mount_spec.is_empty()).then(|| format!("root={}", root_info.mount_spec));
+        let kargs = rootarg
+            .into_iter()
+            .chain(root_info.kargs)
+            .chain(std::iter::once(RW_KARG.to_string()))
+            .chain(bootarg)
+            .collect::<Vec<_>>();
+        let kargs = Cmdline::from(kargs.join(" "));
+
+        Ok(RootSetup {
+            device_info,
+            physical_root_path,
+            physical_root,
+            target_root_path: Some(target_root_path),
+            rootfs_uuid: inspect.uuid,
+            boot,
+            kargs,
+            skip_finalize,
+        })
     }
 }
 
@@ -2336,7 +2461,7 @@ pub(crate) async fn install_to_disk(mut opts: InstallToDiskOpts) -> Result<()> {
     .await?;
 
     // This is all blocking stuff
-    let (mut rootfs, loopback) = {
+    let (disk, loopback) = {
         let loopback_dev = if opts.via_loopback {
             let loopback_dev =
                 bootc_blockdev::LoopbackDevice::new(block_opts.device.as_std_path())?;
@@ -2347,23 +2472,27 @@ pub(crate) async fn install_to_disk(mut opts: InstallToDiskOpts) -> Result<()> {
         };
 
         let state = state.clone();
-        let rootfs = tokio::task::spawn_blocking(move || {
+        let disk = tokio::task::spawn_blocking(move || {
             baseline::install_create_rootfs(&state, block_opts)
         })
         .await??;
-        (rootfs, loopback_dev)
+        (disk, loopback_dev)
     };
 
+    // From here on, install to the filesystems just like `to-filesystem`
+    // does for any other installer.
+    let mut rootfs =
+        MountedTarget::open(&disk.root_path)?.into_root_setup(disk.root_mount, None, false)?;
     install_to_filesystem_impl(&state, &mut rootfs, Cleanup::Skip).await?;
 
-    // Drop all data about the root except the bits we need to ensure any file descriptors etc. are closed.
-    let (root_path, luksdev) = rootfs.into_storage();
+    // Ensure any file descriptors etc. are closed.
+    drop(rootfs);
     Task::new_and_run(
         "Unmounting filesystems",
         "umount",
-        ["-R", root_path.as_str()],
+        ["-R", disk.root_path.as_str()],
     )?;
-    if let Some(luksdev) = luksdev.as_deref() {
+    if let Some(luksdev) = disk.luks_device.as_deref() {
         Task::new_and_run("Closing root LUKS device", "cryptsetup", ["close", luksdev])?;
     }
 
@@ -2554,7 +2683,7 @@ fn clean_boot_directories(rootfs: &Dir, rootfs_path: &Utf8Path, is_ostree: bool)
     Ok(())
 }
 
-struct RootMountInfo {
+pub(crate) struct RootMountInfo {
     mount_spec: String,
     kargs: Vec<String>,
 }
@@ -2798,108 +2927,26 @@ pub(crate) async fn install_to_filesystem(
             kargs,
         }
     };
-    tracing::debug!("Root mount: {} {:?}", root_info.mount_spec, root_info.kargs);
-
-    let boot_is_mount = {
-        if let Some(boot_metadata) = target_rootfs_fd.symlink_metadata_optional(BOOT)? {
-            let root_dev = rootfs_fd.dir_metadata()?.dev();
-            let boot_dev = boot_metadata.dev();
-            tracing::debug!("root_dev={root_dev} boot_dev={boot_dev}");
-            root_dev != boot_dev
-        } else {
-            tracing::debug!("No /{BOOT} directory found");
-            false
-        }
-    };
-    // Find the UUID of /boot because we need it for GRUB.
-    let boot_uuid = if boot_is_mount {
-        let boot_path = target_root_path.join(BOOT);
-        tracing::debug!("boot_path={boot_path}");
-        let u = bootc_mount::inspect_filesystem(&boot_path)
-            .with_context(|| format!("Inspecting /{BOOT}"))?
-            .uuid
-            .ok_or_else(|| anyhow!("No UUID found for /{BOOT}"))?;
-        Some(u)
-    } else {
-        None
-    };
-    tracing::debug!("boot UUID: {boot_uuid:?}");
-
-    // Find the real underlying backing device for the root.  This is currently just required
-    // for GRUB (BIOS) and in the future zipl (I think).
-    let device_info = {
-        let dev = bootc_blockdev::list_dev(Utf8Path::new(&inspect.source))?;
-        tracing::debug!("Target filesystem backing device: {}", dev.path());
-        dev
-    };
-
-    let rootarg = format!("root={}", root_info.mount_spec);
     // CLI takes precedence over config file.
     let config_boot_mount_spec = state
         .install_config
         .as_ref()
         .and_then(|c| c.boot_mount_spec.as_ref());
-    let mut boot = if let Some(spec) = fsopts.boot_mount_spec.as_ref().or(config_boot_mount_spec) {
-        // An empty boot mount spec signals to omit the mountspec kargs
-        // See https://github.com/bootc-dev/bootc/issues/1441
-        if spec.is_empty() {
-            None
-        } else {
-            Some(MountSpec::new(&spec, &format!("/{BOOT}")))
-        }
-    } else {
-        // Read /etc/fstab to get boot entry, but only use it if it's UUID-based
-        // Otherwise fall back to boot_uuid
-        read_boot_fstab_entry(&rootfs_fd)?
-            .filter(|spec| spec.get_source_uuid().is_some())
-            .or_else(|| {
-                boot_uuid
-                    .as_deref()
-                    .map(|boot_uuid| MountSpec::new_uuid_src(boot_uuid, &format!("/{BOOT}")))
-            })
-    };
-    // Ensure that we mount /boot readonly because it's really owned by bootc/ostree
-    // and we don't want e.g. apt/dnf trying to mutate it.
-    if let Some(boot) = boot.as_mut() {
-        boot.push_option("ro");
-    }
-    // By default, we inject a boot= karg because things like FIPS compliance currently
-    // require checking in the initramfs.
-    let bootarg = boot.as_ref().map(|boot| format!("boot={}", &boot.source));
-
-    // If the root mount spec is empty, we omit the mounts kargs entirely.
-    // https://github.com/bootc-dev/bootc/issues/1441
-    let mut kargs = if root_info.mount_spec.is_empty() {
-        Vec::new()
-    } else {
-        [rootarg]
-            .into_iter()
-            .chain(root_info.kargs)
-            .collect::<Vec<_>>()
-    };
-
-    kargs.push(RW_KARG.to_string());
-
-    if let Some(bootarg) = bootarg {
-        kargs.push(bootarg);
-    }
-
-    let kargs = Cmdline::from(kargs.join(" "));
-
+    let boot_mount_spec = fsopts
+        .boot_mount_spec
+        .as_ref()
+        .or(config_boot_mount_spec)
+        .map(String::as_str);
     let skip_finalize =
         matches!(fsopts.replace, Some(ReplaceMode::Alongside)) || fsopts.skip_finalize;
-    let mut rootfs = RootSetup {
-        #[cfg(feature = "install-to-disk")]
-        luks_device: None,
-        device_info,
+    let target = MountedTarget {
+        target_root_path,
+        target_rootfs_fd,
         physical_root_path: fsopts.root_path,
         physical_root: rootfs_fd,
-        target_root_path: Some(target_root_path.clone()),
-        rootfs_uuid: inspect.uuid.clone(),
-        boot,
-        kargs,
-        skip_finalize,
+        inspect,
     };
+    let mut rootfs = target.into_root_setup(root_info, boot_mount_spec, skip_finalize)?;
 
     install_to_filesystem_impl(&state, &mut rootfs, cleanup).await?;
 
