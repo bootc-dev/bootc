@@ -6,7 +6,6 @@
 // Unfortunately needed here to work with linkme
 #![allow(unsafe_code)]
 
-use std::fmt::Write as _;
 use std::future::Future;
 use std::num::NonZeroUsize;
 use std::pin::Pin;
@@ -26,36 +25,54 @@ use crate::store::Storage;
 
 use std::os::fd::AsFd;
 
-/// A lint check has failed.
-#[derive(thiserror::Error, Debug)]
-pub(crate) struct FsckError(String);
-
-/// The outer error is for unexpected fatal runtime problems; the
-/// inner error is for the check failing in an expected way.
-pub(crate) type FsckResult = anyhow::Result<std::result::Result<(), FsckError>>;
-
-/// Everything is OK - we didn't encounter a runtime error, and
-/// the targeted check passed.
-pub(crate) fn fsck_ok() -> FsckResult {
-    Ok(Ok(()))
+/// The kind of problem a check found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CheckFindingCode {
+    /// `/usr/etc/resolv.conf` is a zero-sized file.
+    ResolvconfZeroSized,
+    /// fsverity is enabled for the ostree repository, but not on an object.
+    ObjectWithoutFsverity,
 }
 
-/// We successfully found a failure.
-pub(crate) fn fsck_err(msg: impl AsRef<str>) -> FsckResult {
-    Ok(Err(FsckError::new(msg)))
-}
-
-impl std::fmt::Display for FsckError {
+impl std::fmt::Display for CheckFindingCode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
+        std::fmt::Debug::fmt(self, f)
     }
 }
 
-impl FsckError {
-    fn new(msg: impl AsRef<str>) -> Self {
-        Self(msg.as_ref().to_owned())
+/// A problem a check found in the system.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct CheckFinding {
+    code: CheckFindingCode,
+    /// What the problem is in, e.g. a path or an object.
+    subject: String,
+    detail: String,
+}
+
+impl CheckFinding {
+    fn new(code: CheckFindingCode, subject: impl Into<String>, detail: impl Into<String>) -> Self {
+        Self {
+            code,
+            subject: subject.into(),
+            detail: detail.into(),
+        }
     }
 }
+
+impl std::fmt::Display for CheckFinding {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}: {}", self.code, self.subject, self.detail)
+    }
+}
+
+/// Like the lints, checks have two levels of errors: the outer `Result` is
+/// for unexpected runtime errors, which stop the check; every problem the
+/// check finds in the system is collected as a finding, and the check runs
+/// to completion.  No findings means the check passed.
+pub(crate) type FsckResult = anyhow::Result<Vec<CheckFinding>>;
+
+/// How many findings of one check are printed; the rest are counted.
+const MAX_PRINTED_FINDINGS: NonZeroUsize = NonZeroUsize::new(5).unwrap();
 
 pub(crate) type FsckFn = fn(&Storage) -> FsckResult;
 pub(crate) type AsyncFsckFn = fn(&Storage) -> Pin<Box<dyn Future<Output = FsckResult> + '_>>;
@@ -108,26 +125,33 @@ static CHECK_RESOLVCONF: FsckCheck =
 fn check_resolvconf(storage: &Storage) -> FsckResult {
     let ostree = match storage.get_ostree() {
         Ok(o) => o,
-        Err(_) => return fsck_ok(), // Not an ostree system (e.g. composefs-only)
+        Err(_) => return Ok(Vec::new()), // Not an ostree system (e.g. composefs-only)
     };
     // For now we only check the booted deployment.
     if ostree.booted_deployment().is_none() {
-        return fsck_ok();
+        return Ok(Vec::new());
     }
     let usr = Dir::open_ambient_dir("/usr", cap_std::ambient_authority())?;
     check_resolvconf_in(&usr)
 }
 
+/// The subject of the resolv.conf check's finding.
+const RESOLVCONF_SUBJECT: &str = "usr/etc/resolv.conf";
+
 /// The resolv.conf check proper, on the `/usr` directory `usr`.
 fn check_resolvconf_in(usr: &Dir) -> FsckResult {
     // Read usr/etc/resolv.conf directly.
     let Some(meta) = usr.symlink_metadata_optional("etc/resolv.conf")? else {
-        return fsck_ok();
+        return Ok(Vec::new());
     };
     if meta.is_file() && meta.size() == 0 {
-        return fsck_err("Found usr/etc/resolv.conf as zero-sized file");
+        return Ok(vec![CheckFinding::new(
+            CheckFindingCode::ResolvconfZeroSized,
+            RESOLVCONF_SUBJECT,
+            "zero-sized file",
+        )]);
     }
-    fsck_ok()
+    Ok(Vec::new())
 }
 
 #[derive(Debug, Default)]
@@ -242,7 +266,7 @@ fn check_fsverity(storage: &Storage) -> Pin<Box<dyn Future<Output = FsckResult> 
 async fn check_fsverity_inner(storage: &Storage) -> FsckResult {
     let ostree = match storage.get_ostree() {
         Ok(o) => o,
-        Err(_) => return fsck_ok(), // Not an ostree system (e.g. composefs-only)
+        Err(_) => return Ok(Vec::new()), // Not an ostree system (e.g. composefs-only)
     };
     let repo = &ostree.repo();
     let verity_state = ostree_ext::fsverity::is_verity_enabled(repo)?;
@@ -255,22 +279,44 @@ async fn check_fsverity_inner(storage: &Storage) -> FsckResult {
     let verity_found_state =
         verity_state_of_all_objects(&ostree.repo(), verity_state.desired == Tristate::Enabled)
             .await?;
-    let Some((missing, rest)) = collect_until(
-        verity_found_state.missing.iter(),
-        const { NonZeroUsize::new(5).unwrap() },
-    ) else {
-        return fsck_ok();
+    let findings = verity_found_state
+        .missing
+        .into_iter()
+        .map(|obj| {
+            CheckFinding::new(
+                CheckFindingCode::ObjectWithoutFsverity,
+                obj,
+                "missing fsverity, which is enabled for the repository",
+            )
+        })
+        .collect();
+    Ok(findings)
+}
+
+/// Print the result of the check `name`, returning whether it passed.
+fn print_check_result(
+    name: &str,
+    result: &FsckResult,
+    mut output: impl std::io::Write,
+) -> std::io::Result<bool> {
+    let findings = match result {
+        Ok(findings) => findings,
+        Err(e) => {
+            writeln!(output, "Unexpected runtime error in check {name}: {e:#}")?;
+            return Ok(false);
+        }
     };
-    let mut err = String::from("fsverity enabled, but objects without fsverity:\n");
-    for obj in missing {
-        // SAFETY: Writing into a String
-        writeln!(err, "  {obj}").unwrap();
+    let Some((shown, rest)) = collect_until(findings.iter(), MAX_PRINTED_FINDINGS) else {
+        writeln!(output, "ok: {name}")?;
+        return Ok(true);
+    };
+    for finding in shown {
+        writeln!(output, "fsck error: {name}: {finding}")?;
     }
     if rest > 0 {
-        // SAFETY: Writing into a String
-        writeln!(err, "  ...and {rest} more").unwrap();
+        writeln!(output, "fsck error: {name}: ...and {rest} more")?;
     }
-    fsck_err(err)
+    Ok(false)
 }
 
 pub(crate) async fn fsck(storage: &Storage, mut output: impl std::io::Write) -> anyhow::Result<()> {
@@ -284,18 +330,8 @@ pub(crate) async fn fsck(storage: &Storage, mut output: impl std::io::Write) -> 
             FsckFnImpl::Sync(f) => f(&storage),
             FsckFnImpl::Async(f) => f(&storage).await,
         };
-        match r {
-            Ok(Ok(())) => {
-                writeln!(output, "ok: {name}")?;
-            }
-            Ok(Err(e)) => {
-                errors = true;
-                writeln!(output, "fsck error: {name}: {e}")?;
-            }
-            Err(e) => {
-                errors = true;
-                writeln!(output, "Unexpected runtime error in check {name}: {e:#}")?;
-            }
+        if !print_check_result(name, &r, &mut output)? {
+            errors = true;
         }
     }
     if errors {
@@ -315,4 +351,110 @@ pub(crate) async fn fsck(storage: &Storage, mut output: impl std::io::Write) -> 
     // }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cap_std_ext::cap_tempfile;
+
+    #[test]
+    fn test_check_resolvconf() -> anyhow::Result<()> {
+        let zero_sized = || {
+            vec![CheckFinding::new(
+                CheckFindingCode::ResolvconfZeroSized,
+                RESOLVCONF_SUBJECT,
+                "zero-sized file",
+            )]
+        };
+        // Sets up etc/resolv.conf (if anything) in a fresh /usr
+        type Setup = fn(&Dir) -> std::io::Result<()>;
+        let cases: &[(&str, Setup, Vec<CheckFinding>)] = &[
+            ("missing", |_| Ok(()), Vec::new()),
+            (
+                "zero-sized",
+                |d| d.write("etc/resolv.conf", ""),
+                zero_sized(),
+            ),
+            (
+                "nonempty",
+                |d| d.write("etc/resolv.conf", "nameserver 192.0.2.1\n"),
+                Vec::new(),
+            ),
+            (
+                "symlink",
+                |d| d.symlink("../run/resolv.conf", "etc/resolv.conf"),
+                Vec::new(),
+            ),
+            ("directory", |d| d.create_dir("etc/resolv.conf"), Vec::new()),
+        ];
+        for (name, setup, expected) in cases {
+            let usr = cap_tempfile::tempdir(cap_std::ambient_authority())?;
+            usr.create_dir("etc")?;
+            setup(&usr)?;
+            assert_eq!(&check_resolvconf_in(&usr)?, expected, "case {name}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_print_check_result() {
+        let objects = |n: usize| -> FsckResult {
+            Ok((0..n)
+                .map(|i| {
+                    CheckFinding::new(
+                        CheckFindingCode::ObjectWithoutFsverity,
+                        format!("{i:02}.file"),
+                        "detail",
+                    )
+                })
+                .collect())
+        };
+        let cases: &[(&str, FsckResult, bool, &str)] = &[
+            ("no findings", Ok(Vec::new()), true, "ok: c\n"),
+            (
+                "one finding",
+                objects(1),
+                false,
+                "fsck error: c: ObjectWithoutFsverity: 00.file: detail\n",
+            ),
+            (
+                "at the limit",
+                objects(5),
+                false,
+                indoc::indoc! {"
+                    fsck error: c: ObjectWithoutFsverity: 00.file: detail
+                    fsck error: c: ObjectWithoutFsverity: 01.file: detail
+                    fsck error: c: ObjectWithoutFsverity: 02.file: detail
+                    fsck error: c: ObjectWithoutFsverity: 03.file: detail
+                    fsck error: c: ObjectWithoutFsverity: 04.file: detail
+                "},
+            ),
+            (
+                "over the limit",
+                objects(8),
+                false,
+                indoc::indoc! {"
+                    fsck error: c: ObjectWithoutFsverity: 00.file: detail
+                    fsck error: c: ObjectWithoutFsverity: 01.file: detail
+                    fsck error: c: ObjectWithoutFsverity: 02.file: detail
+                    fsck error: c: ObjectWithoutFsverity: 03.file: detail
+                    fsck error: c: ObjectWithoutFsverity: 04.file: detail
+                    fsck error: c: ...and 3 more
+                "},
+            ),
+            (
+                "runtime error",
+                Err(anyhow::anyhow!("inner").context("outer")),
+                false,
+                "Unexpected runtime error in check c: outer: inner\n",
+            ),
+        ];
+        for (name, result, passed, expected) in cases {
+            let mut output = Vec::new();
+            let r = print_check_result("c", result, &mut output).unwrap();
+            assert_eq!(r, *passed, "case {name}");
+            assert_eq!(String::from_utf8(output).unwrap(), *expected, "case {name}");
+        }
+    }
 }
