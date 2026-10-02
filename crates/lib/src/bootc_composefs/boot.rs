@@ -142,6 +142,18 @@ const AUTH_EXT: &str = "auth";
 /// This is relative to the ESP
 pub(crate) const BOOTC_UKI_DIR: &str = "EFI/Linux/bootc";
 
+// These are the modules we insmod in out menu config files
+const GRUB_MODULES_USED: [&str; 2] = ["fat.mod", "chain.mod"];
+
+fn grub_efi_module_dir() -> Option<&'static str> {
+    match std::env::consts::ARCH {
+        "aarch64" => Some("arm64-efi"),
+        "x86_64" => Some("x86_64-efi"),
+        "riscv64" => Some("riscv64-efi"),
+        _ => None,
+    }
+}
+
 /// Directory (relative to the ESP) where systemd-stub looks for UKI addons that apply
 /// to *every* UKI, as opposed to addons scoped to a single UKI (which live alongside
 /// it under [`BOOTC_UKI_DIR`]). Unlike per-UKI addons, these aren't tied to a single
@@ -2157,6 +2169,27 @@ pub(crate) async fn setup_composefs_boot(
             Some(chroot_target),
             Some(bind_boot_path.as_path()),
         )?;
+
+        if matches!(postfetch.detected_bootloader, Bootloader::Grub) {
+            // The menu config files insmod some modules, these may be either built
+            // into the GRUB EFI binary, or loaded from /boot/grub2.  For example, the
+            // fedora aarch64 grub doesn't include chain.mod. We install all the modules
+            // we can find to avoid potential problems.
+            if let Some(module_dir) = grub_efi_module_dir() {
+                for module in GRUB_MODULES_USED {
+                    let source = format!("usr/lib/grub/{module_dir}/{module}");
+                    if mounted_root.dir().try_exists(&source)? {
+                        let target = format!("boot/grub2/{module_dir}");
+                        root_setup.physical_root.create_dir_all(&target)?;
+                        let target = root_setup.physical_root.open_dir(&target)?;
+                        mounted_root
+                            .dir()
+                            .copy(&source, &target, module)
+                            .with_context(|| format!("Installing GRUB module {module}"))?;
+                    }
+                }
+            }
+        }
 
         // FIXME: Remove this hack once we have support in bootupd
         if matches!(postfetch.detected_bootloader, Bootloader::GrubCC) {
