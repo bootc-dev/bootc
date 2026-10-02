@@ -342,6 +342,22 @@ fn collect_repart_definitions(dry_partitions: &[RepartPartition]) -> Result<()> 
     Ok(())
 }
 
+/// Fail when one of the image's repart.d definitions, as listed by a dry run,
+/// has the name of the root definition we generate. One of the two would mask
+/// the other, so a partition would go missing from the layout.
+fn ensure_generated_root_name_unused(definitions: &[RepartPartition]) -> Result<()> {
+    match definitions
+        .iter()
+        .find(|p| Utf8Path::new(&p.file).file_name() == Some(REPART_GENERATED_ROOT_NAME))
+    {
+        Some(clash) => anyhow::bail!(
+            "repart.d definition {} has the name of the root partition definition bootc generates, rename it",
+            clash.file
+        ),
+        None => Ok(()),
+    }
+}
+
 /// Write the repart.d definition or drop-in `name` into `dir`, creating parent
 /// directories as needed.
 fn write_repart_file(dir: &Path, name: &str, conf: &str) -> Result<()> {
@@ -407,6 +423,7 @@ fn systemd_repart(
     }
 
     // Root partition is not defined, create definition for the root part
+    ensure_generated_root_name_unused(&dry_partitions)?;
     let mut root_conf = String::from("[Partition]\nType=root\n");
 
     match root_size {
@@ -1007,6 +1024,33 @@ pub(crate) fn install_create_rootfs(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_ensure_generated_root_name_unused() {
+        let cases = [
+            // systemd 252 names definitions without their directory, newer
+            // versions with it.
+            (r#"[{"type": "var", "file": "50-root.conf"}]"#, false),
+            (
+                r#"[{"type": "var", "file": "/usr/lib/repart.d/50-root.conf"}]"#,
+                false,
+            ),
+            (
+                r#"[{"type": "esp", "file": "/usr/lib/repart.d/00-esp.conf"},
+                    {"type": "var", "file": "/usr/lib/repart.d/60-root.conf"}]"#,
+                true,
+            ),
+            (r#"[]"#, true),
+        ];
+        for (json, unused) in cases {
+            let definitions: Vec<RepartPartition> = serde_json::from_str(json).unwrap();
+            assert_eq!(
+                ensure_generated_root_name_unused(&definitions).is_ok(),
+                unused,
+                "{json}"
+            );
+        }
+    }
 
     #[test]
     fn test_repart_definitions_args() {
