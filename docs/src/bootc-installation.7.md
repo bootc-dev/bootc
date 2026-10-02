@@ -11,8 +11,9 @@ or virtualized), one needs a few key components:
 
 Bootloader installation depends on the platform and selected bootloader.
 For example, GRUB installation uses [bootupd](https://github.com/coreos/bootupd/),
-while systemd-boot uses `bootctl` and s390x uses `zipl`. Bootloader installation
-can also be disabled. The default expectation is that bootloader contents
+and so does systemd-boot when the image's bootupd can install it, with `bootctl`
+used otherwise, as described in [Bootloaders](bootc-bootloaders.7.md); s390x uses
+`zipl`. Bootloader installation can also be disabled. The default expectation is that bootloader contents
 and install logic come from the container image in a `bootc` based system.
 
 The Linux kernel (and optionally initramfs) is embedded in the container image; the canonical location

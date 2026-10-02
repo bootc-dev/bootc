@@ -555,9 +555,10 @@ pub(crate) fn install_systemd_boot(
 /// Stage Secure Boot keys on the ESP for systemd-boot's setup-mode enrollment.
 ///
 /// This is systemd-boot specific: the keys go in `loader/keys`, which only
-/// systemd-boot reads.
+/// systemd-boot reads. It is independent of *how* systemd-boot was installed,
+/// so it runs for both the `bootctl` and the bootupd install paths.
 #[context("Writing Secure Boot enrollment keys")]
-fn write_autoenroll_keys(
+pub(crate) fn write_autoenroll_keys(
     prepared_root: &MountedImageRoot,
     autoenroll: Option<SecurebootKeys>,
 ) -> Result<()> {
