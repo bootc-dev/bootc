@@ -2650,11 +2650,13 @@ fn install_aboot_disk_payload(
     layout: AbootDiskLayout,
     artifacts: &PreparedAbootArtifacts,
 ) -> Result<()> {
-    let disk = &root_setup.device_info;
+    // The root filesystem's device is a partition; aboot payloads go to
+    // sibling partitions on its backing disk.
+    let disk = root_setup.device_info.require_single_root()?;
     let partitions = aboot_disk_partition_payloads(layout, artifacts)?;
     let targets = partitions
         .iter()
-        .map(|(label, payload)| aboot_partition_path(disk, label, payload.len()))
+        .map(|(label, payload)| aboot_partition_path(&disk, label, payload.len()))
         .collect::<Result<Vec<_>>>()?;
     for ((label, payload), path) in partitions.into_iter().zip(targets) {
         write_aboot_partition(&path, label, payload)?;
