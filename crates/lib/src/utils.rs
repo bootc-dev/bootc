@@ -93,7 +93,10 @@ fn executable_candidates(name: &str) -> Vec<PathBuf> {
 pub fn have_executable_in_root(root: &Dir, name: &str) -> Result<bool> {
     for candidate in executable_candidates(name) {
         let candidate = candidate.strip_prefix("/").unwrap_or(&candidate);
-        if root.try_exists(candidate)? {
+        if root
+            .try_exists(candidate)
+            .with_context(|| format!("checking whether {} exists", candidate.display()))?
+        {
             return Ok(true);
         }
     }
@@ -368,6 +371,61 @@ mod tests {
         root.write("usr/bin/podman", "")?;
         assert!(have_executable_in_root(&root, "podman")?);
         assert!(!have_executable_in_root(&root, "missing")?);
+
+        // An absolute name replaces each PATH entry via PathBuf::push, so the
+        // candidate is independent of the process PATH.
+        const PROBE: &str = "/usr/local/bin/probe";
+        let cases = [
+            ("present", Some(true)),
+            ("absent", Some(false)),
+            ("escapes", None),
+            ("contained-symlink", Some(true)),
+        ];
+        for (label, expected) in cases {
+            let root = cap_std_ext::cap_tempfile::tempdir(cap_std::ambient_authority())?;
+            match label {
+                "present" => {
+                    root.create_dir_all("usr/local/bin")?;
+                    root.write("usr/local/bin/probe", "")?;
+                }
+                "absent" => {}
+                "escapes" => {
+                    root.create_dir("usr")?;
+                    root.symlink_contents("../../var/usrlocal", "usr/local")?;
+                }
+                "contained-symlink" => {
+                    root.create_dir_all("var/usrlocal/bin")?;
+                    root.write("var/usrlocal/bin/probe", "")?;
+                    root.create_dir("usr")?;
+                    root.symlink_contents("../var/usrlocal", "usr/local")?;
+                }
+                _ => unreachable!("{label}"),
+            }
+            let found = have_executable_in_root(&root, PROBE);
+            match expected {
+                Some(expected) => assert_eq!(found?, expected, "{label}"),
+                None => {
+                    let err = found.expect_err(label);
+                    assert!(
+                        err.chain()
+                            .any(|source| source.to_string().contains("usr/local/bin/probe")),
+                        "{label}: {err:?}"
+                    );
+                    assert!(
+                        err.chain().any(|source| {
+                            source
+                                .downcast_ref::<std::io::Error>()
+                                .is_some_and(|io_err| {
+                                    io_err
+                                        .to_string()
+                                        .contains("a path led outside of the filesystem")
+                                })
+                        }),
+                        "{label}: {err:?}"
+                    );
+                }
+            }
+        }
         Ok(())
     }
 }

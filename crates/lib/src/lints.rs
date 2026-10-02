@@ -345,7 +345,9 @@ fn lint_inner<'skip>(
         let name = lint.name;
         let r = match r {
             Ok(r) => r,
-            Err(e) => anyhow::bail!("Unexpected runtime error running lint {name}: {e}"),
+            Err(e) => {
+                return Err(e.context(format!("Unexpected runtime error running lint {name}")));
+            }
         };
 
         if let Err(e) = r {
@@ -1583,6 +1585,57 @@ mod tests {
         assert_eq!(
             resolve_runtime_bins("dtool", "dtool"),
             ["chcon", "dtool", "ostree", "setpriv", "systemctl", "zstd"]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_runtime_deps_escape() -> Result<()> {
+        let root = &fixture()?;
+        root.create_dir("usr")?;
+        // Same shape as /usr/local -> ../../var/usrlocal, on the directory
+        // runtime dependency lookup actually searches.
+        root.symlink_contents("../../var/usrbin", "usr/bin")?;
+
+        let config = &LintExecutionConfig::default();
+        let mut out = Vec::new();
+        let err = lint_inner(
+            root,
+            RootType::Alternative,
+            config,
+            LINTS
+                .iter()
+                .filter(|lint| lint.name != "runtime-deps")
+                .map(|lint| lint.name),
+            &mut out,
+        )
+        .expect_err("lookup failure must remain a runtime error");
+
+        let bin = resolved_runtime_bins()
+            .into_iter()
+            .next()
+            .expect("runtime dependency");
+        let attempted = format!("usr/bin/{bin}");
+        assert_eq!(
+            err.to_string(),
+            "Unexpected runtime error running lint runtime-deps"
+        );
+        assert!(
+            err.chain()
+                .any(|source| source.to_string().contains(&attempted)),
+            "{err:?}"
+        );
+        assert!(
+            err.chain().any(|source| {
+                source
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|io_err| {
+                        io_err
+                            .to_string()
+                            .contains("a path led outside of the filesystem")
+                    })
+            }),
+            "{err:?}"
         );
         Ok(())
     }
