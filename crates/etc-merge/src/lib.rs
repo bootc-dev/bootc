@@ -471,6 +471,28 @@ pub fn compute_diff(
     current_etc_files: &FileSystem<CustomMetadata>,
     new_etc_files: &FileSystem<CustomMetadata>,
 ) -> anyhow::Result<Diff> {
+    compute_diff_impl(pristine_etc_files, current_etc_files, new_etc_files, true)
+}
+
+/// Computes differences without treating paths absent from current `/etc` as deletions.
+///
+/// This is intended for package-mode to image-mode migration, where the current
+/// system may predate defaults in the new image. In that case, absence does not
+/// imply that an administrator deleted the path.
+pub fn compute_diff_without_deletions(
+    pristine_etc_files: &FileSystem<CustomMetadata>,
+    current_etc_files: &FileSystem<CustomMetadata>,
+    new_etc_files: &FileSystem<CustomMetadata>,
+) -> anyhow::Result<Diff> {
+    compute_diff_impl(pristine_etc_files, current_etc_files, new_etc_files, false)
+}
+
+fn compute_diff_impl(
+    pristine_etc_files: &FileSystem<CustomMetadata>,
+    current_etc_files: &FileSystem<CustomMetadata>,
+    new_etc_files: &FileSystem<CustomMetadata>,
+    detect_deletions: bool,
+) -> anyhow::Result<Diff> {
     let mut diff = Diff {
         added: vec![],
         modified: vec![],
@@ -488,12 +510,14 @@ pub fn compute_diff(
         &mut diff,
     )?;
 
-    get_deletions(
-        &pristine_etc_files.root,
-        &current_etc_files.root,
-        PathBuf::new(),
-        &mut diff,
-    )?;
+    if detect_deletions {
+        get_deletions(
+            &pristine_etc_files.root,
+            &current_etc_files.root,
+            PathBuf::new(),
+            &mut diff,
+        )?;
+    }
 
     Ok(diff)
 }
@@ -788,7 +812,10 @@ fn merge_leaf(
     };
 
     if matches!(new_inode, Some(Inode::Directory(..))) {
-        anyhow::bail!("Modified config file {file:?} newly defaults to directory. Cannot merge")
+        anyhow::bail!(
+            "Cannot merge host path {file:?}: the new image contains a directory at this path; \
+             resolve the conflict manually before retrying"
+        );
     };
 
     // If a new file with the same path exists, we delete it
@@ -802,7 +829,13 @@ fn merge_leaf(
     } else {
         current_etc_fd
             .copy(&file, new_etc_fd, &file)
-            .with_context(|| format!("Copying file {file:?}"))?;
+            .with_context(|| {
+                format!(
+                    "Merge conflict for host /etc path {file:?}: unable to copy it into the new /etc; \
+                     inspect and resolve conflicting path components (especially absolute symlinks \
+                     that escape /etc) so the host file can be copied, then retry"
+                )
+            })?;
     };
 
     rustix::fs::chownat(
@@ -1049,6 +1082,54 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn migration_diff_preserves_image_only_default() -> anyhow::Result<()> {
+        let tempdir = cap_std_ext::cap_tempfile::tempdir(cap_std::ambient_authority())?;
+
+        tempdir.create_dir("pristine_etc")?;
+        tempdir.create_dir("current_etc")?;
+        tempdir.create_dir("new_etc")?;
+
+        let pristine = tempdir.open_dir("pristine_etc")?;
+        let current = tempdir.open_dir("current_etc")?;
+        let new = tempdir.open_dir("new_etc")?;
+
+        pristine.write("image-only.conf", b"image default")?;
+        new.write("image-only.conf", b"image default")?;
+
+        let (pristine_tree, current_tree, new_tree) =
+            traverse_etc(&pristine, &current, Some(&new))?;
+        let new_tree = new_tree.unwrap();
+        let diff = compute_diff_without_deletions(&pristine_tree, &current_tree, &new_tree)?;
+
+        merge(&current, &current_tree, &new, &new_tree, &diff)?;
+
+        assert_eq!(new.read("image-only.conf")?, b"image default");
+        Ok(())
+    }
+
+    #[test]
+    fn compute_diff_still_detects_deletions() -> anyhow::Result<()> {
+        let tempdir = cap_std_ext::cap_tempfile::tempdir(cap_std::ambient_authority())?;
+
+        tempdir.create_dir("pristine_etc")?;
+        tempdir.create_dir("current_etc")?;
+        tempdir.create_dir("new_etc")?;
+
+        let pristine = tempdir.open_dir("pristine_etc")?;
+        let current = tempdir.open_dir("current_etc")?;
+        let new = tempdir.open_dir("new_etc")?;
+
+        pristine.write("deleted.conf", b"old default")?;
+
+        let (pristine_tree, current_tree, new_tree) =
+            traverse_etc(&pristine, &current, Some(&new))?;
+        let diff = compute_diff(&pristine_tree, &current_tree, &new_tree.as_ref().unwrap())?;
+
+        assert_eq!(diff.removed, [PathBuf::from("deleted.conf")]);
+        Ok(())
+    }
+
     fn compare_meta(meta1: Metadata, meta2: Metadata) -> bool {
         return meta1.is_file() == meta2.is_file()
             && meta1.is_dir() == meta2.is_dir()
@@ -1291,11 +1372,78 @@ mod tests {
 
         let merge_res = merge(&c, &current_etc_files, &n, &new_etc_files.unwrap(), &diff);
 
-        assert!(merge_res.is_err());
-        assert_eq!(
-            merge_res.unwrap_err().root_cause().to_string(),
-            "Modified config file \"file-to-dir\" newly defaults to directory. Cannot merge"
+        // The directory should still exist in new_etc (image's directory wins)
+        let error = merge_res.expect_err("file-to-directory conflict must fail migration");
+        let error = format!("{error:#}");
+        assert!(error.contains("Cannot merge host path"));
+        assert!(error.contains("resolve the conflict manually before retrying"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn regular_file_copy_conflict_returns_actionable_error() -> anyhow::Result<()> {
+        let tempdir = cap_std_ext::cap_tempfile::tempdir(cap_std::ambient_authority())?;
+
+        tempdir.create_dir("pristine_etc")?;
+        tempdir.create_dir("current_etc")?;
+        tempdir.create_dir("new_etc")?;
+
+        let p = tempdir.open_dir("pristine_etc")?;
+        let c = tempdir.open_dir("current_etc")?;
+        let n = tempdir.open_dir("new_etc")?;
+
+        p.write("conflict", "pristine contents")?;
+        c.write("conflict", "host contents")?;
+        n.write("conflict", "image contents")?;
+
+        let (pristine_tree, current_tree, new_tree) = traverse_etc(&p, &c, Some(&n))?;
+        let new_tree = new_tree.unwrap();
+        let diff = compute_diff(&pristine_tree, &current_tree, &new_tree)?;
+
+        // Make the source path escape the /etc sandbox after traversal so the
+        // snapshot still identifies it as a modified regular host file.
+        c.remove_file("conflict")?;
+        symlinkat("/outside-etc", &c, "conflict")?;
+
+        let error = merge(&c, &current_tree, &n, &new_tree, &diff)
+            .expect_err("copy through an absolute symlink outside current_etc must fail");
+        let error = format!("{error:#}");
+        assert!(error.contains("Merge conflict"), "{error}");
+        assert!(error.contains("host /etc path \"conflict\""), "{error}");
+        assert!(error.contains("absolute symlinks"), "{error}");
+        assert!(
+            error.contains("resolve conflicting path components"),
+            "{error}"
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn regular_host_file_replaces_new_image_symlink() -> anyhow::Result<()> {
+        let tempdir = cap_std_ext::cap_tempfile::tempdir(cap_std::ambient_authority())?;
+
+        tempdir.create_dir("pristine_etc")?;
+        tempdir.create_dir("current_etc")?;
+        tempdir.create_dir("new_etc")?;
+
+        let p = tempdir.open_dir("pristine_etc")?;
+        let c = tempdir.open_dir("current_etc")?;
+        let n = tempdir.open_dir("new_etc")?;
+
+        p.write("conflict", "pristine contents")?;
+        c.write("conflict", "host contents")?;
+        symlinkat("/outside-etc", &n, "conflict")?;
+
+        let (pristine_tree, current_tree, new_tree) = traverse_etc(&p, &c, Some(&n))?;
+        let new_tree = new_tree.unwrap();
+        let diff = compute_diff(&pristine_tree, &current_tree, &new_tree)?;
+
+        merge(&c, &current_tree, &n, &new_tree, &diff)?;
+
+        assert_eq!(n.read("conflict")?, b"host contents");
+        assert!(n.metadata("conflict")?.is_file());
 
         Ok(())
     }

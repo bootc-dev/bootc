@@ -1,0 +1,11 @@
+# The two-guest package-mode plan builds a test image on a separate harness VM,
+# reboots that harness into image mode, and transfers the OCI archive to target.
+# This test installs that image onto the package-mode target, reboots it, then
+# verifies the preserved /var data and merged /etc configuration.
+summary: Package-mode /var preservation and /etc merge
+duration: 45m
+adjust:
+  - when: running_env == image_mode
+    enabled: false
+    because: this migration test requires a package-mode target
+test: bash booted/package-mode/test-to-existing-root-preserve-var-merge-etc.sh
