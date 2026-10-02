@@ -349,6 +349,27 @@ fn collect_repart_definitions(
     Ok(())
 }
 
+/// Fail when one of `config_dirs` has a file with the name of the root
+/// definition we generate: a definition of the image, which one of the two
+/// would mask, or a mask, which hides the generated one too. Masks never show
+/// up in a dry run, so look at the directories themselves.
+fn ensure_generated_root_name_unused(config_dirs: &[impl AsRef<Path>]) -> Result<()> {
+    for dir in config_dirs {
+        let path = dir.as_ref().join(REPART_GENERATED_ROOT_NAME);
+        if let Err(e) = path.symlink_metadata() {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                continue;
+            }
+            return Err(e).with_context(|| format!("Checking {}", path.display()));
+        }
+        anyhow::bail!(
+            "{} has the name of the root partition definition bootc generates, rename or remove it",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
 /// Write the repart.d definition or drop-in `name` into `dir`, creating parent
 /// directories as needed.
 fn write_repart_file(dir: &Path, name: &str, conf: &str) -> Result<()> {
@@ -403,6 +424,7 @@ fn systemd_repart(
     }
 
     // Root partition is not defined, create definition for the root part
+    ensure_generated_root_name_unused(REPART_CONFIG_DIRS)?;
     let mut root_conf = String::from("[Partition]\nType=root\n");
 
     match root_size {
@@ -1444,6 +1466,35 @@ mod tests {
             }
             assert!(aboot_repart_definitions(layout, None, None, &[]).is_err());
         }
+        Ok(())
+    }
+
+    #[test]
+    fn test_ensure_generated_root_name_unused() -> Result<()> {
+        let td = tempfile::tempdir()?;
+        let etc = td.path().join("etc");
+        let usr = td.path().join("usr");
+        std::fs::create_dir(&etc)?;
+        std::fs::create_dir(&usr)?;
+        let dirs = [&etc, &usr, &td.path().join("missing")];
+        std::fs::write(usr.join("00-esp.conf"), "[Partition]\nType=esp\n")?;
+        ensure_generated_root_name_unused(&dirs)?;
+
+        // An image definition for another partition with that name
+        let clash = usr.join(REPART_GENERATED_ROOT_NAME);
+        std::fs::write(&clash, "[Partition]\nType=var\n")?;
+        assert!(ensure_generated_root_name_unused(&dirs).is_err());
+        std::fs::remove_file(&clash)?;
+
+        // A mask, as of a root definition of a base image, which would hide
+        // the generated one as well
+        let mask = etc.join(REPART_GENERATED_ROOT_NAME);
+        std::os::unix::fs::symlink("/dev/null", &mask)?;
+        let e = ensure_generated_root_name_unused(&dirs).unwrap_err();
+        assert!(
+            format!("{e:#}").contains(&mask.display().to_string()),
+            "{e:#}"
+        );
         Ok(())
     }
 
