@@ -477,8 +477,10 @@ def main [] {
         return
     }
 
-    # This test exercises bootupd-based bootloader installation which only
-    # supports GRUB today.  Skip when the image uses systemd-boot.
+    # systemd-boot and grub-cc read their entries from the ESP (or for
+    # systemd-boot an XBOOTLDR partition next to it), and bootc writes those for
+    # the first ESP only, so the layout this test checks on every ESP does not
+    # apply to them.
     if (tap is_composefs) {
         let st = bootc status --json | from json
         let bootloader = $st.status.booted.composefs.bootloader | str downcase

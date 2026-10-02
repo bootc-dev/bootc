@@ -2694,7 +2694,9 @@ enum BootloaderInstallMethod {
     /// grub-cc packages available today ship the binary inside the grub2
     /// component.
     BootupdGrubCcSwap,
-    /// A bare `bootctl install` of systemd-boot.
+    /// A bare `bootctl install` of systemd-boot. That writes systemd-boot to
+    /// `EFI/BOOT/BOOT<arch>.EFI`, so firmware loads it directly and shim is
+    /// never in the boot path.
     Bootctl,
 }
 
@@ -2761,8 +2763,16 @@ fn probe_bootupd(
 /// image: bootupd 0.2.30 to 0.2.35 name components in their metadata but
 /// cannot be asked for one, and packaged 0.2.36 builds accept only GRUB.
 /// bootupd also installs on every ESP of the target, while bootc writes the
-/// entries these bootloaders read to the first ESP only, so several ESPs
-/// keep the previous behaviour.
+/// entries these bootloaders read only for the first ESP (on it, or for
+/// systemd-boot on an XBOOTLDR partition next to it), so several ESPs keep
+/// the previous behaviour.
+///
+/// systemd-boot goes through bootupd whenever it can, since bootupd installs
+/// shim in front of it. That lets it boot with the firmware's stock Secure Boot
+/// keys, provided shim trusts systemd-boot's signer, and gives fwupd's UEFI
+/// capsule updates the shim they chain through. Note `requested` is only
+/// `Systemd` when it was asked for explicitly: [`PostFetchState::new`] picks
+/// `Grub` whenever bootupd is present.
 fn choose_install_method(
     requested: Bootloader,
     bootupd: Option<&BootupdCapabilities>,
@@ -2778,6 +2788,9 @@ fn choose_install_method(
             BootloaderInstallMethod::Bootupd(Bootloader::GrubCC)
         }
         Bootloader::GrubCC => BootloaderInstallMethod::BootupdGrubCcSwap,
+        Bootloader::Systemd if bootupd_installs(Bootloader::Systemd) => {
+            BootloaderInstallMethod::Bootupd(Bootloader::Systemd)
+        }
         Bootloader::Grub => BootloaderInstallMethod::Bootupd(Bootloader::Grub),
         // install_composefs_bootloader handles none and ukiboot before getting here.
         Bootloader::Systemd | Bootloader::Ukiboot | Bootloader::None => {
@@ -2807,10 +2820,10 @@ fn install_composefs_bootloader(
         .or(root_setup.rootfs_uuid.as_deref())
         .ok_or_else(|| anyhow!("No uuid for boot/root"))?;
 
-    // Only grub-cc has more than one way to be installed, and none of them
-    // applies to s390x, which always uses zipl.
+    // Only grub-cc and systemd-boot have more than one way to be installed,
+    // and none of them applies to s390x, which always uses zipl.
     let (bootupd, esps) = match bootloader {
-        Bootloader::GrubCC if !cfg!(target_arch = "s390x") => {
+        Bootloader::GrubCC | Bootloader::Systemd if !cfg!(target_arch = "s390x") => {
             let esps = root_setup
                 .device_info
                 .find_colocated_esps()?
@@ -2820,6 +2833,11 @@ fn install_composefs_bootloader(
         _ => (None, 0),
     };
     let method = choose_install_method(bootloader, bootupd.as_ref(), esps);
+    if method == BootloaderInstallMethod::Bootctl && bootupd.is_some() {
+        println!(
+            "Installing systemd-boot with bootctl, without shim: bootupd in the image cannot install it here (that needs a bootupd that accepts --bootloader systemd and finds systemd-boot and shim components in the image, and a single ESP)"
+        );
+    }
 
     if cfg!(target_arch = "s390x") {
         // TODO: Integrate s390x support into install_via_bootupd
@@ -2838,6 +2856,18 @@ fn install_composefs_bootloader(
         // an empty `boot/efi` directory for its EFI component to discover
         // and mount the real ESP into, exactly as it would on ostree.
         let bind_boot_path = root_setup.physical_root_path.join(BOOT);
+        // Secure Boot key enrollment belongs to systemd-boot, whichever tool
+        // installs it. Read the keys before bootupd writes anything, so a
+        // malformed key directory fails the install early. A directory
+        // without any .auth files in it is not worth a warning, or an ESP
+        // mount.
+        let autoenroll_keys = match method {
+            BootloaderInstallMethod::Bootupd(Bootloader::Systemd) => {
+                get_secureboot_keys(mounted_root.dir(), BOOTC_AUTOENROLL_PATH)?
+                    .filter(|keys| !keys.keys.is_empty())
+            }
+            _ => None,
+        };
         crate::bootloader::install_via_bootupd(
             &root_setup.device_info,
             &root_setup.physical_root_path,
@@ -2891,6 +2921,35 @@ fn install_composefs_bootloader(
                     .context("Copying grub-cc binary")?;
 
                 Ok(())
+            })?;
+        }
+
+        if method == BootloaderInstallMethod::Bootupd(Bootloader::Systemd) {
+            // bootupd writes no loader.conf; use the image's, as with bootctl.
+            // install_via_bootupd above has already returned, so it's safe to
+            // mount the ESP here.
+            mounted_root
+                .with_esp(|_esp_dir| crate::bootloader::write_image_loader_conf(&mounted_root))?;
+        }
+
+        if let Some(keys) = autoenroll_keys {
+            // Staging keys behind shim is newly possible, and the two can
+            // disagree: enrolling a db that does not trust shim's signer
+            // leaves shim unverifiable. systemd-boot enrolls a key set named
+            // `auto` by itself in a VM in setup mode (secure-boot-enroll
+            // defaults to if-safe) and offers any other set in its menu. A db
+            // that keeps shim's signer is a legitimate combination, so warn
+            // rather than refuse.
+            crate::utils::medium_visibility_warning(
+                "Staging Secure Boot enrollment keys for an install that boots through shim: \
+                 the enrolled db must also contain the Microsoft UEFI CA 2023, which signs \
+                 shim, or the firmware may refuse to start shim, and bootupd 0.3.2 and newer \
+                 refuse all bootloader updates",
+            );
+            // install_via_bootupd above has already returned, so it's safe to
+            // mount the ESP here.
+            mounted_root.with_esp(|_esp_dir| {
+                crate::bootloader::write_autoenroll_keys(&mounted_root, Some(keys))
             })?;
         }
     } else {
@@ -3177,13 +3236,14 @@ mod tests {
                 available: available.to_vec(),
             }
         };
-        // A current bootupd with and without a grub-cc component, a packaged
-        // 0.2.36 that accepts only GRUB, and 0.2.35, which lists components but
-        // cannot be asked for one.
+        // A current bootupd with and without grub-cc and systemd-boot
+        // components, a packaged 0.2.36 that accepts only GRUB, and 0.2.35,
+        // which lists components but cannot be asked for one.
         let with_cc = caps(&current, &[GrubCC, Grub]);
+        let with_sd = caps(&current, &[Grub, Systemd]);
         let without_cc = caps(&current, &[Grub]);
-        let grub_only = caps(&grub_only, &[GrubCC, Grub]);
-        let too_old = caps(&too_old, &[GrubCC, Grub]);
+        let grub_only = caps(&grub_only, &[GrubCC, Grub, Systemd]);
+        let too_old = caps(&too_old, &[GrubCC, Grub, Systemd]);
         let cases = [
             (Grub, None, 1, Bootupd(Grub)),
             (Grub, Some(&with_cc), 1, Bootupd(Grub)),
@@ -3194,7 +3254,11 @@ mod tests {
             (GrubCC, Some(&grub_only), 1, Swap),
             (GrubCC, Some(&too_old), 1, Swap),
             (GrubCC, None, 1, Swap),
+            (Systemd, Some(&with_sd), 1, Bootupd(Systemd)),
+            (Systemd, Some(&with_sd), 2, Bootctl),
             (Systemd, Some(&with_cc), 1, Bootctl),
+            (Systemd, Some(&grub_only), 1, Bootctl),
+            (Systemd, Some(&too_old), 1, Bootctl),
             (Systemd, None, 1, Bootctl),
         ];
         for (requested, bootupd, esps, expected) in cases {
@@ -3209,6 +3273,7 @@ mod tests {
         use crate::bootloader::BootupdComponents::{Auto, Efi};
         assert_eq!(Bootupd(Grub).bootupd_request(), Some((Grub, Auto)));
         assert_eq!(Bootupd(GrubCC).bootupd_request(), Some((GrubCC, Efi)));
+        assert_eq!(Bootupd(Systemd).bootupd_request(), Some((Systemd, Efi)));
         assert_eq!(Swap.bootupd_request(), Some((Grub, Efi)));
         assert_eq!(Bootctl.bootupd_request(), None);
     }
