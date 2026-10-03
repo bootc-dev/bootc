@@ -123,6 +123,12 @@ pub(crate) struct TestRoot {
     layout: LayoutMode,
 }
 
+/// Allocate a temporary directory capability for tests which construct their
+/// own filesystem fixtures.
+pub(crate) fn test_tempdir() -> Result<cap_tempfile::TempDir> {
+    cap_tempfile::tempdir(cap_std::ambient_authority()).map_err(Into::into)
+}
+
 impl TestRoot {
     /// Create a new test sysroot with one initial deployment (the "install").
     ///
@@ -147,7 +153,7 @@ impl TestRoot {
 
     /// Create a test sysroot with the specified layout mode.
     fn with_layout(layout: LayoutMode) -> Result<Self> {
-        let root = cap_tempfile::tempdir(cap_std::ambient_authority())?;
+        let root = test_tempdir()?;
 
         // Create the composefs repo directory structure
         root.create_dir_all("composefs")
