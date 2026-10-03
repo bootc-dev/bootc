@@ -2155,7 +2155,7 @@ async fn install_to_filesystem_impl(
 
     if state.composefs_options.composefs_backend {
         let fetch_ref = state.source.composefs_fetch_reference();
-        let manifest = get_container_manifest_and_config(&fetch_ref).await?;
+        let (manifest, _) = get_container_manifest_and_config(&fetch_ref).await?;
         // A capable filesystem gets a strict provisional repository.  The
         // imported image is inspected below; only a fresh repository may then
         // atomically adopt the image's explicit relaxed policy.
