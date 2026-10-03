@@ -3,23 +3,54 @@
 # SRC should contain an "out" subdirectory with:
 #   - systemd-boot-unsigned RPM (*.rpm)
 #   - signed systemd-boot binary (systemd-boot*.efi)
+#
+# By default bootupd and shim are removed, so bootc installs systemd-boot
+# with a bare `bootctl install`. With SDBOOT_SHIM=1 both are kept and the
+# distribution's signed systemd-boot, which must already be laid out as a
+# bootupd component (Fedora's systemd-boot-x64 since 262), is registered with
+# bootupd, so that `bootc install --bootloader systemd` goes through bootupd
+# and ends up with shim in front of systemd-boot. SRC is unused in that mode.
 set -xeuo pipefail
 
 src=$1/out
 shift
 
-# systemd-boot (and, when sealed, the UKI) is signed and booted directly
-# with our own Secure Boot key, so shim is never in the trust chain
-# regardless of sealing. Uninstall bootupd (managed differently for
-# sd-boot) and shim together so neither lingers in the image.
 case "$(uname -m)" in
-  x86_64) shim_pkg=shim-x64 ;;
-  aarch64) shim_pkg=shim-aa64 ;;
-  *) shim_pkg="" ;;
+  x86_64) efi_arch=x64 ;;
+  aarch64) efi_arch=aa64 ;;
+  *) efi_arch="" ;;
 esac
 
+if [ -n "${SDBOOT_SHIM:-}" ]; then
+  [ -n "${efi_arch}" ] || { echo "SDBOOT_SHIM is not supported on $(uname -m)" >&2; exit 1; }
+  # bootc only hands systemd-boot to bootupd when bootupd accepts
+  # --bootloader systemd; with any other bootupd the image would silently take
+  # the bootctl path and this variant would test nothing. Packaged 0.2.36
+  # builds advertise --bootloader but accept only grub, so probe the value:
+  # clap rejects it before acting on the --help after it.
+  command -v bootupctl >/dev/null || { echo "bootupd is not installed" >&2; exit 1; }
+  bootupctl backend install --bootloader systemd --help >/dev/null 2>&1 \
+    || { echo "bootupd does not accept --bootloader systemd" >&2; exit 1; }
+  # The signed systemd-boot has to sit under the second-stage name baked into
+  # shim, inside the component's EFI directory; a package that ships it
+  # anywhere else is invisible to bootupd, which then installs shim alone.
+  found=""
+  for f in /usr/lib/efi/systemd-boot/*/EFI/*/grub"${efi_arch}".efi; do
+    [ -f "${f}" ] && found=${f}
+  done
+  [ -n "${found}" ] || { echo "no signed systemd-boot laid out as a bootupd component under /usr/lib/efi/systemd-boot" >&2; exit 1; }
+  bootupctl backend generate-update-metadata
+  exit 0
+fi
+
+# systemd-boot (and, when sealed, the UKI) is signed and booted directly
+# with our own Secure Boot key, so shim is never in the trust chain
+# regardless of sealing. Uninstall bootupd and shim together, so that bootc
+# takes the bare `bootctl install` path (the shim-less layout this mode
+# tests) and neither lingers in the image. Also uninstall the distribution's
+# signed systemd-boot, if any: bootctl would prefer its .efi.signed over ours.
 pkgs_to_remove=()
-for pkg in bootupd "${shim_pkg}"; do
+for pkg in bootupd "${efi_arch:+shim-${efi_arch}}" "${efi_arch:+systemd-boot-${efi_arch}}"; do
   [ -n "${pkg}" ] || continue
   rpm -q "${pkg}" &>/dev/null && pkgs_to_remove+=("${pkg}")
 done

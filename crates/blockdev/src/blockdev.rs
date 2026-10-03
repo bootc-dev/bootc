@@ -197,12 +197,7 @@ impl Device {
     /// Calls find_all_roots() to discover physical disks, then searches each for an ESP.
     /// Returns None if no ESPs are found.
     pub fn find_colocated_esps(&self) -> Result<Option<Vec<Device>>> {
-        let mut esps = Vec::new();
-        for root in &self.find_all_roots()? {
-            if let Some(esp) = root.find_partition_of_esp_optional()? {
-                esps.push(esp.clone());
-            }
-        }
+        let esps = esps_of_roots(&self.find_all_roots()?)?;
         Ok((!esps.is_empty()).then_some(esps))
     }
 
@@ -454,6 +449,20 @@ impl Device {
         }
         Ok(roots)
     }
+}
+
+/// The ESPs found on `roots`, each listed once: an ESP on a firmware RAID
+/// array (such as Intel VROC) is found through every disk in the array.
+fn esps_of_roots(roots: &[Device]) -> Result<Vec<Device>> {
+    let mut esps: Vec<Device> = Vec::new();
+    for root in roots {
+        if let Some(esp) = root.find_partition_of_esp_optional()? {
+            if !esps.iter().any(|known| known.path() == esp.path()) {
+                esps.push(esp.clone());
+            }
+        }
+    }
+    Ok(esps)
 }
 
 #[context("Listing device {dev}")]
@@ -988,6 +997,28 @@ mod test {
             assert_eq!(esp.partn, Some(1));
             assert_eq!(esp.parttype.as_deref().unwrap(), ESP);
             assert_eq!(esp.fstype.as_deref().unwrap(), "vfat");
+        }
+    }
+
+    #[test]
+    fn test_esps_of_roots() {
+        let cases = [
+            // Each disk of a software RAID has an ESP of its own.
+            (
+                include_str!("../tests/fixtures/lsblk-swraid.json"),
+                &["sda1", "sdb1"][..],
+            ),
+            // Both NVMe disks of a firmware RAID lead to the array's one ESP.
+            (
+                include_str!("../tests/fixtures/lsblk-vroc.json"),
+                &["md126p1"][..],
+            ),
+        ];
+        for (fixture, expected) in cases {
+            let devs: DevicesOutput = serde_json::from_str(fixture).unwrap();
+            let esps = esps_of_roots(&devs.blockdevices).unwrap();
+            let names = esps.iter().map(|esp| esp.name.as_str()).collect::<Vec<_>>();
+            assert_eq!(names, expected);
         }
     }
 

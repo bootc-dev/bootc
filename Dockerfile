@@ -141,6 +141,7 @@ ARG SKIP_CONFIGS
 ARG boot_type
 ARG seal_state
 ARG bootloader
+ARG sdboot_shim=""
 # All network-fetching operations: package installs from distro repos, Copr, Koji.
 # Separated so `just build-fetch --target=fetch` can be retried independently on
 # transient network failures without re-running the configuration phase.
@@ -172,13 +173,30 @@ RUN --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
         dnf install -y "${pkgs_to_install[@]}"
     fi
 
-    # Currently dnf installs grub-cc at /usr/lib/efi/grub2/1:2.12-60.eln156/EFI/eln/cc/grubx64-cc.efi
-    # which is less than ideal because: 
-    # - the "cc" subdirectory
-    # - no support for installing grub-cc in bootupd
-    #
-    # So we move the binary to /usr/lib/grub-cc/grub-cc.efi so we have a predictale location from which
-    # we can copy the EFI binary to the ESP
+    # systemd-boot behind shim goes through bootupd, which has to accept
+    # `--bootloader systemd` (bootupd 0.3.0 and newer), and needs the
+    # distribution's signed systemd-boot laid out as a bootupd component
+    # (Fedora's systemd-boot-<arch> since 262). A stable release may carry
+    # those only in updates-testing at first, so enable it where it exists.
+    if [[ -n "${sdboot_shim}" ]]; then
+        case "$(uname -m)" in
+            x86_64) sdboot_pkg=systemd-boot-x64 ;;
+            aarch64) sdboot_pkg=systemd-boot-aa64 ;;
+            *) echo "sdboot_shim is not supported on $(uname -m)" >&2; exit 1 ;;
+        esac
+        testing=()
+        if dnf repolist --all 2>/dev/null | grep -q '^updates-testing '; then
+            testing=(--enablerepo=updates-testing)
+        fi
+        dnf -y "${testing[@]}" install "${sdboot_pkg}"
+        dnf -y "${testing[@]}" upgrade bootupd
+    fi
+
+    # The grub-cc package ships its binary inside the grub2 component, e.g.
+    # /usr/lib/efi/grub2/<evr>/EFI/fedora/cc/grubx64-cc.efi, and bootupd only
+    # installs grub-cc from a component of its own. So bootc asks bootupd for
+    # GRUB and then swaps in the binary, which we stage at the predictable
+    # /usr/lib/grub-cc/grub-cc.efi (BootloaderInstallMethod::BootupdGrubCcSwap).
     if [[ "$bootloader" == "grub-cc" ]]; then
         mkdir /var/grub-cc
         rpm2archive /var/grub-cc.rpm | tar -xvz -C /var/grub-cc
@@ -333,6 +351,7 @@ ARG variant
 ARG bootloader
 ARG boot_type
 ARG baseconfigs=""
+ARG sdboot_shim=""
 
 # Switch to a signed systemd-boot, if configured
 RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
@@ -341,7 +360,7 @@ RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp
 set -xeuo pipefail
 
 if [[ "${bootloader}" == "systemd" ]]; then
-  /run/packaging/switch-to-sdboot /run/sdboot-signed
+  SDBOOT_SHIM="${sdboot_shim}" /run/packaging/switch-to-sdboot /run/sdboot-signed
 fi
 
 # Composefs test images are installed without --composefs-backend (see

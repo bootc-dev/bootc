@@ -19,6 +19,47 @@ export def is_composefs [] {
     $st.status.booted.composefs? != null
 }
 
+# The architecture suffix used in EFI boot binary names, e.g. the "x64" in
+# BOOTX64.EFI, shimx64.efi and grubx64.efi.
+export def efi_arch [] {
+    let machine = (^uname -m | str trim)
+    match $machine {
+        "x86_64" => "x64",
+        "aarch64" => "aa64",
+        "riscv64" => "riscv64",
+        _ => { error make { msg: $"Unsupported EFI architecture: ($machine)" } }
+    }
+}
+
+# Where the EFI system partition is mounted on the booted system: /boot for
+# the systemd-boot layout, /boot/efi for GRUB.
+export def esp_mountpoint [] {
+    ^bootctl --print-esp-path | str trim
+}
+
+# Whether a (binary) file contains the given marker string.
+export def file_contains [path: string, needle: string] {
+    (do { ^grep -qa $needle $path } | complete).exit_code == 0
+}
+
+# Whether an EFI binary is systemd-boot, by the marker bootctl itself keys on.
+export def is_systemd_boot [path: string] {
+    file_contains $path "LoaderInfo: systemd-boot"
+}
+
+# Whether an EFI binary is shim, by its SBAT entry.
+export def is_shim [path: string] {
+    file_contains $path "UEFI shim"
+}
+
+# Whether the image ships bootupd's update payload. bootc also needs that
+# bootupd to accept --bootloader systemd and list a systemd-boot component
+# before it installs systemd-boot through it; the test images that ship
+# bootupd along with systemd-boot guarantee both.
+export def image_ships_bootupd [] {
+    "/usr/lib/bootupd/updates" | path exists
+}
+
 # Return the EROFS format selected by the tmt configuration. Keep this in the
 # harness so derived UKI test images use the same default as the source image.
 export def selected_erofs_version [] {
