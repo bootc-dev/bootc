@@ -8,7 +8,7 @@ use std::borrow::Cow;
 use std::fmt::Display;
 use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter, Write};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result};
 use camino::{Utf8Path, Utf8PathBuf};
@@ -32,6 +32,15 @@ const JSON_SCHEMAS: &[(&str, &str)] = &[
 ];
 /// File used to identify the bootc source tree toplevel.
 const TOPLEVEL_MARKER: &str = "ADOPTERS.md";
+/// Directory prefix of the vendored crates in the vendor archive.
+const VENDOR_DIR: &str = "vendor";
+/// Files that must not appear in the vendor archive, as (crate, file extensions).
+/// These crates link against system libraries, so their bundled C sources are
+/// excluded via `exclude-crate-paths` in the toplevel Cargo.toml; this catches
+/// a crate update that moves them somewhere the exclusion no longer covers.
+const VENDOR_DENYLIST: &[(&str, &[&str])] = &[("pcre2-sys", &["c", "h"])];
+/// Maximum number of denied files to list in the error message.
+const VENDOR_DENIED_SHOWN: usize = 10;
 const TAR_REPRODUCIBLE_OPTS: &[&str] = &[
     "--sort=name",
     "--owner=0",
@@ -500,6 +509,72 @@ fn edit_vendor_config(config: &str) -> Result<String> {
     Ok(config.to_string())
 }
 
+/// If `path` (relative to the vendor directory) matches [`VENDOR_DENYLIST`],
+/// return the name of the crate it belongs to.
+fn vendor_denied_crate(path: &Utf8Path) -> Option<&'static str> {
+    let crate_dir = path.components().next()?.as_str();
+    let ext = path.extension()?;
+    VENDOR_DENYLIST.iter().find_map(|&(name, exts)| {
+        // cargo vendor uses `<name>-<version>` when several versions are vendored
+        let is_crate = crate_dir == name
+            || crate_dir
+                .strip_prefix(name)
+                .and_then(|v| v.strip_prefix('-'))
+                .is_some_and(|v| v.starts_with(|c: char| c.is_ascii_digit()));
+        (is_crate && exts.contains(&ext)).then_some(name)
+    })
+}
+
+/// List the entries of the (uncompressed) vendor tar stream that match
+/// [`VENDOR_DENYLIST`].
+fn vendor_denied_entries(archive: impl std::io::Read) -> Result<Vec<String>> {
+    let mut denied = Vec::new();
+    for entry in tar::Archive::new(archive).entries()? {
+        let entry = entry?;
+        let path = entry.path()?;
+        let path = path.to_string_lossy();
+        let path = Utf8Path::new(&*path);
+        let relpath = path.strip_prefix(VENDOR_DIR).unwrap_or(path);
+        if let Some(name) = vendor_denied_crate(relpath) {
+            denied.push(format!("{path} (from {name})"));
+        }
+    }
+    Ok(denied)
+}
+
+/// Verify that the vendor archive contains no files from [`VENDOR_DENYLIST`].
+#[context("Checking vendor archive {vendorpath}")]
+fn check_vendor_archive(vendorpath: &Utf8Path) -> Result<()> {
+    let mut child = Command::new("zstd")
+        .args(["-dc", "--"])
+        .arg(vendorpath)
+        .stdout(Stdio::piped())
+        .spawn()
+        .context("Spawning zstd")?;
+    let stdout = child.stdout.take().expect("stdout is piped");
+    let denied = vendor_denied_entries(stdout);
+    // Wait for zstd even if reading failed, so its error is not lost
+    let status = child.wait().context("Waiting for zstd")?;
+    let denied = denied.context("Reading tar entries")?;
+    if !status.success() {
+        anyhow::bail!("zstd failed: {status}");
+    }
+    if !denied.is_empty() {
+        let n = denied.len();
+        let shown = denied[..n.min(VENDOR_DENIED_SHOWN)].join("\n  ");
+        let more = n.saturating_sub(VENDOR_DENIED_SHOWN);
+        let more = if more > 0 {
+            format!("\n  ... and {more} more")
+        } else {
+            String::new()
+        };
+        anyhow::bail!(
+            "Found {n} denylisted files; update exclude-crate-paths in Cargo.toml:\n  {shown}{more}"
+        );
+    }
+    Ok(())
+}
+
 #[context("Packaging")]
 fn impl_package(sh: &Shell) -> Result<Package> {
     let source_date_epoch = git_source_date_epoch(".".into())?;
@@ -514,9 +589,10 @@ fn impl_package(sh: &Shell) -> Result<Package> {
     let vendorpath = Utf8Path::new("target").join(format!("{namev}-vendor.tar.zstd"));
     let vendor_config = cmd!(
         sh,
-        "cargo vendor-filterer --prefix=vendor --format=tar.zstd {vendorpath}"
+        "cargo vendor-filterer --prefix={VENDOR_DIR} --format=tar.zstd {vendorpath}"
     )
     .read()?;
+    check_vendor_archive(&vendorpath)?;
     let vendor_config = edit_vendor_config(&vendor_config)?;
     // Append .cargo/vendor-config.toml (a made up filename) into the tar archive.
     {
@@ -839,5 +915,48 @@ mod tests {
         assert_eq!(parse_cli_bool("false"), Ok(false));
         assert!(parse_cli_bool("").is_err());
         assert!(parse_cli_bool("maybe").is_err());
+    }
+
+    #[test]
+    fn test_vendor_denied_crate() {
+        let cases = [
+            ("pcre2-sys/upstream/src/pcre2_compile.c", Some("pcre2-sys")),
+            ("pcre2-sys/upstream/src/pcre2_internal.h", Some("pcre2-sys")),
+            ("pcre2-sys/pcre2.h", Some("pcre2-sys")),
+            (
+                "pcre2-sys-0.2.9/upstream/src/pcre2_compile.c",
+                Some("pcre2-sys"),
+            ),
+            ("pcre2-sys/src/lib.rs", None),
+            ("pcre2-sys/upstream/src/pcre2.h.generic", None),
+            ("pcre2-sys", None),
+            ("pcre2/src/ffi.c", None),
+            ("pcre2-sysx/foo.c", None),
+            ("pcre2-sys-extra/foo.c", None),
+            ("libz-sys/src/zlib/adler32.c", None),
+        ];
+        for (path, expected) in cases {
+            assert_eq!(vendor_denied_crate(Utf8Path::new(path)), expected, "{path}");
+        }
+    }
+
+    #[test]
+    fn test_vendor_denied_entries() -> Result<()> {
+        let mut builder = tar::Builder::new(Vec::new());
+        for path in [
+            "vendor/pcre2-sys/src/lib.rs",
+            "vendor/pcre2-sys/upstream/src/pcre2_compile.c",
+            "vendor/libz-sys/src/zlib/adler32.c",
+        ] {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(0);
+            builder.append_data(&mut header, path, std::io::empty())?;
+        }
+        let archive = builder.into_inner()?;
+        assert_eq!(
+            vendor_denied_entries(archive.as_slice())?,
+            ["vendor/pcre2-sys/upstream/src/pcre2_compile.c (from pcre2-sys)"]
+        );
+        Ok(())
     }
 }
