@@ -126,6 +126,9 @@ impl SysusersEntry {
     /// not to learn that yet.
     fn next_token(s: &str) -> Option<(&str, &str)> {
         let s = s.trim_start();
+        if s.is_empty() {
+            return None;
+        }
         let (first, rest) = match s.strip_prefix('"') {
             None => match s.find(|c: char| c.is_whitespace()) {
                 Some(idx) => s.split_at(idx),
@@ -136,20 +139,18 @@ impl SysusersEntry {
                 (&rest[..end], &rest[end + 1..])
             }
         };
-        if first.is_empty() {
-            None
-        } else {
-            Some((first, rest))
-        }
+        Some((first, rest))
     }
 
     fn next_token_owned(s: &str) -> Option<(String, &str)> {
-        Self::next_token(s).map(|(a, b)| (a.to_owned(), b))
+        Self::next_token(s)
+            .filter(|(token, _)| !token.is_empty())
+            .map(|(a, b)| (a.to_owned(), b))
     }
 
     fn next_optional_token(s: &str) -> Option<(Option<&str>, &str)> {
         let (token, s) = Self::next_token(s)?;
-        let token = Some(token).filter(|t| *t != "-");
+        let token = Some(token).filter(|t| !t.is_empty() && *t != "-");
         Some((token, s))
     }
 
@@ -446,6 +447,48 @@ mod tests {
         s.lines()
             .filter(|line| !(line.is_empty() || line.starts_with('#')))
             .map(|line| SysusersEntry::parse(line).unwrap().unwrap())
+    }
+
+    #[test]
+    fn test_empty_quoted_fields() -> Result<()> {
+        for (line, uid, home, shell) in [
+            (
+                r#"u service 123 "" /home/service /bin/sh"#,
+                Some(123),
+                Some("/home/service"),
+                Some("/bin/sh"),
+            ),
+            (
+                r#"u service "" "" /home/service /bin/sh"#,
+                None,
+                Some("/home/service"),
+                Some("/bin/sh"),
+            ),
+            (
+                r#"u service 123 "" "" /bin/sh"#,
+                Some(123),
+                None,
+                Some("/bin/sh"),
+            ),
+            (r#"u service 123 "" "" """#, Some(123), None, None),
+        ] {
+            assert_eq!(
+                SysusersEntry::parse(line)?,
+                Some(SysusersEntry::User {
+                    name: "service".into(),
+                    uid: uid.map(IdSource::Numeric),
+                    pgid: uid.map(GroupReference::Numeric),
+                    gecos: String::new(),
+                    home: home.map(str::to_owned),
+                    shell: shell.map(str::to_owned),
+                }),
+                "{line}"
+            );
+        }
+        for line in [r#"u "" 123"#, r#"g "" 123"#] {
+            assert!(SysusersEntry::parse(line).is_err(), "{line}");
+        }
+        Ok(())
     }
 
     #[test]
