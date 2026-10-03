@@ -1,4 +1,3 @@
-# number: 48
 # tmt:
 #   summary: Test composefs UKI dumpfile diff print
 #   duration: 30m

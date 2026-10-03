@@ -103,7 +103,7 @@ fi
 # The following configs are skipped when SKIP_CONFIGS=1, which is used
 # for testing bootc install on Fedora CoreOS where these would conflict.
 if test -z "${SKIP_CONFIGS:-}"; then
-  # For test-22-logically-bound-install
+  # For test-logically-bound-install
   install -D -m 0644 -t /usr/share/containers/systemd/ lbi/*
   for x in curl.container curl-base.image podman.image; do
       ln -s /usr/share/containers/systemd/$x /usr/lib/bootc/bound-images.d/$x

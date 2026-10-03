@@ -18,7 +18,7 @@ prepare:
       - expect
       - ansible-core
       - zstd
-      # Required for test-32-install-to-filesystem-var-mount
+      # Required for test-install-to-filesystem-var-mount
       - parted
       - lvm2
       - dosfstools

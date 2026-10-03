@@ -1,4 +1,3 @@
-# number: 26
 # tmt:
 #   summary: Execute download-only upgrade tests
 #   duration: 40m

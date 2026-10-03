@@ -6,8 +6,8 @@ a systemd soft-reboot.
 
 See: <https://github.com/teemtee/tmt/issues/3143>
 
-Note: This same issue affects Testing Farm as documented in `plans/integration.fmf`
-where `test-27-custom-selinux-policy` is disabled for Packit (AWS) testing.
+Note: This same issue affects Testing Farm as documented in the metadata of
+`tests/booted/test-custom-selinux-policy.nu`, which disables that test for Packit (AWS) testing.
 
 ## Impact on bootc testing
 

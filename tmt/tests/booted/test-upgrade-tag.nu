@@ -1,4 +1,3 @@
-# number: 39
 # tmt:
 #   summary: Test bootc upgrade --tag functionality with containers-storage
 #   duration: 30m

@@ -1,4 +1,3 @@
-# number: 20
 # tmt:
 #   summary: Execute local upgrade tests
 #   duration: 30m

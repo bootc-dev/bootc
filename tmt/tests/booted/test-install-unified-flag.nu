@@ -1,4 +1,3 @@
-# number: 30
 # extra:
 #   fixme_skip_if_composefs: true
 # tmt:

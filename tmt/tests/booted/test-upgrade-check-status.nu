@@ -1,4 +1,3 @@
-# number: 37
 # tmt:
 #   summary: Verify upgrade --check populates cached update in status
 #   duration: 30m

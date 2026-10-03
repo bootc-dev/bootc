@@ -2,7 +2,7 @@
 //! tmt/tests/booted; see <https://github.com/bootc-dev/bootc/issues/2547>.
 //!
 //! Each module in booted/ is one subcommand, and starts with the same
-//! `number`, `tmt` and `extra` header (in `//` comments) that `cargo xtask
+//! `tmt` and `extra` header (in `//` comments) that `cargo xtask
 //! update-generated` reads from the nushell tests to generate tmt/tests and
 //! tmt/plans.
 //!

@@ -1,4 +1,3 @@
-# number: 40
 # tmt:
 #   summary: Test bootc install --karg-delete
 #   duration: 30m

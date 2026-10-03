@@ -1,4 +1,3 @@
-# number: 60
 # tmt:
 #   summary: Test that composefs-native images default to the composefs backend
 #   duration: 45m

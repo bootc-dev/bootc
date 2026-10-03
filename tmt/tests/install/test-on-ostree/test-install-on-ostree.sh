@@ -1,4 +1,3 @@
-# number: 50
 # tmt:
 #   summary: Test bootc install on ostree OS
 #   duration: 30m

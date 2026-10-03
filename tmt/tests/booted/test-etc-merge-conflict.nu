@@ -1,4 +1,3 @@
-# number: 46
 # tmt:
 #   summary: Verify etc merge conflicts are caught during upgrade, not finalization
 #   duration: 15m

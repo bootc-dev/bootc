@@ -1,4 +1,3 @@
-# number: 23
 # tmt:
 #   summary: Execute tests for bootc usrover
 #   duration: 30m

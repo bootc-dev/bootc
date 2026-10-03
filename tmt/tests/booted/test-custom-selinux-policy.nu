@@ -1,4 +1,3 @@
-# number: 27
 # tmt:
 #   summary: Execute custom selinux policy test
 #   duration: 30m

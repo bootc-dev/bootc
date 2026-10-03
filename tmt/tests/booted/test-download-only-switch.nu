@@ -1,4 +1,3 @@
-# number: 47
 # tmt:
 #   summary: Execute download-only switch tests
 #   duration: 40m

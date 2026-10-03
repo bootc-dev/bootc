@@ -504,8 +504,8 @@ pub(crate) fn run_tmt(sh: &Shell, args: &RunTmtArgs) -> Result<()> {
         let plan_bcvk_opts = {
             let supports_bind_storage_ro = distro_supports_bind_storage_ro(&distro);
 
-            // Plan names from tmt are like /tmt/plans/integration/plan-01-readonly
-            // but metadata keys are like /plan-01-readonly, so match on suffix
+            // Plan names from tmt are like /tmt/plans/integration/plan-readonly
+            // but metadata keys are like /plan-readonly, so match on suffix
             let try_bind_storage = plan_metadata
                 .iter()
                 .find(|(key, _)| plan.ends_with(key.as_str()))
@@ -903,16 +903,14 @@ pub(crate) fn tmt_provision(sh: &Shell, args: &TmtProvisionArgs) -> Result<()> {
 
 /// Parse tmt metadata from a test file whose line comments start with `comment`
 /// Looks for:
-/// # number: N
 /// # extra:
 /// #   try_bind_storage: true
 /// # tmt:
 /// #   (yaml content)
 fn parse_tmt_metadata(content: &str, comment: &str) -> Result<Option<TmtMetadata>> {
-    let number_prefix = format!("{comment} number:");
     let extra_marker = format!("{comment} extra:");
     let tmt_marker = format!("{comment} tmt:");
-    let mut number = None;
+    let mut found_tmt = false;
     let mut in_extra_block = false;
     let mut in_tmt_block = false;
     let mut extra_yaml_lines = Vec::new();
@@ -921,21 +919,12 @@ fn parse_tmt_metadata(content: &str, comment: &str) -> Result<Option<TmtMetadata
     for line in content.lines().take(50) {
         let trimmed = line.trim();
 
-        // Look for "# number: N" line
-        if let Some(rest) = trimmed.strip_prefix(&number_prefix) {
-            number = Some(
-                rest.trim()
-                    .parse::<u32>()
-                    .context("Failed to parse number field")?,
-            );
-            continue;
-        }
-
         if trimmed == extra_marker {
             in_extra_block = true;
             in_tmt_block = false;
             continue;
         } else if trimmed == tmt_marker {
+            found_tmt = true;
             in_tmt_block = true;
             in_extra_block = false;
             continue;
@@ -957,9 +946,9 @@ fn parse_tmt_metadata(content: &str, comment: &str) -> Result<Option<TmtMetadata
         }
     }
 
-    let Some(number) = number else {
+    if !found_tmt {
         return Ok(None);
-    };
+    }
 
     // Parse extra metadata
     let extra_yaml = extra_yaml_lines.join("\n");
@@ -979,14 +968,12 @@ fn parse_tmt_metadata(content: &str, comment: &str) -> Result<Option<TmtMetadata
             .with_context(|| format!("Failed to parse tmt metadata YAML:\n{}", tmt_yaml))?
     };
 
-    Ok(Some(TmtMetadata { number, extra, tmt }))
+    Ok(Some(TmtMetadata { extra, tmt }))
 }
 
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
 struct TmtMetadata {
-    /// Test number for ordering and naming
-    number: u32,
     /// Extra metadata (try_bind_storage, etc.)
     extra: serde_yaml::Value,
     /// TMT metadata (summary, duration, adjust, require, etc.)
@@ -995,7 +982,8 @@ struct TmtMetadata {
 
 #[derive(Debug, Eq, PartialEq)]
 struct TestDef {
-    number: u32,
+    /// The test's slug: its file name without the `test-` prefix and extension,
+    /// or for a Rust test its module name with `-` for `_`
     name: String,
     test_command: String,
     /// Whether this test wants to try bind storage (if distro supports it)
@@ -1008,20 +996,6 @@ struct TestDef {
     skip_if_uki: bool,
     /// TMT fmf attributes to pass through (summary, duration, adjust, etc.)
     tmt: serde_yaml::Value,
-}
-
-impl Ord for TestDef {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.number
-            .cmp(&other.number)
-            .then_with(|| self.name.cmp(&other.name))
-    }
-}
-
-impl PartialOrd for TestDef {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
 }
 
 /// A generated file: its path relative to the repository root and contents.
@@ -1179,18 +1153,6 @@ fn generate_integration() -> Result<Vec<GeneratedFile>> {
             .with_context(|| format!("Parsing tmt metadata from {}", filename))?
             .with_context(|| format!("Missing tmt metadata in {}", filename))?;
 
-        // Remove number prefix if present (e.g., "01-readonly" -> "readonly", "26-examples-build" -> "examples-build")
-        let display_name = stem
-            .split_once('-')
-            .and_then(|(prefix, suffix)| {
-                if prefix.chars().all(|c| c.is_ascii_digit()) {
-                    Some(suffix.to_string())
-                } else {
-                    None
-                }
-            })
-            .unwrap_or_else(|| stem.to_string());
-
         // Determine test command based on file extension
         let test_command = if is_rust {
             format!("{RUST_TESTS_COMMAND} {stem}")
@@ -1252,8 +1214,7 @@ fn generate_integration() -> Result<Vec<GeneratedFile>> {
             .unwrap_or(false);
 
         tests.push(TestDef {
-            number: metadata.number,
-            name: display_name,
+            name: stem.to_string(),
             test_command,
             try_bind_storage,
             skip_if_composefs,
@@ -1263,12 +1224,22 @@ fn generate_integration() -> Result<Vec<GeneratedFile>> {
         });
     }
 
-    tests.sort();
+    // Plans run in separate VMs, so the order does not matter beyond being
+    // stable; names are the identity.
+    tests.sort_by(|a, b| a.name.cmp(&b.name));
+    if let Some(dup) = tests.windows(2).find(|w| w[0].name == w[1].name) {
+        anyhow::bail!(
+            "Multiple tests named {}; test names must be unique across {} and {}",
+            dup[0].name,
+            booted_dir,
+            rust_dir
+        );
+    }
 
     let mut generated = Vec::with_capacity(tests.len() * 2);
     for test in &tests {
-        let test_id = format!("test-{:02}-{}", test.number, test.name);
-        let plan_id = format!("plan-{:02}-{}", test.number, test.name);
+        let test_id = format!("test-{}", test.name);
+        let plan_id = format!("plan-{}", test.name);
 
         // The test: start with the tmt metadata (summary, duration, adjust, etc.)
         let mut test_value = if let serde_yaml::Value::Mapping(map) = &test.tmt {
@@ -1376,8 +1347,7 @@ mod tests {
 
     #[test]
     fn test_parse_tmt_metadata_basic() {
-        let content = r#"# number: 1
-# tmt:
+        let content = r#"# tmt:
 #   summary: Execute booted readonly/nondestructive tests
 #   duration: 30m
 #
@@ -1386,7 +1356,6 @@ use tap.nu
 "#;
 
         let metadata = parse_tmt_metadata(content, "#").unwrap().unwrap();
-        assert_eq!(metadata.number, 1);
 
         // Verify tmt fields are captured
         let tmt = metadata.tmt.as_mapping().unwrap();
@@ -1404,8 +1373,7 @@ use tap.nu
 
     #[test]
     fn test_parse_tmt_metadata_with_adjust() {
-        let content = r#"# number: 27
-# tmt:
+        let content = r#"# tmt:
 #   summary: Execute custom selinux policy test
 #   duration: 30m
 #   adjust:
@@ -1417,7 +1385,6 @@ use std assert
 "#;
 
         let metadata = parse_tmt_metadata(content, "#").unwrap().unwrap();
-        assert_eq!(metadata.number, 27);
 
         // Verify adjust section is in tmt
         let tmt = metadata.tmt.as_mapping().unwrap();
@@ -1435,9 +1402,22 @@ use std assert
     }
 
     #[test]
-    fn test_parse_tmt_metadata_shell_script() {
-        let content = r#"# number: 26
+    fn test_parse_tmt_metadata_ignores_legacy_number() {
+        let content = r#"# number: 7
 # tmt:
+#   summary: Header from before tests were identified by name
+#   duration: 30m
+use std assert
+"#;
+
+        let metadata = parse_tmt_metadata(content, "#").unwrap().unwrap();
+        let tmt = metadata.tmt.as_mapping().unwrap();
+        assert_eq!(tmt.len(), 2);
+    }
+
+    #[test]
+    fn test_parse_tmt_metadata_shell_script() {
+        let content = r#"# tmt:
 #   summary: Test bootc examples build scripts
 #   duration: 45m
 #   adjust:
@@ -1449,7 +1429,6 @@ set -eux
 "#;
 
         let metadata = parse_tmt_metadata(content, "#").unwrap().unwrap();
-        assert_eq!(metadata.number, 26);
 
         let tmt = metadata.tmt.as_mapping().unwrap();
         assert_eq!(
@@ -1461,8 +1440,7 @@ set -eux
 
     #[test]
     fn test_parse_tmt_metadata_with_try_bind_storage() {
-        let content = r#"# number: 24
-# extra:
+        let content = r#"# extra:
 #   try_bind_storage: true
 # tmt:
 #   summary: Execute local upgrade tests
@@ -1472,7 +1450,6 @@ use std assert
 "#;
 
         let metadata = parse_tmt_metadata(content, "#").unwrap().unwrap();
-        assert_eq!(metadata.number, 24);
 
         let extra = metadata.extra.as_mapping().unwrap();
         assert_eq!(
@@ -1491,8 +1468,7 @@ use std assert
 
     #[test]
     fn test_parse_tmt_metadata_rust() {
-        let content = r#"// number: 50
-// tmt:
+        let content = r#"// tmt:
 //   summary: Switch to an image with zstd:chunked compressed layers
 // extra:
 //   skip_if_ostree: true
@@ -1502,7 +1478,6 @@ use anyhow::Result;
 "#;
 
         let metadata = parse_tmt_metadata(content, "//").unwrap().unwrap();
-        assert_eq!(metadata.number, 50);
 
         let extra = metadata.extra.as_mapping().unwrap();
         assert_eq!(

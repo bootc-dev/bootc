@@ -1,4 +1,3 @@
-# number: 45
 # tmt:
 #   summary: Test composefs backend resilience to state corruption
 #   duration: 30m

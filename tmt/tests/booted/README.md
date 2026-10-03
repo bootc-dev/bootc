@@ -2,6 +2,21 @@
 
 These are intended to run via tmt.
 
+## Adding a test
+
+Add `test-<name>.nu` (or `.sh`, `.py`) here, starting with a `# tmt:` comment
+block holding the tmt attributes (`summary`, `duration`, `adjust`, ...) as
+YAML, optionally followed by an `# extra:` block of flags for `cargo xtask
+run-tmt` (`try_bind_storage`, ...); see existing tests. Then run `just
+update-generated`, which writes `tmt/tests/tests/test-<name>.fmf` and
+`tmt/plans/integration/plan-<name>.fmf` for it. Tests are identified by their
+name alone, with no number to pick, so changes adding tests don't conflict with
+each other. `just test-tmt <name>` selects plans by substring of the plan name.
+
+A test written in Rust is instead a module of `crates/tests-integration/src/booted/`,
+with the same header in `//` comments, named after the module (with `-` for
+`_`).
+
 ## Composefs EROFS V1/V2 regression coverage
 
 The existing `BOOTC_erofs_version` configuration selects the format while the

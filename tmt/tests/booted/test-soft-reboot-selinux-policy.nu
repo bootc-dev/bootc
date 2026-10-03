@@ -1,4 +1,3 @@
-# number: 29
 # tmt:
 #   summary: Test soft reboot with SELinux policy changes
 #   duration: 30m

@@ -1,4 +1,3 @@
-# number: 31
 # tmt:
 #   summary: Onboard to unified storage, build derived image, and switch to it
 #   duration: 30m

@@ -1,4 +1,3 @@
-# number: 35
 # tmt:
 #   summary: Test composefs garbage collection with same and different kernel+initrd
 #   duration: 30m

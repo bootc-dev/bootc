@@ -1,4 +1,3 @@
-# number: 57
 # tmt:
 #   summary: Test composefs with GRUB and a separate /boot partition
 #   duration: 60m
