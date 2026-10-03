@@ -29,3 +29,9 @@ It is possible to skip bootloader installation entirely by using `--bootloader=n
 With this option, users can have explicit control over how the boot loading is handled, without bootc or bootupd intervention.
 
 NOTE: none is only supported for the Ostree backend and not for Composefs. It is also not supported for the s390x architecture. If used with `--generic-image`, it will lead to a generic image that does not have support for any bootloader.
+
+## composefs backend
+
+Whenever the container image has a UKI, bootc automatically selects the composefs backend during installation. The [prerequisites for sealed images](building/bootc-sealed-images.7.md#prerequisites) describe the currently-supported UKI + systemd-boot configuration. Note that having a UKI does not by itself make an install sealed — that also depends on whether [fs-verity enforcement](bootc-composefs.7.md#overview) is on.
+
+Composefs installs using a traditional `vmlinuz`/`initramfs.img` layout instead of a UKI can enforce fs-verity, but are never sealed, since nothing authenticates the root digest. They can use either `bootupd` (GRUB) or systemd-boot. Under the hood, bootc writes standard BLS boot entries for both UKI and traditional kernels; see the [composefs boot module documentation](https://github.com/bootc-dev/bootc/blob/main/crates/lib/src/bootc_composefs/boot.rs) for details on how entry filenames and sort-keys are chosen to sort correctly on both GRUB and systemd-boot.

@@ -19,7 +19,8 @@ systemd is in use, systemd acts as pid1 as usual - there's no "outer" process.
 The CLI and API for bootc are now considered stable. Every existing system
 can be upgraded in place seamlessly across any future changes.
 
-However, the core underlying code uses the [ostree](https://github.com/ostreedev/ostree)
+However, the default storage backend uses the [ostree](https://github.com/ostreedev/ostree)
 project which has been powering stable operating system updates for
 many years.  The stability here generally refers to the surface
-APIs, not the underlying logic.
+APIs, not the underlying logic. There is also a [composefs backend](bootc-composefs.7.md),
+which is required for sealed images.

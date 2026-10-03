@@ -30,12 +30,9 @@ runs.
 
 # OPTIONS
 
-<!-- BEGIN GENERATED OPTIONS -->
 **--hold**
 
     Hold /boot open until terminated, instead of finalizing
-
-<!-- END GENERATED OPTIONS -->
 
 # EXAMPLES
 
