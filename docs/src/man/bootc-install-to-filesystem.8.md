@@ -16,6 +16,45 @@ necessary platform partitions (such as the EFI system partition) are
 prepared and mounted by an external tool or script. The root filesystem
 is currently expected to be empty by default.
 
+## Install result
+
+An installer that wraps this command often needs to know where the new
+deployment ended up, for example to add configuration to its `/etc`
+before the first boot. With one of the `--output-*` options, bootc
+writes a machine-readable summary of the installation once it has
+succeeded. The format is either JSON (`--output-json-*`) or "pairs"
+(`--output-pairs-*`), and the destination is either a path, which is
+replaced atomically (`--output-*-path`), or a file descriptor inherited
+from the caller and open for writing (`--output-*-fd`), which bootc
+closes after writing. A bad destination makes bootc fail before
+installing anything. A path is resolved before bootc sets up its own
+mounts, so one under e.g. `/tmp` works too. When running bootc in a
+container, the path must be in a volume shared with the caller, and an
+fd must be passed with `podman run --preserve-fds`.
+
+The keys are a stable interface: new ones may be added, but the
+existing ones keep their meaning. Paths are relative to the root of the
+target filesystem.
+
+| JSON key         | Pairs key         | Meaning                                                   |
+|------------------|-------------------|-----------------------------------------------------------|
+| `backend`        | `BACKEND`         | Storage backend: `ostree` or `composefs`                  |
+| `stateroot`      | `STATEROOT`       | Stateroot of the deployment                               |
+| `deploymentPath` | `DEPLOYMENT_PATH` | Root directory of the deployment                          |
+| `etcPath`        | `ETC_PATH`        | Persistent `/etc` of the deployment                       |
+| `varPath`        | `VAR_PATH`        | Persistent `/var`, shared by the stateroot's deployments  |
+| `bootloader`     | `BOOTLOADER`      | Bootloader: `grub`, `grub-cc`, `systemd` or `none`        |
+| `image`          | `IMAGE`           | Image the system updates from (see `--target-imgref`)     |
+| `imageTransport` | `IMAGE_TRANSPORT` | Transport of that image, e.g. `registry`                  |
+| `imageDigest`    | `IMAGE_DIGEST`    | Manifest digest of the installed image                    |
+
+The pairs format is that of `lsblk --pairs --shell`, with one
+`KEY="value"` per line: keys are valid shell variable names, and values
+are double-quoted with `"`, `\`, `$` and `` ` `` escaped by a backslash,
+so the output can be passed to `eval` or sourced with `.`. Control
+characters, which bootc does not emit in practice, are written as
+`\xNN` as in lsblk.
+
 # OPTIONS
 
 <!-- BEGIN GENERATED OPTIONS -->
@@ -140,7 +179,46 @@ is currently expected to be empty by default.
 
     Name of the UKI addons to install without the ".efi.addon" suffix. This option can be provided multiple times if multiple addons are to be installed (composefs backend only)
 
+**--output-json-path**=*PATH*
+
+    Write the result of the installation as JSON to this path, replacing it atomically
+
+**--output-json-fd**=*FD*
+
+    Write the result of the installation as JSON to this inherited file descriptor, which must be open for writing, then close it
+
+**--output-pairs-path**=*PATH*
+
+    Write the result of the installation as shell-quoted KEY="value" lines, like `lsblk --pairs --shell`, to this path, replacing it atomically
+
+**--output-pairs-fd**=*FD*
+
+    Write the result of the installation as shell-quoted KEY="value" lines to this inherited file descriptor, which must be open for writing, then close it
+
 <!-- END GENERATED OPTIONS -->
+
+# EXAMPLES
+
+Install to a filesystem mounted at `/mnt`, read the result into shell
+variables through file descriptor 3 (sending bootc's own output to
+stderr), then add a systemd unit to the new deployment's `/etc`:
+
+    set -e
+    pairs=$(bootc install to-filesystem --output-pairs-fd 3 /mnt 3>&1 >&2)
+    eval "$pairs"
+    cp my-firstboot.service "/mnt/$ETC_PATH/systemd/system/"
+
+Assigning the output first, rather than running `eval "$(bootc ...)"`,
+makes `set -e` stop the script if the installation fails.
+
+The same result as JSON in a file:
+
+    bootc install to-filesystem --output-json-path /run/install-result.json /mnt
+    jq -r .etcPath /run/install-result.json
+
+# SEE ALSO
+
+**bootc**(8), **bootc-install**(8), **bootc-install-to-disk**(8)
 
 # VERSION
 

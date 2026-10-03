@@ -317,6 +317,15 @@ impl Environment {
     }
 }
 
+/// The storage backend of a system: whether its deployments are managed by
+/// ostree or natively by bootc on composefs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum Backend {
+    Ostree,
+    Composefs,
+}
+
 /// A system can boot via either ostree or composefs; this enum
 /// allows code to handle both cases while maintaining type safety.
 pub(crate) enum BootedStorageKind<'a> {
