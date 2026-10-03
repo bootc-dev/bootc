@@ -225,6 +225,11 @@ check:
   - e2fsprogs
   test: nu booted/test-composefs-separate-boot.nu
 
+/test-59-edit:
+  summary: Test bootc edit for image changes and rollback
+  duration: 30m
+  test: nu booted/test-edit.nu
+
 /test-60-install-composefs-native:
   summary: Test that composefs-native images default to the composefs backend
   duration: 45m
