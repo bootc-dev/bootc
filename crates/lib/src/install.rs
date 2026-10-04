@@ -1324,7 +1324,7 @@ async fn install_container(
     }
 
     if let Some(contents) = state.root_ssh_authorized_keys.as_deref() {
-        osconfig::inject_root_ssh_authorized_keys(&root, sepolicy, contents)?;
+        osconfig::inject_root_ssh_authorized_keys(&root, &root, sepolicy, contents)?;
     }
 
     let aleph = InstallAleph::new(

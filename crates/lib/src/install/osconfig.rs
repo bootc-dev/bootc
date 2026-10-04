@@ -11,9 +11,13 @@ use ostree_ext::ostree;
 const ETC_TMPFILES: &str = "etc/tmpfiles.d";
 const ROOT_SSH_TMPFILE: &str = "bootc-root-ssh.conf";
 
+/// Resolve /root in `root` and write the tmpfiles.d drop-in under `dest`.
+/// With ostree `dest` is the deployment root itself; a composefs deployment
+/// keeps its /etc apart from the image.
 #[context("Injecting root authorized_keys")]
 pub(crate) fn inject_root_ssh_authorized_keys(
     root: &Dir,
+    dest: &Dir,
     sepolicy: Option<&ostree::SePolicy>,
     contents: &str,
 ) -> Result<()> {
@@ -36,8 +40,8 @@ pub(crate) fn inject_root_ssh_authorized_keys(
     let tmpfiles_content =
         format!("f~ /{root_path}/.ssh/authorized_keys 600 root root - {b64_encoded}\n");
 
-    crate::lsm::ensure_dir_labeled(root, ETC_TMPFILES, None, 0o755.into(), sepolicy)?;
-    let tmpfiles_dir = root.open_dir(ETC_TMPFILES)?;
+    crate::lsm::ensure_dir_labeled(dest, ETC_TMPFILES, None, 0o755.into(), sepolicy)?;
+    let tmpfiles_dir = dest.open_dir(ETC_TMPFILES)?;
     crate::lsm::atomic_replace_labeled(
         &tmpfiles_dir,
         ROOT_SSH_TMPFILE,
@@ -62,7 +66,8 @@ mod tests {
         root.create_dir("etc")?;
         // Test with a symlink
         root.symlink("var/roothome", "root")?;
-        inject_root_ssh_authorized_keys(root, None, "ssh-ed25519 ABCDE example@demo\n").unwrap();
+        inject_root_ssh_authorized_keys(root, root, None, "ssh-ed25519 ABCDE example@demo\n")
+            .unwrap();
 
         let content = root.read_to_string(format!("etc/tmpfiles.d/{ROOT_SSH_TMPFILE}"))?;
         assert_eq!(
@@ -79,13 +84,33 @@ mod tests {
 
         root.create_dir("etc")?;
         root.create_dir("root")?;
-        inject_root_ssh_authorized_keys(root, None, "ssh-ed25519 ABCDE example@demo\n").unwrap();
+        inject_root_ssh_authorized_keys(root, root, None, "ssh-ed25519 ABCDE example@demo\n")
+            .unwrap();
 
         let content = root.read_to_string(format!("etc/tmpfiles.d/{ROOT_SSH_TMPFILE}"))?;
         assert_eq!(
             content,
             "f~ /root/.ssh/authorized_keys 600 root root - c3NoLWVkMjU1MTkgQUJDREUgZXhhbXBsZUBkZW1vCg==\n"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn test_inject_root_ssh_separate_dest() -> Result<()> {
+        let root = &cap_std_ext::cap_tempfile::TempDir::new(cap_std::ambient_authority())?;
+        let dest = &cap_std_ext::cap_tempfile::TempDir::new(cap_std::ambient_authority())?;
+
+        root.symlink("var/roothome", "root")?;
+        dest.create_dir("etc")?;
+        inject_root_ssh_authorized_keys(root, dest, None, "ssh-ed25519 ABCDE example@demo\n")
+            .unwrap();
+
+        let content = dest.read_to_string(format!("etc/tmpfiles.d/{ROOT_SSH_TMPFILE}"))?;
+        assert_eq!(
+            content,
+            "f~ /var/roothome/.ssh/authorized_keys 600 root root - c3NoLWVkMjU1MTkgQUJDREUgZXhhbXBsZUBkZW1vCg==\n"
+        );
+        assert!(!root.exists("etc"));
         Ok(())
     }
 }

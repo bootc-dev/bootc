@@ -112,7 +112,8 @@ use crate::{
 use crate::{bootc_composefs::status::get_sorted_grub_uki_boot_entries, install::PostFetchState};
 use crate::{
     composefs_consts::{
-        BOOT_LOADER_ENTRIES, STAGED_BOOT_LOADER_ENTRIES, UKI_NAME_PREFIX, USER_CFG, USER_CFG_STAGED,
+        BOOT_LOADER_ENTRIES, STAGED_BOOT_LOADER_ENTRIES, STATE_DIR_RELATIVE, UKI_NAME_PREFIX,
+        USER_CFG, USER_CFG_STAGED,
     },
     spec::{Bootloader, Host},
 };
@@ -2260,6 +2261,19 @@ pub(crate) async fn setup_composefs_boot(
         allow_missing_fsverity,
     )
     .await?;
+
+    if let Some(contents) = state.root_ssh_authorized_keys.as_deref() {
+        let deployment = root_setup
+            .physical_root
+            .open_dir(format!("{STATE_DIR_RELATIVE}/{}", deploy_id.to_hex()))
+            .context("Opening deployment state")?;
+        crate::install::osconfig::inject_root_ssh_authorized_keys(
+            mounted_root.dir(),
+            &deployment,
+            state.load_policy()?.as_ref(),
+            contents,
+        )?;
+    }
 
     Ok(())
 }
