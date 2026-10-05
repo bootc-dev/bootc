@@ -420,12 +420,22 @@ pub(crate) struct InstallComposefsOpts {
 impl InstallComposefsOpts {
     /// Check that the options fit together, once `composefs_backend` says
     /// whether the composefs backend is used (passed, or selected by the image).
-    pub(crate) fn validate(&self, bootloader: Option<&Bootloader>) -> Result<()> {
+    pub(crate) fn validate(
+        &self,
+        bootloader: Option<&Bootloader>,
+        stateroot: Option<&str>,
+    ) -> Result<()> {
         if self.composefs_backend {
             anyhow::ensure!(
                 !matches!(bootloader, Some(Bootloader::None)),
                 "Bootloader set to none is not supported with the composefs backend"
             );
+            let default = ostree_container::deploy::STATEROOT_DEFAULT;
+            if let Some(stateroot) = stateroot.filter(|&s| s != default) {
+                anyhow::bail!(
+                    "--stateroot {stateroot} is not supported with the composefs backend, which only uses {default}"
+                );
+            }
         } else {
             anyhow::ensure!(
                 !self.allow_missing_verity,
@@ -1776,7 +1786,10 @@ async fn prepare_install(
     )?;
     tracing::debug!("Composefs default: {composefs_default}");
     composefs_options.composefs_backend |= composefs_required || composefs_default;
-    composefs_options.validate(config_opts.bootloader.as_ref())?;
+    composefs_options.validate(
+        config_opts.bootloader.as_ref(),
+        config_opts.stateroot.as_deref(),
+    )?;
 
     // Read the file eagerly so we error out early, and before the mount changes
     // below hide a file bind mounted under e.g. /tmp. We may re-exec further down
@@ -3134,28 +3147,42 @@ mod tests {
     #[test]
     fn test_composefs_opts_validate() {
         let addon = || Some(vec!["addon".to_string()]);
-        // (composefs_backend, allow_missing_verity, uki_addon, bootloader, valid)
+        // (composefs_backend, allow_missing_verity, uki_addon, bootloader, stateroot, valid)
         let cases = [
-            (false, false, None, None, true),
-            (false, false, None, Some(Bootloader::None), true),
-            (false, true, None, None, false),
-            (false, false, addon(), None, false),
-            (true, false, None, None, true),
-            (true, true, addon(), Some(Bootloader::Systemd), true),
-            (true, false, None, Some(Bootloader::None), false),
+            (false, false, None, None, None, true),
+            (false, false, None, Some(Bootloader::None), None, true),
+            (false, true, None, None, None, false),
+            (false, false, addon(), None, None, false),
+            (false, false, None, None, Some("myroot"), true),
+            (true, false, None, None, None, true),
+            (true, true, addon(), Some(Bootloader::Systemd), None, true),
+            (true, false, None, Some(Bootloader::None), None, false),
+            (true, false, None, None, Some("default"), true),
+            (true, false, None, None, Some("myroot"), false),
         ];
-        for (composefs_backend, allow_missing_verity, uki_addon, bootloader, valid) in cases {
+        for (composefs_backend, allow_missing_verity, uki_addon, bootloader, stateroot, valid) in
+            cases
+        {
             let opts = InstallComposefsOpts {
                 composefs_backend,
                 allow_missing_verity,
                 uki_addon,
             };
             assert_eq!(
-                opts.validate(bootloader.as_ref()).is_ok(),
+                opts.validate(bootloader.as_ref(), stateroot).is_ok(),
                 valid,
-                "{opts:?} {bootloader:?}"
+                "{opts:?} {bootloader:?} {stateroot:?}"
             );
         }
+
+        let opts = InstallComposefsOpts {
+            composefs_backend: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            opts.validate(None, Some("myroot")).unwrap_err().to_string(),
+            "--stateroot myroot is not supported with the composefs backend, which only uses default"
+        );
     }
 
     #[test]
