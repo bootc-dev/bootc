@@ -18,7 +18,7 @@ use crate::store::Storage;
 
 /// The path in a root for bound images; this directory should only contain
 /// symbolic links to `.container` or `.image` files.
-const BOUND_IMAGE_DIR: &str = "usr/lib/bootc/bound-images.d";
+pub(crate) const BOUND_IMAGE_DIR: &str = "usr/lib/bootc/bound-images.d";
 
 /// A subset of data parsed from a `.image` or `.container` file with
 /// the minimal information necessary to fetch the image.

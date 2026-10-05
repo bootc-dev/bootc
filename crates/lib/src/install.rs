@@ -438,6 +438,31 @@ impl InstallComposefsOpts {
         }
         Ok(())
     }
+
+    /// The composefs backend doesn't install logically bound images yet
+    /// (<https://github.com/bootc-dev/bootc/issues/2540>), so fail rather
+    /// than install a system that is missing them.
+    pub(crate) fn validate_bound_images(
+        &self,
+        bound_images: BoundImagesOpt,
+        root: &Dir,
+    ) -> Result<()> {
+        if !self.composefs_backend || bound_images == BoundImagesOpt::Skip {
+            return Ok(());
+        }
+        let images = crate::boundimage::query_bound_images(root)?;
+        if !images.is_empty() {
+            let images = images
+                .iter()
+                .map(|i| i.image.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            anyhow::bail!(
+                "Logically bound images are not supported with the composefs backend (found {images}); use --bound-images skip to install without them"
+            );
+        }
+        Ok(())
+    }
 }
 
 #[cfg(feature = "install-to-disk")]
@@ -1777,6 +1802,8 @@ async fn prepare_install(
     tracing::debug!("Composefs default: {composefs_default}");
     composefs_options.composefs_backend |= composefs_required || composefs_default;
     composefs_options.validate(config_opts.bootloader.as_ref())?;
+
+    composefs_options.validate_bound_images(config_opts.bound_images, &rootfs)?;
 
     // Read the file eagerly so we error out early, and before the mount changes
     // below hide a file bind mounted under e.g. /tmp. We may re-exec further down
@@ -3166,6 +3193,57 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(c.block_opts.device, "/dev/vda");
+    }
+
+    #[test]
+    fn test_composefs_opts_validate_bound_images() -> Result<()> {
+        use crate::boundimage::BOUND_IMAGE_DIR;
+        let unbound = cap_std_ext::cap_tempfile::TempDir::new(cap_std::ambient_authority())?;
+        unbound.create_dir_all(BOUND_IMAGE_DIR)?;
+        let bound = cap_std_ext::cap_tempfile::TempDir::new(cap_std::ambient_authority())?;
+        bound.create_dir_all("usr/share/containers/systemd")?;
+        bound.write(
+            "usr/share/containers/systemd/app.image",
+            "[Image]\nImage=quay.io/example/app:latest\n",
+        )?;
+        bound.create_dir_all(BOUND_IMAGE_DIR)?;
+        bound.symlink_contents(
+            "/usr/share/containers/systemd/app.image",
+            format!("{BOUND_IMAGE_DIR}/app.image"),
+        )?;
+
+        // (composefs_backend, bound_images, root binds an image, valid)
+        let cases = [
+            (false, BoundImagesOpt::Stored, true, true),
+            (true, BoundImagesOpt::Stored, false, true),
+            (true, BoundImagesOpt::Stored, true, false),
+            (true, BoundImagesOpt::Pull, true, false),
+            (true, BoundImagesOpt::Skip, true, true),
+        ];
+        for (composefs_backend, bound_images, binds, valid) in cases {
+            let opts = InstallComposefsOpts {
+                composefs_backend,
+                ..Default::default()
+            };
+            let root = if binds { &bound } else { &unbound };
+            assert_eq!(
+                opts.validate_bound_images(bound_images, root).is_ok(),
+                valid,
+                "{opts:?} {bound_images:?} {binds}"
+            );
+        }
+
+        let opts = InstallComposefsOpts {
+            composefs_backend: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            opts.validate_bound_images(BoundImagesOpt::Stored, &bound)
+                .unwrap_err()
+                .to_string(),
+            "Logically bound images are not supported with the composefs backend (found quay.io/example/app:latest); use --bound-images skip to install without them"
+        );
+        Ok(())
     }
 
     #[test]
