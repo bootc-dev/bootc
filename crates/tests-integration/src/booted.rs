@@ -1,7 +1,10 @@
 //! Tests that tmt runs on a booted host, ported from the nushell tests in
 //! tmt/tests/booted; see <https://github.com/bootc-dev/bootc/issues/2547>.
 //!
-//! Each module in booted/ is one subcommand.
+//! Each module in booted/ is one subcommand, and starts with the same
+//! `number`, `tmt` and `extra` header (in `//` comments) that `cargo xtask
+//! update-generated` reads from the nushell tests to generate tmt/tests and
+//! tmt/plans.
 //!
 //! Checks fail with an error rather than a panic, because tmt reports an exit
 //! code of 1 as a failure and any other (101 from a panic) as an error.
@@ -151,9 +154,27 @@ fn uki_containerfile(
 
 #[cfg(test)]
 mod tests {
+    use clap::CommandFactory;
     use serde_json::json;
 
     use super::*;
+
+    /// xtask generates each module's tmt test as `bootc-integration-tests
+    /// booted <module name with - for _>`, so that subcommand has to exist.
+    #[test]
+    fn test_modules_are_subcommands() {
+        let opt = crate::Opt::command();
+        let booted = opt.find_subcommand("booted").unwrap();
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/src/booted");
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let name = entry.unwrap().file_name().into_string().unwrap();
+            let name = name.strip_suffix(".rs").unwrap().replace('_', "-");
+            assert!(
+                booted.find_subcommand(&name).is_some(),
+                "No subcommand for {name}"
+            );
+        }
+    }
 
     fn status(composefs: serde_json::Value) -> serde_json::Value {
         json!({"status": {"booted": {"composefs": composefs}}})
