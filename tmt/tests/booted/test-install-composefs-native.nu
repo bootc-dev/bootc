@@ -26,6 +26,8 @@ const NATIVE = "localhost/bootc-composefs-native"
 const BOTH = "localhost/bootc-composefs-both"
 const DISK = "/var/tmp/composefs-native.img"
 const MNT = "/var/mnt/composefs-native"
+const KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITEST test@example.com"
+const KEYS = "/var/tmp/composefs-native-keys"
 
 def build [image: string, extra: string] {
     let td = mktemp -d
@@ -46,7 +48,8 @@ def install [image: string, ...args: string] {
         --security-opt label=type:unconfined_t
         -v /dev:/dev -v /var/lib/containers:/var/lib/containers -v /var/tmp:/var/tmp
         $image
-        bootc install to-disk --disable-selinux --via-loopback ...$args $DISK)
+        bootc install to-disk --disable-selinux --via-loopback
+        --root-ssh-authorized-keys $KEYS ...$args $DISK)
 
     # Inspect the root partition of the installed disk
     let parts = sfdisk --json $DISK | from json | get partitiontable
@@ -56,8 +59,12 @@ def install [image: string, ...args: string] {
     mount -o $"ro,loop,offset=($offset)" $DISK $MNT
     let composefs = ($"($MNT)/composefs" | path exists) and ((ls $"($MNT)/state/deploy" | length) == 1)
     let ostree = ($"($MNT)/ostree/deploy" | path exists)
+    let dropin = glob $"($MNT)/state/deploy/*/etc/tmpfiles.d/bootc-root-ssh.conf"
+        | append (glob $"($MNT)/ostree/deploy/*/deploy/*/etc/tmpfiles.d/bootc-root-ssh.conf")
+        | each {|p| {content: (open --raw $p | decode utf-8), mode: (stat -c %a $p | str trim)}}
     umount $MNT
     rm -f $DISK
+    assert equal $dropin [{content: $"f~ /var/roothome/.ssh/authorized_keys 600 root root - ($KEY | encode base64)\n", mode: "644"}] "root ssh drop-in"
     match [$composefs $ostree] {
         [true false] => "composefs",
         [false true] => "ostree",
@@ -69,6 +76,7 @@ def main [] {
     tap begin "composefs-native images default to the composefs backend"
 
     bootc image copy-to-storage
+    $KEY | save -f $KEYS
     build $NATIVE "RUN rm -f /usr/lib/ostree/prepare-root.conf /etc/ostree/prepare-root.conf"
     # On the composefs variant, localhost/bootc is itself composefs-native: it
     # has no prepare-root.conf, and configures its composefs bootloader.
@@ -83,5 +91,6 @@ def main [] {
     }
 
     podman rmi $NATIVE $BOTH
+    rm -f $KEYS
     tap ok
 }
