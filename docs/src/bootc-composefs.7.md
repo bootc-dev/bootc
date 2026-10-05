@@ -151,6 +151,18 @@ and may change or be removed:
 For building and testing bootc itself with the composefs backend, see
 [CONTRIBUTING.md](https://github.com/bootc-dev/bootc/blob/main/CONTRIBUTING.md).
 
+## Known issues
+
+The composefs backend is stable; upgrades and core functionality is supported. These
+are some of the more prominent known issues.
+
+- [Logically bound images are not implemented](https://github.com/bootc-dev/bootc/issues/2540)
+- [Install configuration `kargs`, `karg-deletes`, and CLI `--karg-delete`](https://github.com/bootc-dev/bootc/issues/2539) is silently ignored on the BLS install path
+- [`--root-ssh-authorized-keys`](https://github.com/bootc-dev/bootc/issues/2535) is silently ignored.
+- [`.bootc-aleph.json` is not written](https://github.com/bootc-dev/bootc/issues/2541)
+- [`--stateroot` is not implemented](https://github.com/bootc-dev/bootc/issues/2542)
+- [Client side SELinux policy is not automatically recompiled](https://github.com/bootc-dev/bootc/issues/2511)
+
 ## Future work
 
 - [Unified storage](https://github.com/bootc-dev/bootc/issues/20)
