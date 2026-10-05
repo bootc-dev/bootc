@@ -348,6 +348,9 @@ fi
 # target-base), and so without --bootloader too, which bcvk only takes with it.
 if [[ "${variant}" == composefs* ]]; then
   printf '[install]\nbootloader = "%s"\n' "${bootloader}" > /usr/lib/bootc/install/80-composefs-bootloader.toml
+  # The composefs backend doesn't install logically bound images yet:
+  # https://github.com/bootc-dev/bootc/issues/2540
+  rm -vf /usr/lib/bootc/bound-images.d/*
 fi
 
 if [[ "${boot_type}" == "uki" ]]; then
