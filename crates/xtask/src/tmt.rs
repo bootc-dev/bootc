@@ -30,6 +30,10 @@ const FIELD_FIXME_SKIP_IF_UKI: &str = "fixme_skip_if_uki";
 /// Ex. composefs-gc
 const FIELD_SKIP_IF_OSTREE: &str = "skip_if_ostree";
 
+// Rust tests are subcommands of the tests-integration binary, one per module
+const RUST_TESTS_DIR: &str = "crates/tests-integration/src/booted";
+const RUST_TESTS_COMMAND: &str = "bootc-integration-tests booted";
+
 // bcvk options
 const BCVK_OPT_BIND_STORAGE_RO: &str = "--bind-storage-ro";
 const ENV_BOOTC_UPGRADE_IMAGE: &str = "BOOTC_upgrade_image";
@@ -947,14 +951,17 @@ pub(crate) fn tmt_provision(sh: &Shell, args: &TmtProvisionArgs) -> Result<()> {
     Ok(())
 }
 
-/// Parse tmt metadata from a test file
+/// Parse tmt metadata from a test file whose line comments start with `comment`
 /// Looks for:
 /// # number: N
 /// # extra:
 /// #   try_bind_storage: true
 /// # tmt:
 /// #   (yaml content)
-fn parse_tmt_metadata(content: &str) -> Result<Option<TmtMetadata>> {
+fn parse_tmt_metadata(content: &str, comment: &str) -> Result<Option<TmtMetadata>> {
+    let number_prefix = format!("{comment} number:");
+    let extra_marker = format!("{comment} extra:");
+    let tmt_marker = format!("{comment} tmt:");
     let mut number = None;
     let mut in_extra_block = false;
     let mut in_tmt_block = false;
@@ -965,7 +972,7 @@ fn parse_tmt_metadata(content: &str) -> Result<Option<TmtMetadata>> {
         let trimmed = line.trim();
 
         // Look for "# number: N" line
-        if let Some(rest) = trimmed.strip_prefix("# number:") {
+        if let Some(rest) = trimmed.strip_prefix(&number_prefix) {
             number = Some(
                 rest.trim()
                     .parse::<u32>()
@@ -974,23 +981,23 @@ fn parse_tmt_metadata(content: &str) -> Result<Option<TmtMetadata>> {
             continue;
         }
 
-        if trimmed == "# extra:" {
+        if trimmed == extra_marker {
             in_extra_block = true;
             in_tmt_block = false;
             continue;
-        } else if trimmed == "# tmt:" {
+        } else if trimmed == tmt_marker {
             in_tmt_block = true;
             in_extra_block = false;
             continue;
         } else if in_extra_block || in_tmt_block {
-            // Stop if we hit a line that doesn't start with #, or is just "#"
-            if !trimmed.starts_with('#') || trimmed == "#" {
+            // Stop if we hit a line that isn't a comment, or is an empty one
+            if !trimmed.starts_with(comment) || trimmed == comment {
                 in_extra_block = false;
                 in_tmt_block = false;
                 continue;
             }
-            // Remove the leading # and preserve indentation
-            if let Some(yaml_line) = line.strip_prefix('#') {
+            // Remove the leading comment marker and preserve indentation
+            if let Some(yaml_line) = line.strip_prefix(comment) {
                 if in_extra_block {
                     extra_yaml_lines.push(yaml_line);
                 } else {
@@ -1133,31 +1140,47 @@ fn generate_integration() -> Result<(String, String)> {
     // Define tests in order
     let mut tests = vec![];
 
-    // Scan for test-*.nu, test-*.sh, and test-*.py files in tmt/tests/booted/
+    // Scan for test-*.nu, test-*.sh, and test-*.py files in tmt/tests/booted/,
+    // and for the Rust tests
     let booted_dir = Utf8Path::new("tmt/tests/booted");
-
-    for entry in std::fs::read_dir(booted_dir)
+    let rust_dir = Utf8Path::new(RUST_TESTS_DIR);
+    let entries = std::fs::read_dir(booted_dir)
         .with_context(|| format!("Reading directory {}", booted_dir))?
-    {
+        .chain(
+            std::fs::read_dir(rust_dir)
+                .with_context(|| format!("Reading directory {}", rust_dir))?,
+        );
+
+    for entry in entries {
         let entry = entry?;
         let path = entry.path();
         let Some(filename) = path.file_name().and_then(|n| n.to_str()) else {
             continue;
         };
 
-        // Extract stem (filename without "test-" prefix and extension)
-        let Some(stem) = filename.strip_prefix("test-").and_then(|s| {
-            s.strip_suffix(".nu")
-                .or_else(|| s.strip_suffix(".sh"))
-                .or_else(|| s.strip_suffix(".py"))
-        }) else {
-            continue;
+        // Extract stem (filename without "test-" prefix and extension), or
+        // for a Rust test its module name, which is its subcommand with _ for -
+        let is_rust = path.starts_with(rust_dir);
+        let (stem, comment) = if is_rust {
+            let Some(module) = filename.strip_suffix(".rs") else {
+                continue;
+            };
+            (module.replace('_', "-"), "//")
+        } else {
+            let Some(stem) = filename.strip_prefix("test-").and_then(|s| {
+                s.strip_suffix(".nu")
+                    .or_else(|| s.strip_suffix(".sh"))
+                    .or_else(|| s.strip_suffix(".py"))
+            }) else {
+                continue;
+            };
+            (stem.to_owned(), "#")
         };
 
         let content =
             std::fs::read_to_string(&path).with_context(|| format!("Reading {}", filename))?;
 
-        let metadata = parse_tmt_metadata(&content)
+        let metadata = parse_tmt_metadata(&content, comment)
             .with_context(|| format!("Parsing tmt metadata from {}", filename))?
             .with_context(|| format!("Missing tmt metadata in {}", filename))?;
 
@@ -1173,20 +1196,23 @@ fn generate_integration() -> Result<(String, String)> {
             })
             .unwrap_or_else(|| stem.to_string());
 
-        // Derive relative path from booted_dir
-        let relative_path = path
-            .strip_prefix("tmt/tests/")
-            .with_context(|| format!("Failed to get relative path for {}", filename))?;
-
         // Determine test command based on file extension
-        let test_command = if filename.ends_with(".nu") {
-            format!("nu {}", relative_path.display())
-        } else if filename.ends_with(".sh") {
-            format!("bash {}", relative_path.display())
-        } else if filename.ends_with(".py") {
-            format!("python3 {}", relative_path.display())
+        let test_command = if is_rust {
+            format!("{RUST_TESTS_COMMAND} {stem}")
         } else {
-            anyhow::bail!("Unsupported test file extension: {}", filename);
+            // Derive relative path from booted_dir
+            let relative_path = path
+                .strip_prefix("tmt/tests/")
+                .with_context(|| format!("Failed to get relative path for {}", filename))?;
+            if filename.ends_with(".nu") {
+                format!("nu {}", relative_path.display())
+            } else if filename.ends_with(".sh") {
+                format!("bash {}", relative_path.display())
+            } else if filename.ends_with(".py") {
+                format!("python3 {}", relative_path.display())
+            } else {
+                anyhow::bail!("Unsupported test file extension: {}", filename);
+            }
         };
 
         // Check if test wants bind storage
@@ -1459,7 +1485,7 @@ mod tests {
 use tap.nu
 "#;
 
-        let metadata = parse_tmt_metadata(content).unwrap().unwrap();
+        let metadata = parse_tmt_metadata(content, "#").unwrap().unwrap();
         assert_eq!(metadata.number, 1);
 
         // Verify tmt fields are captured
@@ -1490,7 +1516,7 @@ use tap.nu
 use std assert
 "#;
 
-        let metadata = parse_tmt_metadata(content).unwrap().unwrap();
+        let metadata = parse_tmt_metadata(content, "#").unwrap().unwrap();
         assert_eq!(metadata.number, 27);
 
         // Verify adjust section is in tmt
@@ -1504,7 +1530,7 @@ use std assert
 use std assert
 "#;
 
-        let result = parse_tmt_metadata(content).unwrap();
+        let result = parse_tmt_metadata(content, "#").unwrap();
         assert!(result.is_none());
     }
 
@@ -1522,7 +1548,7 @@ use std assert
 set -eux
 "#;
 
-        let metadata = parse_tmt_metadata(content).unwrap().unwrap();
+        let metadata = parse_tmt_metadata(content, "#").unwrap().unwrap();
         assert_eq!(metadata.number, 26);
 
         let tmt = metadata.tmt.as_mapping().unwrap();
@@ -1545,7 +1571,7 @@ set -eux
 use std assert
 "#;
 
-        let metadata = parse_tmt_metadata(content).unwrap().unwrap();
+        let metadata = parse_tmt_metadata(content, "#").unwrap().unwrap();
         assert_eq!(metadata.number, 24);
 
         let extra = metadata.extra.as_mapping().unwrap();
@@ -1561,5 +1587,31 @@ use std assert
                 "Execute local upgrade tests".to_string()
             ))
         );
+    }
+
+    #[test]
+    fn test_parse_tmt_metadata_rust() {
+        let content = r#"// number: 50
+// tmt:
+//   summary: Switch to an image with zstd:chunked compressed layers
+// extra:
+//   skip_if_ostree: true
+//
+//! Module documentation
+use anyhow::Result;
+"#;
+
+        let metadata = parse_tmt_metadata(content, "//").unwrap().unwrap();
+        assert_eq!(metadata.number, 50);
+
+        let extra = metadata.extra.as_mapping().unwrap();
+        assert_eq!(
+            extra.get(&serde_yaml::Value::String("skip_if_ostree".to_string())),
+            Some(&serde_yaml::Value::Bool(true))
+        );
+        let tmt = metadata.tmt.as_mapping().unwrap();
+        assert_eq!(tmt.len(), 1);
+
+        assert!(parse_tmt_metadata(content, "#").unwrap().is_none());
     }
 }

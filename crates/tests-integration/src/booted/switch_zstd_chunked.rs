@@ -1,3 +1,14 @@
+// number: 50
+// tmt:
+//   summary: Switch to an image with zstd:chunked compressed layers
+//   duration: 30m
+//   adjust:
+//     - when: running_env != image_mode
+//       enabled: false
+//       because: only the image_mode test image installs bootc-tests
+// extra:
+//   skip_if_ostree: true
+//
 //! zstd:chunked layers are multi-frame zstd streams with skippable frames
 //! holding a table of contents, which a naive zstd decoder truncates; see
 //! <https://github.com/bootc-dev/bootc/issues/2408>

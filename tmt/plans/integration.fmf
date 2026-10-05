@@ -338,6 +338,10 @@ execute:
     how: fmf
     test:
       - /tmt/tests/tests/test-50-switch-zstd-chunked
+  adjust:
+  - when: running_env != image_mode
+    enabled: false
+    because: only the image_mode test image installs bootc-tests
   extra-skip_if_ostree: true
 
 /plan-52-install-repart:
