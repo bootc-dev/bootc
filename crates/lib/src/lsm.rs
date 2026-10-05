@@ -650,6 +650,8 @@ pub(crate) fn ensure_dir_labeled(
 }
 
 /// A wrapper for atomically writing a file, also optionally setting a SELinux label.
+/// The label is looked up for `destname` as if `root` were `/`, so pass the
+/// directory that stands for the target's root, never a subdirectory of it.
 pub(crate) fn atomic_replace_labeled<F>(
     root: &Dir,
     destname: impl AsRef<Utf8Path>,
