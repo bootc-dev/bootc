@@ -813,6 +813,8 @@ mod tests {
             .path()
             .join(crate::store::COMPOSEFS)
             .join("objects/sentinel");
+        // composefs-rs creates objects/ lazily, so it may not exist yet.
+        std::fs::create_dir_all(object_path.parent().unwrap()).unwrap();
         std::fs::write(&object_path, b"retained").unwrap();
         drop(repo);
 
