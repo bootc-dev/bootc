@@ -115,6 +115,12 @@ may instead be selectively migrated. See
 using kernel arguments (via `systemd.mount-extra`) injected before reboot instead
 of migrating the fstab entries. See the "Injecting kernel arguments" section above.
 
+## Install result
+
+The `--output-*` options write a machine-readable summary of the
+installation, such as the paths of the new deployment's `/etc` and
+`/var`; see **bootc-install-to-filesystem**(8).
+
 # OPTIONS
 
 <!-- BEGIN GENERATED OPTIONS -->
@@ -230,6 +236,22 @@ of migrating the fstab entries. See the "Injecting kernel arguments" section abo
 **--uki-addon**=*UKI_ADDON*
 
     Name of the UKI addons to install without the ".efi.addon" suffix. This option can be provided multiple times if multiple addons are to be installed (composefs backend only)
+
+**--output-json-path**=*PATH*
+
+    Write the result of the installation as JSON to this path, replacing it atomically
+
+**--output-json-fd**=*FD*
+
+    Write the result of the installation as JSON to this inherited file descriptor, which must be open for writing, then close it
+
+**--output-pairs-path**=*PATH*
+
+    Write the result of the installation as shell-quoted KEY="value" lines, like `lsblk --pairs --shell`, to this path, replacing it atomically
+
+**--output-pairs-fd**=*FD*
+
+    Write the result of the installation as shell-quoted KEY="value" lines to this inherited file descriptor, which must be open for writing, then close it
 
 <!-- END GENERATED OPTIONS -->
 

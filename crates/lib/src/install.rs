@@ -134,6 +134,7 @@
 //! - [`config`]: TOML configuration parsing and merging
 //! - [`completion`]: Post-installation hooks for external installers (Anaconda)
 //! - [`osconfig`]: SSH key injection and OS configuration
+//! - [`output`]: Machine-readable result for `--output-{json,pairs}-{path,fd}`
 //! - [`aleph`]: Installation provenance tracking (.bootc-aleph.json)
 //! - `osbuild`: Helper APIs for bootc-image-builder integration
 
@@ -146,6 +147,7 @@ pub(crate) mod completion;
 pub(crate) mod config;
 mod osbuild;
 pub(crate) mod osconfig;
+pub(crate) mod output;
 
 use std::collections::HashMap;
 use std::io::Write;
@@ -198,19 +200,23 @@ use crate::bootc_composefs::{
 };
 use crate::bootc_kargs::{INITRD_ARG_PREFIX, ROOTFLAGS_KEY};
 use crate::boundimage::{BoundImage, ResolvedBoundImage};
+use crate::composefs_consts::{SHARED_VAR_PATH, STATE_DIR_RELATIVE};
 use crate::containerenv::ContainerExecutionInfo;
 use crate::deploy::{
     MergeState, PreparedPullResult, PullProgress, prepare_for_pull, pull_from_prepared,
     retry_pull_operation,
 };
 use crate::install::config::Filesystem as FilesystemEnum;
+use crate::install::output::{InstallOutput, InstallOutputOpts, InstallResult};
 use crate::lsm;
 use crate::progress_jsonl::ProgressWriter;
 use crate::spec::{Bootloader, ImageReference};
+use crate::store::Backend;
 use crate::store::Storage;
 use crate::task::Task;
 use crate::utils::sigpolicy_from_opt;
 use bootc_mount::Filesystem;
+use composefs_ctl::composefs::fsverity::FsVerityHashValue as _;
 use linux_kernel_cmdline::{bytes, utf8};
 
 /// The toplevel boot directory
@@ -467,6 +473,10 @@ pub(crate) struct InstallToDiskOpts {
     #[clap(flatten)]
     #[serde(flatten)]
     pub(crate) composefs_opts: InstallComposefsOpts,
+
+    #[clap(flatten)]
+    #[serde(skip)]
+    pub(crate) output_opts: InstallOutputOpts,
 }
 
 #[derive(ValueEnum, Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -545,6 +555,9 @@ pub(crate) struct InstallToFilesystemOpts {
 
     #[clap(flatten)]
     pub(crate) composefs_opts: InstallComposefsOpts,
+
+    #[clap(flatten)]
+    pub(crate) output_opts: InstallOutputOpts,
 }
 
 #[derive(Debug, Clone, clap::Parser, PartialEq, Eq)]
@@ -579,6 +592,9 @@ pub(crate) struct InstallToExistingRootOpts {
 
     #[clap(flatten)]
     pub(crate) composefs_opts: InstallComposefsOpts,
+
+    #[clap(flatten)]
+    pub(crate) output_opts: InstallOutputOpts,
 }
 
 #[derive(Debug, clap::Parser, PartialEq, Eq)]
@@ -675,7 +691,9 @@ pub(crate) struct State {
     #[allow(dead_code)]
     pub(crate) composefs_required: bool,
 
-    // If Some, then --composefs_native is passed
+    /// The storage backend to install, from --composefs-backend or the image.
+    /// This is what decides it, rather than `composefs_options`.
+    pub(crate) backend: Backend,
     pub(crate) composefs_options: InstallComposefsOpts,
     pub(crate) composefs_fsverity_supported: bool,
     pub(crate) allow_missing_verity_explicit: bool,
@@ -1384,8 +1402,6 @@ pub(crate) fn exec_in_host_mountns(args: &[std::ffi::OsString]) -> Result<()> {
 
 #[derive(Debug)]
 pub(crate) struct RootSetup {
-    #[cfg(feature = "install-to-disk")]
-    luks_device: Option<String>,
     pub(crate) device_info: bootc_blockdev::Device,
     /// Absolute path to the location where we've mounted the physical
     /// root filesystem for the system we're installing.
@@ -1417,11 +1433,138 @@ impl RootSetup {
     pub(crate) fn boot_mount_spec(&self) -> Option<&MountSpec> {
         self.boot.as_ref()
     }
+}
 
-    // Drop any open file descriptors and return just the mount path and backing luks device, if any
+/// A root filesystem mounted for bootc to install to, by the caller of
+/// `to-filesystem` or by `to-disk` itself.
+struct MountedTarget {
+    /// The mount point given to bootc; with `--replace=alongside` onto an
+    /// ostree system, this is a deployment root rather than the physical root.
+    target_root_path: Utf8PathBuf,
+    target_rootfs_fd: Dir,
+    physical_root_path: Utf8PathBuf,
+    physical_root: Dir,
+    /// The mount of the physical root.
+    inspect: Filesystem,
+}
+
+impl MountedTarget {
+    /// A physical root filesystem mounted at `path`.
     #[cfg(feature = "install-to-disk")]
-    fn into_storage(self) -> (Utf8PathBuf, Option<String>) {
-        (self.physical_root_path, self.luks_device)
+    fn open(path: &Utf8Path) -> Result<Self> {
+        let physical_root = Dir::open_ambient_dir(path, cap_std::ambient_authority())
+            .with_context(|| format!("Opening target root directory {path}"))?;
+        Ok(Self {
+            target_root_path: path.to_owned(),
+            target_rootfs_fd: physical_root.try_clone()?,
+            physical_root_path: path.to_owned(),
+            physical_root,
+            inspect: bootc_mount::inspect_filesystem(path)?,
+        })
+    }
+
+    /// Work out the rest of what the installation needs to know about the
+    /// target from its mounts, given how the installed system mounts its root
+    /// and (if not found from the mounts) its /boot.  This is how it works for
+    /// any installer calling `to-filesystem`, `to-disk` included.
+    fn into_root_setup(
+        self,
+        root_info: RootMountInfo,
+        boot_mount_spec: Option<&str>,
+        skip_finalize: bool,
+    ) -> Result<RootSetup> {
+        let Self {
+            target_root_path,
+            target_rootfs_fd,
+            physical_root_path,
+            physical_root,
+            inspect,
+        } = self;
+        tracing::debug!("Root mount: {} {:?}", root_info.mount_spec, root_info.kargs);
+
+        let boot_is_mount = {
+            if let Some(boot_metadata) = target_rootfs_fd.symlink_metadata_optional(BOOT)? {
+                let root_dev = physical_root.dir_metadata()?.dev();
+                let boot_dev = boot_metadata.dev();
+                tracing::debug!("root_dev={root_dev} boot_dev={boot_dev}");
+                root_dev != boot_dev
+            } else {
+                tracing::debug!("No /{BOOT} directory found");
+                false
+            }
+        };
+        // Find the UUID of /boot because we need it for GRUB.
+        let boot_uuid = if boot_is_mount {
+            let boot_path = target_root_path.join(BOOT);
+            tracing::debug!("boot_path={boot_path}");
+            let u = bootc_mount::inspect_filesystem(&boot_path)
+                .with_context(|| format!("Inspecting /{BOOT}"))?
+                .uuid
+                .ok_or_else(|| anyhow!("No UUID found for /{BOOT}"))?;
+            Some(u)
+        } else {
+            None
+        };
+        tracing::debug!("boot UUID: {boot_uuid:?}");
+
+        // Find the real underlying backing device for the root.  This is currently just required
+        // for GRUB (BIOS) and in the future zipl (I think).
+        let device_info = {
+            let dev = bootc_blockdev::list_dev(Utf8Path::new(&inspect.source))?;
+            tracing::debug!("Target filesystem backing device: {}", dev.path());
+            dev
+        };
+
+        let mut boot = if let Some(spec) = boot_mount_spec {
+            // An empty boot mount spec signals to omit the mountspec kargs
+            // See https://github.com/bootc-dev/bootc/issues/1441
+            if spec.is_empty() {
+                None
+            } else {
+                Some(MountSpec::new(spec, &format!("/{BOOT}")))
+            }
+        } else {
+            // Read /etc/fstab to get boot entry, but only use it if it's UUID-based
+            // Otherwise fall back to boot_uuid
+            read_boot_fstab_entry(&physical_root)?
+                .filter(|spec| spec.get_source_uuid().is_some())
+                .or_else(|| {
+                    boot_uuid
+                        .as_deref()
+                        .map(|boot_uuid| MountSpec::new_uuid_src(boot_uuid, &format!("/{BOOT}")))
+                })
+        };
+        // Ensure that we mount /boot readonly because it's really owned by bootc/ostree
+        // and we don't want e.g. apt/dnf trying to mutate it.
+        if let Some(boot) = boot.as_mut() {
+            boot.push_option("ro");
+        }
+        // By default, we inject a boot= karg because things like FIPS compliance currently
+        // require checking in the initramfs.
+        let bootarg = boot.as_ref().map(|boot| format!("boot={}", &boot.source));
+
+        // If the root mount spec is empty, we omit the root= karg.
+        // https://github.com/bootc-dev/bootc/issues/1441
+        let rootarg =
+            (!root_info.mount_spec.is_empty()).then(|| format!("root={}", root_info.mount_spec));
+        let kargs = rootarg
+            .into_iter()
+            .chain(root_info.kargs)
+            .chain(std::iter::once(RW_KARG.to_string()))
+            .chain(bootarg)
+            .collect::<Vec<_>>();
+        let kargs = Cmdline::from(kargs.join(" "));
+
+        Ok(RootSetup {
+            device_info,
+            physical_root_path,
+            physical_root,
+            target_root_path: Some(target_root_path),
+            rootfs_uuid: inspect.uuid,
+            boot,
+            kargs,
+            skip_finalize,
+        })
     }
 }
 
@@ -1640,6 +1783,7 @@ async fn prepare_install(
     mut target_opts: InstallTargetOpts,
     mut composefs_options: InstallComposefsOpts,
     target_fs: Option<FilesystemEnum>,
+    output: Option<&InstallOutput>,
 ) -> Result<Arc<State>> {
     tracing::trace!("Preparing install");
     let allow_missing_verity_explicit = composefs_options.allow_missing_verity;
@@ -1777,6 +1921,11 @@ async fn prepare_install(
     tracing::debug!("Composefs default: {composefs_default}");
     composefs_options.composefs_backend |= composefs_required || composefs_default;
     composefs_options.validate(config_opts.bootloader.as_ref())?;
+    let backend = if composefs_options.composefs_backend {
+        Backend::Composefs
+    } else {
+        Backend::Ostree
+    };
 
     // Read the file eagerly so we error out early, and before the mount changes
     // below hide a file bind mounted under e.g. /tmp. We may re-exec further down
@@ -1797,10 +1946,12 @@ async fn prepare_install(
             }
         })
         .transpose()?;
+    let output_env = output.and_then(InstallOutput::reexec_env);
     let reexec_env: Vec<(&str, &str)> = root_ssh_authorized_keys
         .as_deref()
         .map(|v| (ROOT_SSH_AUTHORIZED_KEYS_ENV, v))
         .into_iter()
+        .chain(output_env.as_ref().map(|(k, v)| (*k, v.as_str())))
         .collect();
 
     // We need to access devices that are set up by the host udev
@@ -1882,8 +2033,7 @@ async fn prepare_install(
         }
 
         // If `--allow-missing-verity` is already passed via CLI, don't modify
-        if composefs_options.composefs_backend && !composefs_options.allow_missing_verity && !is_uki
-        {
+        if backend == Backend::Composefs && !composefs_options.allow_missing_verity && !is_uki {
             composefs_options.allow_missing_verity = !root_filesystem.supports_fsverity();
         }
     }
@@ -1907,7 +2057,7 @@ async fn prepare_install(
     // images needn't have one.
     let ostree_prepareroot_config = match ostree_prepareroot_config {
         Some(c) => c,
-        None if composefs_options.composefs_backend => HashMap::new(),
+        None if backend == Backend::Composefs => HashMap::new(),
         None => anyhow::bail!(
             "Failed to find {} in /usr/lib or /etc",
             ostree_prepareroot::CONF_PATH
@@ -1930,6 +2080,7 @@ async fn prepare_install(
         tempdir,
         host_is_container,
         composefs_required,
+        backend,
         composefs_options,
         // assume fs-verity is supported as that's the safer option
         composefs_fsverity_supported: root_filesystem
@@ -1937,6 +2088,11 @@ async fn prepare_install(
             .unwrap_or(true),
         allow_missing_verity_explicit,
     });
+
+    // We won't re-execute any more.
+    if let Some(output) = output {
+        output.set_cloexec()?;
+    }
 
     Ok(state)
 }
@@ -1975,7 +2131,7 @@ async fn install_with_sysroot(
     boot_uuid: &str,
     bound_images: BoundImages,
     has_ostree: bool,
-) -> Result<()> {
+) -> Result<InstallResult> {
     let ostree = storage.get_ostree()?;
     let c_storage = storage.get_ensure_imgstore()?;
 
@@ -1992,6 +2148,17 @@ async fn install_with_sysroot(
         .open_dir(&deployment_path)
         .context("Opening deployment dir")?;
     let postfetch = PostFetchState::new(state, &deployment_dir)?;
+
+    let stateroot = deployment.osname();
+    let result = InstallResult::new(
+        Backend::Ostree,
+        stateroot.to_string(),
+        deployment_path.as_str().into(),
+        format!("ostree/deploy/{stateroot}/var").into(),
+        postfetch.detected_bootloader,
+        &state.target_imgref,
+        aleph.digest,
+    );
 
     if cfg!(target_arch = "s390x") {
         // TODO: Integrate s390x support into install_via_bootupd
@@ -2042,7 +2209,7 @@ async fn install_with_sysroot(
         }
     }
 
-    Ok(())
+    Ok(result)
 }
 
 enum BoundImages {
@@ -2081,7 +2248,11 @@ impl BoundImages {
     }
 }
 
-async fn ostree_install(state: &State, rootfs: &RootSetup, cleanup: Cleanup) -> Result<()> {
+async fn ostree_install(
+    state: &State,
+    rootfs: &RootSetup,
+    cleanup: Cleanup,
+) -> Result<InstallResult> {
     // We verify this upfront because it's currently required by bootupd
     let boot_uuid = rootfs
         .get_boot_uuid()?
@@ -2093,10 +2264,10 @@ async fn ostree_install(state: &State, rootfs: &RootSetup, cleanup: Cleanup) -> 
 
     // Initialize the ostree sysroot (repo, stateroot, etc.)
 
-    {
+    let result = {
         let (sysroot, has_ostree) = initialize_ostree_root(state, rootfs).await?;
 
-        install_with_sysroot(
+        let result = install_with_sysroot(
             state,
             rootfs,
             &sysroot,
@@ -2119,19 +2290,20 @@ async fn ostree_install(state: &State, rootfs: &RootSetup, cleanup: Cleanup) -> 
 
         // We must drop the sysroot here in order to close any open file
         // descriptors.
+        result
     };
 
     // Run this on every install as the penultimate step
     install_finalize(&rootfs.physical_root_path).await?;
 
-    Ok(())
+    Ok(result)
 }
 
 async fn install_to_filesystem_impl(
     state: &State,
     rootfs: &mut RootSetup,
     cleanup: Cleanup,
-) -> Result<()> {
+) -> Result<InstallResult> {
     if matches!(state.selinux_state, SELinuxFinalState::ForceTargetDisabled) {
         rootfs.kargs.extend(&Cmdline::from("selinux=0"));
     }
@@ -2153,7 +2325,7 @@ async fn install_to_filesystem_impl(
         }
     }
 
-    if state.composefs_options.composefs_backend {
+    let result = if state.backend == Backend::Composefs {
         let fetch_ref = state.source.composefs_fetch_reference();
         let manifest = get_container_manifest_and_config(&fetch_ref).await?;
         // A capable filesystem gets a strict provisional repository.  The
@@ -2209,7 +2381,8 @@ async fn install_to_filesystem_impl(
         let allow_missing_verity = requested_relaxed;
         tag_pulled_image(&rootfs.physical_root, &pull_result)?;
 
-        setup_composefs_boot(rootfs, state, &pull_result, allow_missing_verity).await?;
+        let boot_setup =
+            setup_composefs_boot(rootfs, state, &pull_result, allow_missing_verity).await?;
 
         // Label composefs objects as /usr so they get usr_t rather than
         // default_t (which has no policy match).
@@ -2223,8 +2396,18 @@ async fn install_to_filesystem_impl(
             )
             .context("SELinux labeling of composefs objects")?;
         }
+        InstallResult::new(
+            Backend::Composefs,
+            // The composefs backend has a single stateroot, see SHARED_VAR_PATH
+            ostree_ext::container::deploy::STATEROOT_DEFAULT.into(),
+            Utf8Path::new(STATE_DIR_RELATIVE).join(boot_setup.deployment_id.to_hex()),
+            SHARED_VAR_PATH.into(),
+            boot_setup.bootloader,
+            &state.target_imgref,
+            pull_result.manifest_digest.to_string(),
+        )
     } else {
-        ostree_install(state, rootfs, cleanup).await?;
+        let result = ostree_install(state, rootfs, cleanup).await?;
 
         // For s390x, we set zipl as the bootloader
         // this needs to be done after the ostree commit is deployed,
@@ -2243,7 +2426,8 @@ async fn install_to_filesystem_impl(
                 .run_capture_stderr()
                 .context("Setting bootloader config to zipl")?;
         }
-    }
+        result
+    };
 
     // As the very last step before filesystem finalization, do a full SELinux
     // relabel of the physical root filesystem.  Any files that are already
@@ -2265,7 +2449,7 @@ async fn install_to_filesystem_impl(
         }
     }
 
-    Ok(())
+    Ok(result)
 }
 
 fn installation_complete() {
@@ -2285,6 +2469,7 @@ pub(crate) async fn install_to_disk(mut opts: InstallToDiskOpts) -> Result<()> {
         .map(|s| s.as_str())
         .unwrap_or("none");
     let target_device = opts.block_opts.device.as_str();
+    let output = opts.output_opts.into_output();
 
     tracing::info!(
         message_id = INSTALL_DISK_JOURNAL_ID,
@@ -2324,11 +2509,12 @@ pub(crate) async fn install_to_disk(mut opts: InstallToDiskOpts) -> Result<()> {
         opts.target_opts,
         opts.composefs_opts,
         block_opts.filesystem,
+        output.as_ref(),
     )
     .await?;
 
     // This is all blocking stuff
-    let (mut rootfs, loopback) = {
+    let (disk, loopback) = {
         let loopback_dev = if opts.via_loopback {
             let loopback_dev =
                 bootc_blockdev::LoopbackDevice::new(block_opts.device.as_std_path())?;
@@ -2339,23 +2525,27 @@ pub(crate) async fn install_to_disk(mut opts: InstallToDiskOpts) -> Result<()> {
         };
 
         let state = state.clone();
-        let rootfs = tokio::task::spawn_blocking(move || {
+        let disk = tokio::task::spawn_blocking(move || {
             baseline::install_create_rootfs(&state, block_opts)
         })
         .await??;
-        (rootfs, loopback_dev)
+        (disk, loopback_dev)
     };
 
-    install_to_filesystem_impl(&state, &mut rootfs, Cleanup::Skip).await?;
+    // From here on, install to the filesystems just like `to-filesystem`
+    // does for any other installer.
+    let mut rootfs =
+        MountedTarget::open(&disk.root_path)?.into_root_setup(disk.root_mount, None, false)?;
+    let result = install_to_filesystem_impl(&state, &mut rootfs, Cleanup::Skip).await?;
 
-    // Drop all data about the root except the bits we need to ensure any file descriptors etc. are closed.
-    let (root_path, luksdev) = rootfs.into_storage();
+    // Ensure any file descriptors etc. are closed.
+    drop(rootfs);
     Task::new_and_run(
         "Unmounting filesystems",
         "umount",
-        ["-R", root_path.as_str()],
+        ["-R", disk.root_path.as_str()],
     )?;
-    if let Some(luksdev) = luksdev.as_deref() {
+    if let Some(luksdev) = disk.luks_device.as_deref() {
         Task::new_and_run("Closing root LUKS device", "cryptsetup", ["close", luksdev])?;
     }
 
@@ -2371,6 +2561,9 @@ pub(crate) async fn install_to_disk(mut opts: InstallToDiskOpts) -> Result<()> {
         tracing::warn!("Failed to consume state Arc");
     }
 
+    if let Some(output) = output {
+        output.write(&result)?;
+    }
     installation_complete();
 
     Ok(())
@@ -2546,7 +2739,7 @@ fn clean_boot_directories(rootfs: &Dir, rootfs_path: &Utf8Path, is_ostree: bool)
     Ok(())
 }
 
-struct RootMountInfo {
+pub(crate) struct RootMountInfo {
     mount_spec: String,
     kargs: Vec<String>,
 }
@@ -2632,6 +2825,7 @@ pub(crate) async fn install_to_filesystem(
         .map(|s| s.as_str())
         .unwrap_or("none");
     let target_path = opts.filesystem_opts.root_path.as_str();
+    let output = opts.output_opts.into_output();
 
     tracing::info!(
         message_id = INSTALL_FILESYSTEM_JOURNAL_ID,
@@ -2730,6 +2924,7 @@ pub(crate) async fn install_to_filesystem(
         opts.target_opts,
         opts.composefs_opts,
         Some(inspect.fstype.as_str().try_into()?),
+        output.as_ref(),
     )
     .await?;
 
@@ -2790,114 +2985,35 @@ pub(crate) async fn install_to_filesystem(
             kargs,
         }
     };
-    tracing::debug!("Root mount: {} {:?}", root_info.mount_spec, root_info.kargs);
-
-    let boot_is_mount = {
-        if let Some(boot_metadata) = target_rootfs_fd.symlink_metadata_optional(BOOT)? {
-            let root_dev = rootfs_fd.dir_metadata()?.dev();
-            let boot_dev = boot_metadata.dev();
-            tracing::debug!("root_dev={root_dev} boot_dev={boot_dev}");
-            root_dev != boot_dev
-        } else {
-            tracing::debug!("No /{BOOT} directory found");
-            false
-        }
-    };
-    // Find the UUID of /boot because we need it for GRUB.
-    let boot_uuid = if boot_is_mount {
-        let boot_path = target_root_path.join(BOOT);
-        tracing::debug!("boot_path={boot_path}");
-        let u = bootc_mount::inspect_filesystem(&boot_path)
-            .with_context(|| format!("Inspecting /{BOOT}"))?
-            .uuid
-            .ok_or_else(|| anyhow!("No UUID found for /{BOOT}"))?;
-        Some(u)
-    } else {
-        None
-    };
-    tracing::debug!("boot UUID: {boot_uuid:?}");
-
-    // Find the real underlying backing device for the root.  This is currently just required
-    // for GRUB (BIOS) and in the future zipl (I think).
-    let device_info = {
-        let dev = bootc_blockdev::list_dev(Utf8Path::new(&inspect.source))?;
-        tracing::debug!("Target filesystem backing device: {}", dev.path());
-        dev
-    };
-
-    let rootarg = format!("root={}", root_info.mount_spec);
     // CLI takes precedence over config file.
     let config_boot_mount_spec = state
         .install_config
         .as_ref()
         .and_then(|c| c.boot_mount_spec.as_ref());
-    let mut boot = if let Some(spec) = fsopts.boot_mount_spec.as_ref().or(config_boot_mount_spec) {
-        // An empty boot mount spec signals to omit the mountspec kargs
-        // See https://github.com/bootc-dev/bootc/issues/1441
-        if spec.is_empty() {
-            None
-        } else {
-            Some(MountSpec::new(&spec, &format!("/{BOOT}")))
-        }
-    } else {
-        // Read /etc/fstab to get boot entry, but only use it if it's UUID-based
-        // Otherwise fall back to boot_uuid
-        read_boot_fstab_entry(&rootfs_fd)?
-            .filter(|spec| spec.get_source_uuid().is_some())
-            .or_else(|| {
-                boot_uuid
-                    .as_deref()
-                    .map(|boot_uuid| MountSpec::new_uuid_src(boot_uuid, &format!("/{BOOT}")))
-            })
-    };
-    // Ensure that we mount /boot readonly because it's really owned by bootc/ostree
-    // and we don't want e.g. apt/dnf trying to mutate it.
-    if let Some(boot) = boot.as_mut() {
-        boot.push_option("ro");
-    }
-    // By default, we inject a boot= karg because things like FIPS compliance currently
-    // require checking in the initramfs.
-    let bootarg = boot.as_ref().map(|boot| format!("boot={}", &boot.source));
-
-    // If the root mount spec is empty, we omit the mounts kargs entirely.
-    // https://github.com/bootc-dev/bootc/issues/1441
-    let mut kargs = if root_info.mount_spec.is_empty() {
-        Vec::new()
-    } else {
-        [rootarg]
-            .into_iter()
-            .chain(root_info.kargs)
-            .collect::<Vec<_>>()
-    };
-
-    kargs.push(RW_KARG.to_string());
-
-    if let Some(bootarg) = bootarg {
-        kargs.push(bootarg);
-    }
-
-    let kargs = Cmdline::from(kargs.join(" "));
-
+    let boot_mount_spec = fsopts
+        .boot_mount_spec
+        .as_ref()
+        .or(config_boot_mount_spec)
+        .map(String::as_str);
     let skip_finalize =
         matches!(fsopts.replace, Some(ReplaceMode::Alongside)) || fsopts.skip_finalize;
-    let mut rootfs = RootSetup {
-        #[cfg(feature = "install-to-disk")]
-        luks_device: None,
-        device_info,
+    let target = MountedTarget {
+        target_root_path,
+        target_rootfs_fd,
         physical_root_path: fsopts.root_path,
         physical_root: rootfs_fd,
-        target_root_path: Some(target_root_path.clone()),
-        rootfs_uuid: inspect.uuid.clone(),
-        boot,
-        kargs,
-        skip_finalize,
+        inspect,
     };
+    let mut rootfs = target.into_root_setup(root_info, boot_mount_spec, skip_finalize)?;
 
-    install_to_filesystem_impl(&state, &mut rootfs, cleanup).await?;
+    let result = install_to_filesystem_impl(&state, &mut rootfs, cleanup).await?;
 
     // Drop all data about the root except the path to ensure any file descriptors etc. are closed.
     drop(rootfs);
 
+    if let Some(output) = output {
+        output.write(&result)?;
+    }
     installation_complete();
 
     Ok(())
@@ -2946,6 +3062,7 @@ pub(crate) async fn install_to_existing_root(opts: InstallToExistingRootOpts) ->
         target_opts: opts.target_opts,
         config_opts: opts.config_opts,
         composefs_opts: opts.composefs_opts,
+        output_opts: opts.output_opts,
     };
 
     install_to_filesystem(opts, true, cleanup).await
