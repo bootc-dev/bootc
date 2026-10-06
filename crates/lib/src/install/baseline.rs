@@ -175,6 +175,8 @@ fn mkfs<'a>(
             t.cmd.arg("-U");
             t.cmd.arg(u.to_string());
         }
+        // install_create_rootfs() rejects bcachefs before any device is touched.
+        Filesystem::Bcachefs => anyhow::bail!("mkfs.bcachefs is not supported"),
     };
     // Today all the above mkfs commands take -L
     t.cmd.args(["-L", label]);
@@ -988,6 +990,17 @@ pub(crate) fn install_create_rootfs(
     run_repart: bool,
 ) -> Result<RootSetup> {
     let install_config = state.install_config.as_ref();
+    let root_fs = opts.filesystem.or(install_config
+        .and_then(|c| c.filesystem_root())
+        .and_then(|r| r.fstype));
+    // Automatic storage setup for bcachefs is not implemented.
+    // Reject it before modifying the target disk.
+    if root_fs == Some(Filesystem::Bcachefs) {
+        anyhow::bail!(
+            "bcachefs is not supported by `install to-disk`; \
+             create the filesystem by hand and use `install to-filesystem`"
+        );
+    }
     let luks_name = "root";
     // Verify that the target is empty (if not already wiped in particular, but it's
     // also good to verify that the wipe worked)
@@ -1155,12 +1168,8 @@ pub(crate) fn install_create_rootfs(
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("repart: Root filesystem type not defined"))?
     } else {
-        let root_filesystem = opts
-            .filesystem
-            .or(install_config
-                .and_then(|c| c.filesystem_root())
-                .and_then(|r| r.fstype))
-            .ok_or_else(|| anyhow::anyhow!("No root filesystem specified"))?;
+        let root_filesystem =
+            root_fs.ok_or_else(|| anyhow::anyhow!("No root filesystem specified"))?;
 
         &root_filesystem.to_string()
     };
