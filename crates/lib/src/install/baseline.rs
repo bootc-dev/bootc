@@ -171,7 +171,7 @@ fn mkfs<'a>(
             t.cmd.arg("-m");
             t.cmd.arg(format!("uuid={u}"));
         }
-        Filesystem::Btrfs | Filesystem::Ext4 => {
+        Filesystem::Btrfs | Filesystem::Ext4 | Filesystem::Bcachefs => {
             t.cmd.arg("-U");
             t.cmd.arg(u.to_string());
         }
@@ -988,6 +988,9 @@ pub(crate) fn install_create_rootfs(
     run_repart: bool,
 ) -> Result<RootSetup> {
     let install_config = state.install_config.as_ref();
+    let root_fs = opts.filesystem.or(install_config
+        .and_then(|c| c.filesystem_root())
+        .and_then(|r| r.fstype));
     let luks_name = "root";
     // Verify that the target is empty (if not already wiped in particular, but it's
     // also good to verify that the wipe worked)
@@ -996,6 +999,30 @@ pub(crate) fn install_create_rootfs(
     // Always disallow writing to mounted device
     if is_mounted_in_pid1_mountns(&device.path())? {
         anyhow::bail!("Device {} is mounted", device.path())
+    }
+
+    let use_systemd_repart =
+        state.aboot_disk_layout.is_some() || (run_repart && can_use_systemd_repart());
+
+    // Use the install configuration to find the block setup, if we have one
+    let block_setup = if let Some(config) = install_config {
+        config.get_block_setup(opts.block_setup.as_ref().copied())?
+    } else if opts.filesystem.is_some() || use_systemd_repart {
+        // Otherwise, if a filesystem is specified then we default to whatever was
+        // specified via --block-setup, or the default
+        opts.block_setup.unwrap_or_default()
+    } else {
+        // If there was no default filesystem, then there's no default block setup,
+        // and we need to error out.
+        anyhow::bail!("No install configuration found, and no filesystem specified")
+    };
+    // A bcachefs root needs /boot on a partition of its own. Reject it
+    // otherwise, before modifying the target disk.
+    if root_fs == Some(Filesystem::Bcachefs) && !block_setup.requires_bootpart() {
+        anyhow::bail!(
+            "A bcachefs root requires a separate /boot partition with `install to-disk`; \
+             create the filesystem by hand and use `install to-filesystem`"
+        );
     }
 
     // Handle wiping any existing data
@@ -1031,21 +1058,6 @@ pub(crate) fn install_create_rootfs(
         image_repart_partitions(&device, state.aboot_disk_layout)?
     } else {
         Vec::new()
-    };
-    let use_systemd_repart =
-        state.aboot_disk_layout.is_some() || (run_repart && can_use_systemd_repart());
-
-    // Use the install configuration to find the block setup, if we have one
-    let block_setup = if let Some(config) = install_config {
-        config.get_block_setup(opts.block_setup.as_ref().copied())?
-    } else if opts.filesystem.is_some() || use_systemd_repart {
-        // Otherwise, if a filesystem is specified then we default to whatever was
-        // specified via --block-setup, or the default
-        opts.block_setup.unwrap_or_default()
-    } else {
-        // If there was no default filesystem, then there's no default block setup,
-        // and we need to error out.
-        anyhow::bail!("No install configuration found, and no filesystem specified")
     };
     let serial = device.serial.as_deref().unwrap_or("<unknown>");
     let model = device.model.as_deref().unwrap_or("<unknown>");
@@ -1155,12 +1167,8 @@ pub(crate) fn install_create_rootfs(
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("repart: Root filesystem type not defined"))?
     } else {
-        let root_filesystem = opts
-            .filesystem
-            .or(install_config
-                .and_then(|c| c.filesystem_root())
-                .and_then(|r| r.fstype))
-            .ok_or_else(|| anyhow::anyhow!("No root filesystem specified"))?;
+        let root_filesystem =
+            root_fs.ok_or_else(|| anyhow::anyhow!("No root filesystem specified"))?;
 
         &root_filesystem.to_string()
     };
