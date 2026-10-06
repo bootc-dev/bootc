@@ -190,6 +190,10 @@ set `discoverable-partitions = true` in their install configuration
 
     Name of the UKI addons to install without the ".efi.addon" suffix. This option can be provided multiple times if multiple addons are to be installed (composefs backend only)
 
+**--run-repart**
+
+    Whether to use systemd-repart for partitioning. This requires the image to have repart.d definitions
+
 <!-- END GENERATED OPTIONS -->
 
 # EXAMPLES

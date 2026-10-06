@@ -467,6 +467,12 @@ pub(crate) struct InstallToDiskOpts {
     #[clap(flatten)]
     #[serde(flatten)]
     pub(crate) composefs_opts: InstallComposefsOpts,
+
+    /// Whether to use systemd-repart for partitioning.
+    /// This requires the image to have repart.d definitions
+    #[clap(long)]
+    #[serde(default)]
+    pub(crate) run_repart: bool,
 }
 
 #[derive(ValueEnum, Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2340,7 +2346,7 @@ pub(crate) async fn install_to_disk(mut opts: InstallToDiskOpts) -> Result<()> {
 
         let state = state.clone();
         let rootfs = tokio::task::spawn_blocking(move || {
-            baseline::install_create_rootfs(&state, block_opts)
+            baseline::install_create_rootfs(&state, block_opts, opts.run_repart)
         })
         .await??;
         (rootfs, loopback_dev)

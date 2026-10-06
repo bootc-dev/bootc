@@ -86,6 +86,40 @@ EOF
 
     run_install_to_disk localhost/bootc-repart []
 
+    # since `--no-repart` wasn't passed in, sfdisk should've been used
+    let loop = (losetup -f --show /var/disk.img | str trim)
+    try {
+        partx -u $loop
+        udevadm settle
+        let parts = (lsblk -J -b -o name,parttype,partuuid,size $loop | from json)
+        let children = ($parts.blockdevices.0.children)
+        let part_types = ($children | get parttype)
+
+        # ESP GUID
+        let esp_guid = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b"
+        assert ($part_types | any {|t| ($t | str downcase) == $esp_guid }) "ESP partition not found"
+
+        let esp_mb = if (tap is_composefs) { 2048 } else { 512 }
+        # Verify ESP size
+        let esp_part = ($children | where {|t| ($t.parttype | str downcase) == $esp_guid } | first)
+        let esp_size_bytes = ($esp_part.size | into int)
+        let esp_expected = ($esp_mb * 1024 * 1024)                                                                                                                                       
+
+        assert ($esp_size_bytes == $esp_expected) $"ESP should be ($esp_mb)M from sfdisk, got ($esp_size_bytes) bytes"                                                                   
+
+        print "PASS: sfdisk created BIOS + ESP + root partitions"
+    } catch { |e|
+        losetup -d $loop
+        error make { msg: $"No-repart verification failed: ($e.msg)" }
+    }
+
+    losetup -d $loop
+
+    rm -rvf /var/disk.img
+    truncate -s 10G /var/disk.img
+
+    run_install_to_disk localhost/bootc-repart ["--run-repart"]
+
     # Verify partition layout
     let loop = (losetup -f --show /var/disk.img | str trim)
     try {
@@ -184,13 +218,13 @@ EOF
     truncate -s 10G /var/disk.img
     setenforce 0
 
-    run_install_to_disk localhost/bootc-repart-noroot ["--filesystem" "ext4" "--root-size" "7G"]
+    run_install_to_disk localhost/bootc-repart-noroot ["--run-repart" "--filesystem" "ext4" "--root-size" "7G"]
 
     # Verify partition layout
     verify_part_layout_second_boot
 
     # Install again without passing in root-size make sure it works
-    run_install_to_disk localhost/bootc-repart-noroot ["--filesystem" "ext4"]
+    run_install_to_disk localhost/bootc-repart-noroot ["--run-repart" "--filesystem" "ext4"]
 
     # Verify partition layout (again)
     verify_part_layout_second_boot

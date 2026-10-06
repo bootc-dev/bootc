@@ -66,6 +66,8 @@ fn use_discoverable_partitions(state: &State) -> bool {
 
 // This ensures we end up under 512 to be small-sized.
 pub(crate) const BOOTPN_SIZE_MB: u32 = 510;
+// NOTE: If you change this or [`CFS_EFIPN_SIZE_MB`] below,
+// make sure to update the test test-install-reaprt.nu
 pub(crate) const EFIPN_SIZE_MB: u32 = 512;
 /// EFI Partition size for composefs installations
 /// We need more space than ostree as we have UKIs and UKI addons
@@ -625,6 +627,7 @@ fn sfdisk(
 pub(crate) fn install_create_rootfs(
     state: &State,
     opts: InstallBlockDeviceOpts,
+    run_repart: bool,
 ) -> Result<RootSetup> {
     let install_config = state.install_config.as_ref();
     let luks_name = "root";
@@ -660,7 +663,7 @@ pub(crate) fn install_create_rootfs(
         std::fs::remove_dir_all(&mntdir)?;
     }
 
-    let use_systemd_repart = can_use_systemd_repart();
+    let use_systemd_repart = run_repart && can_use_systemd_repart();
 
     // Use the install configuration to find the block setup, if we have one
     let block_setup = if let Some(config) = install_config {
