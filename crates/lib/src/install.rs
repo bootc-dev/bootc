@@ -2940,13 +2940,19 @@ pub(crate) async fn install_to_filesystem(
     };
     tracing::debug!("Root mount: {} {:?}", root_info.mount_spec, root_info.kargs);
 
-    let boot_is_mount = {
-        if let Some(boot_metadata) = target_rootfs_fd.symlink_metadata_optional(BOOT)? {
-            let root_dev = rootfs_fd.dir_metadata()?.dev();
-            let boot_dev = boot_metadata.dev();
-            tracing::debug!("root_dev={root_dev} boot_dev={boot_dev}");
-            root_dev != boot_dev
-        } else {
+    let boot_is_mount = match target_rootfs_fd
+        .open_dir_optional(BOOT)
+        .context("Opening /boot")?
+    {
+        Some(boot_dir) => {
+            matches!(
+                boot_dir
+                    .is_mountpoint(".")
+                    .context("Checking if /boot is a mountpoint")?,
+                Some(true)
+            )
+        }
+        None => {
             tracing::debug!("No /{BOOT} directory found");
             false
         }
