@@ -27,7 +27,7 @@ use camino::Utf8Path;
 use fn_error_context::context;
 use xshell::{Shell, cmd};
 
-use crate::bcvk::BcvkInstallOpts;
+use crate::bcvk::{BcvkInstallOpts, sanitize_bcvk_libvirt_run};
 
 const SYSEXT_DIR: &str = "target/sysext";
 const DEV_VM_NAME: &str = "bootc-dev";
@@ -293,7 +293,9 @@ fn create_vm(sh: &Shell) -> Result<()> {
     bcvk_cmd = bcvk_cmd.args(&firmware_args);
 
     bcvk_cmd = bcvk_cmd.args(["--ssh-wait", &base_img]);
-    bcvk_cmd.run().context("Failed to create VM")?;
+    sanitize_bcvk_libvirt_run(bcvk_cmd)
+        .run()
+        .context("Failed to create VM")?;
 
     // Set up the sysext: create a symlink from /run/extensions/bootc
     // into the virtiofs-mounted versioned directory.
