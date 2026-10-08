@@ -36,6 +36,27 @@ let failed = if $selinux_enabled {
 
 if ($failed | length) > 0 {
     print $"Failed units:\n($failed | str join "\n")"
+    for unit in ($failed | each { |l| $l | split row " " | first }) {
+        print $"Journal for ($unit):"
+        let journal = (try {
+            do { ^journalctl --boot --unit $unit --no-pager } | complete
+        } catch {|e|
+            null
+        })
+        if $journal == null {
+            print "# Unable to collect journal output"
+        } else {
+            if ($journal.stdout | str trim) != "" {
+                print $journal.stdout
+            }
+            if ($journal.stderr | str trim) != "" {
+                print $"journalctl stderr: ($journal.stderr)"
+            }
+            if $journal.exit_code != 0 {
+                print $"journalctl exited with status ($journal.exit_code)"
+            }
+        }
+    }
     assert equal ($failed | length) 0 "Expected zero failed systemd-*/bootc-* units"
 }
 
