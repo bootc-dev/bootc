@@ -24,10 +24,10 @@ Operations which can be executed as part of a container build
 | **bootc container compute-composefs-digest** | Output the bootable composefs digest for a directory |
 | **bootc container split-kernel-and-rootfs** | Split kernel and rootfs from a container image |
 | **bootc container ukify** | Build a Unified Kernel Image (UKI) using ukify |
+| **bootc container aboot** | Build an Android boot or ukiboot image using aboot-update |
 
 <!-- END GENERATED SUBCOMMANDS -->
 
 # VERSION
 
 <!-- VERSION PLACEHOLDER -->
-
