@@ -227,6 +227,11 @@
           "const": "systemd"
         },
         {
+          "description": "Use ukiboot as the bootloader",
+          "type": "string",
+          "const": "ukiboot"
+        },
+        {
           "description": "Don't use a bootloader managed by bootc",
           "type": "string",
           "const": "none"

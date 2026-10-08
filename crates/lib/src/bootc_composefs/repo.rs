@@ -117,8 +117,11 @@ pub(crate) struct InitializedComposefs {
     pub(crate) repository_insecure: bool,
 }
 
-pub(crate) fn final_repository_policy(uki_policy: Option<bool>, requested_relaxed: bool) -> bool {
-    uki_policy == Some(true) || (uki_policy.is_none() && requested_relaxed)
+pub(crate) fn final_repository_policy(
+    image_fsverity_policy: Option<bool>,
+    requested_relaxed: bool,
+) -> bool {
+    image_fsverity_policy == Some(true) || (image_fsverity_policy.is_none() && requested_relaxed)
 }
 
 /// Enforce the durable repository policy after inspecting the imported image.
@@ -136,7 +139,7 @@ pub(crate) fn validate_repository_policy(
     }
     if !repository_insecure && requested_relaxed && !allow_missing_verity_explicit {
         anyhow::bail!(
-            "Initial insecure UKI conflicts with the existing strict composefs repository; explicitly pass --allow-missing-verity to permit this session"
+            "Initial insecure boot artifact conflicts with the existing strict composefs repository; explicitly pass --allow-missing-verity to permit this session"
         );
     }
     Ok(())
@@ -375,10 +378,10 @@ pub(crate) fn prepare_boot_image(
     })
 }
 
-/// Inspect UKI policy without generating or recovering a boot image.  Boot
-/// image generation is deferred until the durable repository policy has been
-/// finalized and the normal boot setup path runs.
-pub(crate) fn inspect_uki_policy(
+/// Inspect the image's fs-verity policy without generating or recovering a boot
+/// image. Boot image generation is deferred until the durable repository policy
+/// has been finalized and the normal boot setup path runs.
+pub(crate) fn inspect_image_fsverity_policy(
     repo: &Arc<crate::store::ComposefsRepository>,
     pull_result: &PullResult<Sha512HashValue>,
 ) -> Result<Option<bool>> {
@@ -388,9 +391,9 @@ pub(crate) fn inspect_uki_policy(
         Some(&pull_result.config_verity),
         &composefs_oci::OciTransformOptions::default(),
     )
-    .context("Creating composefs filesystem for UKI policy inspection")?;
+    .context("Creating composefs filesystem for image fs-verity policy inspection")?;
     let entries = get_boot_resources(&fs, &**repo).context("Extracting boot entries")?;
-    crate::bootc_composefs::boot::uki_fsverity_policy(repo, &entries)
+    crate::bootc_composefs::boot::image_fsverity_policy(repo, &entries)
 }
 
 /// Pull an image directly into the composefs repository via skopeo.
@@ -752,7 +755,7 @@ mod tests {
 
     #[test]
     fn test_final_repository_policy_matrix() {
-        for (uki_policy, requested_relaxed, expected) in [
+        for (image_fsverity_policy, requested_relaxed, expected) in [
             (Some(false), false, false),
             (Some(false), true, false),
             (Some(true), false, true),
@@ -761,7 +764,7 @@ mod tests {
             (None, true, true),
         ] {
             assert_eq!(
-                final_repository_policy(uki_policy, requested_relaxed),
+                final_repository_policy(image_fsverity_policy, requested_relaxed),
                 expected
             );
         }
@@ -769,7 +772,7 @@ mod tests {
 
     #[test]
     fn test_existing_repository_policy_matrix() {
-        for (insecure, uki_policy, requested, explicit, expected) in [
+        for (insecure, image_fsverity_policy, requested, explicit, expected) in [
             (false, Some(false), false, false, true),
             (false, Some(true), true, false, false),
             (false, Some(true), true, true, true),
@@ -781,11 +784,11 @@ mod tests {
             (true, None, false, false, false),
             (true, None, true, false, true),
         ] {
-            let requested_relaxed = final_repository_policy(uki_policy, requested);
+            let requested_relaxed = final_repository_policy(image_fsverity_policy, requested);
             assert_eq!(
                 validate_repository_policy(insecure, requested_relaxed, explicit).is_ok(),
                 expected,
-                "insecure={insecure} uki_policy={uki_policy:?} requested={requested} explicit={explicit}"
+                "insecure={insecure} image_fsverity_policy={image_fsverity_policy:?} requested={requested} explicit={explicit}"
             );
         }
     }
