@@ -88,6 +88,7 @@
 # Experimental features
 
 - [bootc image](bootc-experimental-image.7.md)
+- [composefs aboot support](bootc-experimental-composefs-aboot.7.md)
 - [unified storage](bootc-experimental-unified-storage.7.md)
 - [fsck](bootc-experimental-fsck.7.md)
 - [install reset](bootc-experimental-install-reset.7.md)
