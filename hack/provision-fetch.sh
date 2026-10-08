@@ -43,7 +43,7 @@ case "${ID}-${VERSION_ID}" in
         rm -rf "${td}"
         ;;
     "fedora-"*)
-        dnf -y install nu
+        dnf -y install nu oci-delta
         ;;
 esac
 

@@ -340,6 +340,20 @@ execute:
       - /tmt/tests/tests/test-50-switch-zstd-chunked
   extra-skip_if_ostree: true
 
+/plan-51-switch-from-delta:
+  summary: Switch to a derived image using an OCI delta and verify after reboot
+  discover:
+    how: fmf
+    test:
+      - /tmt/tests/tests/test-51-switch-from-delta
+  adjust:
+  - when: distro != fedora
+    enabled: false
+    because: oci-delta is packaged in Fedora
+  - when: boot_type == uki and seal_state == sealed
+    enabled: false
+    because: the guest-local UKI builder produces unsigned images
+
 /plan-52-install-repart:
   summary: Test bootc install to-disk with systemd-repart partitioning
   discover:

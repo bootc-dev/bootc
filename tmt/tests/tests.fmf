@@ -212,6 +212,18 @@ check:
   duration: 30m
   test: nu booted/test-switch-zstd-chunked.nu
 
+/test-51-switch-from-delta:
+  summary: Switch to a derived image using an OCI delta and verify after reboot
+  duration: 30m
+  adjust:
+  - when: distro != fedora
+    enabled: false
+    because: oci-delta is packaged in Fedora
+  - when: boot_type == uki and seal_state == sealed
+    enabled: false
+    because: the guest-local UKI builder produces unsigned images
+  test: nu booted/test-switch-from-delta.nu
+
 /test-52-install-repart:
   summary: Test bootc install to-disk with systemd-repart partitioning
   duration: 30m
