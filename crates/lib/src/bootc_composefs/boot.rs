@@ -63,12 +63,12 @@
 
 use std::cell::Cell;
 use std::fs::create_dir_all;
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{Cursor, Read, Seek, SeekFrom, Write};
 use std::os::fd::AsFd;
 use std::path::Path;
 use std::sync::Arc;
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow, bail, ensure};
 use bootc_mount::tempmount::TempMount;
 use camino::{Utf8Path, Utf8PathBuf};
 use cap_std_ext::{
@@ -79,14 +79,17 @@ use clap::ValueEnum;
 use composefs::erofs::format::FormatVersion;
 use composefs::fs::read_file;
 use composefs::fsverity::{FsVerityHashValue, Sha512HashValue};
-use composefs::tree::{FileSystem, RegularFile};
+use composefs::tree::{FileSystem, ImageError, RegularFile};
 use composefs_boot::bootloader::{
-    BootEntry as ComposefsBootEntry, EFI_ADDON_DIR_EXT, EFI_ADDON_FILE_EXT, EFI_EXT, PEType,
-    UsrLibModulesVmlinuz,
+    AbootEncoding, AbootEntry, BootEntry as ComposefsBootEntry, EFI_ADDON_DIR_EXT,
+    EFI_ADDON_FILE_EXT, EFI_EXT, PEType, UsrLibModulesVmlinuz,
 };
 use composefs_boot::cmdline::{KARG_COMPOSEFS_DIGEST, KARG_V2};
 use composefs_boot::{
-    cmdline::ComposefsCmdline as ComposefsBootCmdline, os_release::OsReleaseInfo, uki,
+    android_boot::{AndroidBootError, AndroidBootImage, Component},
+    cmdline::ComposefsCmdline as ComposefsBootCmdline,
+    os_release::OsReleaseInfo,
+    uki,
 };
 use composefs_ctl::composefs;
 use composefs_ctl::composefs_boot;
@@ -642,6 +645,24 @@ pub(crate) fn compute_boot_digest_uki<R: Read + Seek>(uki_reader: &mut R) -> Res
     Ok(hex::encode(digest))
 }
 
+#[context("Computing Android boot digest")]
+pub(crate) fn compute_boot_digest_aboot<R: Read + Seek>(
+    reader: &mut R,
+    metadata: &AndroidBootImage,
+) -> Result<String> {
+    let mut hasher = openssl::hash::Hasher::new(openssl::hash::MessageDigest::sha256())
+        .context("Creating hasher")?;
+    for component in [Component::Kernel, Component::Ramdisk] {
+        hasher.update(&metadata.component(reader, component)?)?;
+    }
+    match metadata.component(reader, Component::Dtb) {
+        Ok(dtb) => hasher.update(&dtb)?,
+        Err(AndroidBootError::MissingComponent("dtb")) => {}
+        Err(error) => return Err(error.into()),
+    }
+    Ok(hex::encode(hasher.finish()?))
+}
+
 /// Given the SHA256 sum of current VMlinuz + Initrd combo, find boot entry with the same SHA256Sum
 ///
 /// # Returns
@@ -1161,13 +1182,13 @@ fn parse_uki_composefs_candidates(cmdline: &str) -> Result<Vec<UkiComposefsCandi
 fn uki_candidates_policy(candidates: &[UkiComposefsCandidate]) -> Result<bool> {
     let first = candidates
         .first()
-        .ok_or_else(|| anyhow!("No composefs digest in UKI cmdline"))?
+        .ok_or_else(|| anyhow!("No composefs digest in boot artifact cmdline"))?
         .insecure;
     anyhow::ensure!(
         candidates
             .iter()
             .all(|candidate| candidate.insecure == first),
-        "UKI composefs candidates have mixed fs-verity policies"
+        "Boot artifact composefs candidates have mixed fs-verity policies"
     );
     Ok(first)
 }
@@ -1408,41 +1429,40 @@ fn uki_file_name(file_path: &Path) -> Result<String> {
         .ok_or_else(|| anyhow!("Could not get UKI file name from {file_path}"))
 }
 
-/// Inspect primary UKIs to discover their requested fs-verity policy before
-/// creating the durable repository. Final artifact validation occurs while
-/// writing each UKI to the ESP.
-pub(crate) fn uki_fsverity_policy(
+/// Inspect primary boot artifacts to discover their requested fs-verity policy
+/// before creating the durable repository. Final artifact validation occurs
+/// while installing the boot artifact.
+pub(crate) fn boot_artifact_fsverity_policy(
     repo: &crate::store::ComposefsRepository,
     entries: &[ComposefsBootEntry<Sha512HashValue>],
 ) -> Result<Option<bool>> {
     let mut policy = None;
     for entry in entries {
-        let ComposefsBootEntry::Type2(entry) = entry else {
-            continue;
-        };
-        if !matches!(entry.pe_type, PEType::Uki) {
-            continue;
-        }
-        let mut reader = match &entry.file {
-            RegularFile::External(id, ..) | RegularFile::ExternalNoVerity(id, ..) => {
-                std::fs::File::from(repo.open_object(id)?)
+        let cmdline = match entry {
+            ComposefsBootEntry::Type2(entry) if matches!(entry.pe_type, PEType::Uki) => {
+                let mut reader = match &entry.file {
+                    RegularFile::External(id, ..) | RegularFile::ExternalNoVerity(id, ..) => {
+                        std::fs::File::from(repo.open_object(id)?)
+                    }
+                    RegularFile::Inline(..) | RegularFile::Sparse(..) => {
+                        anyhow::bail!("UKI file is not a regular external object")
+                    }
+                };
+                uki::get_cmdline_buffered(&mut reader).context("Getting UKI cmdline")?
             }
-            RegularFile::Inline(..) | RegularFile::Sparse(..) => {
-                anyhow::bail!("UKI file is not a regular external object")
+            ComposefsBootEntry::Aboot(entry) => {
+                let payload = read_aboot_payload(entry, repo)?;
+                compute_aboot_boot_digest(entry.encoding, &payload)?.0
             }
+            _ => continue,
         };
-        let cmdline = uki::get_cmdline_buffered(&mut reader).context("Getting UKI cmdline")?;
-        let candidates = parse_uki_composefs_candidates(&cmdline).with_context(|| {
-            format!(
-                "Parsing composefs kernel arguments in UKI {}",
-                entry.file_path.display()
-            )
-        })?;
+        let candidates = parse_uki_composefs_candidates(&cmdline)
+            .context("Parsing composefs kernel arguments in boot artifact")?;
         let current = uki_candidates_policy(&candidates)?;
         if let Some(previous) = policy {
             anyhow::ensure!(
                 previous == current,
-                "Primary UKIs request conflicting composefs fs-verity policies"
+                "Primary boot artifacts request conflicting composefs fs-verity policies"
             );
         } else {
             policy = Some(current);
@@ -1451,42 +1471,50 @@ pub(crate) fn uki_fsverity_policy(
     Ok(policy)
 }
 
-/// The composefs digests embedded in the primary UKI's kernel cmdline, used to
+/// The composefs digests embedded in the primary boot artifact, used to
 /// reconcile the freshly-generated boot image digest before it is mounted.
 struct ExpectedComposefsDigest {
     candidates: Vec<UkiComposefsCandidate>,
     uki_name: String,
 }
 
-/// Scans `entries` for the primary UKI (`PEType::Uki`, not an addon) and
+/// Scans `entries` for the primary UKI or aboot payload and
 /// extracts the composefs digests embedded in its kernel cmdline.
 ///
-/// Returns `Ok(None)` if there is no UKI entry (e.g. a BLS-only boot setup) —
+/// Returns `Ok(None)` for a BLS-only boot setup —
 /// there's nothing to validate against in that case.
 fn find_expected_composefs_digest(
     repo: &crate::store::ComposefsRepository,
     entries: &[ComposefsBootEntry<Sha512HashValue>],
 ) -> Result<Option<ExpectedComposefsDigest>> {
     for entry in entries {
-        let ComposefsBootEntry::Type2(entry) = entry else {
-            continue;
-        };
-        if !matches!(entry.pe_type, PEType::Uki) {
-            continue;
-        }
-        let mut uki_reader = match &entry.file {
-            RegularFile::External(id, ..) | RegularFile::ExternalNoVerity(id, ..) => {
-                std::fs::File::from(repo.open_object(id)?)
+        let (cmdline, uki_name) = match entry {
+            ComposefsBootEntry::Aboot(entry) => {
+                let payload = read_aboot_payload(entry, repo)?;
+                (
+                    compute_aboot_boot_digest(entry.encoding, &payload)?.0,
+                    entry.payload.path.display().to_string(),
+                )
             }
-            RegularFile::Inline(..) | RegularFile::Sparse(..) => {
-                anyhow::bail!("UKI file is not a regular external object")
+            ComposefsBootEntry::Type2(entry) if matches!(entry.pe_type, PEType::Uki) => {
+                let mut reader = match &entry.file {
+                    RegularFile::External(id, ..) | RegularFile::ExternalNoVerity(id, ..) => {
+                        std::fs::File::from(repo.open_object(id)?)
+                    }
+                    RegularFile::Inline(..) | RegularFile::Sparse(..) => {
+                        anyhow::bail!("UKI file is not a regular external object")
+                    }
+                };
+                (
+                    uki::get_cmdline_buffered(&mut reader).context("Getting UKI cmdline")?,
+                    uki_file_name(&entry.file_path)?,
+                )
             }
+            _ => continue,
         };
-        let cmdline = uki::get_cmdline_buffered(&mut uki_reader).context("Getting UKI cmdline")?;
         let candidates = parse_uki_composefs_candidates(&cmdline)
             .context("Parsing composefs kernel arguments")?;
         uki_candidates_policy(&candidates)?;
-        let uki_name = uki_file_name(&entry.file_path)?;
         return Ok(Some(ExpectedComposefsDigest {
             candidates,
             uki_name,
@@ -1503,7 +1531,7 @@ fn find_expected_composefs_digest(
 /// This handles images built with older (or newer) composefs-rs tooling
 /// that computed their embedded UKI digest using a different default xattr
 /// filtering mode or EROFS format than the one bootc's own build used.
-#[context("Verifying composefs digest against UKI")]
+#[context("Verifying composefs digest against boot artifact")]
 pub(crate) fn ensure_correct_composefs_digest(
     repo: &Arc<crate::store::ComposefsRepository>,
     manifest_digest: &composefs_oci::OciDigest,
@@ -1511,10 +1539,10 @@ pub(crate) fn ensure_correct_composefs_digest(
     expected_ids: ExpectedBootImageIds,
     entries: &[ComposefsBootEntry<Sha512HashValue>],
 ) -> Result<RecoveredBootImage> {
-    let Some(expected) =
-        find_expected_composefs_digest(repo, entries).context("Checking UKI composefs digest")?
+    let Some(expected) = find_expected_composefs_digest(repo, entries)
+        .context("Checking boot artifact composefs digest")?
     else {
-        // No UKI (e.g. a BLS-only setup); nothing to cross-check.
+        // BLS-only setup; nothing to cross-check.
         return Ok(RecoveredBootImage {
             id: computed_id,
             expected_ids,
@@ -1783,7 +1811,7 @@ pub(crate) fn setup_composefs_uki_boot(
 ) -> Result<(String, Sha512HashValue)> {
     let (esp_device, bootloader, missing_fsverity_allowed, uki_addons) = match setup_type {
         BootSetupType::Setup((root_setup, state, postfetch, allow_missing_fsverity)) => {
-            state.require_no_kargs_for_uki()?;
+            state.require_no_kargs_for_immutable_boot()?;
 
             // Locate ESP partition device by walking up to the root disk(s)
             let esp_part = root_setup.device_info.find_first_colocated_esp()?;
@@ -2094,12 +2122,183 @@ fn get_secureboot_keys(fs: &Dir, p: &str) -> Result<Option<SecurebootKeys>> {
     }));
 }
 
+fn read_aboot_payload(
+    entry: &AbootEntry<Sha512HashValue>,
+    repo: &ComposefsRepository,
+) -> Result<Box<[u8]>> {
+    read_file(&entry.payload.file, repo).context("Reading aboot payload")
+}
+
+fn compute_aboot_boot_digest(encoding: AbootEncoding, payload: &[u8]) -> Result<(String, String)> {
+    let mut image = Cursor::new(payload);
+    match encoding {
+        AbootEncoding::Uki => {
+            let cmdline = uki::get_cmdline(payload)
+                .context("Getting UKI command line")?
+                .to_string();
+            let digest = compute_boot_digest_uki(&mut image)?;
+            Ok((cmdline, digest))
+        }
+        AbootEncoding::AndroidV2 => {
+            let metadata = AndroidBootImage::parse(&mut image)?;
+            let cmdline = metadata.cmdline()?.to_string();
+            let digest = compute_boot_digest_aboot(&mut image, &metadata)?;
+            Ok((cmdline, digest))
+        }
+    }
+}
+
+fn install_ukiboot(
+    root: &Dir,
+    source: &FileSystem<Sha512HashValue>,
+    repo: &ComposefsRepository,
+    esp: &Dir,
+) -> Result<()> {
+    let (efi_arch, fallback_name) = match std::env::consts::ARCH {
+        "x86_64" => ("x64", "BOOTX64.EFI"),
+        "aarch64" => ("aa64", "BOOTAA64.EFI"),
+        arch => bail!("ukiboot is not supported on {arch}"),
+    };
+    let (vendor, ..) =
+        parse_os_release(root)?.ok_or_else(|| anyhow!("Failed to parse os-release"))?;
+    let get_file = |path: &str| {
+        source
+            .as_dir()
+            .split_ref(path.as_ref())
+            .and_then(|(dir, name)| dir.get_file(name))
+    };
+
+    for (vendor_path, fallback_path, packaged_name) in [
+        (
+            format!("ukiboot{efi_arch}.efi"),
+            fallback_name.to_string(),
+            format!("ukiboot{efi_arch}.efi"),
+        ),
+        (
+            "ukiboot_a.efi.extra.d/slot_a.addon.efi".into(),
+            "ukiboot_a.efi.extra.d/slot_a.addon.efi".into(),
+            "slot_a.addon.efi".into(),
+        ),
+        (
+            "ukiboot_b.efi.extra.d/slot_b.addon.efi".into(),
+            "ukiboot_b.efi.extra.d/slot_b.addon.efi".into(),
+            "slot_b.addon.efi".into(),
+        ),
+    ] {
+        // We prefer files in /boot, because they can be signed without affecting the boot-transformed cfs digest
+        let preferred = format!("boot/efi/EFI/{vendor}/{vendor_path}");
+        let fallback = format!("usr/libexec/ukiboot/efi/{packaged_name}");
+        let file = match get_file(&preferred) {
+            Err(ImageError::NotFound(..)) => get_file(&fallback),
+            result => result,
+        }
+        .with_context(|| format!("Finding {preferred} or {fallback}"))?;
+        let data = read_file(file, repo).context("Reading ukiboot EFI file")?;
+        for target in [
+            format!("EFI/{vendor}/{vendor_path}"),
+            format!("EFI/BOOT/{fallback_path}"),
+        ] {
+            let target = Utf8Path::new(&target);
+            if let Some(parent) = target.parent() {
+                esp.create_dir_all(parent)?;
+            }
+            esp.atomic_write(target, &data)
+                .with_context(|| format!("Writing ukiboot EFI file to ESP at {target}"))?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_bootloader(
+    entry: &ComposefsBootEntry<Sha512HashValue>,
+    bootloader: Bootloader,
+) -> Result<()> {
+    if let ComposefsBootEntry::Aboot(entry) = entry {
+        match (entry.encoding, bootloader) {
+            (AbootEncoding::AndroidV2, Bootloader::None) => {}
+            (AbootEncoding::Uki, Bootloader::Ukiboot) => {}
+            (encoding, bootloader) => {
+                bail!("aboot encoding {encoding:?} cannot be used with bootloader {bootloader}")
+            }
+        }
+    } else {
+        ensure!(
+            bootloader != Bootloader::None,
+            "Bootloader set to none is not supported with the composefs backend unless using an aboot artifact"
+        );
+        ensure!(
+            bootloader != Bootloader::Ukiboot,
+            "Bootloader ukiboot requires an aboot artifact with the composefs backend"
+        );
+    }
+    Ok(())
+}
+
+/// Pick the first real bootable entry, skipping UKI addons.
+///
+/// Addons can precede primary artifacts in discovery order, including aboot
+/// payloads. They must not determine the boot type or installation path.
+pub(crate) fn primary_boot_entry(
+    entries: &[ComposefsBootEntry<Sha512HashValue>],
+) -> Result<&ComposefsBootEntry<Sha512HashValue>> {
+    entries.iter().find(|entry| !matches!(entry, ComposefsBootEntry::Type2(e) if !matches!(e.pe_type, PEType::Uki)))
+        .ok_or_else(|| anyhow!("No primary boot artifact"))
+}
+
+fn image_bootloader(entry: &ComposefsBootEntry<Sha512HashValue>) -> Option<Bootloader> {
+    match entry {
+        ComposefsBootEntry::Aboot(entry) => Some(match entry.encoding {
+            AbootEncoding::AndroidV2 => Bootloader::None,
+            AbootEncoding::Uki => Bootloader::Ukiboot,
+        }),
+        _ => None,
+    }
+}
+
+fn setup_composefs_aboot_boot(
+    repo: &ComposefsRepository,
+    id: &Sha512HashValue,
+    entry: &ComposefsBootEntry<Sha512HashValue>,
+    allow_missing_fsverity: bool,
+) -> Result<String> {
+    let ComposefsBootEntry::Aboot(entry) = entry else {
+        bail!("Expected an aboot boot entry")
+    };
+    let payload = read_aboot_payload(entry, repo)?;
+    let (cmdline, boot_digest) = compute_aboot_boot_digest(entry.encoding, &payload)?;
+    let candidates = parse_uki_composefs_candidates(&cmdline)?;
+    let insecure = uki_candidates_policy(&candidates)?;
+    ensure!(
+        primary_uki_candidate(&candidates).digest == *id,
+        "Aboot composefs digest does not match the deployment"
+    );
+    match (allow_missing_fsverity, insecure) {
+        (true, false) => tracing::warn!(
+            "--allow-missing-fsverity was requested but the aboot image requires fs-verity"
+        ),
+        (false, true) => tracing::warn!("aboot image permits booting without fs-verity"),
+        _ => {}
+    }
+
+    Ok(boot_digest)
+}
+
 fn install_composefs_bootloader(
     root_setup: &RootSetup,
     state: &State,
-    postfetch: &PostFetchState,
-    mounted_root: &MountedImageRoot,
+    bootloader: Bootloader,
+    composefs_mnt_fd: std::os::fd::OwnedFd,
+    repo: &ComposefsRepository,
+    fs: &FileSystem<Sha512HashValue>,
 ) -> Result<()> {
+    if bootloader == Bootloader::None {
+        return Ok(());
+    }
+    let mounted_root = MountedImageRoot::new(composefs_mnt_fd, &root_setup.device_info)?;
+
+    if bootloader == Bootloader::Ukiboot {
+        return mounted_root.with_esp(|esp| install_ukiboot(mounted_root.dir(), fs, repo, esp));
+    }
     let boot_uuid = root_setup
         .get_boot_uuid()?
         .or(root_setup.rootfs_uuid.as_deref())
@@ -2111,10 +2310,7 @@ fn install_composefs_bootloader(
             &root_setup.device_info.require_single_root()?,
             boot_uuid,
         )?;
-    } else if matches!(
-        postfetch.detected_bootloader,
-        Bootloader::Grub | Bootloader::GrubCC
-    ) {
+    } else if matches!(bootloader, Bootloader::Grub | Bootloader::GrubCC) {
         let chroot_target = Utf8Path::from_path(mounted_root.root_path())
             .ok_or_else(|| anyhow!("composefs tmpdir path is not valid UTF-8"))?;
         // Like the ostree backend, bind the physical root's real /boot (an
@@ -2134,7 +2330,7 @@ fn install_composefs_bootloader(
         )?;
 
         // FIXME: Remove this hack once we have support in bootupd
-        if matches!(postfetch.detected_bootloader, Bootloader::GrubCC) {
+        if matches!(bootloader, Bootloader::GrubCC) {
             // bootupctl wrote this under the physical root's real /boot (via
             // the bind mount above), not under the composefs root.
             root_setup
@@ -2218,24 +2414,29 @@ pub(crate) async fn setup_composefs_boot(
         fs,
         entries,
     } = crate::bootc_composefs::repo::prepare_boot_image(&repo, pull_result)?;
-
-    let Some(entry) = entries.iter().next() else {
-        anyhow::bail!("No boot entries!");
-    };
-
+    let entry = primary_boot_entry(&entries)?;
     let boot_type = BootType::from(entry);
-    if boot_type == BootType::Aboot {
-        bail!("aboot boot setup is not implemented");
-    }
 
     let composefs_mnt_fd = repo
         .mount(&id.to_hex())
         .context("Failed to mount composefs image")?;
-    let mounted_root = MountedImageRoot::new(composefs_mnt_fd, &root_setup.device_info)?;
+    let image_root = Dir::reopen_dir(&composefs_mnt_fd)?;
 
-    let postfetch = PostFetchState::new(state, mounted_root.dir())?;
+    let postfetch = PostFetchState::new(state, &image_root, image_bootloader(entry))?;
 
-    install_composefs_bootloader(root_setup, state, &postfetch, &mounted_root)?;
+    validate_bootloader(entry, postfetch.detected_bootloader)?;
+    if matches!(boot_type, BootType::Uki | BootType::Aboot) {
+        state.require_no_kargs_for_immutable_boot()?;
+    }
+
+    install_composefs_bootloader(
+        root_setup,
+        state,
+        postfetch.detected_bootloader,
+        composefs_mnt_fd,
+        &repo,
+        &fs,
+    )?;
 
     let repo = Arc::try_unwrap(repo).map_err(|_| {
         anyhow::anyhow!(
@@ -2252,7 +2453,7 @@ pub(crate) async fn setup_composefs_boot(
                 &provisional_deploy_id,
                 provisional_format,
                 entry,
-                mounted_root.dir(),
+                &image_root,
             )?,
             provisional_deploy_id,
         ),
@@ -2267,7 +2468,10 @@ pub(crate) async fn setup_composefs_boot(
             &repo,
             &fs,
         )?,
-        BootType::Aboot => anyhow::bail!("aboot boot setup is not implemented"),
+        BootType::Aboot => (
+            setup_composefs_aboot_boot(&repo, &id, entry, allow_missing_fsverity)?,
+            provisional_deploy_id,
+        ),
     };
 
     write_composefs_state(
@@ -2288,7 +2492,7 @@ pub(crate) async fn setup_composefs_boot(
             .open_dir(format!("{STATE_DIR_RELATIVE}/{}", deploy_id.to_hex()))
             .context("Opening deployment state")?;
         crate::install::osconfig::inject_root_ssh_authorized_keys(
-            mounted_root.dir(),
+            &image_root,
             &deployment,
             state.load_policy()?.as_ref(),
             contents,
@@ -2323,6 +2527,7 @@ pub(crate) fn expected_boot_image_ids(
 mod tests {
     use super::*;
     use composefs::erofs::format::FormatVersion;
+    use composefs_boot::bootloader::{AbootArtifact, AbootEncoding, AbootEntry, Type2Entry};
 
     #[test]
     fn test_grub_bls_abs_entries_path() -> Result<()> {
@@ -2353,6 +2558,152 @@ mod tests {
         assert!(!rendered.contains("composefs=old"));
         assert!(!rendered.contains(":stale"));
         assert!(rendered.contains("root=UUID=abc"));
+    }
+
+    #[tokio::test]
+    async fn test_install_ukiboot() -> Result<()> {
+        use composefs::fs::read_filesystem;
+        use composefs::repository::RepositoryConfig;
+
+        let temp = cap_std_ext::cap_tempfile::tempdir(ambient_authority())?;
+        let config = RepositoryConfig::new(composefs::fsverity::Algorithm::SHA512).set_insecure();
+        let (repo, _) = ComposefsRepository::init_path(&*temp, "repo", config)?;
+        let repo = Arc::new(repo);
+        let root = cap_std_ext::cap_tempfile::tempdir(ambient_authority())?;
+        root.create_dir_all("usr/lib")?;
+        root.write("usr/lib/os-release", "ID=testos\n")?;
+
+        let (loader, fallback) = match std::env::consts::ARCH {
+            "x86_64" => ("ukibootx64.efi", "BOOTX64.EFI"),
+            "aarch64" => ("ukibootaa64.efi", "BOOTAA64.EFI"),
+            _ => return Ok(()),
+        };
+        let files = [
+            (loader, loader, fallback),
+            (
+                "slot_a.addon.efi",
+                "ukiboot_a.efi.extra.d/slot_a.addon.efi",
+                "ukiboot_a.efi.extra.d/slot_a.addon.efi",
+            ),
+            (
+                "slot_b.addon.efi",
+                "ukiboot_b.efi.extra.d/slot_b.addon.efi",
+                "ukiboot_b.efi.extra.d/slot_b.addon.efi",
+            ),
+        ];
+        for signed_mask in 0..8 {
+            let source = cap_std_ext::cap_tempfile::tempdir(ambient_authority())?;
+            let esp = cap_std_ext::cap_tempfile::tempdir(ambient_authority())?;
+            source.create_dir_all("usr/libexec/ukiboot/efi")?;
+            for (index, (name, vendor_path, _)) in files.iter().enumerate() {
+                source.write(
+                    format!("usr/libexec/ukiboot/efi/{name}"),
+                    format!("unsigned-{name}").repeat(if index == 0 { 512 } else { 1 }),
+                )?;
+                if signed_mask & (1 << index) != 0 {
+                    let path = format!("boot/efi/EFI/testos/{vendor_path}");
+                    let path = Utf8Path::new(&path);
+                    source.create_dir_all(path.parent().unwrap())?;
+                    source.write(
+                        path,
+                        format!("signed-{name}").repeat(if index == 0 { 512 } else { 1 }),
+                    )?;
+                }
+            }
+            let fs = read_filesystem(source.reopen_as_ownedfd()?, ".".into(), Some(repo.clone()))
+                .await?;
+            install_ukiboot(&root, &fs, &repo, &esp)?;
+            for (index, (name, vendor_path, fallback_path)) in files.iter().enumerate() {
+                let expected = if signed_mask & (1 << index) != 0 {
+                    format!("signed-{name}")
+                } else {
+                    format!("unsigned-{name}")
+                }
+                .repeat(if index == 0 { 512 } else { 1 });
+                for path in [
+                    format!("EFI/testos/{vendor_path}"),
+                    format!("EFI/BOOT/{fallback_path}"),
+                ] {
+                    assert_eq!(esp.read_to_string(path)?, expected);
+                }
+            }
+
+            let preferred = format!("boot/efi/EFI/testos/{loader}");
+            source.remove_file_optional(&preferred)?;
+            source.create_dir_all(&preferred)?;
+            let fs = read_filesystem(source.reopen_as_ownedfd()?, ".".into(), Some(repo.clone()))
+                .await?;
+            assert!(install_ukiboot(&root, &fs, &repo, &esp).is_err());
+            source.remove_dir(&preferred)?;
+            source.remove_file(format!("usr/libexec/ukiboot/efi/{loader}"))?;
+            let fs = read_filesystem(source.reopen_as_ownedfd()?, ".".into(), Some(repo.clone()))
+                .await?;
+            assert!(install_ukiboot(&root, &fs, &repo, &esp).is_err());
+        }
+        Ok(())
+    }
+
+    fn fake_aboot_entry() -> ComposefsBootEntry<Sha512HashValue> {
+        ComposefsBootEntry::Aboot(AbootEntry {
+            kver: "1.0".into(),
+            encoding: AbootEncoding::AndroidV2,
+            payload: AbootArtifact {
+                path: "/boot/aboot-1.0.img".into(),
+                file: RegularFile::External(Sha512HashValue::EMPTY, 4096),
+            },
+            vbmeta: None,
+        })
+    }
+
+    #[test]
+    fn test_validate_bootloader() {
+        let bls = ComposefsBootEntry::UsrLibModulesVmLinuz(UsrLibModulesVmlinuz {
+            kver: "1.0".into(),
+            vmlinuz: RegularFile::Inline(Default::default()),
+            initramfs: Some(RegularFile::Inline(Default::default())),
+            os_release: None,
+        });
+        let android = fake_aboot_entry();
+        let mut ukiboot = fake_aboot_entry();
+        if let ComposefsBootEntry::Aboot(entry) = &mut ukiboot {
+            entry.encoding = AbootEncoding::Uki;
+        }
+        let uki = ComposefsBootEntry::Type2(Type2Entry {
+            kver: None,
+            file_path: "test.efi".into(),
+            file: RegularFile::Inline(Default::default()),
+            pe_type: PEType::Uki,
+        });
+        assert_eq!(image_bootloader(&android), Some(Bootloader::None));
+        assert_eq!(image_bootloader(&ukiboot), Some(Bootloader::Ukiboot));
+        assert_eq!(image_bootloader(&uki), None);
+        assert_eq!(image_bootloader(&bls), None);
+        for bootloader in [
+            Bootloader::None,
+            Bootloader::Ukiboot,
+            Bootloader::Grub,
+            Bootloader::GrubCC,
+            Bootloader::Systemd,
+        ] {
+            for (entry, expected) in [
+                (&android, bootloader == Bootloader::None),
+                (&ukiboot, bootloader == Bootloader::Ukiboot),
+                (
+                    &uki,
+                    !matches!(bootloader, Bootloader::None | Bootloader::Ukiboot),
+                ),
+                (
+                    &bls,
+                    !matches!(bootloader, Bootloader::None | Bootloader::Ukiboot),
+                ),
+            ] {
+                assert_eq!(
+                    validate_bootloader(entry, bootloader).is_ok(),
+                    expected,
+                    "{entry:?}, {bootloader:?}"
+                );
+            }
+        }
     }
 
     #[test]
