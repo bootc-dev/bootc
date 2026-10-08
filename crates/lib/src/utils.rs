@@ -251,22 +251,36 @@ pub fn read_uefi_var(var_name: &str) -> Result<String, EfiError> {
 
     match efivarfs.read(var_name) {
         Ok(loader_bytes) => {
-            if loader_bytes.len() % 2 != 0 {
+            // Ref: https://www.kernel.org/doc/html/latest/filesystems/efivarfs.html
+            //
+            // When a content of an UEFI variable in /sys/firmware/efi/efivars is displayed,
+            // for example using “hexdump”, pay attention that the first 4 bytes of the output
+            // represent the UEFI variable attributes, in little-endian format.
+            //
+            // Practically the output of each efivar is composed of:
+            //
+            // 4_bytes_of_attributes + efivar_data
+            let data = &loader_bytes[4..];
+
+            if data.len() % 2 != 0 {
                 return Err(EfiError::InvalidData(
                     "EFI var length is not valid UTF-16 LE",
                 ));
             }
 
             // EFI vars are UTF-16 LE
-            let loader_u16_bytes: Vec<u16> = loader_bytes
+            let data_u16_bytes: Vec<u16> = data
                 .chunks_exact(2)
                 .map(|x| u16::from_le_bytes([x[0], x[1]]))
                 .collect();
 
-            let loader = String::from_utf16(&loader_u16_bytes)
+            let var_string = String::from_utf16(&data_u16_bytes)
                 .map_err(|_| EfiError::InvalidData("EFI var is not UTF-16"))?;
 
-            return Ok(loader);
+            // EFI string variables are NUL-terminated; strip the trailing
+            // NUL(s) and any surrounding whitespace so the value compares
+            // cleanly against
+            return Ok(var_string.trim_matches(|c| c == '\0').trim().to_string());
         }
 
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
