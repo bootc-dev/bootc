@@ -469,6 +469,9 @@ pub(crate) struct DeploymentEntry<'a> {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) struct ContainerInspect {
+    /// The boot artifact type in the image, if present.
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    pub(crate) image_type: Option<crate::kernel::ContainerImageType>,
     /// Kernel arguments embedded in the container image.
     pub(crate) kargs: Vec<String>,
     /// Information about the kernel in the container image.
