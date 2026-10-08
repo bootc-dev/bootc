@@ -117,8 +117,11 @@ use composefs::repository::{RepositoryConfig, RepositoryOpenError};
 use composefs_ctl::composefs;
 
 use crate::bootc_composefs::backwards_compat::bcompat_boot::prepend_custom_prefix;
-use crate::bootc_composefs::boot::{EFI_LINUX, mount_esp, mount_esp_readonly, mount_esp_writable};
+use crate::bootc_composefs::boot::{
+    BootType, EFI_LINUX, mount_esp, mount_esp_readonly, mount_esp_writable,
+};
 use crate::bootc_composefs::status::{ComposefsCmdline, composefs_booted, get_bootloader};
+use crate::bootc_composefs::{aboot, state::read_boot_type};
 use crate::composefs_consts::{BLS_ENTRY_FILE_PREFIX, TYPE1_ENT_PATH};
 use crate::install::BOOT;
 use crate::lsm;
@@ -585,36 +588,51 @@ impl BootedStorage {
         let r = match &env {
             Environment::ComposefsBooted(cmdline) => {
                 let (physical_root, run, is_ro) = get_physical_root_and_run()?;
+                let is_aboot =
+                    read_boot_type(&physical_root, &cmdline.digest)? == Some(BootType::Aboot);
+                if is_aboot && !is_ro && matches!(esp_access, EspAccess::ReadWrite) {
+                    let kernel_cmdline = std::fs::read_to_string("/proc/cmdline")
+                        .context("Reading kernel command line")?;
+                    aboot::AbootState::open(&physical_root)?.record_booted(
+                        &linux_kernel_cmdline::utf8::Cmdline::from(kernel_cmdline.as_str()),
+                        &cmdline.digest,
+                    )?;
+                }
                 let mut composefs = ComposefsRepository::open_path(&physical_root, COMPOSEFS)?;
                 if cmdline.allow_missing_fsverity {
                     composefs.set_insecure();
                 }
                 let composefs = Arc::new(composefs);
 
-                // Locate ESP by walking up to the root disk(s), and reading
-                // [`LOADER_DEVICE_PART_UUID`] and matching the UUID with the
-                // respective ESP device UUID
-                //
-                // Both mount variants transparently reuse an already-mounted
-                // ESP when present (e.g. auto-mounted at /boot ro via
-                // `systemd.mount-extra` in the deployment cmdline).
-                let esp_path = find_booted_from_esp(&physical_root)?;
+                let (boot_dir, grub_boot_path, esp) = if is_aboot {
+                    (None, None, None)
+                } else {
+                    // Locate ESP by walking up to the root disk(s), and reading
+                    // [`LOADER_DEVICE_PART_UUID`] and matching the UUID with the
+                    // respective ESP device UUID
+                    //
+                    // Both mount variants transparently reuse an already-mounted
+                    // ESP when present (e.g. auto-mounted at /boot ro via
+                    // `systemd.mount-extra` in the deployment cmdline).
+                    let esp_path = find_booted_from_esp(&physical_root)?;
 
-                let esp_mount = match esp_access {
-                    EspAccess::ReadOnly => mount_esp_readonly(&esp_path)?,
-                    EspAccess::ReadWrite => mount_esp_writable(&esp_path)?,
-                };
+                    let esp_mount = match esp_access {
+                        EspAccess::ReadOnly => mount_esp_readonly(&esp_path)?,
+                        EspAccess::ReadWrite => mount_esp_writable(&esp_path)?,
+                    };
 
-                let (boot_dir, grub_boot_path) = match get_bootloader()?.kind()? {
-                    // We can have a separate /boot and not /sysroot/boot
-                    BootloaderKind::GRUBClassic => {
-                        let (dir, path) = get_boot_dir_for_grub(&physical_root)?;
-                        (dir, Some(path))
-                    }
-                    // NOTE: Handle XBOOTLDR partitions here if and when we use it
-                    BootloaderKind::BLSCompatible => {
-                        (esp_mount.fd.try_clone().context("Cloning fd")?, None)
-                    }
+                    let (boot_dir, grub_boot_path) = match get_bootloader()?.kind()? {
+                        // We can have a separate /boot and not /sysroot/boot
+                        BootloaderKind::GRUBClassic => {
+                            let (dir, path) = get_boot_dir_for_grub(&physical_root)?;
+                            (dir, Some(path))
+                        }
+                        // NOTE: Handle XBOOTLDR partitions here if and when we use it
+                        BootloaderKind::BLSCompatible => {
+                            (esp_mount.fd.try_clone().context("Cloning fd")?, None)
+                        }
+                    };
+                    (Some(boot_dir), grub_boot_path, Some(esp_mount))
                 };
 
                 let storage = Storage {
@@ -622,9 +640,9 @@ impl BootedStorage {
                     physical_root_path: Utf8PathBuf::from("/sysroot"),
                     is_ro,
                     run,
-                    boot_dir: Some(boot_dir),
+                    boot_dir,
                     grub_boot_path,
-                    esp: Some(esp_mount),
+                    esp,
                     ostree: Default::default(),
                     composefs: OnceCell::from(composefs.clone()),
                     imgstore: Default::default(),
@@ -636,9 +654,11 @@ impl BootedStorage {
                 // lacked the prefix — we can't use meta.json presence as a trigger
                 // because open_upgrade() in the initramfs writes meta.json before
                 // userspace ever runs.
-                let cmdline = composefs_booted()?
-                    .ok_or_else(|| anyhow::anyhow!("Could not get booted composefs cmdline"))?;
-                prepend_custom_prefix(&storage, &cmdline).await?;
+                if !is_aboot {
+                    let cmdline = composefs_booted()?
+                        .ok_or_else(|| anyhow::anyhow!("Could not get booted composefs cmdline"))?;
+                    prepend_custom_prefix(&storage, &cmdline).await?;
+                }
 
                 Some(Self { storage })
             }
@@ -756,6 +776,22 @@ pub(crate) struct CachedImageStatus {
 }
 
 impl Storage {
+    #[cfg(test)]
+    pub(crate) fn new_composefs_for_test(physical_root: &Dir, run: &Dir) -> Result<Self> {
+        Ok(Self {
+            physical_root: physical_root.try_clone()?,
+            physical_root_path: Utf8PathBuf::from("/sysroot"),
+            is_ro: false,
+            boot_dir: None,
+            grub_boot_path: None,
+            esp: None,
+            run: run.try_clone()?,
+            ostree: Default::default(),
+            composefs: Default::default(),
+            imgstore: Default::default(),
+        })
+    }
+
     /// Create a new storage accessor from an existing ostree sysroot.
     ///
     /// This is used for non-booted scenarios (e.g., `bootc install`) where
