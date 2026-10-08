@@ -1782,7 +1782,7 @@ async fn prepare_install(
         let kernel = crate::kernel::find_kernel(root)?;
 
         (
-            kernel.as_ref().map(|k| k.kernel.unified).unwrap_or(false),
+            kernel.as_ref().is_some_and(|k| k.k_type.is_unified()),
             kernel,
         )
     } else {
@@ -1907,11 +1907,9 @@ async fn prepare_install(
     //
     // NOTE: This isn't really 100% accurate 100% of the time as the cmdline can be in an addon
     if let Some(root_filesystem) = root_filesystem {
-        if let Some(k) = kernel
-            && let crate::kernel::KernelType::Uki { cmdline, .. } = k.k_type
-        {
-            let allow_missing_fsverity = match cmdline {
-                Some(cmdline) => ComposefsCmdline::find_in_cmdline(&cmdline)?
+        if let Some(kernel) = kernel.as_ref().filter(|k| k.k_type.is_unified()) {
+            let allow_missing_fsverity = match kernel.k_type.cmdline() {
+                Some(cmdline) => ComposefsCmdline::find_in_cmdline(cmdline)?
                     .is_some_and(|cfs_cmdline| cfs_cmdline.allow_missing_fsverity),
                 None => false,
             };
