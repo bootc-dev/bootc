@@ -226,6 +226,10 @@ pub(crate) async fn composefs_rollback(
 
     let host = get_composefs_status(storage, booted_cfs).await?;
 
+    if host.require_composefs_booted()?.boot_type == BootType::Aboot {
+        anyhow::bail!("aboot rollback is not implemented");
+    }
+
     let new_spec = {
         let mut new_spec = host.spec.clone();
         new_spec.boot_order = new_spec.boot_order.swap();
