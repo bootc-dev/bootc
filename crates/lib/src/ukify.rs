@@ -88,8 +88,9 @@ pub(crate) async fn build_ukify(
     // Extract vmlinuz and initramfs paths, or bail if this is already a UKI
     let (vmlinuz_path, initramfs_path) = match &kernel_final.k_type {
         crate::kernel::KernelType::Vmlinuz { path, initramfs } => (path, initramfs),
-        crate::kernel::KernelType::Uki { path, .. } => {
-            anyhow::bail!("Cannot build UKI: rootfs already contains a UKI at {path}");
+        crate::kernel::KernelType::Aboot { path, .. }
+        | crate::kernel::KernelType::Uki { path, .. } => {
+            anyhow::bail!("Cannot build UKI: rootfs already contains a boot image at {path}");
         }
     };
 
@@ -229,7 +230,8 @@ mod tests {
         assert!(result.is_err());
         let err = format!("{:#}", result.unwrap_err());
         assert!(
-            err.contains("already contains a UKI") || err.contains("ukify executable not found"),
+            err.contains("already contains a boot image")
+                || err.contains("ukify executable not found"),
             "Unexpected error message: {err}"
         );
     }
