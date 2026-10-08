@@ -333,8 +333,8 @@ fn get_sorted_type1_boot_entries_helper(
             // For grub and grub-cc, sort by filename in descending order
             // See: https://github.com/bootc-dev/bootc/issues/2221
             Bootloader::Grub | Bootloader::GrubCC => b.filename.cmp(&a.filename),
-            Bootloader::None => {
-                unreachable!("Bootloader checked during installation should not have been none")
+            Bootloader::Ukiboot | Bootloader::None => {
+                unreachable!("Bootloader checked during installation does not use BLS entries")
             }
         };
 
