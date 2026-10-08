@@ -25,6 +25,7 @@ use clap::ValueEnum;
 use fn_error_context::context;
 use serde::{Deserialize, Serialize};
 
+use super::AbootDiskLayout;
 use super::BOOT;
 use super::MountSpec;
 use super::RUN_BOOTC;
@@ -73,6 +74,14 @@ pub(crate) const EFIPN_SIZE_MB: u32 = 512;
 /// We need more space than ostree as we have UKIs and UKI addons
 /// We might also need to store UKIs for pinned deployments
 pub(crate) const CFS_EFIPN_SIZE_MB: u32 = 2048;
+const ABOOT_BOOT_SIZE_MB: u32 = 192;
+const ABOOT_VBMETA_SIZE_MB: u32 = 64;
+const UKIBOOT_ESP_SIZE_MB: u32 = 100;
+const UKIBOOT_CTL_SIZE_MB: u32 = 1;
+pub(crate) const ABOOT_BOOT_GUID: &str = "20117f86-e985-4357-b9ee-374bc1d8487d";
+pub(crate) const ABOOT_VBMETA_GUID: &str = "4b7a15d6-322c-42ac-8110-88b7da0c5d77";
+pub(crate) const UKIBOOT_BOOT_GUID: &str = "df331e4d-be00-463f-b4a7-8b43e18fb53a";
+const UKIBOOT_CTL_GUID: &str = "fefd9070-346f-4c9a-85e6-17f07f922773";
 #[cfg(feature = "install-to-disk")]
 pub(crate) const PREPBOOT_GUID: &str = "9E1A2D38-C612-4316-AA26-8B49521E5A8B";
 #[cfg(feature = "install-to-disk")]
@@ -214,6 +223,8 @@ struct RepartPartition {
     /// Ex. "esp", "root-x86_64"
     #[serde(rename = "type")]
     partition_type: String,
+    #[serde(default)]
+    label: Option<String>,
     /// 0-indexed partition number
     /// absent in older systemd-repart
     /// versions, in c9s
@@ -229,7 +240,7 @@ struct RepartPartition {
     file: String,
 }
 
-fn can_use_systemd_repart() -> bool {
+fn has_systemd_repart() -> bool {
     if Command::new("systemd-repart")
         .arg("--help")
         .stdout(Stdio::null())
@@ -237,6 +248,14 @@ fn can_use_systemd_repart() -> bool {
         .status()
         .is_err()
     {
+        return false;
+    }
+
+    true
+}
+
+fn can_use_systemd_repart() -> bool {
+    if !has_systemd_repart() {
         return false;
     }
 
@@ -254,7 +273,7 @@ fn can_use_systemd_repart() -> bool {
                 .is_some_and(|mut entries| entries.next().is_some())
     });
 
-    return has_config;
+    has_config
 }
 
 /// The first systemd version that supports `systemd-repart --include-partitions=`.
@@ -288,46 +307,62 @@ fn need_filtered_definitions(generic_image: bool) -> Result<bool> {
 
 /// Whether a partition (as reported by systemd-repart) is one we must create
 /// even for a generic image: root, ESP or BIOS boot.
-fn repart_partition_is_required(part: &RepartPartition) -> bool {
+fn repart_partition_is_required(part: &RepartPartition, aboot: Option<AbootDiskLayout>) -> bool {
     let ptype = part.partition_type.as_str();
     ptype.starts_with("root")
         || ptype.starts_with("esp")
         || ptype == "bios"
         || ptype.eq_ignore_ascii_case(BIOS_BOOT)
+        || aboot.is_some_and(|layout| {
+            aboot_partition_labels(layout).contains(&part.label.as_deref().unwrap_or(""))
+        })
 }
 
 /// Collect the repart.d definitions for the partitions we require (root, ESP
-/// and BIOS boot) into [`REPART_FILTERED_DEFINITIONS_DIR`].
+/// and BIOS boot) into dest_dir.
 ///
 /// systemd < 253 does not support the `--include-partitions=` option, so instead
 /// we point systemd-repart at a directory containing only the definitions we want
 /// it to act on
-fn collect_repart_definitions(dry_partitions: &[RepartPartition]) -> Result<()> {
-    let dest_dir = Path::new(REPART_FILTERED_DEFINITIONS_DIR);
+fn collect_repart_definitions(
+    dry_partitions: &[RepartPartition],
+    aboot: Option<AbootDiskLayout>,
+    dest_dir: &Path,
+) -> Result<()> {
     // Start from a clean directory so stale definitions from a previous run
     // don't leak in.
     if dest_dir.exists() {
         std::fs::remove_dir_all(dest_dir)
-            .with_context(|| format!("Removing {REPART_FILTERED_DEFINITIONS_DIR}"))?;
+            .with_context(|| format!("Removing {}", dest_dir.display()))?;
     }
 
     std::fs::create_dir_all(dest_dir)
-        .with_context(|| format!("Creating {REPART_FILTERED_DEFINITIONS_DIR}"))?;
+        .with_context(|| format!("Creating {}", dest_dir.display()))?;
 
     for part in dry_partitions {
-        if !repart_partition_is_required(part) {
+        if !repart_partition_is_required(part, aboot) {
             continue;
         }
 
         // Older version of systemd-repart does not provide the full path to the file
         // so we need to search one by one
-        let src = REPART_CONFIG_DIRS
-            .iter()
-            .map(|d| Path::new(d).join(&part.file))
-            .find(|p| p.exists())
-            .ok_or_else(|| anyhow::anyhow!("Could not find repart.d definition {}", part.file))?;
+        let file = Path::new(&part.file);
+        let src = if file.is_absolute() {
+            file.to_path_buf()
+        } else {
+            REPART_CONFIG_DIRS
+                .iter()
+                .map(|d| Path::new(d).join(file))
+                .find(|p| p.exists())
+                .ok_or_else(|| {
+                    anyhow::anyhow!("Could not find repart.d definition {}", part.file)
+                })?
+        };
+        let name = src
+            .file_name()
+            .context("Missing repart.d definition filename")?;
 
-        std::fs::copy(&src, dest_dir.join(&part.file))
+        std::fs::copy(&src, dest_dir.join(name))
             .with_context(|| format!("Copying repart.d definition {}", src.display()))?;
     }
 
@@ -346,7 +381,7 @@ fn systemd_repart(
     // Dry-run to check what partitions would be created
     // Send `generic_image` as false so that we can see ALL defined
     // partitions
-    let dry_partitions = systemd_repart_run(device, false, true)?;
+    let dry_partitions = systemd_repart_run(device, false, true, None)?;
 
     if dry_partitions.is_empty() {
         anyhow::bail!("systemd-repart returned empty partitions");
@@ -359,10 +394,14 @@ fn systemd_repart(
     if has_root {
         // Root partition is defined in repart.d config, run for real
         if need_filtered_definitions(generic_image)? {
-            collect_repart_definitions(&dry_partitions)?;
+            collect_repart_definitions(
+                &dry_partitions,
+                None,
+                Path::new(REPART_FILTERED_DEFINITIONS_DIR),
+            )?;
         }
 
-        let partitions = systemd_repart_run(device, generic_image, false)?;
+        let partitions = systemd_repart_run(device, generic_image, false, None)?;
         let layout = parse_repart_layout(&partitions)?;
         return Ok(layout);
     }
@@ -409,7 +448,11 @@ fn systemd_repart(
     }
 
     if need_filtered_definitions(generic_image)? {
-        collect_repart_definitions(&dry_partitions)?;
+        collect_repart_definitions(
+            &dry_partitions,
+            None,
+            Path::new(REPART_FILTERED_DEFINITIONS_DIR),
+        )?;
 
         std::fs::write(
             Path::new(REPART_FILTERED_DEFINITIONS_DIR).join("50-root.conf"),
@@ -422,7 +465,7 @@ fn systemd_repart(
             .context("Writing root repart config")?;
     }
 
-    let partitions = systemd_repart_run(device, generic_image, false)?;
+    let partitions = systemd_repart_run(device, generic_image, false, None)?;
     let layout = parse_repart_layout(&partitions)?;
 
     Ok(layout)
@@ -430,12 +473,12 @@ fn systemd_repart(
 
 /// Run systemd-repart on the device and return the parsed JSON output.
 /// `dry_run`: if true, no changes are written to disk.
-/// `definitions`: if set, uses `--definitions=` and `--empty=allow`;
-/// otherwise uses the default config search paths with `--empty=force`.
+/// `definitions`: if set, uses that directory instead of the default search paths.
 fn systemd_repart_run(
     device: &Device,
     generic_image: bool,
     dry_run: bool,
+    definitions: Option<&Path>,
 ) -> Result<Vec<RepartPartition>> {
     let mut cmd = Command::new("systemd-repart");
 
@@ -463,7 +506,9 @@ fn systemd_repart_run(
     // don't know if the user would want to run those on this disk itself
     // or if this disk would be used to create an AMI/VHD and a separate disk
     // would be used for the other partitions
-    if generic_image {
+    if let Some(definitions) = definitions {
+        cmd.arg(format!("--definitions={}", definitions.display()));
+    } else if generic_image {
         if need_filtered_definitions(generic_image)? {
             // Older systemd lacks --include-partitions; act only on the
             // pre-filtered definitions collected by collect_repart_definitions.
@@ -527,6 +572,246 @@ fn parse_repart_layout(partitions: &[RepartPartition]) -> Result<PartitionLayout
         rootpn,
         used_repart: true,
     })
+}
+
+fn aboot_partition_labels(layout: AbootDiskLayout) -> &'static [&'static str] {
+    match layout {
+        AbootDiskLayout::Android => &["boot_a", "boot_b", "vbmeta_a", "vbmeta_b"],
+        AbootDiskLayout::Ukiboot => &["ukiboot_a", "ukiboot_b", "ukibootctl"],
+    }
+}
+
+fn aboot_partition_type(label: &str) -> &'static str {
+    match label {
+        "boot_a" | "boot_b" => ABOOT_BOOT_GUID,
+        "vbmeta_a" | "vbmeta_b" => ABOOT_VBMETA_GUID,
+        "ukiboot_a" | "ukiboot_b" => UKIBOOT_BOOT_GUID,
+        "ukibootctl" => UKIBOOT_CTL_GUID,
+        _ => unreachable!("unknown aboot partition label"),
+    }
+}
+
+fn aboot_repart_layout_defined(
+    partitions: &[RepartPartition],
+    layout: AbootDiskLayout,
+) -> Result<bool> {
+    let other_layout = match layout {
+        AbootDiskLayout::Android => AbootDiskLayout::Ukiboot,
+        AbootDiskLayout::Ukiboot => AbootDiskLayout::Android,
+    };
+    let labels = aboot_partition_labels(layout);
+    let other_labels = aboot_partition_labels(other_layout);
+    anyhow::ensure!(
+        !partitions
+            .iter()
+            .any(|p| other_labels.contains(&p.label.as_deref().unwrap_or(""))),
+        "repart.d contains partitions for a different aboot layout"
+    );
+    let mut found = 0;
+    for label in labels {
+        let count = partitions
+            .iter()
+            .filter(|p| p.label.as_deref() == Some(*label))
+            .count();
+        anyhow::ensure!(
+            count <= 1,
+            "Duplicate {label} partition in aboot repart.d layout"
+        );
+        if let Some(partition) = partitions
+            .iter()
+            .find(|p| p.label.as_deref() == Some(*label))
+        {
+            anyhow::ensure!(
+                partition
+                    .partition_type
+                    .eq_ignore_ascii_case(aboot_partition_type(label)),
+                "aboot partition {label} has the wrong type GUID"
+            );
+        }
+        found += usize::from(count == 1);
+    }
+    if found == 0 {
+        return Ok(false);
+    }
+    anyhow::ensure!(
+        found == labels.len(),
+        "Incomplete aboot repart.d layout: expected {}",
+        labels.join(", ")
+    );
+    let parsed = parse_repart_layout(partitions)?;
+    if layout == AbootDiskLayout::Ukiboot {
+        anyhow::ensure!(
+            parsed.esp_partno.is_some(),
+            "ukiboot repart.d layout needs an ESP"
+        );
+    }
+    Ok(true)
+}
+
+fn validate_repart_boot_layout(
+    partitions: &[RepartPartition],
+    layout: Option<AbootDiskLayout>,
+) -> Result<bool> {
+    if let Some(layout) = layout {
+        return aboot_repart_layout_defined(partitions, layout);
+    }
+    anyhow::ensure!(
+        !partitions
+            .iter()
+            .any(|p| [AbootDiskLayout::Android, AbootDiskLayout::Ukiboot]
+                .iter()
+                .any(|layout| aboot_partition_labels(*layout)
+                    .contains(&p.label.as_deref().unwrap_or("")))),
+        "aboot repart.d layout requires a matching aboot boot artifact"
+    );
+    Ok(false)
+}
+
+fn image_has_aboot_repart_layout(device: &Device, layout: Option<AbootDiskLayout>) -> Result<bool> {
+    if !can_use_systemd_repart() {
+        return Ok(false);
+    }
+    let partitions = systemd_repart_run(device, false, true, None)?;
+    validate_repart_boot_layout(&partitions, layout)
+}
+
+fn verify_image_aboot_filesystems(
+    device: &Device,
+    aboot_layout: AbootDiskLayout,
+    partition_layout: &PartitionLayout,
+) -> Result<()> {
+    let labels = aboot_partition_labels(aboot_layout);
+    for label in labels {
+        let partition = device
+            .children
+            .iter()
+            .flatten()
+            .find(|part| part.partlabel.as_deref() == Some(label))
+            .ok_or_else(|| anyhow::anyhow!("Missing {label} partition"))?;
+        anyhow::ensure!(
+            partition
+                .parttype
+                .as_deref()
+                .is_some_and(|guid| guid.eq_ignore_ascii_case(aboot_partition_type(label))),
+            "aboot partition {label} has the wrong type GUID"
+        );
+        anyhow::ensure!(
+            partition.fstype.is_none(),
+            "aboot partition {label} must not contain a filesystem"
+        );
+    }
+    if aboot_layout == AbootDiskLayout::Ukiboot {
+        let esp = device
+            .find_device_by_partno(partition_layout.esp_partno.context("Missing ukiboot ESP")?)?;
+        anyhow::ensure!(
+            esp.fstype.as_deref() == Some("vfat"),
+            "ukiboot ESP must be formatted as vfat"
+        );
+    }
+    Ok(())
+}
+
+fn aboot_repart_definitions(
+    layout: AbootDiskLayout,
+    root_size: Option<u64>,
+    rootfs: Filesystem,
+) -> Vec<(String, String)> {
+    let mut definitions = Vec::new();
+    if layout == AbootDiskLayout::Ukiboot {
+        let esp = format!(
+            "[Partition]\nType=esp\nLabel=efi\nFormat=vfat\nSizeMinBytes={UKIBOOT_ESP_SIZE_MB}M\nSizeMaxBytes={UKIBOOT_ESP_SIZE_MB}M\n"
+        );
+        definitions.push(("05-efi.conf".into(), esp));
+    }
+    let mut add = |order: u32, name: &str, part_type: &str, size: u32, flags: Option<&str>| {
+        let mut config = format!(
+            "[Partition]\nType={part_type}\nLabel={name}\nSizeMinBytes={size}M\nSizeMaxBytes={size}M\n"
+        );
+        if let Some(flags) = flags {
+            config.push_str(&format!("Flags={flags}\n"));
+        }
+        definitions.push((format!("{order:02}-{name}.conf"), config));
+    };
+
+    match layout {
+        AbootDiskLayout::Android => {
+            add(
+                10,
+                "boot_a",
+                ABOOT_BOOT_GUID,
+                ABOOT_BOOT_SIZE_MB,
+                Some("0x3f000000000000"),
+            );
+            add(
+                11,
+                "boot_b",
+                ABOOT_BOOT_GUID,
+                ABOOT_BOOT_SIZE_MB,
+                Some("0x3d000000000000"),
+            );
+            for (order, name) in [(12, "vbmeta_a"), (13, "vbmeta_b")] {
+                add(order, name, ABOOT_VBMETA_GUID, ABOOT_VBMETA_SIZE_MB, None);
+            }
+        }
+        AbootDiskLayout::Ukiboot => {
+            for (order, name) in [(10, "ukiboot_a"), (11, "ukiboot_b")] {
+                add(order, name, UKIBOOT_BOOT_GUID, ABOOT_BOOT_SIZE_MB, None);
+            }
+            add(
+                12,
+                "ukibootctl",
+                UKIBOOT_CTL_GUID,
+                UKIBOOT_CTL_SIZE_MB,
+                None,
+            );
+        }
+    }
+
+    let mut root = format!(
+        "[Partition]\nType=root\nLabel={}\nFormat={rootfs}\n",
+        if layout == AbootDiskLayout::Android {
+            "system_a"
+        } else {
+            "root"
+        }
+    );
+    if let Some(size) = root_size {
+        root.push_str(&format!("SizeMinBytes={size}M\nSizeMaxBytes={size}M\n"));
+    }
+    definitions.push(("50-root.conf".into(), root));
+    definitions
+}
+
+#[context("Running systemd-repart for aboot")]
+fn systemd_repart_aboot(
+    device: &Device,
+    layout: AbootDiskLayout,
+    root_size: Option<u64>,
+    rootfs: Option<Filesystem>,
+    use_image_definitions: bool,
+    generic_image: bool,
+) -> Result<PartitionLayout> {
+    if use_image_definitions {
+        let definitions = if generic_image {
+            let dry = systemd_repart_run(device, false, true, None)?;
+            let definitions = tempfile::tempdir_in("/var/tmp")?;
+            collect_repart_definitions(&dry, Some(layout), definitions.path())?;
+            Some(definitions)
+        } else {
+            None
+        };
+        let partitions =
+            systemd_repart_run(device, false, false, definitions.as_ref().map(|d| d.path()))?;
+        return parse_repart_layout(&partitions);
+    }
+
+    let rootfs = rootfs.context("Rootfs not specified")?;
+    let definitions = tempfile::tempdir().context("Creating aboot repart definitions directory")?;
+    for (name, config) in aboot_repart_definitions(layout, root_size, rootfs) {
+        std::fs::write(definitions.path().join(name), config)?;
+    }
+    let partitions = systemd_repart_run(device, false, false, Some(definitions.path()))?;
+    parse_repart_layout(&partitions)
 }
 
 /// Use sfdisk to create partitions
@@ -600,8 +885,7 @@ fn sfdisk(
     let root_size = root_size
         .map(|v| Cow::Owned(format!("size={v}MiB, ")))
         .unwrap_or_else(|| Cow::Borrowed(""));
-    let rootpart_uuid =
-        uuid::Uuid::parse_str(crate::discoverable_partition_specification::this_arch_root())?;
+    let rootpart_uuid = crate::discoverable_partition_specification::this_arch_root();
     writeln!(
         &mut partitioning_buf,
         r#"{root_size}type={rootpart_uuid}, name="root""#
@@ -640,30 +924,40 @@ pub(crate) fn install_create_rootfs(
         anyhow::bail!("Device {} is mounted", device.path())
     }
 
-    // Handle wiping any existing data
-    if opts.wipe {
-        let dev = &opts.device;
-        for child in device.children.iter().flatten() {
-            let child = child.path();
-            println!("Wiping {child}");
-            wipefs(Utf8Path::new(&child))?;
-        }
-        println!("Wiping {dev}");
-        wipefs(dev)?;
-    } else if device.has_children() {
-        anyhow::bail!(
-            "Detected existing partitions on {}; use e.g. `wipefs` or --wipe if you intend to overwrite",
-            opts.device
-        );
-    }
-
     let run_bootc = Utf8Path::new(RUN_BOOTC);
     let mntdir = run_bootc.join("mounts");
     if mntdir.exists() {
         std::fs::remove_dir_all(&mntdir)?;
     }
 
-    let use_systemd_repart = run_repart && can_use_systemd_repart();
+    if state.aboot_disk_layout.is_some() {
+        anyhow::ensure!(
+            has_systemd_repart(),
+            "aboot to-disk install requires systemd-repart"
+        );
+    }
+    let aboot_image_repart_layout = if state.aboot_disk_layout.is_some() || run_repart {
+        image_has_aboot_repart_layout(&device, state.aboot_disk_layout)?
+    } else {
+        false
+    };
+    let use_systemd_repart =
+        state.aboot_disk_layout.is_some() || (run_repart && can_use_systemd_repart());
+    let aboot_rootfs = if state.aboot_disk_layout.is_some() && !aboot_image_repart_layout {
+        Some(
+            opts.filesystem
+                .or(install_config
+                    .and_then(|c| c.filesystem_root())
+                    .and_then(|r| r.fstype))
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "aboot to-disk install requires --filesystem when no root filesystem is configured in the install config"
+                    )
+                })?,
+        )
+    } else {
+        None
+    };
 
     // Use the install configuration to find the block setup, if we have one
     let block_setup = if let Some(config) = install_config {
@@ -679,7 +973,21 @@ pub(crate) fn install_create_rootfs(
     };
     let serial = device.serial.as_deref().unwrap_or("<unknown>");
     let model = device.model.as_deref().unwrap_or("<unknown>");
-    let discoverable = use_discoverable_partitions(state);
+    let discoverable = state.aboot_disk_layout.is_none() && use_discoverable_partitions(state);
+    if let Some(layout) = state.aboot_disk_layout {
+        anyhow::ensure!(
+            block_setup == BlockSetup::Direct,
+            "{layout:?} aboot layout requires --block-setup direct"
+        );
+        anyhow::ensure!(
+            layout != AbootDiskLayout::Ukiboot || super::ARCH_USES_EFI,
+            "ukiboot disk layout requires x86_64 or aarch64"
+        );
+        anyhow::ensure!(
+            state.composefs_options.composefs_backend,
+            "aboot disk layouts require the composefs backend"
+        );
+    }
     println!("Block setup: {block_setup}");
     println!("       Size: {}", device.size);
     println!("     Serial: {serial}");
@@ -700,6 +1008,22 @@ pub(crate) fn install_create_rootfs(
     let sepolicy = state.load_policy()?;
     let sepolicy = sepolicy.as_ref();
 
+    if opts.wipe {
+        let dev = &opts.device;
+        for child in device.children.iter().flatten() {
+            let child = child.path();
+            println!("Wiping {child}");
+            wipefs(Utf8Path::new(&child))?;
+        }
+        println!("Wiping {dev}");
+        wipefs(dev)?;
+    } else if device.has_children() {
+        anyhow::bail!(
+            "Detected existing partitions on {}; use e.g. `wipefs` or --wipe if you intend to overwrite",
+            opts.device
+        );
+    }
+
     // Create a temporary directory to use for mount points.  Note that we're
     // in a mount namespace, so these should not be visible on the host.
     let physical_root_path = mntdir.join("rootfs");
@@ -707,7 +1031,16 @@ pub(crate) fn install_create_rootfs(
     let bootfs = mntdir.join("boot");
     std::fs::create_dir_all(bootfs)?;
 
-    let layout = if use_systemd_repart {
+    let layout = if let Some(aboot_disk_layout) = state.aboot_disk_layout {
+        systemd_repart_aboot(
+            &device,
+            aboot_disk_layout,
+            root_size,
+            aboot_rootfs,
+            aboot_image_repart_layout,
+            state.config_opts.generic_image,
+        )?
+    } else if use_systemd_repart {
         systemd_repart(
             &device,
             root_size,
@@ -738,6 +1071,10 @@ pub(crate) fn install_create_rootfs(
 
     // Re-read partition table to get updated children
     device.refresh()?;
+
+    if aboot_image_repart_layout {
+        verify_image_aboot_filesystems(&device, state.aboot_disk_layout.unwrap(), &layout)?;
+    }
 
     // Ensure we have a root filesystem
     let root_filesystem = if layout.used_repart {
@@ -936,8 +1273,13 @@ pub(crate) fn install_create_rootfs(
     if let Some(esp_partno) = layout.esp_partno {
         let espdev = device.find_device_by_partno(esp_partno)?;
         if !layout.used_repart {
+            let esp_label = if state.aboot_disk_layout == Some(AbootDiskLayout::Ukiboot) {
+                "ESP"
+            } else {
+                "EFI-SYSTEM"
+            };
             Task::new("Creating ESP filesystem", "mkfs.fat")
-                .args([&espdev.path(), "-n", "EFI-SYSTEM"])
+                .args([&espdev.path(), "-n", esp_label])
                 .verbose()
                 .quiet_output()
                 .run()?;
@@ -957,8 +1299,79 @@ pub(crate) fn install_create_rootfs(
         physical_root,
         target_root_path: None,
         rootfs_uuid: Some(root_uuid.to_string()),
+        aboot_disk_layout: state.aboot_disk_layout,
+        disk_install: true,
         boot,
         kargs,
         skip_finalize: false,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn aboot_repart_specs() {
+        let android = aboot_repart_definitions(AbootDiskLayout::Android, None, Filesystem::Ext4);
+        assert_eq!(android.len(), 5);
+        assert_eq!(android[0].0, "10-boot_a.conf");
+        assert!(android[0].1.contains("Flags=0x3f000000000000\n"));
+        assert!(android[1].1.contains("Flags=0x3d000000000000\n"));
+        assert!(
+            android[4]
+                .1
+                .contains("Type=root\nLabel=system_a\nFormat=ext4\n")
+        );
+
+        let ukiboot =
+            aboot_repart_definitions(AbootDiskLayout::Ukiboot, Some(4096), Filesystem::Ext4);
+        assert_eq!(ukiboot.len(), 5);
+        assert_eq!(ukiboot[0].0, "05-efi.conf");
+        assert!(ukiboot[0].1.contains("Type=esp\nLabel=efi\nFormat=vfat\n"));
+        assert!(
+            ukiboot[4]
+                .1
+                .contains("SizeMinBytes=4096M\nSizeMaxBytes=4096M\n")
+        );
+    }
+
+    #[test]
+    fn image_aboot_repart_layout() -> Result<()> {
+        let mut partitions: Vec<RepartPartition> = serde_json::from_value(serde_json::json!([
+            { "type": "20117f86-e985-4357-b9ee-374bc1d8487d", "label": "boot_a", "file": "10-boot-a.conf" },
+            { "type": "20117f86-e985-4357-b9ee-374bc1d8487d", "label": "boot_b", "file": "11-boot-b.conf" },
+            { "type": "4b7a15d6-322c-42ac-8110-88b7da0c5d77", "label": "vbmeta_a", "file": "12-vbmeta-a.conf" },
+            { "type": "4b7a15d6-322c-42ac-8110-88b7da0c5d77", "label": "vbmeta_b", "file": "13-vbmeta-b.conf" },
+            { "type": "root-arm64", "label": "system_a", "file": "50-root.conf" }
+        ]))?;
+        assert!(aboot_repart_layout_defined(
+            &partitions,
+            AbootDiskLayout::Android
+        )?);
+        assert!(validate_repart_boot_layout(&partitions, None).is_err());
+        assert!(validate_repart_boot_layout(&partitions, Some(AbootDiskLayout::Ukiboot)).is_err());
+        assert!(!validate_repart_boot_layout(&[], None)?);
+        let correct_type =
+            std::mem::replace(&mut partitions[0].partition_type, "linux-generic".into());
+        assert!(aboot_repart_layout_defined(&partitions, AbootDiskLayout::Android).is_err());
+        partitions[0].partition_type = correct_type;
+
+        let unrelated: RepartPartition = serde_json::from_value(serde_json::json!({
+            "type": ABOOT_BOOT_GUID,
+            "label": "cache",
+            "file": "20-cache.conf"
+        }))?;
+        assert!(repart_partition_is_required(
+            &partitions[0],
+            Some(AbootDiskLayout::Android)
+        ));
+        assert!(!repart_partition_is_required(
+            &unrelated,
+            Some(AbootDiskLayout::Android)
+        ));
+        assert!(!aboot_repart_layout_defined(&[], AbootDiskLayout::Android)?);
+        assert!(aboot_repart_layout_defined(&partitions[..3], AbootDiskLayout::Android).is_err());
+        Ok(())
+    }
 }

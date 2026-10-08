@@ -112,7 +112,10 @@ use crate::{
     bootc_composefs::repo::open_composefs_repo,
     store::{ComposefsRepository, Storage},
 };
-use crate::{bootc_composefs::status::get_sorted_grub_uki_boot_entries, install::PostFetchState};
+use crate::{
+    bootc_composefs::status::get_sorted_grub_uki_boot_entries,
+    install::{AbootDiskLayout, PostFetchState},
+};
 use crate::{
     composefs_consts::{
         BOOT_LOADER_ENTRIES, STAGED_BOOT_LOADER_ENTRIES, STATE_DIR_RELATIVE, UKI_NAME_PREFIX,
@@ -2315,6 +2318,90 @@ fn setup_composefs_aboot_boot(
     )
 }
 
+#[cfg(feature = "install-to-disk")]
+fn aboot_partition_path(
+    disk: &bootc_blockdev::Device,
+    label: &str,
+    payload_size: usize,
+) -> Result<String> {
+    let mut partitions = disk
+        .children
+        .iter()
+        .flatten()
+        .filter(|part| part.partlabel.as_deref() == Some(label));
+    let partition = partitions
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("Missing {label} partition"))?;
+    ensure!(
+        partitions.next().is_none(),
+        "Multiple {label} partitions found"
+    );
+    ensure!(
+        payload_size as u64 <= partition.size,
+        "{label} image is larger than its partition"
+    );
+    Ok(partition.path())
+}
+
+#[cfg(feature = "install-to-disk")]
+fn write_aboot_partition(path: &str, label: &str, payload: &[u8]) -> Result<()> {
+    let mut target = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&path)
+        .with_context(|| format!("Opening {label} partition at {path}"))?;
+    target
+        .write_all(payload)
+        .with_context(|| format!("Writing {label} partition at {path}"))?;
+    target
+        .sync_all()
+        .with_context(|| format!("Syncing {path}"))?;
+    Ok(())
+}
+
+#[cfg(feature = "install-to-disk")]
+fn aboot_disk_partition_payloads(
+    layout: AbootDiskLayout,
+    artifacts: &PreparedAbootArtifacts,
+) -> Result<Vec<(&'static str, &[u8])>> {
+    let partitions = match layout {
+        AbootDiskLayout::Android => vec![
+            ("boot_b", artifacts.payload.as_ref()),
+            ("vbmeta_b", artifacts.vbmeta.as_deref().unwrap_or(&[0])),
+            ("boot_a", artifacts.payload.as_ref()),
+            ("vbmeta_a", artifacts.vbmeta.as_deref().unwrap_or(&[0])),
+        ],
+        AbootDiskLayout::Ukiboot => {
+            ensure!(
+                artifacts.vbmeta.is_none(),
+                "ukiboot layout has no vbmeta partition"
+            );
+            vec![
+                ("ukiboot_b", artifacts.payload.as_ref()),
+                ("ukiboot_a", artifacts.payload.as_ref()),
+            ]
+        }
+    };
+    Ok(partitions)
+}
+
+#[cfg(feature = "install-to-disk")]
+fn install_aboot_disk_payload(
+    root_setup: &RootSetup,
+    layout: AbootDiskLayout,
+    artifacts: &PreparedAbootArtifacts,
+) -> Result<()> {
+    let disk = &root_setup.device_info;
+    let partitions = aboot_disk_partition_payloads(layout, artifacts)?;
+    let targets = partitions
+        .iter()
+        .map(|(label, payload)| aboot_partition_path(disk, label, payload.len()))
+        .collect::<Result<Vec<_>>>()?;
+    for ((label, payload), path) in partitions.into_iter().zip(targets) {
+        write_aboot_partition(&path, label, payload)?;
+    }
+    Ok(())
+}
+
 pub(crate) struct PreparedAbootArtifacts {
     pub(crate) boot_digest: String,
     pub(crate) payload: Box<[u8]>,
@@ -2452,6 +2539,32 @@ fn install_composefs_bootloader(
     Ok(())
 }
 
+fn validate_aboot_disk_layout(
+    encoding: Option<AbootEncoding>,
+    layout: Option<AbootDiskLayout>,
+) -> Result<()> {
+    match (encoding, layout) {
+        (Some(encoding), Some(layout)) => {
+            let expected = match encoding {
+                AbootEncoding::AndroidV2 => AbootDiskLayout::Android,
+                AbootEncoding::Uki => AbootDiskLayout::Ukiboot,
+            };
+            ensure!(
+                layout == expected,
+                "Selected aboot disk layout {layout:?} does not match pulled artifact encoding {encoding:?}"
+            );
+        }
+        (Some(_), None) => bail!(
+            "Pulled image contains an aboot artifact but no aboot disk layout was selected; run to-disk from a container with matching boot artifacts"
+        ),
+        (None, Some(layout)) => {
+            bail!("Selected aboot disk layout {layout:?} but pulled image has no aboot artifact")
+        }
+        (None, None) => {}
+    }
+    Ok(())
+}
+
 #[context("Setting up composefs boot")]
 pub(crate) async fn setup_composefs_boot(
     root_setup: &RootSetup,
@@ -2484,6 +2597,14 @@ pub(crate) async fn setup_composefs_boot(
     } = crate::bootc_composefs::repo::prepare_boot_image(&repo, pull_result)?;
     let entry = primary_boot_entry(&entries)?;
     let boot_type = BootType::from(entry);
+
+    if root_setup.disk_install {
+        let encoding = match entry {
+            ComposefsBootEntry::Aboot(aboot) => Some(aboot.encoding),
+            _ => None,
+        };
+        validate_aboot_disk_layout(encoding, root_setup.aboot_disk_layout)?;
+    }
 
     let composefs_mnt_fd = repo
         .mount(&id.to_hex())
@@ -2536,10 +2657,26 @@ pub(crate) async fn setup_composefs_boot(
             &repo,
             &fs,
         )?,
-        BootType::Aboot => (
-            setup_composefs_aboot_boot(&repo, &id, &boot_ids, entry, allow_missing_fsverity)?,
-            provisional_deploy_id,
-        ),
+        BootType::Aboot => {
+            #[cfg(feature = "install-to-disk")]
+            let boot_digest = if let Some(layout) = root_setup.aboot_disk_layout {
+                let artifacts = prepare_composefs_aboot_update(
+                    &repo,
+                    &id,
+                    &boot_ids,
+                    entry,
+                    allow_missing_fsverity,
+                )?;
+                install_aboot_disk_payload(root_setup, layout, &artifacts)?;
+                artifacts.boot_digest
+            } else {
+                setup_composefs_aboot_boot(&repo, &id, &boot_ids, entry, allow_missing_fsverity)?
+            };
+            #[cfg(not(feature = "install-to-disk"))]
+            let boot_digest =
+                setup_composefs_aboot_boot(&repo, &id, &boot_ids, entry, allow_missing_fsverity)?;
+            (boot_digest, provisional_deploy_id)
+        }
     };
 
     write_composefs_state(
@@ -2596,6 +2733,66 @@ mod tests {
     use super::*;
     use composefs::erofs::format::FormatVersion;
     use composefs_boot::bootloader::{AbootArtifact, AbootEncoding, AbootEntry, Type2Entry};
+
+    #[test]
+    fn aboot_disk_layout_matches_pulled_artifact() {
+        assert!(validate_aboot_disk_layout(None, None).is_ok());
+        assert!(
+            validate_aboot_disk_layout(
+                Some(AbootEncoding::AndroidV2),
+                Some(AbootDiskLayout::Android)
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_aboot_disk_layout(Some(AbootEncoding::Uki), Some(AbootDiskLayout::Ukiboot))
+                .is_ok()
+        );
+        assert!(
+            validate_aboot_disk_layout(Some(AbootEncoding::Uki), Some(AbootDiskLayout::Android))
+                .is_err()
+        );
+        assert!(validate_aboot_disk_layout(Some(AbootEncoding::Uki), None).is_err());
+        assert!(validate_aboot_disk_layout(None, Some(AbootDiskLayout::Ukiboot)).is_err());
+    }
+
+    #[cfg(feature = "install-to-disk")]
+    #[test]
+    fn aboot_initial_partition_payloads() -> Result<()> {
+        let mut artifacts = PreparedAbootArtifacts {
+            boot_digest: String::new(),
+            payload: Box::from(&b"boot"[..]),
+            vbmeta: Some(Box::from(&b"vbmeta"[..])),
+        };
+        let android = aboot_disk_partition_payloads(AbootDiskLayout::Android, &artifacts)?;
+        assert_eq!(
+            android
+                .iter()
+                .map(|(label, payload)| (*label, *payload))
+                .collect::<Vec<_>>(),
+            [
+                ("boot_b", &b"boot"[..]),
+                ("vbmeta_b", &b"vbmeta"[..]),
+                ("boot_a", &b"boot"[..]),
+                ("vbmeta_a", &b"vbmeta"[..]),
+            ]
+        );
+        assert!(aboot_disk_partition_payloads(AbootDiskLayout::Ukiboot, &artifacts).is_err());
+
+        artifacts.vbmeta = None;
+        let android = aboot_disk_partition_payloads(AbootDiskLayout::Android, &artifacts)?;
+        assert_eq!(android[1].1, &[0]);
+        assert_eq!(android[3].1, &[0]);
+        let ukiboot = aboot_disk_partition_payloads(AbootDiskLayout::Ukiboot, &artifacts)?;
+        assert_eq!(
+            ukiboot
+                .iter()
+                .map(|(label, payload)| (*label, *payload))
+                .collect::<Vec<_>>(),
+            [("ukiboot_b", &b"boot"[..]), ("ukiboot_a", &b"boot"[..])]
+        );
+        Ok(())
+    }
 
     #[test]
     fn test_grub_bls_abs_entries_path() -> Result<()> {
