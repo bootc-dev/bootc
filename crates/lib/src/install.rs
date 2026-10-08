@@ -510,6 +510,21 @@ pub(crate) struct InstallToDiskOpts {
     pub(crate) run_repart: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AbootDiskLayout {
+    Android,
+    Ukiboot,
+}
+
+impl From<composefs_ctl::composefs_boot::bootloader::AbootEncoding> for AbootDiskLayout {
+    fn from(encoding: composefs_ctl::composefs_boot::bootloader::AbootEncoding) -> Self {
+        match encoding {
+            composefs_ctl::composefs_boot::bootloader::AbootEncoding::AndroidV2 => Self::Android,
+            composefs_ctl::composefs_boot::bootloader::AbootEncoding::Uki => Self::Ukiboot,
+        }
+    }
+}
+
 #[derive(ValueEnum, Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum ReplaceMode {
@@ -720,6 +735,8 @@ pub(crate) struct State {
     pub(crate) composefs_options: InstallComposefsOpts,
     pub(crate) composefs_fsverity_supported: bool,
     pub(crate) allow_missing_verity_explicit: bool,
+    #[cfg(feature = "install-to-disk")]
+    pub(crate) aboot_disk_layout: Option<AbootDiskLayout>,
 }
 
 // Shared read-only global state
@@ -1438,6 +1455,8 @@ pub(crate) struct RootSetup {
     /// Target root path /target.
     pub(crate) target_root_path: Option<Utf8PathBuf>,
     pub(crate) rootfs_uuid: Option<String>,
+    pub(crate) aboot_disk_layout: Option<AbootDiskLayout>,
+    pub(crate) disk_install: bool,
     /// True if we should skip finalizing
     skip_finalize: bool,
     boot: Option<MountSpec>,
@@ -1683,6 +1702,7 @@ async fn prepare_install(
     mut target_opts: InstallTargetOpts,
     mut composefs_options: InstallComposefsOpts,
     target_fs: Option<FilesystemEnum>,
+    disk_install: bool,
 ) -> Result<Arc<State>> {
     tracing::trace!("Preparing install");
     let allow_missing_verity_explicit = composefs_options.allow_missing_verity;
@@ -1780,15 +1800,22 @@ async fn prepare_install(
     };
     tracing::debug!("Target image reference: {target_imgref}");
 
-    let (composefs_required, kernel) = if let Some(root) = target_rootfs.as_ref() {
-        let kernel = crate::kernel::find_kernel(root)?;
-
-        (
-            kernel.as_ref().is_some_and(|k| k.k_type.is_unified()),
-            kernel,
-        )
+    let kernel = target_rootfs
+        .as_ref()
+        .map(crate::kernel::find_kernel)
+        .transpose()?
+        .flatten();
+    let composefs_required = kernel.as_ref().is_some_and(|k| k.k_type.is_unified());
+    #[cfg(feature = "install-to-disk")]
+    let aboot_disk_layout = if disk_install {
+        kernel.as_ref().and_then(|k| match k.k_type {
+            crate::kernel::KernelType::Aboot { encoding, .. } => {
+                Some(AbootDiskLayout::from(encoding))
+            }
+            _ => None,
+        })
     } else {
-        (false, None)
+        None
     };
 
     tracing::debug!("Composefs required: {composefs_required}");
@@ -1811,7 +1838,7 @@ async fn prepare_install(
         })
         .transpose()?;
 
-    // A UKI requires the composefs backend, and a composefs-native image
+    // A UKI or aboot image requires the composefs backend, and a composefs-native image
     // without ostree's configuration defaults to it.
     let composefs_default = crate::bootc_composefs::image::defaults_to_composefs_backend(
         &rootfs,
@@ -1984,6 +2011,8 @@ async fn prepare_install(
             .map(|fs| fs.supports_fsverity())
             .unwrap_or(true),
         allow_missing_verity_explicit,
+        #[cfg(feature = "install-to-disk")]
+        aboot_disk_layout,
     });
 
     Ok(state)
@@ -2384,6 +2413,7 @@ pub(crate) async fn install_to_disk(mut opts: InstallToDiskOpts) -> Result<()> {
         opts.target_opts,
         opts.composefs_opts,
         block_opts.filesystem,
+        true,
     )
     .await?;
 
@@ -2790,6 +2820,7 @@ pub(crate) async fn install_to_filesystem(
         opts.target_opts,
         opts.composefs_opts,
         Some(inspect.fstype.as_str().try_into()?),
+        false,
     )
     .await?;
 
@@ -2948,6 +2979,8 @@ pub(crate) async fn install_to_filesystem(
         physical_root: rootfs_fd,
         target_root_path: Some(target_root_path.clone()),
         rootfs_uuid: inspect.uuid.clone(),
+        aboot_disk_layout: None,
+        disk_install: false,
         boot,
         kargs,
         skip_finalize,
