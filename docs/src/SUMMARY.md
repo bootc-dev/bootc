@@ -63,6 +63,7 @@
 - [`man bootc-container-split-kernel-and-rootfs`](man/bootc-container-split-kernel-and-rootfs.8.md)
 - [`man bootc-container-ukify`](man/bootc-container-ukify.8.md)
 - [`man bootc-container-compute-composefs-digest`](man/bootc-container-compute-composefs-digest.8.md)
+- [`man bootc-container-aboot`](man/bootc-container-aboot.8.md)
 - [`man bootc-container-lint`](man/bootc-container-lint.8.md)
 
 # Architecture
