@@ -126,6 +126,7 @@ and may change or be removed:
 - UKI addons (`--uki-addon`). Addons are only installed by `bootc install`:
   they aren't updated on upgrade, garbage collected, or reverted on
   rollback.
+- [Android A/B boot images and ukiboot](bootc-experimental-composefs-aboot.7.md).
 - [Unified storage](bootc-experimental-unified-storage.7.md).
 
 ## Limitations
@@ -138,7 +139,8 @@ and may change or be removed:
   backend yet, so for now a system has to be reinstalled. We fully intend to
   support moving to composefs without a reinstall; see
   [Future work](#future-work).
-- `--bootloader=none` is not supported.
+- `--bootloader=none` is only supported for Android A/B boot images; see
+  [aboot support](bootc-experimental-composefs-aboot.7.md).
 - `--soft-reboot=auto` doesn't fall back to a regular reboot when the new
   deployment can't be soft rebooted into; see
   [Soft reboots](bootc-upgrades.7.md#soft-reboots).

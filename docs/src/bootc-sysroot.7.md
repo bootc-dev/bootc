@@ -90,7 +90,7 @@ Unlike the ostree backend, which keeps its repository at `/ostree/repo`, the com
 - `/state/deploy/<deployment-id>/`: Persistent per-deployment state, one directory per deployment (see below for how it is named):
   - `etc/`: a writable copy of the deployment's `/etc`, bind-mounted onto the booted root's `/etc`
   - `var`: a symlink to the shared `/state/os/default/var`, bind-mounted onto the booted root's `/var`
-  - `<deployment-id>.origin`: an INI file recording the image reference, boot type (BLS or UKI) and digest, and the OCI manifest digest (the latter is what keeps a deployment's objects alive across garbage collection)
+  - `<deployment-id>.origin`: an INI file recording the image reference, boot type (BLS, UKI, or aboot) and digest, and the OCI manifest digest (the latter is what keeps a deployment's objects alive across garbage collection)
 
 Although composefs-rs supports other fs-verity hash algorithms, bootc currently hardcodes `SHA-512` for the repository. This is why EROFS image IDs and object identifiers are 128-character hex strings.
 
@@ -103,4 +103,7 @@ deployment was staged.
 
 There is no `/ostree/repo`; the composefs backend doesn't use the ostree repository at all. A minimal `/ostree` directory is still created, but only to hold a compatibility symlink (`ostree/bootc -> ../composefs/bootc`) so that existing tooling expecting `/usr/lib/bootc/storage` to resolve through `ostree/bootc` keeps working.
 
-Transient, not-yet-finalized deployment state (used while staging an update before reboot) lives under `/run/composefs/staged-deployment` and is never persisted to disk.
+The transient view of a staged deployment lives under
+`/run/composefs/staged-deployment`. Aboot additionally persists pending and
+attempted state so an interrupted A/B update can be reconciled after reboot;
+see [aboot update state](bootc-experimental-composefs-aboot.7.md#updates-rollback-and-recovery).
