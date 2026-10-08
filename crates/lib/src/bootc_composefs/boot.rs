@@ -101,7 +101,9 @@ use serde::{Deserialize, Serialize};
 use crate::bootc_composefs::state::{get_booted_bls, write_composefs_state};
 use crate::bootc_composefs::status::build_composefs_karg;
 use crate::bootc_kargs::compute_new_kargs;
-use crate::composefs_consts::{TYPE1_BOOT_DIR_PREFIX, TYPE1_ENT_PATH, TYPE1_ENT_PATH_STAGED};
+use crate::composefs_consts::{
+    BLS_ENTRY_FILE_PREFIX, TYPE1_BOOT_DIR_PREFIX, TYPE1_ENT_PATH, TYPE1_ENT_PATH_STAGED,
+};
 use crate::parsers::bls_config::{BLSConfig, BLSConfigType, EFIKey};
 use crate::spec::BootloaderKind;
 use crate::store::find_booted_from_esp;
@@ -422,7 +424,7 @@ const ESP_MOUNT_DATA: &std::ffi::CStr = c"fmask=0177,dmask=0077";
 /// is already mounted in the current mount namespace; callers should use
 /// [`mount_esp_readonly`] or [`mount_esp_writable`] instead of this primitive
 /// so that pre-existing mounts are handled.
-fn mount_esp(device: &str) -> Result<TempMount> {
+pub fn mount_esp(device: &str) -> Result<TempMount> {
     TempMount::mount_dev(device, "vfat", ESP_MOUNT_FLAGS, Some(ESP_MOUNT_DATA))
 }
 
@@ -519,7 +521,7 @@ pub fn type1_entry_conf_file_name(
     priority: &str,
 ) -> String {
     let os_id_safe = os_id.replace('-', "_");
-    format!("bootc_{os_id_safe}-{version}-{priority}.conf")
+    format!("{BLS_ENTRY_FILE_PREFIX}{os_id_safe}-{version}-{priority}.conf")
 }
 
 /// Generate sort key for the primary (new/upgraded) boot entry.
