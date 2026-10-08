@@ -62,8 +62,11 @@ backend and layout from its boot artifact and reads repart definitions from that
 same container. With `--source-imgref`, the source image's root filesystem is not
 available during preparation, so no aboot disk layout is inferred. The normally
 pulled image must match the selected encoding.
-Supplied repart definitions must match the artifact's slot labels and partition
-type GUIDs; otherwise bootc creates a default layout. Android uses `boot_a`,
+Existing repart definitions are preserved. Supplied boot partition definitions
+must use the artifact's slot labels and partition type GUIDs. Bootc adds
+definitions for missing boot partitions and generates a root definition only
+when none is supplied. In that case, specify the root filesystem in the install
+configuration or with `--filesystem`. Android uses `boot_a`,
 `boot_b`, `vbmeta_a`, and `vbmeta_b`; ukiboot uses `ukiboot_a`, `ukiboot_b`,
 `ukibootctl`, and an ESP. Both layouts include a root filesystem and initialize
 both boot slots. Platform-specific sizing, device trees, and `/etc/aboot.cfg`
