@@ -101,6 +101,11 @@ pub(crate) async fn prepare_boot_artifact(
         }
     }
 
+    let mut cmdline = crate::bootc_kargs::get_kargs_in_root(&root, std::env::consts::ARCH)?;
+    for karg in extra_kargs {
+        cmdline.extend(&Cmdline::from(karg));
+    }
+
     let erofs_version = resolve_erofs_version(erofs_version);
     let composefs_digest =
         compute_composefs_digest(rootfs, erofs_version, write_dumpfile_to).await?;
@@ -113,17 +118,15 @@ pub(crate) async fn prepare_boot_artifact(
         None
     };
 
-    let mut cmdline = crate::bootc_kargs::get_kargs_in_root(&root, std::env::consts::ARCH)?;
     for karg in composefs_kargs_for_boot_artifact(
         composefs_digest,
         erofs_version,
         compatibility_v2_digest,
         allow_missing_fsverity,
     ) {
-        cmdline.extend(&Cmdline::from(karg));
-    }
-    for karg in extra_kargs {
-        cmdline.extend(&Cmdline::from(karg));
+        for param in &Cmdline::from(karg) {
+            cmdline.add_or_modify(&param);
+        }
     }
 
     Ok(BootArtifactInputs {
