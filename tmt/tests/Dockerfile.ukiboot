@@ -1,0 +1,34 @@
+ARG base=localhost/bootc
+FROM ${base} AS rootfs
+COPY tmt/tests/ukiboot/aboot.cfg /etc/aboot.cfg
+COPY tmt/tests/ukiboot/kargs.toml /usr/lib/bootc/kargs.d/90-ukiboot.toml
+RUN --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
+    dnf -y --setopt=install_weak_deps=False install aboot-deploy aboot-update ukiboot systemd-ukify systemd-boot && \
+    dnf clean all && rm -rf /var/cache /var/log /var/lib/dnf && \
+    rm -rf /etc/repart.d /run/repart.d /usr/lib/repart.d /usr/local/lib/repart.d /usr/lib/bootc/bound-images.d && \
+    systemctl enable ukiboot-set-success.service
+ARG TEST_VERSION=1
+RUN --network=none printf '%s\n' "${TEST_VERSION}" > /usr/share/bootc-aboot-test-version
+
+FROM rootfs AS split
+RUN --network=none mkdir -p /boot/.kernel && \
+    bootc container split-kernel-and-rootfs --rootfs / --output /boot/.kernel
+
+FROM scratch AS flattened
+COPY --from=split / /
+
+FROM rootfs AS aboot
+RUN --network=none --mount=type=bind,from=flattened,source=/,target=/target,ro <<'EOF'
+set -eux
+kver=$(ls /target/boot/.kernel)
+mkdir -p /out
+bootc container aboot --rootfs /target --kernel-dir "/target/boot/.kernel/${kver}" --out /out --allow-missing-verity
+test -s "/out/aboot-${kver}.img"
+EOF
+
+FROM flattened
+RUN --network=none rm -rf /boot/.kernel
+COPY --from=aboot /out/ /boot/
+LABEL containers.bootc="1"
+CMD ["/sbin/init"]
+RUN --network=none bootc container lint --skip nonempty-boot --fatal-warnings
