@@ -182,7 +182,7 @@ pub(crate) fn split_kernel(root: &Dir, output: &Dir) -> Result<String> {
 
 /// Returns the path to the first UKI found in the container root, if any.
 ///
-/// Looks in `/boot/EFI/Linux/*.efi`. If multiple UKIs are present, returns
+/// Looks in `/boot/EFI/Linux/*.efi`, excluding addons. If multiple UKIs are present, returns
 /// the first one in sorted order for determinism.
 fn find_uki_path(root: &Dir) -> Result<Option<Utf8PathBuf>> {
     let Some(boot) = root.open_dir_optional(crate::install::BOOT)? else {
@@ -198,7 +198,7 @@ fn find_uki_path(root: &Dir) -> Result<Option<Utf8PathBuf>> {
         let name = entry.file_name();
         let name_path = Path::new(&name);
         let extension = name_path.extension().and_then(|v| v.to_str());
-        if extension == Some("efi") {
+        if extension == Some("efi") && !name.to_string_lossy().ends_with(".addon.efi") {
             if let Some(name_str) = name.to_str() {
                 uki_files.push(name_str.to_owned());
             }
@@ -359,6 +359,55 @@ mod tests {
         // Should return first in sorted order
         let path = find_uki_path(&tempdir)?.expect("should find uki");
         assert_eq!(path.as_str(), "boot/EFI/Linux/aaa.efi");
+        Ok(())
+    }
+
+    #[test]
+    fn test_find_kernel_with_addons() -> Result<()> {
+        for (has_uki, has_vmlinuz, has_cmdline, expected_unified) in [
+            (true, false, true, Some(true)),
+            (false, false, false, None),
+            (false, true, false, Some(false)),
+            (true, false, false, Some(true)),
+        ] {
+            let root = cap_tempfile::tempdir(cap_std::ambient_authority())?;
+            root.create_dir_all("boot/EFI/Linux")?;
+            root.write("boot/EFI/Linux/000.addon.efi", create_minimal_pe())?;
+            if has_uki {
+                let mut uki = create_minimal_pe();
+                if !has_cmdline {
+                    const SECTION_HEADER_OFFSET: usize = 0x188;
+                    uki[SECTION_HEADER_OFFSET..SECTION_HEADER_OFFSET + 8]
+                        .copy_from_slice(b".linux\0\0");
+                }
+                root.write("boot/EFI/Linux/kernel.efi", uki)?;
+            }
+            if has_vmlinuz {
+                root.create_dir_all("usr/lib/modules/6.12")?;
+                root.write("usr/lib/modules/6.12/vmlinuz", b"kernel")?;
+            }
+
+            let kernel = find_kernel(&root)?;
+            assert_eq!(kernel.as_ref().map(|k| k.kernel.unified), expected_unified);
+            if let Some(kernel) = kernel {
+                assert_eq!(
+                    kernel.kernel.version,
+                    if has_uki { "kernel" } else { "6.12" }
+                );
+                if let KernelType::Uki { path, cmdline } = kernel.k_type {
+                    assert_eq!(path, "boot/EFI/Linux/kernel.efi");
+                    assert_eq!(
+                        cmdline.as_ref().map(ToString::to_string).as_deref(),
+                        has_cmdline.then_some("quiet splash")
+                    );
+                } else {
+                    let KernelType::Vmlinuz { path, .. } = kernel.k_type else {
+                        panic!("Expected vmlinuz");
+                    };
+                    assert_eq!(path, "usr/lib/modules/6.12/vmlinuz");
+                }
+            }
+        }
         Ok(())
     }
 }
