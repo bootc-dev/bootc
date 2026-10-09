@@ -1,5 +1,5 @@
 use std::future::Future;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::os::fd::BorrowedFd;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
@@ -249,46 +249,51 @@ pub fn read_uefi_var(var_name: &str) -> Result<String, EfiError> {
         Err(e) => Err(e)?,
     };
 
-    match efivarfs.read(var_name) {
-        Ok(loader_bytes) => {
-            // Ref: https://www.kernel.org/doc/html/latest/filesystems/efivarfs.html
-            //
-            // When a content of an UEFI variable in /sys/firmware/efi/efivars is displayed,
-            // for example using “hexdump”, pay attention that the first 4 bytes of the output
-            // represent the UEFI variable attributes, in little-endian format.
-            //
-            // Practically the output of each efivar is composed of:
-            //
-            // 4_bytes_of_attributes + efivar_data
-            let data = &loader_bytes[4..];
-
-            if data.len() % 2 != 0 {
-                return Err(EfiError::InvalidData(
-                    "EFI var length is not valid UTF-16 LE",
-                ));
-            }
-
-            // EFI vars are UTF-16 LE
-            let data_u16_bytes: Vec<u16> = data
-                .chunks_exact(2)
-                .map(|x| u16::from_le_bytes([x[0], x[1]]))
-                .collect();
-
-            let var_string = String::from_utf16(&data_u16_bytes)
-                .map_err(|_| EfiError::InvalidData("EFI var is not UTF-16"))?;
-
-            // EFI string variables are NUL-terminated; strip the trailing
-            // NUL(s) and any surrounding whitespace so the value compares
-            // cleanly against
-            return Ok(var_string.trim_matches(|c| c == '\0').trim().to_string());
-        }
-
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Err(EfiError::MissingVar);
-        }
-
+    match efivarfs.open(var_name) {
+        Ok(f) => parse_efi_var(f),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(EfiError::MissingVar),
         Err(e) => Err(e)?,
     }
+}
+
+/// Parse the raw contents of an efivarfs EFI variable into its string value.
+///
+/// Ref: <https://www.kernel.org/doc/html/latest/filesystems/efivarfs.html>
+///
+/// When a content of an UEFI variable in /sys/firmware/efi/efivars is displayed,
+/// for example using “hexdump”, pay attention that the first 4 bytes of the output
+/// represent the UEFI variable attributes, in little-endian format.
+///
+/// Practically the output of each efivar is composed of:
+///
+/// 4_bytes_of_attributes + efivar_data
+fn parse_efi_var(mut reader: impl Read) -> Result<String, EfiError> {
+    let mut bytes = Vec::new();
+    reader.read_to_end(&mut bytes)?;
+
+    let Some((_, data)) = bytes.split_at_checked(4) else {
+        return Err(EfiError::InvalidData("EFI variable is too short"));
+    };
+
+    if data.len() % 2 != 0 {
+        return Err(EfiError::InvalidData(
+            "EFI var length is not valid UTF-16 LE",
+        ));
+    }
+
+    // EFI vars are UTF-16 LE
+    let data_u16_bytes: Vec<u16> = data
+        .chunks_exact(2)
+        .map(|x| u16::from_le_bytes([x[0], x[1]]))
+        .collect();
+
+    let var_string = String::from_utf16(&data_u16_bytes)
+        .map_err(|_| EfiError::InvalidData("EFI var is not UTF-16"))?;
+
+    // EFI string variables are NUL-terminated; strip the trailing
+    // NUL(s) and any surrounding whitespace so the value compares
+    // cleanly against UTF-8 strings
+    Ok(var_string.trim_matches(|c| c == '\0').trim().to_string())
 }
 
 /// Computes a relative path from `from` to `to`.
@@ -332,6 +337,54 @@ mod tests {
             digested_pullspec("quay.io/example/foo", digest),
             format!("quay.io/example/foo@{digest}")
         );
+    }
+
+    /// Build raw efivarfs contents: 4 attribute bytes followed by the
+    /// UTF-16 LE encoding of `s`.
+    fn efi_var_bytes(s: &str) -> Vec<u8> {
+        let mut bytes = vec![0x07, 0x00, 0x00, 0x00];
+        for unit in s.encode_utf16() {
+            bytes.extend_from_slice(&unit.to_le_bytes());
+        }
+        bytes
+    }
+
+    #[test]
+    fn test_parse_efi_var() {
+        // A plain value, NUL-terminated as the firmware writes it.
+        let bytes = efi_var_bytes("abcd-1234\0");
+        assert_eq!(parse_efi_var(&bytes[..]).unwrap(), "abcd-1234");
+
+        // Surrounding whitespace and trailing NULs are stripped.
+        let bytes = efi_var_bytes("  value \0\0");
+        assert_eq!(parse_efi_var(&bytes[..]).unwrap(), "value");
+
+        // Just the attributes with no data is empty, not an error.
+        let bytes = efi_var_bytes("");
+        assert_eq!(parse_efi_var(&bytes[..]).unwrap(), "");
+    }
+
+    #[test]
+    fn test_parse_efi_var_errors() {
+        // Fewer than the 4 attribute bytes.
+        assert!(matches!(
+            parse_efi_var(&[0x07, 0x00][..]),
+            Err(EfiError::InvalidData(_))
+        ));
+
+        // Odd number of data bytes cannot be UTF-16 LE.
+        let bytes = [0x07, 0x00, 0x00, 0x00, 0x41];
+        assert!(matches!(
+            parse_efi_var(&bytes[..]),
+            Err(EfiError::InvalidData(_))
+        ));
+
+        // Unpaired UTF-16 surrogate is not valid UTF-16.
+        let bytes = [0x07, 0x00, 0x00, 0x00, 0x00, 0xD8];
+        assert!(matches!(
+            parse_efi_var(&bytes[..]),
+            Err(EfiError::InvalidData(_))
+        ));
     }
 
     #[test]
