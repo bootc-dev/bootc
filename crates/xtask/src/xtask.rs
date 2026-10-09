@@ -205,6 +205,8 @@ pub enum BootType {
     Bls,
     /// UKI boot
     Uki,
+    /// Aboot boot
+    Aboot,
 }
 
 impl Display for BootType {
@@ -212,6 +214,7 @@ impl Display for BootType {
         match self {
             BootType::Bls => f.write_str("bls"),
             BootType::Uki => f.write_str("uki"),
+            BootType::Aboot => f.write_str("aboot"),
         }
     }
 }
@@ -310,7 +313,7 @@ pub(crate) struct RunTmtArgs {
     #[arg(long, env = "BOOTC_seal_state")]
     pub(crate) seal_state: Option<SealState>,
 
-    /// Boot entry type (bls or uki)
+    /// Boot entry type (bls, uki, or aboot)
     #[arg(long, env = "BOOTC_boot_type", default_value_t)]
     pub(crate) boot_type: BootType,
 

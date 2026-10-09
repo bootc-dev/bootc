@@ -33,6 +33,7 @@ base_img := env("BOOTC_image", "localhost/bootc")
 upgrade_img := base_img + "-upgrade"
 # Base image with tmt dependencies added, used as the boot source for upgrade tests
 upgrade_source_img := base_img + "-upgrade-source"
+ukiboot_img := base_img + "-ukiboot"
 
 # Build variant: ostree (default) or composefs
 variant := env("BOOTC_variant", "ostree")
@@ -191,6 +192,18 @@ build-sealed:
 test-tmt *ARGS: build
     @just _build-upgrade-image
     @just test-tmt-nobuild {{ARGS}}
+
+[group('testing')]
+build-ukiboot-test-image: build
+    podman build {{_nocache_arg}} --build-arg=base={{base_img}} -f tmt/tests/Dockerfile.ukiboot -t {{ukiboot_img}}:v1 .
+
+[group('testing')]
+build-ukiboot-update-test-image: build-ukiboot-test-image
+    podman build {{_nocache_arg}} --build-arg=base={{base_img}} --build-arg=TEST_VERSION=2 -f tmt/tests/Dockerfile.ukiboot -t {{ukiboot_img}}:v2 .
+
+[group('testing')]
+test-ukiboot: build-ukiboot-update-test-image
+    cargo xtask run-tmt --env=BOOTC_variant=composefs --filesystem=ext4 --boot-type=aboot --seal-state=unsealed --upgrade-image={{ukiboot_img}}:v2 {{ukiboot_img}}:v1 aboot
 
 # Split out from `test-container` because, unlike the container integration tests,
 # unit tests don't depend on variant/filesystem/bootloader/boot_type/seal_state, so
