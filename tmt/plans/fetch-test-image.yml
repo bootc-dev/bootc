@@ -1,0 +1,9 @@
+---
+- name: Fetch build-under-test image archive to the TMT controller
+  hosts: harness
+  tasks:
+    - name: Fetch the image archive from the harness
+      ansible.builtin.fetch:
+        src: /var/tmp/bootc-to-existing-root-preserve-var-merge-etc.oci
+        dest: /tmp/bootc-to-existing-root-preserve-var-merge-etc.oci
+        flat: true

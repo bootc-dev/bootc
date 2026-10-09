@@ -91,6 +91,5 @@ podman build --jobs=4 --from "$BASE" -v "$BOOTC_TEMPDIR":/bootc-test:z -t localh
 # Keep these in sync with what's used in hack/lbi
 podman pull -q --retry 5 --retry-delay 5s quay.io/curl/curl:latest quay.io/curl/curl-base:latest registry.access.redhat.com/ubi9/podman:latest
 
-# Run system-reinstall-bootc
 # TODO make it more scriptable instead of expect + send
 ./system-reinstall-bootc.exp

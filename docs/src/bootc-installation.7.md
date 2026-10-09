@@ -294,6 +294,17 @@ and data from the old system (now accessible at `/sysroot`) to the new system. T
 useful for preserving network settings, user accounts, or application data from the
 previous installation.
 
+By default, the old `/var` and `/etc` are not migrated into the new deployment. With
+the ostree backend, `--preserve-var` opts into copying the old `/var` into the new
+stateroot before reboot; this uses reflinks when supported and otherwise makes a full
+copy, which can be unsafe while databases or other stateful services are running.
+`/var/tmp`, `/var/cache`, `/var/log/journal`, and `/var/lib/containers` are always
+excluded. Repeat `--preserve-var-skip PATH` to add further exclusions using paths
+relative to `/var` (a path or one direct child path, such as `lib/rpm`). The
+ostree-only `--merge-etc` option instead performs a three-way merge of the
+host's `/etc` customizations into the new deployment before the first reboot. See the
+[to-existing-root man page](man/bootc-install-to-existing-root.8.md) for details.
+
 ##### Before reboot: Injecting new configuration
 
 After running `bootc install to-existing-root`, you may want to inject
@@ -342,11 +353,10 @@ After rebooting into the new bootc system, the previous root filesystem is
 mounted at `/sysroot`. You can then migrate configuration and data from the
 old system to the new one.
 
-**Important:** Any data from `/etc` that you want to use in the new system must be
-manually copied from `/sysroot/etc` to `/etc` after rebooting into the new system.
-There is currently no automated mechanism for migrating this configuration data.
-This applies to network configurations, user accounts, application settings, and other
-system configuration stored in `/etc`.
+Without `--merge-etc`, configuration data from the old `/etc` remains at
+`/sysroot/etc` and is not applied to the new system. Manually copy or merge any data
+you need after rebooting. This applies to network configurations, user accounts,
+application settings, and other system configuration stored in `/etc`.
 
 For example, after rebooting:
 

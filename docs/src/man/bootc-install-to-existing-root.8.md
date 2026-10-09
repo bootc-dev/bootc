@@ -24,6 +24,25 @@ configuration files:
 1. **Before rebooting**: Injecting new configuration into the newly installed system
 2. **After rebooting**: Migrating configuration from the old system to the new system
 
+By default, installation does not migrate the running system's `/var` data or
+customizations in `/etc`. The opt-in `--preserve-var` and `--merge-etc` options
+provide these migrations on the **ostree backend only**. They run after the
+installation completes and before the first reboot.
+
+`--preserve-var` copies the old `/var` into the new stateroot. Where supported,
+the copy uses filesystem reflinks; otherwise it performs a full copy. A full copy
+can be unsafe while databases or other stateful services are running, so stop
+those services before installation when a full copy will be used. The paths
+`tmp`, `cache`, `log/journal`, and `lib/containers` are always excluded. Use the
+repeatable `--preserve-var-skip` option to add exclusions relative to `/var`;
+each path may be one component or a direct child path (for example, `tmp` or
+`lib/rpm`).
+
+`--merge-etc` performs a three-way merge that applies the running host's `/etc`
+customizations to the new deployment before its first reboot. Without this
+option, the new deployment's `/etc` comes from the image; there is no automatic
+`/etc` migration by default.
+
 ### Before reboot: Injecting new configuration
 
 If you need to inject new configuration files (such as custom `/etc/fstab` entries,
@@ -76,9 +95,10 @@ After rebooting into the new bootc system, the previous root filesystem data
 is accessible at `/sysroot` (the "physical root"). This allows you to migrate
 data from the old system to the new one.
 
-**Important:** Any configuration data from `/etc` that you want to use in the
-new system must be **manually copied** from `/sysroot/etc` to `/etc` after
-rebooting. There is currently no automated mechanism for migrating this data.
+With the default installation behavior, configuration data from the old `/etc`
+remains at `/sysroot/etc` and is not applied to the new system. Copy or merge
+any needed configuration manually after reboot, unless you used `--merge-etc`
+to apply the old host's customizations to the new deployment before rebooting.
 
 For example, to migrate configuration after rebooting:
 
@@ -99,8 +119,9 @@ vipw  # Carefully review and merge users from /sysroot/etc/passwd
 ```
 
 This applies to network configurations, user accounts, application settings,
-and other system configuration stored in `/etc`. Review files in `/sysroot/etc`
-and manually copy or merge what you need into `/etc`.
+and other system configuration stored in `/etc` when `--merge-etc` was not used.
+Review files in `/sysroot/etc` and manually copy or merge what you need into
+`/etc`.
 
 **Note:** A generated `/etc/resolv.conf` should not normally be copied or
 edited directly. It may be a dangling symlink after reboot or contain only a
@@ -230,6 +251,18 @@ of migrating the fstab entries. See the "Injecting kernel arguments" section abo
 **--uki-addon**=*UKI_ADDON*
 
     Name of the UKI addons to install without the ".efi.addon" suffix. This option can be provided multiple times if multiple addons are to be installed (composefs backend only)
+
+**--preserve-var**
+
+    Preserve the running system's `/var` data into the new bootc deployment
+
+**--preserve-var-skip**=*PATH*
+
+    Relative paths below `/var` to leave out while preserving `/var`
+
+**--merge-etc**
+
+    Merge the running system's `/etc` customisations into the new deployment
 
 <!-- END GENERATED OPTIONS -->
 

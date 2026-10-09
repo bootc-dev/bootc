@@ -1,0 +1,88 @@
+summary: Test package-mode to-existing-root migration flags
+provision:
+  - name: harness
+    role: harness
+    how: virtual
+    image: $@{test_disk_image}
+    user: root
+  - name: target
+    role: target
+    how: virtual
+    image: $@{test_disk_image}
+    user: root
+prepare:
+  # This is the normal integration guest setup, restricted to the harness.
+  - how: install
+    order: 97
+    package:
+      - podman
+      - skopeo
+      - jq
+      - bootc
+      - system-reinstall-bootc
+      - zstd
+      - cpio
+      - rpm-build
+      - expect
+      - ansible-core
+      - parted
+      - lvm2
+      - dosfstools
+      - e2fsprogs
+    where: harness
+    when: running_env != image_mode
+  - how: shell
+    order: 98
+    script:
+      - mkdir -p bootc && cp /var/share/test-artifacts/*.src.rpm bootc
+      - cd bootc && rpm2cpio *.src.rpm > pkg.cpio && cpio -idmv < pkg.cpio && rm pkg.cpio && rm -f *-vendor.tar.zstd && zstd -d *.tar.zstd && tar -xvf *.tar -C . --strip-components=1 && ls -al
+      - cd bootc/hack && ./provision-packit.sh
+      - |
+        workdir=$(mktemp -d)
+        trap 'rm -rf -- "$workdir"' EXIT
+        cat > "$workdir/Containerfile" <<'EOF'
+        FROM localhost/bootc
+        RUN mkdir -p /etc/bootc-tmt-merge && \
+            printf '%s\n' image-default > /etc/bootc-tmt-merge/default.conf && \
+            printf '%s\n' image-only > /etc/bootc-tmt-merge/image-only.conf
+        EOF
+        podman build -t localhost/bootc-to-existing-root-preserve-var-merge-etc:latest "$workdir"
+        podman save --format oci-archive \
+          --output /var/tmp/bootc-to-existing-root-preserve-var-merge-etc.oci \
+          localhost/bootc-to-existing-root-preserve-var-merge-etc:latest
+    where: harness
+    when: running_env != image_mode
+  - how: install
+    order: 97
+    package:
+      - podman
+      - jq
+      - bootc
+    where: target
+    when: running_env != image_mode
+  # Reboot only the image-mode harness after system-reinstall-bootc.
+  - how: ansible
+    order: 99
+    playbook:
+      - https://github.com/bootc-dev/bootc/raw/refs/heads/main/hack/packit-reboot.yml
+    where: harness
+    when: running_env != image_mode
+  # Fetch to the TMT controller, then copy that exact archive to the target.
+  # Separate ordered steps avoid relying on shared storage or guest ordering.
+  - how: ansible
+    order: 100
+    playbook: fetch-test-image.yml
+    where: harness
+    when: running_env != image_mode
+  - how: ansible
+    order: 101
+    playbook: copy-test-image.yml
+    where: target
+    when: running_env != image_mode
+execute:
+  how: tmt
+discover:
+  how: fmf
+  where: target
+  test:
+    - /tmt/tests/test-50-to-existing-root-preserve-var-merge-etc

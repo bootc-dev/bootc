@@ -1,0 +1,11 @@
+---
+- name: Copy build-under-test image archive from the TMT controller to target
+  hosts: target
+  tasks:
+    - name: Copy the same image archive to the target
+      ansible.builtin.copy:
+        src: /tmp/bootc-to-existing-root-preserve-var-merge-etc.oci
+        dest: /var/tmp/bootc-to-existing-root-preserve-var-merge-etc.oci
+        owner: root
+        group: root
+        mode: '0600'
