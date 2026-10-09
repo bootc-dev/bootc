@@ -41,22 +41,54 @@ pub(crate) fn inject_root_ssh_authorized_keys(
         format!("f~ /{root_path}/.ssh/authorized_keys 600 root root - {b64_encoded}\n");
 
     crate::lsm::ensure_dir_labeled(dest, ETC_TMPFILES, None, 0o755.into(), sepolicy)?;
-    let tmpfiles_dir = dest.open_dir(ETC_TMPFILES)?;
-    crate::lsm::atomic_replace_labeled(
-        &tmpfiles_dir,
-        ROOT_SSH_TMPFILE,
-        0o644.into(),
-        sepolicy,
-        |w| w.write_all(tmpfiles_content.as_bytes()).map_err(Into::into),
-    )?;
+    let target = Utf8Path::new(ETC_TMPFILES).join(ROOT_SSH_TMPFILE);
+    crate::lsm::atomic_replace_labeled(dest, &target, 0o644.into(), sepolicy, |w| {
+        w.write_all(tmpfiles_content.as_bytes()).map_err(Into::into)
+    })?;
 
-    println!("Injected: {ETC_TMPFILES}/{ROOT_SSH_TMPFILE}");
+    println!("Injected: {target}");
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_inject_root_ssh_label() -> Result<()> {
+        // Only meaningful where SELinux is enabled
+        if !crate::lsm::selinux_enabled() {
+            return Ok(());
+        }
+        let host = Dir::open_ambient_dir("/", cap_std::ambient_authority())?;
+        let Some(policy) = crate::lsm::new_sepolicy_at(&host)? else {
+            return Ok(());
+        };
+        let root = &cap_std_ext::cap_tempfile::TempDir::new(cap_std::ambient_authority())?;
+
+        root.create_dir("etc")?;
+        root.create_dir("root")?;
+        inject_root_ssh_authorized_keys(
+            root,
+            root,
+            Some(&policy),
+            "ssh-ed25519 ABCDE example@demo\n",
+        )?;
+
+        let expected = crate::lsm::require_label(
+            &policy,
+            Utf8Path::new("/etc/tmpfiles.d/bootc-root-ssh.conf"),
+            libc::S_IFREG | 0o644,
+        )?;
+        let f = root.open(format!("etc/tmpfiles.d/{ROOT_SSH_TMPFILE}"))?;
+        let mut buf = [0u8; 1024];
+        let n = rustix::fs::fgetxattr(&f, "security.selinux", &mut buf)?;
+        assert_eq!(
+            std::str::from_utf8(&buf[..n])?.trim_end_matches('\0'),
+            expected.as_str()
+        );
+        Ok(())
+    }
 
     #[test]
     fn test_inject_root_ssh_symlinked() -> Result<()> {
