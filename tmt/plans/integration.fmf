@@ -367,4 +367,12 @@ execute:
     test:
       - /tmt/tests/tests/test-60-install-composefs-native
   extra-fixme_skip_if_uki: true
+
+/plan-61-system-reinstall-composefs:
+  summary: Test system-reinstall with composefs backend and bootloader compatibility
+  discover:
+    how: fmf
+    test:
+      - /tmt/tests/tests/test-61-system-reinstall-composefs
+  extra-skip_if_ostree: true
 # END GENERATED PLANS
