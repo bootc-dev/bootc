@@ -780,8 +780,9 @@ checksum = "55b672471b4e9f9e95499ea597ff64941a309b2cdbffcc46f2cc5e2d971fd335"
 
 [[package]]
 name = "composefs"
-version = "0.9.2"
-source = "git+https://github.com/composefs/composefs-rs?tag=v0.9.2#f720d6c79ac6b082fb1e182eed3b291f88e2a7f4"
+version = "0.9.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7678ceb9ed3a1cd466aac8cae1d055d77336c7698fc3d7c8b8cbc5a3a3d33e42"
 dependencies = [
  "anyhow",
  "composefs-ioctls",
@@ -802,18 +803,18 @@ dependencies = [
  "xxhash-rust",
  "zerocopy",
  "zlink-core",
- "zstd 0.13.3",
+ "zstd 0.14.0",
 ]
 
 [[package]]
 name = "composefs-boot"
-version = "0.9.2"
-source = "git+https://github.com/composefs/composefs-rs?tag=v0.9.2#f720d6c79ac6b082fb1e182eed3b291f88e2a7f4"
+version = "0.9.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c61074a193dda9270830d3598d26b618b0181726c8cf61ab59d3f66924875d5e"
 dependencies = [
  "anyhow",
  "composefs",
  "fn-error-context",
- "hex",
  "pcre2",
  "regex-automata",
  "rustix",
@@ -823,8 +824,9 @@ dependencies = [
 
 [[package]]
 name = "composefs-ctl"
-version = "0.9.2"
-source = "git+https://github.com/composefs/composefs-rs?tag=v0.9.2#f720d6c79ac6b082fb1e182eed3b291f88e2a7f4"
+version = "0.9.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32bf730c9fe70c9d0a3b9f013547520c2d6d0ebb966a538ac73700a576114532"
 dependencies = [
  "anyhow",
  "cap-std-ext",
@@ -852,8 +854,9 @@ dependencies = [
 
 [[package]]
 name = "composefs-fuse"
-version = "0.9.2"
-source = "git+https://github.com/composefs/composefs-rs?tag=v0.9.2#f720d6c79ac6b082fb1e182eed3b291f88e2a7f4"
+version = "0.9.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a795d7cd30c58b9245122c3a41409c35ca3bf30dc313cfac700662f3a6e6e176"
 dependencies = [
  "anyhow",
  "composefs",
@@ -867,8 +870,9 @@ dependencies = [
 
 [[package]]
 name = "composefs-ioctls"
-version = "0.9.2"
-source = "git+https://github.com/composefs/composefs-rs?tag=v0.9.2#f720d6c79ac6b082fb1e182eed3b291f88e2a7f4"
+version = "0.9.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6aad17a5f5c2c2f667c1c5cb543f6d6a5b5984fab651178eecc62b83008ebe6d"
 dependencies = [
  "rustix",
  "thiserror 2.0.20",
@@ -876,8 +880,9 @@ dependencies = [
 
 [[package]]
 name = "composefs-oci"
-version = "0.9.2"
-source = "git+https://github.com/composefs/composefs-rs?tag=v0.9.2#f720d6c79ac6b082fb1e182eed3b291f88e2a7f4"
+version = "0.9.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e4f7302aba57a0663087356e3df39d0bf43adf7304d845f5873b5b62974a4123"
 dependencies = [
  "anyhow",
  "async-compression",
@@ -893,6 +898,7 @@ dependencies = [
  "fn-error-context",
  "hex",
  "indicatif",
+ "oci-delta",
  "ocidir",
  "rustix",
  "serde",
@@ -904,13 +910,14 @@ dependencies = [
  "tracing",
  "zlink",
  "zlink-core",
- "zstd 0.13.3",
+ "zstd 0.14.0",
 ]
 
 [[package]]
 name = "composefs-splitdirfdstream"
-version = "0.9.2"
-source = "git+https://github.com/composefs/composefs-rs?tag=v0.9.2#f720d6c79ac6b082fb1e182eed3b291f88e2a7f4"
+version = "0.9.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "abe821055dd88f7c2d7e3ee8ac1e54be8b646f676d568c1f37e53c606b911f09"
 dependencies = [
  "openssl",
  "rand 0.10.3",
@@ -922,8 +929,9 @@ dependencies = [
 
 [[package]]
 name = "composefs-storage"
-version = "0.9.2"
-source = "git+https://github.com/composefs/composefs-rs?tag=v0.9.2#f720d6c79ac6b082fb1e182eed3b291f88e2a7f4"
+version = "0.9.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "999579b801c75fec30b73eb416f40eff07725432ea704b1fb646ad709a1664ba"
 dependencies = [
  "anyhow",
  "base64 0.23.0",
@@ -942,7 +950,7 @@ dependencies = [
  "toml",
  "tracing",
  "zlink",
- "zstd 0.13.3",
+ "zstd 0.14.0",
 ]
 
 [[package]]
@@ -2394,6 +2402,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ff76201f031d8863c38aa7f905eca4f53abbfa15f609db4277d44cd8938f33fe"
 dependencies = [
  "memchr",
+]
+
+[[package]]
+name = "oci-delta"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fc185feabe86ac78e5c4ae8b800078f257621ba652cd426d516a846aed93b543"
+dependencies = [
+ "anyhow",
+ "flate2",
+ "hex",
+ "oci-spec",
+ "openssl",
+ "zstd 0.13.3",
 ]
 
 [[package]]

@@ -204,7 +204,8 @@
       "type": "string",
       "enum": [
         "Bls",
-        "Uki"
+        "Uki",
+        "Aboot"
       ]
     },
     "Bootloader": {
@@ -224,6 +225,11 @@
           "description": "Use SystemdBoot as the bootloader",
           "type": "string",
           "const": "systemd"
+        },
+        {
+          "description": "Use ukiboot as the bootloader",
+          "type": "string",
+          "const": "ukiboot"
         },
         {
           "description": "Don't use a bootloader managed by bootc",

@@ -1,0 +1,11 @@
+[Unit]
+Description=Record Booted Aboot Slot
+Documentation=man:bootc(1)
+RequiresMountsFor=/sysroot
+After=local-fs.target
+Before=bootc-fetch-apply-updates.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/bootc internals composefs-aboot-reconcile

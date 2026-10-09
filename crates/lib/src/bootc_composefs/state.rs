@@ -64,6 +64,17 @@ pub(crate) fn read_origin(sysroot: &Dir, deployment_id: &str) -> Result<Option<t
     Ok(Some(ini))
 }
 
+pub(crate) fn read_boot_type(sysroot: &Dir, deployment_id: &str) -> Result<Option<BootType>> {
+    Sha512HashValue::from_hex(deployment_id).context("Invalid deployment digest")?;
+    let Some(origin) = read_origin(sysroot, deployment_id)? else {
+        return Ok(None);
+    };
+    origin
+        .get::<String>(ORIGIN_KEY_BOOT, ORIGIN_KEY_BOOT_TYPE)
+        .map(|value| BootType::try_from(value.as_str()))
+        .transpose()
+}
+
 pub(crate) fn get_booted_bls(boot_dir: &Dir, booted_cfs: &BootedComposefs) -> Result<BLSConfig> {
     let sorted_entries = get_sorted_type1_boot_entries(boot_dir, true)?;
 
@@ -226,8 +237,8 @@ pub(crate) fn update_boot_digest_in_origin(
 /// * `root_path`         - The root filesystem path (typically `/sysroot`)
 /// * `deployment_id`     - Unique SHA512 hash identifier for this deployment
 /// * `imgref`            - Container image reference for the deployment
-/// * `staged`            - Whether this is a staged deployment (writes to transient state dir)
-/// * `boot_type`         - Boot loader type (`Bls` or `Uki`)
+/// * `staged`            - Whether this is a staged deployment
+/// * `boot_type`         - Boot artifact type (`Bls`, `Uki`, or `Aboot`)
 /// * `boot_digest`       - Optional boot digest for verification
 /// * `manifest_digest`   - OCI manifest content digest, stored in the origin file so the
 ///                         manifest+config can be retrieved from the composefs repo later
@@ -239,13 +250,12 @@ pub(crate) fn update_boot_digest_in_origin(
 /// * `var`                     - Symlink to shared `/var` directory
 /// * `{deployment_id}.origin`  - Origin configuration with image ref, boot, and image metadata
 ///
-/// For staged deployments, also writes to `/run/composefs/staged-deployment`.
 #[context("Writing composefs state")]
 pub(crate) async fn write_composefs_state(
     root_path: &Utf8PathBuf,
     deployment_id: &Sha512HashValue,
     target_imgref: &ImageReference,
-    staged: Option<StagedDeployment>,
+    staged: bool,
     boot_type: BootType,
     boot_digest: String,
     manifest_digest: &str,
@@ -271,7 +281,7 @@ pub(crate) async fn write_composefs_state(
         &root_path,
         &deployment_id.to_hex(),
         &state_path,
-        staged.is_none(),
+        !staged,
         allow_missing_fsverity,
     )?;
 
@@ -307,24 +317,30 @@ pub(crate) async fn write_composefs_state(
         )
         .context("Failed to write to .origin file")?;
 
-    if let Some(staged) = staged {
-        std::fs::create_dir_all(COMPOSEFS_TRANSIENT_STATE_DIR)
-            .with_context(|| format!("Creating {COMPOSEFS_TRANSIENT_STATE_DIR}"))?;
+    Ok(())
+}
 
-        let staged_depl_dir =
-            Dir::open_ambient_dir(COMPOSEFS_TRANSIENT_STATE_DIR, ambient_authority())
-                .with_context(|| format!("Opening {COMPOSEFS_TRANSIENT_STATE_DIR}"))?;
+pub(crate) fn write_staged_deployment(staged: &StagedDeployment) -> Result<()> {
+    std::fs::create_dir_all(COMPOSEFS_TRANSIENT_STATE_DIR)
+        .with_context(|| format!("Creating {COMPOSEFS_TRANSIENT_STATE_DIR}"))?;
+    let dir = Dir::open_ambient_dir(COMPOSEFS_TRANSIENT_STATE_DIR, ambient_authority())
+        .with_context(|| format!("Opening {COMPOSEFS_TRANSIENT_STATE_DIR}"))?;
+    dir.atomic_write(
+        COMPOSEFS_STAGED_DEPLOYMENT_FNAME,
+        staged
+            .to_canon_json_vec()
+            .context("Failed to serialize staged deployment JSON")?,
+    )
+    .with_context(|| format!("Writing to {COMPOSEFS_STAGED_DEPLOYMENT_FNAME}"))
+}
 
-        staged_depl_dir
-            .atomic_write(
-                COMPOSEFS_STAGED_DEPLOYMENT_FNAME,
-                staged
-                    .to_canon_json_vec()
-                    .context("Failed to serialize staged deployment JSON")?,
-            )
-            .with_context(|| format!("Writing to {COMPOSEFS_STAGED_DEPLOYMENT_FNAME}"))?;
-    }
-
+pub(crate) fn remove_staged_deployment() -> Result<()> {
+    let Some(dir) =
+        Dir::open_ambient_dir("/run", ambient_authority())?.open_dir_optional("composefs")?
+    else {
+        return Ok(());
+    };
+    dir.remove_file_optional(COMPOSEFS_STAGED_DEPLOYMENT_FNAME)?;
     Ok(())
 }
 

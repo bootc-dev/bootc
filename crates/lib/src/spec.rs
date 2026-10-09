@@ -242,6 +242,8 @@ pub enum Bootloader {
     GrubCC,
     /// Use SystemdBoot as the bootloader
     Systemd,
+    /// Use ukiboot as the bootloader
+    Ukiboot,
     /// Don't use a bootloader managed by bootc
     None,
 }
@@ -261,6 +263,7 @@ impl Display for Bootloader {
             Bootloader::Grub => "grub",
             Bootloader::GrubCC => "grub-cc",
             Bootloader::Systemd => "systemd",
+            Bootloader::Ukiboot => "ukiboot",
             Bootloader::None => "none",
         };
 
@@ -276,6 +279,7 @@ impl FromStr for Bootloader {
             "grub" => Ok(Self::Grub),
             "grub-cc" => Ok(Self::GrubCC),
             "systemd" => Ok(Self::Systemd),
+            "ukiboot" => Ok(Self::Ukiboot),
             "none" => Ok(Self::None),
             unrecognized => Err(anyhow::anyhow!("Unrecognized bootloader: '{unrecognized}'")),
         }
@@ -289,7 +293,9 @@ impl Bootloader {
         match self {
             Bootloader::Grub => Ok(BootloaderKind::GRUBClassic),
             Bootloader::Systemd | Bootloader::GrubCC => Ok(BootloaderKind::BLSCompatible),
-            Bootloader::None => anyhow::bail!("Bootloader was None"),
+            Bootloader::Ukiboot | Bootloader::None => {
+                anyhow::bail!("Bootloader {self} does not use BLS entries")
+            }
         }
     }
 }
@@ -469,6 +475,9 @@ pub(crate) struct DeploymentEntry<'a> {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) struct ContainerInspect {
+    /// The boot artifact type in the image, if present.
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    pub(crate) image_type: Option<crate::kernel::ContainerImageType>,
     /// Kernel arguments embedded in the container image.
     pub(crate) kargs: Vec<String>,
     /// Information about the kernel in the container image.
