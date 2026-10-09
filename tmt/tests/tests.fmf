@@ -229,3 +229,21 @@ check:
   summary: Test that composefs-native images default to the composefs backend
   duration: 45m
   test: nu booted/test-install-composefs-native.nu
+
+/test-61-aboot-install:
+  summary: Test artifact-selected ukiboot installation
+  duration: 30m
+  enabled: false
+  adjust:
+  - when: boot_type == aboot
+    enabled: true
+  test: python3 booted/test-aboot-install.py
+
+/test-62-aboot-update-rollback:
+  summary: Test ukiboot A/B update and rollback
+  duration: 30m
+  enabled: false
+  adjust:
+  - when: boot_type == aboot
+    enabled: true
+  test: python3 booted/test-aboot-update-rollback.py

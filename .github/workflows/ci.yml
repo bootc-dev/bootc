@@ -655,6 +655,51 @@ jobs:
           name: container-export-test-${{ env.ARCH }}
           path: target/anaconda-test/*.log
 
+  test-ukiboot:
+    if: needs.compute-ci-level.outputs.run_heavy == 'true' && contains(fromJson(needs.compute-ci-level.outputs.package_os_matrix), 'fedora-44')
+    needs: [compute-ci-level, package]
+    runs-on: ubuntu-26.04
+    env:
+      BOOTC_base: quay.io/fedora/fedora-bootc:44
+      BOOTC_buildroot_base: quay.io/fedora/fedora:44
+      BOOTC_variant: ostree
+      BOOTC_SKIP_PACKAGE: "1"
+    steps:
+      - uses: actions/checkout@v7
+      - name: Bootc Ubuntu Setup
+        uses: bootc-dev/actions/bootc-ubuntu-setup@main
+        with:
+          libvirt: true
+      - name: Install bcvk with aboot support
+        # Temporary: Drop once bootc-dev/actions has 0.21.0 or later
+        run: |
+          set -euo pipefail
+          # renovate: datasource=github-releases depName=bootc-dev/bcvk
+          version=0.21.0
+          target=bcvk-x86_64-unknown-linux-gnu
+          td=$(mktemp -d)
+          curl -fL --retry 5 --retry-delay 10 "https://github.com/bootc-dev/bcvk/releases/download/v${version}/${target}.tar.gz" -o "$td/bcvk.tar.gz"
+          tar -xzf "$td/bcvk.tar.gz" -C "$td"
+          sudo install -m 0755 "$td/$target" /usr/local/bin/bcvk
+          bcvk --version
+      - name: Install tmt
+        uses: ./.github/actions/install-tmt
+      - name: Download package artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: packages-fedora-44
+          path: target/packages/
+      - name: Fetch external dependencies
+        run: just build-fetch
+      - name: Install, update, and roll back ukiboot image
+        run: just test-ukiboot
+      - name: Archive test logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ukiboot-test-x86_64
+          path: /var/tmp/tmt
+
   # Gates the full heavy suite. Runs in merge_group / workflow_dispatch, and
   # also directly on PRs whenever compute-ci-level found no merge queue
   # active (see the merge-queue check in that job) — in that case a PR is
@@ -666,7 +711,7 @@ jobs:
   # rather than being skipped along with it.
   required-checks-heavy:
     if: ${{ always() && (github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && needs.compute-ci-level.outputs.merge_queue_enabled != 'true')) }}
-    needs: [compute-ci-level, cargo-deny, validate, install-tests, docs, package, test-integration, test-upgrade, test-baseconfigs, test-container-export]
+    needs: [compute-ci-level, cargo-deny, validate, install-tests, docs, package, test-integration, test-upgrade, test-baseconfigs, test-container-export, test-ukiboot]
     # Cheap aggregation (jq only) — no need for a full VM.
     runs-on: ubuntu-slim
     steps:
