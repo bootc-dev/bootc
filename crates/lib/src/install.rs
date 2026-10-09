@@ -396,6 +396,23 @@ pub(crate) struct InstallConfigOpts {
 }
 
 #[derive(Debug, Default, Clone, clap::Parser, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct UkiAddonOpts {
+    /// Name of the local/scoped UKI addons to install without the ".efi.addon" suffix.
+    /// This option can be provided multiple times if multiple addons are to be installed
+    /// (composefs backend only).
+    #[clap(long = "uki-addon")]
+    #[serde(default)]
+    pub(crate) scoped: Option<Vec<String>>,
+
+    /// Name of the global UKI addons to install without the ".efi.addon" suffix.
+    /// This option can be provided multiple times if multiple addons are to be installed
+    /// (composefs backend only).
+    #[clap(long = "global-uki-addon")]
+    #[serde(default)]
+    pub(crate) global: Option<Vec<String>>,
+}
+
+#[derive(Debug, Default, Clone, clap::Parser, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct InstallComposefsOpts {
     /// Use the composefs backend instead of ostree. This is the default for images with a UKI,
     /// and for images with /usr/lib/composefs/setup-root-conf.toml and no ostree prepare-root.conf
@@ -409,12 +426,9 @@ pub(crate) struct InstallComposefsOpts {
     #[serde(default)]
     pub(crate) allow_missing_verity: bool,
 
-    /// Name of the UKI addons to install without the ".efi.addon" suffix.
-    /// This option can be provided multiple times if multiple addons are to be installed
-    /// (composefs backend only).
-    #[clap(long)]
-    #[serde(default)]
-    pub(crate) uki_addon: Option<Vec<String>>,
+    #[clap(flatten)]
+    #[serde(flatten)]
+    pub(crate) uki_addon_opts: UkiAddonOpts,
 }
 
 impl InstallComposefsOpts {
@@ -442,8 +456,12 @@ impl InstallComposefsOpts {
                 "--allow-missing-verity requires the composefs backend"
             );
             anyhow::ensure!(
-                self.uki_addon.is_none(),
+                self.uki_addon_opts.scoped.is_none(),
                 "--uki-addon requires the composefs backend"
+            );
+            anyhow::ensure!(
+                self.uki_addon_opts.global.is_none(),
+                "--global-uki-addon requires the composefs backend"
             );
         }
         Ok(())
@@ -1683,6 +1701,14 @@ async fn prepare_install(
     target_fs: Option<FilesystemEnum>,
 ) -> Result<Arc<State>> {
     tracing::trace!("Preparing install");
+
+    if !composefs_options.composefs_backend
+        && (composefs_options.uki_addon_opts.scoped.is_some()
+            || composefs_options.uki_addon_opts.global.is_some())
+    {
+        anyhow::bail!("UKI Addons are only supported on composefs backends");
+    }
+
     let allow_missing_verity_explicit = composefs_options.allow_missing_verity;
     let rootfs = cap_std::fs::Dir::open_ambient_dir("/", cap_std::ambient_authority())
         .context("Opening /")?;
@@ -3199,7 +3225,10 @@ mod tests {
             let opts = InstallComposefsOpts {
                 composefs_backend,
                 allow_missing_verity,
-                uki_addon,
+                uki_addon_opts: UkiAddonOpts {
+                    scoped: uki_addon,
+                    global: None,
+                },
             };
             assert_eq!(
                 opts.validate(bootloader.as_ref(), stateroot).is_ok(),

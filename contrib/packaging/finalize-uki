@@ -35,6 +35,17 @@ if [[ -f "${uki_src}/${kver}.dump" ]]; then
     cp "${uki_src}/${kver}.dump" /boot
 fi
 
+# If we have a UKI Addon dir, add it
+if [[ -d "${uki_src}/${kver}.efi.extra.d" ]]; then
+    cp -r "${uki_src}/${kver}.efi.extra.d" /boot/EFI/Linux
+fi
+
+# If we have a global UKI Addon dir, add it
+if [[ -d "${uki_src}/loader/addons" ]]; then
+    mkdir -p /boot/loader
+    cp -r "${uki_src}/loader/addons" /boot/loader
+fi
+
 # NOTE: We used to create a symlink from /usr/lib/modules/${kver}/${kver}.efi to the UKI
 # for tooling compatibility. However, composefs-boot's find_uki_components() doesn't
 # handle symlinks correctly and fails with "is not a regular file". The UKI is already
