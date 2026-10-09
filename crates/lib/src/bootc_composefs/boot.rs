@@ -101,9 +101,12 @@ use serde::{Deserialize, Serialize};
 use crate::bootc_composefs::state::{get_booted_bls, write_composefs_state};
 use crate::bootc_composefs::status::build_composefs_karg;
 use crate::bootc_kargs::compute_new_kargs;
-use crate::composefs_consts::{TYPE1_BOOT_DIR_PREFIX, TYPE1_ENT_PATH, TYPE1_ENT_PATH_STAGED};
+use crate::composefs_consts::{
+    BLS_ENTRY_FILE_PREFIX, TYPE1_BOOT_DIR_PREFIX, TYPE1_ENT_PATH, TYPE1_ENT_PATH_STAGED,
+};
 use crate::parsers::bls_config::{BLSConfig, BLSConfigType, EFIKey};
 use crate::spec::BootloaderKind;
+use crate::store::find_booted_from_esp;
 use crate::task::Task;
 use crate::{
     bootc_composefs::repo::open_composefs_repo,
@@ -421,7 +424,7 @@ const ESP_MOUNT_DATA: &std::ffi::CStr = c"fmask=0177,dmask=0077";
 /// is already mounted in the current mount namespace; callers should use
 /// [`mount_esp_readonly`] or [`mount_esp_writable`] instead of this primitive
 /// so that pre-existing mounts are handled.
-fn mount_esp(device: &str) -> Result<TempMount> {
+pub fn mount_esp(device: &str) -> Result<TempMount> {
     TempMount::mount_dev(device, "vfat", ESP_MOUNT_FLAGS, Some(ESP_MOUNT_DATA))
 }
 
@@ -518,7 +521,7 @@ pub fn type1_entry_conf_file_name(
     priority: &str,
 ) -> String {
     let os_id_safe = os_id.replace('-', "_");
-    format!("bootc_{os_id_safe}-{version}-{priority}.conf")
+    format!("{BLS_ENTRY_FILE_PREFIX}{os_id_safe}-{version}-{priority}.conf")
 }
 
 /// Generate sort key for the primary (new/upgraded) boot entry.
@@ -812,6 +815,9 @@ pub(crate) fn setup_composefs_bls_boot(
             }
 
             // Locate ESP partition device by walking up to the root disk(s)
+            //
+            // NOTE: Not using [`find_booted_from_esp`] as we aren't booted
+            // into a bootc system
             let esp_part = root_setup.device_info.find_first_colocated_esp()?;
 
             (
@@ -847,11 +853,11 @@ pub(crate) fn setup_composefs_bls_boot(
                 ),
             )?;
 
-            // Locate ESP partition device by walking up to the root disk(s)
-            let root_dev = bootc_blockdev::list_dev_by_dir(&storage.physical_root)?;
-            let esp_dev = root_dev.find_first_colocated_esp()?;
-
-            (esp_dev.path(), cmdline, bootloader)
+            (
+                find_booted_from_esp(&storage.physical_root)?,
+                cmdline,
+                bootloader,
+            )
         }
     };
 
@@ -1781,6 +1787,9 @@ pub(crate) fn setup_composefs_uki_boot(
             state.require_no_kargs_for_uki()?;
 
             // Locate ESP partition device by walking up to the root disk(s)
+            //
+            // NOTE: Not using [`find_booted_from_esp`] as we aren't booted
+            // into a bootc system
             let esp_part = root_setup.device_info.find_first_colocated_esp()?;
 
             (
@@ -1794,12 +1803,8 @@ pub(crate) fn setup_composefs_uki_boot(
         BootSetupType::Upgrade((storage, booted_cfs, host)) => {
             let bootloader = host.require_composefs_booted()?.bootloader.clone();
 
-            // Locate ESP partition device by walking up to the root disk(s)
-            let root_dev = bootc_blockdev::list_dev_by_dir(&storage.physical_root)?;
-            let esp_dev = root_dev.find_first_colocated_esp()?;
-
             (
-                esp_dev.path(),
+                find_booted_from_esp(&storage.physical_root)?,
                 bootloader,
                 booted_cfs.cmdline.allow_missing_fsverity,
                 // TODO: We never (re)install UKI addons on upgrade, only on initial

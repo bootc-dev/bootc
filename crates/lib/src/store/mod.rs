@@ -117,13 +117,14 @@ use composefs::repository::{RepositoryConfig, RepositoryOpenError};
 use composefs_ctl::composefs;
 
 use crate::bootc_composefs::backwards_compat::bcompat_boot::prepend_custom_prefix;
-use crate::bootc_composefs::boot::{EFI_LINUX, mount_esp_readonly, mount_esp_writable};
+use crate::bootc_composefs::boot::{EFI_LINUX, mount_esp, mount_esp_readonly, mount_esp_writable};
 use crate::bootc_composefs::status::{ComposefsCmdline, composefs_booted, get_bootloader};
+use crate::composefs_consts::{BLS_ENTRY_FILE_PREFIX, TYPE1_ENT_PATH};
 use crate::install::BOOT;
 use crate::lsm;
 use crate::podstorage::CStorage;
 use crate::spec::{BootloaderKind, ImageStatus};
-use crate::utils::{deployment_fd, open_dir_remount_rw};
+use crate::utils::{EfiError, deployment_fd, open_dir_remount_rw, read_uefi_var};
 
 /// See <https://github.com/containers/composefs-rs/issues/159>
 pub type ComposefsRepository = composefs::repository::Repository<Sha512HashValue>;
@@ -490,6 +491,90 @@ fn get_boot_dir_for_grub(physical_root: &Dir) -> Result<(Dir, Utf8PathBuf)> {
     ))
 }
 
+const LOADER_DEVICE_PART_UUID: &str = "LoaderDevicePartUUID-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f";
+
+/// Find the ESP from which the system was booted
+///
+/// This is a better way to find the correct ESP than just searching
+/// trough all ESPs and returning the first one as we may end up with
+/// the wrong ESP in dual booted systems
+#[context("Finding ESP used for booting")]
+pub(crate) fn find_booted_from_esp(physical_root: &Dir) -> Result<String> {
+    let root_dev = bootc_blockdev::list_dev_by_dir(&physical_root)?;
+    let all_roots = root_dev.find_all_roots()?;
+
+    let device_uuid = match read_uefi_var(LOADER_DEVICE_PART_UUID) {
+        Ok(u) => u,
+        // Older version of Grub (in c10s) do not include this efivar
+        // We can't rely on ESP being mounted on /boot, /boot/efi as older Grub
+        // doesn't fully support BLS spec
+        Err(EfiError::MissingVar) => {
+            tracing::debug!("Missing {LOADER_DEVICE_PART_UUID}, searching through all ESPs...");
+
+            let all_esps = root_dev
+                .find_colocated_esps()?
+                .ok_or_else(|| anyhow::anyhow!("No ESP found"))?;
+
+            if all_esps.len() == 1 {
+                // If only one ESP, there's no ambiguity
+                return Ok(all_esps.first().unwrap().path());
+            }
+
+            for esp in all_esps {
+                let tmp_mount = mount_esp(&esp.path()).context("Mounting ESP")?;
+
+                // Check if we have bootc owned entries in loader/entries
+                let entries = tmp_mount
+                    .fd
+                    .open_dir_optional(TYPE1_ENT_PATH)
+                    .context("Opening entries dir")?;
+
+                let Some(entries_dir) = entries else {
+                    tracing::debug!("No entries found in ESP {}", esp.path());
+                    continue;
+                };
+
+                for entry in entries_dir
+                    .entries_utf8()
+                    .context("Reading directory entries")?
+                {
+                    let entry = entry?;
+
+                    // We can be fairly sure we put our entries in this ESP
+                    if entry.file_name()?.starts_with(BLS_ENTRY_FILE_PREFIX) {
+                        return Ok(esp.path());
+                    }
+                }
+
+                tracing::debug!("ESP {} not owned by us", esp.path());
+            }
+
+            anyhow::bail!("Failed to find bootc owned ESP");
+        }
+        Err(e) => {
+            anyhow::bail!("Reading {LOADER_DEVICE_PART_UUID}: {e:?}")
+        }
+    };
+
+    tracing::debug!("Found {device_uuid} in {LOADER_DEVICE_PART_UUID}");
+
+    for root in all_roots {
+        let Some(children) = root.children else {
+            continue;
+        };
+
+        for child in children {
+            if child.partuuid.as_ref().is_some_and(|partuuid| {
+                *partuuid.to_ascii_lowercase() == device_uuid.to_ascii_lowercase()
+            }) {
+                return Ok(child.path());
+            }
+        }
+    }
+
+    anyhow::bail!("ESP with uuid {device_uuid} not found")
+}
+
 impl BootedStorage {
     /// Create a new booted storage accessor for the given environment.
     ///
@@ -506,13 +591,15 @@ impl BootedStorage {
                 }
                 let composefs = Arc::new(composefs);
 
-                // Locate ESP by walking up to the root disk(s). Both mount
-                // variants transparently reuse an already-mounted ESP when
-                // present (e.g. auto-mounted at /boot ro via
+                // Locate ESP by walking up to the root disk(s), and reading
+                // [`LOADER_DEVICE_PART_UUID`] and matching the UUID with the
+                // respective ESP device UUID
+                //
+                // Both mount variants transparently reuse an already-mounted
+                // ESP when present (e.g. auto-mounted at /boot ro via
                 // `systemd.mount-extra` in the deployment cmdline).
-                let root_dev = bootc_blockdev::list_dev_by_dir(&physical_root)?;
-                let esp_dev = root_dev.find_first_colocated_esp()?;
-                let esp_path = esp_dev.path();
+                let esp_path = find_booted_from_esp(&physical_root)?;
+
                 let esp_mount = match esp_access {
                     EspAccess::ReadOnly => mount_esp_readonly(&esp_path)?,
                     EspAccess::ReadWrite => mount_esp_writable(&esp_path)?,
