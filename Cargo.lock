@@ -3415,6 +3415,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "shlex",
  "tempfile",
  "tracing",
  "uzers",
