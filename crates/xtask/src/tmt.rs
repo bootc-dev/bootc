@@ -19,6 +19,7 @@ const COMMON_INST_ARGS: &[&str] = &["--label=bootc.test=1"];
 
 // Metadata field names
 const FIELD_TRY_BIND_STORAGE: &str = "try_bind_storage";
+const FIELD_EXPORT_IMAGE: &str = "export_image";
 const FIELD_SUMMARY: &str = "summary";
 const FIELD_ADJUST: &str = "adjust";
 const FIELD_ENABLED: &str = "enabled";
@@ -38,6 +39,7 @@ const RUST_TESTS_COMMAND: &str = "bootc-integration-tests booted";
 const BCVK_OPT_BIND_STORAGE_RO: &str = "--bind-storage-ro";
 const ENV_BOOTC_UPGRADE_IMAGE: &str = "BOOTC_upgrade_image";
 const ENV_BOOTC_BRIDGE_IMAGE: &str = "BOOTC_bridge_image";
+const ENV_BOOTC_SOURCE_IMAGE_ARCHIVE: &str = "BOOTC_source_image_archive";
 
 // Distro identifiers
 const DISTRO_CENTOS_9: &str = "centos-9";
@@ -272,12 +274,13 @@ fn verify_ssh_connectivity(sh: &Shell, port: u16, key_path: &Utf8Path) -> Result
 #[derive(Debug, Default)]
 struct PlanMetadata {
     try_bind_storage: bool,
+    export_image: bool,
     skip_if_composefs: bool,
     skip_if_ostree: bool,
     skip_if_uki: bool,
 }
 
-/// Parse integration.fmf to extract extra-try_bind_storage for all plans
+/// Parse integration.fmf to extract harness metadata for all plans.
 #[context("Parsing integration.fmf")]
 fn parse_plan_metadata(
     plans_file: &Utf8Path,
@@ -304,6 +307,18 @@ fn parse_plan_metadata(
         let Some(plan_data) = value.as_mapping() else {
             continue;
         };
+
+        if let Some(export_image) = plan_data
+            .get(serde_yaml::Value::String(format!(
+                "extra-{FIELD_EXPORT_IMAGE}"
+            )))
+            .and_then(|v| v.as_bool())
+        {
+            plan_metadata
+                .entry(plan_name.to_string())
+                .or_default()
+                .export_image = export_image;
+        }
 
         if let Some(try_bind) = plan_data.get(&serde_yaml::Value::String(format!(
             "extra-{}",
@@ -549,6 +564,34 @@ pub(crate) fn run_tmt(sh: &Shell, args: &RunTmtArgs) -> Result<()> {
 
         // Reset plan-specific environment variables
         tmt_env_vars.clear();
+
+        let _source_archive = if plan_metadata
+            .iter()
+            .find(|(key, _)| plan.ends_with(key.as_str()))
+            .is_some_and(|(_, metadata)| metadata.export_image)
+        {
+            let fixture = tempfile::Builder::new()
+                .prefix("bootc-source-")
+                .tempdir_in(sh.current_dir().join("tmt/tests"))?;
+            let fixture_path = Utf8Path::from_path(fixture.path())
+                .context("Converting image fixture path to UTF-8")?;
+            let archive = fixture_path.join("image.oci.tar");
+            cmd!(
+                sh,
+                "podman save -q --format oci-archive -o {archive} {image}"
+            )
+            .run()
+            .context("Exporting test source image")?;
+            let fixture_name = fixture_path
+                .file_name()
+                .context("Image fixture directory name")?;
+            tmt_env_vars.push(format!(
+                "{ENV_BOOTC_SOURCE_IMAGE_ARCHIVE}={fixture_name}/image.oci.tar"
+            ));
+            Some(fixture)
+        } else {
+            None
+        };
 
         // Get bcvk-opts based on plan metadata and distro support
         let plan_bcvk_opts = {
@@ -1050,6 +1093,7 @@ struct TestDef {
     test_command: String,
     /// Whether this test wants to try bind storage (if distro supports it)
     try_bind_storage: bool,
+    export_image: bool,
     /// Whether to skip this test for composefs backend
     skip_if_composefs: bool,
     /// Whether to skip this test for ostree backend
@@ -1238,6 +1282,12 @@ fn generate_integration() -> Result<(String, String)> {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
+        let export_image = metadata
+            .extra
+            .get(FIELD_EXPORT_IMAGE)
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
         let skip_if_ostree = metadata
             .extra
             .as_mapping()
@@ -1261,6 +1311,7 @@ fn generate_integration() -> Result<(String, String)> {
             name: display_name,
             test_command,
             try_bind_storage,
+            export_image,
             skip_if_composefs,
             skip_if_ostree,
             skip_if_uki,
@@ -1382,6 +1433,22 @@ fn generate_integration() -> Result<(String, String)> {
             plan_value.insert(
                 serde_yaml::Value::String(format!("extra-{}", FIELD_TRY_BIND_STORAGE)),
                 serde_yaml::Value::Bool(true),
+            );
+        }
+
+        if test.export_image {
+            plan_value.insert(
+                serde_yaml::Value::String(format!("extra-{FIELD_EXPORT_IMAGE}")),
+                serde_yaml::Value::Bool(true),
+            );
+            let mut environment = serde_yaml::Mapping::new();
+            environment.insert(
+                serde_yaml::Value::String(ENV_BOOTC_SOURCE_IMAGE_ARCHIVE.to_string()),
+                serde_yaml::Value::String("/sysroot/bootc-source.oci.tar".to_string()),
+            );
+            plan_value.insert(
+                serde_yaml::Value::String("environment".to_string()),
+                serde_yaml::Value::Mapping(environment),
             );
         }
 
@@ -1613,5 +1680,24 @@ use anyhow::Result;
         assert_eq!(tmt.len(), 1);
 
         assert!(parse_tmt_metadata(content, "#").unwrap().is_none());
+    }
+
+    #[test]
+    fn test_parse_plan_image_export() -> Result<()> {
+        let file = tempfile::NamedTempFile::new()?;
+        let path = Utf8Path::from_path(file.path()).unwrap();
+        for (value, expected) in [("true", true), ("false", false), ("invalid", false)] {
+            std::fs::write(
+                path,
+                format!(
+                    "/plan-51-switch-from-delta:\n  extra-export_image: {value}\n  extra-try_bind_storage: true\n"
+                ),
+            )?;
+            let plans = parse_plan_metadata(path)?;
+            let plan = &plans["/plan-51-switch-from-delta"];
+            assert_eq!(plan.export_image, expected);
+            assert!(plan.try_bind_storage);
+        }
+        Ok(())
     }
 }
