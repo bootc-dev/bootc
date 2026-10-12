@@ -229,7 +229,7 @@ struct RepartPartition {
     file: String,
 }
 
-fn can_use_systemd_repart() -> bool {
+fn has_systemd_repart() -> bool {
     if Command::new("systemd-repart")
         .arg("--help")
         .stdout(Stdio::null())
@@ -237,6 +237,14 @@ fn can_use_systemd_repart() -> bool {
         .status()
         .is_err()
     {
+        return false;
+    }
+
+    true
+}
+
+fn can_use_systemd_repart() -> bool {
+    if !has_systemd_repart() {
         return false;
     }
 
@@ -254,7 +262,7 @@ fn can_use_systemd_repart() -> bool {
                 .is_some_and(|mut entries| entries.next().is_some())
     });
 
-    return has_config;
+    has_config
 }
 
 /// The first systemd version that supports `systemd-repart --include-partitions=`.
@@ -296,26 +304,28 @@ fn repart_partition_is_required(part: &RepartPartition) -> bool {
         || ptype.eq_ignore_ascii_case(BIOS_BOOT)
 }
 
-/// Collect the repart.d definitions for the partitions we require (root, ESP
-/// and BIOS boot) into [`REPART_FILTERED_DEFINITIONS_DIR`].
+/// Collect the selected repart.d definitions into dest_dir.
 ///
 /// systemd < 253 does not support the `--include-partitions=` option, so instead
 /// we point systemd-repart at a directory containing only the definitions we want
 /// it to act on
-fn collect_repart_definitions(dry_partitions: &[RepartPartition]) -> Result<()> {
-    let dest_dir = Path::new(REPART_FILTERED_DEFINITIONS_DIR);
+fn collect_repart_definitions(
+    dry_partitions: &[RepartPartition],
+    dest_dir: &Path,
+    filter: impl Fn(&RepartPartition) -> bool,
+) -> Result<()> {
     // Start from a clean directory so stale definitions from a previous run
     // don't leak in.
     if dest_dir.exists() {
         std::fs::remove_dir_all(dest_dir)
-            .with_context(|| format!("Removing {REPART_FILTERED_DEFINITIONS_DIR}"))?;
+            .with_context(|| format!("Removing {}", dest_dir.display()))?;
     }
 
     std::fs::create_dir_all(dest_dir)
-        .with_context(|| format!("Creating {REPART_FILTERED_DEFINITIONS_DIR}"))?;
+        .with_context(|| format!("Creating {}", dest_dir.display()))?;
 
     for part in dry_partitions {
-        if !repart_partition_is_required(part) {
+        if !filter(part) {
             continue;
         }
 
@@ -326,8 +336,11 @@ fn collect_repart_definitions(dry_partitions: &[RepartPartition]) -> Result<()> 
             .map(|d| Path::new(d).join(&part.file))
             .find(|p| p.exists())
             .ok_or_else(|| anyhow::anyhow!("Could not find repart.d definition {}", part.file))?;
+        let name = src
+            .file_name()
+            .context("Missing repart.d definition filename")?;
 
-        std::fs::copy(&src, dest_dir.join(&part.file))
+        std::fs::copy(&src, dest_dir.join(name))
             .with_context(|| format!("Copying repart.d definition {}", src.display()))?;
     }
 
@@ -346,7 +359,7 @@ fn systemd_repart(
     // Dry-run to check what partitions would be created
     // Send `generic_image` as false so that we can see ALL defined
     // partitions
-    let dry_partitions = systemd_repart_run(device, false, true)?;
+    let dry_partitions = systemd_repart_run(device, false, true, None)?;
 
     if dry_partitions.is_empty() {
         anyhow::bail!("systemd-repart returned empty partitions");
@@ -359,10 +372,14 @@ fn systemd_repart(
     if has_root {
         // Root partition is defined in repart.d config, run for real
         if need_filtered_definitions(generic_image)? {
-            collect_repart_definitions(&dry_partitions)?;
+            collect_repart_definitions(
+                &dry_partitions,
+                Path::new(REPART_FILTERED_DEFINITIONS_DIR),
+                repart_partition_is_required,
+            )?;
         }
 
-        let partitions = systemd_repart_run(device, generic_image, false)?;
+        let partitions = systemd_repart_run(device, generic_image, false, None)?;
         let layout = parse_repart_layout(&partitions)?;
         return Ok(layout);
     }
@@ -409,7 +426,11 @@ fn systemd_repart(
     }
 
     if need_filtered_definitions(generic_image)? {
-        collect_repart_definitions(&dry_partitions)?;
+        collect_repart_definitions(
+            &dry_partitions,
+            Path::new(REPART_FILTERED_DEFINITIONS_DIR),
+            repart_partition_is_required,
+        )?;
 
         std::fs::write(
             Path::new(REPART_FILTERED_DEFINITIONS_DIR).join("50-root.conf"),
@@ -422,7 +443,7 @@ fn systemd_repart(
             .context("Writing root repart config")?;
     }
 
-    let partitions = systemd_repart_run(device, generic_image, false)?;
+    let partitions = systemd_repart_run(device, generic_image, false, None)?;
     let layout = parse_repart_layout(&partitions)?;
 
     Ok(layout)
@@ -430,12 +451,12 @@ fn systemd_repart(
 
 /// Run systemd-repart on the device and return the parsed JSON output.
 /// `dry_run`: if true, no changes are written to disk.
-/// `definitions`: if set, uses `--definitions=` and `--empty=allow`;
-/// otherwise uses the default config search paths with `--empty=force`.
+/// `definitions`: if set, uses that directory instead of the default search paths.
 fn systemd_repart_run(
     device: &Device,
     generic_image: bool,
     dry_run: bool,
+    definitions: Option<&Path>,
 ) -> Result<Vec<RepartPartition>> {
     let mut cmd = Command::new("systemd-repart");
 
@@ -463,7 +484,9 @@ fn systemd_repart_run(
     // don't know if the user would want to run those on this disk itself
     // or if this disk would be used to create an AMI/VHD and a separate disk
     // would be used for the other partitions
-    if generic_image {
+    if let Some(definitions) = definitions {
+        cmd.arg(format!("--definitions={}", definitions.display()));
+    } else if generic_image {
         if need_filtered_definitions(generic_image)? {
             // Older systemd lacks --include-partitions; act only on the
             // pre-filtered definitions collected by collect_repart_definitions.
