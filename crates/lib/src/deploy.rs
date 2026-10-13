@@ -1255,6 +1255,7 @@ pub(crate) async fn stage(
     spec: &RequiredHostSpec<'_>,
     prog: ProgressWriter,
     lock_finalization: bool,
+    target_imgref: Option<&ImageReference>,
 ) -> Result<()> {
     // Log the staging operation to systemd journal with comprehensive upgrade information
     const STAGE_JOURNAL_ID: &str = "8f7a2b1c3d4e5f6a7b8c9d0e1f2a3b4c";
@@ -1333,7 +1334,12 @@ pub(crate) async fn stage(
             .collect(),
     })
     .await;
-    let origin = origin_from_imageref(spec.image)?;
+
+    let origin = match target_imgref {
+        Some(i) => origin_from_imageref(i)?,
+        None => origin_from_imageref(spec.image)?,
+    };
+
     crate::deploy::deploy(sysroot, from, image, &origin, lock_finalization).await?;
 
     subtask.completed = true;

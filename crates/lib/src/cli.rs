@@ -251,6 +251,7 @@ pub(crate) struct SwitchOpts {
     /// The image to use for subsequent upgrades
     /// Useful when switching to an, say containers-storage, image
     /// but subsequent updates are to be pulled from registry
+    #[clap(long)]
     pub(crate) target_imgref: Option<String>,
 }
 
@@ -1669,6 +1670,7 @@ async fn upgrade(
                 &spec,
                 prog.clone(),
                 opts.download_opts.download_only,
+                None,
             )
             .await?;
             changed = true;
@@ -1761,7 +1763,7 @@ async fn switch_ostree(
     }
 
     let target = imgref_for_switch(&opts)?;
-    let prog: ProgressWriter = opts.progress.try_into()?;
+    let prog: ProgressWriter = opts.progress.clone().try_into()?;
     let cancellable = gio::Cancellable::NONE;
 
     let repo = &booted_ostree.repo();
@@ -1771,6 +1773,13 @@ async fn switch_ostree(
         new_spec.image = Some(target.clone());
         new_spec
     };
+
+    // 1. Check if there's a staged one and compare the image digest
+    // 2. Also need to make sure that `--target-imgeref hi <img1>` and `--target-imgeref hi <img2>`
+    //    actually ends up switching
+
+    println!("new_spec: {new_spec:#?}");
+    println!("host.spec: {:#?}", host.spec);
 
     if new_spec == host.spec {
         println!("Image specification is unchanged.");
@@ -1859,6 +1868,7 @@ async fn switch_ostree(
 
     let stateroot = booted_ostree.stateroot();
     let from = MergeState::from_stateroot(storage, &stateroot)?;
+
     crate::deploy::stage(
         storage,
         from,
@@ -1866,6 +1876,7 @@ async fn switch_ostree(
         &new_spec,
         prog.clone(),
         opts.download_opts.download_only,
+        target_imgref_for_switch(&opts)?.as_ref(),
     )
     .await?;
 
@@ -2013,7 +2024,16 @@ async fn edit_ostree(
 
     let stateroot = booted_ostree.stateroot();
     let from = MergeState::from_stateroot(storage, &stateroot)?;
-    crate::deploy::stage(storage, from, &fetched, &new_spec, prog.clone(), false).await?;
+    crate::deploy::stage(
+        storage,
+        from,
+        &fetched,
+        &new_spec,
+        prog.clone(),
+        false,
+        None,
+    )
+    .await?;
 
     storage.update_mtime()?;
 
