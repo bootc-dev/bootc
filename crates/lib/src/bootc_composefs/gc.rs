@@ -214,6 +214,74 @@ fn unreferenced_boot_binaries<'a>(
         .collect()
 }
 
+#[fn_error_context::context("GC Global UKI Addons")]
+fn gc_global_uki_addons(
+    storage: &Storage,
+    booted_cfs: &BootedComposefs,
+    gc_opts: &GCOpts,
+    bootloader_entries: &Vec<BootloaderEntry>,
+) -> Result<()> {
+    let currently_installed_addons = list_installed_uki_addons(storage)?;
+
+    if !currently_installed_addons
+        .iter()
+        .any(|addon| addon.addon_type == UkiAddonType::Global)
+    {
+        tracing::debug!("No bootc managed Global UKI Addon installed");
+        return Ok(());
+    }
+
+    // Remove unreferenced global UKI Addons
+    let currently_referenced_addons = list_referenced_uki_addons(booted_cfs, &bootloader_entries)?;
+    let mut unreferenced_global_addons = vec![];
+
+    tracing::debug!("currently_referenced_addons: {currently_referenced_addons:#?}");
+    tracing::debug!("currently_installed_addons: {currently_installed_addons:#?}");
+
+    for installed_addon in &currently_installed_addons {
+        // We handle scoped UKI Addons along with the UKI itself
+        if installed_addon.addon_type != UkiAddonType::Global {
+            continue;
+        }
+
+        let is_referenced = currently_referenced_addons.iter().any(|(_, refs)| {
+            refs.iter().any(|r| {
+                r.addon_type == installed_addon.addon_type && r.name == installed_addon.name
+            })
+        });
+
+        if !is_referenced {
+            unreferenced_global_addons.push(installed_addon.name.clone());
+        }
+    }
+
+    tracing::debug!("Unreferenced Global Addons: {unreferenced_global_addons:?}");
+
+    if !unreferenced_global_addons.is_empty() {
+        let global_uki_dir = storage
+            .require_esp()?
+            .fd
+            .open_dir(GLOBAL_UKI_ADDONS_DIR)
+            .context("Opening global UKI Addons dir")?;
+
+        for addon in &unreferenced_global_addons {
+            let global_addon_name = get_global_uki_addon_name(&addon);
+
+            tracing::debug!("Deleting Global UKI Addon: {}", addon);
+
+            if gc_opts.dry_run {
+                continue;
+            }
+
+            global_uki_dir
+                .remove_file(&global_addon_name)
+                .with_context(|| format!("Removing global addon {global_addon_name}"))?;
+        }
+    }
+
+    Ok(())
+}
+
 pub(crate) struct GCOpts {
     pub(crate) dry_run: bool,
     pub(crate) prune_repo: bool,
@@ -347,53 +415,8 @@ pub(crate) async fn composefs_gc(
         }
     }
 
-    // Remove unreferenced global UKI Addons
-    let currently_referenced_addons = list_referenced_uki_addons(booted_cfs, &bootloader_entries)?;
-    let currently_installed_addons = list_installed_uki_addons(storage)?;
-    let mut unreferenced_global_addons = vec![];
-
-    tracing::debug!("currently_referenced_addons: {currently_referenced_addons:#?}");
-    tracing::debug!("currently_installed_addons: {currently_installed_addons:#?}");
-
-    for installed_addon in &currently_installed_addons {
-        // We handle scoped UKI Addons along with the UKI itself
-        if installed_addon.addon_type != UkiAddonType::Global {
-            continue;
-        }
-
-        let is_referenced = currently_referenced_addons.iter().any(|(_, refs)| {
-            refs.iter().any(|r| {
-                r.addon_type == installed_addon.addon_type && r.name == installed_addon.name
-            })
-        });
-
-        if !is_referenced {
-            unreferenced_global_addons.push(installed_addon.name.clone());
-        }
-    }
-
-    tracing::debug!("Unreferenced Global Addons: {unreferenced_global_addons:?}");
-
-    if !unreferenced_global_addons.is_empty() {
-        let global_uki_dir = storage
-            .require_esp()?
-            .fd
-            .open_dir(GLOBAL_UKI_ADDONS_DIR)
-            .context("Opening global UKI Addons dir")?;
-
-        for addon in &unreferenced_global_addons {
-            let global_addon_name = get_global_uki_addon_name(&addon);
-
-            tracing::debug!("Deleting Global UKI Addon: {}", addon);
-
-            if gc_opts.dry_run {
-                continue;
-            }
-
-            global_uki_dir
-                .remove_file(&global_addon_name)
-                .with_context(|| format!("Removing global addon {global_addon_name}"))?;
-        }
+    if booted_cfs_status.boot_type == BootType::Uki {
+        gc_global_uki_addons(storage, booted_cfs, &gc_opts, &bootloader_entries)?;
     }
 
     if !gc_opts.prune_repo {
