@@ -123,9 +123,11 @@ These remain [experimental](https://github.com/bootc-dev/bootc/blob/main/RELEASE
 and may change or be removed:
 
 - The `grub-cc` bootloader (`--bootloader=grub-cc`).
-- UKI addons (`--uki-addon`). Addons are only installed by `bootc install`:
-  they aren't updated on upgrade, garbage collected, or reverted on
-  rollback.
+- UKI addons (--uki-addon, --global-uki-addon). On upgrade and switch,
+  addons already installed (scoped or global) are carried forward, and any
+  passed via the flags are added. Global addons are garbage collected once
+  no deployment references them, scoped addons are garbage collected along with
+  their respective deployments.
 - [Android A/B boot images and ukiboot](bootc-experimental-composefs-aboot.7.md).
 - [Unified storage](bootc-experimental-unified-storage.7.md).
 

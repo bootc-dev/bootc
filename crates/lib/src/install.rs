@@ -400,7 +400,8 @@ pub(crate) struct UkiAddonOpts {
     /// Experimental.
     /// Name of the local/scoped UKI addons to install without the ".addon.efi" suffix.
     /// This option can be provided multiple times if multiple addons are to be installed
-    /// (composefs backend only).
+    /// (composefs backend only). On upgrade and switch, scoped addons already installed
+    /// are carried forward; passing this flag adds further addons on top.
     #[clap(long = "uki-addon")]
     #[serde(default, rename = "uki_addon")]
     pub(crate) scoped: Option<Vec<String>>,
@@ -408,7 +409,8 @@ pub(crate) struct UkiAddonOpts {
     /// Experimental.
     /// Name of the global UKI addons to install without the ".addon.efi" suffix.
     /// This option can be provided multiple times if multiple addons are to be installed
-    /// (composefs backend only).
+    /// (composefs backend only). On upgrade and switch, global addons already installed
+    /// are carried forward; passing this flag adds further addons on top.
     #[clap(long = "global-uki-addon")]
     #[serde(default, rename = "global_uki_addon")]
     pub(crate) global: Option<Vec<String>>,
