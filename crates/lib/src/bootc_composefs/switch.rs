@@ -56,6 +56,9 @@ pub(crate) async fn switch_composefs(
         new_spec
     };
 
+    println!("new_spec: {new_spec:#?}");
+    println!("host.spec: {:#?}", host.spec);
+
     if new_spec == host.spec {
         println!("Image specification is unchanged.");
         if opts.apply && host.status.staged.is_some() {
