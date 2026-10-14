@@ -306,6 +306,13 @@ pub(crate) fn install_systemd_boot(
                 "Skipping --random-seed: requires systemd >= {BOOTCTL_RANDOM_SEED_MIN_VERSION}, found {systemd_version}"
             );
         }
+    } else {
+        // Update firmware variables if not a generic image
+        // This corresponds to --update-firmware CLI option for bootupd installs
+        // This option was added in systemd v258
+        if systemd_version()? >= 258 {
+            bootctl_args.push("--variables=yes");
+        }
     }
 
     Command::new("bootctl")
