@@ -18,6 +18,17 @@ NOTE: systemd-boot is only supported for Composefs Backend and not for Ostree
 If bootupd is not present in the input container image, then systemd-boot will be used
 by default (except on s390x).
 
+### Initial loader configuration
+
+`bootc` does not synthesize a systemd-boot [`loader.conf`](https://www.freedesktop.org/software/systemd/man/latest/loader.conf.html).
+Instead, if the container image ships one at `/usr/lib/bootc/install/systemd-boot/loader.conf`,
+`bootc` copies it verbatim onto the ESP (as `loader/loader.conf`) after running
+`bootctl install`. This lets the base image or a package define the initial
+configuration for eg. the boot menu timeout.
+
+If the image does not ship this file, the commented-out template written by `bootctl install`
+is left in place.
+
 ## s390x
 
 bootc uses `zipl`.
