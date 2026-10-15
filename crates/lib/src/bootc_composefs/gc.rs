@@ -221,7 +221,9 @@ fn gc_global_uki_addons(
     gc_opts: &GCOpts,
     bootloader_entries: &Vec<BootloaderEntry>,
 ) -> Result<()> {
-    let currently_installed_addons = list_installed_uki_addons(storage)?;
+    // GC always runs *after* finalizing deployments so there would be no staged deployment
+    // by definition
+    let currently_installed_addons = list_installed_uki_addons(storage, &None)?;
 
     if !currently_installed_addons
         .iter()
@@ -232,7 +234,10 @@ fn gc_global_uki_addons(
     }
 
     // Remove unreferenced global UKI Addons
-    let currently_referenced_addons = list_referenced_uki_addons(booted_cfs, &bootloader_entries)?;
+    // GC always runs *after* finalizing deployments so there would be no staged deployment
+    // by definition
+    let currently_referenced_addons =
+        list_referenced_uki_addons(booted_cfs, &bootloader_entries, &None)?;
     let mut unreferenced_global_addons = vec![];
 
     tracing::debug!("currently_referenced_addons: {currently_referenced_addons:#?}");
