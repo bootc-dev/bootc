@@ -168,6 +168,9 @@ pub(crate) const BOOTC_UKI_DIR: &str = "EFI/Linux/bootc";
 /// rollback (a global addon update isn't reverted by rolling back to an older deployment).
 pub(crate) const GLOBAL_UKI_ADDONS_DIR: &str = "loader/addons";
 
+/// Where all staged Global UKI Addons are kept
+pub(crate) const STAGED_GLOBAL_UKI_ADDONS_DIR: &str = "loader/addons.staged";
+
 #[derive(thiserror::Error, Debug)]
 pub(crate) enum UKIDigestMismatch {
     #[error("The UKI has the wrong composefs= parameter (is '{actual}', should be '{expected}')")]
@@ -1305,8 +1308,13 @@ fn pe_output_dir(
     mounted_efi: &Path,
     file_path: &Utf8Path,
     uki_id: &Sha512HashValue,
+    is_upgrade: bool,
 ) -> std::path::PathBuf {
     if matches!(pe_type, PEType::GlobalUkiAddon) {
+        if is_upgrade {
+            return mounted_efi.join(STAGED_GLOBAL_UKI_ADDONS_DIR);
+        }
+
         return mounted_efi.join(GLOBAL_UKI_ADDONS_DIR);
     }
 
@@ -1448,6 +1456,49 @@ fn parse_uki_cmdline<R: Read + Seek>(
     Ok(())
 }
 
+/// Copies Global UKI Addons from loader/addons to loader/addons.staged in case of
+/// an upgrade/switch
+#[context("Staging Global UKI Addons")]
+fn stage_global_uki_addons(
+    esp_fd: &Dir,
+    entries_to_write: &Vec<Type2Entry<Sha512HashValue>>,
+) -> Result<()> {
+    if !entries_to_write
+        .iter()
+        .any(|ent| matches!(ent.pe_type, PEType::GlobalUkiAddon))
+    {
+        // No Global UKI Addons to stage
+        return Ok(());
+    }
+
+    let Some(global_addons_dir) = esp_fd.open_dir_optional(GLOBAL_UKI_ADDONS_DIR)? else {
+        // No current Global UKI Addons to copy
+        return Ok(());
+    };
+
+    esp_fd
+        .create_dir_all(STAGED_GLOBAL_UKI_ADDONS_DIR)
+        .context("Creating directory for staged Global UKI Addons")?;
+
+    let staged_addons_dir = esp_fd
+        .open_dir(STAGED_GLOBAL_UKI_ADDONS_DIR)
+        .context("Opening staged Global UKI Addons dir")?;
+
+    // Now copy all addons to the staged directory
+    for ent in global_addons_dir
+        .entries_utf8()
+        .context("Reading entries in Global UKI directory")?
+    {
+        let entry = ent?;
+        let entry_name = entry.file_name().context("Reading file name")?;
+        global_addons_dir
+            .copy(&entry_name, &staged_addons_dir, &entry_name)
+            .with_context(|| format!("Copying addon {entry_name}"))?;
+    }
+
+    Ok(())
+}
+
 /// Writes a PortableExecutable to ESP along with any PE specific or Global addons
 #[context("Writing {} to ESP", entry.file_path.display())]
 fn write_pe_to_esp(
@@ -1455,13 +1506,20 @@ fn write_pe_to_esp(
     entry: &Type2Entry<Sha512HashValue>,
     uki_id: &Sha512HashValue,
     mounted_efi: impl AsRef<Path>,
+    is_upgrade: bool,
 ) -> Result<()> {
     let mut uki_reader = file_from_type2_entry(repo, entry)?;
 
     let file_path = Utf8Path::from_path(&entry.file_path)
         .ok_or_else(|| anyhow::anyhow!("Path is not valid UTf8"))?;
 
-    let final_pe_path = pe_output_dir(&entry.pe_type, mounted_efi.as_ref(), file_path, uki_id);
+    let final_pe_path = pe_output_dir(
+        &entry.pe_type,
+        mounted_efi.as_ref(),
+        file_path,
+        uki_id,
+        is_upgrade,
+    );
     create_dir_all(&final_pe_path).with_context(|| format!("Creating {final_pe_path:?}"))?;
 
     let pe_dir = Dir::open_ambient_dir(&final_pe_path, ambient_authority())
@@ -1915,6 +1973,7 @@ pub(crate) fn setup_composefs_uki_boot(
                     addon_type: UkiAddonType::Scoped {
                         depl_id: id.to_hex(),
                     },
+                    staged: false,
                 });
             }
 
@@ -1922,6 +1981,7 @@ pub(crate) fn setup_composefs_uki_boot(
                 addons.push(UkiAddonsList {
                     name: addon.into(),
                     addon_type: UkiAddonType::Global,
+                    staged: false,
                 });
             }
 
@@ -1941,7 +2001,7 @@ pub(crate) fn setup_composefs_uki_boot(
             // if we find in the new image
             //
             // Only keep addons referenced by the current deployment
-            let installed_addons = list_installed_uki_addons(storage)?
+            let installed_addons = list_installed_uki_addons(storage, &host.status.staged)?
                 .into_iter()
                 .filter(|addon| match &addon.addon_type {
                     UkiAddonType::Scoped { depl_id } => *depl_id == *booted_cfs.cmdline.digest,
@@ -1958,6 +2018,7 @@ pub(crate) fn setup_composefs_uki_boot(
                     addons_via_cli.push(UkiAddonsList {
                         name: addon.into(),
                         addon_type: UkiAddonType::Global,
+                        staged: false,
                     });
                 }
 
@@ -1967,6 +2028,7 @@ pub(crate) fn setup_composefs_uki_boot(
                         addon_type: UkiAddonType::Scoped {
                             depl_id: target_depl_id.clone(),
                         },
+                        staged: false,
                     });
                 }
             }
@@ -2123,8 +2185,15 @@ pub(crate) fn setup_composefs_uki_boot(
         ..
     } = uki_info;
 
+    let is_upgrade = matches!(setup_type, BootSetupType::Upgrade(..));
+
+    // Create a `ESP/loader/addons.staged` if we have Global UKI Addons to update
+    if is_upgrade {
+        stage_global_uki_addons(&esp_mount.fd, &entries_to_write)?;
+    }
+
     for entry in entries_to_write {
-        write_pe_to_esp(repo, &entry, &deploy_id, esp_mount.dir.path())?;
+        write_pe_to_esp(repo, &entry, &deploy_id, esp_mount.dir.path(), is_upgrade)?;
     }
 
     match bootloader.kind()? {
@@ -3166,7 +3235,13 @@ mod tests {
 
         // A UKI itself always lands directly in BOOTC_UKI_DIR.
         assert_eq!(
-            pe_output_dir(&PEType::Uki, mounted_efi, Utf8Path::new("foo.efi"), &uki_id),
+            pe_output_dir(
+                &PEType::Uki,
+                mounted_efi,
+                Utf8Path::new("foo.efi"),
+                &uki_id,
+                false
+            ),
             mounted_efi.join(BOOTC_UKI_DIR)
         );
 
@@ -3177,7 +3252,8 @@ mod tests {
                 &PEType::UkiAddon,
                 mounted_efi,
                 Utf8Path::new("foo.efi.extra.d/bar.addon.efi"),
-                &uki_id
+                &uki_id,
+                false,
             ),
             mounted_efi
                 .join(BOOTC_UKI_DIR)
@@ -3191,9 +3267,22 @@ mod tests {
                 &PEType::GlobalUkiAddon,
                 mounted_efi,
                 Utf8Path::new("bar.addon.efi"),
-                &uki_id
+                &uki_id,
+                false
             ),
             mounted_efi.join(GLOBAL_UKI_ADDONS_DIR)
+        );
+
+        // On upgrade/switch global addons are written to `loader/addons.staged`
+        assert_eq!(
+            pe_output_dir(
+                &PEType::GlobalUkiAddon,
+                mounted_efi,
+                Utf8Path::new("bar.addon.efi"),
+                &uki_id,
+                true
+            ),
+            mounted_efi.join(STAGED_GLOBAL_UKI_ADDONS_DIR)
         );
     }
 

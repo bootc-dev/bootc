@@ -16,6 +16,7 @@ use ostree_ext::{
     composefs_oci::linked_erofs_images,
 };
 
+use crate::bootc_composefs::boot::STAGED_GLOBAL_UKI_ADDONS_DIR;
 use crate::spec::Host;
 use crate::{
     bootc_composefs::{
@@ -107,7 +108,7 @@ pub(crate) fn handle_addon_cli_cmd(
 
     match opts {
         UkiAddonCliOpts::List { json } => {
-            let addons = list_installed_uki_addons(storage)?;
+            let addons = list_installed_uki_addons(storage, &host.status.staged)?;
 
             if *json {
                 return serde_json::to_writer(std::io::stdout(), &addons)
@@ -127,7 +128,9 @@ pub(crate) fn handle_addon_cli_cmd(
             name: addon_name,
             addon_type,
         } => {
-            let addons = list_installed_uki_addons(storage)?;
+            let addons = list_installed_uki_addons(storage, &host.status.staged)?;
+
+            let is_staged = host.status.staged.is_some();
 
             match addon_type {
                 UkiAddonScope::Scoped => {
@@ -142,6 +145,7 @@ pub(crate) fn handle_addon_cli_cmd(
                             &addon.addon_type,
                             UkiAddonType::Scoped { depl_id: id } if id == depl_id
                         ) && addon.name == *addon_name
+                            && addon.staged == is_staged
                     });
 
                     if !found {
@@ -209,7 +213,9 @@ pub(crate) fn handle_addon_cli_cmd(
 
                 UkiAddonScope::Global => {
                     let found = addons.iter().any(|addon| {
-                        addon.addon_type == UkiAddonType::Global && addon.name == *addon_name
+                        addon.addon_type == UkiAddonType::Global
+                            && addon.name == *addon_name
+                            && addon.staged == is_staged
                     });
 
                     if !found {
@@ -220,27 +226,48 @@ pub(crate) fn handle_addon_cli_cmd(
 
                     tracing::debug!("Removing Global UKI Addon {full_addon_name}");
 
+                    let global_addons_dir = if is_staged {
+                        STAGED_GLOBAL_UKI_ADDONS_DIR
+                    } else {
+                        GLOBAL_UKI_ADDONS_DIR
+                    };
+
                     esp.fd
-                        .remove_file(format!("{GLOBAL_UKI_ADDONS_DIR}/{full_addon_name}"))
+                        .remove_file(format!("{global_addons_dir}/{full_addon_name}"))
                         .with_context(|| format!("Removing global addon {full_addon_name}"))?;
 
                     println!("Removed Global Addon {addon_name}");
 
                     let num_ents = esp
                         .fd
-                        .open_dir(GLOBAL_UKI_ADDONS_DIR)
+                        .open_dir(global_addons_dir)
                         .context("Opening global addons dir")?
                         .entries()
                         .context("Getting global addons dir entries")?
                         .count();
 
-                    // Remove directory if empty
+                    // Remove the directory if it's now empty.
                     if num_ents == 0 {
                         esp.fd
-                            .remove_dir(GLOBAL_UKI_ADDONS_DIR)
+                            .remove_dir(global_addons_dir)
                             .context("Removing global addons dir")?;
 
-                        println!("Removed empty directory {GLOBAL_UKI_ADDONS_DIR}");
+                        println!("Removed empty directory {global_addons_dir}");
+
+                        // The staged global addon set is a transient overlay that
+                        // finalize exchanges with the live set on the next boot. An
+                        // empty overlay is collapsed rather than applied, so removing
+                        // the last staged global addon leaves the currently active
+                        // global addons in effect after reboot.
+                        if is_staged {
+                            println!(
+                                "Note: '{addon_name}' was the last staged global addon. \
+                                 An empty staged global addon set is not applied on boot, so \
+                                 the currently active global addons remain in effect after \
+                                 reboot. To drop all global addons, remove them while no \
+                                 deployment is staged."
+                            );
+                        }
                     }
                 }
             }
@@ -256,6 +283,8 @@ pub(crate) fn handle_addon_cli_cmd(
                 None => &*booted_cfs.cmdline.digest,
             };
 
+            let is_staged = host.status.staged.is_some();
+
             // This should never fail
             // This is either the staged/booted digest
             let deployment_digest = Sha512HashValue::from_hex(deployment_id.as_bytes())
@@ -263,17 +292,20 @@ pub(crate) fn handle_addon_cli_cmd(
                     format!("Composefs deployment has bad FSVerity: {deployment_id}")
                 })?;
 
-            let addons = list_installed_uki_addons(storage)?;
+            let addons = list_installed_uki_addons(storage, &host.status.staged)?;
 
             let already_present = addons.iter().any(|addon| match addon_type {
                 UkiAddonScope::Global => {
-                    addon.addon_type == UkiAddonType::Global && addon.name == *addon_name
+                    addon.addon_type == UkiAddonType::Global
+                        && addon.name == *addon_name
+                        && addon.staged == is_staged
                 }
                 UkiAddonScope::Scoped => {
                     matches!(
                         &addon.addon_type,
                         UkiAddonType::Scoped { depl_id: id } if *id == deployment_digest.to_hex()
                     ) && addon.name == *addon_name
+                        && addon.staged == is_staged
                 }
             });
 
@@ -341,13 +373,19 @@ pub(crate) fn handle_addon_cli_cmd(
 
             let (dest_dir, dest_name) = match addon_type {
                 UkiAddonScope::Global => {
+                    let global_addons_dir = if is_staged {
+                        STAGED_GLOBAL_UKI_ADDONS_DIR
+                    } else {
+                        GLOBAL_UKI_ADDONS_DIR
+                    };
+
                     esp.fd
-                        .create_dir_all(GLOBAL_UKI_ADDONS_DIR)
+                        .create_dir_all(global_addons_dir)
                         .context("Creating global addons directory")?;
 
                     let global_addons_dir = esp
                         .fd
-                        .open_dir(GLOBAL_UKI_ADDONS_DIR)
+                        .open_dir(global_addons_dir)
                         .context("Opening global addons dir")?;
 
                     (global_addons_dir, get_global_uki_addon_name(addon_name))
@@ -399,8 +437,11 @@ pub(crate) fn handle_addon_cli_cmd(
             }
         }
         UkiAddonCliOpts::ListReferenced { json } => {
-            let referenced =
-                list_referenced_uki_addons(booted_cfs, &list_bootloader_entries(storage)?)?;
+            let referenced = list_referenced_uki_addons(
+                booted_cfs,
+                &list_bootloader_entries(storage)?,
+                &host.status.staged,
+            )?;
 
             if *json {
                 return serde_json::to_writer(std::io::stdout(), &referenced)
