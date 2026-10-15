@@ -290,8 +290,11 @@ fn handle_bls_conf(
     create_staged_bls_entries(boot_dir, &new_bls_entries)?;
 
     let binaries_dir = if is_uki {
-        let esp = storage.require_esp()?;
-        let uki_dir = esp.fd.open_dir(BOOTC_UKI_DIR).context("Opening UKI dir")?;
+        let boot_mount = storage.require_boot_mount()?;
+        let uki_dir = boot_mount
+            .fd
+            .open_dir(BOOTC_UKI_DIR)
+            .context("Opening UKI dir")?;
 
         uki_dir
     } else {
@@ -329,7 +332,7 @@ pub(crate) async fn prepend_custom_prefix(
 
         BootType::Uki => match bootloader.kind()? {
             BootloaderKind::GRUBClassic => {
-                let esp = storage.require_esp()?;
+                let boot_mount = storage.require_boot_mount()?;
 
                 let mut buf = String::new();
                 let menuentries = get_sorted_grub_uki_boot_entries(boot_dir, &mut buf)?;
@@ -345,7 +348,7 @@ pub(crate) async fn prepend_custom_prefix(
                         continue;
                     }
 
-                    plan_efi_binary_renames(&esp.fd, &digest, &mut rename_transaction)?;
+                    plan_efi_binary_renames(&boot_mount.fd, &digest, &mut rename_transaction)?;
 
                     let new_path = Utf8PathBuf::from("/")
                         .join(BOOTC_UKI_DIR)
@@ -376,8 +379,11 @@ pub(crate) async fn prepend_custom_prefix(
                     })
                     .with_context(|| format!("Writing to {USER_CFG_STAGED}"))?;
 
-                let esp = storage.require_esp()?;
-                let uki_dir = esp.fd.open_dir(BOOTC_UKI_DIR).context("Opening UKI dir")?;
+                let boot_mount = storage.require_boot_mount()?;
+                let uki_dir = boot_mount
+                    .fd
+                    .open_dir(BOOTC_UKI_DIR)
+                    .context("Opening UKI dir")?;
 
                 // execute all EFI PE renames atomically before the final exchange
                 rename_transaction

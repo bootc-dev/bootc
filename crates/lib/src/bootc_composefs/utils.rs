@@ -11,7 +11,7 @@ use fn_error_context::context;
 use linux_kernel_cmdline::utf8::Cmdline;
 
 fn get_uki(storage: &Storage, deployment_verity: &str) -> Result<cap_std_ext::cap_std::fs::File> {
-    let uki_dir = storage.require_esp()?.fd.open_dir(BOOTC_UKI_DIR)?;
+    let uki_dir = storage.require_boot_mount()?.fd.open_dir(BOOTC_UKI_DIR)?;
 
     let req_fname = get_uki_name(deployment_verity);
 
