@@ -127,7 +127,13 @@ and may change or be removed:
   addons already installed (scoped or global) are carried forward, and any
   passed via the flags are added. Global addons are garbage collected once
   no deployment references them, scoped addons are garbage collected along with
-  their respective deployments.
+  their respective deployments. While a deployment is staged, `bootc uki-addon
+  add`/`remove` for global addons operate on a staged copy at
+  `loader/addons.staged`, which is applied to the live `loader/addons` on the
+  next boot. Removing the last global addon empties and deletes
+  `loader/addons.staged`, so nothing is applied on the next boot and the live
+  global addons are kept; remove the last global addon when no deployment is
+  staged.
 - [Android A/B boot images and ukiboot](bootc-experimental-composefs-aboot.7.md).
 - [Unified storage](bootc-experimental-unified-storage.7.md).
 

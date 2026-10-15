@@ -14,10 +14,11 @@ use serde::Serialize;
 
 use crate::{
     bootc_composefs::{
-        boot::{BOOTC_UKI_DIR, EFI_LINUX, GLOBAL_UKI_ADDONS_DIR},
+        boot::{BOOTC_UKI_DIR, EFI_LINUX, GLOBAL_UKI_ADDONS_DIR, STAGED_GLOBAL_UKI_ADDONS_DIR},
         status::BootloaderEntry,
     },
     composefs_consts::UKI_NAME_PREFIX,
+    spec::BootEntry,
     store::{BootedComposefs, Storage},
 };
 
@@ -41,6 +42,8 @@ impl fmt::Display for UkiAddonType {
 pub struct UkiAddonsList {
     pub name: String,
     pub addon_type: UkiAddonType,
+    /// Whether this addon is part of a staged deployment
+    pub staged: bool,
 }
 
 impl fmt::Display for UkiAddonsList {
@@ -53,6 +56,7 @@ fn gather_addons_from_dir(
     dir: &Dir,
     addons: &mut Vec<UkiAddonsList>,
     addon_type: UkiAddonType,
+    staged: bool,
 ) -> Result<()> {
     for ent in dir.entries_utf8()? {
         let ent = ent?;
@@ -72,12 +76,14 @@ fn gather_addons_from_dir(
                 addons.push(UkiAddonsList {
                     name: addon_name.to_string(),
                     addon_type: addon_type.clone(),
+                    staged,
                 });
             }
             UkiAddonType::Scoped { .. } => {
                 addons.push(UkiAddonsList {
                     name: addon_name.to_string(),
                     addon_type: addon_type.clone(),
+                    staged,
                 });
             }
         }
@@ -91,25 +97,34 @@ fn gather_addons_from_dir(
 pub fn gather_addons_from_filesystem(
     boot_dir: &Dir,
     depl_id: Option<&str>,
+    staged_deployment: &Option<BootEntry>,
 ) -> Result<Vec<UkiAddonsList>> {
     let mut addons_list: Vec<UkiAddonsList> = vec![];
 
-    if let Some(global_dir) = boot_dir.open_dir_optional(GLOBAL_UKI_ADDONS_DIR)? {
-        for entry in global_dir.entries_utf8()? {
-            let entry = entry?;
-            let filename = entry.file_name()?;
+    for dir in [GLOBAL_UKI_ADDONS_DIR, STAGED_GLOBAL_UKI_ADDONS_DIR] {
+        if let Some(global_dir) = boot_dir.open_dir_optional(dir)? {
+            for entry in global_dir.entries_utf8()? {
+                let entry = entry?;
+                let filename = entry.file_name()?;
 
-            if let Some(name) = filename.strip_suffix(EFI_ADDON_FILE_EXT) {
-                addons_list.push(UkiAddonsList {
-                    name: name.to_string(),
-                    addon_type: UkiAddonType::Global,
-                });
+                if let Some(name) = filename.strip_suffix(EFI_ADDON_FILE_EXT) {
+                    addons_list.push(UkiAddonsList {
+                        name: name.to_string(),
+                        addon_type: UkiAddonType::Global,
+                        staged: dir == STAGED_GLOBAL_UKI_ADDONS_DIR,
+                    });
+                }
             }
         }
     }
 
     let Some(efi_linux) = boot_dir.open_dir_optional(EFI_LINUX)? else {
         return Ok(addons_list);
+    };
+
+    let staged_deployment_id = match staged_deployment {
+        Some(entry) => Some(entry.require_composefs()?.verity.as_str()),
+        None => None,
     };
 
     for entry in efi_linux.entries_utf8()? {
@@ -141,6 +156,8 @@ pub fn gather_addons_from_filesystem(
                         // We can't always have the deployment id with us
                         depl_id: depl_id.map(|x| x.to_string()).unwrap_or("".into()),
                     },
+                    staged: staged_deployment_id
+                        .is_some_and(|staged_id| Some(staged_id) == depl_id),
                 });
             }
         }
@@ -150,7 +167,10 @@ pub fn gather_addons_from_filesystem(
 }
 
 #[context("Listing UKI Addons")]
-pub fn list_installed_uki_addons(storage: &Storage) -> Result<Vec<UkiAddonsList>> {
+pub fn list_installed_uki_addons(
+    storage: &Storage,
+    staged_deployment: &Option<BootEntry>,
+) -> Result<Vec<UkiAddonsList>> {
     let mut addons = vec![];
 
     let Ok(esp) = storage.require_esp() else {
@@ -158,8 +178,13 @@ pub fn list_installed_uki_addons(storage: &Storage) -> Result<Vec<UkiAddonsList>
     };
 
     if let Some(global_dir) = esp.fd.open_dir_optional(GLOBAL_UKI_ADDONS_DIR)? {
-        gather_addons_from_dir(&global_dir, &mut addons, UkiAddonType::Global)
+        gather_addons_from_dir(&global_dir, &mut addons, UkiAddonType::Global, false)
             .context("Gathering global addons")?;
+    };
+
+    if let Some(global_dir) = esp.fd.open_dir_optional(STAGED_GLOBAL_UKI_ADDONS_DIR)? {
+        gather_addons_from_dir(&global_dir, &mut addons, UkiAddonType::Global, true)
+            .context("Gathering staged global addons")?;
     };
 
     let Some(bootc_uki_dir) = esp
@@ -168,6 +193,11 @@ pub fn list_installed_uki_addons(storage: &Storage) -> Result<Vec<UkiAddonsList>
         .context("Opening UKI dir")?
     else {
         return Ok(addons);
+    };
+
+    let staged_deployment_id = match staged_deployment {
+        Some(ent) => Some(ent.require_composefs()?.verity.as_str()),
+        None => None,
     };
 
     for ent in bootc_uki_dir
@@ -198,6 +228,7 @@ pub fn list_installed_uki_addons(storage: &Storage) -> Result<Vec<UkiAddonsList>
             UkiAddonType::Scoped {
                 depl_id: depl_id.to_string(),
             },
+            staged_deployment_id.is_some_and(|verity| verity == depl_id),
         )?;
     }
 
@@ -211,6 +242,7 @@ pub fn list_installed_uki_addons(storage: &Storage) -> Result<Vec<UkiAddonsList>
 pub fn list_referenced_uki_addons(
     booted_cfs: &BootedComposefs,
     bootloader_entries: &Vec<BootloaderEntry>,
+    staged_deployment: &Option<BootEntry>,
 ) -> Result<Vec<(String, Vec<UkiAddonsList>)>> {
     let mut all_referenced_addons: Vec<(String, Vec<UkiAddonsList>)> = vec![];
 
@@ -261,7 +293,8 @@ pub fn list_referenced_uki_addons(
             .open_dir("boot")
             .context("Opening boot directory in composefs image")?;
 
-        let addons_list = gather_addons_from_filesystem(&cfs_boot_dir, Some(&entry.fsverity))?;
+        let addons_list =
+            gather_addons_from_filesystem(&cfs_boot_dir, Some(&entry.fsverity), staged_deployment)?;
 
         // We work with the bootable fsverity everywhere
         all_referenced_addons.push((entry.fsverity.clone(), addons_list));

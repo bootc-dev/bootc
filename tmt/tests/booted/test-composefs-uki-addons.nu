@@ -82,6 +82,16 @@ def second_boot [] {
     # should succeed
     bootc switch --transport containers-storage --uki-addon monster-cmdline --global-uki-addon global-cmdline localhost/bootc-uki-addons-2
 
+    # A switch/upgrade must *stage* the global addon under loader/addons.staged
+    # and leave the live loader/addons dir untouched until the next boot.
+    # Remount the ESP so our view is coherent with the mount bootc wrote through.
+    umount /var/tmp/efi
+    mount /dev/disk/by-partlabel/EFI-SYSTEM /var/tmp/efi
+
+    assert ("/var/tmp/efi/loader/addons.staged/bootc_composefs-global-cmdline.addon.efi" | path exists) "Global addon should be staged under loader/addons.staged"
+    # This is the first global addon, so the live dir must not hold it yet
+    assert (not ("/var/tmp/efi/loader/addons" | path exists)) "Live loader/addons must not be updated before reboot"
+
     tmt-reboot
 }
 
@@ -92,6 +102,11 @@ def third_boot [] {
 
     # We should have two addons
     assert ((^find /var/tmp/efi -type f -name '*addon.efi' | ^wc -l | str trim | into int) == 2)
+
+    # finalize should have atomically promoted the staged global addon into the
+    # live loader/addons dir and removed the staged dir.
+    assert (not ("/var/tmp/efi/loader/addons.staged" | path exists)) "Staged loader/addons.staged must be gone after reboot"
+    assert ("/var/tmp/efi/loader/addons/bootc_composefs-global-cmdline.addon.efi" | path exists) "Global addon must be promoted to live loader/addons after reboot"
 
     # We should have those in the cmdline
     assert (open /proc/cmdline | str contains "johan=liebert")
@@ -137,6 +152,38 @@ def third_boot [] {
     # This should update the global cmdline because we have the same name
     # Also this shouldn't include the local cmdline addon so we're good and this should pass
     bootc switch --transport containers-storage --uki-addon berserk-cmdline localhost/bootc-uki-addons-3
+
+    # --- Test: removing the last global addon while a deployment is staged ---
+    # The switch above staged a deployment and carried the global addon forward
+    # into loader/addons.staged, while the live loader/addons is left intact.
+    # Remount the ESP for a view coherent with bootc's own mount.
+    umount /var/tmp/efi
+    mount /dev/disk/by-partlabel/EFI-SYSTEM /var/tmp/efi
+
+    assert ("/var/tmp/efi/loader/addons.staged/bootc_composefs-global-cmdline.addon.efi" | path exists) "Global addon should be staged after switch"
+    assert ("/var/tmp/efi/loader/addons/bootc_composefs-global-cmdline.addon.efi" | path exists) "Live global addon must remain while staged"
+
+    # Removing the last global addon while staged operates on loader/addons.staged:
+    # it empties and deletes that dir and warns that the removal won't take effect,
+    # leaving the live loader/addons untouched.
+    let remove_result = (do { bootc uki-addon remove global-cmdline global } | complete)
+    assert ($remove_result.exit_code == 0) "Removing the staged global addon should succeed"
+    assert ($remove_result.stdout | str contains "last staged global addon") "Should warn about removing the last staged global addon"
+
+    umount /var/tmp/efi
+    mount /dev/disk/by-partlabel/EFI-SYSTEM /var/tmp/efi
+
+    assert (not ("/var/tmp/efi/loader/addons.staged" | path exists)) "loader/addons.staged must be deleted after removing the last staged global addon"
+    assert ("/var/tmp/efi/loader/addons/bootc_composefs-global-cmdline.addon.efi" | path exists) "Live global addon must be kept"
+
+    # Re-stage the global addon so fourth_boot sees the same state as before this
+    # check. With a deployment staged, `add` writes back into loader/addons.staged.
+    bootc uki-addon add global-cmdline global
+
+    umount /var/tmp/efi
+    mount /dev/disk/by-partlabel/EFI-SYSTEM /var/tmp/efi
+
+    assert ("/var/tmp/efi/loader/addons.staged/bootc_composefs-global-cmdline.addon.efi" | path exists) "Global addon should be re-staged"
 
     tmt-reboot
 }
@@ -205,7 +252,7 @@ def fourth_boot [] {
 
     # The rejected add must not have installed anything
     let addons_after_reject = bootc uki-addon list --json | from json
-    assert (($addons_after_reject | length) == 2)
+    assert (($addons_after_reject | length) == 3)
 
     tap ok
 }
