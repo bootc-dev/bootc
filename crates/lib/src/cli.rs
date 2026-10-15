@@ -1049,18 +1049,22 @@ pub(crate) enum UkiAddonCliOpts {
         #[clap(long)]
         json: bool,
     },
-    /// Remove a UKI Addon
+    /// Remove a UKI Addon from the currently booted deployment. If there is
+    /// a staged deployment present, the operation is performed on the staged
+    /// deployment's addons
     Remove {
         /// Addon name to be provided without the `.addon.efi` suffix
         name: String,
-        /// If removing a scoped addon, deployment_id is required.
-        /// If removing a global addon, deployment_id is not required.
-        deployment_id: Option<String>,
+        /// The type of addon being removed, global or scoped
+        addon_type: UkiAddonScope,
     },
-    /// Add a UKI Addon to the current deployment
+    /// Add a UKI Addon to the currently booted deployment. If there is
+    /// a staged deployment present, the operation is performed on the staged
+    /// deployment
     Add {
         /// Addon name to be provided without the `.addon.efi` suffix
         name: String,
+        /// The type of addon being added, global or scoped
         addon_type: UkiAddonScope,
     },
     /// List all referenced UKI Addons across all deployments
@@ -2938,7 +2942,7 @@ async fn run_from_opt(opt: Opt) -> Result<CliExitStatus> {
                         );
                     }
 
-                    handle_addon_cli_cmd(storage, &booted_cfs, &opts)
+                    handle_addon_cli_cmd(storage, &booted_cfs, &status, &opts)
                 }
             }
         }

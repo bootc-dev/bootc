@@ -178,7 +178,7 @@ def fourth_boot [] {
     bootc uki-addon list
 
     # Remove the global addon
-    bootc uki-addon remove global-cmdline
+    bootc uki-addon remove global-cmdline global
     let addons_after_remove = bootc uki-addon list --json | from json
     assert (($addons_after_remove | length) == 2)
     let globals_after = $addons_after_remove | where addon_type.type == "global"
@@ -194,14 +194,6 @@ def fourth_boot [] {
 
     # Adding the same addon again should be a no-op
     bootc uki-addon add global-cmdline global
-
-    # Remove a scoped addon from the old deployment
-    let old_scoped = $scoped | where name == "monster-cmdline"
-    assert (($old_scoped | length) == 1)
-    let old_depl_id = $old_scoped.0.addon_type.depl_id
-    bootc uki-addon remove monster-cmdline $old_depl_id
-    let addons_final = bootc uki-addon list --json | from json
-    assert (($addons_final | length) == 2)
 
     # Removing a non-existent addon should fail
     let failed = (do { bootc uki-addon remove nonexistent-addon } | complete)
