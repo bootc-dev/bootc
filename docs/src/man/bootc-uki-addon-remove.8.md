@@ -25,9 +25,11 @@ Use `bootc uki-addon list --json` to find deployment IDs.
 
     This argument is required.
 
-**DEPLOYMENT_ID**
+**ADDON_TYPE**
 
-    If removing a scoped addon, deployment_id is required. If removing a global addon, deployment_id is not required
+    The type of addon being removed, global or scoped
+
+    This argument is required.
 
 <!-- END GENERATED OPTIONS -->
 
