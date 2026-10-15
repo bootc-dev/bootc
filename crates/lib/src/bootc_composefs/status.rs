@@ -617,6 +617,27 @@ pub(crate) fn get_imginfo(
     Ok((img_conf, manifest_digest_str))
 }
 
+/// Version and created timestamp for a composefs deployment image.
+///
+/// The version prefers the manifest annotation. When that annotation is
+/// absent, configuration labels are used (the OCI version label, then the
+/// legacy `version` label), matching ostree status. The timestamp is parsed
+/// from `config.created()`; an invalid value yields no timestamp.
+fn image_version_and_created(
+    manifest: &ImageManifest,
+    config: &ImageConfiguration,
+) -> (Option<String>, Option<chrono::DateTime<chrono::Utc>>) {
+    let version = manifest
+        .annotations()
+        .as_ref()
+        .and_then(|a| a.get(oci_spec::image::ANNOTATION_VERSION).cloned())
+        .or_else(|| ostree_container::version_for_config(config).map(ToOwned::to_owned));
+
+    let created_at = config.created().clone();
+    let timestamp = created_at.and_then(|x| try_deserialize_timestamp(&x));
+    (version, timestamp)
+}
+
 #[context("Getting composefs deployment metadata")]
 fn boot_entry_from_composefs_deployment(
     storage: &Storage,
@@ -633,14 +654,8 @@ fn boot_entry_from_composefs_deployment(
             let (img_conf, image_digest) = get_imginfo(storage, &verity)?;
 
             let architecture = img_conf.config.architecture().to_string();
-            let version = img_conf
-                .manifest
-                .annotations()
-                .as_ref()
-                .and_then(|a| a.get(oci_spec::image::ANNOTATION_VERSION).cloned());
-
-            let created_at = img_conf.config.created().clone();
-            let timestamp = created_at.and_then(|x| try_deserialize_timestamp(&x));
+            let (version, timestamp) =
+                image_version_and_created(&img_conf.manifest, &img_conf.config);
 
             Some(ImageStatus {
                 image: img_ref,
@@ -1363,6 +1378,134 @@ mod tests {
         let host = composefs_aboot_status(&storage, &cmdline)?;
         assert!(host.status.staged.as_ref().unwrap().download_only);
         Ok(())
+    }
+
+    #[test]
+    fn test_image_version_and_created() {
+        use std::collections::HashMap;
+        use std::str::FromStr;
+
+        use ostree_ext::container::{LABEL_OCI_VERSION, LABEL_VERSION};
+        use ostree_ext::oci_spec::image::{
+            ANNOTATION_CREATED, ANNOTATION_VERSION, ConfigBuilder, Descriptor, Digest,
+            ImageConfigurationBuilder, ImageManifestBuilder, MediaType, SCHEMA_VERSION,
+        };
+
+        const CREATED: &str = "2024-06-01T12:00:00Z";
+        const ANNOTATION_CREATED_DECOY: &str = "1999-01-01T00:00:00Z";
+        const LABEL_CREATED_DECOY: &str = "1980-01-01T00:00:00Z";
+
+        struct Case {
+            desc: &'static str,
+            annotation_version: Option<&'static str>,
+            labels: &'static [(&'static str, &'static str)],
+            created: Option<&'static str>,
+            expect_version: Option<&'static str>,
+            expect_timestamp: Option<&'static str>,
+        }
+        let cases = [
+            Case {
+                desc: "annotation only",
+                annotation_version: Some("ann-1"),
+                labels: &[(ANNOTATION_CREATED, LABEL_CREATED_DECOY)],
+                created: Some(CREATED),
+                expect_version: Some("ann-1"),
+                expect_timestamp: Some(CREATED),
+            },
+            Case {
+                desc: "configuration label only",
+                annotation_version: None,
+                labels: &[(LABEL_OCI_VERSION, "label-1")],
+                created: Some(CREATED),
+                expect_version: Some("label-1"),
+                expect_timestamp: Some(CREATED),
+            },
+            Case {
+                desc: "legacy version label only",
+                annotation_version: None,
+                labels: &[(LABEL_VERSION, "legacy-1")],
+                created: Some(CREATED),
+                expect_version: Some("legacy-1"),
+                expect_timestamp: Some(CREATED),
+            },
+            Case {
+                desc: "annotation precedes configuration labels",
+                annotation_version: Some("ann-wins"),
+                labels: &[
+                    (LABEL_OCI_VERSION, "label-loses"),
+                    (LABEL_VERSION, "legacy-loses"),
+                ],
+                created: Some(CREATED),
+                expect_version: Some("ann-wins"),
+                expect_timestamp: Some(CREATED),
+            },
+            Case {
+                desc: "missing version keeps a config created timestamp",
+                annotation_version: None,
+                labels: &[],
+                created: Some(CREATED),
+                expect_version: None,
+                expect_timestamp: Some(CREATED),
+            },
+            Case {
+                desc: "invalid config created timestamp",
+                annotation_version: None,
+                labels: &[],
+                created: Some("not-a-timestamp"),
+                expect_version: None,
+                expect_timestamp: None,
+            },
+        ];
+
+        for case in cases {
+            let mut annotations = HashMap::new();
+            if let Some(version) = case.annotation_version {
+                annotations.insert(ANNOTATION_VERSION.to_owned(), version.to_owned());
+            }
+            annotations.insert(
+                ANNOTATION_CREATED.to_owned(),
+                ANNOTATION_CREATED_DECOY.to_owned(),
+            );
+            let config_desc = Descriptor::new(
+                MediaType::ImageConfig,
+                0,
+                Digest::from_str(
+                    "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                )
+                .unwrap(),
+            );
+            let manifest = ImageManifestBuilder::default()
+                .schema_version(SCHEMA_VERSION)
+                .config(config_desc)
+                .layers(Vec::<Descriptor>::new())
+                .annotations(annotations)
+                .build()
+                .unwrap();
+
+            let mut image = ImageConfigurationBuilder::default();
+            if !case.labels.is_empty() {
+                let labels: HashMap<String, String> = case
+                    .labels
+                    .iter()
+                    .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+                    .collect();
+                let config = ConfigBuilder::default().labels(labels).build().unwrap();
+                image = image.config(config);
+            }
+            if let Some(created) = case.created {
+                image = image.created(created);
+            }
+            let image = image.build().unwrap();
+
+            let (version, timestamp) = image_version_and_created(&manifest, &image);
+            assert_eq!(version.as_deref(), case.expect_version, "{}", case.desc);
+            assert_eq!(
+                timestamp,
+                case.expect_timestamp.and_then(try_deserialize_timestamp),
+                "{}",
+                case.desc
+            );
+        }
     }
 
     #[test]

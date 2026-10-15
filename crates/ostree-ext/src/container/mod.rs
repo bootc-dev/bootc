@@ -206,6 +206,14 @@ pub enum SignatureSource {
 /// A commonly used pre-OCI label for versions.
 pub const LABEL_VERSION: &str = "version";
 
+/// Image configuration label for the OCI image version.
+///
+/// The key string matches [`crate::oci_spec::image::ANNOTATION_VERSION`], which is the
+/// manifest annotation. Configuration labels and manifest annotations are
+/// different maps; Containerfile `LABEL` and `podman build --label` write this
+/// key into the configuration.
+pub const LABEL_OCI_VERSION: &str = oci_spec::image::ANNOTATION_VERSION;
+
 /// Combination of a signature verification mechanism, and a standard container image reference.
 ///
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -453,10 +461,13 @@ pub(crate) fn labels_of(
     config.config().as_ref().and_then(|c| c.labels().as_ref())
 }
 
-/// Retrieve the version number from an image configuration.
+/// Retrieve the version number from image configuration labels.
+///
+/// Precedence is the OCI version label ([`LABEL_OCI_VERSION`]), then the legacy
+/// [`LABEL_VERSION`] label. Manifest annotations are not consulted.
 pub fn version_for_config(config: &oci_spec::image::ImageConfiguration) -> Option<&str> {
     if let Some(labels) = labels_of(config) {
-        for k in [oci_spec::image::ANNOTATION_VERSION, LABEL_VERSION] {
+        for k in [LABEL_OCI_VERSION, LABEL_VERSION] {
             if let Some(v) = labels.get(k) {
                 return Some(v.as_str());
             }
@@ -633,5 +644,49 @@ mod tests {
         c.skopeo_cmd = Some(Command::new("skopeo"));
         super::merge_default_container_proxy_opts(&mut c).unwrap();
         assert_eq!(c.skopeo_cmd.unwrap().get_program(), "skopeo");
+    }
+
+    #[test]
+    fn test_version_for_config() {
+        use std::collections::HashMap;
+
+        struct Case {
+            labels: &'static [(&'static str, &'static str)],
+            expected: Option<&'static str>,
+        }
+        let cases = [
+            Case {
+                labels: &[(LABEL_OCI_VERSION, "oci-label")],
+                expected: Some("oci-label"),
+            },
+            Case {
+                labels: &[(LABEL_VERSION, "legacy")],
+                expected: Some("legacy"),
+            },
+            Case {
+                labels: &[(LABEL_VERSION, "legacy"), (LABEL_OCI_VERSION, "oci-label")],
+                expected: Some("oci-label"),
+            },
+            Case {
+                labels: &[("name", "demo")],
+                expected: None,
+            },
+        ];
+        for case in cases {
+            let labels: HashMap<String, String> = case
+                .labels
+                .iter()
+                .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+                .collect();
+            let config = oci_spec::image::ConfigBuilder::default()
+                .labels(labels)
+                .build()
+                .unwrap();
+            let image = oci_spec::image::ImageConfigurationBuilder::default()
+                .config(config)
+                .build()
+                .unwrap();
+            assert_eq!(version_for_config(&image), case.expected);
+        }
     }
 }
