@@ -284,7 +284,8 @@ pub(crate) fn install_systemd_boot(
         root_path,
         "--esp-path",
         esp_path_in_root.as_str(),
-        // If we supported XBOOTLDR in the future, that'd go here with --boot-path.
+        // No --boot-path: bootc writes the boot entries itself, to an
+        // XBOOTLDR partition if there is one (see `BootPartition`).
     ];
 
     if configopts.generic_image {
