@@ -13,7 +13,7 @@ use serde::Deserialize;
 use bootc_utils::CommandRunExt;
 
 pub mod dps;
-use dps::{BIOS_BOOT, ESP};
+use dps::{BIOS_BOOT, ESP, XBOOTLDR};
 
 /// Check whether the udev database is accessible (cached for the process lifetime).
 ///
@@ -235,6 +235,27 @@ impl Device {
                 .as_ref()
                 .is_some_and(|pt| pt.eq_ignore_ascii_case(parttype))
         })
+    }
+
+    /// Find a VFAT Extended Boot Loader Partition (XBOOTLDR) among children.
+    ///
+    /// Other filesystems are skipped: an XBOOTLDR partition holding UKIs and
+    /// boot entries for systemd-boot must be readable by the firmware.
+    pub fn find_partition_of_xbootldr(&self) -> Option<&Device> {
+        self.find_partition_of_type(XBOOTLDR)
+            .filter(|part| part.fstype.as_deref() == Some("vfat"))
+    }
+
+    /// Find a VFAT Extended Boot Loader Partition (XBOOTLDR) on the same disk
+    /// as this partition, typically the ESP.
+    pub fn find_sibling_xbootldr(&self) -> Result<Option<Device>> {
+        for parent in self.list_parents()?.unwrap_or_default() {
+            let parent = list_dev(Utf8Path::new(&parent.path()))?;
+            if let Some(xbootldr) = parent.find_partition_of_xbootldr() {
+                return Ok(Some(xbootldr.clone()));
+            }
+        }
+        Ok(None)
     }
 
     /// Find the EFI System Partition (ESP) among children.
@@ -1046,6 +1067,33 @@ mod test {
         // No ESP types present: 0x83 (Linux) and 0x82 (swap)
         let dev = make_mbr_disk(&["0x83", "0x82"]);
         assert!(dev.find_partition_of_esp().is_err());
+    }
+
+    #[test]
+    fn test_find_partition_of_xbootldr() {
+        let cases = [
+            (XBOOTLDR, Some("vfat"), Some(2)),
+            (XBOOTLDR, Some("ext4"), None),
+            (XBOOTLDR, None, None),
+            (ESP, Some("vfat"), None),
+        ];
+        for (parttype, fstype, expected) in cases {
+            let disk: Device = serde_json::from_value(serde_json::json!({
+                "name": "vda",
+                "size": 10737418240_u64,
+                "pttype": "gpt",
+                "children": [
+                    {"name": "vda1", "size": 104857600, "partn": 1, "parttype": ESP, "fstype": "vfat"},
+                    {"name": "vda2", "size": 2147483648_u64, "partn": 2, "parttype": parttype, "fstype": fstype},
+                ]
+            }))
+            .unwrap();
+            assert_eq!(
+                disk.find_partition_of_xbootldr().and_then(|p| p.partn),
+                expected,
+                "{parttype} {fstype:?}"
+            );
+        }
     }
 
     #[test]
