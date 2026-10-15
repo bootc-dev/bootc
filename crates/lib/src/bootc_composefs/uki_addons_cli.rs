@@ -16,6 +16,7 @@ use ostree_ext::{
     composefs_oci::linked_erofs_images,
 };
 
+use crate::spec::Host;
 use crate::{
     bootc_composefs::{
         boot::{
@@ -97,6 +98,7 @@ fn verify_addon_exists(
 pub(crate) fn handle_addon_cli_cmd(
     storage: &Storage,
     booted_cfs: &BootedComposefs,
+    host: &Host,
     opts: &UkiAddonCliOpts,
 ) -> Result<()> {
     let Ok(esp) = storage.require_esp() else {
@@ -123,12 +125,18 @@ pub(crate) fn handle_addon_cli_cmd(
         }
         UkiAddonCliOpts::Remove {
             name: addon_name,
-            deployment_id,
+            addon_type,
         } => {
             let addons = list_installed_uki_addons(storage)?;
 
-            match deployment_id {
-                Some(depl_id) => {
+            match addon_type {
+                UkiAddonScope::Scoped => {
+                    // If we have a staged deployment, we'll operate on that
+                    let depl_id = match &host.status.staged {
+                        Some(staged) => staged.require_composefs()?.verity.as_str(),
+                        None => &*booted_cfs.cmdline.digest,
+                    };
+
                     let found = addons.iter().any(|addon| {
                         matches!(
                             &addon.addon_type,
@@ -199,8 +207,7 @@ pub(crate) fn handle_addon_cli_cmd(
                     }
                 }
 
-                // Removing a global addon
-                None => {
+                UkiAddonScope::Global => {
                     let found = addons.iter().any(|addon| {
                         addon.addon_type == UkiAddonType::Global && addon.name == *addon_name
                     });
@@ -243,9 +250,18 @@ pub(crate) fn handle_addon_cli_cmd(
             name: addon_name,
             addon_type,
         } => {
+            // If we have a staged deployment, we'll operate on that
+            let deployment_id = match &host.status.staged {
+                Some(staged) => staged.require_composefs()?.verity.as_str(),
+                None => &*booted_cfs.cmdline.digest,
+            };
+
             // This should never fail
-            let booted_digest = Sha512HashValue::from_hex(booted_cfs.cmdline.digest.as_bytes())
-                .context("Booted composefs has bad FSVerity")?;
+            // This is either the staged/booted digest
+            let deployment_digest = Sha512HashValue::from_hex(deployment_id.as_bytes())
+                .with_context(|| {
+                    format!("Composefs deployment has bad FSVerity: {deployment_id}")
+                })?;
 
             let addons = list_installed_uki_addons(storage)?;
 
@@ -256,7 +272,7 @@ pub(crate) fn handle_addon_cli_cmd(
                 UkiAddonScope::Scoped => {
                     matches!(
                         &addon.addon_type,
-                        UkiAddonType::Scoped { depl_id: id } if *id == booted_digest.to_hex()
+                        UkiAddonType::Scoped { depl_id: id } if *id == deployment_digest.to_hex()
                     ) && addon.name == *addon_name
                 }
             });
@@ -266,7 +282,7 @@ pub(crate) fn handle_addon_cli_cmd(
                 return Ok(());
             }
 
-            let linked_images = linked_erofs_images(&booted_cfs.repo, &booted_digest)
+            let linked_images = linked_erofs_images(&booted_cfs.repo, &deployment_digest)
                 .context("Finding linked EROFS for booted deployment")?;
 
             let Some(non_bootable_img) = linked_images.iter().find(|img| !img.bootable) else {
@@ -338,7 +354,7 @@ pub(crate) fn handle_addon_cli_cmd(
                 }
                 UkiAddonScope::Scoped => {
                     let dir_path = Path::new(BOOTC_UKI_DIR)
-                        .join(get_uki_addon_dir_name(&booted_digest.to_hex()));
+                        .join(get_uki_addon_dir_name(&deployment_digest.to_hex()));
 
                     esp.fd
                         .create_dir_all(&dir_path)
@@ -367,6 +383,20 @@ pub(crate) fn handle_addon_cli_cmd(
                     .context("Reopening as owned fd")?,
             )
             .context("fsync")?;
+
+            match addon_type {
+                UkiAddonScope::Global => println!("Global UKI Addon {addon_name} added"),
+                UkiAddonScope::Scoped => {
+                    println!(
+                        "UKI Addon {addon_name} added to {} deployment",
+                        if host.status.staged.is_some() {
+                            "staged"
+                        } else {
+                            "booted"
+                        }
+                    )
+                }
+            }
         }
         UkiAddonCliOpts::ListReferenced { json } => {
             let referenced =

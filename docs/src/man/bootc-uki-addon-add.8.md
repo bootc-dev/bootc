@@ -26,6 +26,8 @@ already installed, the command is a no-op.
 
 **ADDON_TYPE**
 
+    The type of addon being added, global or scoped
+
     This argument is required.
 
 <!-- END GENERATED OPTIONS -->
