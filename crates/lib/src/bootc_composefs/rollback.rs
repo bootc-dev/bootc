@@ -289,9 +289,10 @@ pub(crate) async fn composefs_rollback(
                 // for staged BLS Config files
                 //
                 // The fsync for ESP is done when we rollback entries
-                let esp = storage.require_esp()?;
+                let boot_mount = storage.require_boot_mount()?;
 
-                esp.fd
+                boot_mount
+                    .fd
                     .remove_all_optional(STAGED_GLOBAL_UKI_ADDONS_DIR)
                     .context("Removing staged Global UKI Addons")?;
 

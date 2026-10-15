@@ -1,6 +1,7 @@
 pub(crate) mod aboot;
 pub(crate) mod backwards_compat;
 pub(crate) mod boot;
+pub(crate) mod boot_partition;
 pub(crate) mod delete;
 pub(crate) mod digest;
 pub(crate) mod export;

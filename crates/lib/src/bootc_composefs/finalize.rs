@@ -155,25 +155,26 @@ pub(crate) async fn composefs_backend_finalize(
         );
     }
 
-    let esp = storage.require_esp()?;
+    let boot_mount = storage.require_boot_mount()?;
 
     // Un-stage Global UKI Addons (if present) as the penultimate step
-    if esp.fd.exists(STAGED_GLOBAL_UKI_ADDONS_DIR) {
-        if esp.fd.exists(GLOBAL_UKI_ADDONS_DIR) {
+    if boot_mount.fd.exists(STAGED_GLOBAL_UKI_ADDONS_DIR) {
+        if boot_mount.fd.exists(GLOBAL_UKI_ADDONS_DIR) {
             tracing::debug!(
                 "Atomically exchanging {STAGED_GLOBAL_UKI_ADDONS_DIR} and {GLOBAL_UKI_ADDONS_DIR}"
             );
 
             renameat_with(
-                &esp.fd,
+                &boot_mount.fd,
                 STAGED_GLOBAL_UKI_ADDONS_DIR,
-                &esp.fd,
+                &boot_mount.fd,
                 GLOBAL_UKI_ADDONS_DIR,
                 RenameFlags::EXCHANGE,
             )
             .context("Atomically exchanging staged Global UKI Addons")?;
 
-            esp.fd
+            boot_mount
+                .fd
                 .remove_dir_all(STAGED_GLOBAL_UKI_ADDONS_DIR)
                 .context("Removing staged Global UKI Addons dir")?;
         } else {
@@ -182,9 +183,9 @@ pub(crate) async fn composefs_backend_finalize(
             );
 
             renameat(
-                &esp.fd,
+                &boot_mount.fd,
                 STAGED_GLOBAL_UKI_ADDONS_DIR,
-                &esp.fd,
+                &boot_mount.fd,
                 GLOBAL_UKI_ADDONS_DIR,
             )
             .context("Finalizing global UKI Addons")?;

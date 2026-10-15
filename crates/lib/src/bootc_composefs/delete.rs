@@ -272,9 +272,10 @@ pub(crate) async fn delete_composefs_deployment(
         delete_depl_boot_entries(&depl_to_del, &storage, deleting_staged)?;
 
         if deleting_staged {
-            let esp = storage.require_esp()?;
+            let boot_mount = storage.require_boot_mount()?;
 
-            esp.fd
+            boot_mount
+                .fd
                 .remove_all_optional(STAGED_GLOBAL_UKI_ADDONS_DIR)
                 .context("Removing staged Global UKI Addons")?;
         }
