@@ -15,6 +15,7 @@ Vendor | CIQ | 2026 | https://ciq.com | Rocky Linux from CIQ (RLC) - Image Based
 Vendor | Universal Blue (Aurora/Bazzite/Bluefin) | 2024 | https://universal-blue.org/ |  The reliability of a Chromebook, but with the flexibility and power of a traditional Linux desktop
 Integration | Kheeper | 2026 | https://kheeper.com | Registry with cloud and bare metal integrations for booting customized images
 Vendor | ALT Atomic | 2025 | https://alt-atomic.org/en/ | Atomic variant of ALT Linux
+Vendor | Luft | 2026 | https://luft.computer | A Fedora-based desktop OS using the composefs backend with sealed UKIs, booting through systemd-boot (SushiBoot) next to Windows
 
 # bootc Adopters (indirect, via ostree)
 
