@@ -12,6 +12,9 @@ use serde::Deserialize;
 
 use bootc_utils::CommandRunExt;
 
+pub mod dps;
+use dps::{BIOS_BOOT, ESP};
+
 /// Check whether the udev database is accessible (cached for the process lifetime).
 ///
 /// When running inside a container or sandbox without `/run/udev`
@@ -75,12 +78,6 @@ fn blkid_probe(dev: &str) -> Result<HashMap<String, String>> {
 /// explicit EFI System Partition type.
 /// Refer to <https://en.wikipedia.org/wiki/Partition_type>
 pub const ESP_ID_MBR: &[u8] = &[0x06, 0xEF];
-
-/// EFI System Partition (ESP) for UEFI boot on GPT
-pub const ESP: &str = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b";
-
-/// BIOS boot partition type GUID for GPT
-pub const BIOS_BOOT: &str = "21686148-6449-6e6f-744e-656564454649";
 
 #[derive(Debug, Deserialize)]
 struct DevicesOutput {
