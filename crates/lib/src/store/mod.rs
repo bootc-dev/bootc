@@ -388,7 +388,7 @@ impl GrubBootLocation {
     /// Decide from the partition type and filesystem type of the filesystem
     /// mounted on `/boot`, and whether it has a GRUB directory.
     fn classify(parttype: Option<&str>, fstype: &str, has_grub_dir: bool) -> Self {
-        use crate::discoverable_partition_specification as dps;
+        use bootc_blockdev::dps;
 
         // The ESP mounted on /boot: GRUB's configuration is in /sysroot/boot
         let is_esp = match parttype {
@@ -1066,7 +1066,7 @@ mod tests {
 
     #[test]
     fn test_grub_boot_location_classify() {
-        use crate::discoverable_partition_specification as dps;
+        use bootc_blockdev::dps;
         use GrubBootLocation::*;
 
         const LINUX_DATA: &str = "0fc63daf-8483-4772-8e79-3d69d8477de4";

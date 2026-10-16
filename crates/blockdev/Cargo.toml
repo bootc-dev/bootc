@@ -13,6 +13,7 @@ bootc-mount = { package = "bootc-internal-mount", path = "../mount", version = "
 
 # Workspace dependencies
 anyhow = { workspace = true }
+cfg-if = { workspace = true }
 camino = { workspace = true, features = ["serde1"] }
 cap-std-ext = { workspace = true, features = ["fs_utf8"] }
 fn-error-context = { workspace = true }
@@ -26,6 +27,7 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 indoc = { workspace = true }
+regex = { workspace = true }
 
 [lib]
 path = "src/blockdev.rs"
