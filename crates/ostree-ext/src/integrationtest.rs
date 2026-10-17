@@ -105,7 +105,7 @@ where
     config
         .rootfs_mut()
         .diff_ids_mut()
-        .push(new_layer.uncompressed_sha256.digest().to_string());
+        .push(new_layer.uncompressed_sha256_as_digest().to_string());
     let new_config_desc = src.write_config(config)?;
     manifest.set_config(new_config_desc);
 
