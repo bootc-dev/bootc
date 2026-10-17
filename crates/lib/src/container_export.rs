@@ -396,8 +396,8 @@ fn handle_kernel_relocation<W: Write>(
     append_dir_entry(tar_builder, "boot")?;
     append_dir_entry(tar_builder, "boot/grub2")?;
 
-    // UKIs don't need relocation - they're already in /boot/EFI/Linux
-    if kernel_info.kernel.unified {
+    // UKIs and aboot payloads don't need relocation - they're already in /boot.
+    if kernel_info.k_type.is_unified() {
         return Ok(());
     }
 

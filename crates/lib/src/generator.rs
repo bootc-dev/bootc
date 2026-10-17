@@ -9,7 +9,10 @@ use ostree_ext::container_utils::{OSTREE_BOOTED, is_ostree_booted_in};
 use ostree_ext::{gio, ostree};
 use rustix::{fd::AsFd, fs::StatVfsMountFlags};
 
+use crate::bootc_composefs::{boot::BootType, state::read_boot_type, status::ComposefsCmdline};
+use crate::composefs_consts::ABOOT_RECONCILE_SERVICE;
 use crate::install::DESTRUCTIVE_CLEANUP;
+use linux_kernel_cmdline::utf8::Cmdline;
 
 const STATUS_ONBOOT_UNIT: &str = "bootc-status-updated-onboot.target";
 const STATUS_PATH_UNIT: &str = "bootc-status-updated.path";
@@ -174,6 +177,8 @@ pub(crate) fn generator(root: &Dir, unit_dir: &Dir) -> Result<()> {
         generate_tmpfiles_ordering(unit_dir)?;
     }
 
+    aboot_generator_impl(root, unit_dir)?;
+
     // === Ostree-specific generator logic ===
     // Only run on ostree systems (native composefs boots skip below).
     if !root.try_exists(OSTREE_BOOTED)? {
@@ -228,6 +233,23 @@ pub(crate) fn shadow_sync_generator_impl(root: &Dir, unit_dir: &Dir) -> Result<b
 
     tracing::debug!("/etc/shadow found, enabling {SHADOW_SYNC_UNIT}");
     enable_unit(unit_dir, SHADOW_SYNC_UNIT, "sysinit.target")?;
+    Ok(true)
+}
+
+fn aboot_generator_impl(root: &Dir, unit_dir: &Dir) -> Result<bool> {
+    let Some(cmdline) = root.read_to_string_optional("proc/cmdline")? else {
+        return Ok(false);
+    };
+    let Some(cmdline) = ComposefsCmdline::find_in_cmdline(&Cmdline::from(cmdline.as_str()))? else {
+        return Ok(false);
+    };
+    let Some(sysroot) = root.open_dir_optional("sysroot")? else {
+        return Ok(false);
+    };
+    if read_boot_type(&sysroot, &cmdline.digest)? != Some(BootType::Aboot) {
+        return Ok(false);
+    }
+    enable_unit(unit_dir, ABOOT_RECONCILE_SERVICE, MULTI_USER_TARGET)?;
     Ok(true)
 }
 
@@ -345,6 +367,83 @@ mod tests {
         tempdir.create_dir("sysroot")?;
         tempdir.create_dir_all("run/systemd/system")?;
         Ok(tempdir)
+    }
+
+    #[test]
+    fn aboot_reconcile_enablement() -> Result<()> {
+        let digest = "ab".repeat(64);
+        for boot_type in [None, Some("bls"), Some("uki"), Some("aboot")] {
+            let root = fixture()?;
+            let units = root.open_dir("run/systemd/system")?;
+            assert!(!aboot_generator_impl(&root, &units)?);
+            root.create_dir("proc")?;
+            root.atomic_write(
+                "proc/cmdline",
+                format!("composefs=?{digest} androidboot.slot_suffix=_a"),
+            )?;
+            if let Some(boot_type) = boot_type {
+                let path = format!(
+                    "sysroot/{}/{digest}",
+                    crate::composefs_consts::STATE_DIR_RELATIVE
+                );
+                root.create_dir_all(&path)?;
+                root.atomic_write(
+                    format!("{path}/{digest}.origin"),
+                    format!("[boot]\nboot_type={boot_type}\n"),
+                )?;
+            }
+            let expected = boot_type == Some("aboot");
+            for _ in 0..2 {
+                assert_eq!(aboot_generator_impl(&root, &units)?, expected);
+            }
+            let link = format!("{MULTI_USER_TARGET}.wants/{ABOOT_RECONCILE_SERVICE}");
+            if expected {
+                assert_eq!(
+                    units.read_link_contents(link)?,
+                    std::path::Path::new("/usr/lib/systemd/system").join(ABOOT_RECONCILE_SERVICE)
+                );
+            } else {
+                assert_eq!(units.entries()?.count(), 0);
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn aboot_reconcile_with_dual_format_cmdline() -> Result<()> {
+        use composefs_ctl::composefs::erofs::format::FormatVersion;
+        use composefs_ctl::composefs::fsverity::{FsVerityHashValue, Sha512HashValue};
+
+        let root = fixture()?;
+        let units = root.open_dir("run/systemd/system")?;
+        root.create_dir("proc")?;
+        let v1 = Sha512HashValue::from_hex("ab".repeat(64))?;
+        let v2 = Sha512HashValue::from_hex("cd".repeat(64))?;
+        root.atomic_write(
+            "proc/cmdline",
+            format!(
+                "{} {} androidboot.slot_suffix=_a",
+                crate::bootc_composefs::status::build_composefs_karg(
+                    v1.clone(),
+                    FormatVersion::V1,
+                    false,
+                ),
+                crate::bootc_composefs::status::build_composefs_karg(v2, FormatVersion::V2, false,),
+            ),
+        )?;
+        let digest = v1.to_hex();
+        let path = format!(
+            "sysroot/{}/{digest}",
+            crate::composefs_consts::STATE_DIR_RELATIVE
+        );
+        root.create_dir_all(&path)?;
+        root.atomic_write(
+            format!("{path}/{digest}.origin"),
+            "[boot]\nboot_type=aboot\n",
+        )?;
+
+        assert!(aboot_generator_impl(&root, &units)?);
+        Ok(())
     }
 
     #[test]

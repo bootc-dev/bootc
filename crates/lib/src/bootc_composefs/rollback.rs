@@ -1,4 +1,4 @@
-use std::io::Write;
+use std::{io::Write, process::Command};
 
 use anyhow::{Context, Result, anyhow};
 use cap_std_ext::cap_std::fs::Dir;
@@ -7,6 +7,7 @@ use fn_error_context::context;
 use ocidir::cap_std::ambient_authority;
 use rustix::fs::{AtFlags, RenameFlags, fsync, renameat_with};
 
+use crate::bootc_composefs::aboot;
 use crate::bootc_composefs::boot::{
     BootType, FILENAME_PRIORITY_PRIMARY, FILENAME_PRIORITY_SECONDARY, primary_sort_key,
     secondary_sort_key, type1_entry_conf_file_name,
@@ -250,21 +251,43 @@ pub(crate) async fn composefs_rollback(
         anyhow::bail!("Rollback deployment not a composefs deployment")
     };
 
-    let boot_dir = storage.require_boot_dir()?;
+    if host.require_composefs_booted()?.boot_type == BootType::Aboot {
+        anyhow::ensure!(
+            rollback_entry.boot_type == BootType::Aboot,
+            "Rollback deployment is not aboot"
+        );
+        let mut state = aboot::AbootState::open(&storage.physical_root)?;
+        state.discard_pending()?;
 
-    match &rollback_entry.bootloader.kind()? {
-        BootloaderKind::GRUBClassic => match rollback_entry.boot_type {
-            BootType::Bls => {
+        let status = Command::new("aboot-deploy")
+            .arg("--rollback")
+            .status()
+            .context("Running aboot-deploy --rollback")?;
+        anyhow::ensure!(status.success(), "aboot-deploy exited with status {status}");
+
+        if reverting {
+            state.clear_rollback()?;
+        } else {
+            state.queue_rollback(&rollback_entry.verity)?;
+        }
+    } else {
+        let boot_dir = storage.require_boot_dir()?;
+
+        match &rollback_entry.bootloader.kind()? {
+            BootloaderKind::GRUBClassic => match rollback_entry.boot_type {
+                BootType::Bls => {
+                    rollback_composefs_entries(&host, boot_dir, rollback_entry.bootloader.clone())?;
+                }
+                BootType::Uki => {
+                    rollback_grub_uki_entries(boot_dir)?;
+                }
+                BootType::Aboot => anyhow::bail!("Unexpected aboot rollback deployment"),
+            },
+
+            BootloaderKind::BLSCompatible => {
+                // We use BLS entries for systemd UKI as well
                 rollback_composefs_entries(&host, boot_dir, rollback_entry.bootloader.clone())?;
             }
-            BootType::Uki => {
-                rollback_grub_uki_entries(boot_dir)?;
-            }
-        },
-
-        BootloaderKind::BLSCompatible => {
-            // We use BLS entries for systemd UKI as well
-            rollback_composefs_entries(&host, boot_dir, rollback_entry.bootloader.clone())?;
         }
     }
 

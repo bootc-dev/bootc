@@ -54,10 +54,14 @@ pub(crate) fn test_bootc_container_inspect() -> Result<()> {
         .as_bool()
         .expect("kernel.unified should be a boolean");
 
-    let is_uki = std::env::var("BOOTC_boot_type").is_ok_and(|var| var == "uki");
+    let boot_type = std::env::var("BOOTC_boot_type").unwrap_or_default();
+    let is_uki = boot_type == "uki";
 
     if let Some(variant) = std::env::var("BOOTC_variant").ok() {
         match (variant.as_str(), is_uki) {
+            ("composefs", _) if boot_type == "aboot" => {
+                assert!(unified, "Expected unified=true for aboot variant");
+            }
             (v @ "ostree", _) | (v @ "composefs", false) => {
                 assert!(!unified, "Expected unified=false for variant {v}");
                 // For traditional kernels, version should look like a uname (contains digits)

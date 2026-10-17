@@ -1,3 +1,4 @@
+pub(crate) mod aboot;
 pub(crate) mod backwards_compat;
 pub(crate) mod boot;
 pub(crate) mod delete;
