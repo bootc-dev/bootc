@@ -11,6 +11,7 @@ use crate::{
     },
     cli::{SwitchOpts, imgref_for_switch},
     progress_jsonl::ProgressWriter,
+    spec::{Host, ImageReference},
     store::{BootedComposefs, Storage},
 };
 
@@ -27,7 +28,7 @@ pub(crate) async fn switch_composefs(
 
     let prog: ProgressWriter = opts.progress.clone().try_into()?;
 
-    let mut do_upgrade_opts = DoUpgradeOpts {
+    let do_upgrade_opts = DoUpgradeOpts {
         soft_reboot: opts.soft_reboot,
         apply: opts.apply,
         download_only: opts.download_opts.download_only,
@@ -42,6 +43,29 @@ pub(crate) async fn switch_composefs(
 
     let target = imgref_for_switch(&opts)?;
 
+    switch_composefs_to(
+        storage,
+        booted_cfs,
+        &host,
+        target,
+        do_upgrade_opts,
+        opts.unified_storage_exp,
+    )
+    .await
+}
+
+/// Switch the booted composefs system to `target`, staging a new deployment.
+///
+/// `unified_storage_exp` forces the use of unified storage; otherwise it is
+/// used when either the booted or the target image is already there.
+pub(crate) async fn switch_composefs_to(
+    storage: &Storage,
+    booted_cfs: &BootedComposefs,
+    host: &Host,
+    target: ImageReference,
+    mut do_upgrade_opts: DoUpgradeOpts,
+    unified_storage_exp: bool,
+) -> Result<()> {
     let new_spec = {
         let mut new_spec = host.spec.clone();
         new_spec.image = Some(target.clone());
@@ -50,7 +74,7 @@ pub(crate) async fn switch_composefs(
 
     if new_spec == host.spec {
         println!("Image specification is unchanged.");
-        if opts.apply && host.status.staged.is_some() {
+        if do_upgrade_opts.apply && host.status.staged.is_some() {
             crate::reboot::reboot()?;
         }
         return Ok(());
@@ -66,9 +90,8 @@ pub(crate) async fn switch_composefs(
         message_id = COMPOSEFS_SWITCH_JOURNAL_ID,
         bootc.operation = "switch",
         bootc.target_image = target_imgref.to_string(),
-        bootc.apply_mode = opts.apply,
-        bootc.download_only = opts.download_opts.download_only,
-        bootc.from_downloaded = opts.download_opts.from_downloaded,
+        bootc.apply_mode = do_upgrade_opts.apply,
+        bootc.download_only = do_upgrade_opts.download_only,
         "Starting composefs switch operation",
     );
 
@@ -78,7 +101,7 @@ pub(crate) async fn switch_composefs(
     // target image is already in bootc-owned containers-storage, OR the booted
     // image is — which means the user has opted into unified storage and all
     // subsequent operations (including switch to a new image) should use it.
-    do_upgrade_opts.use_unified = if opts.unified_storage_exp {
+    do_upgrade_opts.use_unified = if unified_storage_exp {
         true
     } else {
         let booted_imgref = host.spec.image.as_ref();
@@ -98,7 +121,7 @@ pub(crate) async fn switch_composefs(
         let action = validate_update(
             storage,
             booted_cfs,
-            &host,
+            host,
             img_config.manifest.config().digest().as_ref(),
             &cfg_verity,
             true,
@@ -114,7 +137,7 @@ pub(crate) async fn switch_composefs(
                 return do_upgrade(
                     storage,
                     booted_cfs,
-                    &host,
+                    host,
                     &target_imgref,
                     &do_upgrade_opts,
                     &img_config.manifest,
@@ -127,7 +150,7 @@ pub(crate) async fn switch_composefs(
     do_upgrade(
         storage,
         booted_cfs,
-        &host,
+        host,
         &target_imgref,
         &do_upgrade_opts,
         &img_config.manifest,
