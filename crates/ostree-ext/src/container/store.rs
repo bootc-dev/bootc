@@ -624,6 +624,24 @@ fn cleanup_root(root: &Dir) -> Result<()> {
     Ok(())
 }
 
+/// Copy `/usr` directory metadata to the root, matching the composefs-rs
+/// approach since OCI images don't reliably include root dir metadata.
+///
+/// See:
+///   - <https://github.com/coreos/fedora-coreos-tracker/issues/2238>
+///   - <https://github.com/coreos/fedora-coreos-tracker/issues/2238#issuecomment-6082074286>
+fn normalize_root_dirmeta(mt: &ostree::MutableTree) -> Result<()> {
+    let usr = mt.walk(&["usr"], 0).context("looking up /usr in mtree")?;
+
+    let usr_meta_checksum = usr.metadata_checksum();
+    if usr_meta_checksum.is_empty() {
+        anyhow::bail!("/usr has no metadata checksum in mtree");
+    }
+
+    mt.set_metadata_checksum(&usr_meta_checksum);
+    Ok(())
+}
+
 impl ImageImporter {
     /// The metadata key used in ostree commit metadata to serialize
     const CACHED_KEY_MANIFEST_DIGEST: &'static str = "ostree-ext.cached.manifest-digest";
@@ -1306,6 +1324,8 @@ impl ImageImporter {
             cancellable,
         )
         .context("Writing merged filesystem to mtree")?;
+
+        normalize_root_dirmeta(&mt).context("normalizing root dir metadata on mtree")?;
 
         let merged_root = repo
             .write_mtree(&mt, cancellable)
