@@ -37,7 +37,7 @@ const ROOT_TYPE = "4F68BCE3-E8CD-4DB1-96E7-FBCAF984B709"
 # Cleanup function for LVM and loop devices
 def cleanup [vg_name: string, loops: list<string>, mountpoint: string] {
     # Unmount if mounted
-    do { umount $mountpoint } | complete | ignore
+    do { umount -l $mountpoint } | complete | ignore
     do { rmdir $mountpoint } | complete | ignore
 
     # Deactivate and remove LVM
@@ -126,7 +126,7 @@ def setup_disk_with_root [
 
 # Simple cleanup for non-LVM scenarios (single loop device, no VG)
 def cleanup_simple [loop: string, mountpoint: string] {
-    do { umount $mountpoint } | complete | ignore
+    do { umount -l $mountpoint } | complete | ignore
     do { rmdir $mountpoint } | complete | ignore
 
     if ($loop | path exists) {
@@ -143,14 +143,14 @@ def validate_esp [esp_partition: string] {
     # Check for EFI directory with bootloader files
     let efi_dir = $"($esp_mount)/EFI"
     if not ($efi_dir | path exists) {
-        umount $esp_mount
+        umount -l $esp_mount
         rmdir $esp_mount
         error make {msg: $"ESP validation failed: EFI directory not found on ($esp_partition)"}
     }
 
     # Verify there's actual content in EFI (not just empty)
     let efi_contents = (ls $efi_dir | length)
-    umount $esp_mount
+    umount -l $esp_mount
     rmdir $esp_mount
 
     if $efi_contents == 0 {
@@ -164,7 +164,7 @@ def with_esp [esp_partition: string, f: closure] {
     mkdir $esp_mount
     mount $esp_partition $esp_mount
     let r = (do $f $esp_mount)
-    umount $esp_mount
+    umount -l $esp_mount
     rmdir $esp_mount
     $r
 }

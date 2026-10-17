@@ -129,10 +129,6 @@ pub(crate) const EFI_UUID_FILE: &str = "efiuuid.cfg";
 /// The EFI Linux directory
 pub(crate) const EFI_LINUX: &str = "EFI/Linux";
 
-/// Timeout for systemd-boot bootloader menu
-const SYSTEMD_TIMEOUT: &str = "timeout 5";
-const SYSTEMD_LOADER_CONF_PATH: &str = "loader/loader.conf";
-
 pub(crate) const INITRD: &str = "initrd";
 pub(crate) const VMLINUZ: &str = "vmlinuz";
 
@@ -1757,13 +1753,6 @@ fn write_systemd_uki_config(
             type1_entry_conf_file_name(os_id, &booted_bls.version(), FILENAME_PRIORITY_SECONDARY),
             booted_bls.to_string().as_bytes(),
         )?;
-    }
-
-    // Write the timeout for bootloader menu if not exists
-    if !esp_dir.exists(SYSTEMD_LOADER_CONF_PATH) {
-        esp_dir
-            .atomic_write(SYSTEMD_LOADER_CONF_PATH, SYSTEMD_TIMEOUT)
-            .with_context(|| format!("Writing to {SYSTEMD_LOADER_CONF_PATH}"))?;
     }
 
     let esp_dir = esp_dir
