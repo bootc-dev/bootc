@@ -292,6 +292,14 @@ impl Bootloader {
             Bootloader::None => anyhow::bail!("Bootloader was None"),
         }
     }
+
+    /// Whether the bootloader reads boot entries from where the Boot Loader
+    /// Specification puts them: the XBOOTLDR partition next to the ESP if
+    /// there is one, and the ESP otherwise. grub-cc isn't known to read
+    /// XBOOTLDR partitions yet, so it only gets entries on the ESP.
+    pub(crate) fn is_bls_conformant(&self) -> bool {
+        matches!(self, Bootloader::Systemd)
+    }
 }
 
 /// A bootable entry

@@ -367,4 +367,16 @@ execute:
     test:
       - /tmt/tests/tests/test-60-install-composefs-native
   extra-fixme_skip_if_uki: true
+
+/plan-61-composefs-xbootldr:
+  summary: Test composefs with systemd-boot and an XBOOTLDR partition
+  discover:
+    how: fmf
+    test:
+      - /tmt/tests/tests/test-61-composefs-xbootldr
+  adjust:
+  - when: seal_state == sealed
+    enabled: false
+    because: the derived images are built in the VM, which has no keys to sign their UKIs for Secure Boot
+  extra-skip_if_ostree: true
 # END GENERATED PLANS

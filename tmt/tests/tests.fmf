@@ -233,3 +233,14 @@ check:
   summary: Test that composefs-native images default to the composefs backend
   duration: 45m
   test: nu booted/test-install-composefs-native.nu
+
+/test-61-composefs-xbootldr:
+  summary: Test composefs with systemd-boot and an XBOOTLDR partition
+  duration: 60m
+  require:
+  - dosfstools
+  adjust:
+  - when: seal_state == sealed
+    enabled: false
+    because: the derived images are built in the VM, which has no keys to sign their UKIs for Secure Boot
+  test: nu booted/test-composefs-xbootldr.nu

@@ -33,8 +33,8 @@ use super::RootSetup;
 use super::State;
 use super::config::Filesystem;
 use crate::bootloader::systemd_version;
-use crate::discoverable_partition_specification::BIOS_BOOT;
 use crate::task::Task;
+use bootc_blockdev::dps::BIOS_BOOT;
 #[cfg(feature = "install-to-disk")]
 use bootc_mount::is_mounted_in_pid1_mountns;
 use linux_kernel_cmdline::utf8::Cmdline;
@@ -565,7 +565,7 @@ fn sfdisk(
     }
 
     let esp_partno = if super::ARCH_USES_EFI {
-        let esp_guid = crate::discoverable_partition_specification::ESP;
+        let esp_guid = bootc_blockdev::dps::ESP;
         partno += 1;
 
         let esp_size = if composefs_backend {
@@ -600,8 +600,7 @@ fn sfdisk(
     let root_size = root_size
         .map(|v| Cow::Owned(format!("size={v}MiB, ")))
         .unwrap_or_else(|| Cow::Borrowed(""));
-    let rootpart_uuid =
-        uuid::Uuid::parse_str(crate::discoverable_partition_specification::this_arch_root())?;
+    let rootpart_uuid = uuid::Uuid::parse_str(bootc_blockdev::dps::this_arch_root())?;
     writeln!(
         &mut partitioning_buf,
         r#"{root_size}type={rootpart_uuid}, name="root""#
@@ -759,7 +758,7 @@ pub(crate) fn install_create_rootfs(
     let root_device = device.find_device_by_partno(layout.rootpn)?;
 
     // Verify the partition type matches the DPS root partition type for this architecture
-    let expected_parttype = crate::discoverable_partition_specification::this_arch_root();
+    let expected_parttype = bootc_blockdev::dps::this_arch_root();
     if !root_device
         .parttype
         .as_ref()
