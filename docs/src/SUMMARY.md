@@ -92,6 +92,11 @@
 - [install reset](bootc-experimental-install-reset.7.md)
 - [--progress-fd](bootc-experimental-progress-fd.7.md)
 - [container export](bootc-experimental-container-export.7.md)
+- [`man bootc-uki-addon.8.md`](man/bootc-uki-addon.8.md)
+- [`man bootc-uki-addon-list.8.md`](man/bootc-uki-addon-list.8.md)
+- [`man bootc-uki-addon-add.8.md`](man/bootc-uki-addon-add.8.md)
+- [`man bootc-uki-addon-remove.8.md`](man/bootc-uki-addon-remove.8.md)
+- [`man bootc-uki-addon-list-referenced.8.md`](man/bootc-uki-addon-list-referenced.8.md)
 
 # More information
 

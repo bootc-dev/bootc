@@ -123,9 +123,17 @@ These remain [experimental](https://github.com/bootc-dev/bootc/blob/main/RELEASE
 and may change or be removed:
 
 - The `grub-cc` bootloader (`--bootloader=grub-cc`).
-- UKI addons (`--uki-addon`). Addons are only installed by `bootc install`:
-  they aren't updated on upgrade, garbage collected, or reverted on
-  rollback.
+- UKI addons (--uki-addon, --global-uki-addon). On upgrade and switch,
+  addons already installed (scoped or global) are carried forward, and any
+  passed via the flags are added. Global addons are garbage collected once
+  no deployment references them, scoped addons are garbage collected along with
+  their respective deployments. While a deployment is staged, `bootc uki-addon
+  add`/`remove` for global addons operate on a staged copy at
+  `loader/addons.staged`, which is applied to the live `loader/addons` on the
+  next boot. Removing the last global addon empties and deletes
+  `loader/addons.staged`, so nothing is applied on the next boot and the live
+  global addons are kept; remove the last global addon when no deployment is
+  staged.
 - [Unified storage](bootc-experimental-unified-storage.7.md).
 
 ## Limitations

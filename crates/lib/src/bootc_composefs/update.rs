@@ -15,6 +15,7 @@ use ostree_ext::container::ManifestDiff;
 
 use crate::bootc_composefs::finalize::get_etc_diff;
 use crate::bootc_composefs::gc::GCOpts;
+use crate::install::UkiAddonOpts;
 use crate::spec::BootloaderKind;
 use crate::{
     bootc_composefs::{
@@ -234,6 +235,8 @@ pub(crate) struct DoUpgradeOpts {
     pub(crate) quiet: bool,
     /// Structured (JSON-Lines) progress sink; see `--progress-fd`.
     pub(crate) prog: ProgressWriter,
+    /// The UKI Addons to install from the new image (if any)
+    pub(crate) uki_addon_opts: UkiAddonOpts,
 }
 
 async fn apply_upgrade(
@@ -335,7 +338,7 @@ pub(crate) async fn do_upgrade(
     let (boot_digest, deploy_id) = match boot_type {
         BootType::Bls => (
             setup_composefs_bls_boot(
-                BootSetupType::Upgrade((storage, booted_cfs, &host)),
+                BootSetupType::Upgrade((storage, booted_cfs, &host, None)),
                 &repo,
                 &provisional_deploy_id,
                 provisional_format,
@@ -347,7 +350,7 @@ pub(crate) async fn do_upgrade(
 
         BootType::Uki => print_uki_dumpfile_diff_on_mismatch(
             setup_composefs_uki_boot(
-                BootSetupType::Upgrade((storage, booted_cfs, &host)),
+                BootSetupType::Upgrade((storage, booted_cfs, &host, Some(&opts.uki_addon_opts))),
                 &repo,
                 &provisional_deploy_id,
                 &boot_ids,
@@ -503,6 +506,7 @@ pub(crate) async fn upgrade_composefs(
         use_unified: false,
         quiet: opts.quiet,
         prog,
+        uki_addon_opts: opts.uki_addon_opts,
     };
 
     if opts.download_opts.from_downloaded {
