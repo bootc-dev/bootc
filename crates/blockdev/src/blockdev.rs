@@ -490,8 +490,9 @@ pub fn list_dev(dev: &Utf8Path) -> Result<Device> {
         .ok_or_else(|| anyhow!("no device output from lsblk for {dev}"))
 }
 
-#[context("Finding block device for ZFS dataset {dataset}")]
-fn list_dev_for_zfs_dataset(dataset: &str) -> Result<Device> {
+/// List the block devices of the ZFS pool holding a dataset.
+#[context("Finding block devices for ZFS dataset {dataset}")]
+fn list_devs_for_zfs_dataset(dataset: &str) -> Result<Vec<Device>> {
     let dataset = dataset.strip_prefix("ZFS=").unwrap_or(dataset);
     let pool = dataset
         .split('/')
@@ -503,26 +504,84 @@ fn list_dev_for_zfs_dataset(dataset: &str) -> Result<Device> {
         .run_get_string()
         .with_context(|| format!("Querying ZFS pool {pool}"))?;
 
+    let mut devs = Vec::new();
     for line in output.lines() {
         if line.starts_with('\t') || line.starts_with(' ') {
             let dev_path = line.trim_start().split('\t').next().unwrap_or("").trim();
             if dev_path.starts_with('/') {
-                return list_dev(Utf8Path::new(dev_path));
+                // A leaf vdev can be a regular file, or a device that has
+                // gone away; skip it as long as another one resolves.
+                match list_dev(Utf8Path::new(dev_path)) {
+                    Ok(dev) => devs.push(dev),
+                    Err(e) => tracing::debug!("Skipping {dev_path}: {e:#}"),
+                }
             }
         }
     }
+    anyhow::ensure!(
+        !devs.is_empty(),
+        "Could not find a block device backing ZFS pool {pool}"
+    );
+    Ok(devs)
+}
 
-    anyhow::bail!("Could not find a block device backing ZFS pool {pool}")
+/// List the block devices backing a filesystem, given its type and mount
+/// source as findmnt reports them.
+pub fn list_devs_by_source(fstype: &str, source: &str) -> Result<Vec<Device>> {
+    if fstype == "zfs" || source.starts_with("ZFS=") {
+        return list_devs_for_zfs_dataset(source);
+    }
+    // A multi-device bcachefs names its devices colon separated
+    // (`/dev/nvme0n1p1:/dev/sda`); any other source is a single device.
+    let paths = if fstype == "bcachefs" {
+        source.split(':').collect()
+    } else {
+        vec![source]
+    };
+    paths
+        .into_iter()
+        .map(|path| list_dev(Utf8Path::new(path)))
+        .collect()
+}
+
+/// List the whole disks backing the filesystem mounted at the given
+/// directory, each disk once.
+pub fn list_roots_by_dir(dir: &Dir) -> Result<Vec<Device>> {
+    let fsinfo = bootc_mount::inspect_filesystem_of_dir(dir)?;
+    let mut seen = HashSet::new();
+    let mut roots = Vec::new();
+    for dev in list_devs_by_source(&fsinfo.fstype, &fsinfo.source)? {
+        for root in dev.find_all_roots()? {
+            if seen.insert(root.name.clone()) {
+                roots.push(root);
+            }
+        }
+    }
+    Ok(roots)
+}
+
+/// Out of the devices backing one filesystem, select the one to install a
+/// bootloader for: the first whose disk carries an ESP, else the first.
+pub fn select_bootloader_dev(devs: &[Device]) -> Result<Device> {
+    // A single device is the answer without looking for an ESP.
+    if devs.len() > 1 {
+        for dev in devs {
+            if dev.find_colocated_esps()?.is_some() {
+                return Ok(dev.clone());
+            }
+        }
+    }
+    devs.first()
+        .cloned()
+        .ok_or_else(|| anyhow!("No block device backs the filesystem"))
 }
 
 /// List the device containing the filesystem mounted at the given directory.
+/// When several devices back it, this is the one [`select_bootloader_dev`]
+/// selects.
 pub fn list_dev_by_dir(dir: &Dir) -> Result<Device> {
     let fsinfo = bootc_mount::inspect_filesystem_of_dir(dir)?;
-    let source = &fsinfo.source;
-    if fsinfo.fstype == "zfs" || source.starts_with("ZFS=") {
-        return list_dev_for_zfs_dataset(source);
-    }
-    list_dev(&Utf8PathBuf::from(source))
+    select_bootloader_dev(&list_devs_by_source(&fsinfo.fstype, &fsinfo.source)?)
 }
 
 /// The statfs magic of ZFS (`ZFS_SUPER_MAGIC` in OpenZFS), which libc lacks.
@@ -578,8 +637,16 @@ pub fn is_dir_backing_device_ro(dir: &Dir) -> Result<Option<bool>> {
         tracing::debug!("Filesystem source {source} is not a block device node");
         return Ok(None);
     }
-    let dev = list_dev(&Utf8PathBuf::from(source))?;
-    Ok(dev.ro)
+    let devs = list_devs_by_source(&fsinfo.fstype, source)?;
+    // Read-only if any device is, read-write if every device is known to
+    // be, else unknown.
+    Ok(if devs.iter().any(|d| d.ro == Some(true)) {
+        Some(true)
+    } else if devs.iter().all(|d| d.ro == Some(false)) {
+        Some(false)
+    } else {
+        None
+    })
 }
 
 pub struct LoopbackDevice {
