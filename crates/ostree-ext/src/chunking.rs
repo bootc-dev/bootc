@@ -648,6 +648,19 @@ fn basic_packing_with_prior_build<'a>(
         .map(|pkg| pkg.meta.name.to_string())
         .collect();
 
+    // Prior annotations contain names, not unique component identifiers.
+    // With multilib or multiple versions of a package, the name lookup would
+    // lose components or select the same one more than once. Repack instead.
+    let prev_pkgs_len = curr_build
+        .iter()
+        .flatten()
+        .filter(|name| !name.is_empty())
+        .count();
+    if curr_pkgs_set.len() != components.len() || prev_pkgs_set.len() != prev_pkgs_len {
+        tracing::debug!("Ambiguous package names in prior packing; creating a new layout");
+        return Ok(None);
+    }
+
     // Added packages are included in the last bin which was reserved space.
     if let Some(last_bin) = curr_build.last_mut() {
         let added = curr_pkgs_set.difference(&prev_pkgs_set);
@@ -1134,6 +1147,88 @@ mod test {
             structure,
             vec![vec!["pkg3.0", "pkg4.0"], vec!["pkg5.0", "pkg6.0"], vec![],]
         );
+        Ok(())
+    }
+
+    #[test]
+    fn test_prior_packing_duplicate_names() -> Result<()> {
+        // Different architectures or versions can share a package name.
+        for (current_count, prior_structure) in [
+            (2, vec![vec!["pkg1.0"], vec!["pkg2.0"], vec![]]),
+            (2, vec![vec!["pkg1.0", "pkg1.1"], vec!["pkg2.0"], vec![]]),
+            (1, vec![vec!["pkg1.0", "pkg1.1"], vec!["pkg2.0"], vec![]]),
+            (2, vec![vec!["pkg2.0"], vec![]]),
+            (3, vec![vec!["pkg1.0"], vec!["pkg2.0"], vec![]]),
+        ] {
+            let mut components = Vec::new();
+            for i in 0..current_count {
+                components.push(ObjectSourceMetaSized {
+                    meta: ObjectSourceMeta {
+                        identifier: RcStr::from(format!("pkg1.{i}")),
+                        name: RcStr::from("pkg1"),
+                        srcid: RcStr::from("srcpkg1"),
+                        change_time_offset: 0,
+                        change_frequency: 1,
+                    },
+                    size: 100,
+                });
+            }
+            components.push(ObjectSourceMetaSized {
+                meta: ObjectSourceMeta {
+                    identifier: RcStr::from("pkg2.0"),
+                    name: RcStr::from("pkg2"),
+                    srcid: RcStr::from("srcpkg2"),
+                    change_time_offset: 0,
+                    change_frequency: 1,
+                },
+                size: 200,
+            });
+            components.sort_by(|a, b| b.size.cmp(&a.size));
+            let prior = create_manifest(prior_structure);
+            let bin_size = NonZeroU32::new(4).unwrap();
+            assert!(basic_packing_with_prior_build(&components, bin_size, &prior)?.is_none());
+            let packing = basic_packing(&components, bin_size, Some(&prior))?;
+            let packed: BTreeSet<_> = packing
+                .iter()
+                .flatten()
+                .map(|c| c.meta.identifier.as_ref())
+                .collect();
+            let expected: BTreeSet<_> = components
+                .iter()
+                .map(|c| c.meta.identifier.as_ref())
+                .collect();
+            assert_eq!(packed, expected);
+            assert_eq!(
+                packing.iter().map(Vec::len).sum::<usize>(),
+                components.len()
+            );
+            assert_eq!(
+                packing_size(&packing),
+                components.iter().map(|c| c.size).sum::<u64>()
+            );
+            assert!(packing.len() <= bin_size.get() as usize);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_process_mapping_duplicate_names() -> Result<()> {
+        let (_, mut meta, _, mut chunking) =
+            setup_exclusive_test(&[(1, 1, 1000), (2, 1, 1000)], 4, Some(2))?;
+        // The old map picked the first component twice. Its component count
+        // matched, but checksum_1 was left in the remainder and caused a panic.
+        meta.sizes[1].meta.name = meta.sizes[0].meta.name.clone();
+        let prior = create_manifest(vec![vec!["pkg1.0"], vec!["pkg1.1"], vec![]]);
+        chunking.process_mapping(&meta, &NonZeroU32::new(4), Some(&prior), None)?;
+        assert!(chunking.remainder.content.is_empty());
+        assert_eq!(chunking.remainder.size, 0);
+        let objects: BTreeSet<_> = chunking
+            .chunks
+            .iter()
+            .flat_map(|chunk| chunk.content.keys().map(|s| s.as_ref()))
+            .collect();
+        assert_eq!(objects, BTreeSet::from(["checksum_0", "checksum_1"]));
+        assert_eq!(chunking.chunks.iter().map(|c| c.size).sum::<u64>(), 2000);
         Ok(())
     }
 
