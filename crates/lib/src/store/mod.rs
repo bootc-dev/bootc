@@ -32,7 +32,7 @@
 //! The composefs → ostree step (arrow 2) was proven by the `composefs-to-ostree`
 //! spike branch. The planned implementation for the ostree backend will:
 //!
-//! 1. Perform a lazy cached probe (`reflinks_supported`) at install time.
+//! 1. Probe the relevant source/destination filesystem pair as needed.
 //! 2. Pull into containers-storage first (Stage 1).
 //! 3. Use `composefs_oci::pull` with `LocalFetchOpt::ZeroCopy` to populate composefs (Stage 2).
 //! 4. Finally, synthesize the ostree commit by walking the composefs tree,
@@ -66,12 +66,10 @@
 //!
 //! ## Reflink probe
 //!
-//! The reflink probe is performed lazily and cached. It creates
-//! two anonymous temporary files (via `O_TMPFILE`, no
-//! cleanup needed), writes one byte to the source, and attempts
-//! `ioctl(FICLONE)`. Returns `true` on success, `false` on `EOPNOTSUPP` or
-//! `EXDEV`. The probe directory is `composefs/objects` if it already exists,
-//! otherwise the physical root itself.
+//! [`reflink::supports_reflink`] probes a specific source/destination directory
+//! pair using temporary files and descriptor-level `ioctl(FICLONE)`. The
+//! result is not cached: reflink support can differ across filesystems, so the
+//! source/destination pair is the unit of the probe.
 //!
 //! # OSTree
 //!
@@ -125,6 +123,8 @@ use crate::lsm;
 use crate::podstorage::CStorage;
 use crate::spec::{BootloaderKind, ImageStatus};
 use crate::utils::{EfiError, deployment_fd, open_dir_remount_rw, read_uefi_var};
+
+pub(crate) mod reflink;
 
 /// See <https://github.com/containers/composefs-rs/issues/159>
 pub type ComposefsRepository = composefs::repository::Repository<Sha512HashValue>;

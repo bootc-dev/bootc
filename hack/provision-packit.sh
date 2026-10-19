@@ -15,6 +15,7 @@ trap 'rm -rf -- "$BOOTC_TEMPDIR"' EXIT
 cp -a . "$BOOTC_TEMPDIR"
 
 # Keep testing farm run folder
+mkdir -p /var/ARTIFACTS
 cp -r /var/ARTIFACTS "$BOOTC_TEMPDIR"
 
 # Copy bootc repo
@@ -91,6 +92,9 @@ podman build --jobs=4 --from "$BASE" -v "$BOOTC_TEMPDIR":/bootc-test:z -t localh
 # Keep these in sync with what's used in hack/lbi
 podman pull -q --retry 5 --retry-delay 5s quay.io/curl/curl:latest quay.io/curl/curl-base:latest registry.access.redhat.com/ubi9/podman:latest
 
-# Run system-reinstall-bootc
 # TODO make it more scriptable instead of expect + send
-./system-reinstall-bootc.exp
+if [[ ${BOOTC_PROVISION_PACKIT_SKIP_REINSTALL:-0} == 1 ]]; then
+    echo "BOOTC_PROVISION_PACKIT_SKIP_REINSTALL=1: skipping system-reinstall-bootc conversion and reboot"
+else
+    ./system-reinstall-bootc.exp
+fi

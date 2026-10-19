@@ -48,7 +48,8 @@ erofs_version := env("BOOTC_erofs_version", "v1")
 # Baseconfigs to inject into the image for testing (e.g. "etc-transient" or "root-transient")
 baseconfigs := env("BOOTC_baseconfigs", "")
 # Base container image to build from
-base := env("BOOTC_base", "quay.io/centos-bootc/centos-bootc:stream10")
+default_base := "quay.io/centos-bootc/centos-bootc:stream10"
+base := env("BOOTC_base", default_base)
 # Buildroot base image
 buildroot_base := env("BOOTC_buildroot_base", "quay.io/centos/centos:stream10")
 # Optional: path to extra source (e.g. composefs-rs) for local development
@@ -191,6 +192,38 @@ build-sealed:
 test-tmt *ARGS: build
     @just _build-upgrade-image
     @just test-tmt-nobuild {{ARGS}}
+
+# The VM cannot share controller Podman storage, so the package-mode plan
+# transfers a local OCI archive through TMT's workdir sync.
+# Run the plan using one TMT-provisioned guest.
+[group('core')]
+test-tmt-package-mode:
+    #!/bin/bash
+    set -euo pipefail
+    # Build and tag the local image, then archive it for TMT's guest workdir sync.
+    just base={{base}} build
+    if [[ "{{base_img}}" != localhost/bootc ]]; then
+        podman tag {{base_img}} localhost/bootc
+    fi
+    archive_dir=$(mktemp -d -- tmt/plans/.package-mode-local.XXXXXX)
+    cleanup() {
+        rm -rf -- "$archive_dir"
+    }
+    trap cleanup EXIT
+    trap 'cleanup; exit 130' INT
+    trap 'cleanup; exit 143' TERM
+    archive_path="$archive_dir/bootc.oci"
+    if [[ -e "$archive_path" ]]; then
+        echo "Refusing to overwrite existing archive: $archive_path" >&2
+        exit 1
+    fi
+    podman save --format oci-archive --output "$archive_path" localhost/bootc
+    tmt \
+        --context=running_env=packit \
+        --context=package_source=local \
+        --context="test_disk_image=${test_disk_image:-centos-stream-10}" \
+        run --environment "PACKAGE_MODE_IMAGE_ARCHIVE=$archive_path" \
+        plans --name '^/tmt/plans/package-mode$'
 
 # Split out from `test-container` because, unlike the container integration tests,
 # unit tests don't depend on variant/filesystem/bootloader/boot_type/seal_state, so
