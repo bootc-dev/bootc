@@ -1,4 +1,3 @@
-# number: 43
 # tmt:
 #   summary: Error on bootc switch to image with identical fs-verity digest
 #   duration: 10m

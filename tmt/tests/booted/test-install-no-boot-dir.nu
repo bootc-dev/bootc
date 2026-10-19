@@ -1,4 +1,3 @@
-# number: 37
 # tmt:
 #   summary: Test bootc install to-filesystem without /boot directory
 #   duration: 30m

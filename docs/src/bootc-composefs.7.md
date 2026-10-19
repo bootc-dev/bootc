@@ -88,7 +88,7 @@ the new initramfs boots it, and the next upgrade (now staged by the new bootc)
 moves the system to V1. bootc 1.16.4 and later already understand
 `composefs.digest=` and stage V1 directly.
 
-The 1.16.0 path is covered by the `test-49-composefs-1-16-bridge` TMT test for
+The 1.16.0 path is covered by the `test-composefs-1-16-bridge` TMT test for
 both sealed and `--allow-missing-verity` UKIs, including rollback and garbage
 collection. Upgrades of UKI installs from other releases are not yet tested.
 

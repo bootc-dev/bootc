@@ -1,4 +1,3 @@
-# number: 32
 # tmt:
 #   summary: Test multi-device ESP detection for to-existing-root
 #   duration: 60m

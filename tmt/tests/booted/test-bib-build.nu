@@ -1,4 +1,3 @@
-# number: 33
 # tmt:
 #   summary: Test building a qcow2 disk image with bootc-image-builder
 #   duration: 45m

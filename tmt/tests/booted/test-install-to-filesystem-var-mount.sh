@@ -1,4 +1,3 @@
-# number: 32
 # tmt:
 #   summary: Test bootc install to-filesystem with separate /var mount
 #   duration: 30m

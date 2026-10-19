@@ -1,4 +1,3 @@
-# number: 38
 # tmt:
 #   summary: Test bootc install with --bootloader=none
 #   duration: 30m

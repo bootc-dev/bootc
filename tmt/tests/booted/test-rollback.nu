@@ -1,4 +1,3 @@
-# number: 36
 # tmt:
 #   summary: Test bootc rollback functionality
 #   duration: 30m

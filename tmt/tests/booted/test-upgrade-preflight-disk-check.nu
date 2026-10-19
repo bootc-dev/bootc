@@ -1,4 +1,3 @@
-# number: 35
 # tmt:
 #   summary: Verify pre-flight disk space check rejects images with inflated layer sizes
 #   duration: 10m

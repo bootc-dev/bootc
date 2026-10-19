@@ -1,4 +1,3 @@
-// number: 50
 // tmt:
 //   summary: Switch to an image with zstd:chunked compressed layers
 //   duration: 30m

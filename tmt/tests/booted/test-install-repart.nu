@@ -1,4 +1,3 @@
-# number: 52
 # tmt:
 #   summary: Test bootc install to-disk with systemd-repart partitioning
 #   duration: 30m

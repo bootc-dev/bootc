@@ -1,4 +1,3 @@
-# number: 41
 # tmt:
 #   summary: Test composefs garbage collection for UKI
 #   duration: 30m

@@ -1,4 +1,3 @@
-# number: 49
 # tmt:
 #   summary: Test bootc 1.16 old-stager migration for sealed and unsealed UKIs
 #   duration: 45m

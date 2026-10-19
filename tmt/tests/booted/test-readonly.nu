@@ -1,4 +1,3 @@
-# number: 1
 # extra:
 #   try_bind_storage: true
 # tmt:

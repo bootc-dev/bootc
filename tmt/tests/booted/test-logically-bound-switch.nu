@@ -1,4 +1,3 @@
-# number: 21
 # tmt:
 #   summary: Execute logically bound images tests for switching images
 #   duration: 30m

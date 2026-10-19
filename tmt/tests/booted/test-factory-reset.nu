@@ -1,4 +1,3 @@
-# number: 28
 # tmt:
 #   summary: Execute factory reset tests
 #   duration: 30m
@@ -40,7 +39,7 @@ def initial_build [] {
     let new_stateroot_path = $"/sysroot/ostree/deploy/($new_stateroot)"
 
     # locate the workdir_root by looking backwards from a known static dir (TMT_PLAN_DATA)
-    # e.g. TMT_PLAN_DATA=/var/tmp/tmt/run-035/tmt/plans/integration/test-28-factory-reset/data
+    # e.g. TMT_PLAN_DATA=/var/tmp/tmt/run-035/tmt/plans/integration/plan-factory-reset/data
     let workdir_root = ($env.TMT_PLAN_DATA | path dirname | path dirname | path dirname | path dirname | path dirname | path dirname )
 
     # make sure workdir_root's full path exists in new stateroot

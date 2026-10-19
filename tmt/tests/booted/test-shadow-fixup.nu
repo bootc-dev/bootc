@@ -1,4 +1,3 @@
-# number: 44
 # tmt:
 #   summary: Test bootc-sysusers-shadow-sync removes orphaned gshadow entries before sysusers
 #   duration: 30m

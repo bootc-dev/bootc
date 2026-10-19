@@ -1,4 +1,3 @@
-# number: 25
 # tmt:
 #   summary: Execute soft reboot test
 #   duration: 30m

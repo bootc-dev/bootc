@@ -1,4 +1,3 @@
-# number: 22
 # tmt:
 #   summary: Execute logically bound images tests for installing image
 #   duration: 30m

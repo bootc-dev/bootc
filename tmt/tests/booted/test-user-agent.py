@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# number: 34
 # tmt:
 #   summary: Verify bootc sends correct User-Agent header to registries
 #   duration: 10m
