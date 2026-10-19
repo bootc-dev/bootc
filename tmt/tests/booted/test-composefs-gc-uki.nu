@@ -41,7 +41,11 @@ def first_boot [] {
 
     echo $containerfile | podman build -t localhost/bootc-first . -f -
 
-    bootc switch --transport containers-storage --uki-addon gc-test --global-uki-addon gc-test-global localhost/bootc-first
+    # Installing the global addon from an image that provides it must not warn
+    # about pending removal (the staged image references it).
+    let switch_out = (do { bootc switch --transport containers-storage --uki-addon gc-test --global-uki-addon gc-test-global localhost/bootc-first } | complete)
+    assert ($switch_out.exit_code == 0) "Initial switch should succeed"
+    assert (not ($switch_out.stdout | str contains "will be removed on a future update/switch")) "No pending-removal notice expected when the image provides the global addon"
 
     # Make sure we have the .boot EROFS
     let st = bootc status --json | from json
@@ -94,7 +98,13 @@ def second_boot [] {
 
     echo $containerfile | podman build -t localhost/bootc-second . -f -
 
-    bootc switch --transport containers-storage localhost/bootc-second
+    # bootc-second does not provide gc-test-global, but the booted deployment
+    # (bootc-first) still does, so we must be warned that the global addon will be
+    # garbage collected on a future update/switch.
+    let switch_out = (do { bootc switch --transport containers-storage localhost/bootc-second } | complete)
+    assert ($switch_out.exit_code == 0) "Switch should succeed"
+    assert ($switch_out.stdout | str contains "will be removed on a future update/switch") "Expected pending-removal notice for the dropped global addon"
+    assert ($switch_out.stdout | str contains "gc-test-global") "Notice should name the global addon"
 
     tmt-reboot
 }

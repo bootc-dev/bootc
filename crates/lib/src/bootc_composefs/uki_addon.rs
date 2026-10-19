@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fmt;
 
 use anyhow::{Context, Result};
@@ -29,15 +30,6 @@ pub enum UkiAddonType {
     Global,
 }
 
-impl fmt::Display for UkiAddonType {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            UkiAddonType::Global => write!(f, "global"),
-            UkiAddonType::Scoped { depl_id } => write!(f, "scoped (deployment {depl_id})"),
-        }
-    }
-}
-
 #[derive(Debug, Clone, Serialize)]
 pub struct UkiAddonsList {
     pub name: String,
@@ -48,7 +40,42 @@ pub struct UkiAddonsList {
 
 impl fmt::Display for UkiAddonsList {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{} ({})", self.name, self.addon_type)
+        let type_str = match &self.addon_type {
+            UkiAddonType::Global => "global",
+            UkiAddonType::Scoped { .. } => "scoped",
+        };
+
+        // (label, value) rows; the first is the bulleted header line.
+        let mut rows: Vec<(&str, &str)> = vec![("Addon", self.name.as_str()), ("Type", type_str)];
+
+        if let UkiAddonType::Scoped { depl_id } = &self.addon_type {
+            rows.push(("Deployment", depl_id.as_str()));
+        }
+
+        rows.push(("Staged", if self.staged { "yes" } else { "no" }));
+
+        // Left-align the labels and pad so every value starts in the same column.
+        let max_label = rows
+            .iter()
+            .map(|(label, _)| label.chars().count())
+            .max()
+            .unwrap_or(0);
+
+        // Width of the "<label>:" column, so values line up one space after it.
+        let label_width = max_label + 1;
+        let last = rows.len() - 1;
+
+        for (i, (label, value)) in rows.iter().enumerate() {
+            let label = format!("{label}:");
+
+            if i == last {
+                write!(f, "{label:<label_width$} {value}")?;
+            } else {
+                writeln!(f, "{label:<label_width$} {value}")?;
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -301,4 +328,60 @@ pub fn list_referenced_uki_addons(
     }
 
     Ok(all_referenced_addons)
+}
+
+/// Installed global UKI addons that will be garbage-collected on the next
+/// update/switch.
+///
+/// A global addon is removed by GC once no deployment's image references it
+/// This returns the installed global addons that survive the current update's
+/// GC but are headed for removal on the next one unless they are re-referenced
+///
+/// We do this to show a notice/warning to the user that their global addon might
+/// be removed unless re-referenced by another image
+#[context("Finding global UKI addons pending removal")]
+pub(crate) fn global_addons_pending_removal(
+    storage: &Storage,
+    booted_cfs: &BootedComposefs,
+    staged_verity: &str,
+    pinned_verities: &[String],
+    bootloader_entries: &Vec<BootloaderEntry>,
+) -> Result<Vec<String>> {
+    // Global addons currently installed on the ESP.
+    let installed: Vec<String> = list_installed_uki_addons(storage, &None)?
+        .into_iter()
+        .filter(|addon| addon.addon_type == UkiAddonType::Global)
+        .map(|addon| addon.name)
+        .collect();
+
+    if installed.is_empty() {
+        return Ok(vec![]);
+    }
+
+    // Per-deployment addon references, keyed by EROFS verity.
+    let referenced = list_referenced_uki_addons(booted_cfs, bootloader_entries, &None)?;
+
+    // The set of global addon names referenced by any of the given deployments.
+    let global_refs_for = |verities: &HashSet<&str>| -> HashSet<String> {
+        referenced
+            .iter()
+            .filter(|(verity, _)| verities.contains(verity.as_str()))
+            .flat_map(|(_, addons)| addons.iter())
+            .filter(|addon| addon.addon_type == UkiAddonType::Global)
+            .map(|addon| addon.name.clone())
+            .collect()
+    };
+
+    let ref_booted = global_refs_for(&HashSet::from([&*booted_cfs.cmdline.digest]));
+    let ref_staged = global_refs_for(&HashSet::from([staged_verity]));
+    let ref_pinned = global_refs_for(&pinned_verities.iter().map(|s| s.as_str()).collect());
+
+    let pending = installed
+        .into_iter()
+        .filter(|name| {
+            ref_booted.contains(name) && !ref_staged.contains(name) && !ref_pinned.contains(name)
+        })
+        .collect();
+
+    Ok(pending)
 }

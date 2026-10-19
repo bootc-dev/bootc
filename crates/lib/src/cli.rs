@@ -1048,6 +1048,9 @@ pub(crate) enum UkiAddonCliOpts {
         /// Output in JSON format
         #[clap(long)]
         json: bool,
+        /// List all staged addons as well
+        #[clap(long)]
+        verbose: bool,
     },
     /// Remove a UKI Addon from the currently booted deployment. If there is
     /// a staged deployment present, the operation is performed on the staged

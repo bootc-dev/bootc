@@ -33,8 +33,9 @@ use crate::{
         state::{write_composefs_state, write_staged_deployment},
         status::{
             ImgConfigManifest, StagedDeployment, get_bootloader, get_composefs_status,
-            get_container_manifest_and_config, get_imginfo,
+            get_container_manifest_and_config, get_imginfo, list_bootloader_entries,
         },
+        uki_addon::global_addons_pending_removal,
     },
     cli::{SoftRebootMode, UpgradeOpts},
     composefs_consts::{
@@ -500,6 +501,39 @@ pub(crate) async fn do_upgrade(
         },
     )
     .await?;
+
+    // Warn about global UKI addons that the newly staged image no longer provides.
+    // They survive this GC (still referenced by the booted deployment) but will be
+    // garbage collected on the next update/switch once that deployment rolls off.
+    if boot_type == BootType::Uki {
+        let pinned_verities: Vec<String> = host
+            .all_composefs_deployments()?
+            .into_iter()
+            .filter(|d| d.pinned)
+            .map(|d| d.deployment.verity.clone())
+            .collect();
+
+        let bootloader_entries = list_bootloader_entries(storage)?;
+
+        let pending = global_addons_pending_removal(
+            storage,
+            booted_cfs,
+            &deploy_id.to_hex(),
+            &pinned_verities,
+            &bootloader_entries,
+        )?;
+
+        if !pending.is_empty() {
+            println!(
+                "notice: these global UKI addons are not provided by the new image and will be \
+                 removed on a future update/switch unless re-added with \
+                 `bootc uki-addon add <name> global`:"
+            );
+            for addon in &pending {
+                println!("  - {addon}");
+            }
+        }
+    }
 
     apply_upgrade(storage, booted_cfs, &deploy_id.to_hex(), opts).await
 }
