@@ -23,6 +23,10 @@ for machine-readable output suitable for scripting.
 
     Output in JSON format
 
+**--verbose**
+
+    List all staged addons as well
+
 <!-- END GENERATED OPTIONS -->
 
 # EXAMPLES

@@ -107,8 +107,15 @@ pub(crate) fn handle_addon_cli_cmd(
     };
 
     match opts {
-        UkiAddonCliOpts::List { json } => {
-            let addons = list_installed_uki_addons(storage, &host.status.staged)?;
+        UkiAddonCliOpts::List { json, verbose } => {
+            let mut addons = list_installed_uki_addons(storage, &host.status.staged)?;
+
+            if !verbose {
+                addons = addons
+                    .into_iter()
+                    .filter(|addon| !addon.staged)
+                    .collect::<Vec<_>>();
+            }
 
             if *json {
                 return serde_json::to_writer(std::io::stdout(), &addons)
@@ -120,7 +127,11 @@ pub(crate) fn handle_addon_cli_cmd(
                 return Ok(());
             }
 
-            for addon in &addons {
+            for (i, addon) in addons.iter().enumerate() {
+                // Separate addon blocks with a blank line.
+                if i > 0 {
+                    println!();
+                }
                 println!("{addon}");
             }
         }
