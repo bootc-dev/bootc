@@ -49,10 +49,21 @@ CARGO_FEATURES ?= $(CARGO_FEATURES_DEFAULT)
 # again. The unit test targets (install-unit-tests) don't use this and always
 # build with the default features.
 CARGO_OPTIONS ?= --features "$(CARGO_FEATURES)"
+# Set to 1 to skip generating and installing man pages, e.g. for source
+# builds into images that exclude documentation:
+#   make install DISABLE_DOCS=1
+# This doesn't affect $(prefix)/share/doc/bootc/baseimage, which holds base
+# image configuration rather than documentation.
+DISABLE_DOCS ?=
 
 # Build all binaries
 .PHONY: bin
+# The man pages are built first so that the production binary below
+# overwrites the docgen-featured one in target/release.
+ifneq ($(DISABLE_DOCS),1)
 bin: manpages
+endif
+bin:
 	cargo build --release $(CARGO_OPTIONS) --bins
 
 # The docgen feature this adds implies install-to-disk, so the man pages
@@ -77,9 +88,11 @@ install: completion
 	ln -s "$(STORAGE_RELATIVE_PATH)" "$(DESTDIR)$(prefix)/lib/bootc/storage"
 	install -D -m 0755 crates/cli/bootc-generator-stub $(DESTDIR)$(prefix)/lib/systemd/system-generators/bootc-systemd-generator 
 	install -d $(DESTDIR)$(prefix)/lib/bootc/install
+ifneq ($(DISABLE_DOCS),1)
 	install -D -m 0644 -t $(DESTDIR)$(prefix)/share/man/man5 target/man/*.5
 	install -D -m 0644 -t $(DESTDIR)$(prefix)/share/man/man7 target/man/*.7
 	install -D -m 0644 -t $(DESTDIR)$(prefix)/share/man/man8 target/man/*.8
+endif
 	install -D -m 0644 target/completion/bootc.bash $(DESTDIR)$(prefix)/share/bash-completion/completions/bootc
 	install -D -m 0644 target/completion/bootc.elvish $(DESTDIR)$(prefix)/share/elvish/lib/bootc.elv
 	install -D -m 0644 target/completion/bootc.fish $(DESTDIR)$(prefix)/share/fish/vendor_completions.d/bootc.fish
