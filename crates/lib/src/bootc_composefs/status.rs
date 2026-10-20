@@ -412,10 +412,13 @@ pub(crate) fn list_bootloader_entries(storage: &Storage) -> Result<Vec<Bootloade
 }
 
 /// imgref = transport:image_name
+///
+/// Returns the image manifest and config, along with the digest of the
+/// manifest as the registry reported it.
 #[context("Getting container info")]
 pub(crate) async fn get_container_manifest_and_config(
     imgref: &ImageReference,
-) -> Result<ImgConfigManifest> {
+) -> Result<(ImgConfigManifest, String)> {
     let mut config = crate::deploy::new_proxy_config();
 
     ostree_ext::container::merge_default_container_proxy_opts(&mut config)?;
@@ -427,7 +430,7 @@ pub(crate) async fn get_container_manifest_and_config(
         .await
         .with_context(|| format!("Opening image {imgref}"))?;
 
-    let (_, manifest) = proxy.fetch_manifest(&img).await?;
+    let (manifest_digest, manifest) = proxy.fetch_manifest(&img).await?;
     let (mut reader, driver) = proxy.get_descriptor(&img, manifest.config()).await?;
 
     let mut buf = Vec::with_capacity(manifest.config().size() as usize);
@@ -437,7 +440,7 @@ pub(crate) async fn get_container_manifest_and_config(
 
     let config: oci_spec::image::ImageConfiguration = serde_json::from_slice(&buf)?;
 
-    Ok(ImgConfigManifest { manifest, config })
+    Ok((ImgConfigManifest { manifest, config }, manifest_digest))
 }
 
 /// Directory where BLS-compatible bootloaders expect Type 1 boot entries.
