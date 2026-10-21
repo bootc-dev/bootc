@@ -1459,17 +1459,13 @@ fn parse_uki_cmdline<R: Read + Seek>(
 /// Copies Global UKI Addons from loader/addons to loader/addons.staged in case of
 /// an upgrade/switch
 #[context("Staging Global UKI Addons")]
-fn stage_global_uki_addons(
-    esp_fd: &Dir,
-    entries_to_write: &Vec<Type2Entry<Sha512HashValue>>,
-) -> Result<()> {
-    if !entries_to_write
-        .iter()
-        .any(|ent| matches!(ent.pe_type, PEType::GlobalUkiAddon))
-    {
-        // No Global UKI Addons to stage
-        return Ok(());
-    }
+fn stage_global_uki_addons(esp_fd: &Dir) -> Result<()> {
+    // Remove any previously staged addons
+    if esp_fd.exists(STAGED_GLOBAL_UKI_ADDONS_DIR) {
+        esp_fd
+            .remove_dir_all(STAGED_GLOBAL_UKI_ADDONS_DIR)
+            .context("Removing previously staged global addons")?;
+    };
 
     let Some(global_addons_dir) = esp_fd.open_dir_optional(GLOBAL_UKI_ADDONS_DIR)? else {
         // No current Global UKI Addons to copy
@@ -2003,9 +1999,14 @@ pub(crate) fn setup_composefs_uki_boot(
             // Only keep addons referenced by the current deployment
             let installed_addons = list_installed_uki_addons(storage, &host.status.staged)?
                 .into_iter()
-                .filter(|addon| match &addon.addon_type {
-                    UkiAddonType::Scoped { depl_id } => *depl_id == *booted_cfs.cmdline.digest,
-                    UkiAddonType::Global => true,
+                .filter(|addon| {
+                    !addon.staged
+                        && match &addon.addon_type {
+                            UkiAddonType::Scoped { depl_id } => {
+                                *depl_id == *booted_cfs.cmdline.digest
+                            }
+                            UkiAddonType::Global => true,
+                        }
                 })
                 .collect::<Vec<_>>();
 
@@ -2189,7 +2190,7 @@ pub(crate) fn setup_composefs_uki_boot(
 
     // Create a `ESP/loader/addons.staged` if we have Global UKI Addons to update
     if is_upgrade {
-        stage_global_uki_addons(&esp_mount.fd, &entries_to_write)?;
+        stage_global_uki_addons(&esp_mount.fd)?;
     }
 
     for entry in entries_to_write {

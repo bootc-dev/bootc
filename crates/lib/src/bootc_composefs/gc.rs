@@ -222,8 +222,11 @@ fn gc_global_uki_addons(
     bootloader_entries: &Vec<BootloaderEntry>,
 ) -> Result<()> {
     // GC always runs *after* finalizing deployments so there would be no staged deployment
-    // by definition
-    let currently_installed_addons = list_installed_uki_addons(storage, &None)?;
+    // by definition but still only consider live addons for GC
+    let currently_installed_addons = list_installed_uki_addons(storage, &None)?
+        .into_iter()
+        .filter(|addon| !addon.staged)
+        .collect::<Vec<_>>();
 
     if !currently_installed_addons
         .iter()
@@ -703,14 +706,21 @@ pub(crate) async fn composefs_gc(
             }
 
             // Get file size before removing
-            if let Ok(stat) = statat(&objects_dir, path.as_ref(), AtFlags::empty()) {
-                objects_bytes += stat.st_size as u64;
+            match statat(&objects_dir, path.as_ref(), AtFlags::empty()) {
+                Ok(stat) => {
+                    objects_bytes += stat.st_size as u64;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    tracing::debug!("Object {} not found... skipping", path.display());
+                    continue;
+                }
+                Err(e) => Err(e).with_context(|| format!("statat {} failed", path.display()))?,
             }
 
             objects_removed += 1;
 
             unlinkat(&objects_dir, path.as_ref(), AtFlags::empty())
-                .with_context(|| format!("Unlinking object {path:?}"))?;
+                .with_context(|| format!("Unlinking (from bootc) object {path:?}"))?;
         }
     }
 

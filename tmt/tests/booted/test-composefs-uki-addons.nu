@@ -37,6 +37,14 @@ def first_boot [] {
 
     echo $containerfile | podman build -t localhost/bootc-uki-addons . -f -
 
+    mkdir /var/tmp/efi
+    mount /dev/disk/by-partlabel/EFI-SYSTEM /var/tmp/efi
+
+    # Create a non-bootc managed global addon
+    # This should survive all the switches/upgrades
+    mkdir /var/tmp/efi/loader/addons
+    ukify build --cmdline 'bootc=no' --output /var/tmp/efi/loader/addons/non-bootc-managed.addon.efi 
+
     # No addons should be included
     bootc switch --transport containers-storage localhost/bootc-uki-addons
 
@@ -47,8 +55,8 @@ def second_boot [] {
     mkdir /var/tmp/efi
     mount /dev/disk/by-partlabel/EFI-SYSTEM /var/tmp/efi
 
-    # Make sure no addons were included
-    assert ((^find /var/tmp/efi -type f -name '*addon.efi' | ^wc -l | str trim | into int) == 0)
+    # Make sure no addons were included except our global non-bootc managed addon
+    assert ((^find /var/tmp/efi -type f -name '*addon.efi' | ^wc -l | str trim | into int) == 1)
 
     mut containerfile = $"
         FROM localhost/bootc as base
@@ -90,7 +98,7 @@ def second_boot [] {
 
     assert ("/var/tmp/efi/loader/addons.staged/bootc_composefs-global-cmdline.addon.efi" | path exists) "Global addon should be staged under loader/addons.staged"
     # This is the first global addon, so the live dir must not hold it yet
-    assert (not ("/var/tmp/efi/loader/addons" | path exists)) "Live loader/addons must not be updated before reboot"
+    assert (not ("/var/tmp/efi/loader/addons/bootc_composefs-global-cmdline.addon.efi" | path exists)) "Live addons must not be updated before reboot"
 
     tmt-reboot
 }
@@ -100,8 +108,8 @@ def third_boot [] {
     mkdir /var/tmp/efi
     mount /dev/disk/by-partlabel/EFI-SYSTEM /var/tmp/efi
 
-    # We should have two addons
-    assert ((^find /var/tmp/efi -type f -name '*addon.efi' | ^wc -l | str trim | into int) == 2)
+    # We should have three addons
+    assert ((^find /var/tmp/efi -type f -name '*addon.efi' | ^wc -l | str trim | into int) == 3)
 
     # finalize should have atomically promoted the staged global addon into the
     # live loader/addons dir and removed the staged dir.
@@ -111,6 +119,7 @@ def third_boot [] {
     # We should have those in the cmdline
     assert (open /proc/cmdline | str contains "johan=liebert")
     assert (open /proc/cmdline | str contains "kenzo=tenma")
+    assert (open /proc/cmdline | str contains "bootc=no")
 
     mut containerfile = $"
         FROM localhost/bootc as base
@@ -166,6 +175,10 @@ def third_boot [] {
     # Removing the last global addon while staged operates on loader/addons.staged:
     # it empties and deletes that dir and warns that the removal won't take effect,
     # leaving the live loader/addons untouched.
+
+    # First remove the non-bootc managed addon
+    rm -f /var/tmp/efi/loader/addons.staged/non-bootc-managed.addon.efi
+
     let remove_result = (do { bootc uki-addon remove global-cmdline global } | complete)
     assert ($remove_result.exit_code == 0) "Removing the staged global addon should succeed"
     assert ($remove_result.stdout | str contains "last staged global addon") "Should warn about removing the last staged global addon"
@@ -207,6 +220,8 @@ def fourth_boot [] {
     assert (open /proc/cmdline | str contains "pink=floyd")
 
     # --- CLI tests ---
+    
+    # NOTE: Our CLI only lists bootc managed global addons
 
     # list --json should return 3 addons
     let addons = bootc uki-addon list --json | from json
