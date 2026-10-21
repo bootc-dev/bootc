@@ -9,8 +9,8 @@ use rustix::fs::{AtFlags, RenameFlags, fsync, renameat_with};
 
 use crate::bootc_composefs::aboot;
 use crate::bootc_composefs::boot::{
-    BootType, FILENAME_PRIORITY_PRIMARY, FILENAME_PRIORITY_SECONDARY, primary_sort_key,
-    secondary_sort_key, type1_entry_conf_file_name,
+    BootType, FILENAME_PRIORITY_PRIMARY, FILENAME_PRIORITY_SECONDARY, STAGED_GLOBAL_UKI_ADDONS_DIR,
+    primary_sort_key, secondary_sort_key, type1_entry_conf_file_name,
 };
 use crate::bootc_composefs::status::{get_composefs_status, get_sorted_type1_boot_entries};
 use crate::composefs_consts::{
@@ -285,6 +285,16 @@ pub(crate) async fn composefs_rollback(
             },
 
             BootloaderKind::BLSCompatible => {
+                // Clean up any staged global addons which is consistent with what we do
+                // for staged BLS Config files
+                //
+                // The fsync for ESP is done when we rollback entries
+                let esp = storage.require_esp()?;
+
+                esp.fd
+                    .remove_all_optional(STAGED_GLOBAL_UKI_ADDONS_DIR)
+                    .context("Removing staged Global UKI Addons")?;
+
                 // We use BLS entries for systemd UKI as well
                 rollback_composefs_entries(&host, boot_dir, rollback_entry.bootloader.clone())?;
             }
