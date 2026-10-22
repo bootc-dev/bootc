@@ -3,8 +3,11 @@
 # reboot that same guest; local loads the checkout image, Packit builds it.
 set -xeuo pipefail
 
-target_image=localhost/bootc
+target_image=localhost/bootc-preserve-var-test
 var_marker=/var/lib/bootc-tmt-preserve-var/sentinel
+bind_dir=/var/lib/bootc-tmt-preserve-var-bind
+bind_source=$bind_dir/source
+bind_target=$bind_dir/target
 tmt_plan_data_suffix=/tmt/plans/package-mode/data
 tmt_workdir_parent=/var/tmp/tmt
 tmt_workdir_root=/var/lib/bootc-tmt-workdirs
@@ -118,6 +121,13 @@ case ${TMT_REBOOT_COUNT:-0} in
         restorecon -RF /var/roothome/.ssh
 
         printf '%s\n' preserved-var | tee "$var_marker"
+        mkdir -p "$bind_source" "$bind_target"
+        printf '%s\n' bind-source-data > "$bind_source/sentinel"
+        printf '%s\n' mounted-only-data > "$bind_source/mounted-sentinel"
+        printf '%s\n' underlying-target-data > "$bind_target/underlying-sentinel"
+        mount --bind "$bind_source" "$bind_target"
+        test "$(<"$bind_target/mounted-sentinel")" = mounted-only-data
+        test ! -e "$bind_target/underlying-sentinel"
 
         tmt_run_dir=$(get_tmt_run_dir)
         tmt_run_id=${tmt_run_dir##*/}
@@ -248,6 +258,23 @@ case ${TMT_REBOOT_COUNT:-0} in
             "$target_image" \
             bootc install to-existing-root --preserve-var --acknowledge-destructive
 
+        # Find the new stateroot by the copied source sentinel; generated
+        # stateroot names are intentionally not assumed.
+        new_var=
+        for candidate in /ostree/deploy/*/var; do
+            if [[ -f "$candidate${bind_source#/var}/sentinel" ]]; then
+                new_var=$candidate
+                break
+            fi
+        done
+        test -n "$new_var"
+        test "$(<"$new_var${bind_source#/var}/sentinel")" = bind-source-data
+        bind_target_in_new_var=$new_var${bind_target#/var}
+        test -d "$bind_target_in_new_var"
+        test -z "$(find "$bind_target_in_new_var" -mindepth 1 -print -quit)"
+        test ! -e "$bind_target_in_new_var/mounted-sentinel"
+        test ! -e "$bind_target_in_new_var/underlying-sentinel"
+
         if [[ $tmt_run_layout == var-tmp ]]; then
             # to-existing-root does not migrate the old host's /etc. Add the
             # tmpfiles rule to the new deployment's persistent /etc instead.
@@ -295,6 +322,10 @@ case ${TMT_REBOOT_COUNT:-0} in
         ;;
     1)
         test -e /run/ostree-booted
+
+        mountpoint -q "$bind_target"
+        test "$(<"$bind_target/mounted-sentinel")" = mounted-only-data
+        test ! -e "$bind_target/underlying-sentinel"
 
         tmt_run_dir=$(get_tmt_run_dir)
         tmt_run_id=${tmt_run_dir##*/}
