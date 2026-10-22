@@ -1,0 +1,141 @@
+summary: Test package-mode to-existing-root migration flags
+environment:
+  PACKAGE_SOURCE: $@{package_source}
+provision:
+  how: virtual
+  image: $@{test_disk_image}
+  user: root
+prepare:
+  # The VM cannot share controller Podman storage; TMT syncs the OCI archive
+  # through its workdir before prepare runs.
+  - how: install
+    order: 93
+    package:
+      - podman
+      - jq
+      - bootc
+    when: package_source == local
+  # Packit build-only preparation needs the full integration toolchain.
+  - how: install
+    order: 93
+    package:
+      - podman
+      - skopeo
+      - jq
+      - bootc
+      - system-reinstall-bootc
+      - zstd
+      - cpio
+      - rpm-build
+      - expect
+      - ansible-core
+      - parted
+      - lvm2
+      - dosfstools
+      - e2fsprogs
+    when: package_source == artifacts
+  # Reject missing/unknown sources before any mode-specific setup runs.
+  - how: shell
+    order: 95
+    script: |
+      case "${PACKAGE_SOURCE:-}" in
+        artifacts|local) ;;
+        *)
+          printf 'package_source must be artifacts or local (got %q)\n' "${PACKAGE_SOURCE:-}" >&2
+          exit 1
+          ;;
+      esac
+  # Load the TMT-synced archive into rootful guest Podman, then clean its copy.
+  - how: shell
+    order: 96
+    script: |
+      set -eu
+      archive_relative=${PACKAGE_MODE_IMAGE_ARCHIVE:-}
+      case "$archive_relative" in
+        tmt/plans/.package-mode-local.*/bootc.oci) ;;
+        *)
+          printf 'Unexpected PACKAGE_MODE_IMAGE_ARCHIVE path: %s\n' "$archive_relative" >&2
+          exit 1
+          ;;
+      esac
+      archive_directory_relative=${archive_relative%/*}
+      temporary_name=${archive_directory_relative##*/}
+      case "$temporary_name" in
+        .package-mode-local.*) ;;
+        *)
+          printf 'Unexpected package-mode archive directory: %s\n' "$archive_directory_relative" >&2
+          exit 1
+          ;;
+      esac
+      if [ "$archive_directory_relative" != "tmt/plans/$temporary_name" ]; then
+        printf 'Package-mode archive must be directly under tmt/plans: %s\n' "$archive_relative" >&2
+        exit 1
+      fi
+
+      tree_root=$(realpath -e -- "${TMT_TREE:?TMT_TREE is required}")
+      if [ ! -d "$tree_root" ]; then
+        printf 'TMT_TREE is not a directory: %s\n' "$tree_root" >&2
+        exit 1
+      fi
+      plans_root=$(realpath -e -- "$tree_root/tmt/plans")
+      plans_root_prefix=${tree_root%/}/
+      if [ "$plans_root" = "$tree_root" ]; then
+        printf 'TMT plans directory resolves to the worktree root: %s\n' "$plans_root" >&2
+        exit 1
+      fi
+      case "$plans_root" in
+        "$plans_root_prefix"*) ;;
+        *)
+          printf 'TMT plans directory resolves outside the worktree: %s\n' "$plans_root" >&2
+          exit 1
+          ;;
+      esac
+      archive_directory=$(realpath -m -- "$tree_root/$archive_directory_relative")
+      if [ "$archive_directory" != "$plans_root/$temporary_name" ]; then
+        printf 'Package-mode archive directory resolves outside tmt/plans: %s\n' "$archive_relative" >&2
+        exit 1
+      fi
+      cleanup() {
+        rm -rf -- "$archive_directory"
+      }
+      trap cleanup EXIT
+      trap 'exit 130' INT
+      trap 'exit 143' TERM
+
+      archive_path=$(realpath -e -- "$archive_directory/bootc.oci")
+      if [ "$archive_path" != "$archive_directory/bootc.oci" ]; then
+        printf 'Package-mode archive must not resolve outside its temporary directory: %s\n' "$archive_relative" >&2
+        exit 1
+      fi
+      if [ ! -f "$archive_path" ]; then
+        printf 'Package-mode archive is not a regular file: %s\n' "$archive_relative" >&2
+        exit 1
+      fi
+      podman --remote=false load --input "$archive_path"
+      podman --remote=false image exists localhost/bootc
+    when: package_source == local
+  - how: shell
+    order: 98
+    script:
+      - mkdir -p bootc && cp /var/share/test-artifacts/*.src.rpm bootc
+      # Packit artifacts are already staged in the guest before extraction.
+      - cd bootc && rpm2cpio *.src.rpm > pkg.cpio && cpio -idmv < pkg.cpio && rm pkg.cpio && rm -f *-vendor.tar.zstd && zstd -d *.tar.zstd && tar -xvf *.tar -C . --strip-components=1 && ls -al
+      - cd bootc/hack && BOOTC_PROVISION_PACKIT_SKIP_REINSTALL=1 ./provision-packit.sh
+    when: package_source == artifacts
+  # Both sources now provide localhost/bootc in the guest's rootful storage.
+  # Pull the LBI references needed to install the image.
+  - how: shell
+    order: 99
+    script: |
+      podman --remote=false image exists localhost/bootc
+      podman --remote=false pull quay.io/curl/curl:latest
+      podman --remote=false pull quay.io/curl/curl-base:latest
+      podman --remote=false pull registry.access.redhat.com/ubi9/podman:latest
+    when: package_source == artifacts or package_source == local
+execute:
+  how: tmt
+discover:
+  how: fmf
+  prune: true
+  test:
+    - /tmt/tests/test-50-to-existing-root-preserve-var
