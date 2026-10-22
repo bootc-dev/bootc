@@ -158,11 +158,6 @@ case ${TMT_REBOOT_COUNT:-0} in
             staging_parent=
             trap - EXIT
 
-            install -d -m 0755 /etc/tmpfiles.d
-            printf 'd %s 0755 root root -\nL+ %s - - - - %s\n' \
-                "$tmt_workdir_parent" "$tmt_run_dir" "$persistent_tmt_run_dir" \
-                > /etc/tmpfiles.d/bootc-tmt-workdir.conf
-
             disposable_run_dir=$tmt_workdir_parent/.${tmt_run_id}.original.$$
             if [[ -e "$disposable_run_dir" || -L "$disposable_run_dir" ]]; then
                 printf 'Disposable TMT workdir already exists: %s\n' "$disposable_run_dir" >&2
@@ -253,6 +248,46 @@ case ${TMT_REBOOT_COUNT:-0} in
             "$target_image" \
             bootc install to-existing-root --preserve-var --acknowledge-destructive
 
+        if [[ $tmt_run_layout == var-tmp ]]; then
+            # to-existing-root does not migrate the old host's /etc. Add the
+            # tmpfiles rule to the new deployment's persistent /etc instead.
+            podman --remote=false run --rm --privileged --pid=host --user=root:root \
+                -v /dev:/dev \
+                -v /:/target \
+                -v /boot:/target/boot \
+                -v /var/lib/containers:/var/lib/containers \
+                --security-opt label=type:unconfined_t \
+                "$target_image" \
+                bash -euo pipefail -c '
+                    deployment=/mnt/bootc-tmt-deployment
+                    cleanup() {
+                        local status=$?
+                        trap - EXIT
+                        if ! umount -R "$deployment"; then
+                            printf "Failed to unmount deployment target %s\n" "$deployment" >&2
+                            status=1
+                        fi
+                        exit "$status"
+                    }
+                    trap cleanup EXIT
+
+                    workdir_parent=$1
+                    run_dir=$2
+                    persistent_run_dir=$3
+                    mkdir -p "$deployment"
+                    bootc install mount --sysroot /target --latest "$deployment"
+                    rule=$deployment/etc/tmpfiles.d/bootc-tmt-workdir.conf
+                    install -d -m 0755 "${rule%/*}"
+                    tmpfiles_rule=(
+                        "d $workdir_parent 0755 root root -"
+                        "L+ $run_dir - - - - $persistent_run_dir"
+                    )
+                    printf '%s\n' "${tmpfiles_rule[@]}" > "$rule"
+                    printf '%s\n' "${tmpfiles_rule[@]}" | cmp - "$rule"
+                ' install-tmt-tmpfiles-rule \
+                "$tmt_workdir_parent" "$tmt_run_dir" "$persistent_tmt_run_dir"
+        fi
+
         bootc status
         # Ask the guest to reboot itself; this is more reliable than
         # testcloud's ACPI soft-poweroff for a full bootc deployment reboot.
@@ -270,6 +305,7 @@ case ${TMT_REBOOT_COUNT:-0} in
             verify_tmt_workdir_in_preserved_var "$tmt_run_dir"
         else
             persistent_tmt_run_dir=$tmt_workdir_root/$tmt_run_id
+            test -f /etc/tmpfiles.d/bootc-tmt-workdir.conf
             test -L "$tmt_run_dir"
             test "$(readlink -f -- "$tmt_run_dir")" = "$persistent_tmt_run_dir"
         fi
