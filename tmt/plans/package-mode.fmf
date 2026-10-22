@@ -131,6 +131,29 @@ prepare:
       podman --remote=false pull quay.io/curl/curl:latest
       podman --remote=false pull quay.io/curl/curl-base:latest
       podman --remote=false pull registry.access.redhat.com/ubi9/podman:latest
+      workdir=$(mktemp -d)
+      trap 'rm -rf -- "$workdir"' EXIT
+      cat > "$workdir/Containerfile" <<'EOF'
+      FROM localhost/bootc
+      RUN unit='var-lib-bootc\x2dtmt\x2dpreserve\x2dvar\x2dbind-target.mount' && \
+          mkdir -p /usr/etc/systemd/system/local-fs.target.wants && \
+          printf '%s\n' \
+            '[Unit]' \
+            'Description=bootc TMT preserve-var bind mount' \
+            '' \
+            '[Mount]' \
+            'What=/var/lib/bootc-tmt-preserve-var-bind/source' \
+            'Where=/var/lib/bootc-tmt-preserve-var-bind/target' \
+            'Type=none' \
+            'Options=bind' \
+            '' \
+            '[Install]' \
+            'WantedBy=local-fs.target' \
+            > "/usr/etc/systemd/system/$unit" && \
+          ln -s "../$unit" "/usr/etc/systemd/system/local-fs.target.wants/$unit"
+      EOF
+      podman --remote=false build -t localhost/bootc-preserve-var-test "$workdir"
+      podman --remote=false image exists localhost/bootc-preserve-var-test
     when: package_source == artifacts or package_source == local
 execute:
   how: tmt
