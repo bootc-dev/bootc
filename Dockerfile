@@ -147,43 +147,6 @@ RUN --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
     if [[ ${#pkgs_to_install[@]} -gt 0 ]]; then
         dnf install -y "${pkgs_to_install[@]}"
     fi
-
-    if [[ "$bootloader" == "grub-cc" ]]; then
-        case "$(uname -m)" in
-            x86_64)
-                grub_cc_url=https://kojipkgs.fedoraproject.org/packages/grub2/2.12/60.eln156/x86_64/grub2-efi-x64-cc-2.12-60.eln156.x86_64.rpm
-                ;;
-            aarch64)
-                grub_cc_url=https://kojipkgs.fedoraproject.org/packages/grub2/2.12/60.eln156/aarch64/grub2-efi-aa64-cc-2.12-60.eln156.aarch64.rpm
-                ;;
-            *)
-                echo "Unsupported architecture: $(uname -m)" >&2
-                exit 1
-                ;;
-        esac
-
-        curl --fail --location --retry 5 --retry-all-errors --retry-delay 1 \
-            --output /var/grub-cc.rpm "$grub_cc_url"
-    fi
-
-    # Currently dnf installs grub-cc at /usr/lib/efi/grub2/1:2.12-60.eln156/EFI/eln/cc/grubx64-cc.efi
-    # which is less than ideal because: 
-    # - the "cc" subdirectory
-    # - no support for installing grub-cc in bootupd
-    #
-    # So we move the binary to /usr/lib/grub-cc/grub-cc.efi so we have a predictale location from which
-    # we can copy the EFI binary to the ESP
-    if [[ "$bootloader" == "grub-cc" ]]; then
-        mkdir /var/grub-cc
-        rpm2archive /var/grub-cc.rpm > /tmp/grub-cc.tar.gz
-        tar -xvz -f /tmp/grub-cc.tar.gz -C /var/grub-cc
-        file=$(find /var/grub-cc -name '*.efi')
-        mkdir -p /usr/lib/grub-cc
-        cp "$file" /usr/lib/grub-cc/grub-cc.efi
-    fi
-
-    rm -rvf /var/grub-cc
-    rm -rvf /var/grub-cc.rpm
 EOF
 
 # Note we don't do any customization here yet
