@@ -348,6 +348,9 @@ pub(crate) enum InstallOpts {
     /// the running host root filesystem. Currently, the host root filesystem's `/boot` partition
     /// will be wiped, but the content of the existing root will otherwise be retained, and will
     /// need to be cleaned up if desired when rebooted into the new root.
+    ///
+    /// When migrating from a package-mode system, use `--preserve-var` to copy `/var` data
+    /// into the new deployment before rebooting.
     ToExistingRoot(crate::install::InstallToExistingRootOpts),
     /// Nondestructively create a fresh installation state inside an existing bootc system.
     ///
@@ -2400,10 +2403,14 @@ async fn run_from_opt(opt: Opt) -> Result<CliExitStatus> {
             InstallOpts::Mount(opts) => crate::mount::mount(opts).await,
             #[cfg(feature = "install-to-disk")]
             InstallOpts::ToDisk(opts) => crate::install::install_to_disk(opts).await,
-            InstallOpts::ToFilesystem(opts) => {
-                crate::install::install_to_filesystem(opts, false, crate::install::Cleanup::Skip)
-                    .await
-            }
+            InstallOpts::ToFilesystem(opts) => crate::install::install_to_filesystem(
+                opts,
+                false,
+                crate::install::Cleanup::Skip,
+                false,
+            )
+            .await
+            .map(|_| ()),
             InstallOpts::ToExistingRoot(opts) => {
                 crate::install::install_to_existing_root(opts).await
             }

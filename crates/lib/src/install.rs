@@ -144,6 +144,7 @@ mod aleph;
 pub(crate) mod baseline;
 pub(crate) mod completion;
 pub(crate) mod config;
+pub(crate) mod migrate;
 mod osbuild;
 pub(crate) mod osconfig;
 
@@ -635,6 +636,23 @@ pub(crate) struct InstallToExistingRootOpts {
 
     #[clap(flatten)]
     pub(crate) composefs_opts: InstallComposefsOpts,
+
+    /// Preserve the running system's `/var` data into the new bootc deployment.
+    ///
+    /// Non-excluded content is copied with reflinks when supported, or with a
+    /// full copy otherwise. Reflinks are created per file and are not a
+    /// snapshot; stop stateful services or use a consistent snapshot before
+    /// copying live database data.
+    ///
+    /// `/var/tmp`, `/var/cache`, `/var/log/journal`, and `/var/lib/containers`
+    /// are always excluded. Repeat `--preserve-var-skip` to add paths relative
+    /// to `/var`. Nested mountpoints are represented by empty directories.
+    #[clap(long)]
+    pub(crate) preserve_var: bool,
+
+    /// Relative paths below `/var` to leave out while preserving `/var`.
+    #[clap(long = "preserve-var-skip", value_name = "PATH")]
+    pub(crate) preserve_var_skip: Vec<String>,
 }
 
 #[derive(Debug, clap::Parser, PartialEq, Eq)]
@@ -2062,7 +2080,7 @@ async fn install_with_sysroot(
     boot_uuid: &str,
     bound_images: BoundImages,
     has_ostree: bool,
-) -> Result<()> {
+) -> Result<camino::Utf8PathBuf> {
     let ostree = storage.get_ostree()?;
     let c_storage = storage.get_ensure_imgstore()?;
 
@@ -2129,7 +2147,7 @@ async fn install_with_sysroot(
         }
     }
 
-    Ok(())
+    Ok(camino::Utf8PathBuf::from(deployment_path.to_string()))
 }
 
 enum BoundImages {
@@ -2140,35 +2158,41 @@ enum BoundImages {
 
 impl BoundImages {
     async fn from_state(state: &State) -> Result<Self> {
-        let bound_images = match state.config_opts.bound_images {
-            BoundImagesOpt::Skip => BoundImages::Skip,
-            others => {
-                let queried_images = crate::boundimage::query_bound_images(&state.container_root)?;
-                match others {
-                    BoundImagesOpt::Stored => {
-                        // Verify each bound image is present in the container storage
-                        let mut r = Vec::with_capacity(queried_images.len());
-                        for image in queried_images {
-                            let resolved = ResolvedBoundImage::from_image(&image).await?;
-                            tracing::debug!("Resolved {}: {}", resolved.image, resolved.digest);
-                            r.push(resolved)
-                        }
-                        BoundImages::Resolved(r)
-                    }
-                    BoundImagesOpt::Pull => {
-                        // No need to resolve the images, we will pull them into the target later
-                        BoundImages::Unresolved(queried_images)
-                    }
-                    BoundImagesOpt::Skip => anyhow::bail!("unreachable error"),
-                }
-            }
-        };
+        let bound_images_opt = state.config_opts.bound_images;
+        if bound_images_opt == BoundImagesOpt::Skip {
+            return Ok(BoundImages::Skip);
+        }
 
-        Ok(bound_images)
+        let queried_images = crate::boundimage::query_bound_images(&state.container_root)?;
+        Self::from_queried(bound_images_opt, queried_images).await
+    }
+
+    async fn from_queried(
+        bound_images_opt: BoundImagesOpt,
+        queried_images: Vec<BoundImage>,
+    ) -> Result<Self> {
+        match bound_images_opt {
+            BoundImagesOpt::Stored => {
+                let mut resolved_images = Vec::with_capacity(queried_images.len());
+                for image in queried_images {
+                    let resolved = ResolvedBoundImage::from_image(&image).await?;
+                    tracing::debug!("Resolved {}: {}", resolved.image, resolved.digest);
+                    resolved_images.push(resolved);
+                }
+                Ok(BoundImages::Resolved(resolved_images))
+            }
+            BoundImagesOpt::Pull => Ok(BoundImages::Unresolved(queried_images)),
+            BoundImagesOpt::Skip => Ok(BoundImages::Skip),
+        }
     }
 }
 
-async fn ostree_install(state: &State, rootfs: &RootSetup, cleanup: Cleanup) -> Result<()> {
+async fn ostree_install(
+    state: &State,
+    rootfs: &RootSetup,
+    cleanup: Cleanup,
+    pre_resolved_bound_images: Option<BoundImages>,
+) -> Result<camino::Utf8PathBuf> {
     // We verify this upfront because it's currently required by bootupd
     let boot_uuid = rootfs
         .get_boot_uuid()?
@@ -2176,14 +2200,17 @@ async fn ostree_install(state: &State, rootfs: &RootSetup, cleanup: Cleanup) -> 
         .ok_or_else(|| anyhow!("No uuid for boot/root"))?;
     tracing::debug!("boot uuid={boot_uuid}");
 
-    let bound_images = BoundImages::from_state(state).await?;
+    let bound_images = match pre_resolved_bound_images {
+        Some(bound_images) => bound_images,
+        None => BoundImages::from_state(state).await?,
+    };
 
     // Initialize the ostree sysroot (repo, stateroot, etc.)
 
-    {
+    let deployment_path = {
         let (sysroot, has_ostree) = initialize_ostree_root(state, rootfs).await?;
 
-        install_with_sysroot(
+        let deployment_path = install_with_sysroot(
             state,
             rootfs,
             &sysroot,
@@ -2206,19 +2233,21 @@ async fn ostree_install(state: &State, rootfs: &RootSetup, cleanup: Cleanup) -> 
 
         // We must drop the sysroot here in order to close any open file
         // descriptors.
+        deployment_path
     };
 
     // Run this on every install as the penultimate step
     install_finalize(&rootfs.physical_root_path).await?;
 
-    Ok(())
+    Ok(deployment_path)
 }
 
 async fn install_to_filesystem_impl(
     state: &State,
     rootfs: &mut RootSetup,
     cleanup: Cleanup,
-) -> Result<()> {
+    pre_resolved_bound_images: Option<BoundImages>,
+) -> Result<Option<camino::Utf8PathBuf>> {
     if matches!(state.selinux_state, SELinuxFinalState::ForceTargetDisabled) {
         rootfs.kargs.extend(&Cmdline::from("selinux=0"));
     }
@@ -2240,7 +2269,7 @@ async fn install_to_filesystem_impl(
         }
     }
 
-    if state.composefs_options.composefs_backend {
+    let deployment_path = if state.composefs_options.composefs_backend {
         let fetch_ref = state.source.composefs_fetch_reference();
         let manifest = get_container_manifest_and_config(&fetch_ref).await?;
         // A capable filesystem gets a strict provisional repository.  The
@@ -2312,8 +2341,10 @@ async fn install_to_filesystem_impl(
             )
             .context("SELinux labeling of composefs objects")?;
         }
+        None
     } else {
-        ostree_install(state, rootfs, cleanup).await?;
+        let deployment_path =
+            ostree_install(state, rootfs, cleanup, pre_resolved_bound_images).await?;
 
         // For s390x, we set zipl as the bootloader
         // this needs to be done after the ostree commit is deployed,
@@ -2332,7 +2363,8 @@ async fn install_to_filesystem_impl(
                 .run_capture_stderr()
                 .context("Setting bootloader config to zipl")?;
         }
-    }
+        Some(deployment_path)
+    };
 
     // As the very last step before filesystem finalization, do a full SELinux
     // relabel of the physical root filesystem.  Any files that are already
@@ -2354,7 +2386,7 @@ async fn install_to_filesystem_impl(
         }
     }
 
-    Ok(())
+    Ok(deployment_path)
 }
 
 fn installation_complete() {
@@ -2436,7 +2468,7 @@ pub(crate) async fn install_to_disk(mut opts: InstallToDiskOpts) -> Result<()> {
         (rootfs, loopback_dev)
     };
 
-    install_to_filesystem_impl(&state, &mut rootfs, Cleanup::Skip).await?;
+    install_to_filesystem_impl(&state, &mut rootfs, Cleanup::Skip, None).await?;
 
     // Drop all data about the root except the bits we need to ensure any file descriptors etc. are closed.
     let (root_path, luksdev) = rootfs.into_storage();
@@ -2712,7 +2744,8 @@ pub(crate) async fn install_to_filesystem(
     opts: InstallToFilesystemOpts,
     targeting_host_root: bool,
     cleanup: Cleanup,
-) -> Result<()> {
+    require_ostree_backend: bool,
+) -> Result<Option<camino::Utf8PathBuf>> {
     // Log the installation operation to systemd journal
     const INSTALL_FILESYSTEM_JOURNAL_ID: &str = "9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3";
     let source_image = opts
@@ -2823,6 +2856,21 @@ pub(crate) async fn install_to_filesystem(
         false,
     )
     .await?;
+
+    // The image can select the composefs backend during preparation, so check
+    // compatibility after that choice is resolved but before target mutation.
+    validate_migration_backend(
+        require_ostree_backend,
+        state.composefs_options.composefs_backend,
+    )?;
+
+    // Resolve stored bound images before replacement or boot-directory cleanup
+    // can mutate the existing root. Pull mode remains unresolved until deploy.
+    let pre_resolved_bound_images = if targeting_host_root && require_ostree_backend {
+        Some(BoundImages::from_state(&state).await?)
+    } else {
+        None
+    };
 
     // Check to see if this happens to be the real host root
     if !fsopts.acknowledge_destructive {
@@ -2986,13 +3034,41 @@ pub(crate) async fn install_to_filesystem(
         skip_finalize,
     };
 
-    install_to_filesystem_impl(&state, &mut rootfs, cleanup).await?;
+    let deployment_path =
+        install_to_filesystem_impl(&state, &mut rootfs, cleanup, pre_resolved_bound_images).await?;
 
     // Drop all data about the root except the path to ensure any file descriptors etc. are closed.
     drop(rootfs);
 
     installation_complete();
 
+    Ok(deployment_path)
+}
+
+fn validate_migration_backend(require_ostree_backend: bool, composefs_backend: bool) -> Result<()> {
+    anyhow::ensure!(
+        !require_ostree_backend || !composefs_backend,
+        "--preserve-var requires the ostree backend"
+    );
+    Ok(())
+}
+
+/// Resolve the physical sysroot when `root_path` points at an OSTree deployment.
+fn physical_sysroot_path(root_path: &std::path::Path) -> std::path::PathBuf {
+    let possible_sysroot = root_path.join("sysroot");
+    if possible_sysroot.join("ostree").exists() {
+        possible_sysroot
+    } else {
+        root_path.to_owned()
+    }
+}
+
+fn write_destructive_cleanup_marker(root_path: &std::path::Path) -> Result<()> {
+    let physical_root = physical_sysroot_path(root_path);
+    let sysroot = Dir::open_ambient_dir(&physical_root, cap_std::ambient_authority())
+        .with_context(|| format!("Opening physical sysroot {physical_root:?}"))?;
+    tracing::debug!("Writing {DESTRUCTIVE_CLEANUP}");
+    sysroot.atomic_write(DESTRUCTIVE_CLEANUP, b"")?;
     Ok(())
 }
 
@@ -3026,7 +3102,23 @@ pub(crate) async fn install_to_existing_root(opts: InstallToExistingRootOpts) ->
         false => Cleanup::Skip,
     };
 
-    let opts = InstallToFilesystemOpts {
+    let preserve_var = opts.preserve_var;
+    let defer_cleanup = opts.cleanup && preserve_var;
+    let root_path = std::path::PathBuf::from(opts.root_path.as_str());
+    let mut preserve_var_skip = opts.preserve_var_skip;
+    if let Some(config) = config::load_config()? {
+        if let Some(config_skip) = config.preserve_var_skip {
+            preserve_var_skip.extend(config_skip);
+        }
+    }
+    let preserve_var_skip = migrate::validate_exclusions(&preserve_var_skip)?;
+    let require_ostree_backend = preserve_var;
+    validate_migration_backend(
+        require_ostree_backend,
+        opts.composefs_opts.composefs_backend,
+    )?;
+
+    let fs_opts = InstallToFilesystemOpts {
         filesystem_opts: InstallTargetFilesystemOpts {
             root_path: opts.root_path,
             root_mount_spec: None,
@@ -3041,7 +3133,36 @@ pub(crate) async fn install_to_existing_root(opts: InstallToExistingRootOpts) ->
         composefs_opts: opts.composefs_opts,
     };
 
-    install_to_filesystem(opts, true, cleanup).await
+    let deployment_path = install_to_filesystem(
+        fs_opts,
+        true,
+        if defer_cleanup {
+            Cleanup::Skip
+        } else {
+            cleanup
+        },
+        require_ostree_backend,
+    )
+    .await?;
+
+    if preserve_var {
+        println!();
+        println!("Preserving /var...");
+        let deployment_path = deployment_path
+            .as_ref()
+            .context("Install did not produce an ostree deployment")?;
+        let physical_root = physical_sysroot_path(&root_path);
+        let deploy_dir = physical_root.join(deployment_path);
+        let new_var = migrate::deployment_var_path(&deploy_dir)?;
+        migrate::preserve_var(&root_path.join("var"), &new_var, &preserve_var_skip)
+            .context("Post-install /var preservation")?;
+    }
+
+    if defer_cleanup {
+        write_destructive_cleanup_marker(&root_path)?;
+    }
+
+    Ok(())
 }
 
 /// Read the /boot entry from /etc/fstab, if it exists
@@ -3604,6 +3725,68 @@ UUID=boot-uuid /boot ext4 defaults 0 0
         assert!(!result.contains("debug"));
         assert!(result.contains("foo=baz"));
 
+        Ok(())
+    }
+
+    #[test]
+    fn test_migration_backend_compatibility() {
+        let cases = [
+            (false, false, true),
+            (false, true, true),
+            (true, false, true),
+            (true, true, false),
+        ];
+        for (require_ostree_backend, composefs_backend, valid) in cases {
+            assert_eq!(
+                validate_migration_backend(require_ostree_backend, composefs_backend).is_ok(),
+                valid,
+                "require_ostree_backend={require_ostree_backend}, composefs_backend={composefs_backend}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_bound_images_pull_mode_stays_unresolved() {
+        let queried_images = vec![BoundImage {
+            image: "quay.io/example/app:latest".to_string(),
+            auth_file: None,
+        }];
+
+        let bound_images = BoundImages::from_queried(BoundImagesOpt::Pull, queried_images)
+            .await
+            .unwrap();
+        let BoundImages::Unresolved(images) = bound_images else {
+            panic!("pull mode should defer bound image resolution until deployment");
+        };
+        assert_eq!(images.len(), 1);
+        assert_eq!(images[0].image, "quay.io/example/app:latest");
+    }
+
+    #[test]
+    fn test_destructive_cleanup_marker_uses_physical_sysroot() -> Result<()> {
+        let td = tempfile::tempdir()?;
+        let deployment_root = td.path();
+        let physical_sysroot = deployment_root.join("sysroot");
+        std::fs::create_dir_all(deployment_root.join("etc"))?;
+        std::fs::create_dir_all(physical_sysroot.join("ostree"))?;
+        std::fs::create_dir_all(physical_sysroot.join("etc"))?;
+
+        write_destructive_cleanup_marker(deployment_root)?;
+
+        assert!(physical_sysroot.join(DESTRUCTIVE_CLEANUP).is_file());
+        assert!(!deployment_root.join(DESTRUCTIVE_CLEANUP).exists());
+        Ok(())
+    }
+
+    #[test]
+    fn test_destructive_cleanup_marker_uses_root_without_nested_sysroot() -> Result<()> {
+        let td = tempfile::tempdir()?;
+        let root = td.path();
+        std::fs::create_dir_all(root.join("etc"))?;
+
+        write_destructive_cleanup_marker(root)?;
+
+        assert!(root.join(DESTRUCTIVE_CLEANUP).is_file());
         Ok(())
     }
 }

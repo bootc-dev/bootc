@@ -205,6 +205,33 @@ build-ukiboot-update-test-image: build-ukiboot-test-image
 test-ukiboot: build-ukiboot-update-test-image
     cargo xtask run-tmt --env=BOOTC_variant=composefs --filesystem=ext4 --boot-type=aboot --seal-state=unsealed --upgrade-image={{ukiboot_img}}:v2 {{ukiboot_img}}:v1 aboot
 
+# Run the package-mode migration plan against the current checkout image.
+# The VM cannot share controller Podman storage, so transfer it as an OCI archive.
+[group('testing')]
+test-tmt-package-mode:
+    #!/bin/bash
+    set -euo pipefail
+    just build
+    archive_dir=$(mktemp -d -- tmt/plans/.package-mode-local.XXXXXX)
+    cleanup() {
+        rm -rf -- "$archive_dir"
+    }
+    trap cleanup EXIT
+    trap 'cleanup; exit 130' INT
+    trap 'cleanup; exit 143' TERM
+    archive_path="$archive_dir/bootc.oci"
+    if [[ -e "$archive_path" ]]; then
+        echo "Refusing to overwrite existing archive: $archive_path" >&2
+        exit 1
+    fi
+    podman save --format oci-archive --output "$archive_path" localhost/bootc
+    tmt \
+        --context=running_env=packit \
+        --context=package_source=local \
+        --context="test_disk_image=${test_disk_image:-centos-stream-10}" \
+        run --environment "PACKAGE_MODE_IMAGE_ARCHIVE=$archive_path" \
+        plans --name '^/tmt/plans/package-mode$'
+
 # Split out from `test-container` because, unlike the container integration tests,
 # unit tests don't depend on variant/filesystem/bootloader/boot_type/seal_state, so
 # CI runs this once per OS (in the `package` job) instead of once per test-integration
