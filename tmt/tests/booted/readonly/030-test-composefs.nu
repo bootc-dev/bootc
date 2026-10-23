@@ -31,6 +31,13 @@ if $expecting_composefs {
 
         if ($bootctl_output | str contains 'Product: systemd-boot') {
             find_root_eq_in_cmdline "systemd-boot"
+
+            # Make sure our "timeout 5" is actually present
+
+            mkdir /var/tmp/efi
+            mount /dev/disk/by-partlabel/EFI-SYSTEM /var/tmp/efi
+
+            assert (open /var/tmp/efi/loader/loader.conf | lines | any {|s| $s == "timeout 5" })
         }
     }
 

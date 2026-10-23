@@ -1,4 +1,5 @@
 use std::fs::create_dir_all;
+use std::io::Read;
 use std::process::Command;
 use std::sync::OnceLock;
 
@@ -262,6 +263,13 @@ pub(crate) fn install_via_bootupd(
     }
 }
 
+/// Timeout for systemd-boot bootloader menu
+///
+/// If you update this, make sure to update the readonly test
+/// 030-test-composefs.nu
+const SYSTEMD_TIMEOUT: &str = "timeout 5";
+const SYSTEMD_LOADER_CONF_PATH: &str = "loader/loader.conf";
+
 /// Install systemd-boot using a pre-prepared boot root.
 #[context("Installing bootloader")]
 pub(crate) fn install_systemd_boot(
@@ -297,6 +305,13 @@ pub(crate) fn install_systemd_boot(
             tracing::debug!(
                 "Skipping --random-seed: requires systemd >= {BOOTCTL_RANDOM_SEED_MIN_VERSION}, found {systemd_version}"
             );
+        }
+    } else {
+        // Update firmware variables if not a generic image
+        // This corresponds to --update-firmware CLI option for bootupd installs
+        // This option was added in systemd v258
+        if systemd_version()? >= 258 {
+            bootctl_args.push("--variables=yes");
         }
     }
 
@@ -355,6 +370,45 @@ pub(crate) fn install_systemd_boot(
         }
         if keys.is_empty() {
             tracing::debug!("No Secure Boot keys provided for systemd-boot enrollment");
+        }
+    }
+
+    let esp_dir = prepared_root.open_esp_dir()?;
+
+    // systemd-boot creates a loader.conf files with all lines
+    // commented out
+    match esp_dir
+        .open_optional(SYSTEMD_LOADER_CONF_PATH)
+        .context("Opening systemd-boot loader config")?
+    {
+        // Update timeout in the loader config file
+        // We can't use bootctl set-timeout as that updates EFI variables
+        Some(mut f) => {
+            let mut s = String::new();
+            f.read_to_string(&mut s)
+                .context("Reading systemd-boot loader config")?;
+
+            let mut new_contents = vec![SYSTEMD_TIMEOUT];
+
+            for line in s.lines() {
+                // We only want to replace the timeout
+                if line.contains("timeout") {
+                    continue;
+                }
+
+                new_contents.push(line);
+            }
+
+            esp_dir
+                .atomic_write(SYSTEMD_LOADER_CONF_PATH, new_contents.join("\n"))
+                .with_context(|| format!("Writing to {SYSTEMD_LOADER_CONF_PATH}"))?;
+        }
+
+        // Write the timeout for bootloader menu as it doesn't exist
+        None => {
+            esp_dir
+                .atomic_write(SYSTEMD_LOADER_CONF_PATH, SYSTEMD_TIMEOUT)
+                .with_context(|| format!("Writing to {SYSTEMD_LOADER_CONF_PATH}"))?;
         }
     }
 
