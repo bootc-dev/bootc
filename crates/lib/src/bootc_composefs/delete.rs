@@ -6,7 +6,7 @@ use cap_std_ext::{cap_std::fs::Dir, dirext::CapStdExtDirExt};
 use crate::{
     bootc_composefs::{
         aboot,
-        boot::{BootType, get_efi_uuid_source},
+        boot::{BootType, STAGED_GLOBAL_UKI_ADDONS_DIR, get_efi_uuid_source},
         gc::{GCOpts, composefs_gc},
         rollback::{composefs_rollback, rename_exchange_user_cfg},
         state::remove_staged_deployment,
@@ -270,6 +270,14 @@ pub(crate) async fn delete_composefs_deployment(
         }
     } else {
         delete_depl_boot_entries(&depl_to_del, &storage, deleting_staged)?;
+
+        if deleting_staged {
+            let esp = storage.require_esp()?;
+
+            esp.fd
+                .remove_all_optional(STAGED_GLOBAL_UKI_ADDONS_DIR)
+                .context("Removing staged Global UKI Addons")?;
+        }
     }
 
     composefs_gc(

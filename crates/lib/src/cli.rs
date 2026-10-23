@@ -39,10 +39,13 @@ use ostree_ext::sysroot::SysrootLock;
 use schemars::schema_for;
 use serde::{Deserialize, Serialize};
 
+use crate::bootc_composefs::boot::BootType;
 use crate::bootc_composefs::delete::delete_composefs_deployment;
 use crate::bootc_composefs::gc::{GCOpts, composefs_gc};
 use crate::bootc_composefs::soft_reboot::{prepare_soft_reboot_composefs, reset_soft_reboot};
 use crate::bootc_composefs::state::get_usr_overlay_status;
+use crate::bootc_composefs::status::get_composefs_status;
+use crate::bootc_composefs::uki_addons_cli::handle_addon_cli_cmd;
 use crate::bootc_composefs::{
     aboot,
     digest::{compute_composefs_digest, new_temp_composefs_repo},
@@ -54,6 +57,7 @@ use crate::bootc_composefs::{
     update::upgrade_composefs,
 };
 use crate::deploy::{MergeState, RequiredHostSpec};
+use crate::install::UkiAddonOpts;
 use crate::podstorage::set_additional_image_store;
 use crate::progress_jsonl::{ProgressWriter, RawProgressFd};
 use crate::spec::FilesystemOverlayAccessMode;
@@ -103,7 +107,7 @@ pub(crate) struct DownloadOnlyOpts {
     /// This unlocks the staged deployment without fetching updates from the container image source.
     /// The deployment will be applied on the next shutdown or reboot. Use with --apply to
     /// reboot immediately.
-    #[clap(long, conflicts_with = "download_only")]
+    #[clap(long, conflicts_with_all = ["download_only", "scoped", "global"])]
     pub(crate) from_downloaded: bool,
 }
 
@@ -117,7 +121,7 @@ pub(crate) struct UpgradeOpts {
     /// Check if an update is available without applying it.
     ///
     /// This only downloads updated metadata, not the full image layers.
-    #[clap(long, conflicts_with_all = ["apply", "download_only", "from_downloaded"])]
+    #[clap(long, conflicts_with_all = ["apply", "download_only", "from_downloaded", "scoped", "global"])]
     pub(crate) check: bool,
 
     /// Restart or reboot into the new target image.
@@ -145,6 +149,10 @@ pub(crate) struct UpgradeOpts {
 
     #[clap(flatten)]
     pub(crate) progress: ProgressOptions,
+
+    // This is kinda unfortunate that we can't gate this only for composefs systems
+    #[clap(flatten)]
+    pub(crate) uki_addon_opts: UkiAddonOpts,
 }
 
 /// Perform an switch operation
@@ -215,6 +223,10 @@ pub(crate) struct SwitchOpts {
 
     #[clap(flatten)]
     pub(crate) progress: ProgressOptions,
+
+    // This is kinda unfortunate that we can't gate this only for composefs systems
+    #[clap(flatten)]
+    pub(crate) uki_addon_opts: UkiAddonOpts,
 }
 
 /// Finalize a staged composefs deployment.
@@ -1003,6 +1015,49 @@ impl InternalsOpts {
     const GENERATOR_BIN: &'static str = "bootc-systemd-generator";
 }
 
+#[derive(Debug, Clone, Copy, clap::ValueEnum, PartialEq, Eq)]
+pub(crate) enum UkiAddonScope {
+    Global,
+    Scoped,
+}
+
+#[derive(Debug, clap::Subcommand, PartialEq, Eq)]
+pub(crate) enum UkiAddonCliOpts {
+    /// List all installed UKI Addons
+    List {
+        /// Output in JSON format
+        #[clap(long)]
+        json: bool,
+        /// List all staged addons as well
+        #[clap(long)]
+        verbose: bool,
+    },
+    /// Remove a UKI Addon from the currently booted deployment. If there is
+    /// a staged deployment present, the operation is performed on the staged
+    /// deployment's addons
+    Remove {
+        /// Addon name to be provided without the `.addon.efi` suffix
+        name: String,
+        /// The type of addon being removed, global or scoped
+        addon_type: UkiAddonScope,
+    },
+    /// Add a UKI Addon to the currently booted deployment. If there is
+    /// a staged deployment present, the operation is performed on the staged
+    /// deployment
+    Add {
+        /// Addon name to be provided without the `.addon.efi` suffix
+        name: String,
+        /// The type of addon being added, global or scoped
+        addon_type: UkiAddonScope,
+    },
+    /// List all referenced UKI Addons across all deployments
+    ListReferenced {
+        /// Output in JSON format
+        #[clap(long)]
+        json: bool,
+    },
+}
+
 /// Deploy and transactionally in-place with bootable container images.
 ///
 /// The `bootc` project currently uses ostree-containers as a backend
@@ -1134,6 +1189,10 @@ pub(crate) enum Opt {
     },
     #[clap(hide = true)]
     DeleteDeployment { depl_id: String },
+
+    /// Perform operations related to UKI Addons
+    #[clap(subcommand)]
+    UkiAddon(UkiAddonCliOpts),
 }
 
 /// Ensure we've entered a mount namespace, so that we can remount
@@ -1758,6 +1817,10 @@ async fn switch(opts: SwitchOpts) -> Result<()> {
     let storage = &get_storage().await?;
     match storage.kind()? {
         BootedStorageKind::Ostree(booted_ostree) => {
+            if opts.uki_addon_opts.scoped.is_some() || opts.uki_addon_opts.global.is_some() {
+                anyhow::bail!("UKI Addon options are only supported for composefs backend");
+            }
+
             switch_ostree(opts, storage, &booted_ostree).await
         }
         BootedStorageKind::Composefs(booted_cfs) => {
@@ -2117,6 +2180,11 @@ async fn run_from_opt(opt: Opt) -> Result<CliExitStatus> {
             let storage = &get_storage().await?;
             match storage.kind()? {
                 BootedStorageKind::Ostree(booted_ostree) => {
+                    if opts.uki_addon_opts.scoped.is_some() || opts.uki_addon_opts.global.is_some()
+                    {
+                        anyhow::bail!("UKI Addon options are only supported for composefs backend");
+                    }
+
                     upgrade(opts, storage, &booted_ostree).await
                 }
                 BootedStorageKind::Composefs(booted_cfs) => {
@@ -2805,6 +2873,25 @@ async fn run_from_opt(opt: Opt) -> Result<CliExitStatus> {
                 }
                 BootedStorageKind::Composefs(booted_cfs) => {
                     delete_composefs_deployment(&depl_id, storage, &booted_cfs).await
+                }
+            }
+        }
+        Opt::UkiAddon(opts) => {
+            let storage = &get_storage().await?;
+            match storage.kind()? {
+                BootedStorageKind::Ostree(_) => {
+                    anyhow::bail!("UKI Addons are only supported for Composefs Backend")
+                }
+                BootedStorageKind::Composefs(booted_cfs) => {
+                    let status = get_composefs_status(storage, &booted_cfs).await?;
+
+                    if status.require_composefs_booted()?.boot_type != BootType::Uki {
+                        anyhow::bail!(
+                            "Cannot perform UKI Addon operations on systems not booted via UKI"
+                        );
+                    }
+
+                    handle_addon_cli_cmd(storage, &booted_cfs, &status, &opts)
                 }
             }
         }

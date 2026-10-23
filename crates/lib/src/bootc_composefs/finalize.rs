@@ -1,5 +1,6 @@
 use std::{path::Path, process::Command};
 
+use crate::bootc_composefs::boot::{GLOBAL_UKI_ADDONS_DIR, STAGED_GLOBAL_UKI_ADDONS_DIR};
 use crate::bootc_composefs::gc::{GCOpts, composefs_gc};
 use crate::bootc_composefs::rollback::{rename_exchange_bls_entries, rename_exchange_user_cfg};
 use crate::bootc_composefs::status::get_composefs_status;
@@ -16,7 +17,7 @@ use cap_std_ext::dirext::CapStdExtDirExt;
 use composefs::generic_tree::{FileSystem, Stat};
 use composefs_ctl::composefs;
 use etc_merge::{Diff, compute_diff, merge, traverse_etc};
-use rustix::fs::{Mode, OFlags, fsync};
+use rustix::fs::{Mode, OFlags, RenameFlags, fsync, renameat, renameat_with};
 
 use fn_error_context::context;
 
@@ -155,6 +156,40 @@ pub(crate) async fn composefs_backend_finalize(
     }
 
     let boot_dir = storage.require_boot_dir()?;
+
+    // Un-stage Global UKI Addons (if present) as the penultimate step
+    if boot_dir.exists(STAGED_GLOBAL_UKI_ADDONS_DIR) {
+        if boot_dir.exists(GLOBAL_UKI_ADDONS_DIR) {
+            tracing::debug!(
+                "Atomically exchanging {STAGED_GLOBAL_UKI_ADDONS_DIR} and {GLOBAL_UKI_ADDONS_DIR}"
+            );
+
+            renameat_with(
+                &boot_dir,
+                STAGED_GLOBAL_UKI_ADDONS_DIR,
+                &boot_dir,
+                GLOBAL_UKI_ADDONS_DIR,
+                RenameFlags::EXCHANGE,
+            )
+            .context("Atomically exchanging staged Global UKI Addons")?;
+
+            boot_dir
+                .remove_dir_all(STAGED_GLOBAL_UKI_ADDONS_DIR)
+                .context("Removing staged Global UKI Addons dir")?;
+        } else {
+            tracing::debug!(
+                "No global addons in the current deployment. Finalizing global UKI Addons"
+            );
+
+            renameat(
+                &boot_dir,
+                STAGED_GLOBAL_UKI_ADDONS_DIR,
+                &boot_dir,
+                GLOBAL_UKI_ADDONS_DIR,
+            )
+            .context("Finalizing global UKI Addons")?;
+        }
+    }
 
     match booted_composefs.bootloader.kind()? {
         BootloaderKind::GRUBClassic => match staged_composefs.boot_type {
