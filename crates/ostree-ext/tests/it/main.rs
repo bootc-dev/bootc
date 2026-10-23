@@ -58,6 +58,24 @@ fn assert_err_contains<T>(r: Result<T>, s: impl AsRef<str>) {
     }
 }
 
+/// Verify that a commit's root directory metadata matches `/usr`.
+fn assert_root_dirmeta_matches_usr(repo: &ostree::Repo, commit: &str) {
+    let root = repo.read_commit(commit, gio::Cancellable::NONE).unwrap().0;
+    let root = root.downcast::<ostree::RepoFile>().unwrap();
+    root.ensure_resolved().unwrap();
+
+    let usr = root.resolve_relative_path("usr");
+    let usr = usr.downcast::<ostree::RepoFile>().unwrap();
+    usr.ensure_resolved().unwrap();
+
+    let root_meta_checksum = root.tree_get_metadata_checksum().unwrap();
+    let usr_meta_checksum = usr.tree_get_metadata_checksum().unwrap();
+    assert_eq!(
+        root_meta_checksum, usr_meta_checksum,
+        "root dir metadata checksum should match /usr"
+    );
+}
+
 static TEST_REGISTRY: LazyLock<String> =
     LazyLock::new(|| match std::env::var_os("TEST_REGISTRY") {
         Some(t) => t.to_str().unwrap().to_owned(),
@@ -707,6 +725,7 @@ async fn test_export_as_container_nonderived() -> Result<()> {
     let reimported = fixture.must_import(&dest).await?;
     let reimport_ls = fixture::ostree_ls(fixture.destrepo(), &reimported.merge_commit).unwrap();
     similar_asserts::assert_eq!(initimport_ls, reimport_ls);
+    assert_root_dirmeta_matches_usr(fixture.destrepo(), &reimported.merge_commit);
     Ok(())
 }
 
@@ -1558,6 +1577,7 @@ async fn test_non_ostree() -> Result<()> {
         similar_asserts::assert_eq!(&src_manifest, &dest_manifest);
     }
     assert_eq!(imp.manifest_digest, src_digest);
+    assert_root_dirmeta_matches_usr(fixture.destrepo(), &imp.merge_commit);
     Ok(())
 }
 
