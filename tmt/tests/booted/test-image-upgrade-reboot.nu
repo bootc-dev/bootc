@@ -82,6 +82,15 @@ def initial_build [] {
         podman build -t $imgsrc .
     }
 
+    if (("/boot/loader/entries" | path exists)) {
+        ("
+            title Test
+            version 1
+            sort-key 9
+            efi /EFI/boot/test.efi
+        ") | save /boot/loader/entries/entry.conf
+    }
+
     # For composefs, save state so we can verify it's preserved after upgrade.
     if $is_composefs {
         "true" | save /var/was-composefs
@@ -93,6 +102,11 @@ def initial_build [] {
     # staged deployments.
     print $"Staging ($imgsrc)"
     bootc switch --transport containers-storage ($imgsrc)
+
+    if (("/boot/loader/entries" | path exists)) {
+        assert ("/boot/loader/entries.staged/entry.conf" | path exists) "custom BLS entry must exist"
+    }
+
     print "Re-running with --apply (spec unchanged, should still reboot)"
     tmt-reboot -c $"bootc switch --apply --transport containers-storage ($imgsrc)"
 }
@@ -139,6 +153,9 @@ def second_boot [] {
             print $"EFI files: ($efi_files)"
             assert (($efi_files | length) >= 2) $"expected at least 2 UKIs on ESP, found ($efi_files | length)"
         }
+    }
+    if (("/boot/loader/entries" | path exists)) {
+        assert ("/boot/loader/entries/entry.conf" | path exists) "custom BLS entry must exist"
     }
 
     tap ok
