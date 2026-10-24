@@ -251,3 +251,8 @@ check:
   - when: boot_type == aboot
     enabled: true
   test: python3 booted/test-aboot-update-rollback.py
+
+/test-63-install-shared-propagation:
+  summary: Install from a shared mount namespace without leaking the storage bind mount
+  duration: 30m
+  test: nu booted/test-install-shared-propagation.nu

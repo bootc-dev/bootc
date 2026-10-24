@@ -392,4 +392,12 @@ execute:
     enabled: true
   extra-try_bind_storage: true
   extra-skip_if_ostree: true
+
+/plan-63-install-shared-propagation:
+  summary: Install from a shared mount namespace without leaking the storage bind mount
+  discover:
+    how: fmf
+    test:
+      - /tmt/tests/tests/test-63-install-shared-propagation
+  extra-fixme_skip_if_composefs: true
 # END GENERATED PLANS
