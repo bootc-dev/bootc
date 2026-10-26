@@ -221,6 +221,15 @@ check:
   duration: 30m
   test: nu booted/test-composefs-uki-addons.nu
 
+/test-51-composefs-verity:
+  summary: Enforce composefs image and object integrity independently of repository metadata
+  duration: 5m
+  adjust:
+  - when: running_env != image_mode
+    enabled: false
+    because: only the image_mode test image installs bootc-tests
+  test: bootc-integration-tests booted composefs-verity
+
 /test-51-switch-from-delta:
   summary: Switch to a derived image using an OCI delta and verify after reboot
   duration: 30m

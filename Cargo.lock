@@ -289,6 +289,7 @@ dependencies = [
  "linux-kernel-cmdline",
  "rustix",
  "serde",
+ "tempfile",
  "toml",
  "tracing",
 ]
@@ -3499,9 +3500,11 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bcvk-qemu",
+ "bootc-initramfs-setup",
  "camino",
  "cap-std-ext",
  "clap",
+ "composefs-ctl",
  "data-encoding",
  "fn-error-context",
  "indicatif",

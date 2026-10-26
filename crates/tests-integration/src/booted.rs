@@ -13,11 +13,14 @@ use anyhow::{Context, Result};
 use clap::Subcommand;
 use xshell::{Shell, cmd};
 
+mod composefs_verity;
 mod switch_zstd_chunked;
 
 #[derive(Debug, Subcommand)]
 #[clap(rename_all = "kebab-case")]
 pub(crate) enum Opt {
+    /// Verify the initramfs mount path rejects composefs integrity failures
+    ComposefsVerity,
     /// Switch to an image with zstd:chunked compressed layers
     SwitchZstdChunked,
 }
@@ -25,6 +28,7 @@ pub(crate) enum Opt {
 pub(crate) fn run(opt: Opt) -> Result<()> {
     let sh = &Shell::new()?;
     match opt {
+        Opt::ComposefsVerity => composefs_verity::run(),
         Opt::SwitchZstdChunked => switch_zstd_chunked::run(sh),
     }
 }
