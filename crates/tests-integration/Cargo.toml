@@ -13,9 +13,11 @@ path = "src/tests-integration.rs"
 [dependencies]
 # Workspace dependencies
 anyhow = { workspace = true }
+bootc-initramfs-setup = { path = "../initramfs" }
 camino = { workspace = true }
 cap-std-ext = { workspace = true }
 clap = { workspace = true, features = ["derive","cargo"] }
+composefs-ctl.workspace = true
 fn-error-context = { workspace = true }
 indoc = { workspace = true }
 rustix = { workspace = true }
