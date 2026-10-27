@@ -4,6 +4,8 @@
 //! - We delete the bootloader entry but fail to delete image
 //! - We delete bootloader + image but fail to delete the state/unrefenced objects etc
 
+use std::collections::HashSet;
+
 use anyhow::{Context, Result};
 use cap_std_ext::{cap_std::fs::Dir, dirext::CapStdExtDirExt};
 use composefs::fsverity::FsVerityHashValue;
@@ -15,6 +17,8 @@ use composefs_ctl::composefs_oci;
 use ostree_ext::composefs::fsverity::Sha512HashValue;
 use ostree_ext::composefs_oci::linked_erofs_images;
 use rustix::fs::AtFlags;
+use rustix::fs::FlockOperation;
+use rustix::fs::flock;
 use rustix::fs::{statat, unlinkat};
 
 use crate::bootc_composefs::boot::GLOBAL_UKI_ADDONS_DIR;
@@ -313,6 +317,47 @@ fn orphaned_state_dirs<'a>(
             }
         })
         .collect()
+}
+
+fn get_boot_dump(booted_cfs: &BootedComposefs, verity: &str) -> Result<Option<Vec<u8>>> {
+    let verity_to_sha = Sha512HashValue::from_hex(verity);
+
+    let Ok(verity_to_sha) = verity_to_sha else {
+        // We do not want to block on GC if we find corrupted state
+        tracing::warn!("Bad FSVerity '{verity}' when checkign additional roots, skipping");
+        return Ok(None);
+    };
+
+    let linked_images = match linked_erofs_images(&booted_cfs.repo, &verity_to_sha) {
+        Ok(images) => images,
+        Err(err) => {
+            tracing::warn!(
+                "Unable to inspect linked EROFS images for orphan '{verity}', skipping boot-object cleanup: {err:#}"
+            );
+            return Ok(None);
+        }
+    };
+
+    // Get any image that is non-bootable
+    let Some(non_bootable_img) = linked_images.iter().find(|img| !img.bootable) else {
+        tracing::debug!("No non-bootable image found for {verity}");
+        return Ok(None);
+    };
+
+    let boot_dump = composefs_ctl::dump_files(
+        &booted_cfs.repo,
+        &non_bootable_img.id.to_hex(),
+        &vec![std::path::Path::new("/").join(crate::install::BOOT)],
+        false,
+    )
+    .context("Getting dump for /boot")?;
+
+    if boot_dump.is_empty() {
+        tracing::debug!("Nothing found in /boot in non-bootable image");
+        return Ok(None);
+    }
+
+    Ok(Some(boot_dump))
 }
 
 /// 1. List all bootloader entries
@@ -635,46 +680,42 @@ pub(crate) async fn composefs_gc(
 
     let (mut objects_bytes, mut objects_removed) = (0, 0);
 
+    let mut live_objects: HashSet<String> = HashSet::new();
+
+    for verity in &additional_roots {
+        let Some(boot_dump) = get_boot_dump(booted_cfs, verity)? else {
+            continue;
+        };
+
+        let boot_dump = std::str::from_utf8(&boot_dump).context("dumpfile is not UTF-8")?;
+
+        use composefs::dumpfile_parse::{Entry, Item};
+
+        for line in boot_dump.lines() {
+            let entry = Entry::parse(line).unwrap();
+
+            let Item::Regular { path, .. } = entry.item else {
+                continue;
+            };
+
+            live_objects.insert(
+                path.to_str()
+                    .ok_or_else(|| anyhow::anyhow!("Object path is not valid UTF-8"))?
+                    .to_string(),
+            );
+        }
+    }
+
+    flock(&booted_cfs.repo.repo_fd(), FlockOperation::LockExclusive)
+        .context("Acquiring exclusive lock for GC")?;
+
     // Now GC the UKI/UKI Addons from `.boot` EROFS if we have them.
     // Aboot artifacts may share repository objects and are left to repository GC.
     // These won't be GC'd by the above `repo.gc` as the EROFS have `/boot` masked.
     for verity in all_orphans.iter().copied().filter(|_| !is_aboot) {
-        let verity_to_sha = Sha512HashValue::from_hex(verity);
-
-        let Ok(verity_to_sha) = verity_to_sha else {
-            // We do not want to block on GC if we find corrupted state
-            tracing::warn!("Bad FSVerity '{verity}' when performing GC on orphan, skipping");
+        let Some(boot_dump) = get_boot_dump(booted_cfs, verity)? else {
             continue;
         };
-
-        let linked_images = match linked_erofs_images(&booted_cfs.repo, &verity_to_sha) {
-            Ok(images) => images,
-            Err(err) => {
-                tracing::warn!(
-                    "Unable to inspect linked EROFS images for orphan '{verity}', skipping boot-object cleanup: {err:#}"
-                );
-                continue;
-            }
-        };
-
-        // Get any image that is non-bootable
-        let Some(non_bootable_img) = linked_images.iter().find(|img| !img.bootable) else {
-            tracing::debug!("No non-bootable image found for {verity}");
-            continue;
-        };
-
-        let boot_dump = composefs_ctl::dump_files(
-            &booted_cfs.repo,
-            &non_bootable_img.id.to_hex(),
-            &vec![std::path::Path::new("/").join(crate::install::BOOT)],
-            false,
-        )
-        .context("Getting dump for /boot")?;
-
-        if boot_dump.is_empty() {
-            tracing::debug!("Nothing found in /boot in non-bootable image");
-            continue;
-        }
 
         let boot_dump = std::str::from_utf8(&boot_dump).context("dumpfile is not UTF-8")?;
 
@@ -691,6 +732,16 @@ pub(crate) async fn composefs_gc(
             let Item::Regular { path, .. } = entry.item else {
                 continue;
             };
+
+            let path_string = path
+                .to_str()
+                .ok_or_else(|| anyhow::anyhow!("Object path is not valid UTF-8"))?
+                .to_string();
+
+            if live_objects.contains(&path_string) {
+                tracing::debug!("{path:?} is still referenced. Skipping...");
+                continue;
+            }
 
             tracing::debug!(
                 "{}: objects/{path:?}",
@@ -723,6 +774,8 @@ pub(crate) async fn composefs_gc(
                 .with_context(|| format!("Unlinking (from bootc) object {path:?}"))?;
         }
     }
+
+    flock(booted_cfs.repo.repo_fd(), FlockOperation::Unlock).context("repository unlock failed")?;
 
     // Run garbage collection. Tags root the OCI metadata chain
     // (manifest → config → layers). The additional_roots protect EROFS

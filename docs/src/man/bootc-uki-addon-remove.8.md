@@ -20,6 +20,13 @@ When a deployment is staged (after `bootc upgrade` or `bootc switch`), removing 
 global addon operates on the staged copy at `loader/addons.staged`, not the live
 `loader/addons`. The staged copy is applied to `loader/addons` on the next boot.
 
+A global addon removed this way applies only to the deployment that is staged
+right now. The next `bootc upgrade`/`bootc switch` rebuilds `loader/addons.staged`
+from the live `loader/addons`, so a removal made only in the staged copy is undone
+and the addon returns. To remove a global addon persistently, run the command when
+no deployment is staged (so it modifies `loader/addons` directly), or re-run it
+after staging the new deployment.
+
 Removing the last global addon empties `loader/addons.staged`, so that directory
 is deleted. With no `loader/addons.staged` left, nothing is applied on the next
 boot and the live `loader/addons` is kept as-is, so the removed global addon
