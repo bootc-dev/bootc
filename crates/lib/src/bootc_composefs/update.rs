@@ -268,6 +268,15 @@ fn ensure_no_aboot_attempt(storage: &Storage) -> Result<()> {
     Ok(())
 }
 
+/// Drop a failed aboot candidate before constructing the next update's target and state.
+pub(crate) fn discard_failed_aboot_update(storage: &Storage, host: &Host) -> Result<bool> {
+    let booted = host.require_composefs_booted()?;
+    if booted.boot_type != BootType::Aboot {
+        return Ok(false);
+    }
+    aboot::AbootState::open(&storage.physical_root)?.discard_failed_attempt(&booted.verity)
+}
+
 /// This is just an intersection of SwitchOpts and UpgradeOpts
 pub(crate) struct DoUpgradeOpts<'a> {
     pub(crate) apply: bool,
@@ -565,11 +574,20 @@ pub(crate) async fn upgrade_composefs(
         "Starting composefs upgrade operation"
     );
 
-    let host = get_composefs_status(storage, composefs)
+    let mut host = get_composefs_status(storage, composefs)
         .await
         .context("Getting composefs deployment status")?;
 
-    let current_image = host.spec.image.as_ref();
+    // Preserve the selected source when discarding a failed staged switch.
+    let update_image = host.spec.image.clone();
+    if !opts.check
+        && !opts.download_opts.from_downloaded
+        && discard_failed_aboot_update(storage, &host)?
+    {
+        host = get_composefs_status(storage, composefs).await?;
+    }
+
+    let current_image = update_image.as_ref();
 
     // Handle --tag: derive target from current image + new tag
     let derived_image = if let Some(ref tag) = opts.tag {
