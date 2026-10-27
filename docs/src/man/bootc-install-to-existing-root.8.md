@@ -20,7 +20,8 @@ The opt-in `--preserve-var` option copies the running system's `/var` into the
 new deployment before rebooting. It requires the OSTree backend, uses reflinks
 when supported, and otherwise performs a full copy. Reflinks are created per
 file, not as an atomic snapshot; stop stateful services or use a consistent
-snapshot before copying live database data. The paths `tmp`, `cache`,
+snapshot before copying live database data. A completed copy is not guaranteed
+to survive sudden power loss or a kernel failure. The paths `tmp`, `cache`,
 `log/journal`, and `lib/containers` are always excluded. Repeat
 `--preserve-var-skip` to exclude additional paths relative to `/var`; each path
 may contain at most one slash, for example `lib/rpm`.

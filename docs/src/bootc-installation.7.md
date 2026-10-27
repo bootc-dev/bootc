@@ -297,7 +297,8 @@ previous installation.
 With the OSTree backend, `--preserve-var` copies the old `/var` into the new
 deployment before rebooting. It uses reflinks when supported and otherwise makes a
 full copy; neither strategy is a consistent snapshot of live data. Stop stateful
-services before copying their data. `/var/tmp`, `/var/cache`, `/var/log/journal`,
+services before copying their data. A completed copy is not guaranteed to survive
+sudden power loss or a kernel failure. `/var/tmp`, `/var/cache`, `/var/log/journal`,
 and `/var/lib/containers` are always excluded. Use repeatable
 `--preserve-var-skip PATH` options or the `preserve-var-skip` install configuration
 key for additional relative paths below `/var`.
