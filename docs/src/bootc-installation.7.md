@@ -470,9 +470,9 @@ If you're building tooling that uses `bootc install to-filesystem`, you should:
 
 ## systemd-repart
 
-When `systemd-repart` is available and repart.d definitions are present in the
-container image, `bootc install to-disk` uses systemd-repart instead of sfdisk
-to partition the target disk.
+With `--run-repart`, when `systemd-repart` is available and repart.d
+definitions are present in the container image, `bootc install to-disk` uses
+systemd-repart instead of sfdisk to partition the target disk.
 
 ### How definitions are discovered
 
