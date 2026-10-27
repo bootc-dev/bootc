@@ -27,7 +27,7 @@
 //!   `cp -a` copies each non-ephemeral subdirectory of `/var` into the new
 //!   deployment's stateroot `var/`.  This is correct but slow for large `/var`
 //!   trees, and **unsafe for live databases** (see the known-limitation comment
-//!   on `preserve_var_copy`).
+//!   on `preserve_var_copy_mounts`).
 //!
 //! Nested mountpoints are selected from one `/proc/self/mountinfo` snapshot
 //! before the copy. This is a point-in-time, best-effort snapshot, not a
@@ -35,12 +35,27 @@
 //! race with the copy, just like concurrent file changes.
 //! Each missing entry is copied to a unique sibling staging directory and
 //! published atomically without replacing an existing destination. A failed
-//! entry leaves no partial final entry and can be retried; this is not a global
-//! transaction, so entries completely published before a later failure remain.
+//! entry leaves no partial final entry and can be retried; there is no global
+//! rollback, so entries completely published before a later failure remain.
 //!
-//! Exclusions such as `tmp`, `log/journal`, `lib/containers`, or `lib/rpm`
-//! can be supplied through configuration or repeated `--preserve-var-skip`
-//! options.
+//! The built-in exclusions are `tmp`, `cache`, `log/journal`, and
+//! `lib/containers`. Additional exclusions can be supplied through
+//! configuration or repeated `--preserve-var-skip` options; `lib/rpm` is not
+//! excluded unless explicitly configured.
+//!
+//! Staging directories use names beginning `.bootc-preserve-var.` beneath the
+//! destination `/var`. They are cleaned up during normal success and error
+//! handling, but an abrupt termination can leave them behind. They are not
+//! automatically removed on a later run because a matching entry could be
+//! unrelated. Before manually removing one, ensure no migration is running and
+//! verify the individual entry is an artifact of an interrupted migration; do
+//! not blindly remove every similarly named entry.
+//!
+//! Staged rename publication is atomic for namespace visibility, but this code
+//! does not fsync copied files or directories. It therefore makes no guarantee
+//! that a published entry survives sudden power loss or kernel failure. This is
+//! per-entry publication, not a transaction: entries published before a later
+//! error remain.
 //!
 //! Rollback preservation is intentionally independent from `/var` migration.
 
@@ -217,7 +232,7 @@ fn preserve_var_reflink_mounts(
         mountpoints,
         true,
         false,
-        OsStr::new("cp"),
+        OsStr::new(GNU_CP),
     )
     .context("Reflink-copying /var into new deployment (Strategy C)")?;
     println!("  /var reflink copy complete.");
@@ -329,7 +344,7 @@ fn copy_var_filtered_inner(
                 "    Creating empty mountpoint placeholder for {}",
                 relative.display()
             );
-            create_staged_placeholder(src_dir, dst_dir, &name)?;
+            create_staged_placeholder(src_dir, dst_dir, &name, &relative)?;
             continue;
         }
 
@@ -362,6 +377,10 @@ fn copy_var_filtered_inner(
             } else if destination_entry_exists(dst_dir, &name)? {
                 // A destination of a different type is an existing entry, not
                 // permission to replace it with the source directory.
+                println!(
+                    "    Skipping destination collision at /var path {:?}",
+                    relative
+                );
                 continue;
             } else if has_nested_mount || has_nested_exclusion {
                 copy_filtered_directory_staged(
@@ -381,6 +400,10 @@ fn copy_var_filtered_inner(
         }
         if destination_entry_exists(dst_dir, &name)? {
             // Match cp --no-clobber without ever opening the existing object.
+            println!(
+                "    Skipping destination collision at /var path {:?}",
+                relative
+            );
             continue;
         }
         included_entries.push(name);
@@ -391,20 +414,22 @@ fn copy_var_filtered_inner(
             .iter()
             .map(|name| name.as_os_str())
             .collect::<Vec<_>>();
-        copy_batch_staged(
-            cp_program,
-            src_dir,
-            &names,
-            dst_dir,
-            reflink,
-            &format!("/var/{}", relative_dir.display()),
-        )?;
+        copy_batch_staged(cp_program, src_dir, &names, dst_dir, reflink, relative_dir)?;
     }
 
     Ok(())
 }
 
 static NEXT_STAGING_ID: AtomicU64 = AtomicU64::new(0);
+// Bound collision retries so a pathological destination cannot make staging
+// allocation loop forever. The process id plus monotonic id makes collisions
+// exceptional; one hundred attempts leave room for stale entries while still
+// failing promptly if the namespace is obstructed.
+const STAGING_NAME_ATTEMPTS: u32 = 100;
+
+// Do not resolve privileged copy commands through a caller-controlled PATH.
+// Lower-level helpers still accept an executable parameter for test injection.
+const GNU_CP: &str = "/usr/bin/cp";
 
 /// Make an empty, uniquely-named staging directory beneath the destination
 /// capability. Publishing from the same parent keeps the final rename atomic.
@@ -412,7 +437,7 @@ fn create_staging_dir(parent: &CapStdDir) -> Result<(std::ffi::OsString, CapStdD
     use rustix::fs::{Mode, mkdirat};
 
     let parent_fd = parent.as_filelike_view::<std::fs::File>();
-    for _ in 0..100 {
+    for _ in 0..STAGING_NAME_ATTEMPTS {
         let id = NEXT_STAGING_ID.fetch_add(1, Ordering::Relaxed);
         let name =
             std::ffi::OsString::from(format!(".bootc-preserve-var.{}.{}", std::process::id(), id));
@@ -436,8 +461,8 @@ fn create_staging_dir(parent: &CapStdDir) -> Result<(std::ffi::OsString, CapStdD
 }
 
 /// Ensure temporary staging entries are removed on both success and failure.
-/// Any entries already published remain complete; transactions are per entry,
-/// not a global rollback of earlier successful publications.
+/// Any entries already published remain complete; there is no global rollback
+/// of earlier successful publications.
 fn with_staging_dir<T>(
     parent: &CapStdDir,
     operation: impl FnOnce(&OsStr, &CapStdDir) -> Result<T>,
@@ -470,6 +495,7 @@ fn publish_staged_entry(
     staging: &CapStdDir,
     destination: &CapStdDir,
     name: &OsStr,
+    relative: &Path,
 ) -> Result<bool> {
     use rustix::fs::{RenameFlags, renameat_with};
 
@@ -479,11 +505,15 @@ fn publish_staged_entry(
         // staged directories into a same-type destination without replacing
         // existing children; other collisions remain untouched.
         Err(error) if error == rustix::io::Errno::EXIST => {
+            println!(
+                "    Destination collision at /var path {:?}; keeping existing entries",
+                relative
+            );
             if staging.symlink_metadata(name)?.is_dir() {
                 if let Some(destination_dir) = open_existing_child_dir(destination, name)? {
                     let staging_dir = open_child_dir_nofollow(staging, name)
                         .context("Opening staged directory after publish collision")?;
-                    merge_staged_directory(&staging_dir, &destination_dir)?;
+                    merge_staged_directory(&staging_dir, &destination_dir, relative)?;
                 }
             }
             Ok(false)
@@ -496,7 +526,11 @@ fn publish_staged_entry(
 /// replacing entries already present there. Keep the destination directory's
 /// metadata unchanged; moving children updates its timestamps, so restore its
 /// original metadata after the merge.
-fn merge_staged_directory(staging: &CapStdDir, destination: &CapStdDir) -> Result<()> {
+fn merge_staged_directory(
+    staging: &CapStdDir,
+    destination: &CapStdDir,
+    relative_dir: &Path,
+) -> Result<()> {
     let metadata = snapshot_directory_metadata(destination)?;
     let names = staging
         .read_dir(".")?
@@ -505,7 +539,7 @@ fn merge_staged_directory(staging: &CapStdDir, destination: &CapStdDir) -> Resul
 
     let merge_result = (|| {
         for name in names {
-            publish_staged_entry(staging, destination, &name)?;
+            publish_staged_entry(staging, destination, &name, &relative_dir.join(&name))?;
         }
         Ok(())
     })();
@@ -527,7 +561,7 @@ fn copy_batch_staged(
     names: &[&OsStr],
     destination: &CapStdDir,
     reflink: bool,
-    description: &str,
+    relative_dir: &Path,
 ) -> Result<()> {
     with_staging_dir(destination, |_, staging| {
         let options = if reflink {
@@ -545,10 +579,14 @@ fn copy_batch_staged(
             Stdio::inherit(),
             Stdio::inherit(),
         )?;
-        anyhow::ensure!(status.success(), "cp failed while copying {description}");
+        anyhow::ensure!(
+            status.success(),
+            "cp failed while copying /var/{}",
+            relative_dir.display()
+        );
 
         for name in names {
-            publish_staged_entry(staging, destination, name)?;
+            publish_staged_entry(staging, destination, name, &relative_dir.join(name))?;
         }
         Ok(())
     })
@@ -577,7 +615,7 @@ fn copy_filtered_directory_staged(
             true,
             cp_program,
         )?;
-        publish_staged_entry(staging, destination_parent, name)?;
+        publish_staged_entry(staging, destination_parent, name, relative)?;
         Ok(())
     })
 }
@@ -586,10 +624,11 @@ fn create_staged_placeholder(
     src_parent: &CapStdDir,
     dst_parent: &CapStdDir,
     name: &OsStr,
+    relative: &Path,
 ) -> Result<()> {
     with_staging_dir(dst_parent, |_, staging| {
         create_mountpoint_placeholder(src_parent, staging, name)?;
-        if !publish_staged_entry(staging, dst_parent, name)? {
+        if !publish_staged_entry(staging, dst_parent, name, relative)? {
             validate_empty_placeholder(dst_parent, name, src_parent.symlink_metadata(name)?)?;
         }
         Ok(())
@@ -880,34 +919,6 @@ fn preserve_metadata_timestamps<Fd: AsFd>(metadata: &Metadata, dst_fd: Fd) -> Re
     Ok(())
 }
 
-/// Strategy D: plain recursive copy of `/var` for filesystems without reflink support.
-///
-/// # Known limitation
-///
-/// This performs a full `cp -a` of every included subdirectory of the running
-/// `/var` into the new deployment's ostree stateroot `var/`.  For most workloads
-/// this is fine, but it is **unsafe for databases and other applications that
-/// keep open write handles into `/var`** (e.g. PostgreSQL in `/var/lib/pgsql`,
-/// MySQL/MariaDB in `/var/lib/mysql`, SQLite databases under `/var/lib/*`).
-/// Copying a live database with `cp -a` will almost certainly produce a
-/// corrupted copy.
-///
-/// The correct fix is to run this migration only after stopping all stateful
-/// services that write to `/var`, or — better — to migrate the filesystem to
-/// btrfs or XFS (which support reflinks, Strategy C) to avoid copying every
-/// file's data immediately. Reflinks clone files individually; they do not
-/// provide an atomic snapshot of the `/var` tree or of a live database.
-///
-/// Exclusions can be configured with install configuration or repeated
-/// `--preserve-var-skip` options. Paths are relative to `/var` and may be one
-/// component (such as `lib`) or exactly one child (such as `lib/pgsql`). `/var`
-/// itself and deeper paths are not accepted. Excluded state is not migrated by
-/// this command and must be handled separately. Exclusions do not make a live database copy
-/// consistent: any database state that is copied while it is being written can
-/// still be corrupted. Stop stateful services before copying their data, or use
-/// a consistent snapshot.
-///
-/// See: <https://github.com/bootc-dev/bootc/issues/2220>
 #[cfg(test)]
 #[context("Copying /var into new deployment (Strategy D)")]
 fn preserve_var_copy(
@@ -918,6 +929,23 @@ fn preserve_var_copy(
     preserve_var_copy_mounts(src_var, new_var, exclusions, &BTreeSet::new())
 }
 
+/// Strategy D: plain recursive copy of `/var` for filesystems without reflink support.
+///
+/// This performs `cp -a` for included state and is **unsafe for databases and
+/// other applications with open write handles into `/var`** (for example,
+/// PostgreSQL in `/var/lib/pgsql`, MySQL/MariaDB in `/var/lib/mysql`, or SQLite
+/// databases under `/var/lib/*`). A live database copy may be corrupted.
+/// Stop stateful services before copying, or use a consistent snapshot.
+/// Reflinks (Strategy C) also clone files individually and are not an atomic
+/// snapshot of `/var` or a live database.
+///
+/// Additional exclusions can be configured or supplied with repeated
+/// `--preserve-var-skip` options. Paths are relative to `/var`, with one
+/// component or exactly one child component allowed. Excluded state is not
+/// migrated and must be handled separately. Exclusions do not make a copied
+/// live database consistent.
+///
+/// See: <https://github.com/bootc-dev/bootc/issues/2220>
 fn preserve_var_copy_mounts(
     src_var: &CapStdDir,
     new_var: &CapStdDir,
@@ -932,7 +960,7 @@ fn preserve_var_copy_mounts(
         mountpoints,
         false,
         false,
-        OsStr::new("cp"),
+        OsStr::new(GNU_CP),
     )
     .context("Copying /var into new deployment (Strategy D)")?;
     println!("  /var copy complete.");
@@ -1102,7 +1130,6 @@ mod tests {
         Ok(())
     }
 
-    #[test]
     #[test]
     fn both_copy_strategies_leave_nested_mountpoints_empty() -> Result<()> {
         let temp = tempfile::tempdir()?;
@@ -1371,7 +1398,8 @@ mod tests {
             assert!(!publish_staged_entry(
                 staging,
                 &destination,
-                OsStr::new("tree")
+                OsStr::new("tree"),
+                Path::new("tree")
             )?);
             assert_eq!(
                 fs::read(destination_path.join("tree/existing"))?,
