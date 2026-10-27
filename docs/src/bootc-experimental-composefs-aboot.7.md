@@ -86,9 +86,19 @@ requires an unambiguous booted slot and calls `aboot-deploy` to flash the inacti
 On the next boot, bootc records the observed `androidboot.slot_suffix` kernel commandline
 option and reconciles the attempted deployment. The previous slot becomes the rollback
 deployment; `bootc rollback` queues it through `aboot-deploy --rollback`.  `bootc status`
-indicates when a rollback is queued. A failed boot is **not** automatically retried: bootc
-retains the attempted update for inspection and will not stage another update until that
-state is resolved.
+indicates when a rollback is queued.
+
+After a failed flash or firmware fallback, bootc retains the attempted update for
+inspection. Bootc does **not** automatically retry the flash, including on subsequent reboots.
+Starting with the first boot after the failed attempt, `bootc upgrade` or
+`bootc switch` discards that staged update before preparing a new one. This also
+allows explicitly retrying the same image. `bootc upgrade --check` leaves the failed
+attempt untouched. During the boot that recorded the attempt, replacing or discarding
+it is blocked because its boot outcome is not yet known.
+
+`bootc rollback` also discards the failed pending update when a valid rollback
+deployment is available. A failed flash may have overwritten the inactive slot,
+so discarding the attempt does not necessarily restore a rollback deployment.
 
 The firmware's slot-selection and success-marking behavior is outside bootc.  For example,
 the ukiboot enables `ukiboot-set-success.service` to mark a successful boot. Validate that
