@@ -2596,6 +2596,10 @@ pub(crate) async fn setup_composefs_boot(
         .context("Failed to mount composefs image")?;
     let image_root = Dir::reopen_dir(&composefs_mnt_fd)?;
 
+    if boot_type == BootType::Aboot {
+        super::aboot::require_aboot_deploy_in_image(&image_root)?;
+    }
+
     let postfetch = PostFetchState::new(state, &image_root, image_bootloader(entry))?;
 
     validate_bootloader(entry, postfetch.detected_bootloader)?;

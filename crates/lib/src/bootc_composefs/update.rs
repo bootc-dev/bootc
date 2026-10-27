@@ -386,6 +386,10 @@ pub(crate) async fn do_upgrade(
             .context("Failed to mount composefs image")?,
     )?;
 
+    if boot_type == BootType::Aboot {
+        aboot::require_aboot_deploy_in_image(&mounted_fs)?;
+    }
+
     // Check if three way etc merge is possible without conflicts
     let new_etc = mounted_fs
         .open_dir("etc")
