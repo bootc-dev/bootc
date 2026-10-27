@@ -677,6 +677,14 @@ pub(crate) struct InstallToExistingRootOpts {
     /// `/var/tmp`, `/var/cache`, `/var/log/journal`, and `/var/lib/containers`
     /// are always excluded. Repeat `--preserve-var-skip` to add paths relative
     /// to `/var`. Nested mountpoints are represented by empty directories.
+    ///
+    /// Do not combine this with `--replace=wipe`: wiping the target would erase
+    /// the source `/var` before it can be copied. An abrupt termination may
+    /// leave hidden `.bootc-preserve-var.*` staging directories in the new
+    /// `/var`; they are not automatically removed later. Verify an individual
+    /// entry is an abandoned migration artifact before manually removing it.
+    /// Staged publication is atomic for visibility, but is not guaranteed
+    /// durable across sudden power loss.
     #[clap(long)]
     pub(crate) preserve_var: bool,
 
@@ -2790,8 +2798,10 @@ pub(crate) async fn install_to_filesystem(
     opts: InstallToFilesystemOpts,
     targeting_host_root: bool,
     cleanup: Cleanup,
-    resolve_bound_images_early: bool,
+    require_ostree_backend: bool,
 ) -> Result<Option<camino::Utf8PathBuf>> {
+    validate_preserve_var_replace(require_ostree_backend, opts.filesystem_opts.replace)?;
+
     // Log the installation operation to systemd journal
     const INSTALL_FILESYSTEM_JOURNAL_ID: &str = "9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3";
     let source_image = opts
@@ -2906,17 +2916,13 @@ pub(crate) async fn install_to_filesystem(
     // The image can select the composefs backend during preparation, so check
     // compatibility after that choice is resolved but before target mutation.
     validate_migration_backend(
-        resolve_bound_images_early,
+        require_ostree_backend,
         state.composefs_options.composefs_backend,
     )?;
 
-    // Callers may opt in when stored bound images must be validated before
-    // target mutations. Other install flows retain their existing resolution
-    // timing by passing false.
-    let pre_resolved_bound_images = if targeting_host_root
-        && resolve_bound_images_early
-        && !state.composefs_options.composefs_backend
-    {
+    // Resolve stored bound images before replacement or boot-directory cleanup
+    // can mutate the existing root. Pull mode remains unresolved until deploy.
+    let pre_resolved_bound_images = if targeting_host_root && require_ostree_backend {
         Some(BoundImages::from_state(&state).await?)
     } else {
         None
@@ -2931,8 +2937,10 @@ pub(crate) async fn install_to_filesystem(
         Some(ReplaceMode::Wipe) => {
             let rootfs_fd = rootfs_fd.try_clone()?;
             println!("Wiping contents of root");
-            tokio::task::spawn_blocking(move || remove_all_in_dir_no_xdev(&rootfs_fd, true))
-                .await??;
+            tokio::task::spawn_blocking(move || {
+                wipe_install_target(&rootfs_fd, require_ostree_backend)
+            })
+            .await??;
         }
         Some(ReplaceMode::Alongside) => {
             clean_boot_directories(&target_rootfs_fd, &target_root_path, is_already_ostree)?
@@ -3103,6 +3111,20 @@ fn validate_migration_backend(require_ostree_backend: bool, composefs_backend: b
     Ok(())
 }
 
+fn validate_preserve_var_replace(preserve_var: bool, replace: Option<ReplaceMode>) -> Result<()> {
+    anyhow::ensure!(
+        !(preserve_var && matches!(replace, Some(ReplaceMode::Wipe))),
+        "--preserve-var cannot be used with --replace=wipe: wiping the target would erase the source /var before it can be copied"
+    );
+    Ok(())
+}
+
+fn wipe_install_target(rootfs: &Dir, preserve_var: bool) -> Result<()> {
+    validate_preserve_var_replace(preserve_var, Some(ReplaceMode::Wipe))?;
+    remove_all_in_dir_no_xdev(rootfs, true)?;
+    Ok(())
+}
+
 /// Resolve the physical sysroot when `root_path` points at an OSTree deployment.
 fn physical_sysroot_path(root_path: &std::path::Path) -> std::path::PathBuf {
     let possible_sysroot = root_path.join("sysroot");
@@ -3123,6 +3145,10 @@ fn write_destructive_cleanup_marker(root_path: &std::path::Path) -> Result<()> {
 }
 
 pub(crate) async fn install_to_existing_root(opts: InstallToExistingRootOpts) -> Result<()> {
+    // Reject this before configuration loading, mounting, preparation, or any
+    // target changes: a wipe would destroy the running source /var.
+    validate_preserve_var_replace(opts.preserve_var, opts.replace)?;
+
     // Log the existing root installation operation to systemd journal
     const INSTALL_EXISTING_ROOT_JOURNAL_ID: &str = "7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1";
     let source_image = opts
@@ -3811,6 +3837,21 @@ UUID=boot-uuid /boot ext4 defaults 0 0
                 "require_ostree_backend={require_ostree_backend}, composefs_backend={composefs_backend}"
             );
         }
+    }
+
+    #[test]
+    fn preserve_var_rejects_wipe_before_target_contents_can_be_removed() -> Result<()> {
+        let target = tempfile::tempdir()?;
+        let sentinel = target.path().join("var/state.db");
+        std::fs::create_dir_all(sentinel.parent().unwrap())?;
+        std::fs::write(&sentinel, b"must remain untouched")?;
+
+        let rootfs = Dir::open_ambient_dir(target.path(), cap_std::ambient_authority())?;
+        let error = wipe_install_target(&rootfs, true).unwrap_err();
+
+        assert!(error.to_string().contains("--preserve-var"));
+        assert_eq!(std::fs::read(&sentinel)?, b"must remain untouched");
+        Ok(())
     }
 
     #[tokio::test]
