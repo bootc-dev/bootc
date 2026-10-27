@@ -52,6 +52,15 @@ use super::{
 
 const SLOT_SUFFIX: &str = "androidboot.slot_suffix";
 
+/// Require update and rollback tooling in every installed or staged aboot image.
+pub(crate) fn require_aboot_deploy_in_image(root: &Dir) -> Result<()> {
+    ensure!(
+        crate::utils::have_executable_in_root(root, "aboot-deploy")?,
+        "Target image must contain aboot-deploy for aboot updates and rollbacks"
+    );
+    Ok(())
+}
+
 /// Logical A/B slot observed from the running kernel command line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Slot {
