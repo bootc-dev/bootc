@@ -29,6 +29,7 @@ def verify_boot(slot, version, *, staged=False):
     booted = st["booted"]
     assert booted["ostree"] is None, booted
     assert booted["composefs"]["bootType"] == "Aboot", booted
+    assert booted["composefs"]["bootloader"] == "ukiboot", booted
     assert run("findmnt", "--noheadings", "--output", "FSTYPE", "--target", "/sysroot") == "ext4"
     assert (st["staged"] is not None) == staged, st
     assert not st["rollbackQueued"], st

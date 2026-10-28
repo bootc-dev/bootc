@@ -44,6 +44,7 @@ use crate::composefs_consts::{
     ABOOT_ARTIFACT_DIR, ABOOT_ATTEMPTED_FNAME, ABOOT_IMAGE_FNAME, ABOOT_PENDING_FNAME,
     ABOOT_ROLLBACK_FNAME, ABOOT_STATE_DIR, ABOOT_VBMETA_FNAME, STATE_DIR_RELATIVE,
 };
+use crate::spec::Bootloader;
 
 use super::{
     boot::BootType,
@@ -52,6 +53,33 @@ use super::{
 };
 
 const SLOT_SUFFIX: &str = "androidboot.slot_suffix";
+const ABOOT_CONFIG: &str = "/etc/aboot.cfg";
+
+/// Determine the host bootloader from the running system's aboot configuration.
+pub(crate) fn get_bootloader() -> Result<Bootloader> {
+    let config = match std::fs::read_to_string(ABOOT_CONFIG) {
+        Ok(config) => config,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Bootloader::None),
+        Err(err) => return Err(err).with_context(|| format!("Reading {ABOOT_CONFIG}")),
+    };
+    Ok(bootloader_from_config(&config))
+}
+
+fn bootloader_from_config(config: &str) -> Bootloader {
+    // Match aboot_config_load(): trim keys and values, keep the last assignment,
+    // and treat quotes and inline comments literally rather than as shell syntax.
+    let boot_type = config
+        .lines()
+        .filter(|line| !line.starts_with('#'))
+        .filter_map(|line| line.split_once('='))
+        .filter(|(key, _)| key.trim_ascii() == "BOOT_TYPE")
+        .map(|(_, value)| value.trim_ascii())
+        .next_back();
+    match boot_type {
+        Some("ukiboot") => Bootloader::Ukiboot,
+        _ => Bootloader::None,
+    }
+}
 
 /// Require update and rollback tooling in every installed or staged aboot image.
 pub(crate) fn require_aboot_deploy_in_image(root: &Dir) -> Result<()> {
@@ -592,6 +620,34 @@ mod tests {
     use super::*;
     use crate::composefs_consts::STATE_DIR_RELATIVE;
     use cap_std_ext::{cap_std::ambient_authority, cap_tempfile::tempdir};
+
+    #[test]
+    fn bootloader_config() {
+        for (config, expected) in [
+            ("", Bootloader::None),
+            (
+                "PARTITION_A=/dev/disk/by-partlabel/boot_a\n",
+                Bootloader::None,
+            ),
+            ("BOOT_TYPE=aboot\n", Bootloader::None),
+            ("BOOT_TYPE=unknown\n", Bootloader::None),
+            ("BOOT_TYPE=\n", Bootloader::None),
+            ("BOOT_TYPE=ukiboot", Bootloader::Ukiboot),
+            (" \tBOOT_TYPE \t= \tukiboot \t\r\n", Bootloader::Ukiboot),
+            (
+                "#BOOT_TYPE=ukiboot\n #BOOT_TYPE=ukiboot\n",
+                Bootloader::None,
+            ),
+            ("BOOT_TYPE\nCMDLINE=a=b\n", Bootloader::None),
+            ("BOOT_TYPE=ukiboot\nBOOT_TYPE=aboot\n", Bootloader::None),
+            ("BOOT_TYPE=aboot\nBOOT_TYPE=ukiboot\n", Bootloader::Ukiboot),
+            ("BOOT_TYPE=\"ukiboot\"\n", Bootloader::None),
+            ("BOOT_TYPE='ukiboot'\n", Bootloader::None),
+            ("BOOT_TYPE=ukiboot # comment\n", Bootloader::None),
+        ] {
+            assert_eq!(bootloader_from_config(config), expected, "{config:?}");
+        }
+    }
 
     fn deployment(root: &Dir, digest: &str, boot_type: &str) -> Result<()> {
         let path = format!("{STATE_DIR_RELATIVE}/{digest}");

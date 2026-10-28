@@ -35,6 +35,7 @@ def main():
         assert staged["booted"] == initial["booted"], staged
         assert staged["staged"]["image"]["image"]["image"] == target, staged
         assert staged["staged"]["composefs"]["bootType"] == "Aboot", staged
+        assert staged["staged"]["composefs"]["bootloader"] == "ukiboot", staged
         assert staged["staged"]["composefs"]["verity"] != initial["booted"]["composefs"]["verity"], staged
         # Make aboot-deploy fail while reading its configuration, before flashing.
         original_config = ABOOT_CONFIG.read_bytes()
@@ -72,6 +73,7 @@ def main():
         assert updated["booted"]["composefs"]["verity"] != original["composefs"]["verity"], updated
         assert updated["rollback"]["image"] == original["image"], updated
         assert updated["rollback"]["composefs"]["verity"] == original["composefs"]["verity"], updated
+        assert updated["rollback"]["composefs"]["bootloader"] == "ukiboot", updated
         run("bootc", "rollback")
         assert status()["rollbackQueued"]
         subprocess.run(["tmt-reboot"], check=True)

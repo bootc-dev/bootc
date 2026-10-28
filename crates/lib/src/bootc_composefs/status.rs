@@ -953,7 +953,12 @@ fn read_staged_deployment() -> Result<Option<StagedDeployment>> {
         .map(Some)
 }
 
-fn aboot_entry(storage: &Storage, verity: &str, missing_verity_allowed: bool) -> Result<BootEntry> {
+fn aboot_entry(
+    storage: &Storage,
+    verity: &str,
+    missing_verity_allowed: bool,
+    bootloader: Bootloader,
+) -> Result<BootEntry> {
     let origin = read_origin(&storage.physical_root, verity)?
         .ok_or_else(|| anyhow::anyhow!("No origin file for aboot deployment {verity}"))?;
     let entry = boot_entry_from_composefs_deployment(
@@ -961,7 +966,7 @@ fn aboot_entry(storage: &Storage, verity: &str, missing_verity_allowed: bool) ->
         origin,
         verity,
         missing_verity_allowed,
-        Bootloader::None,
+        bootloader,
     )?;
     ensure!(
         entry.require_composefs()?.boot_type == BootType::Aboot,
@@ -970,13 +975,17 @@ fn aboot_entry(storage: &Storage, verity: &str, missing_verity_allowed: bool) ->
     Ok(entry)
 }
 
-fn composefs_aboot_status(storage: &Storage, cmdline: &ComposefsCmdline) -> Result<Host> {
+fn composefs_aboot_status(
+    storage: &Storage,
+    cmdline: &ComposefsCmdline,
+    bootloader: Bootloader,
+) -> Result<Host> {
     let state = aboot::AbootState::open(&storage.physical_root)?;
     let staged = match state.read_pending()? {
         Some(pending) => Some(pending.staged()),
         None => read_staged_deployment()?,
     };
-    composefs_aboot_status_from(storage, &state, cmdline, staged.as_ref())
+    composefs_aboot_status_from(storage, &state, cmdline, staged.as_ref(), bootloader)
 }
 
 fn composefs_aboot_status_from(
@@ -984,6 +993,7 @@ fn composefs_aboot_status_from(
     state: &aboot::AbootState<'_>,
     cmdline: &ComposefsCmdline,
     staged: Option<&StagedDeployment>,
+    bootloader: Bootloader,
 ) -> Result<Host> {
     let mut host = Host::new(HostSpec {
         image: None,
@@ -994,10 +1004,16 @@ fn composefs_aboot_status_from(
         storage,
         &cmdline.digest,
         cmdline.allow_missing_fsverity,
+        bootloader,
     )?);
 
     if let Some(staged) = staged.filter(|s| s.depl_id != *cmdline.digest) {
-        let mut entry = aboot_entry(storage, &staged.depl_id, cmdline.allow_missing_fsverity)?;
+        let mut entry = aboot_entry(
+            storage,
+            &staged.depl_id,
+            cmdline.allow_missing_fsverity,
+            bootloader,
+        )?;
         entry.download_only = staged.finalization_locked;
         host.status.staged = Some(entry);
     }
@@ -1012,7 +1028,7 @@ fn composefs_aboot_status_from(
             continue;
         }
         seen.push(verity.clone());
-        let entry = aboot_entry(storage, &verity, cmdline.allow_missing_fsverity)?;
+        let entry = aboot_entry(storage, &verity, cmdline.allow_missing_fsverity, bootloader)?;
         if host.status.rollback.is_none() {
             host.status.rollback = Some(entry);
         } else {
@@ -1052,7 +1068,7 @@ async fn composefs_deployment_status_from(
     let booted_composefs_digest = &cmdline.digest;
 
     if read_boot_type(&storage.physical_root, booted_composefs_digest)? == Some(BootType::Aboot) {
-        return composefs_aboot_status(storage, cmdline);
+        return composefs_aboot_status(storage, cmdline, aboot::get_bootloader()?);
     }
 
     let boot_dir = storage.require_boot_dir()?;
@@ -1294,6 +1310,37 @@ mod tests {
     }
 
     #[test]
+    fn aboot_status_uses_host_bootloader() -> Result<()> {
+        let root = cap_std_ext::cap_tempfile::tempdir(cap_std::ambient_authority())?;
+        root.create_dir("run")?;
+        let run = root.open_dir("run")?;
+        let storage = Storage::new_composefs_for_test(&root, &run)?;
+        let a = "aa".repeat(64);
+        let b = "bb".repeat(64);
+        let staged_id = "cc".repeat(64);
+        for digest in [&a, &b, &staged_id] {
+            write_aboot_origin(&root, digest)?;
+        }
+        let mut state = aboot::AbootState::open(&root)?;
+        state.record_booted(&Cmdline::from("androidboot.slot_suffix=_a"), &a)?;
+        state.record_booted(&Cmdline::from("androidboot.slot_suffix=_b"), &b)?;
+        let cmdline = ComposefsCmdline::new(&a);
+        let staged = StagedDeployment {
+            depl_id: staged_id,
+            finalization_locked: false,
+        };
+        for bootloader in [Bootloader::None, Bootloader::Ukiboot] {
+            let host =
+                composefs_aboot_status_from(&storage, &state, &cmdline, Some(&staged), bootloader)?;
+            assert_eq!(host.list_deployments().len(), 3);
+            for entry in host.list_deployments() {
+                assert_eq!(entry.require_composefs()?.bootloader, bootloader);
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
     fn aboot_status_from_slots() -> Result<()> {
         let root = cap_std_ext::cap_tempfile::tempdir(cap_std::ambient_authority())?;
         root.create_dir("run")?;
@@ -1310,7 +1357,8 @@ mod tests {
         aboot_state.record_booted(&Cmdline::from("androidboot.slot_suffix=_b"), &b)?;
 
         let cmdline = ComposefsCmdline::new(&a);
-        let host = composefs_aboot_status_from(&storage, &aboot_state, &cmdline, None)?;
+        let host =
+            composefs_aboot_status_from(&storage, &aboot_state, &cmdline, None, Bootloader::None)?;
         let booted = host.require_composefs_booted()?;
         assert_eq!(booted.verity, a);
         assert_eq!(booted.boot_type, BootType::Aboot);
@@ -1329,7 +1377,8 @@ mod tests {
         assert!(!host.status.rollback_queued);
 
         aboot_state.queue_rollback(&b)?;
-        let host = composefs_aboot_status_from(&storage, &aboot_state, &cmdline, None)?;
+        let host =
+            composefs_aboot_status_from(&storage, &aboot_state, &cmdline, None, Bootloader::None)?;
         assert!(host.status.rollback_queued);
         assert_eq!(host.spec.boot_order, BootOrder::Rollback);
         aboot_state.clear_rollback()?;
@@ -1338,7 +1387,13 @@ mod tests {
             depl_id: staged_id.clone(),
             finalization_locked: true,
         };
-        let host = composefs_aboot_status_from(&storage, &aboot_state, &cmdline, Some(&staged))?;
+        let host = composefs_aboot_status_from(
+            &storage,
+            &aboot_state,
+            &cmdline,
+            Some(&staged),
+            Bootloader::None,
+        )?;
         let staged_entry = host.status.staged.as_ref().unwrap();
         assert_eq!(staged_entry.require_composefs()?.verity, staged_id);
         assert!(staged_entry.download_only);
@@ -1356,7 +1411,13 @@ mod tests {
             depl_id: b.clone(),
             finalization_locked: false,
         };
-        let host = composefs_aboot_status_from(&storage, &aboot_state, &cmdline, Some(&staged))?;
+        let host = composefs_aboot_status_from(
+            &storage,
+            &aboot_state,
+            &cmdline,
+            Some(&staged),
+            Bootloader::None,
+        )?;
         assert_eq!(
             host.status
                 .staged
@@ -1369,13 +1430,14 @@ mod tests {
         assert!(host.status.rollback.is_none());
 
         root.atomic_write(format!("{ABOOT_STATE_DIR}/slots/b"), "invalid")?;
-        let host = composefs_aboot_status_from(&storage, &aboot_state, &cmdline, None)?;
+        let host =
+            composefs_aboot_status_from(&storage, &aboot_state, &cmdline, None, Bootloader::None)?;
         assert!(host.status.rollback.is_none());
         assert_eq!(host.list_deployments().len(), 1);
 
         let pending = aboot_state.stage_artifacts(&staged_id, true, b"boot", None)?;
         aboot_state.write_pending(&pending)?;
-        let host = composefs_aboot_status(&storage, &cmdline)?;
+        let host = composefs_aboot_status(&storage, &cmdline, Bootloader::None)?;
         assert!(host.status.staged.as_ref().unwrap().download_only);
         Ok(())
     }
