@@ -21,9 +21,8 @@ for config in $configs {
             let fstype = $mnt.filesystems.0.fstype
             assert equal $fstype "overlay" "/etc should be mounted as overlay when etc-transient is active"
 
-            print "# Checking / has 755 permissions (overlay upper dir must not block traversal)"
-            let perms = (stat -c "%a" / | str trim)
-            assert equal $perms "755" "/ should have 755 permissions"
+            # root permission checks done in 055-test-root-dirmeta
+            # (overlay upper dir must not block traversal)
 
             print "# Checking /etc is writable (transient overlay)"
             let result = (do { ^touch /etc/bootc-baseconfig-test } | complete)
@@ -36,9 +35,7 @@ for config in $configs {
             let fstype = $mnt.filesystems.0.fstype
             assert equal $fstype "overlay" "/ should be mounted as overlay when root-transient is active"
 
-            print "# Checking / has 755 permissions"
-            let perms = (stat -c "%a" / | str trim)
-            assert equal $perms "755" "/ should have 755 permissions"
+            # root permission checks done in 055-test-root-dirmeta
 
             print "# Checking / is writable (transient overlay)"
             let result = (do { ^touch /bootc-baseconfig-root-test } | complete)

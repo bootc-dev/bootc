@@ -60,6 +60,47 @@ fn assert_err_contains<T>(r: Result<T>, s: impl AsRef<str>) {
     }
 }
 
+/// Verify that a commit's root directory mode/uid/gid matches `/usr`.
+fn assert_root_dirmeta_matches_usr(repo: &ostree::Repo, commit: &str) {
+    let root = repo.read_commit(commit, gio::Cancellable::NONE).unwrap().0;
+    let root = root.downcast::<ostree::RepoFile>().unwrap();
+    root.ensure_resolved().unwrap();
+
+    let usr = root.resolve_relative_path("usr");
+    let usr = usr.downcast::<ostree::RepoFile>().unwrap();
+    usr.ensure_resolved().unwrap();
+
+    let queryflags = gio::FileQueryInfoFlags::NOFOLLOW_SYMLINKS;
+    let attrs = "unix::mode,unix::uid,unix::gid";
+    let root_info = root
+        .query_info(attrs, queryflags, gio::Cancellable::NONE)
+        .unwrap();
+    let usr_info = usr
+        .query_info(attrs, queryflags, gio::Cancellable::NONE)
+        .unwrap();
+
+    let root_mode = root_info.attribute_uint32("unix::mode");
+    let usr_mode = usr_info.attribute_uint32("unix::mode");
+    assert_eq!(
+        root_mode, usr_mode,
+        "root mode '{root_mode:#o}' should match /usr mode '{usr_mode:#o}'"
+    );
+
+    let root_uid = root_info.attribute_uint32("unix::uid");
+    let usr_uid = usr_info.attribute_uint32("unix::uid");
+    assert_eq!(
+        root_uid, usr_uid,
+        "root uid '{root_uid}' should match /usr uid '{usr_uid}'"
+    );
+
+    let root_gid = root_info.attribute_uint32("unix::gid");
+    let usr_gid = usr_info.attribute_uint32("unix::gid");
+    assert_eq!(
+        root_gid, usr_gid,
+        "root gid '{root_gid}' should match /usr gid '{usr_gid}'"
+    );
+}
+
 static TEST_REGISTRY: LazyLock<String> =
     LazyLock::new(|| match std::env::var_os("TEST_REGISTRY") {
         Some(t) => t.to_str().unwrap().to_owned(),
@@ -709,6 +750,7 @@ async fn test_export_as_container_nonderived() -> Result<()> {
     let reimported = fixture.must_import(&dest).await?;
     let reimport_ls = fixture::ostree_ls(fixture.destrepo(), &reimported.merge_commit).unwrap();
     similar_asserts::assert_eq!(initimport_ls, reimport_ls);
+    assert_root_dirmeta_matches_usr(fixture.destrepo(), &reimported.merge_commit);
     Ok(())
 }
 
@@ -1021,6 +1063,69 @@ async fn test_export_etc_remapping() -> Result<()> {
         "Did not expect /usr/etc/export-test.conf in exported image"
     );
 
+    Ok(())
+}
+
+/// Verify that a derived layer that changes `/usr` mode (e.g. `RUN chmod 0555 /usr`)
+/// is preserved through the merge commit.
+#[tokio::test]
+async fn test_derived_layer_usr_mode() -> Result<()> {
+    if !check_skopeo() {
+        return Ok(());
+    }
+    let fixture = Fixture::new_v1()?;
+    let src_imgref = fixture.export_container().await.unwrap().0;
+
+    // Build a derived image with a layer that changes /usr to mode 0555.
+    let derived_path = &fixture.path.join("derived-usr-mode.oci");
+    oci_clone(src_imgref.name.as_str(), derived_path)
+        .await
+        .unwrap();
+    ostree_ext::integrationtest::generate_derived_oci_from_tar(
+        derived_path,
+        |w| {
+            let mut layer_tar = tar::Builder::new(w);
+            let mut h = tar::Header::new_gnu();
+            h.set_uid(0);
+            h.set_gid(0);
+            h.set_size(0);
+            h.set_mode(0o555);
+            h.set_entry_type(tar::EntryType::Directory);
+            layer_tar.append_data(&mut h, "usr", &mut std::io::empty())?;
+            layer_tar.finish()?;
+            Ok(())
+        },
+        None,
+        None,
+    )?;
+
+    let derived_imgref = ImageReference {
+        transport: Transport::OciDir,
+        name: derived_path.to_string(),
+    };
+    let imp = fixture.must_import(&derived_imgref).await?;
+
+    // Verify /usr has mode 0555 in the merge commit.
+    let root = fixture
+        .destrepo()
+        .read_commit(&imp.merge_commit, gio::Cancellable::NONE)?
+        .0;
+    let usr = root.resolve_relative_path("usr");
+    let usr = usr.downcast::<ostree::RepoFile>().unwrap();
+    usr.ensure_resolved().unwrap();
+
+    let info = usr.query_info(
+        "unix::mode",
+        gio::FileQueryInfoFlags::NOFOLLOW_SYMLINKS,
+        gio::Cancellable::NONE,
+    )?;
+    let mode = info.attribute_uint32("unix::mode") & 0o7777; // mask to get only permissions bits
+    assert_eq!(
+        mode, 0o555,
+        "/usr mode should be 0555 after derived layer, got '{mode:#o}'"
+    );
+
+    assert_root_dirmeta_matches_usr(fixture.destrepo(), &imp.merge_commit);
     Ok(())
 }
 
@@ -1653,6 +1758,7 @@ async fn test_non_ostree() -> Result<()> {
         similar_asserts::assert_eq!(&src_manifest, &dest_manifest);
     }
     assert_eq!(imp.manifest_digest, src_digest);
+    assert_root_dirmeta_matches_usr(fixture.destrepo(), &imp.merge_commit);
     Ok(())
 }
 
