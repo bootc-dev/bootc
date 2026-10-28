@@ -11,6 +11,7 @@ use std::ffi::OsString;
 use std::fmt::Display;
 use std::fmt::Write as _;
 use std::io::Write;
+use std::num::NonZeroU64;
 use std::path::Path;
 use std::process::Command;
 use std::process::Stdio;
@@ -128,7 +129,8 @@ pub(crate) struct InstallBlockDeviceOpts {
 
     /// Size of the root partition (default specifier: M).  Allowed specifiers: M (mebibytes), G (gibibytes), T (tebibytes).
     ///
-    /// By default, all remaining space on the disk will be used.
+    /// By default, the root partition takes the remaining space, leaving room
+    /// for any other partitions the image's repart.d definitions describe.
     #[clap(long)]
     pub(crate) root_size: Option<String>,
 }
@@ -234,8 +236,6 @@ struct RepartPartition {
     partno: Option<u32>,
     #[serde(default)]
     raw_size: u64,
-    #[serde(default)]
-    raw_padding: u64,
     #[allow(dead_code)]
     fs: Option<String>,
     /// The file used to generate this partition
@@ -298,6 +298,14 @@ fn generated_root_definition_name() -> String {
     format!("50-root-{}.conf", uuid::Uuid::new_v4())
 }
 
+/// The name of the drop-in that pins a definition's partition to its planned
+/// size. Drop-ins apply in name order, so the name sorts after those images
+/// usually ship, such as `override.conf` or `10-size.conf`.
+const REPART_PLANNED_SIZE_DROPIN: &str = "zz-bootc-planned-size.conf";
+
+/// Bytes per MiB, the unit we pin the generated root partition's size in.
+const MIB: u64 = 1024 * 1024;
+
 /// Whether we must emulate `--include-partitions=` by pre-filtering the
 /// definitions ourselves
 fn need_filtered_definitions(generic_image: bool) -> Result<bool> {
@@ -348,6 +356,46 @@ fn collect_repart_definitions(
     }
 
     Ok(())
+}
+
+/// The size in MiB to pin the root partition we generate to, given a dry run of
+/// all definitions in which it has no size limits. systemd-repart gives it the
+/// space the other definitions leave, padding included, and shares that by
+/// Weight= with any of them that can grow, so the partitions created only on
+/// first boot still fit after it. Rounded down to whole MiB.
+fn planned_root_size_mib(planned: &[RepartPartition]) -> Result<NonZeroU64> {
+    let root = planned
+        .iter()
+        .find(|p| p.partition_type.starts_with("root-"))
+        .ok_or_else(|| anyhow::anyhow!("systemd-repart planned no root partition"))?;
+    NonZeroU64::new(root.raw_size / MIB).ok_or_else(|| {
+        anyhow::anyhow!("systemd-repart planned less than 1 MiB for the root partition")
+    })
+}
+
+/// The partitions other than root that a generic image's install creates (the
+/// ESP and BIOS boot), as the file name of their definition and the size in
+/// bytes systemd-repart planned for them with all definitions.
+///
+/// That install leaves the other partitions to first boot, so a definition
+/// among these that can grow would take the space planned for them, unless it
+/// is pinned to its planned size.
+fn planned_boot_partition_sizes(planned: &[RepartPartition]) -> Result<Vec<(String, u64)>> {
+    planned
+        .iter()
+        .filter(|p| repart_partition_is_required(p) && !p.partition_type.starts_with("root"))
+        .map(|p| {
+            let name = Utf8Path::new(&p.file)
+                .file_name()
+                .ok_or_else(|| anyhow::anyhow!("Invalid repart.d definition path {}", p.file))?;
+            Ok((name.to_owned(), p.raw_size))
+        })
+        .collect()
+}
+
+/// The repart.d drop-in that pins a partition to `size` bytes.
+fn planned_size_pin(size: u64) -> String {
+    format!("[Partition]\nSizeMinBytes={size}\nSizeMaxBytes={size}\n")
 }
 
 /// Write the repart.d definition or drop-in `name` into `dir`, creating parent
@@ -404,48 +452,48 @@ fn systemd_repart(
     }
 
     // Root partition is not defined, create definition for the root part
-    let mut root_conf = String::from("[Partition]\nType=root\n");
-
-    match root_size {
-        Some(size_mib) => {
-            writeln!(root_conf, "SizeMinBytes={size_mib}M")?;
-            writeln!(root_conf, "SizeMaxBytes={size_mib}M")?;
-        }
-        None => {
-            let mb = 1024 * 1024;
-            // Save 64 MB as partition headroom for GPT headers
-            let partition_headroom = 64 * mb;
-
-            // Installing to a disk, compute the root ptn size
-            // by taking all other partitions into account
-            //
-            // We're doing this to accommodate for partitions that are
-            // supposed to be crated on first boot, like home,var,swap etc
-            let space_taken = dry_partitions
-                .iter()
-                .fold(0u64, |acc, x| acc + x.raw_size + x.raw_padding);
-            let root_size_mib = (device.size - space_taken - partition_headroom) / mb;
-
-            tracing::debug!(
-                "space_taken: {} M, device.size: {} M, Root Size: {root_size_mib} M",
-                space_taken / mb,
-                device.size / mb
-            );
-
-            writeln!(root_conf, "SizeMinBytes={root_size_mib}M")?;
-            writeln!(root_conf, "SizeMaxBytes={root_size_mib}M")?;
-        }
+    let Some(fs) = rootfs else {
+        anyhow::bail!("Rootfs not specified");
     };
-
-    match rootfs {
-        Some(fs) => writeln!(root_conf, "Format={fs}")?,
-        None => {
-            anyhow::bail!("Rootfs not specified")
-        }
+    let mut root_conf = format!("[Partition]\nType=root\nFormat={fs}\n");
+    if let Some(size_mib) = root_size {
+        writeln!(root_conf, "SizeMinBytes={size_mib}M")?;
+        writeln!(root_conf, "SizeMaxBytes={size_mib}M")?;
     }
-
     // Not in /run/repart.d, which may be the host's
     let generated = tempfile::tempdir().context("Creating a directory for repart.d definitions")?;
+    let root_name = generated_root_definition_name();
+
+    // A generic image's install creates only root, the ESP and BIOS boot, and
+    // leaves the other partitions to first boot. Plan the layout with all
+    // definitions, and have this run create those three at their planned
+    // sizes, so that none of them grows into the space planned for the
+    // others. With --root-size there is no such plan: the other partitions
+    // may only fit once the disk has been grown. Without a generic image, the
+    // real run creates all the partitions, and sizes an unsized root by itself.
+    let boot_partition_sizes = if generic_image && root_size.is_none() {
+        write_repart_file(generated.path(), &root_name, &root_conf)?;
+        let planned = systemd_repart_run(
+            device,
+            false,
+            true,
+            RepartDefinitions::WithGenerated(generated.path()),
+        )
+        .context("Planning the root partition size")?;
+
+        let size_mib = planned_root_size_mib(&planned)?.get();
+        tracing::debug!(
+            "Root partition size: {size_mib} MiB of {} MiB",
+            device.size / MIB
+        );
+        writeln!(root_conf, "SizeMinBytes={size_mib}M")?;
+        writeln!(root_conf, "SizeMaxBytes={size_mib}M")?;
+
+        planned_boot_partition_sizes(&planned)?
+    } else {
+        Vec::new()
+    };
+
     let definitions = if need_filtered_definitions(generic_image)? {
         // The run then reads only this directory, so it needs the copies too
         collect_repart_definitions(
@@ -457,11 +505,12 @@ fn systemd_repart(
     } else {
         RepartDefinitions::WithGenerated(generated.path())
     };
-    write_repart_file(
-        generated.path(),
-        &generated_root_definition_name(),
-        &root_conf,
-    )?;
+    write_repart_file(generated.path(), &root_name, &root_conf)?;
+    // For this run only: on first boot the partitions exist already
+    for (name, size) in &boot_partition_sizes {
+        let dropin = format!("{name}.d/{REPART_PLANNED_SIZE_DROPIN}");
+        write_repart_file(generated.path(), &dropin, &planned_size_pin(*size))?;
+    }
 
     let partitions = systemd_repart_run(device, generic_image, false, definitions)?;
     let layout = parse_repart_layout(&partitions)?;
@@ -1451,6 +1500,78 @@ mod tests {
             assert!(aboot_repart_definitions(layout, None, None, &[]).is_err());
         }
         Ok(())
+    }
+
+    #[test]
+    fn test_planned_root_size_mib() {
+        // This module imports anyhow::Ok
+        use std::result::Result::Ok;
+        let cases = [
+            // A dry run on a 10 GiB disk of the definitions of
+            // tmt/tests/booted/test-install-repart.nu (ESP, home and swap,
+            // 1 GiB each) plus the generated root without size limits, which
+            // gets the rest minus the GPT and alignment overhead.
+            (
+                include_str!("../fixtures/repart-dry-run-v262.json"),
+                Ok(7166),
+            ),
+            // A dry run without root, where systemd 262 reports the unused
+            // space as padding of the last partition.
+            (
+                r#"[{"type": "swap", "file": "30-swap.conf", "raw_size": 1073741824, "raw_padding": 7515123712}]"#,
+                Err("planned no root partition"),
+            ),
+            (
+                r#"[{"type": "root-x86-64", "file": "50-root.conf", "raw_size": 1044480}]"#,
+                Err("less than 1 MiB"),
+            ),
+            (
+                r#"[{"type": "root-x86-64", "file": "50-root.conf"}]"#,
+                Err("less than 1 MiB"),
+            ),
+        ];
+        for (json, expected) in cases {
+            let planned: Vec<RepartPartition> = serde_json::from_str(json).unwrap();
+            match (planned_root_size_mib(&planned), expected) {
+                (Ok(size_mib), Ok(expected)) => assert_eq!(size_mib.get(), expected),
+                (Err(e), Err(expected)) => {
+                    assert!(format!("{e:#}").contains(expected), "{e:#}")
+                }
+                (result, expected) => panic!("{json}: got {result:?}, expected {expected:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn test_planned_boot_partition_sizes() {
+        let cases = [
+            // systemd 262 names the definitions with their full path; only the
+            // ESP is created by a generic install.
+            (
+                include_str!("../fixtures/repart-dry-run-v262.json"),
+                vec![("00-esp.conf", 1073741824)],
+            ),
+            // systemd 252 names them without a path, and BIOS boot by its GUID.
+            (
+                r#"[
+                    {"type": "21686148-6449-6e6f-744e-656564454649", "file": "00-bios.conf", "raw_size": 1048576},
+                    {"type": "esp", "file": "00-esp.conf", "raw_size": 536870912},
+                    {"type": "xbootldr", "file": "10-xbootldr.conf", "raw_size": 1073741824},
+                    {"type": "root-x86-64", "file": "50-root.conf", "raw_size": 7516192768}
+                ]"#,
+                vec![("00-bios.conf", 1048576), ("00-esp.conf", 536870912)],
+            ),
+            (r#"[]"#, vec![]),
+        ];
+        for (json, expected) in cases {
+            let planned: Vec<RepartPartition> = serde_json::from_str(json).unwrap();
+            let sizes = planned_boot_partition_sizes(&planned).unwrap();
+            let sizes = sizes
+                .iter()
+                .map(|(name, size)| (name.as_str(), *size))
+                .collect::<Vec<_>>();
+            assert_eq!(sizes, expected, "{json}");
+        }
     }
 
     #[test]
