@@ -422,6 +422,9 @@ if test "${boot_type}" = "uki"; then
   kver=$(ls /run/kernel)
   /run/packaging/finalize-uki /run/sealed-uki/out "$kver"
 fi
+# TODO: drop once https://src.fedoraproject.org/rpms/filesystem/pull-request/44 or equivalent
+# is widely available. For now, manually ensure that /usr has the correct permissions
+chmod 0555 /usr
 EORUN
 # And finally, test our linting
 # lint: allow non-tmpfs - we want to detect leaked files in /run and /tmp
