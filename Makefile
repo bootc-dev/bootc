@@ -56,6 +56,11 @@ CARGO_OPTIONS ?= --features "$(CARGO_FEATURES)"
 # image configuration rather than documentation.
 DISABLE_DOCS ?=
 
+# Set to 1 to install already-built binaries and man pages without invoking
+# cargo, e.g. from an RPM %install after the binaries were built in %build:
+#   make install SKIP_BUILD=1
+SKIP_BUILD ?=
+
 # Build all binaries
 .PHONY: bin
 # The man pages are built first so that the production binary below
@@ -73,7 +78,10 @@ manpages:
 	cargo run --release --package xtask -- manpages -- $(CARGO_OPTIONS)
 
 .PHONY: completion
+ifneq ($(SKIP_BUILD),1)
 completion: bin
+endif
+completion:
 	mkdir -p target/completion
 	for shell in bash elvish fish powershell zsh; do \
 		target/release/bootc completion $$shell > target/completion/bootc.$$shell; \

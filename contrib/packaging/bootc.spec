@@ -165,8 +165,10 @@ sed -i -e '/https:\/\//d' cargo-vendor.txt
 %endif
 
 %install
-# Pass CARGO_FEATURES explicitly to prevent auto-detection rebuild in install environment
-%make_install INSTALL="install -p -c" CARGO_FEATURES="%{?with_rhsm:rhsm} %{?with_rhel9:rhel9}"
+# Everything was built in %%build; SKIP_BUILD=1 keeps make from invoking cargo
+# again (which would also overwrite the %%cargo_build output in target/rpm via
+# the target/release symlink created by %%cargo_prep).
+%make_install INSTALL="install -p -c" SKIP_BUILD=1
 %if %{with ostree_ext}
 make install-ostree-hooks DESTDIR=%{?buildroot}
 %endif
