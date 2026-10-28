@@ -60,6 +60,40 @@ fn assert_err_contains<T>(r: Result<T>, s: impl AsRef<str>) {
     }
 }
 
+/// Verify that a commit's root directory mode/uid/gid matches `/usr`.
+///
+/// Returns the mode if successful.
+fn assert_root_dirmeta_matches_usr(repo: &ostree::Repo, commit: &str) -> u32 {
+    let root = repo.read_commit(commit, gio::Cancellable::NONE).unwrap().0;
+    let root = root.downcast::<ostree::RepoFile>().unwrap();
+    root.ensure_resolved().unwrap();
+
+    let usr = root.resolve_relative_path("usr");
+    let usr = usr.downcast::<ostree::RepoFile>().unwrap();
+    usr.ensure_resolved().unwrap();
+
+    let query = |f: &ostree::RepoFile| {
+        let info = f
+            .query_info(
+                "unix::mode,unix::uid,unix::gid",
+                gio::FileQueryInfoFlags::NOFOLLOW_SYMLINKS,
+                gio::Cancellable::NONE,
+            )
+            .unwrap();
+        (
+            info.attribute_uint32("unix::mode"),
+            info.attribute_uint32("unix::uid"),
+            info.attribute_uint32("unix::gid"),
+        )
+    };
+
+    let root_meta = query(&root);
+    let usr_meta = query(&usr);
+    assert_eq!(root_meta, usr_meta, "root dirmeta should match /usr");
+
+    root_meta.0 & 0o7777
+}
+
 static TEST_REGISTRY: LazyLock<String> =
     LazyLock::new(|| match std::env::var_os("TEST_REGISTRY") {
         Some(t) => t.to_str().unwrap().to_owned(),
@@ -709,6 +743,7 @@ async fn test_export_as_container_nonderived() -> Result<()> {
     let reimported = fixture.must_import(&dest).await?;
     let reimport_ls = fixture::ostree_ls(fixture.destrepo(), &reimported.merge_commit).unwrap();
     similar_asserts::assert_eq!(initimport_ls, reimport_ls);
+    assert_root_dirmeta_matches_usr(fixture.destrepo(), &reimported.merge_commit);
     Ok(())
 }
 
@@ -1653,6 +1688,13 @@ async fn test_non_ostree() -> Result<()> {
         similar_asserts::assert_eq!(&src_manifest, &dest_manifest);
     }
     assert_eq!(imp.manifest_digest, src_digest);
+
+    let root_mode = assert_root_dirmeta_matches_usr(fixture.destrepo(), &imp.merge_commit);
+    assert_eq!(
+        root_mode, 0o555,
+        "root mode ({root_mode:#o}) matches /usr but is not 0o555"
+    );
+
     Ok(())
 }
 

@@ -158,7 +158,8 @@ use oci_spec::image::{
 };
 use ocidir::oci_spec::distribution::Reference;
 use ostree::prelude::{Cast, FileEnumeratorExt, FileExt, ToVariant};
-use ostree::{gio, glib};
+use ostree::{DirMetaParsed, gio, glib};
+use rustix::fs::{Gid, Mode, OFlags, Uid};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Write as _;
 use std::iter::FromIterator;
@@ -640,6 +641,62 @@ fn cleanup_root(root: &Dir) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Apply directory mode and ownership from an ostree DirMeta to a filesystem
+/// directory.
+///
+/// We intentionally skip xattrs here since the SELinux relabelling pass in
+/// `write_dfd_to_mtree` overwrites `security.selinux` on every directory,
+/// and no other directory xattrs are meaningful in practice.
+fn apply_dirmeta(
+    dir: impl rustix::fd::AsFd,
+    metadata: &ostree::DirMetaParsed,
+    should_fchown: bool,
+) -> Result<()> {
+    if should_fchown {
+        rustix::fs::fchown(
+            &dir,
+            Some(Uid::from_raw(metadata.uid)),
+            Some(Gid::from_raw(metadata.gid)),
+        )
+        .context("fchown")?;
+    }
+    let mode = Mode::from_raw_mode(metadata.mode);
+    rustix::fs::fchmod(&dir, mode).context("fchmod")?;
+    Ok(())
+}
+
+/// Copy the `/usr` directory mode and ownership to the root, like composefs-rs's
+/// `copy_root_metadata_from_usr`. OCI images don't reliably include root dir
+/// metadata, so layer root metadata (including an explicit `.` entry) is
+/// intentionally overridden. Must run before the merged tree is committed, so
+/// the root still gets its own SELinux label (root_t).
+///
+/// More generally, the union checkout only applies the metadata of
+/// directories it creates, so a derived layer which only changes a
+/// directory's mode or ownership (e.g. `RUN chmod 0555 /usr`) is silently
+/// lost. This only covers the root, which is what deployed systems need.
+/// Handling that in general is deferred to the composefs-based commit
+/// synthesis (<https://github.com/bootc-dev/bootc/pull/2236>).
+///
+/// See:
+///   - <https://github.com/coreos/fedora-coreos-tracker/issues/2238>
+///   - <https://github.com/coreos/fedora-coreos-tracker/issues/2238#issuecomment-6082074286>
+fn normalize_root_dirmeta(root: &Dir, should_fchown: bool) -> Result<()> {
+    let usr = root.symlink_metadata("usr").context("looking up /usr")?;
+    anyhow::ensure!(usr.is_dir(), "image has no /usr directory");
+    // `root` may be an `O_PATH` fd, on which fchmod/fchown fail with EBADF.
+    let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC;
+    let rootfd = rustix::fs::openat(root, ".", flags, Mode::empty()).context("opening root")?;
+
+    let metadata = DirMetaParsed {
+        uid: usr.uid(),
+        gid: usr.gid(),
+        mode: usr.mode(),
+        xattrs: vec![],
+    };
+    apply_dirmeta(rootfd, &metadata, should_fchown).context("applying /usr metadata to root")
 }
 
 impl ImageImporter {
@@ -1430,6 +1487,12 @@ impl ImageImporter {
         }
 
         cleanup_root(&root_dir)?;
+
+        // Apply the layer uid/gid only for bare checkouts, where the
+        // checked-out files carry real ownership.
+        let should_fchown = checkout_mode == ostree::RepoCheckoutMode::None;
+        normalize_root_dirmeta(&root_dir, should_fchown)
+            .context("normalizing root dir metadata")?;
 
         let mt = ostree::MutableTree::new();
         repo.write_dfd_to_mtree(
