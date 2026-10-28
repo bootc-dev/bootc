@@ -137,8 +137,6 @@ cd %{name}-%{version}-build
 
 %build
 export SYSTEM_REINSTALL_BOOTC_INSTALL_PODMAN_PATH=%{system_reinstall_bootc_install_podman_path}
-# Build this first to avoid feature skew
-make manpages
 
 # Build all binaries
 %if 0%{?container_build}
@@ -154,6 +152,17 @@ cargo build -j%{_smp_build_ncpus} --release %{?with_rhsm:--features rhsm} %{?wit
 %else
     %cargo_build %{?with_rhsm:--features rhsm} %{?with_rhel9:--features rhel9} -- --bins
 %endif
+%endif
+
+# The generated CLI sections in the man page sources are kept in sync by CI,
+# so just convert them; this avoids building bootc a second time.
+# Outside of container builds, use the same cargo environment and profile as
+# %%cargo_build/%%cargo_test, so xtask doesn't invalidate their shared state
+# (target/release is a symlink to target/rpm, created by %%cargo_prep).
+%if 0%{?container_build}
+make manpages-no-sync
+%else
+make manpages-no-sync XTASK_PROFILE=rpm CARGO="%{__cargo}"
 %endif
 
 %if ! 0%{?container_build}

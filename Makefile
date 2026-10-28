@@ -61,6 +61,17 @@ DISABLE_DOCS ?=
 #   make install SKIP_BUILD=1
 SKIP_BUILD ?=
 
+# Cargo profile used to build xtask (e.g. for man pages). RPM builds set this
+# to `rpm` so xtask shares the %cargo_build profile instead of clobbering its
+# state through the target/release -> target/rpm symlink from %cargo_prep.
+XTASK_PROFILE ?= release
+
+# The cargo command used by the build targets. RPM builds set this to
+# %{__cargo} so the environment (e.g. RUSTC_BOOTSTRAP) matches the
+# %cargo_* macros; otherwise build scripts that depend on it re-run and
+# invalidate the shared build state.
+CARGO ?= cargo
+
 # Build all binaries
 .PHONY: bin
 # The man pages are built first so that the production binary below
@@ -69,13 +80,19 @@ ifneq ($(DISABLE_DOCS),1)
 bin: manpages
 endif
 bin:
-	cargo build --release $(CARGO_OPTIONS) --bins
+	$(CARGO) build --release $(CARGO_OPTIONS) --bins
 
 # The docgen feature this adds implies install-to-disk, so the man pages
 # document the full CLI regardless of CARGO_OPTIONS.
 .PHONY: manpages
 manpages:
-	cargo run --release --package xtask -- manpages -- $(CARGO_OPTIONS)
+	$(CARGO) run --profile $(XTASK_PROFILE) --package xtask -- manpages -- $(CARGO_OPTIONS)
+
+# Convert the man page markdown in docs/src/man without building bootc to
+# sync its generated CLI sections; CI ensures those are already up to date.
+.PHONY: manpages-no-sync
+manpages-no-sync:
+	$(CARGO) run --profile $(XTASK_PROFILE) --package xtask -- manpages --no-sync
 
 .PHONY: completion
 ifneq ($(SKIP_BUILD),1)
