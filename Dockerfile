@@ -108,6 +108,15 @@ RUN --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp <<EOF
     if [[ "${boot_type}" == "uki" ]]; then
         /target-rootfs/usr/bin/bootc container split-kernel-and-rootfs --rootfs /target-rootfs --output /kernel
     fi
+
+    # TODO: drop once https://src.fedoraproject.org/rpms/filesystem/pull-request/44 or equivalent
+    # is widely available. For now, manually ensure that /usr has the correct permissions.
+    # The COPY in the fetch stage below is the layer which creates /usr in the
+    # final image, so its mode here is applied at directory creation and
+    # survives the ostree union checkout, which only applies the metadata of
+    # directories it creates. This also runs before the UKI is sealed in the
+    # sealed-uki stage, so the embedded composefs digest matches this rootfs.
+    chmod 0555 /target-rootfs/usr
 EOF
 
 FROM scratch as fetch
