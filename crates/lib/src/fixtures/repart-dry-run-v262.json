@@ -1,0 +1,58 @@
+[
+	{
+		"type" : "esp",
+		"label" : "esp",
+		"uuid" : "4450fa5c-8a37-462f-a99f-9c0ce5ef4d45",
+		"partno" : 0,
+		"file" : "/usr/lib/repart.d/00-esp.conf",
+		"node" : "/work/fixtures/disk.img1",
+		"offset" : 1048576,
+		"old_size" : 0,
+		"raw_size" : 1073741824,
+		"old_padding" : 0,
+		"raw_padding" : 0,
+		"activity" : "create"
+	},
+	{
+		"type" : "home",
+		"label" : "home",
+		"uuid" : "ee91f8c0-f889-41c5-8a5a-882f39dd1540",
+		"partno" : 1,
+		"file" : "/usr/lib/repart.d/20-home.conf",
+		"node" : "/work/fixtures/disk.img2",
+		"offset" : 1074790400,
+		"old_size" : 0,
+		"raw_size" : 1073741824,
+		"old_padding" : 0,
+		"raw_padding" : 0,
+		"activity" : "create"
+	},
+	{
+		"type" : "swap",
+		"label" : "swap",
+		"uuid" : "4d65aeda-a93d-42b7-8950-80cf7648c5cb",
+		"partno" : 2,
+		"file" : "/usr/lib/repart.d/30-swap.conf",
+		"node" : "/work/fixtures/disk.img3",
+		"offset" : 2148532224,
+		"old_size" : 0,
+		"raw_size" : 1073741824,
+		"old_padding" : 0,
+		"raw_padding" : 0,
+		"activity" : "create"
+	},
+	{
+		"type" : "root-x86-64",
+		"label" : "root-x86-64",
+		"uuid" : "b109a783-eb87-46c5-9e97-e1e65114ca63",
+		"partno" : 3,
+		"file" : "/tmp/tmp.BUTWwTH38q/50-root.conf",
+		"node" : "/work/fixtures/disk.img4",
+		"offset" : 3222274048,
+		"old_size" : 0,
+		"raw_size" : 7515123712,
+		"old_padding" : 0,
+		"raw_padding" : 0,
+		"activity" : "create"
+	}
+]
