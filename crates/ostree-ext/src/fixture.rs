@@ -1013,6 +1013,33 @@ impl NonOstreeFixture {
 
         let bw = self.src_oci.create_gzip_layer(None)?;
         let mut bw = tar::Builder::new(bw);
+        // Emit explicit entries for every directory, like a real layer tar
+        // does. The tar import re-stamps the ancestors of any directory it
+        // has to synthesize to the default 0755, so the 0555 on /usr below
+        // would be lost when the files under it are imported.
+        let mut dirs = std::collections::BTreeSet::new();
+        for def in FileDef::iter_from(CONTENTS_V0) {
+            let def = def.unwrap();
+            let mut p: &Utf8Path = &def.path;
+            while let Some(parent) = p.parent() {
+                if !parent.as_str().is_empty() {
+                    dirs.insert(parent.to_owned());
+                }
+                p = parent;
+            }
+        }
+        for d in &dirs {
+            let mode = if d.as_str() == "usr" { 0o555 } else { 0o755 };
+            FileDef {
+                uid: 0,
+                gid: 0,
+                mode,
+                path: Cow::Owned(d.clone()),
+                xattrs: Default::default(),
+                ty: FileDefType::Directory,
+            }
+            .append_tar(&mut bw)?;
+        }
         for def in FileDef::iter_from(CONTENTS_V0) {
             let def = def.unwrap();
             def.append_tar(&mut bw)?;
