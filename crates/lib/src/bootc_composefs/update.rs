@@ -381,13 +381,16 @@ pub(crate) async fn do_upgrade(
 
     let entry = super::boot::primary_boot_entry(&entries)?;
     let boot_type = BootType::from(entry);
-    let booted_type = host.require_composefs_booted()?.boot_type;
+    let booted = host.require_composefs_booted()?;
+    let bootloader = booted.bootloader;
+    let booted_type = booted.boot_type;
     if boot_type == BootType::Aboot || booted_type == BootType::Aboot {
         anyhow::ensure!(
             boot_type == booted_type,
             "Cannot switch between aboot and non-aboot boot layouts"
         );
     }
+    super::boot::validate_bootloader(entry, bootloader)?;
 
     let mounted_fs = Dir::reopen_dir(
         &repo

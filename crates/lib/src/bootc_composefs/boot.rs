@@ -2217,7 +2217,7 @@ fn install_ukiboot(
     Ok(())
 }
 
-fn validate_bootloader(
+pub(crate) fn validate_bootloader(
     entry: &ComposefsBootEntry<Sha512HashValue>,
     bootloader: Bootloader,
 ) -> Result<()> {
