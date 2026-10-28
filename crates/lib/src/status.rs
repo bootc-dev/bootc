@@ -428,7 +428,21 @@ pub(crate) fn get_status(
         .map(|d| d.unlocked())
         .and_then(crate::spec::deployment_unlocked_state_to_usr_overlay);
 
-    let live_bound_images = crate::applylive::read_state_from_host()?;
+    // `deploy_serial` isn't recoverable from the quadlet markers alone
+    // (they only record the checksum), so fill it in here from whichever
+    // deployment the live-applied definitions came from.
+    let mut live_bound_images = crate::applylive::status_from_host()?;
+    if let Some(live) = live_bound_images.as_mut() {
+        let matching = deployments
+            .staged
+            .iter()
+            .chain(deployments.rollback.iter())
+            .chain(deployments.other.iter())
+            .find(|d| d.csum() == live.checksum);
+        if let Some(d) = matching {
+            live.deploy_serial = d.deployserial() as u32;
+        }
+    }
 
     let mut host = Host::new(spec);
     host.status = HostStatus {

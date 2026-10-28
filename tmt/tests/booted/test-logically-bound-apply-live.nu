@@ -32,7 +32,7 @@ const image_v2 = "registry.access.redhat.com/ubi9/ubi-minimal:9.3"
 const quadlet = "/usr/share/containers/systemd/lbi-sleeper.container"
 const run_quadlet = "/run/containers/systemd/lbi-sleeper.container"
 const unit = "lbi-sleeper.service"
-const state_file = "/run/bootc/apply-live/bound-images.json"
+const protected_images_list = "/run/bootc/apply-live/protected-images.list"
 
 def initial_setup [] {
     bootc image copy-to-storage
@@ -115,12 +115,11 @@ def second_boot [] {
     assert (open $run_quadlet | str contains $image_v2)
     assert equal (getfattr --only-values -n security.selinux $run_quadlet | split row ':' | get 2) container_var_run_t
     assert equal (running_image) $image_v1
-    let state = open $state_file
-    assert equal $state.checksum $staged_checksum
-    let entry = $state.images | where unit? == $unit | first
-    assert equal $entry.pending true
     let live = bootc status --json | from json | get status.liveBoundImages
     assert equal $live.checksum $staged_checksum
+    let entry = $live.images | where unit? == $unit | first
+    assert equal $entry.pending true
+    assert (open $protected_images_list | str contains $image_v2)
 
     # A plain re-run restarts the pending unit
     let out = bootc apply-live bound-images
@@ -128,8 +127,8 @@ def second_boot [] {
     assert ($out | str contains $"restart pending: ($unit)")
     systemctl is-active $unit
     assert equal (running_image) $image_v2
-    let state = open $state_file
-    let entry = $state.images | where unit? == $unit | first
+    let live = bootc status --json | from json | get status.liveBoundImages
+    let entry = $live.images | where unit? == $unit | first
     assert equal ($entry.pending? | default false) false
     let human = bootc status --format humanreadable
     print $human
@@ -173,7 +172,7 @@ def third_boot [] {
     # /run is fresh: no override, no state, and the deployment's own
     # definition (v2) is what runs.
     assert not ($run_quadlet | path exists)
-    assert not ($state_file | path exists)
+    assert not ($protected_images_list | path exists)
     assert equal $st.status.liveBoundImages? null
     assert (open $quadlet | str contains $image_v2)
     systemctl is-active $unit
