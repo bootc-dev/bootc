@@ -40,9 +40,9 @@ def first_boot [] {
     systemd-run -p MountFlags=slave -qdPG -- /bin/sh -c $"
         mount -orw,remount /sysroot
         cd ($entries_dir)
-        cp * new-entry.conf
-        
-        sed -i 's;($booted_verity);($missing_verity);' new-entry.conf
+        cp * bootc_new-entry.conf
+
+        sed -i 's;($booted_verity);($missing_verity);' bootc_new-entry.conf
     "
 
     # This should work but log a warning in journal

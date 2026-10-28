@@ -56,6 +56,9 @@ pub(crate) const BLS_ENTRY_FILE_PREFIX: &str = "bootc_";
 /// The prefix for names of UKI and UKI Addons
 pub(crate) const UKI_NAME_PREFIX: &str = TYPE1_BOOT_DIR_PREFIX;
 
+/// The prefix for BLS file entries
+pub(crate) const BLS_ENTRY_PREFIX: &str = "bootc_";
+
 /// Prefix for OCI tags owned by bootc in the composefs repository.
 ///
 /// Tags are created as `localhost/bootc-<manifest_digest>` to act as GC roots
