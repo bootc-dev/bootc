@@ -7,8 +7,6 @@ opt-level = 1 # No optimizations are too slow for us.
 
 [profile.release]
 lto = "thin"
-# We use FFI so this is safest
-panic = "abort"
 # We assume we're being delivered via e.g. RPM which supports split debuginfo
 debug = true
 
