@@ -360,6 +360,120 @@ fn get_boot_dump(booted_cfs: &BootedComposefs, verity: &str) -> Result<Option<Ve
     Ok(Some(boot_dump))
 }
 
+#[fn_error_context::context("GC UKI Artifacts")]
+fn gc_uki_artifacts(
+    booted_cfs: &BootedComposefs,
+    gc_opts: &GCOpts,
+    additional_roots: &Vec<&str>,
+    all_orphans: &Vec<&String>,
+) -> Result<GcResult> {
+    let mut live_objects: HashSet<String> = HashSet::new();
+    let mut result = GcResult {
+        objects_removed: 0,
+        objects_bytes: 0,
+        ..Default::default()
+    };
+
+    for verity in additional_roots {
+        let Some(boot_dump) = get_boot_dump(booted_cfs, verity)? else {
+            continue;
+        };
+
+        let boot_dump = std::str::from_utf8(&boot_dump).context("dumpfile is not UTF-8")?;
+
+        use composefs::dumpfile_parse::{Entry, Item};
+
+        for line in boot_dump.lines() {
+            let entry =
+                Entry::parse(line).with_context(|| format!("Parsing dumpfile line '{line}'"))?;
+
+            let Item::Regular { path, .. } = entry.item else {
+                continue;
+            };
+
+            live_objects.insert(
+                path.to_str()
+                    .ok_or_else(|| anyhow::anyhow!("Object path is not valid UTF-8"))?
+                    .to_string(),
+            );
+        }
+    }
+
+    flock(&booted_cfs.repo.repo_fd(), FlockOperation::LockExclusive)
+        .context("Acquiring exclusive lock for GC")?;
+
+    // Now GC the UKI/UKI Addons from `.boot` EROFS if we have them.
+    // Aboot artifacts may share repository objects and are left to repository GC.
+    // These won't be GC'd by the above `repo.gc` as the EROFS have `/boot` masked.
+    for verity in all_orphans {
+        let Some(boot_dump) = get_boot_dump(booted_cfs, verity)? else {
+            continue;
+        };
+
+        let boot_dump = std::str::from_utf8(&boot_dump).context("dumpfile is not UTF-8")?;
+
+        let objects_dir = booted_cfs
+            .repo
+            .objects_dir()
+            .context("Opening objects dir")?;
+
+        use composefs::dumpfile_parse::{Entry, Item};
+
+        for line in boot_dump.lines() {
+            let entry =
+                Entry::parse(line).with_context(|| format!("Parsing dumpfile line '{line}'"))?;
+
+            let Item::Regular { path, .. } = entry.item else {
+                continue;
+            };
+
+            let path_string = path
+                .to_str()
+                .ok_or_else(|| anyhow::anyhow!("Object path is not valid UTF-8"))?
+                .to_string();
+
+            if live_objects.contains(&path_string) {
+                tracing::debug!("{path:?} is still referenced. Skipping...");
+                continue;
+            }
+
+            tracing::debug!(
+                "{}: objects/{path:?}",
+                if gc_opts.dry_run {
+                    "would remove"
+                } else {
+                    "removing"
+                },
+            );
+
+            if gc_opts.dry_run {
+                continue;
+            }
+
+            // Get file size before removing
+            match statat(&objects_dir, path.as_ref(), AtFlags::empty()) {
+                Ok(stat) => {
+                    result.objects_bytes += stat.st_size as u64;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    tracing::debug!("Object {} not found... skipping", path.display());
+                    continue;
+                }
+                Err(e) => Err(e).with_context(|| format!("statat {} failed", path.display()))?,
+            }
+
+            result.objects_removed += 1;
+
+            unlinkat(&objects_dir, path.as_ref(), AtFlags::empty())
+                .with_context(|| format!("Unlinking (from bootc) object {path:?}"))?;
+        }
+    }
+
+    flock(booted_cfs.repo.repo_fd(), FlockOperation::Unlock).context("repository unlock failed")?;
+
+    Ok(result)
+}
+
 /// 1. List all bootloader entries
 /// 2. List all EROFS images
 /// 3. List all state directories
@@ -678,104 +792,12 @@ pub(crate) async fn composefs_gc(
         }
     }
 
-    let (mut objects_bytes, mut objects_removed) = (0, 0);
-
-    let mut live_objects: HashSet<String> = HashSet::new();
-
-    for verity in &additional_roots {
-        let Some(boot_dump) = get_boot_dump(booted_cfs, verity)? else {
-            continue;
-        };
-
-        let boot_dump = std::str::from_utf8(&boot_dump).context("dumpfile is not UTF-8")?;
-
-        use composefs::dumpfile_parse::{Entry, Item};
-
-        for line in boot_dump.lines() {
-            let entry = Entry::parse(line).unwrap();
-
-            let Item::Regular { path, .. } = entry.item else {
-                continue;
-            };
-
-            live_objects.insert(
-                path.to_str()
-                    .ok_or_else(|| anyhow::anyhow!("Object path is not valid UTF-8"))?
-                    .to_string(),
-            );
-        }
-    }
-
-    flock(&booted_cfs.repo.repo_fd(), FlockOperation::LockExclusive)
-        .context("Acquiring exclusive lock for GC")?;
-
-    // Now GC the UKI/UKI Addons from `.boot` EROFS if we have them.
-    // Aboot artifacts may share repository objects and are left to repository GC.
-    // These won't be GC'd by the above `repo.gc` as the EROFS have `/boot` masked.
-    for verity in all_orphans.iter().copied().filter(|_| !is_aboot) {
-        let Some(boot_dump) = get_boot_dump(booted_cfs, verity)? else {
-            continue;
-        };
-
-        let boot_dump = std::str::from_utf8(&boot_dump).context("dumpfile is not UTF-8")?;
-
-        let objects_dir = booted_cfs
-            .repo
-            .objects_dir()
-            .context("Opening objects dir")?;
-
-        use composefs::dumpfile_parse::{Entry, Item};
-
-        for line in boot_dump.lines() {
-            let entry = Entry::parse(line).unwrap();
-
-            let Item::Regular { path, .. } = entry.item else {
-                continue;
-            };
-
-            let path_string = path
-                .to_str()
-                .ok_or_else(|| anyhow::anyhow!("Object path is not valid UTF-8"))?
-                .to_string();
-
-            if live_objects.contains(&path_string) {
-                tracing::debug!("{path:?} is still referenced. Skipping...");
-                continue;
-            }
-
-            tracing::debug!(
-                "{}: objects/{path:?}",
-                if gc_opts.dry_run {
-                    "would remove"
-                } else {
-                    "removing"
-                },
-            );
-
-            if gc_opts.dry_run {
-                continue;
-            }
-
-            // Get file size before removing
-            match statat(&objects_dir, path.as_ref(), AtFlags::empty()) {
-                Ok(stat) => {
-                    objects_bytes += stat.st_size as u64;
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                    tracing::debug!("Object {} not found... skipping", path.display());
-                    continue;
-                }
-                Err(e) => Err(e).with_context(|| format!("statat {} failed", path.display()))?,
-            }
-
-            objects_removed += 1;
-
-            unlinkat(&objects_dir, path.as_ref(), AtFlags::empty())
-                .with_context(|| format!("Unlinking (from bootc) object {path:?}"))?;
-        }
-    }
-
-    flock(booted_cfs.repo.repo_fd(), FlockOperation::Unlock).context("repository unlock failed")?;
+    let uki_gc_result = if booted_cfs_status.boot_type == BootType::Uki {
+        let res = gc_uki_artifacts(booted_cfs, &gc_opts, &additional_roots, &all_orphans)?;
+        Some(res)
+    } else {
+        None
+    };
 
     // Run garbage collection. Tags root the OCI metadata chain
     // (manifest → config → layers). The additional_roots protect EROFS
@@ -792,8 +814,10 @@ pub(crate) async fn composefs_gc(
         booted_cfs.repo.gc(&additional_roots)?
     };
 
-    gc_result.objects_bytes += objects_bytes;
-    gc_result.objects_removed += objects_removed;
+    if let Some(uki_gc_result) = uki_gc_result {
+        gc_result.objects_bytes += uki_gc_result.objects_bytes;
+        gc_result.objects_removed += uki_gc_result.objects_removed;
+    }
 
     Ok(gc_result)
 }
