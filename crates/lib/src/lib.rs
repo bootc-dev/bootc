@@ -81,6 +81,7 @@ pub(crate) mod fsck;
 pub(crate) mod generator;
 mod glyph;
 mod image;
+mod image_mount;
 mod install;
 pub(crate) mod journal;
 mod k8sapitypes;
