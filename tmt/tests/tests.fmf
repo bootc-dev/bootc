@@ -276,3 +276,8 @@ check:
   summary: Install from a shared mount namespace without leaking the storage bind mount
   duration: 30m
   test: nu booted/test-install-shared-propagation.nu
+
+/test-64-image-mount:
+  summary: Verify booted and staged deployment image mounts
+  duration: 10m
+  test: nu booted/test-64-image-mount.nu

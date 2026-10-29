@@ -765,6 +765,10 @@ pub(crate) enum ImageOpts {
         /// The image to pull
         image: String,
     },
+    /// Mount content from the booted or staged deployment image read-only.
+    Mount(crate::image_mount::MountOpts),
+    /// Unmount the named non-root mount (non-recursive; bootc provenance is not checked).
+    Unmount(crate::image_mount::UnmountOpts),
     /// Wrapper for selected `podman image` subcommands in bootc storage.
     #[clap(subcommand)]
     Cmd(ImageCmdOpts),
@@ -2496,6 +2500,8 @@ async fn run_from_opt(opt: Opt) -> Result<CliExitStatus> {
                     .pull_from_host_storage(&image)
                     .await
             }
+            ImageOpts::Mount(opts) => crate::image_mount::mount(opts).await,
+            ImageOpts::Unmount(opts) => crate::image_mount::unmount(opts),
             ImageOpts::Cmd(opt) => {
                 let storage = get_storage().await?;
                 let imgstore = storage.get_ensure_imgstore()?;
