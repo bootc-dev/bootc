@@ -459,4 +459,11 @@ execute:
     enabled: false
     because: the derived images are built in the VM, which has no keys to sign their UKIs for Secure Boot
   extra-skip_if_ostree: true
+
+/plan-68-image-mount:
+  summary: Verify booted and staged deployment image mounts
+  discover:
+    how: fmf
+    test:
+      - /tmt/tests/tests/test-64-image-mount
 # END GENERATED PLANS

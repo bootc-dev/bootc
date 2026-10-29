@@ -301,3 +301,8 @@ check:
     enabled: false
     because: the derived images are built in the VM, which has no keys to sign their UKIs for Secure Boot
   test: nu booted/test-composefs-xbootldr.nu
+
+/test-68-image-mount:
+  summary: Verify booted and staged deployment image mounts
+  duration: 10m
+  test: nu booted/test-64-image-mount.nu
