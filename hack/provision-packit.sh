@@ -93,7 +93,7 @@ if [[ -n "${BOOTC_source_image_archive:-}" ]]; then
 fi
 
 # Keep these in sync with what's used in hack/lbi; ubi9/podman is pinned, see hack/lbi/podman.image
-podman pull -q --retry 5 --retry-delay 5s quay.io/curl/curl:latest quay.io/curl/curl-base:latest registry.access.redhat.com/ubi9/podman@sha256:2cfaa8360cb9416af369f0dc0474875cf476b6b846e5ce5027d58db9f0054a2a
+podman pull -q --retry 5 --retry-delay 5s quay.io/curl/curl:latest quay.io/curl/curl-base:latest registry.access.redhat.com/ubi9/podman:9.8-1793032728
 
 # Run system-reinstall-bootc
 # TODO make it more scriptable instead of expect + send

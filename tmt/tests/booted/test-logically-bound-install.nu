@@ -12,7 +12,7 @@ use tap.nu
 let expected_images = [
     "quay.io/curl/curl:latest",
     "quay.io/curl/curl-base:latest",
-    "registry.access.redhat.com/ubi9/podman@sha256:2cfaa8360cb9416af369f0dc0474875cf476b6b846e5ce5027d58db9f0054a2a" # this image is signed; 9.8-1793032728, see hack/lbi/podman.image
+    "registry.access.redhat.com/ubi9/podman:9.8-1793032728" # this image is signed; pinned, see hack/lbi/podman.image
 ]
 
 def validate_images [images: list<string>] {
@@ -24,17 +24,14 @@ def validate_images [images: list<string>] {
 
 # This test checks that bootc actually populated the bootc storage with the LBI images
 def test_logically_bound_images_in_storage [] {
+    # Use podman to list the images in the bootc storage
+    let images = podman --storage-opt=additionalimagestore=/usr/lib/bootc/storage images --format {{.Repository}}:{{.Tag}} | split row "\n"
+
     # Debug print
     print "IMAGES:"
     podman --storage-opt=additionalimagestore=/usr/lib/bootc/storage images
 
-    # Look up each reference rather than listing repository:tag, since
-    # some are pinned by digest.
-    for expected in $expected_images {
-        print $"Checking ($expected)"
-        let r = podman --storage-opt=additionalimagestore=/usr/lib/bootc/storage image exists $expected | complete
-        assert equal $r.exit_code 0 $"($expected) not found in bootc storage"
-    }
+    validate_images $images
 }
 
 # This test makes sure that bootc itself knows how to list the LBI images in the bootc storage

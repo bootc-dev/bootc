@@ -67,7 +67,7 @@ testimage_label := "bootc.testimage=1"
 # replaced it has no sigstore signature for the registry.access.redhat.com
 # :latest tag, so the default sigstoreSigned policy rejects pulling it by tag.
 # Keep in sync with hack/lbi.
-lbi_images := "quay.io/curl/curl:latest quay.io/curl/curl-base:latest registry.access.redhat.com/ubi9/podman@sha256:2cfaa8360cb9416af369f0dc0474875cf476b6b846e5ce5027d58db9f0054a2a"
+lbi_images := "quay.io/curl/curl:latest quay.io/curl/curl-base:latest registry.access.redhat.com/ubi9/podman:9.8-1793032728"
 fedora-coreos := "quay.io/fedora/fedora-coreos:testing-devel"
 generic_buildargs := ""
 _extra_src_args := if extra_src != "" { "-v " + extra_src + ":/run/extra-src:ro --security-opt=label=disable" } else { "" }
