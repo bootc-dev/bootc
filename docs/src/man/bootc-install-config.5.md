@@ -51,7 +51,10 @@ The `install` section supports these subfields:
    path) includes a default policy which requires signatures.
    When `true`, image pulls will be rejected if the policy file specifies
    `insecureAcceptAnything` as the default. Defaults to `false`.
-   This is equivalent to the `--enforce-container-sigpolicy` CLI flag.
+    This is equivalent to the `--enforce-container-sigpolicy` CLI flag.
+- `preserve-var-skip`: An array of relative paths below `/var` to exclude when
+    `bootc install to-existing-root --preserve-var` copies data. Each path may
+    contain at most one slash. The always-excluded paths cannot be re-included.
 
 # filesystem
 
