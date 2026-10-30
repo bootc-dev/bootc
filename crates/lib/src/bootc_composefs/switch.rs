@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use fn_error_context::context;
+use ostree_ext::oci_spec::image::Digest;
 
 use crate::{
     bootc_composefs::{
@@ -119,20 +120,34 @@ pub(crate) async fn switch_composefs(
 
     // With a delta the target is whatever the delta says it is, and we can look
     // it up locally; without one we have to ask the registry.
-    let (image, manifest) = match &delta {
+    let (image, manifest, manifest_digest) = match &delta {
         Some(delta) => {
             crate::delta::reject_unified_storage(delta, do_upgrade_opts.use_unified)?;
             ensure_delta_source_present(repo, delta)?;
             (
                 lookup_config_splitstream(repo, delta.target_manifest().config().digest())?,
                 delta.target_manifest().clone(),
+                delta.target_manifest_digest().to_string(),
             )
         }
         None => {
-            let (image, img_config, _) = is_image_pulled(repo, target_imgref).await?;
-            (image, img_config.manifest)
+            let (image, img_config, digest) = is_image_pulled(repo, target_imgref).await?;
+            (image, img_config.manifest, digest)
         }
     };
+
+    if final_target_imgref.is_some()
+        && switch_origin(
+            storage,
+            &host,
+            &source,
+            origin,
+            &manifest_digest.parse().context("Parsing manifest digest")?,
+            &do_upgrade_opts,
+        )?
+    {
+        return Ok(());
+    }
 
     if let Some(cfg_verity) = image {
         let action = validate_update(
@@ -177,4 +192,63 @@ pub(crate) async fn switch_composefs(
     .await?;
 
     Ok(())
+}
+
+/// Reuse only an identical OCI image, never just an identical composefs root.
+/// Different manifests can share a root while providing different initial /etc
+/// content; those still go through do_upgrade's collision check.
+fn switch_origin(
+    storage: &Storage,
+    host: &crate::spec::Host,
+    source: &crate::spec::ImageReference,
+    target: &crate::spec::ImageReference,
+    manifest_digest: &Digest,
+    opts: &DoUpgradeOpts<'_>,
+) -> Result<bool> {
+    let same_image = |entry: &&crate::spec::BootEntry| {
+        entry
+            .image
+            .as_ref()
+            .is_some_and(|image| image.image_digest == manifest_digest.as_ref())
+    };
+    let entry = host.status.staged.as_ref().filter(same_image);
+    let Some(entry) = entry else { return Ok(false) };
+    anyhow::ensure!(
+        opts.soft_reboot.is_none(),
+        "Origin-only changes require a full reboot"
+    );
+    anyhow::ensure!(
+        opts.uki_addon_opts.scoped.is_none() && opts.uki_addon_opts.global.is_none(),
+        "Cannot install UKI addons with an origin-only change"
+    );
+    anyhow::ensure!(
+        !host.status.rollback_queued,
+        "Cannot change origin while rollback is queued"
+    );
+    let locked = entry.download_only || opts.download_only;
+    anyhow::ensure!(
+        !opts.apply || !locked,
+        "Staged deployment is download-only; use bootc switch --from-downloaded --apply"
+    );
+    let deployment = &entry.require_composefs()?.verity;
+    super::service::start_finalize_stated_svc()?;
+    // This is a genuine staged deployment. Do not rewrite state also used
+    // by a rollback or pinned deployment.
+    anyhow::ensure!(
+        host.all_composefs_deployments()?.iter().all(|d| {
+            d.deployment.verity != *deployment
+                || (matches!(d.ty, Some(crate::status::Slot::Staged)) && !d.pinned)
+        }),
+        "Origin change would modify another deployment"
+    );
+    super::update::set_staged_lock(storage, entry, locked)?;
+    let old = super::state::read_origin(&storage.physical_root, deployment)?
+        .context("No staged origin")?;
+    let origin = super::state::with_image_references(old, Some(source), target)?;
+    super::state::write_origin(&storage.physical_root, deployment, &origin)?;
+    println!("Staged update origin: {target}");
+    if opts.apply {
+        crate::reboot::reboot()?;
+    }
+    Ok(true)
 }

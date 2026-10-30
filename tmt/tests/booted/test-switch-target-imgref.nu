@@ -48,7 +48,8 @@ insecure = true
     podman save --format oci-archive -o $archive $source
     podman stop $registry
 
-    # A new source must still be processed when the update origin is unchanged.
+    # Re-origin an identical staged image. Also exercises OSTree cache retention.
+    bootc switch --download-only --transport containers-storage localhost/target-imgref-source:v1
     bootc switch --download-only --transport containers-storage --target-imgref $origin localhost/target-imgref-source:v1
     let previous = (status).status.staged.image.imageDigest
     # A new source must still be processed when the update origin is unchanged.

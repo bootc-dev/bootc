@@ -561,9 +561,35 @@ pub(crate) async fn apply_upgrade_from_downloaded(
     }
 
     let staged_id = &staged.require_composefs()?.verity;
-    if host.require_composefs_booted()?.boot_type == BootType::Aboot {
+    set_staged_lock(storage, staged, false)?;
+
+    start_finalize_stated_svc()?;
+
+    return apply_upgrade(storage, composefs, staged_id, &do_upgrade_opts).await;
+}
+
+pub(crate) fn set_staged_lock(
+    storage: &Storage,
+    staged: &crate::spec::BootEntry,
+    locked: bool,
+) -> Result<()> {
+    let staged_cfs = staged.require_composefs()?;
+    if staged_cfs.boot_type == BootType::Aboot {
         let mut state = aboot::AbootState::open(&storage.physical_root)?;
-        let pending = state.unlock_pending(staged_id)?;
+        let pending = if locked {
+            let mut pending = state
+                .read_pending()?
+                .context("No pending aboot deployment")?;
+            anyhow::ensure!(
+                pending.depl_id == staged_cfs.verity,
+                "Pending aboot deployment changed"
+            );
+            pending.finalization_locked = true;
+            state.write_pending(&pending)?;
+            pending
+        } else {
+            state.unlock_pending(&staged_cfs.verity)?
+        };
         write_staged_deployment(&pending.staged())?;
     } else {
         let staged_depl_dir =
@@ -574,13 +600,14 @@ pub(crate) async fn apply_upgrade_from_downloaded(
             .context("Reading staged file")?;
         let mut new_staged: StagedDeployment =
             serde_json::from_str(&current).context("Deserializing staged file")?;
-        new_staged.finalization_locked = false;
+        anyhow::ensure!(
+            new_staged.depl_id == staged_cfs.verity,
+            "Staged deployment changed"
+        );
+        new_staged.finalization_locked = locked;
         write_staged_deployment(&new_staged)?;
     }
-
-    start_finalize_stated_svc()?;
-
-    return apply_upgrade(storage, composefs, staged_id, &do_upgrade_opts).await;
+    Ok(())
 }
 
 #[context("Upgrading composefs")]
