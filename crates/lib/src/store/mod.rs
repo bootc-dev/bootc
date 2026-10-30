@@ -129,6 +129,8 @@ use crate::podstorage::CStorage;
 use crate::spec::{BootloaderKind, ImageStatus};
 use crate::utils::{EfiError, deployment_fd, open_dir_remount_rw, read_uefi_var};
 
+pub(crate) mod reflink;
+
 /// See <https://github.com/containers/composefs-rs/issues/159>
 pub type ComposefsRepository = composefs::repository::Repository<Sha512HashValue>;
 

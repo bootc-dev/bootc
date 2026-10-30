@@ -16,9 +16,18 @@
 //! directory.  The old package-mode `/var` is stranded at `<root_path>/var`
 //! (inside the container, the host root is mounted at `root_path`).
 //!
-//! This uses `cp -a` to copy each non-ephemeral subdirectory of `/var` into the
-//! new deployment's stateroot `var/`. The copy is not a consistent snapshot of
-//! live data; stop stateful services before migrating their data.
+//! Two strategies are tried in order:
+//!
+//! - **Strategy C — reflink copy** (btrfs / XFS with reflinks): `cp --reflink=always`
+//!   clones files copy-on-write, avoiding an immediate second copy of their data.
+//!   Files are cloned individually, so this is not an atomic snapshot of the
+//!   `/var` tree or of a live database.
+//!
+//! - **Strategy D — plain copy** (ext4 and other non-reflink filesystems):
+//!   `cp -a` copies each non-ephemeral subdirectory of `/var` into the new
+//!   deployment's stateroot `var/`.  This is correct but slow for large `/var`
+//!   trees, and **unsafe for live databases** (see the known-limitation comment
+//!   on `preserve_var_copy`).
 //!
 //! Nested mountpoints are selected from one `/proc/self/mountinfo` snapshot
 //! before the copy. This is a point-in-time, best-effort snapshot, not a
@@ -50,6 +59,7 @@ use std::{
     },
 };
 
+use crate::store::reflink::supports_reflink;
 use anyhow::{Context, Result};
 use cap_std_ext::cap_std::ambient_authority;
 use cap_std_ext::cap_std::fs::{Dir as CapStdDir, Metadata, MetadataExt};
@@ -78,8 +88,14 @@ pub(crate) fn preserve_var(src_var: &Path, new_var: &Path, exclusions: &[String]
         .collect::<Vec<_>>();
     effective_exclusions.extend(exclusions.iter().cloned());
 
-    println!("  Copying /var into the new deployment");
-    preserve_var_copy_mounts(&src_var, &new_var, &effective_exclusions, &nested_mounts)?;
+    let copy_result = if supports_reflink(&src_var, &new_var)? {
+        println!("  Filesystem supports reflinks — using copy-on-write clone (Strategy C)");
+        preserve_var_reflink_mounts(&src_var, &new_var, &effective_exclusions, &nested_mounts)
+    } else {
+        println!("  Filesystem does not support reflinks — falling back to full copy (Strategy D)");
+        preserve_var_copy_mounts(&src_var, &new_var, &effective_exclusions, &nested_mounts)
+    };
+    copy_result?;
 
     Ok(())
 }
@@ -174,6 +190,40 @@ fn run_cp(
     Ok(status)
 }
 
+/// Strategy C: reflink-copy each top-level entry under `src_var` into `new_var`.
+///
+/// Skips well-known ephemeral subdirectories.
+#[cfg(test)]
+#[context("Reflink-copying /var into new deployment (Strategy C)")]
+fn preserve_var_reflink(
+    src_var: &CapStdDir,
+    new_var: &CapStdDir,
+    exclusions: &[String],
+) -> Result<()> {
+    preserve_var_reflink_mounts(src_var, new_var, exclusions, &BTreeSet::new())
+}
+
+fn preserve_var_reflink_mounts(
+    src_var: &CapStdDir,
+    new_var: &CapStdDir,
+    exclusions: &[String],
+    mountpoints: &BTreeSet<PathBuf>,
+) -> Result<()> {
+    copy_var_filtered(
+        src_var,
+        new_var,
+        Path::new(""),
+        exclusions,
+        mountpoints,
+        true,
+        false,
+        OsStr::new("cp"),
+    )
+    .context("Reflink-copying /var into new deployment (Strategy C)")?;
+    println!("  /var reflink copy complete.");
+    Ok(())
+}
+
 /// Copy a directory's ordinary children together with cp -a, recursing only
 /// into directories whose descendants contain a mountpoint or exclusion.
 /// Batching ordinary siblings in one cp invocation retains hardlinks between
@@ -187,6 +237,7 @@ fn copy_var_filtered(
     relative_dir: &Path,
     exclusions: &[String],
     mountpoints: &BTreeSet<PathBuf>,
+    reflink: bool,
     destination_created: bool,
     cp_program: &OsStr,
 ) -> Result<()> {
@@ -220,6 +271,7 @@ fn copy_var_filtered(
         relative_dir,
         exclusions,
         mountpoints,
+        reflink,
         cp_program,
     );
     let restore_result = match (source_metadata.as_ref(), destination_metadata.as_ref()) {
@@ -251,6 +303,7 @@ fn copy_var_filtered_inner(
     relative_dir: &Path,
     exclusions: &[String],
     mountpoints: &BTreeSet<PathBuf>,
+    reflink: bool,
     cp_program: &OsStr,
 ) -> Result<()> {
     let entries = src_dir
@@ -302,6 +355,7 @@ fn copy_var_filtered_inner(
                     &relative,
                     exclusions,
                     mountpoints,
+                    reflink,
                     false,
                     cp_program,
                 )?;
@@ -317,6 +371,7 @@ fn copy_var_filtered_inner(
                     &relative,
                     exclusions,
                     mountpoints,
+                    reflink,
                     cp_program,
                 )?;
             } else {
@@ -341,6 +396,7 @@ fn copy_var_filtered_inner(
             src_dir,
             &names,
             dst_dir,
+            reflink,
             &format!("/var/{}", relative_dir.display()),
         )?;
     }
@@ -470,10 +526,15 @@ fn copy_batch_staged(
     source: &CapStdDir,
     names: &[&OsStr],
     destination: &CapStdDir,
+    reflink: bool,
     description: &str,
 ) -> Result<()> {
     with_staging_dir(destination, |_, staging| {
-        let options = &["-a"][..];
+        let options = if reflink {
+            &["--reflink=always", "-a"][..]
+        } else {
+            &["-a"][..]
+        };
         let status = run_cp(
             cp_program,
             source,
@@ -500,6 +561,7 @@ fn copy_filtered_directory_staged(
     relative: &Path,
     exclusions: &[String],
     mountpoints: &BTreeSet<PathBuf>,
+    reflink: bool,
     cp_program: &OsStr,
 ) -> Result<()> {
     with_staging_dir(destination_parent, |_, staging| {
@@ -511,6 +573,7 @@ fn copy_filtered_directory_staged(
             relative,
             exclusions,
             mountpoints,
+            reflink,
             true,
             cp_program,
         )?;
@@ -817,7 +880,7 @@ fn preserve_metadata_timestamps<Fd: AsFd>(metadata: &Metadata, dst_fd: Fd) -> Re
     Ok(())
 }
 
-/// Plain recursive copy of `/var` into the new deployment.
+/// Strategy D: plain recursive copy of `/var` for filesystems without reflink support.
 ///
 /// # Known limitation
 ///
@@ -830,8 +893,10 @@ fn preserve_metadata_timestamps<Fd: AsFd>(metadata: &Metadata, dst_fd: Fd) -> Re
 /// corrupted copy.
 ///
 /// The correct fix is to run this migration only after stopping all stateful
-/// services that write to `/var`, or to use a consistent snapshot before
-/// copying their data.
+/// services that write to `/var`, or — better — to migrate the filesystem to
+/// btrfs or XFS (which support reflinks, Strategy C) to avoid copying every
+/// file's data immediately. Reflinks clone files individually; they do not
+/// provide an atomic snapshot of the `/var` tree or of a live database.
 ///
 /// Exclusions can be configured with install configuration or repeated
 /// `--preserve-var-skip` options. Paths are relative to `/var` and may be one
@@ -865,6 +930,7 @@ fn preserve_var_copy_mounts(
         Path::new(""),
         exclusions,
         mountpoints,
+        false,
         false,
         OsStr::new("cp"),
     )
@@ -1033,6 +1099,63 @@ mod tests {
         assert_eq!(restored.atime_nsec(), snapshot.metadata.atime_nsec());
         assert_eq!(restored.mtime(), snapshot.metadata.mtime());
         assert_eq!(restored.mtime_nsec(), snapshot.metadata.mtime_nsec());
+        Ok(())
+    }
+
+    #[test]
+    #[test]
+    fn both_copy_strategies_leave_nested_mountpoints_empty() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let src_path = temp.path().join("src");
+        let dst_path = temp.path().join("dst");
+        fs::create_dir_all(src_path.join("lib/bound"))?;
+        fs::create_dir_all(src_path.join("lib/sibling"))?;
+        fs::write(src_path.join("lib/file-bound"), b"do not migrate")?;
+        fs::write(
+            src_path.join("lib/bound/mounted-sentinel"),
+            b"do not migrate",
+        )?;
+        fs::write(src_path.join("lib/sibling/sentinel"), b"migrate")?;
+        fs::create_dir(&dst_path)?;
+        let mounts = BTreeSet::from([PathBuf::from("lib/bound"), PathBuf::from("lib/file-bound")]);
+        let src = cap_dir(&src_path);
+        let dst = cap_dir(&dst_path);
+
+        preserve_var_copy_mounts(&src, &dst, &[], &mounts)?;
+        assert!(dst_path.join("lib/bound").is_dir());
+        assert_eq!(fs::read_dir(dst_path.join("lib/bound"))?.count(), 0);
+        assert_eq!(fs::read(dst_path.join("lib/file-bound"))?, b"");
+        assert_eq!(fs::read(dst_path.join("lib/sibling/sentinel"))?, b"migrate");
+
+        let excluded_dst_path = temp.path().join("excluded-dst");
+        fs::create_dir(&excluded_dst_path)?;
+        preserve_var_copy_mounts(
+            &src,
+            &cap_dir(&excluded_dst_path),
+            &["lib/bound".into()],
+            &mounts,
+        )?;
+        assert!(!excluded_dst_path.join("lib/bound").exists());
+
+        let reflink_dst = temp.path().join("reflink-dst");
+        fs::create_dir(&reflink_dst)?;
+        let reflink_dst = cap_dir(&reflink_dst);
+        if supports_reflink(&src, &reflink_dst)? {
+            preserve_var_reflink_mounts(&src, &reflink_dst, &[], &mounts)?;
+            assert!(reflink_dst.symlink_metadata("lib/bound")?.is_dir());
+            assert_eq!(
+                fs::read_dir(temp.path().join("reflink-dst/lib/bound"))?.count(),
+                0
+            );
+            assert_eq!(
+                fs::read(temp.path().join("reflink-dst/lib/file-bound"))?,
+                b""
+            );
+            assert_eq!(
+                fs::read(temp.path().join("reflink-dst/lib/sibling/sentinel"))?,
+                b"migrate"
+            );
+        }
         Ok(())
     }
 
@@ -1270,6 +1393,185 @@ mod tests {
     }
 
     #[test]
+    fn unfiltered_directory_collisions_preserve_destination_metadata() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let src_path = temp.path().join("src");
+        fs::create_dir_all(src_path.join("state"))?;
+        fs::write(src_path.join("state/existing"), b"source")?;
+        fs::write(src_path.join("state/new"), b"new")?;
+        fs::write(src_path.join("collision-file"), b"source collision")?;
+        fs::create_dir(src_path.join("directory-vs-file"))?;
+        fs::write(src_path.join("directory-vs-file/new"), b"must not replace")?;
+        fs::set_permissions(src_path.join("state"), fs::Permissions::from_mode(0o751))?;
+        let source_mtime = SystemTime::UNIX_EPOCH + Duration::from_secs(1_600_000_201);
+        fs::File::open(src_path.join("state"))?
+            .set_times(fs::FileTimes::new().set_modified(source_mtime))?;
+
+        let src = cap_dir(&src_path);
+        for (strategy, reflink) in [("copy", false), ("reflink", true)] {
+            let dst_path = temp.path().join(format!("dst-{strategy}"));
+            fs::create_dir_all(dst_path.join("state"))?;
+            fs::write(dst_path.join("state/existing"), b"destination")?;
+            fs::write(dst_path.join("collision-file"), b"keep collision")?;
+            fs::write(dst_path.join("directory-vs-file"), b"keep file")?;
+            fs::set_permissions(dst_path.join("state"), fs::Permissions::from_mode(0o700))?;
+            let destination_mtime = SystemTime::UNIX_EPOCH + Duration::from_secs(1_600_000_202);
+            fs::File::open(dst_path.join("state"))?
+                .set_times(fs::FileTimes::new().set_modified(destination_mtime))?;
+            let dst = cap_dir(&dst_path);
+            if reflink && !supports_reflink(&src, &dst)? {
+                continue;
+            }
+
+            if reflink {
+                preserve_var_reflink(&src, &dst, &[])?;
+            } else {
+                preserve_var_copy(&src, &dst, &[])?;
+            }
+
+            let destination_metadata = fs::metadata(dst_path.join("state"))?;
+            assert_eq!(destination_metadata.mode() & 0o7777, 0o700);
+            assert_eq!(destination_metadata.modified()?, destination_mtime);
+            assert_eq!(fs::read(dst_path.join("state/existing"))?, b"destination");
+            assert_eq!(fs::read(dst_path.join("state/new"))?, b"new");
+            assert_eq!(
+                fs::read(dst_path.join("collision-file"))?,
+                b"keep collision"
+            );
+            assert_eq!(fs::read(dst_path.join("directory-vs-file"))?, b"keep file");
+            assert!(!dst_path.join("directory-vs-file/new").exists());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn failed_copy_batch_is_cleaned_and_can_be_retried() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let src_path = temp.path().join("src");
+        fs::create_dir(&src_path)?;
+        fs::write(src_path.join("first"), b"linked data")?;
+        fs::hard_link(src_path.join("first"), src_path.join("second"))?;
+        let src = cap_dir(&src_path);
+
+        let failing_cp = temp.path().join("cp-fails-after-copy");
+        fs::write(
+            &failing_cp,
+            b"#!/bin/sh\nreflink=no\nwhile [ \"$1\" != -- ]; do\n  [ \"$1\" = --reflink=always ] && reflink=yes\n  shift\ndone\nshift\nsource=$1\nshift\nwhile [ \"$#\" -gt 1 ]; do shift; done\ndestination=$1\nif [ \"$reflink\" = yes ]; then\n  /bin/cp --reflink=always -a -- \"$source\" \"$destination\"\nelse\n  /bin/cp -a -- \"$source\" \"$destination\"\nfi\nexit 1\n",
+        )?;
+        fs::set_permissions(&failing_cp, fs::Permissions::from_mode(0o755))?;
+
+        for (strategy, reflink) in [("copy", false), ("reflink", true)] {
+            let dst_path = temp.path().join(format!("dst-{strategy}"));
+            fs::create_dir(&dst_path)?;
+            let dst = cap_dir(&dst_path);
+            if reflink && !supports_reflink(&src, &dst)? {
+                continue;
+            }
+
+            let error = copy_var_filtered(
+                &src,
+                &dst,
+                Path::new(""),
+                &[],
+                &BTreeSet::new(),
+                reflink,
+                false,
+                failing_cp.as_os_str(),
+            );
+            assert!(error.is_err());
+            assert_eq!(fs::read_dir(&dst_path)?.count(), 0);
+
+            if reflink {
+                preserve_var_reflink(&src, &dst, &[])?;
+            } else {
+                preserve_var_copy(&src, &dst, &[])?;
+            }
+            let first = fs::metadata(dst_path.join("first"))?;
+            let second = fs::metadata(dst_path.join("second"))?;
+            assert_eq!(first.ino(), second.ino());
+            assert_eq!(fs::read(dst_path.join("first"))?, b"linked data");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn empty_mountpoint_placeholders_are_retry_safe_and_type_checked() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let src_path = temp.path().join("src");
+        fs::create_dir_all(src_path.join("directory-mount"))?;
+        fs::write(src_path.join("file-mount"), b"mounted data")?;
+        let src = cap_dir(&src_path);
+
+        for (strategy, reflink) in [("copy", false), ("reflink", true)] {
+            let dst_path = temp.path().join(format!("dst-{strategy}"));
+            fs::create_dir(&dst_path)?;
+            let dst = cap_dir(&dst_path);
+            if reflink && !supports_reflink(&src, &dst)? {
+                continue;
+            }
+
+            fs::create_dir(dst_path.join("directory-mount"))?;
+            fs::write(dst_path.join("file-mount"), b"")?;
+            let mounts = BTreeSet::from([
+                PathBuf::from("directory-mount"),
+                PathBuf::from("file-mount"),
+            ]);
+            if reflink {
+                preserve_var_reflink_mounts(&src, &dst, &[], &mounts)?;
+                preserve_var_reflink_mounts(&src, &dst, &[], &mounts)?;
+            } else {
+                preserve_var_copy_mounts(&src, &dst, &[], &mounts)?;
+                preserve_var_copy_mounts(&src, &dst, &[], &mounts)?;
+            }
+            assert_eq!(fs::read_dir(dst_path.join("directory-mount"))?.count(), 0);
+            assert_eq!(fs::metadata(dst_path.join("file-mount"))?.len(), 0);
+
+            fs::write(dst_path.join("directory-mount/sentinel"), b"keep")?;
+            let error = if reflink {
+                preserve_var_reflink_mounts(&src, &dst, &[], &mounts)
+            } else {
+                preserve_var_copy_mounts(&src, &dst, &[], &mounts)
+            };
+            assert!(error.is_err());
+            assert_eq!(
+                fs::read(dst_path.join("directory-mount/sentinel"))?,
+                b"keep"
+            );
+            fs::remove_file(dst_path.join("directory-mount/sentinel"))?;
+            fs::write(dst_path.join("file-mount"), b"keep file")?;
+            let error = if reflink {
+                preserve_var_reflink_mounts(&src, &dst, &[], &mounts)
+            } else {
+                preserve_var_copy_mounts(&src, &dst, &[], &mounts)
+            };
+            assert!(error.is_err());
+            assert_eq!(fs::read(dst_path.join("file-mount"))?, b"keep file");
+
+            let wrong_type = temp.path().join(format!("wrong-type-{strategy}"));
+            fs::create_dir(&wrong_type)?;
+            fs::write(wrong_type.join("directory-mount"), b"keep wrong type")?;
+            fs::create_dir(wrong_type.join("file-mount"))?;
+            fs::write(wrong_type.join("file-mount/sentinel"), b"keep wrong type")?;
+            let wrong_dst = cap_dir(&wrong_type);
+            let error = if reflink {
+                preserve_var_reflink_mounts(&src, &wrong_dst, &[], &mounts)
+            } else {
+                preserve_var_copy_mounts(&src, &wrong_dst, &[], &mounts)
+            };
+            assert!(error.is_err());
+            assert_eq!(
+                fs::read(wrong_type.join("directory-mount"))?,
+                b"keep wrong type"
+            );
+            assert_eq!(
+                fs::read(wrong_type.join("file-mount/sentinel"))?,
+                b"keep wrong type"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
     fn mountpoint_placeholders_fail_without_reusing_existing_destinations() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let src_path = temp.path().join("src");
@@ -1357,6 +1659,39 @@ mod tests {
         assert_eq!(
             fs::metadata(dst_path.join("log/keep/preserved"))?.ino(),
             fs::metadata(dst_path.join("log/keep/preserved-hardlink"))?.ino()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn reflink_strategy_skips_multiple_children_under_parent() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let src_path = temp.path().join("src");
+        let dst_path = temp.path().join("dst");
+        fs::create_dir_all(src_path.join("log/journal"))?;
+        fs::create_dir_all(src_path.join("log/private"))?;
+        fs::create_dir_all(src_path.join("log/keep"))?;
+        fs::write(src_path.join("log/journal/ignored"), b"journal")?;
+        fs::write(src_path.join("log/private/ignored"), b"private")?;
+        fs::write(src_path.join("log/keep/preserved"), b"keep")?;
+        fs::create_dir(&dst_path)?;
+        let src = cap_dir(&src_path);
+        let dst = cap_dir(&dst_path);
+        let supports_reflink = supports_reflink(&src, &dst)?;
+        if !supports_reflink {
+            fs::remove_file(src_path.join("log/keep/preserved"))?;
+            fs::remove_dir(src_path.join("log/keep"))?;
+        }
+
+        // Exercise Strategy C's exclusion routing on every filesystem and, if
+        // available, its reflink copy of a retained sibling.
+        preserve_var_reflink(&src, &dst, &["log/journal".into(), "log/private".into()])?;
+
+        assert!(!dst_path.join("log/journal").exists());
+        assert!(!dst_path.join("log/private").exists());
+        assert_eq!(
+            dst_path.join("log/keep/preserved").exists(),
+            supports_reflink
         );
         Ok(())
     }
