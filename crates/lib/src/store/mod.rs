@@ -496,6 +496,17 @@ fn get_boot_dir_for_grub(physical_root: &Dir) -> Result<(Dir, Utf8PathBuf)> {
 
 const LOADER_DEVICE_PART_UUID: &str = "LoaderDevicePartUUID-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f";
 
+/// Decide how to find the booted ESP: `Some(partuuid)` to match against the
+/// root disk's partitions, or `None` to search its ESPs when the variable is
+/// missing (older GRUB, e.g. c10s).
+fn booted_esp_partuuid(efi_var: Result<String, EfiError>) -> Result<Option<String>> {
+    match efi_var {
+        Ok(u) => Ok(Some(u)),
+        Err(EfiError::MissingVar) => Ok(None),
+        Err(e) => anyhow::bail!("Reading {LOADER_DEVICE_PART_UUID}: {e:?}"),
+    }
+}
+
 /// Find the ESP from which the system was booted
 ///
 /// This is a better way to find the correct ESP than just searching
@@ -506,12 +517,12 @@ pub(crate) fn find_booted_from_esp(physical_root: &Dir) -> Result<String> {
     let root_dev = bootc_blockdev::list_dev_by_dir(&physical_root)?;
     let all_roots = root_dev.find_all_roots()?;
 
-    let device_uuid = match read_uefi_var(LOADER_DEVICE_PART_UUID) {
-        Ok(u) => u,
+    let device_uuid = match booted_esp_partuuid(read_uefi_var(LOADER_DEVICE_PART_UUID))? {
+        Some(u) => u,
         // Older version of Grub (in c10s) do not include this efivar
         // We can't rely on ESP being mounted on /boot, /boot/efi as older Grub
         // doesn't fully support BLS spec
-        Err(EfiError::MissingVar) => {
+        None => {
             tracing::debug!("Missing {LOADER_DEVICE_PART_UUID}, searching through all ESPs...");
 
             let all_esps = root_dev
@@ -553,9 +564,6 @@ pub(crate) fn find_booted_from_esp(physical_root: &Dir) -> Result<String> {
             }
 
             anyhow::bail!("Failed to find bootc owned ESP");
-        }
-        Err(e) => {
-            anyhow::bail!("Reading {LOADER_DEVICE_PART_UUID}: {e:?}")
         }
     };
 
@@ -1045,6 +1053,32 @@ impl Storage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_booted_esp_partuuid() {
+        // Expected: Ok(Some(partuuid)), Ok(None) to search the ESPs, or Err.
+        let cases: Vec<(Result<String, EfiError>, Result<Option<&str>, ()>)> = vec![
+            (Ok("1234-ABCD".into()), Ok(Some("1234-ABCD"))),
+            // Older GRUB does not set the variable: search.
+            (Err(EfiError::MissingVar), Ok(None)),
+            (Err(EfiError::SystemNotUEFI), Err(())),
+            (Err(EfiError::InvalidData("bad")), Err(())),
+            (Err(EfiError::Io(std::io::Error::other("io"))), Err(())),
+        ];
+        for (input, expected) in cases {
+            let desc = format!("{input:?}");
+            match booted_esp_partuuid(input) {
+                Ok(got) => assert_eq!(Ok(got.as_deref()), expected, "{desc}"),
+                Err(e) => {
+                    assert_eq!(expected, Err(()), "{desc}: unexpected error {e}");
+                    assert!(
+                        e.to_string().contains(LOADER_DEVICE_PART_UUID),
+                        "{desc}: {e}"
+                    );
+                }
+            }
+        }
+    }
 
     /// The raw mode returned by metadata includes file type bits (S_IFDIR,
     /// etc.) in addition to permission bits. This constant masks to only
