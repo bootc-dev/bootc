@@ -225,7 +225,12 @@ pub(crate) async fn composefs_rollback(
         "Starting composefs rollback operation"
     );
 
-    let host = get_composefs_status(storage, booted_cfs).await?;
+    let mut host = get_composefs_status(storage, booted_cfs).await?;
+    if super::origin::OriginChange::read_active(&storage.physical_root, &host)?.is_some() {
+        // The projected metadata change has no staged bootloader entries or
+        // /run marker for the ordinary rollback cleanup to remove.
+        host.status.staged = None;
+    }
 
     let new_spec = {
         let mut new_spec = host.spec.clone();
@@ -300,6 +305,8 @@ pub(crate) async fn composefs_rollback(
             }
         }
     }
+
+    super::origin::cancel(&storage.physical_root)?;
 
     if reverting {
         println!("Next boot: current deployment");

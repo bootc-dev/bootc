@@ -70,16 +70,30 @@ pub(crate) async fn switch_composefs(
     let current_origin =
         super::state::read_origin(&storage.physical_root, &current.require_composefs()?.verity)?
             .context("No origin for current deployment")?;
-    let previous_source = current_origin.get::<String>(
-        crate::deploy::ORIGIN_BOOTC,
-        crate::deploy::ORIGIN_SOURCE_IMAGE,
-    );
+    let pending = super::origin::OriginChange::read_active(&storage.physical_root, &host)?;
+    let previous_source = pending.as_ref().map(|p| p.source.to_string()).or_else(|| {
+        current_origin.get::<String>(
+            crate::deploy::ORIGIN_BOOTC,
+            crate::deploy::ORIGIN_SOURCE_IMAGE,
+        )
+    });
     if switch_images_unchanged(
         &source,
         final_target_imgref.as_ref(),
         host.spec.image.as_ref(),
         previous_source.as_deref(),
     )? {
+        if let Some(pending) = pending {
+            if super::origin::should_reboot(
+                opts.soft_reboot,
+                opts.apply,
+                pending.finalization_locked,
+            )? {
+                crate::reboot::reboot()?;
+            }
+            println!("Image specification is unchanged.");
+            return Ok(());
+        }
         return handle_unchanged_switch(&opts, &host);
     }
 
@@ -211,12 +225,13 @@ fn switch_origin(
             .as_ref()
             .is_some_and(|image| image.image_digest == manifest_digest.as_ref())
     };
-    let entry = host.status.staged.as_ref().filter(same_image);
+    let entry = host
+        .status
+        .staged
+        .as_ref()
+        .filter(same_image)
+        .or_else(|| host.status.booted.as_ref().filter(same_image));
     let Some(entry) = entry else { return Ok(false) };
-    anyhow::ensure!(
-        opts.soft_reboot.is_none(),
-        "Origin-only changes require a full reboot"
-    );
     anyhow::ensure!(
         opts.uki_addon_opts.scoped.is_none() && opts.uki_addon_opts.global.is_none(),
         "Cannot install UKI addons with an origin-only change"
@@ -226,28 +241,40 @@ fn switch_origin(
         "Cannot change origin while rollback is queued"
     );
     let locked = entry.download_only || opts.download_only;
-    anyhow::ensure!(
-        !opts.apply || !locked,
-        "Staged deployment is download-only; use bootc switch --from-downloaded --apply"
-    );
+    let reboot = super::origin::should_reboot(opts.soft_reboot, opts.apply, locked)?;
     let deployment = &entry.require_composefs()?.verity;
     super::service::start_finalize_stated_svc()?;
-    // This is a genuine staged deployment. Do not rewrite state also used
-    // by a rollback or pinned deployment.
-    anyhow::ensure!(
-        host.all_composefs_deployments()?.iter().all(|d| {
-            d.deployment.verity != *deployment
-                || (matches!(d.ty, Some(crate::status::Slot::Staged)) && !d.pinned)
-        }),
-        "Origin change would modify another deployment"
-    );
-    super::update::set_staged_lock(storage, entry, locked)?;
-    let old = super::state::read_origin(&storage.physical_root, deployment)?
-        .context("No staged origin")?;
-    let origin = super::state::with_image_references(old, Some(source), target)?;
-    super::state::write_origin(&storage.physical_root, deployment, &origin)?;
+    if deployment == &host.require_composefs_booted()?.verity {
+        if host.require_composefs_booted()?.boot_type == super::boot::BootType::Aboot {
+            super::update::ensure_no_aboot_attempt(storage)?;
+        }
+        let pending = super::origin::OriginChange::new(
+            &storage.physical_root,
+            host,
+            manifest_digest,
+            source,
+            target,
+            locked,
+        )?;
+        pending.write(&storage.physical_root)?;
+    } else {
+        // This is a genuine staged deployment. Do not rewrite state also used
+        // by a rollback or pinned deployment.
+        anyhow::ensure!(
+            host.all_composefs_deployments()?.iter().all(|d| {
+                d.deployment.verity != *deployment
+                    || (matches!(d.ty, Some(crate::status::Slot::Staged)) && !d.pinned)
+            }),
+            "Origin change would modify another deployment"
+        );
+        super::update::set_staged_lock(storage, entry, locked)?;
+        let old = super::state::read_origin(&storage.physical_root, deployment)?
+            .context("No staged origin")?;
+        let origin = super::state::with_image_references(old, Some(source), target)?;
+        super::state::write_origin(&storage.physical_root, deployment, &origin)?;
+    }
     println!("Staged update origin: {target}");
-    if opts.apply {
+    if reboot {
         crate::reboot::reboot()?;
     }
     Ok(true)

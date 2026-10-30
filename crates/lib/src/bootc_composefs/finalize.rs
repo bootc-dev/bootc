@@ -93,6 +93,11 @@ pub(crate) async fn composefs_backend_finalize(
         return Ok(());
     }
 
+    if let Some(pending) = super::origin::OriginChange::read_active(&storage.physical_root, &host)?
+    {
+        return pending.finalize(&storage.physical_root, &host);
+    }
+
     let staged_composefs = staged_depl.composefs.as_ref().ok_or(anyhow::anyhow!(
         "Staged deployment is not a composefs deployment"
     ))?;

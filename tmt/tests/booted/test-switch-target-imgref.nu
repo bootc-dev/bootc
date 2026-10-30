@@ -84,6 +84,57 @@ def second_boot [] {
     assert equal (status).status.booted $booted
     assert equal (status).status.staged null
 
+    # Recover an identical booted image with a different future origin. Keep
+    # the registry unavailable throughout staging and the locked reboot.
+    podman load -i $archive
+    bootc switch --download-only --transport containers-storage --target-imgref $next_origin $source
+    if (tap is_composefs) {
+        let id = $booted.composefs.verity
+        bootc delete-deployment $id
+        assert equal (status).status.staged null
+        assert equal (status).status.booted $booted
+        bootc switch --download-only --transport containers-storage --target-imgref $next_origin $source
+        bootc rollback
+        assert equal (status).status.staged null
+        bootc rollback
+        bootc switch --download-only --transport containers-storage --target-imgref $next_origin $source
+    }
+    assert equal (status).status.booted $booted
+    assert equal (status).status.staged.image.imageDigest $booted.image.imageDigest
+    assert equal (status).status.staged.image.image.image $next_origin
+    assert (status).status.staged.downloadOnly
+    podman rmi $source
+    bootc switch --download-only --transport containers-storage --target-imgref $next_origin $source
+    tmt-reboot
+}
+
+def third_boot [] {
+    assert equal (status).status.booted.image.image.image $origin
+    if not (tap is_composefs) {
+        # libostree discards an unfinalized staged deployment across reboot.
+        # Restore it from the offline delivery before explicitly unlocking it.
+        podman load -i $archive
+        bootc switch --download-only --transport containers-storage --target-imgref $next_origin $source
+        podman rmi $source
+    }
+    assert equal (status).status.staged.image.image.image $next_origin
+    assert (status).status.staged.downloadOnly
+    bootc switch --download-only --transport containers-storage --target-imgref $next_origin $source
+    if (tap is_composefs) {
+        let applied = do { bootc update --apply } | complete
+        assert ($applied.exit_code != 0)
+    }
+    bootc switch --from-downloaded
+    assert (not (status).status.staged.downloadOnly)
+    tmt-reboot
+}
+
+def fourth_boot [] {
+    let booted = (status).status.booted
+    assert equal $booted.image.image.image $next_origin
+    assert equal (status).status.staged null
+    assert equal (open $marker | str trim) "v2"
+    bootc switch --transport containers-storage --target-imgref $next_origin $source
     podman rm $registry
     tap ok
 }
@@ -92,6 +143,8 @@ def main [] {
     match $env.TMT_REBOOT_COUNT? {
         null | "0" => first_boot,
         "1" => second_boot,
+        "2" => third_boot,
+        "3" => fourth_boot,
         $n => { error make { msg: $"Invalid reboot count ($n)" } },
     }
 }

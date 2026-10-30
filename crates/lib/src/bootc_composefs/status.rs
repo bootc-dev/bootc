@@ -705,7 +705,12 @@ pub(crate) async fn get_composefs_status(
     storage: &crate::store::Storage,
     booted_cfs: &crate::store::BootedComposefs,
 ) -> Result<Host> {
-    composefs_deployment_status_from(&storage, booted_cfs.cmdline).await
+    let mut host = composefs_deployment_status_from(&storage, booted_cfs.cmdline).await?;
+    if let Some(pending) = super::origin::OriginChange::read_active(&storage.physical_root, &host)?
+    {
+        pending.project(&storage.physical_root, &mut host)?;
+    }
+    Ok(host)
 }
 
 /// Check whether any deployment is capable of being soft rebooted or not
