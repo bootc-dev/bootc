@@ -497,12 +497,14 @@ fn get_boot_dir_for_grub(physical_root: &Dir) -> Result<(Dir, Utf8PathBuf)> {
 const LOADER_DEVICE_PART_UUID: &str = "LoaderDevicePartUUID-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f";
 
 /// Decide how to find the booted ESP: `Some(partuuid)` to match against the
-/// root disk's partitions, or `None` to search its ESPs when the variable is
-/// missing (older GRUB, e.g. c10s).
+/// root disk's partitions, or `None` to search its ESPs. Search when the
+/// variable is missing (older GRUB, e.g. c10s) or there are no EFI variables
+/// at all (non-UEFI boot, e.g. Raspberry Pi firmware), as
+/// `classify_bootloader` does.
 fn booted_esp_partuuid(efi_var: Result<String, EfiError>) -> Result<Option<String>> {
     match efi_var {
         Ok(u) => Ok(Some(u)),
-        Err(EfiError::MissingVar) => Ok(None),
+        Err(EfiError::MissingVar) | Err(EfiError::SystemNotUEFI) => Ok(None),
         Err(e) => anyhow::bail!("Reading {LOADER_DEVICE_PART_UUID}: {e:?}"),
     }
 }
@@ -519,7 +521,7 @@ pub(crate) fn find_booted_from_esp(physical_root: &Dir) -> Result<String> {
 
     let device_uuid = match booted_esp_partuuid(read_uefi_var(LOADER_DEVICE_PART_UUID))? {
         Some(u) => u,
-        // Older version of Grub (in c10s) do not include this efivar
+        // No LoaderDevicePartUUID (older GRUB in c10s, or non-UEFI boot).
         // We can't rely on ESP being mounted on /boot, /boot/efi as older Grub
         // doesn't fully support BLS spec
         None => {
@@ -1061,7 +1063,8 @@ mod tests {
             (Ok("1234-ABCD".into()), Ok(Some("1234-ABCD"))),
             // Older GRUB does not set the variable: search.
             (Err(EfiError::MissingVar), Ok(None)),
-            (Err(EfiError::SystemNotUEFI), Err(())),
+            // Not booted via UEFI (e.g. Raspberry Pi firmware): search.
+            (Err(EfiError::SystemNotUEFI), Ok(None)),
             (Err(EfiError::InvalidData("bad")), Err(())),
             (Err(EfiError::Io(std::io::Error::other("io"))), Err(())),
         ];
