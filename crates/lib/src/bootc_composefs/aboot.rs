@@ -97,7 +97,6 @@ impl PendingDeployment {
         StagedDeployment {
             depl_id: self.depl_id.clone(),
             finalization_locked: self.finalization_locked,
-            original_imgref: None,
         }
     }
 }

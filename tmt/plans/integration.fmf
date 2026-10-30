@@ -425,4 +425,11 @@ execute:
     test:
       - /tmt/tests/tests/test-63-install-shared-propagation
   extra-fixme_skip_if_composefs: true
+
+/plan-64-switch-target-imgref:
+  summary: Offline switch preserves the update origin and survives repeated requests
+  discover:
+    how: fmf
+    test:
+      - /tmt/tests/tests/test-64-switch-target-imgref
 # END GENERATED PLANS

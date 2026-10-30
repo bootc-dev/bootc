@@ -10,7 +10,10 @@ use crate::{
             validate_update,
         },
     },
-    cli::{SwitchOpts, imgref_for_switch, target_imgref_for_switch},
+    cli::{
+        SwitchOpts, handle_unchanged_switch, imgref_for_switch, switch_images_unchanged,
+        target_imgref_for_switch,
+    },
     progress_jsonl::ProgressWriter,
     store::{BootedComposefs, Storage},
 };
@@ -50,38 +53,44 @@ pub(crate) async fn switch_composefs(
         "--target-imgref with --enforce-container-sigpolicy is not supported by the composefs backend"
     );
 
-    let target = imgref_for_switch(&opts)?;
+    let source = imgref_for_switch(&opts)?;
+    let final_target_imgref = target_imgref_for_switch(&opts)?;
+    let origin = final_target_imgref.as_ref().unwrap_or(&source);
     if let Some(delta) = delta.as_ref() {
-        delta.validate_image_reference(&target)?;
+        delta.validate_image_reference(&source)?;
     }
 
-    let new_spec = {
-        let mut new_spec = host.spec.clone();
-        new_spec.image = Some(target.clone());
-        new_spec
-    };
-
-    println!("new_spec: {new_spec:#?}");
-    println!("host.spec: {:#?}", host.spec);
-
-    if new_spec == host.spec {
-        println!("Image specification is unchanged.");
-        if opts.apply && host.status.staged.is_some() {
-            crate::reboot::reboot()?;
-        }
-        return Ok(());
+    let current = host
+        .status
+        .staged
+        .as_ref()
+        .or(host.status.booted.as_ref())
+        .context("No current deployment")?;
+    let current_origin =
+        super::state::read_origin(&storage.physical_root, &current.require_composefs()?.verity)?
+            .context("No origin for current deployment")?;
+    let previous_source = current_origin.get::<String>(
+        crate::deploy::ORIGIN_BOOTC,
+        crate::deploy::ORIGIN_SOURCE_IMAGE,
+    );
+    if switch_images_unchanged(
+        &source,
+        final_target_imgref.as_ref(),
+        host.spec.image.as_ref(),
+        previous_source.as_deref(),
+    )? {
+        return handle_unchanged_switch(&opts, &host);
     }
 
-    let Some(target_imgref) = new_spec.image else {
-        anyhow::bail!("Target image is undefined")
-    };
+    let target_imgref = &source;
 
     const COMPOSEFS_SWITCH_JOURNAL_ID: &str = "7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d1";
 
     tracing::info!(
         message_id = COMPOSEFS_SWITCH_JOURNAL_ID,
         bootc.operation = "switch",
-        bootc.target_image = target_imgref.to_string(),
+        bootc.target_image = origin.to_string(),
+        bootc.source_image = target_imgref.to_string(),
         bootc.apply_mode = opts.apply,
         bootc.download_only = opts.download_opts.download_only,
         bootc.from_downloaded = opts.download_opts.from_downloaded,
@@ -104,7 +113,7 @@ pub(crate) async fn switch_composefs(
             false
         };
         let target_unified =
-            crate::deploy::image_exists_in_unified_storage(storage, &target_imgref).await?;
+            crate::deploy::image_exists_in_unified_storage(storage, target_imgref).await?;
         booted_unified || target_unified
     };
 
@@ -120,12 +129,10 @@ pub(crate) async fn switch_composefs(
             )
         }
         None => {
-            let (image, img_config, _) = is_image_pulled(repo, &target_imgref).await?;
+            let (image, img_config, _) = is_image_pulled(repo, target_imgref).await?;
             (image, img_config.manifest)
         }
     };
-
-    let final_target_imgref = target_imgref_for_switch(&opts)?;
 
     if let Some(cfg_verity) = image {
         let action = validate_update(
@@ -148,7 +155,7 @@ pub(crate) async fn switch_composefs(
                     storage,
                     booted_cfs,
                     &host,
-                    &target_imgref,
+                    target_imgref,
                     final_target_imgref.as_ref(),
                     &do_upgrade_opts,
                     &manifest,
@@ -162,7 +169,7 @@ pub(crate) async fn switch_composefs(
         storage,
         booted_cfs,
         &host,
-        &target_imgref,
+        target_imgref,
         final_target_imgref.as_ref(),
         &do_upgrade_opts,
         &manifest,

@@ -255,6 +255,7 @@ pub(crate) async fn write_composefs_state(
     root_path: &Utf8PathBuf,
     deployment_id: &Sha512HashValue,
     target_imgref: &ImageReference,
+    source_imgref: Option<&ImageReference>,
     initialize_var: bool,
     boot_type: BootType,
     boot_digest: String,
@@ -286,12 +287,19 @@ pub(crate) async fn write_composefs_state(
     )?;
 
     let imgref = target_imgref.to_image_proxy_ref()?;
+    let mut config = tini::Ini::new()
+        .section("origin")
+        // The composefs pull path does not yet enforce the spec signature mode.
+        .item(
+            ORIGIN_CONTAINER,
+            format!("ostree-unverified-image:{imgref}"),
+        );
 
-    let mut config = tini::Ini::new().section("origin").item(
-        ORIGIN_CONTAINER,
-        // TODO (Johan-Liebert1): The image won't always be unverified
-        format!("ostree-unverified-image:{imgref}"),
-    );
+    if let Some(source) = source_imgref.filter(|source| *source != target_imgref) {
+        config = config
+            .section(crate::deploy::ORIGIN_BOOTC)
+            .item(crate::deploy::ORIGIN_SOURCE_IMAGE, source.to_string());
+    }
 
     config = config
         .section(ORIGIN_KEY_BOOT)
