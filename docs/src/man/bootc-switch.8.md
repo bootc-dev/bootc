@@ -21,6 +21,26 @@ are tracking `:v1.0`, and as a rollout progresses, machines can be switched to `
 
 It is also supported to provide explicit digests, via e.g. `bootc switch quay.io/exampleos/someuser@sha256:9cca0703342e24806a9f64e08c053dca7f2cd90f10529af8ea872afb0a0c77d4`. When you do this, `bootc upgrade` will always be a no-op. In this model, upgrades are then always triggered by further `switch` operations.
 
+Use `--target-imgref` to fetch an image from local container storage or a temporary
+registry while recording a different reference for subsequent updates. The
+positional image and `--transport` select the source to fetch now; the target
+reference is recorded without contacting it and requires a transport prefix,
+such as `docker://quay.io/exampleos/myapp:v1.1` or
+`containers-storage:localhost/myapp:v1.1`.
+
+Repeating the same source and target leaves the current deployment unchanged,
+even if the temporary source is no longer available. Use `--from-downloaded` to
+make a deployment staged with `--download-only` ready for the next boot. Use
+`bootc upgrade` to check the recorded update source for newer content.
+
+On composefs, the existing deployment collision checks still apply: changing the
+target reference does not allow switching to content with the same fs-verity
+digest as an existing deployment.
+
+`--target-imgref` cannot be combined with `--from-downloaded`, `--mutate-in-place`,
+or `--from-delta`. On composefs, it also cannot be combined with
+`--enforce-container-sigpolicy`.
+
 ## Applying Changes
 
 The `--apply` option will automatically restart the system if it has
@@ -107,6 +127,18 @@ Switch and immediately apply the changes:
 Switch with soft reboot if possible:
 
     bootc switch --apply --soft-reboot=auto quay.io/exampleos/myapp:v1.1
+
+Stage a locally loaded image while retaining a registry as the update source:
+
+    bootc switch --download-only --transport containers-storage \
+        --target-imgref docker://quay.io/exampleos/myapp:v1.1 localhost/offline:v1.1
+    bootc switch --from-downloaded
+    systemctl reboot
+
+Fetch from a technician's temporary registry and track the normal registry:
+
+    bootc switch --target-imgref docker://quay.io/exampleos/myapp:v1.1 \
+        technician-laptop:5000/myapp:v1.1
 
 # SEE ALSO
 
