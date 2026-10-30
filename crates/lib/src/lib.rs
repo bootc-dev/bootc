@@ -33,6 +33,7 @@
 //! ## Container and Image Handling
 //!
 //! - [`image`] - Image operations and queries
+//! - [`delta`] - oci-delta artifacts (`--from-delta`)
 //! - [`boundimage`] - Logically Bound Images (LBIs)
 //! - [`applylive`] - Applying staged content to the running system (`bootc apply-live`)
 //! - [`podstorage`] - bootc-owned container storage (`/usr/lib/bootc/storage`)
@@ -40,7 +41,7 @@
 //!
 //! ## Storage Backends
 //!
-//! - [`bootc_composefs`] - Composefs backend implementation (experimental)
+//! - [`bootc_composefs`] - Composefs backend implementation
 //! - The OSTree backend is implemented via `ostree-ext` and the [`store`] module
 //!
 //! ## Filesystem and Boot
@@ -64,7 +65,9 @@
 //! - [`linux-kernel-cmdline`](../linux_kernel_cmdline/index.html) - Cmdline parsing
 //! - [`etc-merge`](../etc_merge/index.html) - `/etc` three-way merge
 
+mod aboot;
 mod applylive;
+mod boot_artifact;
 mod bootc_composefs;
 pub(crate) mod bootc_kargs;
 mod bootloader;
@@ -73,6 +76,8 @@ pub mod cli;
 mod composefs_consts;
 mod container_export;
 mod containerenv;
+pub(crate) mod delta;
+pub(crate) mod delta_ostree;
 pub(crate) mod deploy;
 mod discoverable_partition_specification;
 pub(crate) mod fsck;
@@ -87,6 +92,7 @@ mod lints;
 mod loader_entries;
 mod lsm;
 pub(crate) mod metadata;
+mod mount;
 mod parsers;
 mod podman;
 pub(crate) mod podman_client;

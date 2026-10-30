@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "package": "bootc-dev/gh-agentic-workflows",
+  "source": "bootc-dev/gh-agentic-workflows@8b8fddc621b42cc44f82f93bc2970dafaeda113a",
+  "resolvedCommit": "8b8fddc621b42cc44f82f93bc2970dafaeda113a",
+  "installer": "gh-aw v0.88.7",
+  "files": [
+    {
+      "source": ".github/workflows/drafter.md",
+      "destination": ".github/workflows/drafter.md",
+      "sha256": "b84b4cc1a66dd42106ee5a030033aaf2d694fa2dd8916a20013b66e5dc2a7eb2"
+    },
+    {
+      "source": ".github/workflows/fix.md",
+      "destination": ".github/workflows/fix.md",
+      "sha256": "a1ad52f62eec3ffce63d136cdcf932576f70c131ec06b332ffea4f5cb87f65c2"
+    },
+    {
+      "source": ".github/workflows/install-labels.yml",
+      "destination": ".github/workflows/install-labels.yml",
+      "sha256": "9d92d5ce3cdd58bc134f2d4faaa4ad1d3cddc5853407ad4426d007c9dc731552"
+    },
+    {
+      "source": ".github/workflows/merge.yml",
+      "destination": ".github/workflows/merge.yml",
+      "sha256": "06e79b2edc82a62b0fa12031aa065dbd1e6667bf70a0a6aec3a07434aa99b095"
+    },
+    {
+      "source": ".github/workflows/review.md",
+      "destination": ".github/workflows/review.md",
+      "sha256": "0e2921f12303dd7344b3e29799e5d5abce6fef0166004f57fa5f4494f24518af"
+    },
+    {
+      "source": ".github/workflows/upgrade.yml",
+      "destination": ".github/workflows/upgrade.yml",
+      "sha256": "f2016111f09f29e5351ce2cdfdc51e48752b1a0a30d7cede1c9094170c4b76fc"
+    }
+  ]
+}

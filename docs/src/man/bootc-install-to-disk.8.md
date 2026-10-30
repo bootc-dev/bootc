@@ -39,6 +39,16 @@ The root partition uses an architecture-specific DPS type GUID. Specific partiti
 sizes and type GUIDs are implementation details that may change between versions;
 use `install to-filesystem` if you need precise control over the partition layout.
 
+For aboot images, the installer recognizes the boot artifact when installing from the
+running container and selects one of two A/B layouts. The `android` layout uses `boot_a`,
+`boot_b`, `vbmeta_a`, `vbmeta_b`, and a root filesystem partition, without an ESP.
+The `ukiboot` layout uses an ESP, `ukiboot_a`, `ukiboot_b`, `ukibootctl`, and a root
+filesystem partition. Additionally the aboot artifact is written to the boot partitions.
+The installer preserves partitions defined by the running installer's `repart.d`
+configuration and adds definitions for missing required partitions.
+The built in partition layouts are not intended as universal layouts for all
+possible aboot hardware, but work at least for virtualized testing.
+
 ### Root filesystem discovery
 
 The root partition can be discovered at boot time in two ways:
@@ -168,6 +178,7 @@ set `discoverable-partitions = true` in their install configuration
     - grub
     - grub-cc
     - systemd
+    - ukiboot
     - none
 
 **--via-loopback**
@@ -176,19 +187,27 @@ set `discoverable-partitions = true` in their install configuration
 
 **--composefs-backend**
 
-    If true, composefs backend is used, else ostree backend is used
+    Use the composefs backend instead of ostree. This is the default for images with a UKI, and for images with /usr/lib/composefs/setup-root-conf.toml and no ostree prepare-root.conf
 
     Default: false
 
 **--allow-missing-verity**
 
-    Make fs-verity validation optional in case the filesystem doesn't support it
+    Make fs-verity validation optional in case the filesystem doesn't support it (composefs backend only)
 
     Default: false
 
-**--uki-addon**=*UKI_ADDON*
+**--uki-addon**=*SCOPED*
 
-    Name of the UKI addons to install without the ".efi.addon" suffix. This option can be provided multiple times if multiple addons are to be installed
+    Experimental. Name of the local/scoped UKI addons to install without the ".addon.efi" suffix. This option can be provided multiple times if multiple addons are to be installed (composefs backend only). On upgrade and switch, scoped addons already installed are carried forward; passing this flag adds further addons on top
+
+**--global-uki-addon**=*GLOBAL*
+
+    Experimental. Name of the global UKI addons to install without the ".addon.efi" suffix. This option can be provided multiple times if multiple addons are to be installed (composefs backend only). On upgrade and switch, global addons already installed are carried forward; passing this flag adds further addons on top
+
+**--run-repart**
+
+    Whether to use systemd-repart for partitioning. This requires the image to have repart.d definitions
 
 <!-- END GENERATED OPTIONS -->
 
@@ -217,3 +236,8 @@ Install with custom kernel arguments:
 # VERSION
 
 <!-- VERSION PLACEHOLDER -->
+
+For aboot to-disk installation from the running container image, its boot
+artifacts determine the backend and disk layout. The pulled image must contain a
+matching aboot artifact. Automatic aboot disk-layout selection is not performed
+with `--source-imgref`.

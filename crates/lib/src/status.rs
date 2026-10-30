@@ -704,6 +704,7 @@ fn human_render_slot(
     let prefix = match slot {
         Some(Slot::Staged) => "  Staged image".into(),
         Some(Slot::Booted) => format!("{} Booted image", crate::glyph::Glyph::BlackCircle),
+        Some(Slot::Rollback) if host_status.rollback_queued => "  Rollback image (queued)".into(),
         Some(Slot::Rollback) => "  Rollback image".into(),
         _ => "   Other image".into(),
     };
@@ -841,6 +842,7 @@ fn human_render_slot_ostree(
     let prefix = match slot {
         Some(Slot::Staged) => "  Staged ostree".into(),
         Some(Slot::Booted) => format!("{} Booted ostree", crate::glyph::Glyph::BlackCircle),
+        Some(Slot::Rollback) if host_status.rollback_queued => "  Rollback ostree (queued)".into(),
         Some(Slot::Rollback) => "  Rollback ostree".into(),
         _ => " Other ostree".into(),
     };
@@ -881,11 +883,13 @@ fn human_render_slot_composefs(
     slot: Slot,
     entry: &crate::spec::BootEntry,
     erofs_verity: &str,
+    rollback_queued: bool,
 ) -> Result<()> {
     // TODO consider rendering more ostree stuff here like rpm-ostree status does
     let prefix = match slot {
         Slot::Staged => "  Staged composefs".into(),
         Slot::Booted => format!("{} Booted composefs", crate::glyph::Glyph::BlackCircle),
+        Slot::Rollback if rollback_queued => "  Rollback composefs (queued)".into(),
         Slot::Rollback => "  Rollback composefs".into(),
     };
     let prefix_len = prefix.len();
@@ -929,7 +933,13 @@ fn human_readable_output_booted(mut out: impl Write, host: &Host, verbose: bool)
                     verbose,
                 )?;
             } else if let Some(composefs) = &host_status.composefs {
-                human_render_slot_composefs(&mut out, slot_name, host_status, &composefs.verity)?;
+                human_render_slot_composefs(
+                    &mut out,
+                    slot_name,
+                    host_status,
+                    &composefs.verity,
+                    host.status.rollback_queued,
+                )?;
             } else {
                 writeln!(out, "Current {slot_name} state is unknown")?;
             }
@@ -978,10 +988,12 @@ fn container_inspect_print_human(
 
     if let Some(kernel) = &inspect.kernel {
         rows.push(("Kernel", kernel.version.clone()));
-        let kernel_type = if kernel.unified { "UKI" } else { "vmlinuz" };
-        rows.push(("Type", kernel_type.to_string()));
     } else {
         rows.push(("Kernel", "<none>".to_string()));
+    }
+
+    if let Some(image_type) = inspect.image_type {
+        rows.push(("Type", image_type.as_str().to_string()));
     }
 
     let kargs = if inspect.kargs.is_empty() {
@@ -1018,8 +1030,14 @@ pub(crate) fn container_inspect(
     )?;
     let kargs = crate::bootc_kargs::get_kargs_in_root(&root, std::env::consts::ARCH)?;
     let kargs: Vec<String> = kargs.iter_str().map(|s| s.to_owned()).collect();
-    let kernel = crate::kernel::find_kernel(&root)?.map(Into::into);
-    let inspect = crate::spec::ContainerInspect { kargs, kernel };
+    let kernel = crate::kernel::find_kernel(&root)?;
+    let image_type = kernel.as_ref().map(|k| k.k_type.image_type());
+    let kernel = kernel.map(Into::into);
+    let inspect = crate::spec::ContainerInspect {
+        kargs,
+        kernel,
+        image_type,
+    };
 
     // Determine output format: explicit --format wins, then --json, then default to human-readable
     let format = format.unwrap_or(if json {
@@ -1149,6 +1167,36 @@ mod tests {
                      Commit: f9fa3a553ceaaaf30cf85bfe7eed46a822f7b8fd7e14c1e3389cbc3f6d27f791
         "};
         similar_asserts::assert_eq!(w, expected);
+    }
+
+    #[test]
+    fn test_human_readable_queued_rollback() -> Result<()> {
+        let mut host: Host =
+            serde_yaml::from_str(include_str!("fixtures/spec-staged-booted.yaml"))?;
+        let entry = host.status.staged.take().unwrap();
+        let image = entry.image.as_ref().unwrap();
+
+        for (queued, expected) in [
+            (false, "  Rollback image: quay.io/example/someimage:latest"),
+            (
+                true,
+                "  Rollback image (queued): quay.io/example/someimage:latest",
+            ),
+        ] {
+            host.status.rollback_queued = queued;
+            let mut output = Vec::new();
+            human_render_slot(
+                &mut output,
+                Some(Slot::Rollback),
+                &entry,
+                image,
+                &host.status,
+                false,
+            )?;
+            let output = String::from_utf8(output)?;
+            assert_eq!(output.lines().next(), Some(expected));
+        }
+        Ok(())
     }
 
     #[test]
@@ -1289,6 +1337,7 @@ mod tests {
     #[test]
     fn test_container_inspect_human_readable() {
         let inspect = crate::spec::ContainerInspect {
+            image_type: Some(crate::kernel::ContainerImageType::Vmlinuz),
             kargs: vec!["console=ttyS0".into(), "quiet".into()],
             kernel: Some(crate::kernel::Kernel {
                 version: "6.12.0-100.fc41.x86_64".into(),
@@ -1309,6 +1358,7 @@ mod tests {
     #[test]
     fn test_container_inspect_human_readable_uki() {
         let inspect = crate::spec::ContainerInspect {
+            image_type: Some(crate::kernel::ContainerImageType::Uki),
             kargs: vec![],
             kernel: Some(crate::kernel::Kernel {
                 version: "6.12.0-100.fc41.x86_64".into(),
@@ -1329,6 +1379,7 @@ mod tests {
     #[test]
     fn test_container_inspect_human_readable_no_kernel() {
         let inspect = crate::spec::ContainerInspect {
+            image_type: None,
             kargs: vec!["console=ttyS0".into()],
             kernel: None,
         };
@@ -1340,6 +1391,34 @@ mod tests {
              Kargs: console=ttyS0
         "};
         similar_asserts::assert_eq!(output, expected);
+    }
+
+    #[test]
+    fn test_container_inspect_human_readable_aboot() {
+        for (image_type, label) in [
+            (crate::kernel::ContainerImageType::Aboot, "aboot"),
+            (crate::kernel::ContainerImageType::AbootEfi, "aboot-efi"),
+        ] {
+            let inspect = crate::spec::ContainerInspect {
+                image_type: Some(image_type),
+                kargs: vec!["console=ttyS0".into()],
+                kernel: Some(crate::kernel::Kernel {
+                    version: "6.12".into(),
+                    unified: true,
+                }),
+            };
+            let mut w = Vec::new();
+            container_inspect_print_human(&inspect, &mut w).unwrap();
+            let output = String::from_utf8(w).unwrap();
+            similar_asserts::assert_eq!(
+                output,
+                format!("Kernel: 6.12\n  Type: {label}\n Kargs: console=ttyS0\n")
+            );
+            let json = serde_json::to_value(&inspect).unwrap();
+            assert_eq!(json["type"], label);
+            assert_eq!(json["kernel"]["unified"], true);
+            assert!(json.get("aboot").is_none());
+        }
     }
 
     #[test]

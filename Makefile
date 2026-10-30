@@ -29,19 +29,48 @@ prefix ?= /usr
 # We may in the future also want to include Fedora+derivatives as
 # the code is really tiny.
 # (Note we should also make installation of the units conditional on the rhsm feature)
-CARGO_FEATURES_DEFAULT ?= $(shell . /usr/lib/os-release; if echo "$$ID_LIKE" |grep -qF rhel; then echo rhsm; fi)
+#
+# Enable the rhel9 feature on RHEL/CentOS Stream 9, which runs kernel 5.14.
+# That kernel cannot mount an erofs image directly from a file descriptor;
+# composefs-ctl's rhel9 feature activates a loopback-device fallback instead.
+CARGO_FEATURES_DEFAULT ?= $(shell . /usr/lib/os-release; \
+  features=""; \
+  if echo "$$ID_LIKE" | grep -qF rhel; then features="$$features rhsm"; fi; \
+  if echo "$$ID_LIKE" | grep -qF rhel && [ "$$VERSION_ID" = "9" ]; then features="$$features rhel9"; fi; \
+  echo $$features)
 # You can set this to override all cargo features, including the defaults
 CARGO_FEATURES ?= $(CARGO_FEATURES_DEFAULT)
+# The cargo options for building bootc, used by both `bin` and `manpages`.
+# Override it for more control; for example, to build without the default
+# `selinux` feature (which links libselinux):
+#   make bin CARGO_OPTIONS='--no-default-features --features "install-to-disk pre-6.15"'
+# Note --no-default-features applies to every crate in the workspace, so it
+# also drops e.g. the initramfs crate's default `pre-6.15` unless it is listed
+# again. The unit test targets (install-unit-tests) don't use this and always
+# build with the default features.
+CARGO_OPTIONS ?= --features "$(CARGO_FEATURES)"
+# Set to 1 to skip generating and installing man pages, e.g. for source
+# builds into images that exclude documentation:
+#   make install DISABLE_DOCS=1
+# This doesn't affect $(prefix)/share/doc/bootc/baseimage, which holds base
+# image configuration rather than documentation.
+DISABLE_DOCS ?=
 
 # Build all binaries
 .PHONY: bin
+# The man pages are built first so that the production binary below
+# overwrites the docgen-featured one in target/release.
+ifneq ($(DISABLE_DOCS),1)
 bin: manpages
-	cargo build --release --features "$(CARGO_FEATURES)" --bins
+endif
+bin:
+	cargo build --release $(CARGO_OPTIONS) --bins
 
-# Note this cargo build is run without features (such as rhsm)
+# The docgen feature this adds implies install-to-disk, so the man pages
+# document the full CLI regardless of CARGO_OPTIONS.
 .PHONY: manpages
 manpages:
-	cargo run --release --package xtask -- manpages
+	cargo run --release --package xtask -- manpages -- $(CARGO_OPTIONS)
 
 .PHONY: completion
 completion: bin
@@ -59,8 +88,11 @@ install: completion
 	ln -s "$(STORAGE_RELATIVE_PATH)" "$(DESTDIR)$(prefix)/lib/bootc/storage"
 	install -D -m 0755 crates/cli/bootc-generator-stub $(DESTDIR)$(prefix)/lib/systemd/system-generators/bootc-systemd-generator 
 	install -d $(DESTDIR)$(prefix)/lib/bootc/install
-	install -D -m 0644 -t $(DESTDIR)$(prefix)/share/man/man5 target/man/*.5; \
-	install -D -m 0644 -t $(DESTDIR)$(prefix)/share/man/man8 target/man/*.8; \
+ifneq ($(DISABLE_DOCS),1)
+	install -D -m 0644 -t $(DESTDIR)$(prefix)/share/man/man5 target/man/*.5
+	install -D -m 0644 -t $(DESTDIR)$(prefix)/share/man/man7 target/man/*.7
+	install -D -m 0644 -t $(DESTDIR)$(prefix)/share/man/man8 target/man/*.8
+endif
 	install -D -m 0644 target/completion/bootc.bash $(DESTDIR)$(prefix)/share/bash-completion/completions/bootc
 	install -D -m 0644 target/completion/bootc.elvish $(DESTDIR)$(prefix)/share/elvish/lib/bootc.elv
 	install -D -m 0644 target/completion/bootc.fish $(DESTDIR)$(prefix)/share/fish/vendor_completions.d/bootc.fish
@@ -122,6 +154,8 @@ validate:
 	cargo test --no-run
 	(cd crates/ostree-ext && cargo check --no-default-features)
 	(cd crates/lib && cargo check --no-default-features)
+	(cd crates/cli && cargo check --no-default-features)
+	cargo test -p bootc-lib --no-default-features --no-run
 	cargo clippy -- $(CLIPPY_CONFIG)
 	env RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps --document-private-items
 .PHONY: validate

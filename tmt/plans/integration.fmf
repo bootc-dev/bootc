@@ -94,6 +94,10 @@ execute:
     how: fmf
     test:
       - /tmt/tests/tests/test-24-image-upgrade-reboot
+  adjust:
+  - when: distro == centos-9 and boot_type == uki and seal_state == sealed
+    enabled: false
+    because: CentOS 9 cannot consume the signed host upgrade because shared storage is unavailable and its guest-local UKI builder produces unsigned images
   extra-try_bind_storage: true
 
 /plan-25-soft-reboot:
@@ -315,11 +319,118 @@ execute:
       - /tmt/tests/tests/test-48-composefs-uki-dumpfile
   extra-skip_if_ostree: true
 
+/plan-49-composefs-1-16-bridge:
+  summary: Test bootc 1.16 old-stager migration for sealed and unsealed UKIs
+  enabled: false
+  discover:
+    how: fmf
+    test:
+      - /tmt/tests/tests/test-49-composefs-1-16-bridge
+  adjust:
+  - when: composefs_bridge == true
+    enabled: true
+  extra-try_bind_storage: true
+  extra-skip_if_ostree: true
+
 /plan-49-logically-bound-apply-live:
   summary: Execute logically bound images tests for bootc apply-live bound-images
   discover:
     how: fmf
     test:
       - /tmt/tests/tests/test-49-logically-bound-apply-live
+  extra-fixme_skip_if_composefs: true
+
+/plan-50-switch-zstd-chunked:
+  summary: Switch to an image with zstd:chunked compressed layers
+  discover:
+    how: fmf
+    test:
+      - /tmt/tests/tests/test-50-switch-zstd-chunked
+  adjust:
+  - when: running_env != image_mode
+    enabled: false
+    because: only the image_mode test image installs bootc-tests
+  extra-skip_if_ostree: true
+
+/plan-51-composefs-uki-addons:
+  summary: Test composefs UKI Addons
+  discover:
+    how: fmf
+    test:
+      - /tmt/tests/tests/test-51-composefs-uki-addons
+  extra-skip_if_ostree: true
+
+/plan-51-switch-from-delta:
+  summary: Switch to a derived image using an OCI delta and verify after reboot
+  discover:
+    how: fmf
+    test:
+      - /tmt/tests/tests/test-51-switch-from-delta
+  adjust:
+  - when: distro != fedora
+    enabled: false
+    because: oci-delta is packaged in Fedora
+  - when: boot_type == uki and seal_state == sealed
+    enabled: false
+    because: the guest-local UKI builder produces unsigned images
+  extra-export_image: true
+  environment:
+    BOOTC_source_image_archive: /sysroot/bootc-source.oci.tar
+
+/plan-52-install-repart:
+  summary: Test bootc install to-disk with systemd-repart partitioning
+  discover:
+    how: fmf
+    test:
+      - /tmt/tests/tests/test-52-install-repart
+
+/plan-57-composefs-separate-boot:
+  summary: Test composefs with GRUB and a separate /boot partition
+  discover:
+    how: fmf
+    test:
+      - /tmt/tests/tests/test-57-composefs-separate-boot
+  extra-skip_if_ostree: true
+  extra-fixme_skip_if_uki: true
+
+/plan-60-install-composefs-native:
+  summary: Test that composefs-native images default to the composefs backend
+  discover:
+    how: fmf
+    test:
+      - /tmt/tests/tests/test-60-install-composefs-native
+  extra-fixme_skip_if_uki: true
+
+/plan-61-aboot-install:
+  summary: Test artifact-selected ukiboot installation
+  enabled: false
+  discover:
+    how: fmf
+    test:
+      - /tmt/tests/tests/test-61-aboot-install
+  adjust:
+  - when: boot_type == aboot
+    enabled: true
+  extra-skip_if_ostree: true
+
+/plan-62-aboot-update-rollback:
+  summary: Test ukiboot A/B update and rollback
+  enabled: false
+  discover:
+    how: fmf
+    test:
+      - /tmt/tests/tests/test-62-aboot-update-rollback
+  adjust:
+  - when: boot_type == aboot
+    enabled: true
+  extra-try_bind_storage: true
+  extra-skip_if_ostree: true
+
+/plan-63-install-shared-propagation:
+  summary: Install from a shared mount namespace without leaking the storage bind mount
+  discover:
+    how: fmf
+    test:
+      - /tmt/tests/tests/test-63-install-shared-propagation
   extra-fixme_skip_if_composefs: true
 # END GENERATED PLANS

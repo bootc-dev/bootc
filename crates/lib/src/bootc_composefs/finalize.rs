@@ -1,10 +1,12 @@
-use std::path::Path;
+use std::{path::Path, process::Command};
 
-use crate::bootc_composefs::boot::BootType;
+use crate::bootc_composefs::boot::{GLOBAL_UKI_ADDONS_DIR, STAGED_GLOBAL_UKI_ADDONS_DIR};
 use crate::bootc_composefs::gc::{GCOpts, composefs_gc};
 use crate::bootc_composefs::rollback::{rename_exchange_bls_entries, rename_exchange_user_cfg};
 use crate::bootc_composefs::status::get_composefs_status;
+use crate::bootc_composefs::{aboot, boot::BootType};
 use crate::composefs_consts::STATE_DIR_ABS;
+use crate::install::BOOT;
 use crate::spec::BootloaderKind;
 use crate::store::{BootedComposefs, Storage};
 use anyhow::{Context, Result};
@@ -15,7 +17,7 @@ use cap_std_ext::dirext::CapStdExtDirExt;
 use composefs::generic_tree::{FileSystem, Stat};
 use composefs_ctl::composefs;
 use etc_merge::{Diff, compute_diff, merge, traverse_etc};
-use rustix::fs::fsync;
+use rustix::fs::{Mode, OFlags, RenameFlags, fsync, renameat, renameat_with};
 
 use fn_error_context::context;
 
@@ -95,6 +97,16 @@ pub(crate) async fn composefs_backend_finalize(
         "Staged deployment is not a composefs deployment"
     ))?;
 
+    let mut aboot_state = (staged_composefs.boot_type == BootType::Aboot)
+        .then(|| aboot::AbootState::open(&storage.physical_root))
+        .transpose()?;
+    if let Some(state) = aboot_state.as_ref()
+        && state.read_attempted()?.is_some()
+    {
+        tracing::warn!("Aboot deployment was already attempted; not flashing it again");
+        return Ok(());
+    }
+
     // Mount the booted EROFS image to get pristine etc
     let sysroot_fd = storage.physical_root.reopen_as_ownedfd()?;
     let composefs_fd = mount_composefs_image(
@@ -135,6 +147,50 @@ pub(crate) async fn composefs_backend_finalize(
     // Unmount EROFS
     drop(erofs_tmp_mnt);
 
+    if staged_composefs.boot_type == BootType::Aboot {
+        return finalize_staged_aboot(
+            storage,
+            aboot_state.as_mut().unwrap(),
+            &staged_composefs.verity,
+        );
+    }
+
+    let esp = storage.require_esp()?;
+
+    // Un-stage Global UKI Addons (if present) as the penultimate step
+    if esp.fd.exists(STAGED_GLOBAL_UKI_ADDONS_DIR) {
+        if esp.fd.exists(GLOBAL_UKI_ADDONS_DIR) {
+            tracing::debug!(
+                "Atomically exchanging {STAGED_GLOBAL_UKI_ADDONS_DIR} and {GLOBAL_UKI_ADDONS_DIR}"
+            );
+
+            renameat_with(
+                &esp.fd,
+                STAGED_GLOBAL_UKI_ADDONS_DIR,
+                &esp.fd,
+                GLOBAL_UKI_ADDONS_DIR,
+                RenameFlags::EXCHANGE,
+            )
+            .context("Atomically exchanging staged Global UKI Addons")?;
+
+            esp.fd
+                .remove_dir_all(STAGED_GLOBAL_UKI_ADDONS_DIR)
+                .context("Removing staged Global UKI Addons dir")?;
+        } else {
+            tracing::debug!(
+                "No global addons in the current deployment. Finalizing global UKI Addons"
+            );
+
+            renameat(
+                &esp.fd,
+                STAGED_GLOBAL_UKI_ADDONS_DIR,
+                &esp.fd,
+                GLOBAL_UKI_ADDONS_DIR,
+            )
+            .context("Finalizing global UKI Addons")?;
+        }
+    }
+
     let boot_dir = storage.require_boot_dir()?;
 
     match booted_composefs.bootloader.kind()? {
@@ -144,6 +200,7 @@ pub(crate) async fn composefs_backend_finalize(
                 rename_exchange_bls_entries(&entries_dir)?;
             }
             BootType::Uki => finalize_staged_grub_uki(boot_dir)?,
+            BootType::Aboot => unreachable!(),
         },
 
         BootloaderKind::BLSCompatible => {
@@ -152,7 +209,7 @@ pub(crate) async fn composefs_backend_finalize(
         }
     };
 
-    // Now that we have successfully updated bootloader entires, we can GC the unreferenced ones
+    // Now that we have successfully updated bootloader entries, we can GC the unreferenced ones
     // We do not prune the composefs repository here though
     composefs_gc(
         storage,
@@ -164,6 +221,73 @@ pub(crate) async fn composefs_backend_finalize(
     )
     .await?;
 
+    Ok(())
+}
+
+/// Keep /boot open until we're killed, which systemd does with SIGTERM
+/// when `bootc-finalize-staged-hold.service` is stopped after
+/// `bootc-finalize-staged.service`.
+///
+/// When /boot is an automount (e.g. the ESP set up by
+/// systemd-gpt-auto-generator), an idle expire breaks finalization in two
+/// ways. If it races with shutdown, it deadlocks: the finalization (which
+/// looks up /boot) blocks on the expire, while the unmount is ordered after
+/// the finalization. If it completes before shutdown, systemd won't remount
+/// /boot once shutdown has begun, so finalization fails to open it (EHOSTDOWN)
+/// and the old deployment boots. An open file descriptor makes autofs treat
+/// the mount as busy, so it never expires. Note this only works from the
+/// root mount namespace.
+pub(crate) fn hold_boot() -> Result<()> {
+    let path = format!("/{BOOT}");
+    let _fd = rustix::fs::open(
+        path.as_str(),
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .with_context(|| format!("Opening {path}"))?;
+    tracing::debug!("Holding {path} open until terminated");
+    loop {
+        std::thread::park();
+    }
+}
+
+#[context("Finalizing staged aboot deployment {deployment}")]
+fn finalize_staged_aboot(
+    storage: &Storage,
+    state: &mut aboot::AbootState<'_>,
+    deployment: &str,
+) -> Result<()> {
+    let pending = state
+        .read_pending()?
+        .ok_or_else(|| anyhow::anyhow!("No pending aboot deployment"))?;
+    anyhow::ensure!(
+        pending.depl_id == deployment,
+        "Pending aboot deployment changed"
+    );
+    anyhow::ensure!(
+        !pending.finalization_locked,
+        "Pending aboot deployment is download-only"
+    );
+    let artifacts = state.verify_artifacts(&storage.physical_root_path, &pending)?;
+    let kernel_cmdline =
+        std::fs::read_to_string("/proc/cmdline").context("Reading kernel command line")?;
+    let booted_slot = aboot::Slot::from_cmdline(&linux_kernel_cmdline::utf8::Cmdline::from(
+        kernel_cmdline.as_str(),
+    ));
+
+    state.record_attempt(deployment)?;
+    if let Some(slot) = booted_slot {
+        state.invalidate_other(slot)?;
+    }
+
+    let mut command = Command::new("aboot-deploy");
+    command.args(["--local", "--boot-image"]);
+    command.arg(artifacts.boot);
+    if let Some(vbmeta) = artifacts.vbmeta {
+        command.arg("--vbmeta-image").arg(vbmeta);
+    }
+    let status = command.status().context("Running aboot-deploy")?;
+    anyhow::ensure!(status.success(), "aboot-deploy exited with status {status}");
     Ok(())
 }
 

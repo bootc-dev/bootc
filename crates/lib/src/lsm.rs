@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+#[cfg(feature = "selinux")]
 use std::ffi::CString;
 use std::io::Write;
 use std::os::fd::AsRawFd;
@@ -25,33 +26,41 @@ const SELINUXFS: &str = "/sys/fs/selinux";
 /// The SELinux xattr
 const SELINUX_XATTR: &[u8] = b"security.selinux\0";
 /// The kernel initial SID used for objects without a label.
+#[cfg(feature = "selinux")]
 const SELINUX_INITIAL_SID_UNLABELED: &str = "unlabeled";
 const SELF_CURRENT: &str = "/proc/self/attr/current";
-
-fn unlabeled_type() -> Result<CString> {
-    let context =
-        selinux::SecurityContext::of_initial_kernel_context(SELINUX_INITIAL_SID_UNLABELED, true)
-            .context("Querying the SELinux unlabeled initial context")?;
-    context_type(context.as_bytes())
-}
 
 /// Whether SELinux is enabled for the current process.
 ///
 /// libselinux caches this state process-wide, so mounting selinuxfs requires a
 /// re-exec before this result can change.
+#[cfg(feature = "selinux")]
 pub(crate) fn selinux_enabled() -> bool {
     selinux::kernel_support() != selinux::KernelSupport::Unsupported
+}
+
+/// Without the `selinux` feature, bootc treats SELinux as disabled.
+#[cfg(not(feature = "selinux"))]
+pub(crate) fn selinux_enabled() -> bool {
+    false
 }
 
 /// Whether SELinux is enabled on the host, as observed from PID 1's mount namespace.
 ///
 /// This bypasses libselinux's process-cached state and is only appropriate while
 /// bootstrapping the selinuxfs mount before re-exec.
+#[cfg(feature = "selinux")]
 #[context("Querying host SELinux availability")]
 pub(crate) fn host_selinux_enabled() -> Result<bool> {
     Path::new("/proc/1/root/sys/fs/selinux/enforce")
         .try_exists()
         .map_err(Into::into)
+}
+
+/// Without the `selinux` feature, bootc treats SELinux as disabled.
+#[cfg(not(feature = "selinux"))]
+pub(crate) fn host_selinux_enabled() -> Result<bool> {
+    Ok(false)
 }
 
 /// Get the current process SELinux security context
@@ -91,7 +100,7 @@ fn test_install_t() -> Result<bool> {
 /// However, if you maintain a bootc operating system with SELinux, you should from
 /// the start ensure that /usr/bin/bootc has the correct capabilities.
 #[context("Ensuring selinux install_t type")]
-pub(crate) fn selinux_ensure_install() -> Result<bool> {
+pub(crate) fn selinux_ensure_install(reexec_env: &[(&str, &str)]) -> Result<bool> {
     let guardenv = "_bootc_selinuxfs_mounted";
     let current = get_current_security_context()?;
     tracing::debug!("Current security context is {current}");
@@ -131,8 +140,7 @@ pub(crate) fn selinux_ensure_install() -> Result<bool> {
     let mut cmd = Command::new(&tmpf);
     cmd.env(guardenv, tmpf);
     cmd.env(bootc_utils::reexec::ORIG, srcpath);
-    cmd.args(std::env::args_os().skip(1));
-    cmd.arg0(bootc_utils::NAME);
+    bootc_utils::reexec::prepare_reexec(&mut cmd, reexec_env);
     cmd.log_debug();
     Err(anyhow::Error::msg(cmd.exec()).context("execve"))
 }
@@ -177,10 +185,12 @@ impl Drop for SetEnforceGuard {
 /// Try to enter the install_t domain, but if we can't do that, then
 /// just setenforce 0.
 #[context("Ensuring selinux install_t type")]
-pub(crate) fn selinux_ensure_install_or_setenforce() -> Result<Option<SetEnforceGuard>> {
+pub(crate) fn selinux_ensure_install_or_setenforce(
+    reexec_env: &[(&str, &str)],
+) -> Result<Option<SetEnforceGuard>> {
     // If the process already has install_t, exit early
     // Note that this may re-exec the entire process
-    if selinux_ensure_install()? {
+    if selinux_ensure_install(reexec_env)? {
         return Ok(None);
     }
     let g = if std::env::var_os("BOOTC_SETENFORCE0_FALLBACK").is_some() {
@@ -259,6 +269,17 @@ pub(crate) fn require_label(
         })
 }
 
+/// Look up the label for a path in a policy, returning None if no match is found.
+pub(crate) fn optional_label(
+    policy: &ostree::SePolicy,
+    destname: &Utf8Path,
+    mode: u32,
+) -> Result<Option<ostree::glib::GString>> {
+    policy
+        .label(destname.as_str(), mode, ostree::gio::Cancellable::NONE)
+        .map_err(Into::into)
+}
+
 /// A thin wrapper for invoking fsetxattr(security.selinux)
 pub(crate) fn set_security_selinux(fd: std::os::fd::BorrowedFd, label: &[u8]) -> Result<()> {
     rustix::fs::fsetxattr(
@@ -279,6 +300,52 @@ pub(crate) enum SELinuxLabelState {
     Labeled,
 }
 
+/// The type of the kernel's `unlabeled` initial context. Files with it (e.g.
+/// created while SELinux was disabled) need relabeling just like files without
+/// any label.
+#[cfg(feature = "selinux")]
+#[derive(Debug)]
+struct UnlabeledType(CString);
+
+/// Without the `selinux` feature, bootc never parses SELinux contexts, so this
+/// can't be constructed and only files without any label count as unlabeled.
+#[cfg(not(feature = "selinux"))]
+#[derive(Debug)]
+enum UnlabeledType {}
+
+impl UnlabeledType {
+    /// Look up the unlabeled type if SELinux is enabled for this process.
+    #[cfg(feature = "selinux")]
+    fn query() -> Result<Option<Self>> {
+        if !selinux_enabled() {
+            return Ok(None);
+        }
+        let context = selinux::SecurityContext::of_initial_kernel_context(
+            SELINUX_INITIAL_SID_UNLABELED,
+            true,
+        )
+        .context("Querying the SELinux unlabeled initial context")?;
+        context_type(context.as_bytes()).map(|t| Some(Self(t)))
+    }
+
+    #[cfg(not(feature = "selinux"))]
+    fn query() -> Result<Option<Self>> {
+        Ok(None)
+    }
+
+    /// Whether a `security.selinux` value has this type.
+    #[cfg(feature = "selinux")]
+    fn matches(&self, context: &[u8]) -> Result<bool> {
+        Ok(context_type(context)?.as_c_str() == self.0.as_c_str())
+    }
+
+    #[cfg(not(feature = "selinux"))]
+    fn matches(&self, _context: &[u8]) -> Result<bool> {
+        match *self {}
+    }
+}
+
+#[cfg(feature = "selinux")]
 fn context_type(context: &[u8]) -> Result<CString> {
     // security.selinux xattrs may include a trailing NUL terminator.
     let context = context.strip_suffix(b"\0").unwrap_or(context);
@@ -293,15 +360,16 @@ fn context_type(context: &[u8]) -> Result<CString> {
 }
 
 /// Query the SELinux labeling for a particular path
+#[cfg(feature = "selinux")]
 pub(crate) fn has_security_selinux(root: &Dir, path: &Utf8Path) -> Result<SELinuxLabelState> {
-    let unlabeled_type = unlabeled_type()?;
+    let unlabeled_type = UnlabeledType::query()?.context("SELinux is not enabled")?;
     has_security_selinux_inner(root, path, Some(&unlabeled_type))
 }
 
 fn has_security_selinux_inner(
     root: &Dir,
     path: &Utf8Path,
-    unlabeled_type: Option<&CString>,
+    unlabeled_type: Option<&UnlabeledType>,
 ) -> Result<SELinuxLabelState> {
     // TODO: avoid hardcoding a max size here
     let mut buf = [0u8; 2048];
@@ -313,9 +381,10 @@ fn has_security_selinux_inner(
             let Some(unlabeled_type) = unlabeled_type else {
                 return Ok(SELinuxLabelState::Labeled);
             };
-            let label_type = context_type(&buf[..len])
+            let unlabeled = unlabeled_type
+                .matches(&buf[..len])
                 .with_context(|| format!("Parsing SELinux context for {path:?}"))?;
-            if label_type.as_c_str() == unlabeled_type.as_c_str() {
+            if unlabeled {
                 Ok(SELinuxLabelState::Unlabeled)
             } else {
                 Ok(SELinuxLabelState::Labeled)
@@ -348,7 +417,7 @@ fn ensure_labeled_inner(
     path: &Utf8Path,
     metadata: &Metadata,
     policy: &ostree::SePolicy,
-    unlabeled_type: Option<&CString>,
+    unlabeled_type: Option<&UnlabeledType>,
 ) -> Result<SELinuxLabelState> {
     let r = has_security_selinux_inner(root, path, unlabeled_type)?;
     if matches!(r, SELinuxLabelState::Unlabeled) {
@@ -460,7 +529,7 @@ pub(crate) fn ensure_dir_labeled_recurse(
 
     // When SELinux is unavailable to this process, retain the conservative
     // xattr-presence behavior in `has_security_selinux_inner`.
-    let unlabeled_type = selinux_enabled().then(unlabeled_type).transpose()?;
+    let unlabeled_type = UnlabeledType::query()?;
     // Juggle the cap-std requirement for relative paths vs the libselinux
     // requirement for absolute paths by special casing the empty string "" as "."
     // just for the initial directory enumeration.
@@ -581,6 +650,8 @@ pub(crate) fn ensure_dir_labeled(
 }
 
 /// A wrapper for atomically writing a file, also optionally setting a SELinux label.
+/// The label is looked up for `destname` as if `root` were `/`, so pass the
+/// directory that stands for the target's root, never a subdirectory of it.
 pub(crate) fn atomic_replace_labeled<F>(
     root: &Dir,
     destname: impl AsRef<Utf8Path>,
@@ -634,6 +705,26 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "selinux")]
+    fn test_unlabeled_type() {
+        // Only meaningful where SELinux is enabled
+        let Some(unlabeled_type) = UnlabeledType::query().unwrap() else {
+            return;
+        };
+        assert!(
+            unlabeled_type
+                .matches(b"system_u:object_r:unlabeled_t:s0\0")
+                .unwrap()
+        );
+        assert!(
+            !unlabeled_type
+                .matches(b"system_u:object_r:var_t:s0")
+                .unwrap()
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "selinux")]
     fn test_context_type() {
         let cases: &[(&[u8], Option<&str>)] = &[
             (b"system_u:object_r:unlabeled_t:s0", Some("unlabeled_t")),

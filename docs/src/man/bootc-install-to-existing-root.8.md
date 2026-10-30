@@ -28,33 +28,14 @@ configuration files:
 
 If you need to inject new configuration files (such as custom `/etc/fstab` entries,
 systemd mount units, or other configuration) into the newly installed system before
-rebooting, you can find the deployment directory in the ostree repository structure.
-The new deployment is located at:
-
-```
-/ostree/deploy/<stateroot>/deploy/<checksum>.<serial>/
-```
-
-Where `<stateroot>` defaults to `default` unless you specified a different
-value with `--stateroot`.
-
-To find the path to the newly installed deployment:
+rebooting, mount it with **bootc-install-mount**(8) and modify it through the
+mounted view. For example, to add a systemd mount unit:
 
 ```bash
-# Get the full deployment path directly
-DEPLOY_PATH=$(ostree admin --sysroot=/target --print-current-dir)
-```
-
-This will return the full path, for example:
-`/target/ostree/deploy/default/deploy/807f233831a03d315289a4ba29c1670d8bd326d4569eabee7a84f25327997307.0`
-
-You can then modify files in that deployment. For example, to add systemd mount units:
-
-```bash
-# Get deployment path
-DEPLOY_PATH=$(ostree admin --sysroot=/target --print-current-dir)
-# Add a systemd mount unit
-vi ${DEPLOY_PATH}/etc/systemd/system/data.mount
+mkdir /mnt/installed
+bootc install mount --sysroot /target --latest /mnt/installed
+vi /mnt/installed/etc/systemd/system/data.mount
+umount -R /mnt/installed
 ```
 
 #### Injecting kernel arguments for local state
@@ -109,8 +90,9 @@ cp /sysroot/etc/sysconfig/network-scripts/ifcfg-eth0 /etc/sysconfig/network-scri
 # Copy application configuration
 cp -r /sysroot/etc/myapp /etc/
 
-# Selectively merge configuration files
-vi /etc/resolv.conf  # Add nameservers from /sysroot/etc/resolv.conf
+# Identify the old resolver policy, then migrate its authoritative
+# network manager profiles or resolver configuration
+stat -c '%F %N' /sysroot/etc/resolv.conf
 
 # For user accounts, use proper tools
 vipw  # Carefully review and merge users from /sysroot/etc/passwd
@@ -119,6 +101,15 @@ vipw  # Carefully review and merge users from /sysroot/etc/passwd
 This applies to network configurations, user accounts, application settings,
 and other system configuration stored in `/etc`. Review files in `/sysroot/etc`
 and manually copy or merge what you need into `/etc`.
+
+**Note:** A generated `/etc/resolv.conf` should not normally be copied or
+edited directly. It may be a dangling symlink after reboot or contain only a
+local resolver address such as `127.0.0.53`, rather than the upstream DNS
+servers. Migrate the authoritative configuration, such as NetworkManager
+connection profiles or resolver drop-ins, into the configuration used by the
+new system. If both systems intentionally use a hand-managed static file, it
+may instead be selectively migrated. See
+[DNS and `/etc/resolv.conf`](../building/bootc-dns.7.md) for details.
 
 **Note:** For filesystem mounts from `/etc/fstab` in the old system, consider
 using kernel arguments (via `systemd.mount-extra`) injected before reboot instead
@@ -214,6 +205,7 @@ of migrating the fstab entries. See the "Injecting kernel arguments" section abo
     - grub
     - grub-cc
     - systemd
+    - ukiboot
     - none
 
 **--acknowledge-destructive**
@@ -226,23 +218,26 @@ of migrating the fstab entries. See the "Injecting kernel arguments" section abo
 
 **--composefs-backend**
 
-    If true, composefs backend is used, else ostree backend is used
+    Use the composefs backend instead of ostree. This is the default for images with a UKI, and for images with /usr/lib/composefs/setup-root-conf.toml and no ostree prepare-root.conf
 
     Default: false
 
 **--allow-missing-verity**
 
-    Make fs-verity validation optional in case the filesystem doesn't support it
+    Make fs-verity validation optional in case the filesystem doesn't support it (composefs backend only)
 
     Default: false
 
-**--uki-addon**=*UKI_ADDON*
+**--uki-addon**=*SCOPED*
 
-    Name of the UKI addons to install without the ".efi.addon" suffix. This option can be provided multiple times if multiple addons are to be installed
+    Experimental. Name of the local/scoped UKI addons to install without the ".addon.efi" suffix. This option can be provided multiple times if multiple addons are to be installed (composefs backend only). On upgrade and switch, scoped addons already installed are carried forward; passing this flag adds further addons on top
+
+**--global-uki-addon**=*GLOBAL*
+
+    Experimental. Name of the global UKI addons to install without the ".addon.efi" suffix. This option can be provided multiple times if multiple addons are to be installed (composefs backend only). On upgrade and switch, global addons already installed are carried forward; passing this flag adds further addons on top
 
 <!-- END GENERATED OPTIONS -->
 
 # VERSION
 
 <!-- VERSION PLACEHOLDER -->
-

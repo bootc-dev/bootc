@@ -1,8 +1,12 @@
 use std::{io::Read, sync::OnceLock};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, ensure};
 use bootc_mount::inspect_filesystem;
-use composefs_ctl::composefs::fsverity::Sha512HashValue;
+use composefs_ctl::composefs::erofs::format::FormatVersion;
+use composefs_ctl::composefs::fsverity::{FsVerityHashValue, Sha512HashValue};
+use composefs_ctl::composefs_boot::cmdline::{
+    ComposefsCmdline as BootComposefsCmdline, KARG_COMPOSEFS_DIGEST, KARG_V2,
+};
 use composefs_ctl::composefs_oci;
 use composefs_oci::OciImage;
 use fn_error_context::context;
@@ -12,14 +16,15 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     bootc_composefs::{
+        aboot,
         boot::BootType,
         selinux::are_selinux_policies_compatible,
-        state::{get_composefs_usr_overlay_status, read_origin},
+        state::{get_usr_overlay_status, read_boot_type, read_origin},
         utils::{compute_store_boot_digest_for_uki, get_uki_cmdline},
     },
     composefs_consts::{
-        COMPOSEFS_CMDLINE, ORIGIN_KEY_BOOT_DIGEST, ORIGIN_KEY_IMAGE, ORIGIN_KEY_MANIFEST_DIGEST,
-        TYPE1_ENT_PATH, TYPE1_ENT_PATH_STAGED, USER_CFG, USER_CFG_STAGED,
+        ORIGIN_KEY_BOOT_DIGEST, ORIGIN_KEY_IMAGE, ORIGIN_KEY_MANIFEST_DIGEST, TYPE1_ENT_PATH,
+        TYPE1_ENT_PATH_STAGED, USER_CFG, USER_CFG_STAGED,
     },
     install::EFI_LOADER_INFO,
     parsers::{
@@ -88,34 +93,60 @@ impl ComposefsCmdline {
         }
     }
 
-    pub(crate) fn build(digest: &str, allow_missing_fsverity: bool) -> Self {
-        ComposefsCmdline {
-            allow_missing_fsverity,
-            digest: digest.into(),
+    /// Search for either supported composefs kernel command line parameter.
+    pub(crate) fn find_in_cmdline(cmdline: &Cmdline) -> Result<Option<Self>> {
+        let Some(parsed) = BootComposefsCmdline::<Sha512HashValue>::from_cmdline(cmdline)
+            .context("Parsing composefs kernel command line")?
+        else {
+            return Ok(None);
+        };
+        Ok(Some(Self {
+            allow_missing_fsverity: parsed.is_insecure(),
+            digest: parsed.digest().to_hex().into(),
             is_transient: false,
-        }
+        }))
     }
+}
 
-    /// Search for the `composefs=` parameter in the passed in kernel command line
-    pub(crate) fn find_in_cmdline(cmdline: &Cmdline) -> Option<Self> {
-        match cmdline.find(COMPOSEFS_CMDLINE) {
-            Some(param) => {
-                let value = param.value()?;
-                Some(Self::new(value))
-            }
-            None => None,
-        }
+fn reconcile_composefs_cmdline_with_mount_source(
+    mut cmdline: ComposefsCmdline,
+    mount_source: &str,
+) -> Result<ComposefsCmdline> {
+    let (verity, is_transient) = if let Some(v) = mount_source.strip_prefix("composefs:") {
+        (v, false)
+    } else if let Some(v) = mount_source.strip_prefix("transient:composefs=") {
+        (v, true)
+    } else {
+        anyhow::bail!("Root not mounted using composefs (source: {mount_source})")
+    };
+
+    let mount_cmdline = ComposefsCmdline::new(verity);
+    if *mount_cmdline.digest != *cmdline.digest {
+        cmdline.digest = mount_cmdline.digest;
     }
+    cmdline.is_transient = is_transient;
+    Ok(cmdline)
+}
+
+/// Render a composefs karg that identifies the EROFS format of `digest`.
+pub(crate) fn build_composefs_karg(
+    digest: Sha512HashValue,
+    format_version: FormatVersion,
+    allow_missing_fsverity: bool,
+) -> String {
+    match format_version {
+        FormatVersion::V0 | FormatVersion::V1 => {
+            BootComposefsCmdline::new_v1(digest, allow_missing_fsverity)
+        }
+        FormatVersion::V2 => BootComposefsCmdline::new_v2(digest, allow_missing_fsverity),
+    }
+    .to_cmdline_arg()
 }
 
 impl std::fmt::Display for ComposefsCmdline {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let allow_missing_fsverity = if self.allow_missing_fsverity { "?" } else { "" };
-        write!(
-            f,
-            "{}={}{}",
-            COMPOSEFS_CMDLINE, allow_missing_fsverity, self.digest
-        )
+        write!(f, "{}={}{}", KARG_V2, allow_missing_fsverity, self.digest)
     }
 }
 
@@ -157,47 +188,17 @@ pub(crate) fn composefs_booted() -> Result<Option<&'static ComposefsCmdline>> {
         return Ok(v.as_ref());
     }
     let cmdline = Cmdline::from_proc()?;
-    let Some(kv) = cmdline.find(COMPOSEFS_CMDLINE) else {
+    let Some(v) = ComposefsCmdline::find_in_cmdline(&cmdline)? else {
         return Ok(None);
     };
-    let Some(v) = kv.value() else { return Ok(None) };
-    let v = ComposefsCmdline::new(v);
 
     // Find the source of / mountpoint as the cmdline doesn't change on soft-reboot
     let root_mnt = inspect_filesystem("/".into())?;
 
-    // The mount source encodes the composefs digest in one of two formats:
-    //   - Normal boot:    "composefs:<hash>"
-    //   - Transient root: "transient:composefs=<hash>"
-    // Strip either prefix to get the digest and record whether the root is
-    // transient, then compare the digest with the cmdline value to detect
-    // soft-reboots into a different deployment.
-    let (verity_from_mount_src, is_transient) =
-        if let Some(v) = root_mnt.source.strip_prefix("composefs:") {
-            (v, false)
-        } else if let Some(v) = root_mnt.source.strip_prefix("transient:composefs=") {
-            (v, true)
-        } else {
-            anyhow::bail!(
-                "Root not mounted using composefs (source: {})",
-                root_mnt.source
-            )
-        };
-
-    let r = if *verity_from_mount_src != *v.digest {
-        // soft rebooted into another deployment
-        CACHED_DIGEST_VALUE.get_or_init(|| {
-            let mut c = ComposefsCmdline::new(verity_from_mount_src);
-            c.is_transient = is_transient;
-            Some(c)
-        })
-    } else {
-        CACHED_DIGEST_VALUE.get_or_init(|| {
-            let mut c = v;
-            c.is_transient = is_transient;
-            Some(c)
-        })
-    };
+    // The mount source is authoritative after a soft reboot, while the
+    // parsed command line retains policy such as allow-missing-fsverity.
+    let reconciled = reconcile_composefs_cmdline_with_mount_source(v, &root_mnt.source)?;
+    let r = CACHED_DIGEST_VALUE.get_or_init(|| Some(reconciled));
 
     Ok(r.as_ref())
 }
@@ -333,8 +334,8 @@ fn get_sorted_type1_boot_entries_helper(
             // For grub and grub-cc, sort by filename in descending order
             // See: https://github.com/bootc-dev/bootc/issues/2221
             Bootloader::Grub | Bootloader::GrubCC => b.filename.cmp(&a.filename),
-            Bootloader::None => {
-                unreachable!("Bootloader checked during installation should not have been none")
+            Bootloader::Ukiboot | Bootloader::None => {
+                unreachable!("Bootloader checked during installation does not use BLS entries")
             }
         };
 
@@ -412,10 +413,13 @@ pub(crate) fn list_bootloader_entries(storage: &Storage) -> Result<Vec<Bootloade
 }
 
 /// imgref = transport:image_name
+///
+/// Returns the image manifest and config, along with the digest of the
+/// manifest as the registry reported it.
 #[context("Getting container info")]
 pub(crate) async fn get_container_manifest_and_config(
     imgref: &ImageReference,
-) -> Result<ImgConfigManifest> {
+) -> Result<(ImgConfigManifest, String)> {
     let mut config = crate::deploy::new_proxy_config();
 
     ostree_ext::container::merge_default_container_proxy_opts(&mut config)?;
@@ -427,7 +431,7 @@ pub(crate) async fn get_container_manifest_and_config(
         .await
         .with_context(|| format!("Opening image {imgref}"))?;
 
-    let (_, manifest) = proxy.fetch_manifest(&img).await?;
+    let (manifest_digest, manifest) = proxy.fetch_manifest(&img).await?;
     let (mut reader, driver) = proxy.get_descriptor(&img, manifest.config()).await?;
 
     let mut buf = Vec::with_capacity(manifest.config().size() as usize);
@@ -437,7 +441,7 @@ pub(crate) async fn get_container_manifest_and_config(
 
     let config: oci_spec::image::ImageConfiguration = serde_json::from_slice(&buf)?;
 
-    Ok(ImgConfigManifest { manifest, config })
+    Ok((ImgConfigManifest { manifest, config }, manifest_digest))
 }
 
 /// Directory where BLS-compatible bootloaders expect Type 1 boot entries.
@@ -613,12 +617,34 @@ pub(crate) fn get_imginfo(
     Ok((img_conf, manifest_digest_str))
 }
 
+/// Version and created timestamp for a composefs deployment image.
+///
+/// The version prefers the manifest annotation. When that annotation is
+/// absent, configuration labels are used (the OCI version label, then the
+/// legacy `version` label), matching ostree status. The timestamp is parsed
+/// from `config.created()`; an invalid value yields no timestamp.
+fn image_version_and_created(
+    manifest: &ImageManifest,
+    config: &ImageConfiguration,
+) -> (Option<String>, Option<chrono::DateTime<chrono::Utc>>) {
+    let version = manifest
+        .annotations()
+        .as_ref()
+        .and_then(|a| a.get(oci_spec::image::ANNOTATION_VERSION).cloned())
+        .or_else(|| ostree_container::version_for_config(config).map(ToOwned::to_owned));
+
+    let created_at = config.created().clone();
+    let timestamp = created_at.and_then(|x| try_deserialize_timestamp(&x));
+    (version, timestamp)
+}
+
 #[context("Getting composefs deployment metadata")]
 fn boot_entry_from_composefs_deployment(
     storage: &Storage,
     origin: tini::Ini,
     verity: &str,
     missing_verity_allowed: bool,
+    bootloader: Bootloader,
 ) -> Result<BootEntry> {
     let image = match origin.get::<String>("origin", ORIGIN_CONTAINER) {
         Some(img_name_from_config) => {
@@ -628,14 +654,8 @@ fn boot_entry_from_composefs_deployment(
             let (img_conf, image_digest) = get_imginfo(storage, &verity)?;
 
             let architecture = img_conf.config.architecture().to_string();
-            let version = img_conf
-                .manifest
-                .annotations()
-                .as_ref()
-                .and_then(|a| a.get(oci_spec::image::ANNOTATION_VERSION).cloned());
-
-            let created_at = img_conf.config.created().clone();
-            let timestamp = created_at.and_then(|x| try_deserialize_timestamp(&x));
+            let (version, timestamp) =
+                image_version_and_created(&img_conf.manifest, &img_conf.config);
 
             Some(ImageStatus {
                 image: img_ref,
@@ -668,7 +688,7 @@ fn boot_entry_from_composefs_deployment(
         composefs: Some(crate::spec::BootEntryComposefs {
             verity: verity.into(),
             boot_type,
-            bootloader: get_bootloader()?,
+            bootloader,
             boot_digest,
             missing_verity_allowed,
         }),
@@ -714,6 +734,7 @@ fn set_soft_reboot_capability(
         }
 
         BootType::Uki => set_reboot_capable_uki_deployments(storage, booted_cmdline, host),
+        BootType::Aboot => Ok(()),
     }
 }
 
@@ -730,10 +751,10 @@ fn find_bls_entry<'a>(
     Ok(None)
 }
 
-/// Compares cmdline `first` and `second` skipping `composefs=`
+/// Compares cmdline `first` and `second` skipping either composefs karg spelling.
 fn compare_cmdline_skip_cfs(first: &Cmdline<'_>, second: &Cmdline<'_>) -> bool {
     for param in first {
-        if param.key() == COMPOSEFS_CMDLINE.into() {
+        if param.key() == KARG_V2.into() || param.key() == KARG_COMPOSEFS_DIGEST.into() {
             continue;
         }
 
@@ -920,12 +941,119 @@ fn rollback_queued_from_first_entry(
     }
 }
 
+fn read_staged_deployment() -> Result<Option<StagedDeployment>> {
+    let path = format!("{COMPOSEFS_TRANSIENT_STATE_DIR}/{COMPOSEFS_STAGED_DEPLOYMENT_FNAME}");
+    let contents = match std::fs::read_to_string(&path) {
+        Ok(contents) => contents,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err).with_context(|| format!("Reading {path}")),
+    };
+    serde_json::from_str(&contents)
+        .with_context(|| format!("Parsing {path}"))
+        .map(Some)
+}
+
+fn aboot_entry(storage: &Storage, verity: &str, missing_verity_allowed: bool) -> Result<BootEntry> {
+    let origin = read_origin(&storage.physical_root, verity)?
+        .ok_or_else(|| anyhow::anyhow!("No origin file for aboot deployment {verity}"))?;
+    let entry = boot_entry_from_composefs_deployment(
+        storage,
+        origin,
+        verity,
+        missing_verity_allowed,
+        Bootloader::None,
+    )?;
+    ensure!(
+        entry.require_composefs()?.boot_type == BootType::Aboot,
+        "Slot references non-aboot deployment {verity}"
+    );
+    Ok(entry)
+}
+
+fn composefs_aboot_status(storage: &Storage, cmdline: &ComposefsCmdline) -> Result<Host> {
+    let state = aboot::AbootState::open(&storage.physical_root)?;
+    let staged = match state.read_pending()? {
+        Some(pending) => Some(pending.staged()),
+        None => read_staged_deployment()?,
+    };
+    composefs_aboot_status_from(storage, &state, cmdline, staged.as_ref())
+}
+
+fn composefs_aboot_status_from(
+    storage: &Storage,
+    state: &aboot::AbootState<'_>,
+    cmdline: &ComposefsCmdline,
+    staged: Option<&StagedDeployment>,
+) -> Result<Host> {
+    let mut host = Host::new(HostSpec {
+        image: None,
+        boot_order: BootOrder::Default,
+    });
+
+    host.status.booted = Some(aboot_entry(
+        storage,
+        &cmdline.digest,
+        cmdline.allow_missing_fsverity,
+    )?);
+
+    if let Some(staged) = staged.filter(|s| s.depl_id != *cmdline.digest) {
+        let mut entry = aboot_entry(storage, &staged.depl_id, cmdline.allow_missing_fsverity)?;
+        entry.download_only = staged.finalization_locked;
+        host.status.staged = Some(entry);
+    }
+
+    let mut seen = vec![cmdline.digest.to_string()];
+    if let Some(staged) = host.status.staged.as_ref() {
+        seen.push(staged.require_composefs()?.verity.clone());
+    }
+    for deployment in state.slot_deployments()? {
+        let verity = deployment.to_hex();
+        if seen.contains(&verity) {
+            continue;
+        }
+        seen.push(verity.clone());
+        let entry = aboot_entry(storage, &verity, cmdline.allow_missing_fsverity)?;
+        if host.status.rollback.is_none() {
+            host.status.rollback = Some(entry);
+        } else {
+            host.status.other_deployments.push(entry);
+        }
+    }
+
+    if let Some(queued) = state.queued_rollback()? {
+        let rollback =
+            host.status.rollback.as_ref().ok_or_else(|| {
+                anyhow::anyhow!("Queued aboot rollback deployment is unavailable")
+            })?;
+        ensure!(
+            rollback.require_composefs()?.verity == queued,
+            "Queued aboot rollback does not match the rollback deployment"
+        );
+        host.status.rollback_queued = true;
+        host.spec.boot_order = BootOrder::Rollback;
+    }
+
+    host.spec.image = host
+        .status
+        .staged
+        .as_ref()
+        .or(host.status.booted.as_ref())
+        .and_then(|entry| entry.image.as_ref())
+        .map(|image| image.image.clone());
+    host.status.usr_overlay = get_usr_overlay_status().ok().flatten();
+    Ok(host)
+}
+
 #[context("Getting composefs deployment status")]
 async fn composefs_deployment_status_from(
     storage: &Storage,
     cmdline: &ComposefsCmdline,
 ) -> Result<Host> {
     let booted_composefs_digest = &cmdline.digest;
+
+    if read_boot_type(&storage.physical_root, booted_composefs_digest)? == Some(BootType::Aboot) {
+        return composefs_aboot_status(storage, cmdline);
+    }
 
     let boot_dir = storage.require_boot_dir()?;
 
@@ -939,20 +1067,10 @@ async fn composefs_deployment_status_from(
 
     let mut host = Host::new(host_spec);
 
-    let staged_deployment = match std::fs::File::open(format!(
-        "{COMPOSEFS_TRANSIENT_STATE_DIR}/{COMPOSEFS_STAGED_DEPLOYMENT_FNAME}"
-    )) {
-        Ok(mut f) => {
-            let mut s = String::new();
-            f.read_to_string(&mut s)?;
-
-            Ok(Some(s))
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(e),
-    }?;
+    let staged_deployment = read_staged_deployment()?;
 
     let mut boot_type: Option<BootType> = None;
+    let bootloader = get_bootloader()?;
 
     // Boot entries from deployments that are neither booted nor staged deployments
     // Rollback deployment is in here, but may also contain stale deployment entries
@@ -982,6 +1100,7 @@ async fn composefs_deployment_status_from(
             ini,
             &verity_digest,
             cmdline.allow_missing_fsverity,
+            bootloader,
         )?;
 
         // SAFETY: boot_entry.composefs will always be present
@@ -1005,10 +1124,8 @@ async fn composefs_deployment_status_from(
         }
 
         if let Some(staged_deployment) = &staged_deployment {
-            let staged_depl = serde_json::from_str::<StagedDeployment>(&staged_deployment)?;
-
-            if verity_digest == staged_depl.depl_id {
-                boot_entry.download_only = staged_depl.finalization_locked;
+            if verity_digest == staged_deployment.depl_id {
+                boot_entry.download_only = staged_deployment.finalization_locked;
                 host.status.staged = Some(boot_entry);
                 continue;
             }
@@ -1074,6 +1191,9 @@ async fn composefs_deployment_status_from(
 
                     (is_rollback_queued, None, Some(menuentries))
                 }
+                BootType::Aboot => {
+                    anyhow::bail!("Aboot deployment unexpectedly reached GRUB status handling")
+                }
             },
 
             // We will have BLS stuff and the UKI stuff in the same DIR
@@ -1090,8 +1210,8 @@ async fn composefs_deployment_status_from(
             }
         };
 
-    // Determine rollback deployment by matching extra deployment boot entries against entires read from /boot
-    // This collects verity digest across bls and grub enties, we should just have one of them, but still works
+    // Determine rollback deployment by matching extra deployment boot entries against entries read from /boot
+    // This collects verity digest across bls and grub entries, we should just have one of them, but still works
     //
     // We want this ordered, so we have a vector here
     let bootloader_configured_verity = sorted_bls_config
@@ -1142,7 +1262,7 @@ async fn composefs_deployment_status_from(
         host.spec.boot_order = BootOrder::Rollback
     };
 
-    host.status.usr_overlay = get_composefs_usr_overlay_status().ok().flatten();
+    host.status.usr_overlay = get_usr_overlay_status().ok().flatten();
 
     set_soft_reboot_capability(storage, &mut host, sorted_bls_config, cmdline)?;
 
@@ -1153,23 +1273,276 @@ async fn composefs_deployment_status_from(
 mod tests {
     use cap_std_ext::{cap_std, dirext::CapStdExtDirExt};
 
+    use crate::bootc_composefs::aboot;
     use crate::bootc_composefs::boot::{
         FILENAME_PRIORITY_PRIMARY, FILENAME_PRIORITY_SECONDARY, primary_sort_key,
         secondary_sort_key, type1_entry_conf_file_name,
     };
+    use crate::composefs_consts::{ABOOT_STATE_DIR, STATE_DIR_RELATIVE};
     use crate::parsers::grub_menuconfig::MenuentryBody;
 
     use super::*;
 
+    fn write_aboot_origin(root: &Dir, digest: &str) -> Result<()> {
+        let path = format!("{STATE_DIR_RELATIVE}/{digest}");
+        root.create_dir_all(&path)?;
+        root.atomic_write(
+            format!("{path}/{digest}.origin"),
+            "[boot]\nboot_type=aboot\ndigest=boot-digest\n",
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn aboot_status_from_slots() -> Result<()> {
+        let root = cap_std_ext::cap_tempfile::tempdir(cap_std::ambient_authority())?;
+        root.create_dir("run")?;
+        let run = root.open_dir("run")?;
+        let storage = Storage::new_composefs_for_test(&root, &run)?;
+        let a = "aa".repeat(64);
+        let b = "bb".repeat(64);
+        let staged_id = "cc".repeat(64);
+        for digest in [&a, &b, &staged_id] {
+            write_aboot_origin(&root, digest)?;
+        }
+        let mut aboot_state = aboot::AbootState::open(&root)?;
+        aboot_state.record_booted(&Cmdline::from("androidboot.slot_suffix=_a"), &a)?;
+        aboot_state.record_booted(&Cmdline::from("androidboot.slot_suffix=_b"), &b)?;
+
+        let cmdline = ComposefsCmdline::new(&a);
+        let host = composefs_aboot_status_from(&storage, &aboot_state, &cmdline, None)?;
+        let booted = host.require_composefs_booted()?;
+        assert_eq!(booted.verity, a);
+        assert_eq!(booted.boot_type, BootType::Aboot);
+        assert_eq!(booted.bootloader, Bootloader::None);
+        assert_eq!(
+            host.status
+                .rollback
+                .as_ref()
+                .unwrap()
+                .require_composefs()?
+                .verity,
+            b
+        );
+        assert!(host.status.staged.is_none());
+        assert!(host.status.other_deployments.is_empty());
+        assert!(!host.status.rollback_queued);
+
+        aboot_state.queue_rollback(&b)?;
+        let host = composefs_aboot_status_from(&storage, &aboot_state, &cmdline, None)?;
+        assert!(host.status.rollback_queued);
+        assert_eq!(host.spec.boot_order, BootOrder::Rollback);
+        aboot_state.clear_rollback()?;
+
+        let staged = StagedDeployment {
+            depl_id: staged_id.clone(),
+            finalization_locked: true,
+        };
+        let host = composefs_aboot_status_from(&storage, &aboot_state, &cmdline, Some(&staged))?;
+        let staged_entry = host.status.staged.as_ref().unwrap();
+        assert_eq!(staged_entry.require_composefs()?.verity, staged_id);
+        assert!(staged_entry.download_only);
+        assert_eq!(
+            host.status
+                .rollback
+                .as_ref()
+                .unwrap()
+                .require_composefs()?
+                .verity,
+            b
+        );
+
+        let staged = StagedDeployment {
+            depl_id: b.clone(),
+            finalization_locked: false,
+        };
+        let host = composefs_aboot_status_from(&storage, &aboot_state, &cmdline, Some(&staged))?;
+        assert_eq!(
+            host.status
+                .staged
+                .as_ref()
+                .unwrap()
+                .require_composefs()?
+                .verity,
+            b
+        );
+        assert!(host.status.rollback.is_none());
+
+        root.atomic_write(format!("{ABOOT_STATE_DIR}/slots/b"), "invalid")?;
+        let host = composefs_aboot_status_from(&storage, &aboot_state, &cmdline, None)?;
+        assert!(host.status.rollback.is_none());
+        assert_eq!(host.list_deployments().len(), 1);
+
+        let pending = aboot_state.stage_artifacts(&staged_id, true, b"boot", None)?;
+        aboot_state.write_pending(&pending)?;
+        let host = composefs_aboot_status(&storage, &cmdline)?;
+        assert!(host.status.staged.as_ref().unwrap().download_only);
+        Ok(())
+    }
+
+    #[test]
+    fn test_image_version_and_created() {
+        use std::collections::HashMap;
+        use std::str::FromStr;
+
+        use ostree_ext::container::{LABEL_OCI_VERSION, LABEL_VERSION};
+        use ostree_ext::oci_spec::image::{
+            ANNOTATION_CREATED, ANNOTATION_VERSION, ConfigBuilder, Descriptor, Digest,
+            ImageConfigurationBuilder, ImageManifestBuilder, MediaType, SCHEMA_VERSION,
+        };
+
+        const CREATED: &str = "2024-06-01T12:00:00Z";
+        const ANNOTATION_CREATED_DECOY: &str = "1999-01-01T00:00:00Z";
+        const LABEL_CREATED_DECOY: &str = "1980-01-01T00:00:00Z";
+
+        struct Case {
+            desc: &'static str,
+            annotation_version: Option<&'static str>,
+            labels: &'static [(&'static str, &'static str)],
+            created: Option<&'static str>,
+            expect_version: Option<&'static str>,
+            expect_timestamp: Option<&'static str>,
+        }
+        let cases = [
+            Case {
+                desc: "annotation only",
+                annotation_version: Some("ann-1"),
+                labels: &[(ANNOTATION_CREATED, LABEL_CREATED_DECOY)],
+                created: Some(CREATED),
+                expect_version: Some("ann-1"),
+                expect_timestamp: Some(CREATED),
+            },
+            Case {
+                desc: "configuration label only",
+                annotation_version: None,
+                labels: &[(LABEL_OCI_VERSION, "label-1")],
+                created: Some(CREATED),
+                expect_version: Some("label-1"),
+                expect_timestamp: Some(CREATED),
+            },
+            Case {
+                desc: "legacy version label only",
+                annotation_version: None,
+                labels: &[(LABEL_VERSION, "legacy-1")],
+                created: Some(CREATED),
+                expect_version: Some("legacy-1"),
+                expect_timestamp: Some(CREATED),
+            },
+            Case {
+                desc: "annotation precedes configuration labels",
+                annotation_version: Some("ann-wins"),
+                labels: &[
+                    (LABEL_OCI_VERSION, "label-loses"),
+                    (LABEL_VERSION, "legacy-loses"),
+                ],
+                created: Some(CREATED),
+                expect_version: Some("ann-wins"),
+                expect_timestamp: Some(CREATED),
+            },
+            Case {
+                desc: "missing version keeps a config created timestamp",
+                annotation_version: None,
+                labels: &[],
+                created: Some(CREATED),
+                expect_version: None,
+                expect_timestamp: Some(CREATED),
+            },
+            Case {
+                desc: "invalid config created timestamp",
+                annotation_version: None,
+                labels: &[],
+                created: Some("not-a-timestamp"),
+                expect_version: None,
+                expect_timestamp: None,
+            },
+        ];
+
+        for case in cases {
+            let mut annotations = HashMap::new();
+            if let Some(version) = case.annotation_version {
+                annotations.insert(ANNOTATION_VERSION.to_owned(), version.to_owned());
+            }
+            annotations.insert(
+                ANNOTATION_CREATED.to_owned(),
+                ANNOTATION_CREATED_DECOY.to_owned(),
+            );
+            let config_desc = Descriptor::new(
+                MediaType::ImageConfig,
+                0,
+                Digest::from_str(
+                    "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                )
+                .unwrap(),
+            );
+            let manifest = ImageManifestBuilder::default()
+                .schema_version(SCHEMA_VERSION)
+                .config(config_desc)
+                .layers(Vec::<Descriptor>::new())
+                .annotations(annotations)
+                .build()
+                .unwrap();
+
+            let mut image = ImageConfigurationBuilder::default();
+            if !case.labels.is_empty() {
+                let labels: HashMap<String, String> = case
+                    .labels
+                    .iter()
+                    .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+                    .collect();
+                let config = ConfigBuilder::default().labels(labels).build().unwrap();
+                image = image.config(config);
+            }
+            if let Some(created) = case.created {
+                image = image.created(created);
+            }
+            let image = image.build().unwrap();
+
+            let (version, timestamp) = image_version_and_created(&manifest, &image);
+            assert_eq!(version.as_deref(), case.expect_version, "{}", case.desc);
+            assert_eq!(
+                timestamp,
+                case.expect_timestamp.and_then(try_deserialize_timestamp),
+                "{}",
+                case.desc
+            );
+        }
+    }
+
     #[test]
     fn test_composefs_parsing() {
-        const DIGEST: &str = "8b7df143d91c716ecfa5fc1730022f6b421b05cedee8fd52b1fc65a96030ad52";
+        const DIGEST: &str = "8b7df143d91c716ecfa5fc1730022f6b421b05cedee8fd52b1fc65a96030ad528b7df143d91c716ecfa5fc1730022f6b421b05cedee8fd52b1fc65a96030ad52";
         let v = ComposefsCmdline::new(DIGEST);
         assert!(!v.allow_missing_fsverity);
         assert_eq!(v.digest.as_ref(), DIGEST);
         let v = ComposefsCmdline::new(&format!("?{}", DIGEST));
         assert!(v.allow_missing_fsverity);
         assert_eq!(v.digest.as_ref(), DIGEST);
+    }
+
+    #[test]
+    fn test_build_composefs_karg() -> Result<()> {
+        let hex = "ab".repeat(64);
+        let digest = || Sha512HashValue::from_hex(&hex).unwrap();
+
+        assert_eq!(
+            build_composefs_karg(digest(), FormatVersion::V1, false),
+            format!("composefs.digest=v1-sha512-12:{hex}")
+        );
+        assert_eq!(
+            build_composefs_karg(digest(), FormatVersion::V2, true),
+            format!("composefs=?{hex}")
+        );
+
+        let cmdline = Cmdline::from(format!("composefs.digest=v1-sha512-12:{hex}"));
+        assert_eq!(
+            ComposefsCmdline::find_in_cmdline(&cmdline)?
+                .expect("composefs argument should be present")
+                .digest
+                .as_ref(),
+            hex
+        );
+
+        Ok(())
     }
 
     #[test]
@@ -1549,55 +1922,123 @@ mod tests {
     }
 
     #[test]
-    fn test_find_in_cmdline() {
-        const DIGEST: &str = "8b7df143d91c716ecfa5fc1730022f6b421b05cedee8fd52b1fc65a96030ad52";
+    fn test_find_in_cmdline() -> Result<()> {
+        const DIGEST: &str = "8b7df143d91c716ecfa5fc1730022f6b421b05cedee8fd52b1fc65a96030ad528b7df143d91c716ecfa5fc1730022f6b421b05cedee8fd52b1fc65a96030ad52";
 
-        // Test case: cmdline contains composefs parameter
-        let cmdline = Cmdline::from(format!("root=UUID=abc123 rw composefs={}", DIGEST));
-        let result = ComposefsCmdline::find_in_cmdline(&cmdline);
-        assert!(result.is_some());
-        let cfs = result.unwrap();
-        assert_eq!(cfs.digest.as_ref(), DIGEST);
-        assert!(!cfs.allow_missing_fsverity);
+        let cases = [
+            ("absent", "root=UUID=abc123 rw quiet", None, false),
+            ("legacy", "composefs={DIGEST}", Some(DIGEST), false),
+            (
+                "v1",
+                "composefs.digest=v1-sha512-12:{DIGEST}",
+                Some(DIGEST),
+                false,
+            ),
+            (
+                "dual",
+                "composefs={DIGEST} composefs.digest=v1-sha512-12:{DIGEST}",
+                Some(DIGEST),
+                false,
+            ),
+            ("legacy-insecure", "composefs=?{DIGEST}", Some(DIGEST), true),
+            ("malformed", "composefs=not-a-digest", None, false),
+        ];
 
-        // Test case: cmdline contains composefs parameter with allow_missing_fsverity
-        let cmdline = Cmdline::from(format!("root=UUID=abc123 rw composefs=?{}", DIGEST));
-        let result = ComposefsCmdline::find_in_cmdline(&cmdline);
-        assert!(result.is_some());
-        let cfs = result.unwrap();
-        assert_eq!(cfs.digest.as_ref(), DIGEST);
-        assert!(cfs.allow_missing_fsverity);
+        for (name, input, expected_digest, insecure) in cases {
+            let input = input.replace("{DIGEST}", DIGEST);
+            let result = ComposefsCmdline::find_in_cmdline(&Cmdline::from(input));
+            if name == "malformed" {
+                let error = match result {
+                    Err(error) => error,
+                    Ok(_) => panic!("malformed composefs argument must fail"),
+                };
+                assert!(
+                    format!("{error:#}").contains("Parsing composefs kernel command line"),
+                    "{error:#}"
+                );
+                assert!(format!("{error:#}").contains("composefs="), "{error:#}");
+            } else if let Some(expected_digest) = expected_digest {
+                let cfs = result?.expect("composefs argument should be present");
+                assert_eq!(cfs.digest.as_ref(), expected_digest);
+                assert_eq!(cfs.allow_missing_fsverity, insecure);
+            } else {
+                assert!(result?.is_none(), "{name} should not match");
+            }
+        }
 
-        // Test case: cmdline does not contain composefs parameter
-        let cmdline = Cmdline::from("root=UUID=abc123 rw quiet");
-        let result = ComposefsCmdline::find_in_cmdline(&cmdline);
-        assert!(result.is_none());
+        Ok(())
+    }
 
-        // Test case: empty cmdline
-        let cmdline = Cmdline::from("");
-        let result = ComposefsCmdline::find_in_cmdline(&cmdline);
-        assert!(result.is_none());
+    #[test]
+    fn test_reconcile_composefs_cmdline_with_mount_source() -> Result<()> {
+        let digest_v1 = "ab".repeat(64);
+        let digest_v2 = "cd".repeat(64);
+        let cases = [
+            (
+                "preferred V1, actual V2, strict",
+                format!("composefs.digest=v1-sha512-12:{digest_v1}"),
+                format!("composefs:{digest_v2}"),
+                digest_v2.as_str(),
+                false,
+                false,
+            ),
+            (
+                "preferred V2, actual V2, allow missing, transient",
+                format!("composefs=?{digest_v1}"),
+                format!("transient:composefs={digest_v2}"),
+                digest_v2.as_str(),
+                true,
+                true,
+            ),
+            (
+                "matching digest, strict, normal",
+                format!("composefs={digest_v1}"),
+                format!("composefs:{digest_v1}"),
+                digest_v1.as_str(),
+                false,
+                false,
+            ),
+            (
+                "matching digest, allow missing, transient",
+                format!("composefs=?{digest_v1}"),
+                format!("transient:composefs={digest_v1}"),
+                digest_v1.as_str(),
+                true,
+                true,
+            ),
+        ];
 
-        // Test case: cmdline with other parameters and composefs at different positions
-        let cmdline = Cmdline::from(format!("quiet composefs={} loglevel=3", DIGEST));
-        let result = ComposefsCmdline::find_in_cmdline(&cmdline);
-        assert!(result.is_some());
-        let cfs = result.unwrap();
-        assert_eq!(cfs.digest.as_ref(), DIGEST);
-        assert!(!cfs.allow_missing_fsverity);
+        for (
+            name,
+            cmdline,
+            mount_source,
+            expected_digest,
+            expected_allow_missing,
+            expected_transient,
+        ) in cases
+        {
+            let parsed = ComposefsCmdline::find_in_cmdline(&Cmdline::from(cmdline))?
+                .unwrap_or_else(|| panic!("{name}: composefs argument should be present"));
+            let reconciled = reconcile_composefs_cmdline_with_mount_source(parsed, &mount_source)?;
+            assert_eq!(reconciled.digest.as_ref(), expected_digest, "{name}");
+            assert_eq!(
+                reconciled.allow_missing_fsverity, expected_allow_missing,
+                "{name}"
+            );
+            assert_eq!(reconciled.is_transient, expected_transient, "{name}");
+        }
 
-        // Test case: cmdline with composefs at the beginning
-        let cmdline = Cmdline::from(format!("composefs=?{} root=UUID=abc123 quiet", DIGEST));
-        let result = ComposefsCmdline::find_in_cmdline(&cmdline);
-        assert!(result.is_some());
-        let cfs = result.unwrap();
-        assert_eq!(cfs.digest.as_ref(), DIGEST);
-        assert!(cfs.allow_missing_fsverity);
+        let parsed = ComposefsCmdline::new(&digest_v1);
+        let error = match reconcile_composefs_cmdline_with_mount_source(parsed, "ext4") {
+            Ok(_) => panic!("invalid mount source must fail"),
+            Err(error) => error,
+        };
+        assert!(
+            format!("{error:#}").contains("Root not mounted using composefs (source: ext4)"),
+            "{error:#}"
+        );
 
-        // Test case: cmdline with similar parameter names (should not match)
-        let cmdline = Cmdline::from(format!("composefs_backup={} root=UUID=abc123", DIGEST));
-        let result = ComposefsCmdline::find_in_cmdline(&cmdline);
-        assert!(result.is_none());
+        Ok(())
     }
 
     use crate::testutils::fake_digest_version;

@@ -65,6 +65,7 @@ RUN --network=none --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp
       --secrets /run/secrets \
       --kernel-dir /run/kernel/boot/\$kver \
       --seal-state $seal_state \
+      --erofs-version "${BOOTC_erofs_version:-v1}" \
       "${allow_missing_verity[@]}"
 
 RUNEOF
@@ -170,7 +171,6 @@ COMPOSEFS_BACKEND_PARAMS=()
 KARGS=("--karg=root=UUID=$ROOT_UUID")
 
 if [[ $is_composefs != "null" ]]; then
-    COMPOSEFS_BACKEND_PARAMS+=("--composefs-backend")
     COMPOSEFS_BACKEND_PARAMS+=("--bootloader" "${bootloader}")
 
     tune2fs -O verity /dev/BL/var02

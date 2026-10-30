@@ -24,6 +24,8 @@ set -xeuo pipefail
 cargo doc --workspace --no-deps --document-private-items
 # Also build docs for key external git dependencies (not on docs.rs)
 cargo doc --no-deps --document-private-items -p composefs-ctl
+# Check sources before mdBook can create placeholders for missing chapters.
+cargo run --locked --package xtask -- check-docs
 # Build mdbook
 cd docs
 mdbook-mermaid install .

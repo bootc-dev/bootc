@@ -24,19 +24,13 @@ Currently by default, the update will be applied at shutdown time via `ostree-fi
 There is also an explicit `bootc upgrade --apply` verb which will automatically take action (rebooting)
 if the system has changed.
 
-The `--apply` option currently always reboots the system. In the future, this command may detect cases where no kernel changes are queued and perform a userspace-only restart instead.
-
 However, in the future this is likely to change such that reboots outside of a `bootc upgrade --apply`
 do *not* automatically apply the update in addition.
 
 ## Soft Reboot
 
-The `--soft-reboot` option configures soft reboot behavior when used with `--apply`:
-
-- `required`: The operation will fail if soft reboot is not available on the target system
-- `auto`: Uses soft reboot if available on the target system, otherwise falls back to a regular reboot
-
-Soft reboot allows faster system restart by avoiding full hardware reboot when possible.
+For shared `--apply` and `--soft-reboot` behavior, see
+[Soft reboots](../bootc-upgrades.7.md#soft-reboots).
 
 # OPTIONS
 
@@ -72,6 +66,18 @@ Soft reboot allows faster system restart by avoiding full hardware reboot when p
 **--tag**=*TAG*
 
     Upgrade to a different tag of the currently booted image
+
+**--from-delta**=*PATH*
+
+    Upgrade from a local oci-delta artifact instead of the network
+
+**--uki-addon**=*SCOPED*
+
+    Experimental. Name of the local/scoped UKI addons to install without the ".addon.efi" suffix. This option can be provided multiple times if multiple addons are to be installed (composefs backend only). On upgrade and switch, scoped addons already installed are carried forward; passing this flag adds further addons on top
+
+**--global-uki-addon**=*GLOBAL*
+
+    Experimental. Name of the global UKI addons to install without the ".addon.efi" suffix. This option can be provided multiple times if multiple addons are to be installed (composefs backend only). On upgrade and switch, global addons already installed are carried forward; passing this flag adds further addons on top
 
 <!-- END GENERATED OPTIONS -->
 

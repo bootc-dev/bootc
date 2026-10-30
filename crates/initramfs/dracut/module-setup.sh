@@ -26,4 +26,6 @@ install() {
     # dracut --force in a Containerfile RUN layer).
     [[ -e /usr/lib/composefs/setup-root-conf.toml ]] && \
         inst_simple /usr/lib/composefs/setup-root-conf.toml
+
+    return 0
 }

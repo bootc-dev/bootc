@@ -6,20 +6,21 @@ name = "bootc-lib"
 repository = "https://github.com/bootc-dev/bootc"
 # The intention is we'll follow semver here, even though this
 # project isn't actually published as a crate.
-version = "1.16.12"
+version = "1.17.3"
 # In general we try to keep this pinned to what's in the latest RHEL9.
 rust-version = "1.85.0"
 
 include = ["/src", "/build.rs", "LICENSE-APACHE", "LICENSE-MIT"]
 
 [dependencies]
+oci-delta = "0.1.1"
 # Internal crates
-bootc-blockdev = { package = "bootc-internal-blockdev", path = "../blockdev", version = "1.16.12" }
+bootc-blockdev = { package = "bootc-internal-blockdev", path = "../blockdev", version = "1.17.3" }
 linux-kernel-cmdline = { workspace = true }
-bootc-mount = { package = "bootc-internal-mount", path = "../mount", version = "1.16.12" }
+bootc-mount = { package = "bootc-internal-mount", path = "../mount", version = "1.17.3" }
 bootc-sysusers = { path = "../sysusers" }
 bootc-tmpfiles = { path = "../tmpfiles" }
-bootc-utils = { package = "bootc-internal-utils", path = "../utils", version = "1.16.12" }
+bootc-utils = { package = "bootc-internal-utils", path = "../utils", version = "1.17.3" }
 ostree-ext = { path = "../ostree-ext", features = ["bootc"] }
 etc-merge = { path = "../etc-merge" }
 bootc-initramfs-setup = { path = "../initramfs" }
@@ -51,7 +52,7 @@ regex = { workspace = true }
 rustix = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
-selinux = { workspace = true }
+selinux = { workspace = true, optional = true }
 tempfile = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["io-std", "time", "process", "rt", "net"] }
@@ -78,11 +79,14 @@ uuid = { version = "1.8.0", features = ["v4"] }
 uapi-version = "0.4.0"
 
 [dev-dependencies]
+# For the ostree/container test fixtures
+ostree-ext = { path = "../ostree-ext", features = ["bootc", "internal-testing-api"] }
 similar-asserts = { workspace = true }
 static_assertions = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
 
 [features]
-default = ["install-to-disk"]
+default = ["install-to-disk", "selinux"]
 # This feature enables `bootc install to-disk`, which is considered just a "demo"
 # or reference installer; we expect most nontrivial use cases to be using
 # `bootc install to-filesystem`.
@@ -90,11 +94,15 @@ install-to-disk = []
 # This featuares enables `bootc internals publish-rhsm-facts` to integrate with
 # Red Hat Subscription Manager
 rhsm = []
-# Implementation detail of man page generation.
-docgen = ["clap_mangen"]
+# SELinux support, via libselinux. Without it bootc treats SELinux as disabled
+# on the host, for distributions that don't use SELinux (or ship libselinux).
+selinux = ["dep:selinux"]
+# Implementation detail of man page generation. The man pages document the
+# whole CLI, so this also enables install-to-disk.
+docgen = ["clap_mangen", "install-to-disk"]
 
 [build-dependencies]
-cargo_metadata = "0.19"
+cargo_metadata = "0.23"
 
 [lints]
 workspace = true

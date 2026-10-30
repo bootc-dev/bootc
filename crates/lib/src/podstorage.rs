@@ -126,6 +126,7 @@ pub(crate) fn bind_storage_roots(
             // But...how did we avoid that circular dependency by using the process cwd?
             //
             // I tried making the mounts recursively private, but that didn't help.
+            // (We do make them private below, but for a different reason.)
             let oldwd = rustix::fs::open(
                 ".",
                 OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::RDONLY,
@@ -133,6 +134,16 @@ pub(crate) fn bind_storage_roots(
             )?;
             rustix::process::fchdir(&storage_root)?;
             rustix::thread::unshare_unsafe(rustix::thread::UnshareFlags::NEWNS)?;
+            // The new namespace inherits the caller's propagation. If that is shared
+            // (e.g. `install to-existing-root --source-imgref` run directly on a systemd
+            // host, which skips our usual unshare), the bind below would propagate back
+            // and stay mounted on the host's /run/bootc/storage after we exit.
+            // https://github.com/bootc-dev/bootc/issues/2455
+            rustix::mount::mount_change(
+                c"/",
+                rustix::mount::MountPropagationFlags::PRIVATE
+                    | rustix::mount::MountPropagationFlags::REC,
+            )?;
             rustix::mount::mount_bind(".", STORAGE_ALIAS_DIR)?;
             rustix::process::fchdir(&oldwd)?;
             Ok(())

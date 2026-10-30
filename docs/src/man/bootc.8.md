@@ -17,6 +17,9 @@ directly via `bootc install` (executed as part of a container) or via
 another mechanism such as an OS installer tool, further updates can be
 pulled and `bootc upgrade`.
 
+For guides to building, installing, and managing bootable images, see
+**bootc-docs**(7).
+
 <!-- BEGIN GENERATED OPTIONS -->
 <!-- END GENERATED OPTIONS -->
 
@@ -34,11 +37,14 @@ pulled and `bootc upgrade`.
 | **bootc install** | Install the running container to a target |
 | **bootc container** | Operations which can be executed as part of a container build |
 | **bootc loader-entries** | Operations on Boot Loader Specification (BLS) entries |
-| **bootc composefs-finalize-staged** |  |
+| **bootc uki-addon** | Perform operations related to UKI Addons |
 
 <!-- END GENERATED SUBCOMMANDS -->
+
+# SEE ALSO
+
+**bootc-docs**(7)
 
 # VERSION
 
 <!-- VERSION PLACEHOLDER -->
-

@@ -4,9 +4,16 @@ bootc-install-config.toml
 
 # DESCRIPTION
 
-The `bootc install` process supports some basic customization.  This configuration file
-is in TOML format, and will be discovered by the installation process in via "drop-in"
-files in `/usr/lib/bootc/install` that are processed in alphanumerical order.
+The `bootc install` process supports customization through TOML drop-in files
+in `/usr/lib/bootc/install`, `/usr/local/lib/bootc/install`, `/etc/bootc/install`,
+and `/run/bootc/install`. If the same filename occurs in multiple directories,
+the file in the later directory in this list takes precedence. The selected
+files are then processed in alphanumerical filename order.
+
+Fragments whose `match_architectures` includes the current architecture, or
+which omit that field, are merged. Values such as the root filesystem type
+are overridden when specified in a later fragment. The `kargs` and
+`karg-deletes` lists are appended instead of replaced.
 
 The individual files are merged into a single final installation config, so it is
 supported for e.g. a container base image to provide a default root filesystem type,

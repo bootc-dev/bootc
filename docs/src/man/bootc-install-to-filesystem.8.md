@@ -122,23 +122,28 @@ is currently expected to be empty by default.
     - grub
     - grub-cc
     - systemd
+    - ukiboot
     - none
 
 **--composefs-backend**
 
-    If true, composefs backend is used, else ostree backend is used
+    Use the composefs backend instead of ostree. This is the default for images with a UKI, and for images with /usr/lib/composefs/setup-root-conf.toml and no ostree prepare-root.conf
 
     Default: false
 
 **--allow-missing-verity**
 
-    Make fs-verity validation optional in case the filesystem doesn't support it
+    Make fs-verity validation optional in case the filesystem doesn't support it (composefs backend only)
 
     Default: false
 
-**--uki-addon**=*UKI_ADDON*
+**--uki-addon**=*SCOPED*
 
-    Name of the UKI addons to install without the ".efi.addon" suffix. This option can be provided multiple times if multiple addons are to be installed
+    Experimental. Name of the local/scoped UKI addons to install without the ".addon.efi" suffix. This option can be provided multiple times if multiple addons are to be installed (composefs backend only). On upgrade and switch, scoped addons already installed are carried forward; passing this flag adds further addons on top
+
+**--global-uki-addon**=*GLOBAL*
+
+    Experimental. Name of the global UKI addons to install without the ".addon.efi" suffix. This option can be provided multiple times if multiple addons are to be installed (composefs backend only). On upgrade and switch, global addons already installed are carried forward; passing this flag adds further addons on top
 
 <!-- END GENERATED OPTIONS -->
 

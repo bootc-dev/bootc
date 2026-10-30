@@ -46,7 +46,7 @@ const BOOTCTL_RANDOM_SEED_MIN_VERSION: u32 = 257;
 /// in place (bootupd will overwrite them during installation).
 // TODO: clean all ESPs on multi-device setups
 pub(crate) fn mount_esp_part(root: &Dir, root_path: &Utf8Path, is_ostree: bool) -> Result<()> {
-    let efi_path = Utf8Path::new("boot").join(crate::bootloader::EFI_DIR);
+    let efi_path = Utf8Path::new(crate::install::BOOT).join(crate::bootloader::EFI_DIR);
     let Some(esp_fd) = root
         .open_dir_optional(&efi_path)
         .context("Opening /boot/efi")?
@@ -290,7 +290,7 @@ pub(crate) fn install_systemd_boot(
     if configopts.generic_image {
         bootctl_args.push("--no-variables");
         // `--random-seed` was only added to `bootctl install` in systemd 257.
-        let systemd_version = bootctl_systemd_version()?;
+        let systemd_version = systemd_version()?;
         if systemd_version >= BOOTCTL_RANDOM_SEED_MIN_VERSION {
             bootctl_args.extend(["--random-seed", "no"]);
         } else {
@@ -309,6 +309,14 @@ pub(crate) fn install_systemd_boot(
         // write it.  Redirect into /tmp (a tmpfs mounted by MountedImageRoot)
         // so the write succeeds and is automatically discarded.
         .env("KERNEL_INSTALL_CONF_ROOT", KERNEL_INSTALL_CONF_ROOT)
+        // If systemd thinks it's inside of a chroot, it will fall
+        // back to "graceful" mode.  This means that bootctl will exit
+        // 0 even if bootloader installation doesn't go as expected,
+        // and we don't want that.  Explicitly disable chroot
+        // detection.
+        //
+        // See: https://github.com/bootc-dev/bootc/issues/2486
+        .env("SYSTEMD_IN_CHROOT", "0")
         .log_debug()
         // Capture stderr so bootctl error messages appear in our error chain.
         .run_capture_stderr()?;
@@ -353,15 +361,19 @@ pub(crate) fn install_systemd_boot(
     Ok(())
 }
 
-#[context("Querying bootctl version")]
-pub(crate) fn bootctl_systemd_version() -> Result<u32> {
+/// Query the major version of systemd via `systemctl --version`, caching the
+/// result so it can be shared across callers (bootctl, systemd-repart, etc.).
+#[context("Querying systemd version")]
+pub(crate) fn systemd_version() -> Result<u32> {
     static VERSION: OnceLock<u32> = OnceLock::new();
 
     if let Some(v) = VERSION.get() {
         return Ok(*v);
     };
 
-    let out = Command::new("bootctl").arg("--version").run_get_string()?;
+    let out = Command::new("systemctl")
+        .arg("--version")
+        .run_get_string()?;
     let v = parse_systemd_version(&out).context("Failed to parse version to integer")?;
 
     let version = VERSION.get_or_init(|| v);
@@ -371,7 +383,7 @@ pub(crate) fn bootctl_systemd_version() -> Result<u32> {
 
 /// Parse the systemd major version from `bootctl --version` output, whose first
 /// line looks like `systemd 259 (259.5-0ubuntu3)`.
-fn parse_systemd_version(output: &str) -> Result<u32> {
+pub(crate) fn parse_systemd_version(output: &str) -> Result<u32> {
     output
         .split_whitespace()
         .nth(1)

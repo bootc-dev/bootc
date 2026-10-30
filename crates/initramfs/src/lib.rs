@@ -26,9 +26,9 @@ use composefs::{
     fsverity::{FsVerityHashValue, Sha512HashValue},
     mount::FsHandle,
     mountcompat::{overlayfs_set_fd, overlayfs_set_lower_and_data_fds, prepare_mount},
-    repository::Repository,
+    repository::{ImageNotFound, Repository},
 };
-use composefs_boot::cmdline::ComposefsCmdline;
+use composefs_boot::cmdline::{ComposefsCmdline, KARG_COMPOSEFS_DIGEST, KARG_V2};
 use composefs_ctl::composefs;
 use composefs_ctl::composefs_boot;
 
@@ -67,9 +67,9 @@ fn mount_setattr(fd: impl AsFd, flags: libc::c_int, attr: &MountAttr) -> Result<
     Ok(())
 }
 
-/// Set mount to readonly
+/// Set a detached mount tree read-only without reopening its path.
 #[context("Setting mount readonly")]
-fn set_mount_readonly(fd: impl AsFd) -> Result<()> {
+pub fn set_mount_readonly(fd: impl AsFd) -> Result<()> {
     let attr = MountAttr {
         attr_set: MOUNT_ATTR_RDONLY,
         attr_clr: 0,
@@ -77,6 +77,18 @@ fn set_mount_readonly(fd: impl AsFd) -> Result<()> {
         userns_fd: 0,
     };
     mount_setattr(fd, libc::AT_EMPTY_PATH, &attr)
+}
+
+/// Set a mount and every mount below it read-only.
+#[context("Setting mount tree readonly")]
+pub fn set_mount_tree_readonly(fd: impl AsFd) -> Result<()> {
+    let attr = MountAttr {
+        attr_set: MOUNT_ATTR_RDONLY,
+        attr_clr: 0,
+        propagation: 0,
+        userns_fd: 0,
+    };
+    mount_setattr(fd, libc::AT_EMPTY_PATH | libc::AT_RECURSIVE, &attr)
 }
 
 /// Types of mounts supported by the configuration
@@ -111,12 +123,15 @@ pub struct MountConfig {
     pub transient: bool,
 }
 
+/// The setup-root configuration, see `bootc-setup-root-conf(5)`.
 #[derive(Debug, Deserialize, Default, PartialEq)]
-struct Config {
+pub struct Config {
+    /// How `/etc` is mounted
     #[serde(default)]
-    etc: MountConfig,
+    pub etc: MountConfig,
+    /// How `/var` is mounted
     #[serde(default)]
-    var: MountConfig,
+    pub var: MountConfig,
     #[serde(default)]
     root: RootConfig,
 }
@@ -362,6 +377,81 @@ pub fn mount_composefs_image(
     Ok(rootfs)
 }
 
+fn parse_composefs_candidates(cmdline: &str) -> Result<Vec<ComposefsCmdline<Sha512HashValue>>> {
+    let mut candidates = Vec::new();
+    let mut seen_legacy = false;
+
+    // The repository policy is deliberately kept separate from the cmdline:
+    // the '?' marker only requests that policy, and setup_root decides below
+    // whether the repository permits it.  Parse the cmdline with the kernel
+    // parser so quoted parameters remain a single parameter.
+    for parameter in Cmdline::from(cmdline).iter() {
+        let key = parameter.key();
+        if &*key != KARG_COMPOSEFS_DIGEST && &*key != KARG_V2 {
+            continue;
+        }
+
+        let value = parameter
+            .value()
+            .ok_or_else(|| anyhow::anyhow!("{key}= composefs kernel argument has no value"))?;
+        if &*key == KARG_V2 {
+            anyhow::ensure!(
+                !seen_legacy,
+                "duplicate {KARG_V2}= composefs kernel argument"
+            );
+            seen_legacy = true;
+        }
+
+        let parameter = format!("{key}={value}");
+        if let Some(candidate) = ComposefsCmdline::<Sha512HashValue>::from_cmdline(&parameter)? {
+            candidates.push(candidate);
+        }
+    }
+    Ok(candidates)
+}
+
+fn select_composefs_candidate<T>(
+    candidates: &[ComposefsCmdline<Sha512HashValue>],
+    mut mount: impl FnMut(&ComposefsCmdline<Sha512HashValue>) -> Result<Option<T>>,
+) -> Result<(T, ComposefsCmdline<Sha512HashValue>)> {
+    for candidate in candidates {
+        if let Some(mounted) = mount(candidate)? {
+            return Ok((mounted, candidate.clone()));
+        }
+    }
+    let tried = candidates
+        .iter()
+        .map(|candidate| candidate.digest().to_hex())
+        .collect::<Vec<_>>()
+        .join(", ");
+    anyhow::bail!("no composefs image found (tried: {tried})")
+}
+
+fn mount_composefs_candidate(
+    sysroot: &OwnedFd,
+    candidate: &ComposefsCmdline<Sha512HashValue>,
+    allow_missing_fsverity: bool,
+) -> Result<Option<OwnedFd>> {
+    // `allow_missing_fsverity` is repository policy, not a trust decision
+    // supplied by the kernel command line.  A cmdline '?' may only request
+    // the already-permitted insecure mode; it must never weaken strict policy.
+    if candidate.is_insecure() && !allow_missing_fsverity {
+        anyhow::bail!(
+            "composefs candidate requests insecure fs-verity, but the repository policy is strict"
+        );
+    }
+
+    match mount_composefs_image(
+        sysroot,
+        &candidate.digest().to_hex(),
+        allow_missing_fsverity,
+    ) {
+        Ok(rootfs) => Ok(Some(rootfs)),
+        Err(error) if error.downcast_ref::<ImageNotFound>().is_some() => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
 /// Mounts a subdirectory with the specified configuration
 #[context("Mounting subdirectory")]
 pub fn mount_subdir(
@@ -468,17 +558,27 @@ pub fn setup_root(args: Args) -> Result<()> {
         config
     };
 
-    let composefs_info = ComposefsCmdline::<Sha512HashValue>::from_cmdline(&cmdline)
-        .context("Failed to parse composefs cmdline")?
-        .ok_or_else(|| anyhow::anyhow!("No composefs image in cmdline"))?;
+    let candidates =
+        parse_composefs_candidates(&cmdline).context("Failed to parse composefs cmdline")?;
+    if candidates.is_empty() {
+        anyhow::bail!("No composefs image in cmdline");
+    }
+    let allow_missing_fsverity = candidates[0].is_insecure();
+    if candidates
+        .iter()
+        .any(|candidate| candidate.is_insecure() != allow_missing_fsverity)
+    {
+        anyhow::bail!("composefs candidates have mixed fs-verity policy");
+    }
 
-    let new_root = match &args.root_fs {
-        Some(path) => open_root_fs(path).context("Failed to clone specified root fs")?,
-        None => mount_composefs_image(
-            &sysroot,
-            &composefs_info.digest().to_hex(),
-            composefs_info.is_insecure(),
-        )?,
+    let (new_root, composefs_info) = match &args.root_fs {
+        Some(path) => (
+            open_root_fs(path).context("Failed to clone specified root fs")?,
+            candidates[0].clone(),
+        ),
+        None => select_composefs_candidate(&candidates, |candidate| {
+            mount_composefs_candidate(&sysroot, candidate, allow_missing_fsverity)
+        })?,
     };
 
     // we need to clone this before the next step to make sure we get the old one
@@ -632,5 +732,117 @@ mod tests {
         let config = parse("[root]\ntransient = true\n[etc]\nmount = \"root\"");
         assert_eq!(config.root.transient, true);
         assert_eq!(config.etc.mount, Some(MountType::None));
+    }
+
+    fn v1(digest: Sha512HashValue, insecure: bool) -> String {
+        ComposefsCmdline::new_v1(digest, insecure).to_cmdline_arg()
+    }
+
+    fn v2(digest: Sha512HashValue, insecure: bool) -> String {
+        ComposefsCmdline::new_v2(digest, insecure).to_cmdline_arg()
+    }
+
+    #[test]
+    fn test_composefs_candidate_priority_and_selected_state() {
+        let v1_digest = Sha512HashValue::EMPTY;
+        let v2_digest = Sha512HashValue::from_hex("aa".repeat(64)).unwrap();
+        let cmdline = format!(
+            "quiet {} {}",
+            v1(v1_digest.clone(), false),
+            v2(v2_digest.clone(), false)
+        );
+        let candidates = parse_composefs_candidates(&cmdline).unwrap();
+        let (selected, selected_cmdline) = select_composefs_candidate(&candidates, |candidate| {
+            Ok((candidate.digest() == &v2_digest).then_some(candidate.digest().to_hex()))
+        })
+        .unwrap();
+        assert_eq!(selected, v2_digest.to_hex());
+        assert_eq!(selected_cmdline.digest(), &v2_digest);
+
+        let (selected, _) = select_composefs_candidate(&candidates, |candidate| {
+            Ok(Some(candidate.digest().to_hex()))
+        })
+        .unwrap();
+        assert_eq!(selected, v1_digest.to_hex());
+    }
+
+    #[test]
+    fn test_composefs_candidate_parse_and_policy_errors() {
+        let malformed = ["composefs=not-a-digest", "composefs.digest=v9-sha512-12:aa"];
+        for cmdline in malformed {
+            assert!(
+                parse_composefs_candidates(cmdline).is_err(),
+                "expected parse error for {cmdline:?}"
+            );
+        }
+
+        let strict = parse_composefs_candidates(&v1(Sha512HashValue::EMPTY, false)).unwrap();
+        let insecure = parse_composefs_candidates(&v2(Sha512HashValue::EMPTY, true)).unwrap();
+        assert_ne!(strict[0].is_insecure(), insecure[0].is_insecure());
+    }
+
+    #[test]
+    fn test_composefs_candidate_parser_cases() {
+        let first = Sha512HashValue::EMPTY;
+        let second = Sha512HashValue::from_hex("aa".repeat(64)).unwrap();
+        let cases = [
+            ("single v1", v1(first.clone(), false), vec![first.clone()]),
+            ("single v2", v2(first.clone(), false), vec![first.clone()]),
+            (
+                "dual preserves cmdline order",
+                format!("{} {}", v2(first.clone(), false), v1(second.clone(), false)),
+                vec![first.clone(), second.clone()],
+            ),
+            (
+                "quoted parameter",
+                format!("quiet \"{}\" rw", v1(first.clone(), false)),
+                vec![first.clone()],
+            ),
+            (
+                "skips sha256 descriptor",
+                format!(
+                    "composefs.digest=v1-sha256-12:{} {} {}",
+                    "aa".repeat(32),
+                    v1(first.clone(), false),
+                    v2(second.clone(), false)
+                ),
+                vec![first.clone(), second.clone()],
+            ),
+        ];
+
+        for (name, cmdline, expected_digests) in cases {
+            let candidates = parse_composefs_candidates(&cmdline)
+                .unwrap_or_else(|error| panic!("{name} unexpectedly failed: {error:#}"));
+            assert_eq!(
+                candidates
+                    .iter()
+                    .map(|candidate| candidate.digest().clone())
+                    .collect::<Vec<_>>(),
+                expected_digests,
+                "case {name}"
+            );
+        }
+
+        let duplicate_cases = [
+            format!("{} {}", v2(first.clone(), false), v2(second.clone(), false)),
+            format!("{} {}", v2(first.clone(), false), v2(first.clone(), false)),
+        ];
+        for cmdline in duplicate_cases {
+            assert!(
+                parse_composefs_candidates(&cmdline).is_err(),
+                "duplicate recognized key accepted: {cmdline}"
+            );
+        }
+
+        let irrelevant = [
+            "quiet splash rw",
+            "root=UUID=abc composefs.digest=v1-sha256-12:aa",
+        ];
+        for cmdline in irrelevant {
+            assert!(
+                parse_composefs_candidates(cmdline).unwrap().is_empty(),
+                "irrelevant argument was treated as a candidate: {cmdline}"
+            );
+        }
     }
 }

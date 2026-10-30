@@ -120,8 +120,8 @@ jobs:
               || [[ "$EVENT" == "pull_request" && "$MERGE_QUEUE_ENABLED" != "true" ]] \
               || echo "$LABELS" | jq -e 'index("ci/merge")' > /dev/null; }; then
             # Full suite: all OSes
-            echo 'package_os_matrix=["fedora-43","fedora-44","fedora-45","fedora-46","centos-9","centos-10"]' >> "$GITHUB_OUTPUT"
-            echo 'integration_os_matrix=["fedora-43","fedora-44","centos-9","centos-10"]' >> "$GITHUB_OUTPUT"
+            echo 'package_os_matrix=["fedora-44","fedora-45","fedora-46","centos-9","centos-10"]' >> "$GITHUB_OUTPUT"
+            echo 'integration_os_matrix=["fedora-44","centos-9","centos-10"]' >> "$GITHUB_OUTPUT"
             echo 'upgrade_os_matrix=["fedora-44","centos-10"]' >> "$GITHUB_OUTPUT"
             echo 'run_heavy=true' >> "$GITHUB_OUTPUT"
           elif [[ "$DOCS_ONLY" != "true" ]] && echo "$LABELS" | jq -e 'index("ci/tier-1")' > /dev/null; then
@@ -140,7 +140,7 @@ jobs:
 
   # Run basic validation checks (linting, formatting, etc)
   validate:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7
       - name: Bootc Ubuntu Setup
@@ -149,7 +149,7 @@ jobs:
         run: just validate
   # Check for security vulnerabilities and license compliance
   cargo-deny:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
     - uses: actions/checkout@v7
     - uses: EmbarkStudios/cargo-deny-action@v2
@@ -167,7 +167,7 @@ jobs:
     # Re-enable once the underlying hang is root-caused.
     if: false && needs.compute-ci-level.outputs.run_heavy == 'true'
     needs: compute-ci-level
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -236,7 +236,7 @@ jobs:
           done
   # Test that we can build documentation
   docs:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7
       - name: Bootc Ubuntu Setup
@@ -254,7 +254,7 @@ jobs:
       matrix:
         test_os: ${{ fromJson(needs.compute-ci-level.outputs.package_os_matrix) }}
 
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     # Rawhide is best-effort; don't let it block merges
     continue-on-error: ${{ matrix.test_os == 'fedora-46' }}
 
@@ -265,8 +265,10 @@ jobs:
 
       - name: Setup env
         run: |
-          BASE=$(just pullspec-for-os base ${{ matrix.test_os }})
-          echo "BOOTC_base=${BASE}" >> $GITHUB_ENV
+          BASE="$(just pullspec-for-os base "${{ matrix.test_os }}")"
+          BUILDROOT_BASE="$(just pullspec-for-os buildroot-base "${{ matrix.test_os }}")"
+          printf 'BOOTC_base=%s\n' "$BASE" >> "$GITHUB_ENV"
+          printf 'BOOTC_buildroot_base=%s\n' "$BUILDROOT_BASE" >> "$GITHUB_ENV"
 
       - name: Build packages (and verify build system)
         run: just check-buildsys
@@ -276,7 +278,9 @@ jobs:
         with:
           name: packages-${{ matrix.test_os }}
           path: target/packages/*.rpm
-          retention-days: 1
+          # Test jobs download these from this run; keep them long enough
+          # that re-running a flaked job on an older PR still works.
+          retention-days: 7
 
       # Unit tests don't depend on the variant/filesystem/bootloader/boot_type/seal_state
       # axes used by the test-integration matrix below, so we run them once per OS here
@@ -302,9 +306,14 @@ jobs:
         seal_state: ["sealed", "unsealed"]
 
         exclude:
-          # https://github.com/bootc-dev/bootc/issues/1812
+          # centos-9 composefs: only sealed UKI is supported (V1 EROFS).
+          # BLS and unsealed modes require newer dracut/systemd features.
           - test_os: centos-9
             variant: composefs
+            boot_type: bls
+          - test_os: centos-9
+            variant: composefs
+            seal_state: unsealed
           - seal_state: "sealed"
             boot_type: bls
           - seal_state: "sealed"
@@ -329,8 +338,6 @@ jobs:
           # For now only have grub-cc tests in F44
           - test_os: fedora-45
             bootloader: grub-cc
-          - test_os: fedora-43
-            bootloader: grub-cc
           - test_os: centos-9
             bootloader: grub-cc
           - test_os: centos-10
@@ -342,7 +349,7 @@ jobs:
           - bootloader: grub-cc
             seal_state: sealed
 
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
 
     steps:
       - uses: actions/checkout@v7
@@ -355,8 +362,10 @@ jobs:
 
       - name: Setup env
         run: |
-          BASE=$(just pullspec-for-os base ${{ matrix.test_os }})
-          echo "BOOTC_base=${BASE}" >> $GITHUB_ENV
+          BASE="$(just pullspec-for-os base "${{ matrix.test_os }}")"
+          BUILDROOT_BASE="$(just pullspec-for-os buildroot-base "${{ matrix.test_os }}")"
+          printf 'BOOTC_base=%s\n' "$BASE" >> "$GITHUB_ENV"
+          printf 'BOOTC_buildroot_base=%s\n' "$BUILDROOT_BASE" >> "$GITHUB_ENV"
           echo "RUST_BACKTRACE=full" >> $GITHUB_ENV
           echo "RUST_LOG=debug" >> $GITHUB_ENV
 
@@ -441,7 +450,7 @@ jobs:
           - test_os: fedora-44
             variant: composefs
 
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
 
     steps:
       - uses: actions/checkout@v7
@@ -454,8 +463,10 @@ jobs:
 
       - name: Setup env
         run: |
-          BASE=$(just pullspec-for-os base ${{ matrix.test_os }})
-          echo "BOOTC_base=${BASE}" >> $GITHUB_ENV
+          BASE="$(just pullspec-for-os base "${{ matrix.test_os }}")"
+          BUILDROOT_BASE="$(just pullspec-for-os buildroot-base "${{ matrix.test_os }}")"
+          printf 'BOOTC_base=%s\n' "$BASE" >> "$GITHUB_ENV"
+          printf 'BOOTC_buildroot_base=%s\n' "$BUILDROOT_BASE" >> "$GITHUB_ENV"
           echo "BOOTC_variant=${{ matrix.variant }}" >> $GITHUB_ENV
           echo "BOOTC_SKIP_PACKAGE=1" >> $GITHUB_ENV
           echo "RUST_BACKTRACE=full" >> $GITHUB_ENV
@@ -503,7 +514,7 @@ jobs:
           # centos-9 ships an older dracut that lacks the auto-install of setup-root-conf.toml
           - test_os: centos-9
 
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
 
     steps:
       - uses: actions/checkout@v7
@@ -516,8 +527,10 @@ jobs:
 
       - name: Setup env
         run: |
-          BASE=$(just pullspec-for-os base ${{ matrix.test_os }})
-          echo "BOOTC_base=${BASE}" >> $GITHUB_ENV
+          BASE="$(just pullspec-for-os base "${{ matrix.test_os }}")"
+          BUILDROOT_BASE="$(just pullspec-for-os buildroot-base "${{ matrix.test_os }}")"
+          printf 'BOOTC_base=%s\n' "$BASE" >> "$GITHUB_ENV"
+          printf 'BOOTC_buildroot_base=%s\n' "$BUILDROOT_BASE" >> "$GITHUB_ENV"
           echo "BOOTC_variant=composefs" >> $GITHUB_ENV
           echo "BOOTC_baseconfigs=${{ matrix.baseconfigs }}" >> $GITHUB_ENV
           echo "RUST_BACKTRACE=full" >> $GITHUB_ENV
@@ -539,7 +552,7 @@ jobs:
           cargo xtask run-tmt \
             --env=BOOTC_variant=composefs \
             --env=BOOTC_baseconfigs=${{ matrix.baseconfigs }} \
-            --composefs-backend --bootloader=grub --filesystem=ext4 \
+            --filesystem=ext4 \
             --seal-state=unsealed --boot-type=bls \
             --upgrade-image=localhost/bootc-upgrade \
             localhost/bootc readonly
@@ -569,7 +582,7 @@ jobs:
     # We need to change to use coreos-assembler.
     if: false
     needs: [compute-ci-level, package]
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
 
     steps:
       - uses: actions/checkout@v7
@@ -612,7 +625,7 @@ jobs:
   test-container-export:
     if: needs.compute-ci-level.outputs.run_heavy == 'true'
     needs: [compute-ci-level, package]
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
 
     steps:
       - uses: actions/checkout@v7
@@ -642,6 +655,51 @@ jobs:
           name: container-export-test-${{ env.ARCH }}
           path: target/anaconda-test/*.log
 
+  test-ukiboot:
+    if: needs.compute-ci-level.outputs.run_heavy == 'true' && contains(fromJson(needs.compute-ci-level.outputs.package_os_matrix), 'fedora-44')
+    needs: [compute-ci-level, package]
+    runs-on: ubuntu-26.04
+    env:
+      BOOTC_base: quay.io/fedora/fedora-bootc:44
+      BOOTC_buildroot_base: quay.io/fedora/fedora:44
+      BOOTC_variant: ostree
+      BOOTC_SKIP_PACKAGE: "1"
+    steps:
+      - uses: actions/checkout@v7
+      - name: Bootc Ubuntu Setup
+        uses: bootc-dev/actions/bootc-ubuntu-setup@main
+        with:
+          libvirt: true
+      - name: Install bcvk with aboot support
+        # Temporary: Drop once bootc-dev/actions has 0.21.0 or later
+        run: |
+          set -euo pipefail
+          # renovate: datasource=github-releases depName=bootc-dev/bcvk
+          version=0.21.0
+          target=bcvk-x86_64-unknown-linux-gnu
+          td=$(mktemp -d)
+          curl -fL --retry 5 --retry-delay 10 "https://github.com/bootc-dev/bcvk/releases/download/v${version}/${target}.tar.gz" -o "$td/bcvk.tar.gz"
+          tar -xzf "$td/bcvk.tar.gz" -C "$td"
+          sudo install -m 0755 "$td/$target" /usr/local/bin/bcvk
+          bcvk --version
+      - name: Install tmt
+        uses: ./.github/actions/install-tmt
+      - name: Download package artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: packages-fedora-44
+          path: target/packages/
+      - name: Fetch external dependencies
+        run: just build-fetch
+      - name: Install, update, and roll back ukiboot image
+        run: just test-ukiboot
+      - name: Archive test logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ukiboot-test-x86_64
+          path: /var/tmp/tmt
+
   # Gates the full heavy suite. Runs in merge_group / workflow_dispatch, and
   # also directly on PRs whenever compute-ci-level found no merge queue
   # active (see the merge-queue check in that job) — in that case a PR is
@@ -653,7 +711,7 @@ jobs:
   # rather than being skipped along with it.
   required-checks-heavy:
     if: ${{ always() && (github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && needs.compute-ci-level.outputs.merge_queue_enabled != 'true')) }}
-    needs: [compute-ci-level, cargo-deny, validate, install-tests, docs, package, test-integration, test-upgrade, test-baseconfigs, test-container-export]
+    needs: [compute-ci-level, cargo-deny, validate, install-tests, docs, package, test-integration, test-upgrade, test-baseconfigs, test-container-export, test-ukiboot]
     # Cheap aggregation (jq only) — no need for a full VM.
     runs-on: ubuntu-slim
     steps:

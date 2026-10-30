@@ -9,7 +9,10 @@ use ostree_ext::container_utils::{OSTREE_BOOTED, is_ostree_booted_in};
 use ostree_ext::{gio, ostree};
 use rustix::{fd::AsFd, fs::StatVfsMountFlags};
 
+use crate::bootc_composefs::{boot::BootType, state::read_boot_type, status::ComposefsCmdline};
+use crate::composefs_consts::ABOOT_RECONCILE_SERVICE;
 use crate::install::DESTRUCTIVE_CLEANUP;
+use linux_kernel_cmdline::utf8::Cmdline;
 
 const STATUS_ONBOOT_UNIT: &str = "bootc-status-updated-onboot.target";
 const STATUS_PATH_UNIT: &str = "bootc-status-updated.path";
@@ -90,48 +93,58 @@ pub(crate) fn unit_enablement_impl(sysroot: &Dir, unit_dir: &Dir) -> Result<()> 
 
 /// Main entrypoint for the generator
 pub(crate) fn generator(root: &Dir, unit_dir: &Dir) -> Result<()> {
-    // === Relabel unit: runs for ALL composefs boots (native or ostree) ===
+    // Detect composefs and ostree once, reuse across all blocks below.
+    //
+    // composefs always uses overlayfs, so check the filesystem magic first as
+    // a cheap gate.  Then inspect the mount source to distinguish regular
+    // composefs ("composefs:<digest>") from transient ("transient:composefs=<digest>").
+    let is_overlayfs = rustix::fs::fstatfs(root.as_fd())?.f_type == libc::OVERLAYFS_SUPER_MAGIC;
+    let root_source = if is_overlayfs {
+        match bootc_mount::inspect_filesystem(camino::Utf8Path::new("/")) {
+            Ok(fs) => Some(fs.source),
+            Err(e) => {
+                tracing::debug!("Could not inspect root filesystem: {e:#}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let root_is_transient = root_source
+        .as_deref()
+        .is_some_and(|s| s.starts_with("transient:composefs="));
+    let is_composefs = root_is_transient
+        || root_source
+            .as_deref()
+            .is_some_and(|s| s.starts_with("composefs:"));
+    let is_ostree = root.try_exists(OSTREE_BOOTED)?;
+
+    // === Relabel unit: runs for transient composefs boots (native or ostree) ===
     // Must be before the ostree-booted guard because native composefs boots do
     // not write /run/ostree-booted, but still need the relabel unit when any
     // transient overlay is active.
     //
-    // Gate on the root being overlayfs (composefs always mounts an overlay, so
-    // this excludes non-composefs systems without needing the ostree-booted marker).
-    //
     // Two triggering conditions, detected independently:
     //
     // 1. Transient root: the initramfs sets the overlay source to
-    //    "transient:composefs=<digest>" in /proc/self/mountinfo.  Detect via
-    //    inspect_filesystem() rather than fstatvfs() because the `ro` kernel
-    //    cmdline flag can make an otherwise-writable overlay appear read-only
-    //    at generator time.
+    //    "transient:composefs=<digest>" in /proc/self/mountinfo.  Detected
+    //    via root_is_transient above.
     //
     // 2. Transient /etc: this is mounted by bootc-root-setup.service
     //    which runs *after* the generator, so fstatvfs would see the read-only
     //    composefs at generator time.  Read setup-root-conf.toml directly from
     //    the booted image instead.
-    {
-        let st = rustix::fs::fstatfs(root.as_fd())?;
-        if st.f_type == libc::OVERLAYFS_SUPER_MAGIC {
-            let root_is_transient =
-                match bootc_mount::inspect_filesystem(camino::Utf8Path::new("/")) {
-                    Ok(fs) => fs.source.starts_with("transient:composefs="),
-                    Err(e) => {
-                        tracing::debug!("Could not inspect root filesystem: {e:#}");
-                        false
-                    }
-                };
-            let submounts_are_transient = bootc_initramfs_setup::config_has_transient_submounts(
-                std::path::Path::new(bootc_initramfs_setup::SETUP_ROOT_CONF_PATH),
+    if is_composefs {
+        let submounts_are_transient = bootc_initramfs_setup::config_has_transient_submounts(
+            std::path::Path::new(bootc_initramfs_setup::SETUP_ROOT_CONF_PATH),
+        );
+        if root_is_transient || submounts_are_transient {
+            tracing::debug!(
+                root_is_transient,
+                submounts_are_transient,
+                "Transient overlay detected; generating relabel unit"
             );
-            if root_is_transient || submounts_are_transient {
-                tracing::debug!(
-                    root_is_transient,
-                    submounts_are_transient,
-                    "Transient overlay detected; generating relabel unit"
-                );
-                generate_transient_overlay_relabel(unit_dir)?;
-            }
+            generate_transient_overlay_relabel(unit_dir)?;
         }
     }
 
@@ -140,22 +153,31 @@ pub(crate) fn generator(root: &Dir, unit_dir: &Dir) -> Result<()> {
     // not write /run/ostree-booted, but still need the shadow sync to clean up
     // stale shadow/gshadow entries (the rechunk scenario).  Gate on either a
     // composefs mount source (native composefs boot) or the ostree-booted marker.
-    {
-        let is_composefs = match bootc_mount::inspect_filesystem(camino::Utf8Path::new("/")) {
-            Ok(fs) => {
-                fs.source.starts_with("composefs:") || fs.source.starts_with("transient:composefs=")
-            }
-            Err(e) => {
-                tracing::debug!("Could not inspect root filesystem: {e:#}");
-                false
-            }
-        };
-        let is_ostree = root.try_exists(OSTREE_BOOTED)?;
-        if is_composefs || is_ostree {
-            let updated = shadow_sync_generator_impl(root, unit_dir)?;
-            tracing::trace!("Enabled shadow sync: {updated}");
-        }
+    if is_composefs || is_ostree {
+        let updated = shadow_sync_generator_impl(root, unit_dir)?;
+        tracing::trace!("Enabled shadow sync: {updated}");
     }
+
+    // === tmpfiles ordering fix: native composefs boots only ===
+    // On ostree boots, ostree-remount.service provides
+    //   Before=systemd-tmpfiles-setup.service
+    //   Before=systemd-random-seed.service
+    // which (together with the generated var.mount unit) ensures tmpfiles
+    // creates /var/lib/systemd before any service tries to use it.
+    //
+    // On native composefs boots neither ostree-remount nor a var.mount unit
+    // exist, so systemd-tmpfiles-setup and systemd-random-seed race.  If
+    // the container image ships a sparse /var (common after the var-tmpfiles
+    // lint), /var/lib/systemd may not exist yet when random-seed starts,
+    // causing an SELinux denial or ENOENT.
+    //
+    // Fix: generate a drop-in that orders tmpfiles-setup before the services
+    // that need its output.
+    if is_composefs && !is_ostree {
+        generate_tmpfiles_ordering(unit_dir)?;
+    }
+
+    aboot_generator_impl(root, unit_dir)?;
 
     // === Ostree-specific generator logic ===
     // Only run on ostree systems (native composefs boots skip below).
@@ -214,6 +236,23 @@ pub(crate) fn shadow_sync_generator_impl(root: &Dir, unit_dir: &Dir) -> Result<b
     Ok(true)
 }
 
+fn aboot_generator_impl(root: &Dir, unit_dir: &Dir) -> Result<bool> {
+    let Some(cmdline) = root.read_to_string_optional("proc/cmdline")? else {
+        return Ok(false);
+    };
+    let Some(cmdline) = ComposefsCmdline::find_in_cmdline(&Cmdline::from(cmdline.as_str()))? else {
+        return Ok(false);
+    };
+    let Some(sysroot) = root.open_dir_optional("sysroot")? else {
+        return Ok(false);
+    };
+    if read_boot_type(&sysroot, &cmdline.digest)? != Some(BootType::Aboot) {
+        return Ok(false);
+    }
+    enable_unit(unit_dir, ABOOT_RECONCILE_SERVICE, MULTI_USER_TARGET)?;
+    Ok(true)
+}
+
 /// Parse /etc/fstab and check if the root mount is out of sync with the composefs
 /// state, and if so, fix it.
 fn generate_fstab_editor(unit_dir: &Dir) -> Result<()> {
@@ -233,6 +272,33 @@ ExecStart=bootc internals fixup-etc-fstab\n\
     let target = "local-fs-pre.target.wants";
     unit_dir.create_dir_all(target)?;
     unit_dir.symlink(&format!("../{EDIT_UNIT}"), &format!("{target}/{EDIT_UNIT}"))?;
+    Ok(())
+}
+
+/// On native composefs boots (no ostree-remount), ensure
+/// systemd-tmpfiles-setup runs before services that need /var/lib/systemd.
+///
+/// Without this, systemd-tmpfiles-setup and systemd-random-seed race: both
+/// are wanted by sysinit.target with no ordering between them.  If the
+/// container image has a sparse /var (e.g. after `rm -rf /var/lib` for the
+/// var-tmpfiles lint), /var/lib/systemd won't exist when random-seed starts.
+/// A .mount unit (e.g. var-lib-nfs-rpc_pipefs.mount) may even create
+/// /var/lib with an unlabeled_t SELinux context before policy loads, causing
+/// an AVC denial when random-seed tries to mkdir /var/lib/systemd.
+///
+/// On ostree boots, ostree-remount.service already provides this ordering.
+fn generate_tmpfiles_ordering(unit_dir: &Dir) -> Result<()> {
+    let dropin_dir = "systemd-tmpfiles-setup.service.d";
+    unit_dir.create_dir_all(dropin_dir)?;
+    unit_dir.atomic_write(
+        &format!("{dropin_dir}/bootc-ordering.conf"),
+        "# Generated by bootc generator for native composefs boots.\n\
+# Ensure /var/lib/systemd and other tmpfiles-managed directories\n\
+# exist before services that depend on them.\n\
+[Unit]\n\
+Before=systemd-random-seed.service systemd-tpm2-setup.service\n",
+    )?;
+    tracing::debug!("Generated tmpfiles-setup ordering drop-in for composefs boot");
     Ok(())
 }
 
@@ -301,6 +367,83 @@ mod tests {
         tempdir.create_dir("sysroot")?;
         tempdir.create_dir_all("run/systemd/system")?;
         Ok(tempdir)
+    }
+
+    #[test]
+    fn aboot_reconcile_enablement() -> Result<()> {
+        let digest = "ab".repeat(64);
+        for boot_type in [None, Some("bls"), Some("uki"), Some("aboot")] {
+            let root = fixture()?;
+            let units = root.open_dir("run/systemd/system")?;
+            assert!(!aboot_generator_impl(&root, &units)?);
+            root.create_dir("proc")?;
+            root.atomic_write(
+                "proc/cmdline",
+                format!("composefs=?{digest} androidboot.slot_suffix=_a"),
+            )?;
+            if let Some(boot_type) = boot_type {
+                let path = format!(
+                    "sysroot/{}/{digest}",
+                    crate::composefs_consts::STATE_DIR_RELATIVE
+                );
+                root.create_dir_all(&path)?;
+                root.atomic_write(
+                    format!("{path}/{digest}.origin"),
+                    format!("[boot]\nboot_type={boot_type}\n"),
+                )?;
+            }
+            let expected = boot_type == Some("aboot");
+            for _ in 0..2 {
+                assert_eq!(aboot_generator_impl(&root, &units)?, expected);
+            }
+            let link = format!("{MULTI_USER_TARGET}.wants/{ABOOT_RECONCILE_SERVICE}");
+            if expected {
+                assert_eq!(
+                    units.read_link_contents(link)?,
+                    std::path::Path::new("/usr/lib/systemd/system").join(ABOOT_RECONCILE_SERVICE)
+                );
+            } else {
+                assert_eq!(units.entries()?.count(), 0);
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn aboot_reconcile_with_dual_format_cmdline() -> Result<()> {
+        use composefs_ctl::composefs::erofs::format::FormatVersion;
+        use composefs_ctl::composefs::fsverity::{FsVerityHashValue, Sha512HashValue};
+
+        let root = fixture()?;
+        let units = root.open_dir("run/systemd/system")?;
+        root.create_dir("proc")?;
+        let v1 = Sha512HashValue::from_hex("ab".repeat(64))?;
+        let v2 = Sha512HashValue::from_hex("cd".repeat(64))?;
+        root.atomic_write(
+            "proc/cmdline",
+            format!(
+                "{} {} androidboot.slot_suffix=_a",
+                crate::bootc_composefs::status::build_composefs_karg(
+                    v1.clone(),
+                    FormatVersion::V1,
+                    false,
+                ),
+                crate::bootc_composefs::status::build_composefs_karg(v2, FormatVersion::V2, false,),
+            ),
+        )?;
+        let digest = v1.to_hex();
+        let path = format!(
+            "sysroot/{}/{digest}",
+            crate::composefs_consts::STATE_DIR_RELATIVE
+        );
+        root.create_dir_all(&path)?;
+        root.atomic_write(
+            format!("{path}/{digest}.origin"),
+            "[boot]\nboot_type=aboot\n",
+        )?;
+
+        assert!(aboot_generator_impl(&root, &units)?);
+        Ok(())
     }
 
     #[test]
@@ -462,6 +605,34 @@ UUID=341c4712-54e8-4839-8020-d94073b1dc8b /boot                   xfs     defaul
             let updated = fstab_generator_impl(&tempdir, &unit_dir).unwrap();
             assert!(!updated);
             assert_eq!(unit_dir.entries()?.count(), 0);
+
+            Ok(())
+        }
+
+        #[test]
+        fn test_tmpfiles_ordering_dropin() -> Result<()> {
+            let tempdir = fixture()?;
+            let unit_dir = &tempdir.open_dir("run/systemd/system")?;
+
+            generate_tmpfiles_ordering(unit_dir)?;
+
+            let dropin_dir = unit_dir.open_dir("systemd-tmpfiles-setup.service.d")?;
+            let content = dropin_dir.read_to_string("bootc-ordering.conf")?;
+            assert!(
+                content.contains("\n[Unit]\n"),
+                "drop-in [Unit] header must be left-aligned: {content}"
+            );
+            assert!(
+                content.contains("\nBefore=systemd-random-seed.service"),
+                "drop-in must order tmpfiles before random-seed: {content}"
+            );
+            assert!(
+                content.contains("systemd-tpm2-setup.service"),
+                "drop-in must order tmpfiles before tpm2-setup: {content}"
+            );
+
+            // Calling again must succeed (idempotent)
+            generate_tmpfiles_ordering(unit_dir)?;
 
             Ok(())
         }

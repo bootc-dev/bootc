@@ -23,16 +23,13 @@ It is also supported to provide explicit digests, via e.g. `bootc switch quay.io
 
 ## Applying Changes
 
-The `--apply` option will automatically take action (rebooting) if the system has changed after switching to the new image. Currently, this option always reboots the system. In the future, this command may detect cases where no kernel changes are queued and perform a userspace-only restart instead.
+The `--apply` option will automatically restart the system if it has
+changed after switching to the new image.
 
 ## Soft Reboot
 
-The `--soft-reboot` option configures soft reboot behavior when used with `--apply`:
-
-- `required`: The operation will fail if soft reboot is not available on the target system
-- `auto`: Uses soft reboot if available on the target system, otherwise falls back to a regular reboot
-
-Soft reboot allows faster system restart by avoiding full hardware reboot when possible.
+For shared `--apply` and `--soft-reboot` behavior, see
+[Soft reboots](../bootc-upgrades.7.md#soft-reboots).
 
 # OPTIONS
 
@@ -78,6 +75,18 @@ Soft reboot allows faster system restart by avoiding full hardware reboot when p
 **--retain**
 
     Retain reference to currently booted image
+
+**--from-delta**=*PATH*
+
+    Switch using a local oci-delta artifact instead of the network
+
+**--uki-addon**=*SCOPED*
+
+    Experimental. Name of the local/scoped UKI addons to install without the ".addon.efi" suffix. This option can be provided multiple times if multiple addons are to be installed (composefs backend only). On upgrade and switch, scoped addons already installed are carried forward; passing this flag adds further addons on top
+
+**--global-uki-addon**=*GLOBAL*
+
+    Experimental. Name of the global UKI addons to install without the ".addon.efi" suffix. This option can be provided multiple times if multiple addons are to be installed (composefs backend only). On upgrade and switch, global addons already installed are carried forward; passing this flag adds further addons on top
 
 <!-- END GENERATED OPTIONS -->
 

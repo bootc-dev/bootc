@@ -28,6 +28,7 @@ use ostree_ext::ostree_prepareroot;
 use serde::Serialize;
 
 use crate::bootc_composefs::boot::EFI_LINUX;
+use crate::bootc_composefs::image::is_composefs_native;
 
 /// Create a default WalkConfiguration with noxdev enabled.
 ///
@@ -344,7 +345,9 @@ fn lint_inner<'skip>(
         let name = lint.name;
         let r = match r {
             Ok(r) => r,
-            Err(e) => anyhow::bail!("Unexpected runtime error running lint {name}: {e}"),
+            Err(e) => {
+                return Err(e.context(format!("Unexpected runtime error running lint {name}")));
+            }
         };
 
         if let Err(e) = r {
@@ -573,12 +576,17 @@ fn check_api_dirs(root: &Dir, _config: &LintExecutionConfig) -> LintResult {
 static LINT_COMPOSEFS: Lint = Lint::new_warning(
     "baseimage-composefs",
     indoc! { r#"
-Check that composefs is enabled for ostree. More in
+Check that composefs is enabled for ostree. Skipped for composefs-native
+images, i.e. those that ship /usr/lib/composefs/setup-root-conf.toml. More in
 <https://ostreedev.github.io/ostree/composefs/>.
 "#},
     check_composefs,
 );
 fn check_composefs(dir: &Dir, _config: &LintExecutionConfig) -> LintResult {
+    // ostree's prepare-root.conf is irrelevant for composefs-native images.
+    if is_composefs_native(dir)? {
+        return lint_ok();
+    }
     if let Err(e) = check_prepareroot_composefs_norecurse(dir)? {
         return Ok(Err(e));
     }
@@ -604,6 +612,10 @@ fn check_baseimage_root_norecurse(dir: &Dir, _config: &LintExecutionConfig) -> L
 
     // Check /ostree -> sysroot/ostree
     let Some(meta) = dir.symlink_metadata_optional("ostree")? else {
+        // Composefs-native images don't use ostree, so they don't need it.
+        if is_composefs_native(dir)? {
+            return lint_ok();
+        }
         return lint_err("Missing ostree -> sysroot/ostree link");
     };
     if !meta.is_symlink() {
@@ -624,7 +636,9 @@ static LINT_BASEIMAGE_ROOT: Lint = Lint::new_fatal(
     "baseimage-root",
     indoc! { r#"
 Check that expected files are present in the root of the filesystem; such
-as /sysroot and a composefs configuration for ostree. More in
+as /sysroot and a composefs configuration for ostree. The /ostree symlink
+is not required for composefs-native images, i.e. those that ship
+/usr/lib/composefs/setup-root-conf.toml. More in
 <https://bootc.dev/bootc/bootc-images.html#standard-image-content>.
 "#},
     check_baseimage_root,
@@ -765,7 +779,7 @@ Any content here in the container image will be masked at runtime.
     check_boot,
 );
 fn check_boot(root: &Dir, config: &LintExecutionConfig) -> LintResult {
-    let Some(d) = root.open_dir_optional("boot")? else {
+    let Some(d) = root.open_dir_optional(crate::install::BOOT)? else {
         return lint_err("Missing /boot directory");
     };
 
@@ -949,6 +963,7 @@ mod tests {
     use std::sync::LazyLock;
 
     use super::*;
+    use crate::bootc_composefs::image::setup_root_conf_path;
 
     static ALTROOT_LINTS: LazyLock<usize> = LazyLock::new(|| {
         LINTS
@@ -1365,6 +1380,21 @@ mod tests {
         drop(td);
         let td = passing_fixture()?;
         check_baseimage_root(&td, config).unwrap().unwrap();
+
+        // Composefs-native images don't need /ostree...
+        td.remove_file("ostree")?;
+        assert!(check_baseimage_root(&td, config).unwrap().is_err());
+        let conf = Utf8Path::new(setup_root_conf_path());
+        td.create_dir_all(conf.parent().unwrap())?;
+        td.write(conf, "")?;
+        check_baseimage_root(&td, config).unwrap().unwrap();
+        // ...but if they have it, it must still be correct
+        td.create_dir("ostree")?;
+        assert!(check_baseimage_root(&td, config).unwrap().is_err());
+        td.remove_dir("ostree")?;
+        // ...and they still need /sysroot
+        td.remove_dir("sysroot")?;
+        assert!(check_baseimage_root(&td, config).unwrap().is_err());
         Ok(())
     }
 
@@ -1387,6 +1417,13 @@ mod tests {
         )?;
         // Now it should fail because composefs is explicitly disabled.
         assert!(check_composefs(&td, config).unwrap().is_err());
+
+        // ...unless the image is composefs-native, where ostree's
+        // configuration doesn't matter.
+        let conf = Utf8Path::new(setup_root_conf_path());
+        td.create_dir_all(conf.parent().unwrap())?;
+        td.write(conf, "")?;
+        check_composefs(&td, config).unwrap().unwrap();
 
         Ok(())
     }
@@ -1548,6 +1585,57 @@ mod tests {
         assert_eq!(
             resolve_runtime_bins("dtool", "dtool"),
             ["chcon", "dtool", "ostree", "setpriv", "systemctl", "zstd"]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_runtime_deps_escape() -> Result<()> {
+        let root = &fixture()?;
+        root.create_dir("usr")?;
+        // Same shape as /usr/local -> ../../var/usrlocal, on the directory
+        // runtime dependency lookup actually searches.
+        root.symlink_contents("../../var/usrbin", "usr/bin")?;
+
+        let config = &LintExecutionConfig::default();
+        let mut out = Vec::new();
+        let err = lint_inner(
+            root,
+            RootType::Alternative,
+            config,
+            LINTS
+                .iter()
+                .filter(|lint| lint.name != "runtime-deps")
+                .map(|lint| lint.name),
+            &mut out,
+        )
+        .expect_err("lookup failure must remain a runtime error");
+
+        let bin = resolved_runtime_bins()
+            .into_iter()
+            .next()
+            .expect("runtime dependency");
+        let attempted = format!("usr/bin/{bin}");
+        assert_eq!(
+            err.to_string(),
+            "Unexpected runtime error running lint runtime-deps"
+        );
+        assert!(
+            err.chain()
+                .any(|source| source.to_string().contains(&attempted)),
+            "{err:?}"
+        );
+        assert!(
+            err.chain().any(|source| {
+                source
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|io_err| {
+                        io_err
+                            .to_string()
+                            .contains("a path led outside of the filesystem")
+                    })
+            }),
+            "{err:?}"
         );
         Ok(())
     }

@@ -201,7 +201,7 @@ pub(crate) async fn run_from_anaconda(rootfs: &Dir) -> Result<()> {
     // Note that because this does a re-exec, anything *before* this point
     // should be idempotent.
     crate::cli::require_root(false)?;
-    crate::cli::ensure_self_unshared_mount_namespace()?;
+    crate::cli::ensure_self_unshared_mount_namespace(&[])?;
 
     if std::env::var_os(ANACONDA_ENV_HINT).is_none() {
         anyhow::bail!("Missing environment variable {ANACONDA_ENV_HINT}");

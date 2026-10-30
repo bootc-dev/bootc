@@ -27,12 +27,13 @@ mod bcvk 'bcvk.just'
 #   sealed  → requires boot_type=uki and filesystem with fsverity (ext4/btrfs)
 #   uki     → requires bootloader=systemd
 
-# Output image name
-base_img := "localhost/bootc"
+# Output image name (override with BOOTC_image to isolate worktree images)
+base_img := env("BOOTC_image", "localhost/bootc")
 # Synthetic upgrade image for testing
 upgrade_img := base_img + "-upgrade"
 # Base image with tmt dependencies added, used as the boot source for upgrade tests
 upgrade_source_img := base_img + "-upgrade-source"
+ukiboot_img := base_img + "-ukiboot"
 
 # Build variant: ostree (default) or composefs
 variant := env("BOOTC_variant", "ostree")
@@ -43,6 +44,8 @@ filesystem := env("BOOTC_filesystem", "ext4")
 boot_type := env("BOOTC_boot_type", "bls")
 # Only used for composefs tests
 seal_state := env("BOOTC_seal_state", "unsealed")
+# Only used for composefs UKI tests: "v1" or "v2"
+erofs_version := env("BOOTC_erofs_version", "v1")
 # Baseconfigs to inject into the image for testing (e.g. "etc-transient" or "root-transient")
 baseconfigs := env("BOOTC_baseconfigs", "")
 # Base container image to build from
@@ -75,10 +78,12 @@ base_buildargs := generic_buildargs + " " + _extra_src_args \
                   + " --build-arg=boot_type=" + boot_type \
                   + " --build-arg=seal_state=" + seal_state \
                   + " --build-arg=filesystem=" + filesystem \
+                  + " --build-arg=erofs_version=" + erofs_version \
                   + " --build-arg=baseconfigs=" + baseconfigs
 buildargs := base_buildargs \
              + " --cap-add=all --security-opt=label=type:container_runtime_t --device /dev/fuse" \
-             + " --secret=id=secureboot_key,src=target/test-secureboot/db.key --secret=id=secureboot_cert,src=target/test-secureboot/db.crt"
+             + " --secret=id=secureboot_key,src=target/test-secureboot/db.key --secret=id=secureboot_cert,src=target/test-secureboot/db.crt" \
+             + " --build-context=secureboot=target/test-secureboot"
 
 # ============================================================================
 # Core workflows - the main targets most developers will use
@@ -188,6 +193,18 @@ test-tmt *ARGS: build
     @just _build-upgrade-image
     @just test-tmt-nobuild {{ARGS}}
 
+[group('testing')]
+build-ukiboot-test-image: build
+    podman build {{_nocache_arg}} --build-arg=base={{base_img}} -f tmt/tests/Dockerfile.ukiboot -t {{ukiboot_img}}:v1 .
+
+[group('testing')]
+build-ukiboot-update-test-image: build-ukiboot-test-image
+    podman build {{_nocache_arg}} --build-arg=base={{base_img}} --build-arg=TEST_VERSION=2 -f tmt/tests/Dockerfile.ukiboot -t {{ukiboot_img}}:v2 .
+
+[group('testing')]
+test-ukiboot: build-ukiboot-update-test-image
+    cargo xtask run-tmt --env=BOOTC_variant=composefs --filesystem=ext4 --boot-type=aboot --seal-state=unsealed --upgrade-image={{ukiboot_img}}:v2 {{ukiboot_img}}:v1 aboot
+
 # Split out from `test-container` because, unlike the container integration tests,
 # unit tests don't depend on variant/filesystem/bootloader/boot_type/seal_state, so
 # CI runs this once per OS (in the `package` job) instead of once per test-integration
@@ -224,8 +241,7 @@ test-composefs bootloader filesystem boot_type seal_state *ARGS:
         filesystem={{filesystem}} \
         boot_type={{boot_type}} \
         seal_state={{seal_state}} \
-            test-tmt --composefs-backend \
-                --bootloader={{bootloader}} \
+            test-tmt \
                 --filesystem={{filesystem}} \
                 --seal-state={{seal_state}} \
                 --boot-type={{boot_type}} \
@@ -242,6 +258,8 @@ test-upgrade *ARGS: build _build-upgrade-source-image
     set -xeuo pipefail
     composefs_args=()
     if [[ "{{variant}}" = composefs ]]; then
+        # Unlike the composefs test images, the published base image doesn't
+        # select the composefs backend itself, and its bootc may predate that.
         composefs_args=(--composefs-backend \
             --bootloader={{bootloader}} \
             --filesystem={{filesystem}} \
@@ -250,6 +268,7 @@ test-upgrade *ARGS: build _build-upgrade-source-image
             --karg=enforcing=0)
     fi
     cargo xtask run-tmt --env=BOOTC_variant={{variant}} \
+        --env=BOOTC_erofs_version={{erofs_version}} \
         --env=BOOTC_test_upgrade_image={{base_img}} \
         --upgrade-image={{base_img}} \
         "${composefs_args[@]}" \
@@ -290,7 +309,7 @@ test-container-export: build
 # Run tmt tests without rebuilding (for fast iteration)
 [group('testing')]
 test-tmt-nobuild *ARGS:
-    cargo xtask run-tmt --env=BOOTC_variant={{variant}} {{_baseconfigs_env}} --upgrade-image={{upgrade_img}} {{base_img}} {{ARGS}}
+    cargo xtask run-tmt --env=BOOTC_variant={{variant}} --env=BOOTC_erofs_version={{erofs_version}} {{_baseconfigs_env}} --upgrade-image={{upgrade_img}} {{base_img}} {{ARGS}}
 
 # Run readonly tests with a baseconfig baked into the image at build time.
 # Requires composefs variant. Example: just variant=composefs test-tmt-baseconfig root-transient
@@ -300,10 +319,9 @@ test-tmt-baseconfig baseconfig *ARGS:
     just variant=composefs baseconfigs={{baseconfig}} _build-upgrade-image
     cargo xtask run-tmt \
         --env=BOOTC_variant=composefs \
+        --env=BOOTC_erofs_version={{erofs_version}} \
         --env=BOOTC_baseconfigs={{baseconfig}} \
         --upgrade-image={{upgrade_img}} \
-        --composefs-backend \
-        --bootloader={{bootloader}} \
         --filesystem={{filesystem}} \
         --boot-type={{boot_type}} \
         --seal-state={{seal_state}} \
@@ -437,6 +455,8 @@ package:
     if [[ -z "{{no_auto_local_deps}}" ]]; then
         local_deps_args=$(cargo xtask local-rust-deps)
     fi
+    # Pull the base image up front with more retries than `podman build` defaults to
+    podman pull -q --retry 5 --retry-delay 5s {{base}}
     podman build {{base_buildargs}} --build-arg=SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH} --build-arg=pkgversion=${VERSION} -t localhost/bootc-pkg --target=build $local_deps_args .
     mkdir -p "${packages}"
     rm -vf "${packages}"/*.rpm
@@ -508,8 +528,11 @@ _build-upgrade-image:
         --build-arg "boot_type={{boot_type}}" \
         --build-arg "seal_state={{seal_state}}" \
         --build-arg "filesystem={{filesystem}}" \
+        --build-arg "base={{base_img}}" \
+        --build-arg "erofs_version={{erofs_version}}" \
         --secret=id=secureboot_key,src=target/test-secureboot/db.key \
         --secret=id=secureboot_cert,src=target/test-secureboot/db.crt \
+        --build-context=secureboot=target/test-secureboot \
         "${extra_args[@]}" \
         -t {{upgrade_img}} \
         -f tmt/tests/Dockerfile.upgrade \

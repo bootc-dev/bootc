@@ -8,7 +8,7 @@ use std::borrow::Cow;
 use std::fmt::Display;
 use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter, Write};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result};
 use camino::{Utf8Path, Utf8PathBuf};
@@ -32,6 +32,15 @@ const JSON_SCHEMAS: &[(&str, &str)] = &[
 ];
 /// File used to identify the bootc source tree toplevel.
 const TOPLEVEL_MARKER: &str = "ADOPTERS.md";
+/// Directory prefix of the vendored crates in the vendor archive.
+const VENDOR_DIR: &str = "vendor";
+/// Files that must not appear in the vendor archive, as (crate, file extensions).
+/// These crates link against system libraries, so their bundled C sources are
+/// excluded via `exclude-crate-paths` in the toplevel Cargo.toml; this catches
+/// a crate update that moves them somewhere the exclusion no longer covers.
+const VENDOR_DENYLIST: &[(&str, &[&str])] = &[("pcre2-sys", &["c", "h"])];
+/// Maximum number of denied files to list in the error message.
+const VENDOR_DENIED_SHOWN: usize = 10;
 const TAR_REPRODUCIBLE_OPTS: &[&str] = &[
     "--sort=name",
     "--owner=0",
@@ -43,6 +52,18 @@ const TAR_REPRODUCIBLE_OPTS: &[&str] = &[
 /// Helper function to write out out-of-sync error messages for manpages, tmt tests
 fn out_of_sync_error(message: &str) -> Result<()> {
     anyhow::bail!("{}; run `just update-generated` to update it", message)
+}
+
+/// Parse a `0`/`1` boolean from a CLI/env value so the flag can be driven from
+/// the Justfile (e.g. `BOOTC_skip_bind_storage=1`).
+fn parse_cli_bool(s: &str) -> std::result::Result<bool, String> {
+    match s {
+        "1" | "true" => Ok(true),
+        "0" | "false" => Ok(false),
+        other => Err(format!(
+            "invalid value '{other}' (expected 0, 1, true, or false)"
+        )),
+    }
 }
 
 /// Build tasks for bootc
@@ -57,7 +78,16 @@ struct Cli {
 #[derive(Debug, Subcommand)]
 enum Commands {
     /// Generate man pages
-    Manpages,
+    Manpages {
+        /// Extra options for cargo when building bootc, after `--`
+        /// (e.g. `-- --no-default-features --features install-to-disk`)
+        #[arg(last = true)]
+        cargo_options: Vec<String>,
+    },
+    /// Generate section 7 guide man pages without building the bootc CLI
+    GuideManpages,
+    /// Check website and installed manual coverage without building the bootc CLI
+    CheckDocs,
     /// Update or check generated files
     UpdateGenerated {
         #[command(subcommand)]
@@ -175,6 +205,8 @@ pub enum BootType {
     Bls,
     /// UKI boot
     Uki,
+    /// Aboot boot
+    Aboot,
 }
 
 impl Display for BootType {
@@ -182,6 +214,7 @@ impl Display for BootType {
         match self {
             BootType::Bls => f.write_str("bls"),
             BootType::Uki => f.write_str("uki"),
+            BootType::Aboot => f.write_str("aboot"),
         }
     }
 }
@@ -208,8 +241,9 @@ impl Display for SealState {
 /// Arguments for run-tmt command.
 ///
 /// The composefs-related fields can be set via CLI flags or via the standard
-/// `BOOTC_*` environment variables used by the Justfile.  When `BOOTC_variant`
-/// is set to `composefs`, `--composefs-backend` is implied automatically.
+/// `BOOTC_*` environment variables used by the Justfile.  `BOOTC_variant=composefs`
+/// selects the composefs plans, but doesn't pass `--composefs-backend` to bcvk:
+/// those test images select the composefs backend themselves.
 #[derive(Debug, Args)]
 pub(crate) struct RunTmtArgs {
     /// Image name (e.g., "localhost/bootc")
@@ -231,14 +265,44 @@ pub(crate) struct RunTmtArgs {
     #[clap(long)]
     pub(crate) upgrade_image: Option<String>,
 
+    /// Bridge image to use when bind-storage-ro is available
+    #[clap(long)]
+    pub(crate) bridge_image: Option<String>,
+
+    /// Skip the `--bind-storage-ro` host container-storage virtiofs mount even for
+    /// plans that request it.  Useful where libvirt-managed virtiofsd cannot run
+    /// (nested user namespaces, cloud/non-qemu).  Plans that depend on a locally
+    /// built upgrade image being available in-VM via bind-storage will not be able
+    /// to perform the upgrade/switch step.
+    ///
+    /// Takes `0`/`1`/`true`/`false` so it can be driven from the Justfile via
+    /// `BOOTC_skip_bind_storage=1`.  A bare `--skip-bind-storage` means `1`.
+    #[arg(
+        long,
+        env = "BOOTC_skip_bind_storage",
+        num_args = 0..=1,
+        default_value_t = false,
+        default_missing_value = "1",
+        value_parser = parse_cli_bool,
+    )]
+    pub(crate) skip_bind_storage: bool,
+
     /// Preserve VMs after test completion (useful for debugging)
     #[arg(long)]
     pub(crate) preserve_vm: bool,
 
-    /// Use composefs backend.  Also implied when BOOTC_variant=composefs.
+    /// Install with `--composefs-backend` (and `--bootloader`), for images that
+    /// don't select the composefs backend themselves.
     #[arg(long)]
     pub(crate) composefs_backend: bool,
 
+    /// Whether the image is installed with the composefs backend: set by
+    /// `--composefs-backend` or `BOOTC_variant=composefs`.
+    #[arg(skip)]
+    pub(crate) composefs: bool,
+
+    /// Only passed to bcvk with `--composefs-backend`; composefs test images
+    /// configure it themselves.
     #[arg(long, env = "BOOTC_bootloader")]
     pub(crate) bootloader: Option<Bootloader>,
 
@@ -249,7 +313,7 @@ pub(crate) struct RunTmtArgs {
     #[arg(long, env = "BOOTC_seal_state")]
     pub(crate) seal_state: Option<SealState>,
 
-    /// Boot entry type (bls or uki)
+    /// Boot entry type (bls, uki, or aboot)
     #[arg(long, env = "BOOTC_boot_type", default_value_t)]
     pub(crate) boot_type: BootType,
 
@@ -265,15 +329,13 @@ pub(crate) struct RunTmtArgs {
 }
 
 impl RunTmtArgs {
-    /// Derive composefs_backend from BOOTC_variant if not explicitly set.
+    /// Derive `composefs` from `--composefs-backend` and BOOTC_variant, from
+    /// the environment or passed to the tests with `--env` (as the Justfile does).
     pub(crate) fn resolve_composefs(&mut self) {
-        if !self.composefs_backend {
-            if let Ok(v) = std::env::var("BOOTC_variant") {
-                if v == "composefs" {
-                    self.composefs_backend = true;
-                }
-            }
-        }
+        const COMPOSEFS_VARIANT: &str = "BOOTC_variant=composefs";
+        self.composefs = self.composefs_backend
+            || std::env::var("BOOTC_variant").is_ok_and(|v| v == "composefs")
+            || self.env.iter().any(|e| e == COMPOSEFS_VARIANT);
     }
 }
 
@@ -333,7 +395,9 @@ fn try_main() -> Result<()> {
     let sh = xshell::Shell::new()?;
 
     match cli.command {
-        Commands::Manpages => man::generate_man_pages(&sh),
+        Commands::Manpages { cargo_options } => man::generate_man_pages(&sh, &cargo_options),
+        Commands::GuideManpages => man::generate_guide_man_pages(&sh),
+        Commands::CheckDocs => man::check_docs(),
         Commands::UpdateGenerated { command } => match command {
             UpdateGeneratedCommands::Direct { check } => {
                 if check {
@@ -448,6 +512,76 @@ fn edit_vendor_config(config: &str) -> Result<String> {
     Ok(config.to_string())
 }
 
+/// If `path` (relative to the vendor directory) matches [`VENDOR_DENYLIST`],
+/// return the name of the crate it belongs to.
+fn vendor_denied_crate(path: &Utf8Path) -> Option<&'static str> {
+    let crate_dir = path.components().next()?.as_str();
+    let ext = path.extension()?;
+    VENDOR_DENYLIST.iter().find_map(|&(name, exts)| {
+        // cargo vendor uses `<name>-<version>` when several versions are vendored
+        let is_crate = crate_dir == name
+            || crate_dir
+                .strip_prefix(name)
+                .and_then(|v| v.strip_prefix('-'))
+                .is_some_and(|v| v.starts_with(|c: char| c.is_ascii_digit()));
+        (is_crate && exts.contains(&ext)).then_some(name)
+    })
+}
+
+/// List the entries of the (uncompressed) vendor tar stream that match
+/// [`VENDOR_DENYLIST`].
+fn vendor_denied_entries(archive: impl std::io::Read) -> Result<Vec<String>> {
+    let mut denied = Vec::new();
+    let mut archive = tar::Archive::new(archive);
+    for entry in archive.entries()? {
+        let entry = entry?;
+        let path = entry.path()?;
+        let path = path.to_string_lossy();
+        let path = Utf8Path::new(&*path);
+        let relpath = path.strip_prefix(VENDOR_DIR).unwrap_or(path);
+        if let Some(name) = vendor_denied_crate(relpath) {
+            denied.push(format!("{path} (from {name})"));
+        }
+    }
+    // Drain trailing padding after the end-of-archive marker so the
+    // writer (zstd) doesn't get SIGPIPE.
+    std::io::copy(&mut archive.into_inner(), &mut std::io::sink())?;
+    Ok(denied)
+}
+
+/// Verify that the vendor archive contains no files from [`VENDOR_DENYLIST`].
+#[context("Checking vendor archive {vendorpath}")]
+fn check_vendor_archive(vendorpath: &Utf8Path) -> Result<()> {
+    let mut child = Command::new("zstd")
+        .args(["-dc", "--"])
+        .arg(vendorpath)
+        .stdout(Stdio::piped())
+        .spawn()
+        .context("Spawning zstd")?;
+    let stdout = child.stdout.take().expect("stdout is piped");
+    let denied = vendor_denied_entries(stdout);
+    // Wait for zstd even if reading failed, so its error is not lost
+    let status = child.wait().context("Waiting for zstd")?;
+    let denied = denied.context("Reading tar entries")?;
+    if !status.success() {
+        anyhow::bail!("zstd failed: {status}");
+    }
+    if !denied.is_empty() {
+        let n = denied.len();
+        let shown = denied[..n.min(VENDOR_DENIED_SHOWN)].join("\n  ");
+        let more = n.saturating_sub(VENDOR_DENIED_SHOWN);
+        let more = if more > 0 {
+            format!("\n  ... and {more} more")
+        } else {
+            String::new()
+        };
+        anyhow::bail!(
+            "Found {n} denylisted files; update exclude-crate-paths in Cargo.toml:\n  {shown}{more}"
+        );
+    }
+    Ok(())
+}
+
 #[context("Packaging")]
 fn impl_package(sh: &Shell) -> Result<Package> {
     let source_date_epoch = git_source_date_epoch(".".into())?;
@@ -462,9 +596,10 @@ fn impl_package(sh: &Shell) -> Result<Package> {
     let vendorpath = Utf8Path::new("target").join(format!("{namev}-vendor.tar.zstd"));
     let vendor_config = cmd!(
         sh,
-        "cargo vendor-filterer --prefix=vendor --format=tar.zstd {vendorpath}"
+        "cargo vendor-filterer --prefix={VENDOR_DIR} --format=tar.zstd {vendorpath}"
     )
     .read()?;
+    check_vendor_archive(&vendorpath)?;
     let vendor_config = edit_vendor_config(&vendor_config)?;
     // Append .cargo/vendor-config.toml (a made up filename) into the tar archive.
     {
@@ -772,5 +907,63 @@ fn validate_composefs_digest(sh: &Shell, args: &ValidateComposefsDigestArgs) -> 
             .ignore_status()
             .run()?;
         anyhow::bail!("Composefs digest mismatch");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_cli_bool() {
+        assert_eq!(parse_cli_bool("1"), Ok(true));
+        assert_eq!(parse_cli_bool("true"), Ok(true));
+        assert_eq!(parse_cli_bool("0"), Ok(false));
+        assert_eq!(parse_cli_bool("false"), Ok(false));
+        assert!(parse_cli_bool("").is_err());
+        assert!(parse_cli_bool("maybe").is_err());
+    }
+
+    #[test]
+    fn test_vendor_denied_crate() {
+        let cases = [
+            ("pcre2-sys/upstream/src/pcre2_compile.c", Some("pcre2-sys")),
+            ("pcre2-sys/upstream/src/pcre2_internal.h", Some("pcre2-sys")),
+            ("pcre2-sys/pcre2.h", Some("pcre2-sys")),
+            (
+                "pcre2-sys-0.2.9/upstream/src/pcre2_compile.c",
+                Some("pcre2-sys"),
+            ),
+            ("pcre2-sys/src/lib.rs", None),
+            ("pcre2-sys/upstream/src/pcre2.h.generic", None),
+            ("pcre2-sys", None),
+            ("pcre2/src/ffi.c", None),
+            ("pcre2-sysx/foo.c", None),
+            ("pcre2-sys-extra/foo.c", None),
+            ("libz-sys/src/zlib/adler32.c", None),
+        ];
+        for (path, expected) in cases {
+            assert_eq!(vendor_denied_crate(Utf8Path::new(path)), expected, "{path}");
+        }
+    }
+
+    #[test]
+    fn test_vendor_denied_entries() -> Result<()> {
+        let mut builder = tar::Builder::new(Vec::new());
+        for path in [
+            "vendor/pcre2-sys/src/lib.rs",
+            "vendor/pcre2-sys/upstream/src/pcre2_compile.c",
+            "vendor/libz-sys/src/zlib/adler32.c",
+        ] {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(0);
+            builder.append_data(&mut header, path, std::io::empty())?;
+        }
+        let archive = builder.into_inner()?;
+        assert_eq!(
+            vendor_denied_entries(archive.as_slice())?,
+            ["vendor/pcre2-sys/upstream/src/pcre2_compile.c (from pcre2-sys)"]
+        );
+        Ok(())
     }
 }

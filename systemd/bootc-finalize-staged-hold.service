@@ -1,0 +1,25 @@
+# Keeps /boot busy while a deployment is staged, so that an automounted
+# /boot (e.g. the ESP set up by systemd-gpt-auto-generator) can't idle-expire.
+# An expire racing with shutdown deadlocks bootc-finalize-staged.service's
+# ExecStop, and one that completes before shutdown leaves /boot unmounted
+# for good, since systemd won't trigger the automount again during shutdown,
+# so the ExecStop fails. This is a port of
+# ostree-finalize-staged-hold.service; see
+# https://github.com/ostreedev/ostree/pull/2543 for background.
+[Unit]
+Description=Hold /boot Open for Composefs Finalize Staged Deployment
+Documentation=man:bootc(1)
+DefaultDependencies=no
+
+RequiresMountsFor=/boot
+After=local-fs.target
+Before=basic.target final.target
+
+[Service]
+Type=exec
+
+# This is explicitly run in the root namespace to ensure an automounted
+# /boot doesn't time out since autofs doesn't handle mount namespaces.
+#
+# https://bugzilla.redhat.com/show_bug.cgi?id=2056090
+ExecStart=+/usr/bin/bootc composefs-finalize-staged --hold

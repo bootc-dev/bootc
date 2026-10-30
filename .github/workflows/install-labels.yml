@@ -1,0 +1,69 @@
+name: Install Labels
+
+# This is a plain (non-gh-aw) workflow: sets up required repository labels for
+# gh-agentic-workflows. The create-or-update loop below is idempotent, so the
+# weekly schedule just self-heals labels that get renamed/deleted/recolored by
+# hand -- run it manually via the Actions tab too, e.g. right after initial
+# setup, instead of waiting for the first scheduled run.
+
+on:
+  schedule:
+    - cron: "40 7 * * 1"  # Weekly, Monday 07:40 UTC (upgrade.yml runs at :25).
+  workflow_dispatch:
+
+permissions:
+  issues: write
+
+jobs:
+  install-labels:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install labels
+        uses: actions/github-script@v9
+        with:
+          script: |
+            // Keep this LABELS array and install loop in sync with
+            // scripts/install-labels.js (inlined here so this step needs
+            // no eval/require and no checkout of the repo).
+            const LABELS = [
+              { name: 'agent/code', description: 'Triggers the drafter agent', color: '0E8A16' },
+              { name: 'agent/fixme', description: 'Reviewer agent found issues that need fixing', color: 'D93F0B' },
+              { name: 'agent/lgtm', description: 'Reviewer agent approved; ready to auto-merge', color: '0E8A16' },
+              { name: 'agent/drafter-working', description: 'The drafter agent is actively working on this issue', color: 'FBCA04' },
+              { name: 'agent/review-working', description: 'The review agent is actively working on this PR', color: 'FBCA04' },
+              { name: 'agent/fix-working', description: 'The fix agent is actively working on this PR', color: 'FBCA04' },
+              { name: 'agent/workflow-edits-allowed', description: 'Pre-authorizes agent runs to edit protected files without the request_review gate', color: '5319E7' },
+              { name: 'agent/flake-tracker', description: 'Marks the CI flake tracker issue the merge queue analyzer maintains', color: '1D76DB' },
+            ];
+
+            const { owner, repo } = context.repo;
+            console.log(`Installing labels on ${owner}/${repo}...`);
+
+            for (const label of LABELS) {
+              try {
+                await github.rest.issues.getLabel({ owner, repo, name: label.name });
+
+                console.log(`Updating label: ${label.name}`);
+                await github.rest.issues.updateLabel({
+                  owner,
+                  repo,
+                  name: label.name,
+                  description: label.description,
+                  color: label.color,
+                });
+              } catch (error) {
+                if (error.status === 404) {
+                  console.log(`Creating label: ${label.name}`);
+                  await github.rest.issues.createLabel({
+                    owner,
+                    repo,
+                    name: label.name,
+                    description: label.description,
+                    color: label.color,
+                  });
+                } else {
+                  console.error(`Error processing label ${label.name}:`, error.message);
+                  throw error;
+                }
+              }
+            }

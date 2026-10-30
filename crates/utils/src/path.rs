@@ -21,10 +21,11 @@ fn is_shellsafe(c: char) -> bool {
 
 impl<'a> Display for PathQuotedDisplay<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if let Some(s) = self.path.to_str() {
-            if s.chars().all(is_shellsafe) {
-                return f.write_str(s);
-            }
+        if let Some(s) = self.path.to_str()
+            && !s.is_empty()
+            && s.chars().all(is_shellsafe)
+        {
+            return f.write_str(s);
         }
         if let Ok(r) = shlex::bytes::try_quote(self.path.as_os_str().as_bytes()) {
             let s = String::from_utf8_lossy(&r);
@@ -37,7 +38,7 @@ impl<'a> Display for PathQuotedDisplay<'a> {
 
 impl<'a> PathQuotedDisplay<'a> {
     /// Given a path, quote it in a way that it would be parsed by a default
-    /// POSIX shell. If the path is UTF-8 with no spaces or shell meta-characters,
+    /// POSIX shell. If the path is nonempty UTF-8 with no spaces or shell meta-characters,
     /// it will be exactly the same as the input.
     pub fn new<P: AsRef<Path>>(path: &'a P) -> PathQuotedDisplay<'a> {
         PathQuotedDisplay {
@@ -55,7 +56,6 @@ mod tests {
     #[test]
     fn test_unquoted() {
         for v in [
-            "",
             "foo",
             "/foo/bar",
             "/foo/bar/../baz",
@@ -81,6 +81,7 @@ mod tests {
     #[test]
     fn test_quoted() {
         let cases = [
+            ("", "''"),
             (" ", "' '"),
             ("/some/path with spaces/", "'/some/path with spaces/'"),
             ("/foo/!/bar&", "'/foo/!/bar&'"),

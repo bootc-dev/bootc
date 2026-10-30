@@ -62,6 +62,14 @@ def initial_build [] {
     podman build -t localhost/bootc-shadow-fixup-b .
 
     bootc switch --transport containers-storage localhost/bootc-shadow-fixup-b
+
+    # On composefs, staging must also start the hold unit that keeps an
+    # automounted /boot from expiring before finalization at shutdown.
+    if (tap is_composefs) {
+        let hold_state = (do { ^systemctl is-active bootc-finalize-staged-hold.service } | complete | get stdout | str trim)
+        assert ($hold_state == "active") $"bootc-finalize-staged-hold.service not active after staging: ($hold_state)"
+    }
+
     bootc_testlib reboot
 }
 

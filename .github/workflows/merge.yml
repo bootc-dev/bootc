@@ -1,0 +1,157 @@
+name: Auto-merge agent PRs
+on:
+  pull_request:
+    types: [labeled]
+
+# This is a plain (non-gh-aw) workflow: merging is a mechanical action, not
+# a judgment call, so no LLM agent is involved here. review.md (a gh-aw
+# workflow) is the sole judge of readiness and signals it by adding the
+# agent/lgtm label; this workflow just acts on that signal.
+jobs:
+  merge:
+    if: |
+      false &&
+      github.event.label.name == 'agent/lgtm' &&
+      startsWith(github.event.pull_request.head.ref, 'agent/') &&
+      github.event.pull_request.head.repo.id == github.repository_id
+    # Pilot rollout: delete the `false &&` line above once reviewer/fixer
+    # judgment quality has been watched for a couple of weeks.
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Generate App token
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.GH_AW_APP_CLIENT_ID }}
+          private-key: ${{ secrets.GH_AW_APP_PRIVATE_KEY }}
+      - name: Mark the PR ready for review
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          # drafter.md opens PRs as drafts; gh pr merge refuses drafts outright.
+          # Also do this before waiting on CI below: some repos skip CI on
+          # drafts entirely, so flipping to ready-for-review first ensures
+          # any draft-gated checks actually get triggered.
+          gh pr ready "${{ github.event.pull_request.number }}" \
+            --repo "${{ github.repository }}"
+      - name: Wait for other CI checks before merging
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          # review.md only judges code quality and scope; it never waits for
+          # CI. Without this gate, a PR whose tests haven't finished (or are
+          # red) could get squash-merged the instant agent/lgtm is added.
+          # Poll every other check on this PR (excluding this workflow's own
+          # still-running check, matched by workflow name, to avoid
+          # deadlocking on ourselves) and refuse to merge if any has failed.
+          pr="${{ github.event.pull_request.number }}"
+          repo="${{ github.repository }}"
+          self_workflow="${{ github.workflow }}"
+          deadline=$((SECONDS + 1800))
+          empty_polls=0
+          while :; do
+            if ! checks=$(gh pr checks "$pr" --repo "$repo" \
+              --json name,bucket,workflow,link 2>&1); then
+              echo "::error::Failed to query PR checks: $checks"
+              exit 1
+            fi
+            other=$(jq --arg self "$self_workflow" \
+              '[.[] | select(.workflow != $self)]' <<<"$checks")
+            total=$(jq 'length' <<<"$other")
+            if [ "$total" -eq 0 ]; then
+              # No other checks registered yet (or none configured at all).
+              # Poll once more after a short delay before concluding there's
+              # simply no other CI on this repo, to avoid a race against
+              # sibling workflows that haven't registered a check-run yet.
+              empty_polls=$((empty_polls + 1))
+              if [ "$empty_polls" -ge 2 ]; then
+                echo "No other CI checks found on this PR; proceeding."
+                break
+              fi
+              sleep 15
+              continue
+            fi
+            bad=$(jq '[.[] | select(.bucket == "fail" or .bucket == "cancel")]' <<<"$other")
+            bad_count=$(jq 'length' <<<"$bad")
+            if [ "$bad_count" -gt 0 ]; then
+              echo "::error::CI check(s) failed; refusing to merge:"
+              jq -r '.[] | "  \(.name): \(.link)"' <<<"$bad"
+              exit 1
+            fi
+            pending=$(jq '[.[] | select(.bucket == "pending")] | length' <<<"$other")
+            if [ "$pending" -eq 0 ]; then
+              echo "All $total other CI check(s) passed; proceeding to merge."
+              break
+            fi
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "::error::Timed out after 30m waiting for $pending pending CI check(s)."
+              exit 1
+            fi
+            echo "$pending/$total check(s) still pending, waiting..."
+            sleep 20
+          done
+      - name: Squash-merge the PR
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          pr="${{ github.event.pull_request.number }}"
+          repo="${{ github.repository }}"
+          base="${{ github.event.pull_request.base.ref }}"
+          # Pin the squash commit's message to the PR's title/body rather
+          # than gh's default (title + the raw commit log concatenated).
+          # Commits on an agent-authored branch are WIP checkpoints from a
+          # review/fix loop, not meant to be final history -- review.md
+          # already scrutinizes the PR's title/body directly, so this is
+          # what should end up in the permanent log, not intermediate
+          # commit messages. It also means review.md never needs to demand
+          # a fix commit purely to reword an earlier commit message.
+          #
+          # None of this applies if the base branch has a merge-queue
+          # ruleset: `gh pr merge` there doesn't merge directly, it enqueues
+          # (the same underlying mechanism as --auto), and the queue always
+          # uses its own configured merge method and generates its own
+          # commit message once it actually merges -- --squash/--subject/
+          # --body-file are silently ignored in that path (confirmed by
+          # testing against a live merge-queue repo). We still pass them:
+          # harmless when ignored, and correct on non-merge-queue repos.
+          #
+          # `--delete-branch` is a harder problem: gh refuses it outright
+          # ("Cannot use -d or --delete-branch when merge queue enabled")
+          # instead of ignoring it, so it must not be passed at all when a
+          # merge queue is in play. Branch cleanup in that case is left to
+          # the repo's own "Automatically delete head branches" setting.
+          # Detect this via the rules-branches endpoint, which returns the
+          # effective rules for a branch (org + repo rulesets combined).
+          # Fail safe on API errors: assume no merge queue, i.e. keep the
+          # old behavior, since that fails loudly and clearly if wrong
+          # rather than silently leaving branches undeleted everywhere.
+          mq_count=$(gh api "repos/$repo/rules/branches/$base" \
+            --jq '[.[] | select(.type == "merge_queue")] | length' \
+            2>/dev/null) || mq_count=0
+          title=$(gh pr view "$pr" --repo "$repo" --json title --jq .title)
+          gh pr view "$pr" --repo "$repo" --json body --jq .body \
+            > /tmp/merge-pr-body.txt
+          merge_args=(--squash --subject "$title" --body-file /tmp/merge-pr-body.txt)
+          if [ "${mq_count:-0}" -gt 0 ]; then
+            echo "Base branch '$base' has a merge-queue ruleset; enqueuing" \
+              "the PR instead of merging directly (branch deletion left to" \
+              "the repo's own settings)."
+          else
+            merge_args+=(--delete-branch)
+          fi
+          gh pr merge "$pr" --repo "$repo" "${merge_args[@]}"
+      - name: Remove agent/lgtm label (best-effort, PR may already be merged/gone)
+        if: always()
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          gh pr edit "${{ github.event.pull_request.number }}" \
+            --repo "${{ github.repository }}" \
+            --remove-label agent/lgtm || true

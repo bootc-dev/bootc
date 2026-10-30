@@ -19,6 +19,27 @@ use std::collections::BTreeMap;
 /// The BLS extension key prefix for source-tracked options.
 const OPTIONS_SOURCE_KEY_PREFIX: &str = "x-options-source-";
 
+/// The ostree release (year, release) that introduced `bootconfig-extra`
+/// serialization, which preserves `x-` prefixed BLS keys across staged
+/// deployment roundtrips. See <https://github.com/ostreedev/ostree/pull/3570>.
+const OSTREE_BOOTCONFIG_EXTRA_VERSION: (u32, u32) = (2026, 1);
+
+/// Whether the libostree loaded at runtime supports `bootconfig-extra`.
+///
+/// Without it, the `x-options-source-*` keys set by this module are
+/// silently dropped during finalization at shutdown, so the feature
+/// cannot work at all.
+pub(crate) fn ostree_supports_bootconfig_extra() -> bool {
+    let (year, release) = OSTREE_BOOTCONFIG_EXTRA_VERSION;
+    ostree::check_version(year, release)
+}
+
+/// The error reported when the host ostree lacks `bootconfig-extra` support.
+pub(crate) fn unsupported_ostree_error() -> anyhow::Error {
+    let (year, release) = OSTREE_BOOTCONFIG_EXTRA_VERSION;
+    anyhow::anyhow!("This feature requires ostree >= {year}.{release} for bootconfig-extra support")
+}
+
 /// A validated source name (alphanumeric + hyphens + underscores, non-empty).
 ///
 /// This is a newtype wrapper around `String` that enforces validation at
@@ -250,11 +271,10 @@ pub(crate) fn set_options_for_source_staged(
 ) -> Result<()> {
     let source = SourceName::parse(source)?;
 
-    // The bootconfig-extra serialization (preserving x-prefixed BLS keys through
-    // staged deployment roundtrips) was added in ostree 2026.1. Without it,
-    // source keys are silently dropped during finalization at shutdown.
-    if !ostree::check_version(2026, 1) {
-        anyhow::bail!("This feature requires ostree >= 2026.1 for bootconfig-extra support");
+    // The CLI refuses to dispatch here on unsupported hosts, but keep the
+    // check so the library API can't be misused either.
+    if !ostree_supports_bootconfig_extra() {
+        return Err(unsupported_ostree_error());
     }
 
     let booted = sysroot

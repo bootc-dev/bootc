@@ -203,6 +203,13 @@ pub fn mount_typed(dev: &str, fstype: &str, target: &Utf8Path) -> Result<()> {
         .run_inherited_with_cmd_context()
 }
 
+/// Recursively unmount a tree assembled by a caller-owned operation.
+pub fn unmount_recursive(target: &Utf8Path) -> Result<()> {
+    Command::new("umount")
+        .args(["--recursive", target.as_str()])
+        .run_inherited_with_cmd_context()
+}
+
 /// If the fsid of the passed path matches the fsid of the same path rooted
 /// at /proc/1/root, it is assumed that these are indeed the same mounted
 /// filesystem between container and host.

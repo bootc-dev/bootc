@@ -1,0 +1,283 @@
+# number: 51
+# tmt:
+#   summary: Test composefs UKI Addons
+#   duration: 30m
+# extra:
+#   skip_if_ostree: true
+
+
+use std assert
+use tap.nu
+
+bootc status
+let st = bootc status --json | from json
+let booted = $st.status.booted.image
+
+let is_uki = (($st.status.booted.composefs.bootType | str downcase) == "uki")
+
+if not $is_uki {
+    exit 0
+}
+
+def first_boot [] {
+    bootc image copy-to-storage
+
+    mut containerfile = $"
+        FROM localhost/bootc as base
+        RUN touch /usr/share/first
+    "
+
+    let cmds = "
+      ukify build --cmdline 'johan=liebert' --output /out/${kver}.efi.extra.d/monster-cmdline.addon.efi
+      mkdir -p '/out/loader/addons'
+      ukify build --cmdline 'kenzo=tenma' --output /out/loader/addons/global-cmdline.addon.efi
+    "
+
+    $containerfile = (tap make_uki_containerfile $containerfile --addon-cmds $cmds)
+
+    echo $containerfile | podman build -t localhost/bootc-uki-addons . -f -
+
+    mkdir /var/tmp/efi
+    mount /dev/disk/by-partlabel/EFI-SYSTEM /var/tmp/efi
+
+    # Create a non-bootc managed global addon
+    # This should survive all the switches/upgrades
+    mkdir /var/tmp/efi/loader/addons
+    ukify build --cmdline 'bootc=no' --output /var/tmp/efi/loader/addons/non-bootc-managed.addon.efi 
+
+    # No addons should be included
+    bootc switch --transport containers-storage localhost/bootc-uki-addons
+
+    tmt-reboot
+}
+
+def second_boot [] {
+    mkdir /var/tmp/efi
+    mount /dev/disk/by-partlabel/EFI-SYSTEM /var/tmp/efi
+
+    # Make sure no addons were included except our global non-bootc managed addon
+    assert ((^find /var/tmp/efi -type f -name '*addon.efi' | ^wc -l | str trim | into int) == 1)
+
+    mut containerfile = $"
+        FROM localhost/bootc as base
+        RUN touch /usr/share/second
+    "
+
+    let cmds = "
+      mkdir -p /out/${kver}.efi.extra.d
+      ukify build --cmdline 'johan=liebert' --output /out/${kver}.efi.extra.d/monster-cmdline.addon.efi
+      mkdir -p '/out/loader/addons'
+      ukify build --cmdline 'kenzo=tenma' --output /out/loader/addons/global-cmdline.addon.efi
+      
+      # /run/target is taken from tap make_uki_containerfile 'FROM base as sealed-uki'
+      CFS_DIGEST=$\(bootc container compute-composefs-digest /run/target\)
+      ukify build --cmdline \"composefs=${CFS_DIGEST}\" --output /out/loader/addons/global-cfs-cmdline.addon.efi
+    "
+
+    $containerfile = (tap make_uki_containerfile $containerfile --addon-cmds $cmds)
+
+    echo $containerfile | podman build -t localhost/bootc-uki-addons-2 . -f -
+
+    # Include composefs cmdline in global addon
+    # Should fail
+    let result_global = (do { 
+        bootc switch --transport containers-storage --global-uki-addon global-cfs-cmdline localhost/bootc-uki-addons-2
+    } | complete)
+
+    assert ($result_global.exit_code != 0) "Global addon with composefs= should be rejected"
+
+    # Include two addons, but don't include the global composefs= cmdline
+    # should succeed
+    bootc switch --transport containers-storage --uki-addon monster-cmdline --global-uki-addon global-cmdline localhost/bootc-uki-addons-2
+
+    # A switch/upgrade must *stage* the global addon under loader/addons.staged
+    # and leave the live loader/addons dir untouched until the next boot.
+    # Remount the ESP so our view is coherent with the mount bootc wrote through.
+    umount /var/tmp/efi
+    mount /dev/disk/by-partlabel/EFI-SYSTEM /var/tmp/efi
+
+    assert ("/var/tmp/efi/loader/addons.staged/bootc_composefs-global-cmdline.addon.efi" | path exists) "Global addon should be staged under loader/addons.staged"
+    # This is the first global addon, so the live dir must not hold it yet
+    assert (not ("/var/tmp/efi/loader/addons/bootc_composefs-global-cmdline.addon.efi" | path exists)) "Live addons must not be updated before reboot"
+
+    tmt-reboot
+}
+
+
+def third_boot [] {
+    mkdir /var/tmp/efi
+    mount /dev/disk/by-partlabel/EFI-SYSTEM /var/tmp/efi
+
+    # We should have three addons
+    assert ((^find /var/tmp/efi -type f -name '*addon.efi' | ^wc -l | str trim | into int) == 3)
+
+    # finalize should have atomically promoted the staged global addon into the
+    # live loader/addons dir and removed the staged dir.
+    assert (not ("/var/tmp/efi/loader/addons.staged" | path exists)) "Staged loader/addons.staged must be gone after reboot"
+    assert ("/var/tmp/efi/loader/addons/bootc_composefs-global-cmdline.addon.efi" | path exists) "Global addon must be promoted to live loader/addons after reboot"
+
+    # We should have those in the cmdline
+    assert (open /proc/cmdline | str contains "johan=liebert")
+    assert (open /proc/cmdline | str contains "kenzo=tenma")
+    assert (open /proc/cmdline | str contains "bootc=no")
+
+    mut containerfile = $"
+        FROM localhost/bootc as base
+        RUN touch /usr/share/third
+    "
+
+    # Put the composefs= in a local addon
+    let cmds = "
+      mkdir -p /out/${kver}.efi.extra.d
+      ukify build --cmdline 'berserk=guts' --output /out/${kver}.efi.extra.d/berserk-cmdline.addon.efi
+
+      # /run/target is taken from tap make_uki_containerfile 'FROM base as sealed-uki'
+      CFS_DIGEST=$\(bootc compute-composefs-digest /run/target\)
+      ukify build --cmdline 'composefs=${CFS_DIGEST}' --output /out/${kver}.efi.extra.d/local-cfs-cmdline.addon.efi
+
+      mkdir -p '/out/loader/addons'
+      ukify build --cmdline 'pink=floyd' --output /out/loader/addons/global-cmdline.addon.efi
+    "
+
+    $containerfile = (tap make_uki_containerfile $containerfile --addon-cmds $cmds)
+
+    echo $containerfile | podman build -t localhost/bootc-uki-addons-3 . -f -
+
+    # Include two composefs cmdlines
+    # Should fail
+    let result_local = (do { 
+        bootc switch --transport containers-storage --uki-addon local-cfs-cmdline localhost/bootc-uki-addons-3
+    } | complete)
+
+    assert ($result_local.exit_code != 0) "Two composefs cmdline should've been rejected"
+
+    # Requesting a CLI addon that isn't present in the image must fail the switch
+    let missing_addon = (do {
+        bootc switch --transport containers-storage --uki-addon does-not-exist localhost/bootc-uki-addons-3
+    } | complete)
+    assert ($missing_addon.exit_code != 0) "Switch requesting a non-existent UKI addon should fail"
+
+
+    # This should update the global cmdline because we have the same name
+    # Also this shouldn't include the local cmdline addon so we're good and this should pass
+    bootc switch --transport containers-storage --uki-addon berserk-cmdline localhost/bootc-uki-addons-3
+
+    # --- Test: removing the last global addon while a deployment is staged ---
+    # The switch above staged a deployment and carried the global addon forward
+    # into loader/addons.staged, while the live loader/addons is left intact.
+    # Remount the ESP for a view coherent with bootc's own mount.
+    umount /var/tmp/efi
+    mount /dev/disk/by-partlabel/EFI-SYSTEM /var/tmp/efi
+
+    assert ("/var/tmp/efi/loader/addons.staged/bootc_composefs-global-cmdline.addon.efi" | path exists) "Global addon should be staged after switch"
+    assert ("/var/tmp/efi/loader/addons/bootc_composefs-global-cmdline.addon.efi" | path exists) "Live global addon must remain while staged"
+
+    # Removing the last global addon while staged operates on loader/addons.staged:
+    # it empties and deletes that dir and warns that the removal won't take effect,
+    # leaving the live loader/addons untouched.
+
+    # First remove the non-bootc managed addon
+    rm -f /var/tmp/efi/loader/addons.staged/non-bootc-managed.addon.efi
+
+    let remove_result = (do { bootc uki-addon remove global-cmdline global } | complete)
+    assert ($remove_result.exit_code == 0) "Removing the staged global addon should succeed"
+    assert ($remove_result.stdout | str contains "last staged global addon") "Should warn about removing the last staged global addon"
+
+    umount /var/tmp/efi
+    mount /dev/disk/by-partlabel/EFI-SYSTEM /var/tmp/efi
+
+    assert (not ("/var/tmp/efi/loader/addons.staged" | path exists)) "loader/addons.staged must be deleted after removing the last staged global addon"
+    assert ("/var/tmp/efi/loader/addons/bootc_composefs-global-cmdline.addon.efi" | path exists) "Live global addon must be kept"
+
+    # Re-stage the global addon so fourth_boot sees the same state as before this
+    # check. With a deployment staged, `add` writes back into loader/addons.staged.
+    bootc uki-addon add global-cmdline global
+
+    umount /var/tmp/efi
+    mount /dev/disk/by-partlabel/EFI-SYSTEM /var/tmp/efi
+
+    assert ("/var/tmp/efi/loader/addons.staged/bootc_composefs-global-cmdline.addon.efi" | path exists) "Global addon should be re-staged"
+
+    tmt-reboot
+}
+
+def fourth_boot [] {
+    mkdir /var/tmp/efi
+    mount /dev/disk/by-partlabel/EFI-SYSTEM /var/tmp/efi
+
+    # We should have three addons
+    # One from the previous deployment
+    # One global addon and one from the current deployment
+    assert ((^find /var/tmp/efi -type f -name '*addon.efi' | ^wc -l | str trim | into int) == 3)
+
+    # Addon should be present, but not for this deployment
+    assert (not (open /proc/cmdline | str contains "johan=liebert"))
+    # Global addon should've been updated
+    assert (not (open /proc/cmdline | str contains "kenzo=tenma"))
+
+    assert (open /proc/cmdline | str contains "berserk=guts")
+    # Global addon should've been updated
+    assert (open /proc/cmdline | str contains "pink=floyd")
+
+    # --- CLI tests ---
+    
+    # NOTE: Our CLI only lists bootc managed global addons
+
+    # list --json should return 3 addons
+    let addons = bootc uki-addon list --json | from json
+    assert (($addons | length) == 3)
+
+    # Verify the global addon is present
+    let globals = $addons | where addon_type.type == "global"
+    assert (($globals | length) == 1)
+    assert ($globals.0.name == "global-cmdline")
+
+    # Verify we have two scoped addons
+    let scoped = $addons | where addon_type.type == "scoped"
+    assert (($scoped | length) == 2)
+
+    # Human-readable list should not error
+    bootc uki-addon list
+
+    # Remove the global addon
+    bootc uki-addon remove global-cmdline global
+    let addons_after_remove = bootc uki-addon list --json | from json
+    assert (($addons_after_remove | length) == 2)
+    let globals_after = $addons_after_remove | where addon_type.type == "global"
+    assert (($globals_after | length) == 0)
+
+    # Add it back from the booted image
+    bootc uki-addon add global-cmdline global
+    let addons_after_add = bootc uki-addon list --json | from json
+    assert (($addons_after_add | length) == 3)
+    let globals_readded = $addons_after_add | where addon_type.type == "global"
+    assert (($globals_readded | length) == 1)
+    assert ($globals_readded.0.name == "global-cmdline")
+
+    # Adding the same addon again should be a no-op
+    bootc uki-addon add global-cmdline global
+
+    # Removing a non-existent addon should fail
+    let failed = (do { bootc uki-addon remove nonexistent-addon } | complete)
+    assert ($failed.exit_code != 0)
+
+    # Adding an addon that carries a composefs= cmdline should be rejected.
+    let cfs_add = (do { bootc uki-addon add local-cfs-cmdline scoped } | complete)
+    assert ($cfs_add.exit_code != 0) "Adding an addon containing composefs= should be rejected"
+
+    # The rejected add must not have installed anything
+    let addons_after_reject = bootc uki-addon list --json | from json
+    assert (($addons_after_reject | length) == 3)
+
+    tap ok
+}
+
+def main [] {
+    match $env.TMT_REBOOT_COUNT? {
+        null | "0" => first_boot,
+        "1" => second_boot,
+        "2" => third_boot,
+        "3" => fourth_boot,
+        $o => { error make { msg: $"Invalid TMT_REBOOT_COUNT ($o)" } },
+    }
+}
