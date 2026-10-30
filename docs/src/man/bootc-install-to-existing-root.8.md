@@ -16,6 +16,15 @@ host root filesystem\'s `/boot` partition will be wiped, but the
 content of the existing root will otherwise be retained, and will need
 to be cleaned up if desired when rebooted into the new root.
 
+The opt-in `--preserve-var` option copies the running system's `/var` into the
+new deployment before rebooting. It requires the OSTree backend, uses reflinks
+when supported, and otherwise performs a full copy. Reflinks are created per
+file, not as an atomic snapshot; stop stateful services or use a consistent
+snapshot before copying live database data. The paths `tmp`, `cache`,
+`log/journal`, and `lib/containers` are always excluded. Repeat
+`--preserve-var-skip` to exclude additional paths relative to `/var`; each path
+may contain at most one slash, for example `lib/rpm`.
+
 ## Managing configuration: before and after reboot
 
 When using `to-existing-root`, there are two distinct scenarios for managing
@@ -215,6 +224,14 @@ of migrating the fstab entries. See the "Injecting kernel arguments" section abo
 **--cleanup**
 
     Add the bootc-destructive-cleanup systemd service to delete files from the previous install on first boot
+
+**--preserve-var**
+
+    Preserve the running system's `/var` data into the new bootc deployment
+
+**--preserve-var-skip**=*PATH*
+
+    Relative paths below `/var` to leave out while preserving `/var`
 
 **--composefs-backend**
 
