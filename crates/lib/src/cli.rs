@@ -1720,6 +1720,41 @@ pub(crate) fn target_imgref_for_switch(opts: &SwitchOpts) -> Result<Option<Image
     Ok(Some(ImageReference::from(target).canonicalize()?))
 }
 
+/// Compare the requested update origin and, for redirected switches, the delivery
+/// source recorded by the current deployment. Older deployments without a saved
+/// delivery source used their update origin as the source.
+pub(crate) fn switch_images_unchanged(
+    source: &ImageReference,
+    target: Option<&ImageReference>,
+    current_origin: &ImageReference,
+    current_delivery_source: Option<&ImageReference>,
+) -> Result<bool> {
+    if target.unwrap_or(source) != current_origin {
+        return Ok(false);
+    }
+    // Ordinary switches compare only the update origin. Provenance matters
+    // when a target override distinguishes it from a delivery source.
+    if target.is_none() {
+        return Ok(true);
+    }
+    let current_delivery_source = current_delivery_source.unwrap_or(current_origin);
+    Ok(source.clone().canonicalize()? == current_delivery_source.clone().canonicalize()?)
+}
+
+pub(crate) fn handle_unchanged_switch(opts: &SwitchOpts, host: &Host) -> Result<()> {
+    if opts.apply
+        && let Some(staged) = &host.status.staged
+    {
+        anyhow::ensure!(
+            !staged.download_only,
+            "Staged deployment is download-only; use bootc switch --from-downloaded --apply"
+        );
+        crate::reboot::reboot()?;
+    }
+    println!("Image specification is unchanged.");
+    Ok(())
+}
+
 #[context("Getting imgref for switch")]
 pub(crate) fn imgref_for_switch(opts: &SwitchOpts) -> Result<ImageReference> {
     let transport = ostree_container::Transport::try_from(opts.transport.as_str())?;
@@ -1749,7 +1784,7 @@ async fn switch_ostree(
         .await?
         .map(std::sync::Arc::new);
 
-    let (_, host) = crate::status::get_status(booted_ostree)?;
+    let (deployments, host) = crate::status::get_status(booted_ostree)?;
 
     if opts.download_opts.from_downloaded {
         return apply_from_downloaded_ostree(
@@ -1764,7 +1799,12 @@ async fn switch_ostree(
         .await;
     }
 
-    let target = imgref_for_switch(&opts)?;
+    let source = imgref_for_switch(&opts)?;
+    let target_imgref = target_imgref_for_switch(&opts)?;
+    let target = target_imgref.as_ref().unwrap_or(&source);
+    let import_target = target_imgref
+        .clone()
+        .map(ostree_container::OstreeImageReference::from);
     let prog: ProgressWriter = opts.progress.clone().try_into()?;
     let cancellable = gio::Cancellable::NONE;
 
@@ -1776,19 +1816,41 @@ async fn switch_ostree(
         new_spec
     };
 
-    // 1. Check if there's a staged one and compare the image digest
-    // 2. Also need to make sure that `--target-imgeref hi <img1>` and `--target-imgeref hi <img2>`
-    //    actually ends up switching
-
-    println!("new_spec: {new_spec:#?}");
-    println!("host.spec: {:#?}", host.spec);
-
-    if new_spec == host.spec {
-        println!("Image specification is unchanged.");
-        if opts.apply && host.status.staged.is_some() {
-            crate::reboot::reboot()?;
+    let current = deployments
+        .staged
+        .as_ref()
+        .unwrap_or(&booted_ostree.deployment);
+    // A non-container OSTree deployment may not have an image origin.
+    if let Some(current_origin) = host.spec.image.as_ref() {
+        let current_delivery_source = if target_imgref.is_some() && target == current_origin {
+            current
+                .origin()
+                .map(|origin| {
+                    origin.optional_string(
+                        crate::deploy::ORIGIN_BOOTC,
+                        crate::deploy::ORIGIN_SOURCE_IMAGE,
+                    )
+                })
+                .transpose()?
+                .flatten()
+                .map(|source| {
+                    source
+                        .parse::<ostree_container::OstreeImageReference>()
+                        .map(ImageReference::from)
+                })
+                .transpose()
+                .context("Parsing current deployment's delivery source")?
+        } else {
+            None
+        };
+        if switch_images_unchanged(
+            &source,
+            target_imgref.as_ref(),
+            current_origin,
+            current_delivery_source.as_ref(),
+        )? {
+            return handle_unchanged_switch(&opts, &host);
         }
-        return Ok(());
     }
 
     // Log the switch operation to systemd journal
@@ -1805,6 +1867,8 @@ async fn switch_ostree(
         bootc.old_image_reference = old_image,
         bootc.new_image_reference = &target.image,
         bootc.new_image_transport = &target.transport,
+        bootc.source_image_reference = &source.image,
+        bootc.source_image_transport = &source.transport,
         "Switching from image {} to {}",
         old_image,
         target.image
@@ -1818,7 +1882,7 @@ async fn switch_ostree(
     let use_unified = if opts.unified_storage_exp {
         true
     } else {
-        crate::deploy::image_exists_in_unified_storage(storage, &target).await?
+        crate::deploy::image_exists_in_unified_storage(storage, &source).await?
     };
     if let Some(delta) = delta.as_deref() {
         crate::delta::reject_unified_storage(delta, use_unified)?;
@@ -1827,7 +1891,7 @@ async fn switch_ostree(
     let fetched = if let Some(delta) = delta.clone() {
         crate::deploy::pull_delta(
             repo,
-            &target,
+            &source,
             delta,
             opts.quiet,
             prog.clone(),
@@ -1837,8 +1901,8 @@ async fn switch_ostree(
     } else if use_unified {
         crate::deploy::pull_unified(
             repo,
-            &target,
-            None,
+            &source,
+            import_target.as_ref(),
             opts.quiet,
             prog.clone(),
             storage,
@@ -1848,8 +1912,8 @@ async fn switch_ostree(
     } else {
         crate::deploy::pull(
             repo,
-            &target,
-            None,
+            &source,
+            import_target.as_ref(),
             opts.quiet,
             prog.clone(),
             Some(&booted_ostree.deployment),
@@ -1878,7 +1942,7 @@ async fn switch_ostree(
         &new_spec,
         prog.clone(),
         opts.download_opts.download_only,
-        target_imgref_for_switch(&opts)?.as_ref(),
+        Some(&source),
     )
     .await?;
 
@@ -3128,6 +3192,34 @@ mod tests {
             assert_eq!(
                 Opt::try_parse_from(argv).unwrap_err().kind(),
                 clap::error::ErrorKind::ArgumentConflict,
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_switch_images_unchanged() -> Result<()> {
+        let origin = ImageReference::from(ostree_container::OstreeImageReference::try_from(
+            "ostree-unverified-registry:quay.io/example/os:v2",
+        )?);
+        let source = ImageReference::from(ostree_container::OstreeImageReference::try_from(
+            "ostree-unverified-image:containers-storage:localhost/offline:v2",
+        )?);
+        let signed_source = ImageReference {
+            signature: Some(crate::spec::ImageSignature::ContainerPolicy),
+            ..source.clone()
+        };
+        // Older deployments have no saved delivery source. Signature policy is
+        // also part of the reference, even when the image name is unchanged.
+        for (requested_source, saved_source, unchanged) in [
+            (&origin, None, true),
+            (&source, None, false),
+            (&source, Some(&source), true),
+            (&signed_source, Some(&source), false),
+        ] {
+            assert_eq!(
+                switch_images_unchanged(requested_source, Some(&origin), &origin, saved_source)?,
+                unchanged,
             );
         }
         Ok(())

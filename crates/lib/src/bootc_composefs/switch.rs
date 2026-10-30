@@ -10,7 +10,10 @@ use crate::{
             lookup_config_splitstream, validate_update,
         },
     },
-    cli::{SwitchOpts, imgref_for_switch, target_imgref_for_switch},
+    cli::{
+        SwitchOpts, handle_unchanged_switch, imgref_for_switch, switch_images_unchanged,
+        target_imgref_for_switch,
+    },
     progress_jsonl::ProgressWriter,
     store::{BootedComposefs, Storage},
 };
@@ -52,12 +55,14 @@ pub(crate) async fn switch_composefs(
         );
     }
 
-    let target = imgref_for_switch(&opts)?;
+    let source = imgref_for_switch(&opts)?;
+    let target = target_imgref_for_switch(&opts)?;
+    let origin = target.as_ref().unwrap_or(&source);
     if let Some(delta) = delta.as_ref() {
-        delta.validate_image_reference(&target)?;
+        delta.validate_image_reference(&source)?;
     }
 
-    // There may be an existing failed update with the same name as "target", and
+    // There may be an existing failed update with the same update origin, and
     // in that case we don't want the "nothing changed" check below to trigger.
     // Instead we want to discard the failed attempt and redo the update.
     let failed_target_matches = host
@@ -65,7 +70,7 @@ pub(crate) async fn switch_composefs(
         .staged
         .as_ref()
         .and_then(|entry| entry.image.as_ref())
-        .is_some_and(|image| image.image == target);
+        .is_some_and(|image| &image.image == origin);
     let discarded_failed_update = discard_failed_aboot_update(storage, &host)?;
     if discarded_failed_update {
         // Refresh host to skip discarded update
@@ -73,30 +78,56 @@ pub(crate) async fn switch_composefs(
     }
     let retry_failed_target = discarded_failed_update && failed_target_matches;
 
-    let new_spec = {
-        let mut new_spec = host.spec.clone();
-        new_spec.image = Some(target.clone());
-        new_spec
+    let current = host
+        .status
+        .staged
+        .as_ref()
+        .or(host.status.booted.as_ref())
+        .context("No current deployment")?;
+    let current_origin = host
+        .spec
+        .image
+        .as_ref()
+        .context("No image for current deployment")?;
+    let current_delivery_source = if target.is_some() && origin == current_origin {
+        let current_origin_file = super::state::read_origin(
+            &storage.physical_root,
+            &current.require_composefs()?.verity,
+        )?
+        .context("No origin for current deployment")?;
+        current_origin_file
+            .get::<String>(
+                crate::deploy::ORIGIN_BOOTC,
+                crate::deploy::ORIGIN_SOURCE_IMAGE,
+            )
+            .map(|source| {
+                source
+                    .parse::<ostree_ext::container::OstreeImageReference>()
+                    .map(crate::spec::ImageReference::from)
+            })
+            .transpose()
+            .context("Parsing current deployment's delivery source")?
+    } else {
+        None
     };
-
-    if new_spec == host.spec && !retry_failed_target {
-        println!("Image specification is unchanged.");
-        if opts.apply && host.status.staged.is_some() {
-            crate::reboot::reboot()?;
-        }
-        return Ok(());
+    if !retry_failed_target
+        && switch_images_unchanged(
+            &source,
+            target.as_ref(),
+            current_origin,
+            current_delivery_source.as_ref(),
+        )?
+    {
+        return handle_unchanged_switch(&opts, &host);
     }
-
-    let Some(target_imgref) = new_spec.image else {
-        anyhow::bail!("Target image is undefined")
-    };
 
     const COMPOSEFS_SWITCH_JOURNAL_ID: &str = "7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d1";
 
     tracing::info!(
         message_id = COMPOSEFS_SWITCH_JOURNAL_ID,
         bootc.operation = "switch",
-        bootc.target_image = target_imgref.to_string(),
+        bootc.target_image = origin.to_string(),
+        bootc.source_image = source.to_string(),
         bootc.apply_mode = opts.apply,
         bootc.download_only = opts.download_opts.download_only,
         bootc.from_downloaded = opts.download_opts.from_downloaded,
@@ -119,7 +150,7 @@ pub(crate) async fn switch_composefs(
             false
         };
         let target_unified =
-            crate::deploy::image_exists_in_unified_storage(storage, &target_imgref).await?;
+            crate::deploy::image_exists_in_unified_storage(storage, &source).await?;
         booted_unified || target_unified
     };
 
@@ -135,12 +166,10 @@ pub(crate) async fn switch_composefs(
             )
         }
         None => {
-            let (image, img_config, _) = is_image_pulled(repo, &target_imgref).await?;
+            let (image, img_config, _) = is_image_pulled(repo, &source).await?;
             (image, img_config.manifest)
         }
     };
-
-    let final_target_imgref = target_imgref_for_switch(&opts)?;
 
     if let Some(cfg_verity) = image {
         let action = validate_update(
@@ -154,7 +183,7 @@ pub(crate) async fn switch_composefs(
 
         match action {
             UpdateAction::Skip => {
-                println!("No changes in image: {target_imgref:#}");
+                println!("No changes in image: {source:#}");
                 return Ok(());
             }
 
@@ -163,8 +192,8 @@ pub(crate) async fn switch_composefs(
                     storage,
                     booted_cfs,
                     &host,
-                    &target_imgref,
-                    final_target_imgref.as_ref(),
+                    &source,
+                    target.as_ref(),
                     &do_upgrade_opts,
                     &manifest,
                 )
@@ -177,8 +206,8 @@ pub(crate) async fn switch_composefs(
         storage,
         booted_cfs,
         &host,
-        &target_imgref,
-        final_target_imgref.as_ref(),
+        &source,
+        target.as_ref(),
         &do_upgrade_opts,
         &manifest,
     )
