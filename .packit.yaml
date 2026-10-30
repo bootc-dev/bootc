@@ -128,6 +128,12 @@ jobs:
     trigger: release
     dist_git_branches:
       - fedora-all
+    files_to_sync:
+      - src: contrib/packaging/bootc.spec
+        dest: bootc.spec
+      - src: contrib/packaging/bootc.rpmlintrc
+        dest: bootc.rpmlintrc
+      - .packit.yaml
 
   - job: koji_build
     trigger: commit
