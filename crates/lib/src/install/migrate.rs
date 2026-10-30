@@ -58,6 +58,67 @@ use cap_std_ext::cmdext::{CapStdExtCommandExt, CmdFds};
 #[cfg(test)]
 use fn_error_context::context;
 
+/// Preserve the running `/var` into the new deployment's `var/` directory.
+///
+/// `src_var` is the running system's `/var` (at `<root_path>/var`).
+/// `new_var` is the new deployment's empty `var/` directory.
+pub(crate) fn preserve_var(src_var: &Path, new_var: &Path, exclusions: &[String]) -> Result<()> {
+    // Resolve symlink aliases and path components before comparing against the
+    // absolute, kernel-resolved mountpoints in mountinfo.
+    let canonical_src_var = std::fs::canonicalize(src_var)
+        .with_context(|| format!("Canonicalizing source /var {}", src_var.display()))?;
+    let nested_mounts = mountinfo::nested_mountpoints_for(&canonical_src_var)?;
+    let src_var = CapStdDir::open_ambient_dir(&canonical_src_var, ambient_authority())
+        .with_context(|| format!("Opening source {}", canonical_src_var.display()))?;
+    let new_var = open_or_create_var_dir(new_var)?;
+
+    let mut effective_exclusions = ["tmp", "cache", "log/journal", "lib/containers"]
+        .into_iter()
+        .map(String::from)
+        .collect::<Vec<_>>();
+    effective_exclusions.extend(exclusions.iter().cloned());
+
+    println!("  Copying /var into the new deployment");
+    preserve_var_copy_mounts(&src_var, &new_var, &effective_exclusions, &nested_mounts)?;
+
+    Ok(())
+}
+
+/// Open the destination through its parent capability, creating just the
+/// final `/var` directory if needed. The caller-supplied parent is the initial
+/// ambient authority; all subsequent traversal is relative to opened handles.
+fn open_or_create_var_dir(path: &Path) -> Result<CapStdDir> {
+    let parent = path.parent().context("Destination /var has no parent")?;
+    let name = path
+        .file_name()
+        .context("Destination /var has no final path component")?;
+    let parent = CapStdDir::open_ambient_dir(parent, ambient_authority())
+        .with_context(|| format!("Opening destination parent {}", parent.display()))?;
+    match parent.create_dir(name) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            anyhow::ensure!(
+                parent.symlink_metadata(name)?.is_dir(),
+                "Destination {} exists and is not a directory",
+                path.display()
+            );
+        }
+        Err(e) => return Err(e).with_context(|| format!("Creating {}", path.display())),
+    }
+    open_child_dir_nofollow(&parent, name)
+        .with_context(|| format!("Opening destination {}", path.display()))
+}
+
+pub(crate) fn deployment_var_path(deploy_dir: &Path) -> Result<std::path::PathBuf> {
+    let deploy_parent = deploy_dir
+        .parent()
+        .context("Deployment path has no parent")?;
+    let stateroot = deploy_parent
+        .parent()
+        .context("Deployment path has no stateroot")?;
+    Ok(stateroot.join("var"))
+}
+
 /// Run GNU cp with directory handles inherited as fixed descriptors. Each
 /// operand is `/proc/self/fd/N[/entry]`; cp's top-level paths therefore remain
 /// rooted in the opened capabilities even if the original paths are renamed.
@@ -931,6 +992,15 @@ mod tests {
     }
 
     #[test]
+    fn deployment_var_is_stateroot_var() {
+        let deploy = Path::new("/sysroot/ostree/deploy/default/deploy/checksum.0");
+        assert_eq!(
+            deployment_var_path(deploy).unwrap(),
+            Path::new("/sysroot/ostree/deploy/default/var")
+        );
+    }
+
+    #[test]
     fn directory_metadata_restoration_accepts_path_capability() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let src_path = temp.path().join("src");
@@ -1232,6 +1302,10 @@ mod tests {
         let target = temp.path().join("target");
         fs::create_dir(&target)?;
         fs::write(target.join("sentinel"), b"unchanged")?;
+
+        let var_link = temp.path().join("var-link");
+        symlink(&target, &var_link)?;
+        assert!(open_or_create_var_dir(&var_link).is_err());
 
         let parent_path = temp.path().join("parent");
         fs::create_dir(&parent_path)?;
