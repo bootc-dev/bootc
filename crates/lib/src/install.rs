@@ -144,6 +144,8 @@ mod aleph;
 pub(crate) mod baseline;
 pub(crate) mod completion;
 pub(crate) mod config;
+#[cfg(test)]
+mod migrate;
 mod osbuild;
 pub(crate) mod osconfig;
 
