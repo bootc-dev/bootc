@@ -42,6 +42,11 @@ case "${ID}-${VERSION_ID}" in
         cd -
         rm -rf "${td}"
         ;;
+    "fedora-43")
+        # no oci-delta on f43 (https://github.com/bootc-dev/bootc/issues/2604)
+        # this can go away when f43 is EOL
+        dnf -y install nu
+        ;;
     "fedora-"*)
         dnf -y install nu oci-delta
         ;;
