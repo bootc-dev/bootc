@@ -746,12 +746,7 @@ pub(crate) async fn prepare_for_pull_unified(
         }
         PrepareResult::Ready(p) => p,
     };
-    check_bootc_label(&prep.config);
-    if let Some(warning) = prep.deprecated_warning() {
-        ostree_ext::cli::print_deprecated_warning(warning).await;
-    }
-    ostree_ext::cli::print_layer_status(&prep);
-    let layers_to_fetch = prep.layers_to_fetch().collect::<Result<Vec<_>>>()?;
+    let prepared_image = prepared_import_meta(imp, prep).await?;
 
     // Log that we're importing a new image from containers-storage
     const PULLING_NEW_IMAGE_ID: &str = "6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0";
@@ -764,16 +759,6 @@ pub(crate) async fn prepare_for_pull_unified(
         "Importing image from bootc storage: {}",
         ostree_imgref
     );
-
-    let prepared_image = PreparedImportMeta {
-        imp,
-        n_layers_to_fetch: layers_to_fetch.len(),
-        layers_total: prep.all_layers().count(),
-        bytes_to_fetch: layers_to_fetch.iter().map(|(l, _)| l.layer.size()).sum(),
-        bytes_total: prep.all_layers().map(|l| l.layer.size()).sum(),
-        digest: prep.manifest_digest.clone(),
-        prep,
-    };
 
     Ok(PreparedPullResult::Ready(Box::new(prepared_image)))
 }
