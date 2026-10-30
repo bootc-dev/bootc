@@ -5,9 +5,9 @@ use crate::{
     bootc_composefs::{
         status::get_composefs_status,
         update::{
-            DoUpgradeOpts, UpdateAction, apply_upgrade_from_downloaded, do_upgrade,
-            ensure_delta_source_present, is_image_pulled, lookup_config_splitstream,
-            validate_update,
+            DoUpgradeOpts, UpdateAction, apply_upgrade_from_downloaded,
+            discard_failed_aboot_update, do_upgrade, ensure_delta_source_present, is_image_pulled,
+            lookup_config_splitstream, validate_update,
         },
     },
     cli::{SwitchOpts, imgref_for_switch},
@@ -22,7 +22,7 @@ pub(crate) async fn switch_composefs(
     booted_cfs: &BootedComposefs,
 ) -> Result<()> {
     // TODO: Handle in-place
-    let host = get_composefs_status(storage, booted_cfs)
+    let mut host = get_composefs_status(storage, booted_cfs)
         .await
         .context("Getting composefs deployment status")?;
 
@@ -48,6 +48,10 @@ pub(crate) async fn switch_composefs(
     let target = imgref_for_switch(&opts)?;
     if let Some(delta) = delta.as_ref() {
         delta.validate_image_reference(&target)?;
+    }
+
+    if discard_failed_aboot_update(storage, &host)? {
+        host = get_composefs_status(storage, booted_cfs).await?;
     }
 
     let new_spec = {

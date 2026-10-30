@@ -27,7 +27,8 @@
 //! invalidates the non-booted slot mapping, and invokes aboot-deploy. On the next boot,
 //! observing the candidate consumes `pending`, its staged payload directory, and
 //! `attempted`. Observing another deployment retains them without automatically retrying
-//! the write. An unattempted pending update is projected back into `/run` and rearmed
+//! the write; an explicit update or switch can discard them after that reboot.
+//! An unattempted pending update is projected back into `/run` and rearmed
 //! unless it was staged download-only.
 
 use anyhow::{Context, Result, ensure};
@@ -43,6 +44,7 @@ use crate::composefs_consts::{
     ABOOT_ARTIFACT_DIR, ABOOT_ATTEMPTED_FNAME, ABOOT_IMAGE_FNAME, ABOOT_PENDING_FNAME,
     ABOOT_ROLLBACK_FNAME, ABOOT_STATE_DIR, ABOOT_VBMETA_FNAME, STATE_DIR_RELATIVE,
 };
+use crate::spec::Bootloader;
 
 use super::{
     boot::BootType,
@@ -51,6 +53,42 @@ use super::{
 };
 
 const SLOT_SUFFIX: &str = "androidboot.slot_suffix";
+const ABOOT_CONFIG: &str = "/etc/aboot.cfg";
+
+/// Determine the host bootloader from the running system's aboot configuration.
+pub(crate) fn get_bootloader() -> Result<Bootloader> {
+    let config = match std::fs::read_to_string(ABOOT_CONFIG) {
+        Ok(config) => config,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Bootloader::None),
+        Err(err) => return Err(err).with_context(|| format!("Reading {ABOOT_CONFIG}")),
+    };
+    Ok(bootloader_from_config(&config))
+}
+
+fn bootloader_from_config(config: &str) -> Bootloader {
+    // Match aboot_config_load(): trim keys and values, keep the last assignment,
+    // and treat quotes and inline comments literally rather than as shell syntax.
+    let boot_type = config
+        .lines()
+        .filter(|line| !line.starts_with('#'))
+        .filter_map(|line| line.split_once('='))
+        .filter(|(key, _)| key.trim_ascii() == "BOOT_TYPE")
+        .map(|(_, value)| value.trim_ascii())
+        .next_back();
+    match boot_type {
+        Some("ukiboot") => Bootloader::Ukiboot,
+        _ => Bootloader::None,
+    }
+}
+
+/// Require update and rollback tooling in every installed or staged aboot image.
+pub(crate) fn require_aboot_deploy_in_image(root: &Dir) -> Result<()> {
+    ensure!(
+        crate::utils::have_executable_in_root(root, "aboot-deploy")?,
+        "Target image must contain aboot-deploy for aboot updates and rollbacks"
+    );
+    Ok(())
+}
 
 /// Logical A/B slot observed from the running kernel command line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -356,16 +394,32 @@ impl<'a> AbootState<'a> {
     }
 
     pub(crate) fn discard_pending(&self) -> Result<()> {
-        ensure!(
-            self.read_attempted()?.is_none(),
-            "An attempted aboot update has not been reconciled"
-        );
+        if let Some(attempted) = self.read_attempted()? {
+            ensure!(
+                attempted.boot_id != boot_id()?,
+                "Cannot discard an aboot update attempted during this boot"
+            );
+        }
+        // Remove pending before attempted so interrupted cleanup cannot rearm the payload.
         if let Some(pending) = self.read_pending()? {
             self.remove_state_file(ABOOT_PENDING_FNAME)?;
             self.remove_artifacts(&pending.depl_id)?;
         }
+        self.remove_state_file(ABOOT_ATTEMPTED_FNAME)?;
         remove_staged_deployment()?;
         Ok(())
+    }
+
+    /// Discard a failed attempt only when an explicit update replaces it after reboot.
+    pub(crate) fn discard_failed_attempt(&self, booted: &str) -> Result<bool> {
+        let Some(attempted) = self.read_attempted()? else {
+            return Ok(false);
+        };
+        if attempted.depl_id == booted {
+            return Ok(false);
+        }
+        self.discard_pending()?;
+        Ok(true)
     }
 
     /// Mark an update attempted before invalidating a slot or writing partitions.
@@ -567,6 +621,34 @@ mod tests {
     use crate::composefs_consts::STATE_DIR_RELATIVE;
     use cap_std_ext::{cap_std::ambient_authority, cap_tempfile::tempdir};
 
+    #[test]
+    fn bootloader_config() {
+        for (config, expected) in [
+            ("", Bootloader::None),
+            (
+                "PARTITION_A=/dev/disk/by-partlabel/boot_a\n",
+                Bootloader::None,
+            ),
+            ("BOOT_TYPE=aboot\n", Bootloader::None),
+            ("BOOT_TYPE=unknown\n", Bootloader::None),
+            ("BOOT_TYPE=\n", Bootloader::None),
+            ("BOOT_TYPE=ukiboot", Bootloader::Ukiboot),
+            (" \tBOOT_TYPE \t= \tukiboot \t\r\n", Bootloader::Ukiboot),
+            (
+                "#BOOT_TYPE=ukiboot\n #BOOT_TYPE=ukiboot\n",
+                Bootloader::None,
+            ),
+            ("BOOT_TYPE\nCMDLINE=a=b\n", Bootloader::None),
+            ("BOOT_TYPE=ukiboot\nBOOT_TYPE=aboot\n", Bootloader::None),
+            ("BOOT_TYPE=aboot\nBOOT_TYPE=ukiboot\n", Bootloader::Ukiboot),
+            ("BOOT_TYPE=\"ukiboot\"\n", Bootloader::None),
+            ("BOOT_TYPE='ukiboot'\n", Bootloader::None),
+            ("BOOT_TYPE=ukiboot # comment\n", Bootloader::None),
+        ] {
+            assert_eq!(bootloader_from_config(config), expected, "{config:?}");
+        }
+    }
+
     fn deployment(root: &Dir, digest: &str, boot_type: &str) -> Result<()> {
         let path = format!("{STATE_DIR_RELATIVE}/{digest}");
         root.create_dir_all(&path)?;
@@ -758,20 +840,71 @@ mod tests {
                 boot_id: "old-boot".into(),
             },
         )?;
-        assert!(matches!(
-            state.reconcile_state("booted", "old-boot")?,
-            ReconcileAction::None
-        ));
-        assert!(matches!(
-            state.reconcile_state("booted", "new-boot")?,
-            ReconcileAction::None
-        ));
-        assert!(state.read_pending()?.is_some());
+        for current_boot in ["old-boot", "new-boot", "another-boot"] {
+            assert!(matches!(
+                state.reconcile_state("booted", current_boot)?,
+                ReconcileAction::None
+            ));
+            assert_eq!(state.read_pending()?, Some(pending.clone()));
+            assert_eq!(state.read_attempted()?.unwrap().boot_id, "old-boot");
+        }
         assert!(root.try_exists(&artifact_dir)?);
         assert!(matches!(
             state.reconcile_state(&digest, "new-boot")?,
             ReconcileAction::RemoveTransient
         ));
+        assert!(state.read_pending()?.is_none());
+        assert!(state.read_attempted()?.is_none());
+        assert!(!root.try_exists(&artifact_dir)?);
+        Ok(())
+    }
+
+    #[test]
+    fn replace_failed_attempt_after_reboot() -> Result<()> {
+        let root = tempdir(ambient_authority())?;
+        let digest = "aa".repeat(64);
+        let artifact_dir = format!("{STATE_DIR_RELATIVE}/{digest}/{ABOOT_ARTIFACT_DIR}");
+        deployment(&root, &digest, "aboot")?;
+        let mut state = AbootState::open(&root)?;
+        let pending = state.stage_artifacts(&digest, false, b"failed", None)?;
+        state.write_pending(&pending)?;
+        state.record_attempt(&digest)?;
+
+        assert!(state.discard_failed_attempt("booted").is_err());
+        assert!(state.discard_pending().is_err());
+        assert_eq!(state.read_pending()?, Some(pending));
+        assert!(root.try_exists(&artifact_dir)?);
+
+        state.write_json(
+            ABOOT_ATTEMPTED_FNAME,
+            &AttemptedDeployment {
+                depl_id: digest.clone(),
+                boot_id: "previous-boot".into(),
+            },
+        )?;
+        // Leave successful attempts for normal boot reconciliation.
+        assert!(!state.discard_failed_attempt(&digest)?);
+        assert!(state.read_attempted()?.is_some());
+        assert!(state.discard_failed_attempt("booted")?);
+        assert!(state.read_pending()?.is_none());
+        assert!(state.read_attempted()?.is_none());
+        assert!(!root.try_exists(&artifact_dir)?);
+
+        // The same image can be staged and attempted again explicitly.
+        let pending = state.stage_artifacts(&digest, false, b"retry", None)?;
+        state.write_pending(&pending)?;
+        state.record_attempt(&digest)?;
+        assert_eq!(state.read_attempted()?.unwrap().boot_id, boot_id()?);
+
+        // Rollback can also discard an older failed attempt.
+        state.write_json(
+            ABOOT_ATTEMPTED_FNAME,
+            &AttemptedDeployment {
+                depl_id: digest,
+                boot_id: "previous-boot".into(),
+            },
+        )?;
+        state.discard_pending()?;
         assert!(state.read_pending()?.is_none());
         assert!(state.read_attempted()?.is_none());
         assert!(!root.try_exists(&artifact_dir)?);

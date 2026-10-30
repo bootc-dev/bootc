@@ -13,7 +13,7 @@ def status():
     return json.loads(run("bootc", "status", "--json"))["status"]
 
 
-def verify_boot(slot, version):
+def verify_boot(slot, version, *, staged=False):
     assert run("systemctl", "is-enabled", "ukiboot-set-success.service") == "enabled"
     for service in ("ukiboot-set-success.service", "bootc-aboot-reconcile.service"):
         for attempt in range(60):
@@ -29,8 +29,9 @@ def verify_boot(slot, version):
     booted = st["booted"]
     assert booted["ostree"] is None, booted
     assert booted["composefs"]["bootType"] == "Aboot", booted
+    assert booted["composefs"]["bootloader"] == "ukiboot", booted
     assert run("findmnt", "--noheadings", "--output", "FSTYPE", "--target", "/sysroot") == "ext4"
-    assert st["staged"] is None, st
+    assert (st["staged"] is not None) == staged, st
     assert not st["rollbackQueued"], st
     assert Path("/usr/share/bootc-aboot-test-version").read_text().strip() == str(version)
     assert f"androidboot.slot_suffix=_{slot}" in Path("/proc/cmdline").read_text().split()

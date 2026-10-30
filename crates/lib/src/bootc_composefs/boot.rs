@@ -2492,7 +2492,7 @@ fn install_ukiboot(
     Ok(())
 }
 
-fn validate_bootloader(
+pub(crate) fn validate_bootloader(
     entry: &ComposefsBootEntry<Sha512HashValue>,
     bootloader: Bootloader,
 ) -> Result<()> {
@@ -2870,6 +2870,10 @@ pub(crate) async fn setup_composefs_boot(
         .mount(&id.to_hex())
         .context("Failed to mount composefs image")?;
     let image_root = Dir::reopen_dir(&composefs_mnt_fd)?;
+
+    if boot_type == BootType::Aboot {
+        super::aboot::require_aboot_deploy_in_image(&image_root)?;
+    }
 
     let postfetch = PostFetchState::new(state, &image_root, image_bootloader(entry))?;
 
