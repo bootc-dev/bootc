@@ -477,13 +477,13 @@ pub(crate) async fn do_upgrade(
     let staged_state = StagedDeployment {
         depl_id: deploy_id.to_hex(),
         finalization_locked: opts.download_only,
-        original_imgref: target_imgref.map(|_| imgref.to_string()),
     };
 
     write_composefs_state(
         &Utf8PathBuf::from("/sysroot"),
         &deploy_id,
-        target_imgref.unwrap_or(imgref),
+        imgref,
+        target_imgref,
         false,
         boot_type,
         boot_digest,
