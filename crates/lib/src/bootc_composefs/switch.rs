@@ -45,6 +45,11 @@ pub(crate) async fn switch_composefs(
         return apply_upgrade_from_downloaded(storage, booted_cfs, &host, &do_upgrade_opts).await;
     }
 
+    anyhow::ensure!(
+        opts.target_imgref.is_none() || !opts.enforce_container_sigpolicy,
+        "--target-imgref with --enforce-container-sigpolicy is not supported by the composefs backend"
+    );
+
     let target = imgref_for_switch(&opts)?;
     if let Some(delta) = delta.as_ref() {
         delta.validate_image_reference(&target)?;

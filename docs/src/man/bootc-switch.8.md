@@ -88,6 +88,10 @@ For shared `--apply` and `--soft-reboot` behavior, see
 
     Experimental. Name of the global UKI addons to install without the ".addon.efi" suffix. This option can be provided multiple times if multiple addons are to be installed (composefs backend only). On upgrade and switch, global addons already installed are carried forward; passing this flag adds further addons on top
 
+**--target-imgref**=*TARGET_IMGREF*
+
+    Record a different image reference for subsequent updates
+
 <!-- END GENERATED OPTIONS -->
 
 # EXAMPLES

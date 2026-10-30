@@ -248,11 +248,16 @@ pub(crate) struct SwitchOpts {
     #[clap(flatten)]
     pub(crate) uki_addon_opts: UkiAddonOpts,
 
-    /// The image to use for subsequent upgrades
-    /// Useful when switching to an, say containers-storage, image
-    /// but subsequent updates are to be pulled from registry
-    #[clap(long)]
-    pub(crate) target_imgref: Option<String>,
+    /// Record a different image reference for subsequent updates.
+    ///
+    /// The positional image and --transport select where to fetch now. This
+    /// reference is recorded without fetching it. Accepts a registry image name
+    /// or a transport-prefixed reference, such as docker://quay.io/example/os:latest.
+    /// Repeating the same source and update origin leaves the deployment unchanged.
+    /// Use --from-downloaded to unlock a deployment staged with --download-only.
+    #[clap(long, value_parser = crate::spec::parse_image_reference,
+        conflicts_with_all = ["from_downloaded", "mutate_in_place", "from_delta"])]
+    pub(crate) target_imgref: Option<containers_image_proxy::ImageReference>,
 }
 
 /// Finalize a staged composefs deployment.
@@ -1686,13 +1691,13 @@ pub(crate) fn target_imgref_for_switch(opts: &SwitchOpts) -> Result<Option<Image
         return Ok(None);
     };
 
-    let imgref = containers_image_proxy::ImageReference::try_from(target_imgref.as_str())
-        .with_context(|| format!("Parsing imgref {target_imgref}"))?;
-
     let sigverify = sigpolicy_from_opt(opts.enforce_container_sigpolicy);
-    let target = ostree_container::OstreeImageReference { sigverify, imgref };
+    let target = ostree_container::OstreeImageReference {
+        sigverify,
+        imgref: target_imgref.clone(),
+    };
 
-    Ok(Some(ImageReference::from(target)))
+    Ok(Some(ImageReference::from(target).canonicalize()?))
 }
 
 #[context("Getting imgref for switch")]
@@ -2997,6 +3002,92 @@ async fn run_from_opt(opt: Opt) -> Result<CliExitStatus> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_switch_target_imgref() -> Result<()> {
+        for (value, transport, image) in [
+            ("quay.io/example/os:v2", "registry", "quay.io/example/os:v2"),
+            (
+                "docker://quay.io/example/os:v2",
+                "registry",
+                "quay.io/example/os:v2",
+            ),
+            ("localhost:5000/os:v2", "registry", "localhost:5000/os:v2"),
+            ("oci:5000/os:v2", "registry", "oci:5000/os:v2"),
+            ("docker:5000/os:v2", "registry", "docker:5000/os:v2"),
+            ("registry:5000/os:v2", "registry", "registry:5000/os:v2"),
+            (
+                "registry:quay.io/example/os:v2",
+                "registry",
+                "quay.io/example/os:v2",
+            ),
+            (
+                "containers-storage:localhost/os:v2",
+                "containers-storage",
+                "localhost/os:v2",
+            ),
+            ("oci:/var/tmp/os", "oci", "/var/tmp/os"),
+            ("oci:./5000/os", "oci", "./5000/os"),
+            ("oci:relative/os", "oci", "relative/os"),
+        ] {
+            let Opt::Switch(opts) = Opt::try_parse_from([
+                "bootc",
+                "switch",
+                "--transport",
+                "containers-storage",
+                "--target-imgref",
+                value,
+                "localhost/offline:v2",
+            ])?
+            else {
+                unreachable!()
+            };
+            let source = imgref_for_switch(&opts)?;
+            assert_eq!(source.transport, "containers-storage");
+            assert_eq!(source.image, "localhost/offline:v2");
+            let parsed = opts.target_imgref.as_ref().unwrap();
+            assert_eq!(
+                parsed.transport,
+                ostree_container::Transport::try_from(transport)?
+            );
+            assert_eq!(parsed.name, image);
+            let target = target_imgref_for_switch(&opts)?.unwrap();
+            assert_eq!(target.transport, transport);
+            assert_eq!(target.image, image);
+        }
+        for value in [
+            "",
+            "docker:quay.io/example/os",
+            "docker://",
+            "oci:",
+            "https://quay.io/example/os",
+            "bad image",
+        ] {
+            let error = Opt::try_parse_from([
+                "bootc",
+                "switch",
+                "--target-imgref",
+                value,
+                "localhost/offline:v2",
+            ])
+            .unwrap_err();
+            assert_eq!(
+                error.kind(),
+                clap::error::ErrorKind::ValueValidation,
+                "{value}"
+            );
+        }
+        for args in [
+            vec!["--from-downloaded"],
+            vec!["--mutate-in-place", "localhost/offline:v2"],
+            vec!["--from-delta", "/var/tmp/delta", "localhost/offline:v2"],
+        ] {
+            let mut argv = vec!["bootc", "switch", "--target-imgref", "quay.io/example/os"];
+            argv.extend(args);
+            assert!(Opt::try_parse_from(argv).is_err());
+        }
+        Ok(())
+    }
 
     #[test]
     fn test_callname() {
