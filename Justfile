@@ -63,7 +63,11 @@ nocache := env("BOOTC_nocache", "")
 _nocache_arg := if nocache != "" { "--no-cache" } else { "" }
 _baseconfigs_env := if baseconfigs != "" { "--env=BOOTC_baseconfigs=" + baseconfigs } else { "" }
 testimage_label := "bootc.testimage=1"
-lbi_images := "quay.io/curl/curl:latest quay.io/curl/curl-base:latest registry.access.redhat.com/ubi9/podman:latest"
+# Pinned to ubi9/podman 9.8-1793032728: the 9.8-1793203936 build that
+# replaced it has no sigstore signature for the registry.access.redhat.com
+# :latest tag, so the default sigstoreSigned policy rejects pulling it by tag.
+# Keep in sync with hack/lbi.
+lbi_images := "quay.io/curl/curl:latest quay.io/curl/curl-base:latest registry.access.redhat.com/ubi9/podman@sha256:2cfaa8360cb9416af369f0dc0474875cf476b6b846e5ce5027d58db9f0054a2a"
 fedora-coreos := "quay.io/fedora/fedora-coreos:testing-devel"
 generic_buildargs := ""
 _extra_src_args := if extra_src != "" { "-v " + extra_src + ":/run/extra-src:ro --security-opt=label=disable" } else { "" }
