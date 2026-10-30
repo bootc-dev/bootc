@@ -213,6 +213,7 @@ fi
 %endif
 %{_unitdir}/*
 %{_mandir}/man*/*bootc*
+%exclude %{_mandir}/man8/system-reinstall-bootc.8*
 %if 0%{?rhel} && 0%{?rhel} <= 9
 %{_datadir}/bash-completion/completions/bootc
 %{_datadir}/zsh/site-functions/_bootc
@@ -226,6 +227,7 @@ fi
 %files -n system-reinstall-bootc
 %{_bindir}/system-reinstall-bootc
 %{system_reinstall_bootc_install_podman_path}
+%{_mandir}/man8/system-reinstall-bootc.8*
 
 %if %{with tests}
 %files tests
