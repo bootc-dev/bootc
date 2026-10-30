@@ -347,7 +347,7 @@ run-container-external-tests:
 # Remove all test VMs created by tmt tests
 [group('testing')]
 tmt-vm-cleanup:
-    bcvk libvirt rm --stop --force --label bootc.test=1
+    bcvk libvirt rm-all --stop --force --label bootc.test=1
 
 # Build test image for Fedora CoreOS testing
 [group('testing')]
