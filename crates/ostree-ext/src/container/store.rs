@@ -709,6 +709,17 @@ impl ImageImporter {
         self.target_imgref = Some(target.clone())
     }
 
+    fn already_present(&self, state: Box<LayeredImageState>) -> Result<PrepareResult> {
+        // A cache hit skips import(), but must retain the requested target just
+        // as a fresh import would. Leave existing source refs to normal cleanup.
+        if !self.no_imgref
+            && let Some(target) = &self.target_imgref
+        {
+            set_image_reference(&self.repo, &target.imgref, &state.merge_commit)?;
+        }
+        Ok(PrepareResult::AlreadyPresent(state))
+    }
+
     /// Do not write the final image ref, but do write refs for shared layers.
     /// This is useful in scenarios where you want to "pre-pull" an image,
     /// but in such a way that it does not need to be manually removed later.
@@ -1087,7 +1098,7 @@ impl ImageImporter {
             &manifest_digest,
             manifest.config().digest(),
         ) {
-            PreviousState::UpToDate(state) => return Ok(PrepareResult::AlreadyPresent(state)),
+            PreviousState::UpToDate(state) => return self.already_present(state),
             PreviousState::Outdated(previous) => previous.unzip(),
         };
 
@@ -1124,7 +1135,7 @@ impl ImageImporter {
                 // A digested pull spec, and our existing state matches.
                 if previous_state.manifest_digest == target_digest {
                     tracing::debug!("Digest-based pullspec {:?} already present", self.imgref);
-                    return Ok(PrepareResult::AlreadyPresent(previous_state));
+                    return self.already_present(previous_state);
                 }
                 Some(previous_state)
             } else {
@@ -1155,7 +1166,7 @@ impl ImageImporter {
             &manifest_digest,
             manifest.config().digest(),
         ) {
-            PreviousState::UpToDate(state) => return Ok(PrepareResult::AlreadyPresent(state)),
+            PreviousState::UpToDate(state) => return self.already_present(state),
             PreviousState::Outdated(previous) => previous.unzip(),
         };
 
@@ -1902,6 +1913,19 @@ pub fn query_image_commit(repo: &ostree::Repo, commit: &str) -> Result<Box<Layer
     Ok(state)
 }
 
+/// Retain an already imported image commit under another image reference.
+/// This performs no fetch and also works when the destination does not exist yet.
+#[context("Setting image reference {imgref}")]
+fn set_image_reference(repo: &ostree::Repo, imgref: &ImageReference, commit: &str) -> Result<()> {
+    repo.set_ref_immediate(
+        None,
+        &ref_for_image(imgref)?,
+        Some(commit),
+        gio::Cancellable::NONE,
+    )?;
+    Ok(())
+}
+
 fn manifest_for_image(repo: &ostree::Repo, imgref: &ImageReference) -> Result<ImageManifest> {
     let ostree_ref = ref_for_image(imgref)?;
     let rev = repo.require_rev(&ostree_ref)?;
@@ -1949,15 +1973,7 @@ pub async fn copy(
         .await?;
     }
 
-    let dest_ostree_ref = ref_for_image(dest_imgref)?;
-    dest_repo.set_ref_immediate(
-        None,
-        &dest_ostree_ref,
-        Some(&src_commit),
-        gio::Cancellable::NONE,
-    )?;
-
-    Ok(())
+    set_image_reference(dest_repo, dest_imgref, &src_commit)
 }
 
 /// Options controlling commit export into OCI

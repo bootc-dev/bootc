@@ -6,6 +6,7 @@ use std::str::FromStr;
 
 use anyhow::Result;
 use ostree_ext::container::Transport;
+use ostree_ext::containers_image_proxy;
 use ostree_ext::oci_spec::distribution::Reference;
 use ostree_ext::oci_spec::image::Digest;
 use ostree_ext::{container::OstreeImageReference, oci_spec, ostree::DeploymentUnlockedState};
@@ -93,6 +94,31 @@ pub struct ImageReference {
     /// Signature verification type
     #[serde(skip_serializing_if = "Option::is_none")]
     pub signature: Option<ImageSignature>,
+}
+
+/// Parse a transport-prefixed reference, defaulting bare image names to the registry.
+pub(crate) fn parse_image_reference(value: &str) -> Result<containers_image_proxy::ImageReference> {
+    // A numeric port identifies a bare registry reference even when the host
+    // is named after a transport. Use oci:./5000/os for an OCI relative path.
+    let registry_port = value.split_once('/').is_some_and(|(authority, _)| {
+        authority
+            .rsplit_once(':')
+            .is_some_and(|(_, port)| !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()))
+    });
+    let prefixed;
+    let value = if !registry_port
+        && value.split_once(':').is_some_and(|(transport, _)| {
+            transport == "docker" || Transport::try_from(transport).is_ok()
+        }) {
+        value
+    } else {
+        prefixed = format!("docker://{value}");
+        &prefixed
+    };
+    let imgref = containers_image_proxy::ImageReference::try_from(value)?;
+    // Transport parsing alone does not validate registry image names.
+    imgref.as_registry().transpose()?;
+    Ok(imgref)
 }
 
 /// If the reference is in :tag@digest form, strip the tag.

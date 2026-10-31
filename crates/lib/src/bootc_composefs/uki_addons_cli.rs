@@ -102,6 +102,15 @@ pub(crate) fn handle_addon_cli_cmd(
     host: &Host,
     opts: &UkiAddonCliOpts,
 ) -> Result<()> {
+    if matches!(
+        opts,
+        UkiAddonCliOpts::Add { .. } | UkiAddonCliOpts::Remove { .. }
+    ) {
+        anyhow::ensure!(
+            super::origin::OriginChange::read_active(&storage.physical_root, host)?.is_none(),
+            "Cannot modify UKI addons while an origin change is pending; activate or cancel it first"
+        );
+    }
     let Ok(esp) = storage.require_esp() else {
         anyhow::bail!("ESP not found");
     };

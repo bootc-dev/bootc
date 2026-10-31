@@ -560,6 +560,10 @@ pub(crate) async fn composefs_gc(
             continue;
         }
 
+        if let Some(id) = deployment.container_image_id(storage)? {
+            live_container_images.insert(id);
+        }
+
         // Keep the EROFS image as an additional root until all deployments
         // have manifest -> image refs. Once a deployment is pulled with the
         // new code, its EROFS image is reachable from the manifest and

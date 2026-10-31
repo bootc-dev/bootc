@@ -179,6 +179,10 @@ pub(crate) fn generator(root: &Dir, unit_dir: &Dir) -> Result<()> {
 
     aboot_generator_impl(root, unit_dir)?;
 
+    if is_composefs && !is_ostree {
+        origin_change_generator_impl(root, unit_dir)?;
+    }
+
     // === Ostree-specific generator logic ===
     // Only run on ostree systems (native composefs boots skip below).
     if !root.try_exists(OSTREE_BOOTED)? {
@@ -233,6 +237,22 @@ pub(crate) fn shadow_sync_generator_impl(root: &Dir, unit_dir: &Dir) -> Result<b
 
     tracing::debug!("/etc/shadow found, enabling {SHADOW_SYNC_UNIT}");
     enable_unit(unit_dir, SHADOW_SYNC_UNIT, "sysinit.target")?;
+    Ok(true)
+}
+
+fn origin_change_generator_impl(root: &Dir, unit_dir: &Dir) -> Result<bool> {
+    let Some(sysroot) = root.open_dir_optional("sysroot")? else {
+        return Ok(false);
+    };
+    if !sysroot.try_exists(crate::bootc_composefs::origin::PENDING_ORIGIN)? {
+        return Ok(false);
+    }
+    // Re-arm even locked changes: finalization checks their persistent lock.
+    enable_unit(
+        unit_dir,
+        crate::composefs_consts::BOOTC_FINALIZE_STAGED_SERVICE,
+        MULTI_USER_TARGET,
+    )?;
     Ok(true)
 }
 
@@ -359,6 +379,29 @@ mod tests {
     use camino::Utf8Path;
 
     use super::*;
+
+    #[test]
+    fn origin_change_rearms_finalization() -> Result<()> {
+        let root = cap_std_ext::cap_tempfile::tempdir(cap_std::ambient_authority())?;
+        let units = cap_std_ext::cap_tempfile::tempdir(cap_std::ambient_authority())?;
+        assert!(!origin_change_generator_impl(&root, &units)?);
+        root.create_dir_all("sysroot/state")?;
+        root.write(
+            format!("sysroot/{}", crate::bootc_composefs::origin::PENDING_ORIGIN),
+            b"{}",
+        )?;
+        assert!(origin_change_generator_impl(&root, &units)?);
+        let link = format!(
+            "{MULTI_USER_TARGET}.wants/{}",
+            crate::composefs_consts::BOOTC_FINALIZE_STAGED_SERVICE
+        );
+        assert_eq!(
+            units.read_link_contents(link)?,
+            std::path::Path::new("/usr/lib/systemd/system")
+                .join(crate::composefs_consts::BOOTC_FINALIZE_STAGED_SERVICE)
+        );
+        Ok(())
+    }
 
     fn fixture() -> Result<cap_std_ext::cap_tempfile::TempDir> {
         let tempdir = cap_std_ext::cap_tempfile::tempdir(cap_std::ambient_authority())?;

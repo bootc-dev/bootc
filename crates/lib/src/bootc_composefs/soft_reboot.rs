@@ -22,6 +22,30 @@ use std::{fs::create_dir_all, os::unix::process::CommandExt, path::PathBuf, proc
 
 const NEXTROOT: &str = "/run/nextroot";
 
+/// Auto mode leaves an incapable deployment staged; required mode must fail.
+pub(super) fn check_capability(capable: bool, mode: SoftRebootMode) -> Result<bool> {
+    anyhow::ensure!(
+        capable || matches!(mode, SoftRebootMode::Auto),
+        "Deployment is not soft-reboot capable"
+    );
+    Ok(capable)
+}
+
+#[test]
+fn test_check_capability() {
+    for (capable, mode, expected) in [
+        (false, SoftRebootMode::Auto, Some(false)),
+        (false, SoftRebootMode::Required, None),
+        (true, SoftRebootMode::Auto, Some(true)),
+        (true, SoftRebootMode::Required, Some(true)),
+    ] {
+        match expected {
+            Some(expected) => assert_eq!(check_capability(capable, mode).unwrap(), expected),
+            None => assert!(check_capability(capable, mode).is_err()),
+        }
+    }
+}
+
 #[context("Resetting soft reboot state")]
 pub(crate) fn reset_soft_reboot() -> Result<()> {
     // NOTE: By default bootc runs in an unshared mount namespace;
@@ -91,14 +115,8 @@ pub(crate) async fn prepare_soft_reboot_composefs(
         .find(|entry| entry.deployment.verity == *deployment_id)
         .ok_or_else(|| anyhow::anyhow!("Deployment '{deployment_id}' not found"))?;
 
-    if !required_deployment.soft_reboot_capable {
-        match soft_reboot_mode {
-            SoftRebootMode::Required => {
-                anyhow::bail!("Cannot soft-reboot to deployment with a different kernel state")
-            }
-
-            SoftRebootMode::Auto => return Ok(()),
-        }
+    if !check_capability(required_deployment.soft_reboot_capable, soft_reboot_mode)? {
+        return Ok(());
     }
 
     start_finalize_stated_svc()?;

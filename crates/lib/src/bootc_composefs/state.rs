@@ -1,4 +1,3 @@
-use std::io::Write;
 use std::os::unix::fs::symlink;
 use std::path::Path;
 use std::{fs::create_dir_all, process::Command};
@@ -37,6 +36,7 @@ use crate::{
         ORIGIN_KEY_BOOT_DIGEST, ORIGIN_KEY_BOOT_TYPE, ORIGIN_KEY_IMAGE, ORIGIN_KEY_MANIFEST_DIGEST,
         SHARED_VAR_PATH, STATE_DIR_RELATIVE,
     },
+    deploy::{ORIGIN_BOOTC, ORIGIN_SOURCE_IMAGE},
     parsers::bls_config::BLSConfig,
     spec::ImageReference,
     spec::{FilesystemOverlay, FilesystemOverlayAccessMode, FilesystemOverlayPersistence},
@@ -62,6 +62,34 @@ pub(crate) fn read_origin(sysroot: &Dir, deployment_id: &str) -> Result<Option<t
 
     let ini = tini::Ini::from_string(&origin_contents).context("Failed to parse origin file")?;
     Ok(Some(ini))
+}
+
+/// Set image references without replacing unrelated deployment metadata.
+pub(crate) fn with_image_references(
+    origin: tini::Ini,
+    source: Option<&ImageReference>,
+    target: &ImageReference,
+) -> Result<tini::Ini> {
+    let target = target.to_image_proxy_ref()?;
+    // The composefs pull path does not yet enforce the spec signature mode.
+    let origin = origin
+        .section("origin")
+        .item(
+            ORIGIN_CONTAINER,
+            format!("ostree-unverified-image:{target}"),
+        )
+        .section(ORIGIN_BOOTC);
+    Ok(match source {
+        Some(source) => origin.item(ORIGIN_SOURCE_IMAGE, source.to_string()),
+        None => origin.erase(ORIGIN_SOURCE_IMAGE),
+    })
+}
+
+pub(crate) fn write_origin(sysroot: &Dir, deployment: &str, origin: &tini::Ini) -> Result<()> {
+    let state = sysroot.open_dir(format!("{STATE_DIR_RELATIVE}/{deployment}"))?;
+    state
+        .atomic_write(format!("{deployment}.origin"), origin.to_string())
+        .context("Writing deployment origin")
 }
 
 pub(crate) fn read_boot_type(sysroot: &Dir, deployment_id: &str) -> Result<Option<BootType>> {
@@ -198,15 +226,11 @@ fn add_update_in_origin(
     }
 
     state_dir
-        .atomic_replace_with(origin_filename, move |f| -> std::io::Result<_> {
-            f.write_all(ini.to_string().as_bytes())?;
-            f.flush()?;
-
-            let perms = Permissions::from_mode(0o644);
-            f.get_mut().as_file_mut().set_permissions(perms)?;
-
-            Ok(())
-        })
+        .atomic_write_with_perms(
+            origin_filename,
+            ini.to_string(),
+            Permissions::from_mode(0o644),
+        )
         .context("Writing to origin file")?;
 
     Ok(())
@@ -236,7 +260,8 @@ pub(crate) fn update_boot_digest_in_origin(
 ///
 /// * `root_path`         - The root filesystem path (typically `/sysroot`)
 /// * `deployment_id`     - Unique SHA512 hash identifier for this deployment
-/// * `imgref`            - Container image reference for the deployment
+/// * `target_imgref`     - Container image reference for subsequent updates
+/// * `source_imgref`     - Optional reference used to obtain this image
 /// * `initialize_var`    - Whether to populate the shared `/var` from the image
 /// * `boot_type`         - Boot artifact type (`Bls`, `Uki`, or `Aboot`)
 /// * `boot_digest`       - Optional boot digest for verification
@@ -255,6 +280,7 @@ pub(crate) async fn write_composefs_state(
     root_path: &Utf8PathBuf,
     deployment_id: &Sha512HashValue,
     target_imgref: &ImageReference,
+    source_imgref: Option<&ImageReference>,
     initialize_var: bool,
     boot_type: BootType,
     boot_digest: String,
@@ -285,13 +311,11 @@ pub(crate) async fn write_composefs_state(
         allow_missing_fsverity,
     )?;
 
-    let imgref = target_imgref.to_image_proxy_ref()?;
-
-    let mut config = tini::Ini::new().section("origin").item(
-        ORIGIN_CONTAINER,
-        // TODO (Johan-Liebert1): The image won't always be unverified
-        format!("ostree-unverified-image:{imgref}"),
-    );
+    let mut config = with_image_references(
+        tini::Ini::new(),
+        source_imgref.filter(|source| *source != target_imgref),
+        target_imgref,
+    )?;
 
     config = config
         .section(ORIGIN_KEY_BOOT)
@@ -307,17 +331,8 @@ pub(crate) async fn write_composefs_state(
         .section(ORIGIN_KEY_IMAGE)
         .item(ORIGIN_KEY_MANIFEST_DIGEST, manifest_digest);
 
-    let state_dir =
-        Dir::open_ambient_dir(&state_path, ambient_authority()).context("Opening state dir")?;
-
-    state_dir
-        .atomic_write(
-            format!("{}.origin", deployment_id.to_hex()),
-            config.to_string().as_bytes(),
-        )
-        .context("Failed to write to .origin file")?;
-
-    Ok(())
+    let sysroot = Dir::open_ambient_dir(root_path, ambient_authority())?;
+    write_origin(&sysroot, &deployment_id.to_hex(), &config)
 }
 
 pub(crate) fn write_staged_deployment(staged: &StagedDeployment) -> Result<()> {

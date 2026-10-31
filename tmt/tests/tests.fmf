@@ -273,3 +273,8 @@ check:
   summary: Install from a shared mount namespace without leaking the storage bind mount
   duration: 30m
   test: nu booted/test-install-shared-propagation.nu
+
+/test-64-switch-target-imgref:
+  summary: Offline switch preserves the update origin and survives repeated requests
+  duration: 40m
+  test: nu booted/test-switch-target-imgref.nu

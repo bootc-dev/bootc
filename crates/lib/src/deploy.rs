@@ -78,6 +78,10 @@ use crate::utils::async_task_with_spinner;
 // TODO use https://github.com/ostreedev/ostree-rs-ext/pull/493/commits/afc1837ff383681b947de30c0cefc70080a4f87a
 const BASE_IMAGE_PREFIX: &str = "ostree/container/baseimage/bootc";
 
+/// Deployment-local provenance; only the normal origin controls future updates.
+pub(crate) const ORIGIN_BOOTC: &str = "bootc";
+pub(crate) const ORIGIN_SOURCE_IMAGE: &str = "source-image-reference";
+
 // Match podman's default registry retry policy. A failed attempt has to rebuild
 // the importer, so retries are made at the whole-pull boundary instead of for
 // individual layers.
@@ -441,27 +445,34 @@ pub(crate) async fn prune_container_store(sysroot: &Storage) -> Result<()> {
     let ostree = sysroot.get_ostree()?;
     let deployments = ostree.deployments();
     let mut all_bound_images = Vec::new();
+    let mut image_ids = Vec::new();
     for deployment in deployments {
         let bound = crate::boundimage::query_bound_images_for_deployment(ostree, &deployment)?;
         all_bound_images.extend(bound.into_iter());
         // Also include the host image itself
         // Note: Use just the image name (not the full transport:image format) because
         // podman's image names don't include the transport prefix.
-        if let Some(host_image) = crate::status::boot_entry_from_deployment(ostree, &deployment)?
-            .image
-            .map(|i| i.image)
-        {
+        let entry = crate::status::boot_entry_from_deployment(ostree, &deployment)?;
+        if let Some(id) = entry.container_image_id(sysroot)? {
+            image_ids.push(id);
+        }
+        if let Some(host_image) = entry.image.map(|i| i.image) {
             all_bound_images.push(crate::boundimage::BoundImage {
                 image: host_image.image.clone(),
                 auth_file: None,
             });
         }
     }
-    // Convert to a hashset of just the image names
-    let image_names = HashSet::from_iter(all_bound_images.iter().map(|img| img.image.as_str()));
+    // Names retain bound images; IDs also retain host images with a redirected origin.
+    let roots = HashSet::from_iter(
+        all_bound_images
+            .iter()
+            .map(|img| img.image.as_str())
+            .chain(image_ids.iter().map(String::as_str)),
+    );
     let pruned = sysroot
         .get_ensure_imgstore()?
-        .prune_except_roots(&image_names)
+        .prune_except_roots(&roots)
         .await?;
     tracing::debug!("Pruned images: {}", pruned.len());
     Ok(())
@@ -685,6 +696,20 @@ pub(crate) async fn image_exists_in_unified_storage(
     imgstore.exists(&image_ref_str).await
 }
 
+/// Detect a deployment's stored image even when its pull source and origin differ.
+pub(crate) async fn deployment_uses_unified_storage(
+    store: &Storage,
+    deployment: Option<&crate::spec::BootEntry>,
+) -> Result<bool> {
+    let Some(deployment) = deployment else {
+        return Ok(false);
+    };
+    let Some(id) = deployment.container_image_id(store)? else {
+        return Ok(false);
+    };
+    store.get_ensure_imgstore()?.exists(&id).await
+}
+
 /// Unified approach: Use bootc's CStorage to pull the image, then prepare from containers-storage.
 /// This reuses the same infrastructure as LBIs.
 pub(crate) async fn prepare_for_pull_unified(
@@ -746,12 +771,7 @@ pub(crate) async fn prepare_for_pull_unified(
         }
         PrepareResult::Ready(p) => p,
     };
-    check_bootc_label(&prep.config);
-    if let Some(warning) = prep.deprecated_warning() {
-        ostree_ext::cli::print_deprecated_warning(warning).await;
-    }
-    ostree_ext::cli::print_layer_status(&prep);
-    let layers_to_fetch = prep.layers_to_fetch().collect::<Result<Vec<_>>>()?;
+    let prepared_image = prepared_import_meta(imp, prep).await?;
 
     // Log that we're importing a new image from containers-storage
     const PULLING_NEW_IMAGE_ID: &str = "6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0";
@@ -764,16 +784,6 @@ pub(crate) async fn prepare_for_pull_unified(
         "Importing image from bootc storage: {}",
         ostree_imgref
     );
-
-    let prepared_image = PreparedImportMeta {
-        imp,
-        n_layers_to_fetch: layers_to_fetch.len(),
-        layers_total: prep.all_layers().count(),
-        bytes_to_fetch: layers_to_fetch.iter().map(|(l, _)| l.layer.size()).sum(),
-        bytes_total: prep.all_layers().map(|l| l.layer.size()).sum(),
-        digest: prep.manifest_digest.clone(),
-        prep,
-    };
 
     Ok(PreparedPullResult::Ready(Box::new(prepared_image)))
 }
@@ -1183,6 +1193,17 @@ fn origin_from_imageref(imgref: &ImageReference) -> Result<glib::KeyFile> {
     Ok(origin)
 }
 
+fn origin_for_switch(
+    image: &ImageReference,
+    source: Option<&ImageReference>,
+) -> Result<glib::KeyFile> {
+    let origin = origin_from_imageref(image)?;
+    if let Some(source) = source.filter(|source| *source != image) {
+        origin.set_string(ORIGIN_BOOTC, ORIGIN_SOURCE_IMAGE, &source.to_string());
+    }
+    Ok(origin)
+}
+
 /// The source of data for staging a new deployment
 #[derive(Debug)]
 pub(crate) enum MergeState {
@@ -1255,6 +1276,7 @@ pub(crate) async fn stage(
     spec: &RequiredHostSpec<'_>,
     prog: ProgressWriter,
     lock_finalization: bool,
+    source_imgref: Option<&ImageReference>,
 ) -> Result<()> {
     // Log the staging operation to systemd journal with comprehensive upgrade information
     const STAGE_JOURNAL_ID: &str = "8f7a2b1c3d4e5f6a7b8c9d0e1f2a3b4c";
@@ -1333,7 +1355,9 @@ pub(crate) async fn stage(
             .collect(),
     })
     .await;
-    let origin = origin_from_imageref(spec.image)?;
+
+    let origin = origin_for_switch(spec.image, source_imgref)?;
+
     crate::deploy::deploy(sysroot, from, image, &origin, lock_finalization).await?;
 
     subtask.completed = true;
@@ -1640,7 +1664,43 @@ pub(crate) fn fixup_etc_fstab(root: &Dir) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ostree_ext::keyfileext::KeyFileExt;
     use tokio::io::{AsyncBufReadExt, BufReader};
+
+    #[test]
+    fn test_switch_origin_provenance() -> Result<()> {
+        let target = ImageReference {
+            image: "quay.io/example/os:v2".into(),
+            transport: "registry".into(),
+            signature: None,
+        };
+        let source = ImageReference {
+            image: "localhost/offline:v2".into(),
+            transport: "containers-storage".into(),
+            signature: None,
+        };
+        for (pull_source, expected) in [
+            (None, None),
+            (Some(&target), None),
+            (Some(&source), Some(source.to_string())),
+        ] {
+            let origin = origin_for_switch(&target, pull_source)?;
+            let reloaded = glib::KeyFile::new();
+            reloaded.load_from_data(&origin.to_data(), glib::KeyFileFlags::NONE)?;
+            assert_eq!(
+                reloaded.string("origin", ostree_container::deploy::ORIGIN_CONTAINER)?,
+                target.to_string()
+            );
+            assert_eq!(
+                reloaded
+                    .optional_string(ORIGIN_BOOTC, ORIGIN_SOURCE_IMAGE)?
+                    .as_deref(),
+                expected.as_deref()
+            );
+            assert!(!crate::utils::origin_has_rpmostree_stuff(&reloaded));
+        }
+        Ok(())
+    }
 
     fn get_blob_failure(error: ostree_ext::containers_image_proxy::GetBlobError) -> anyhow::Error {
         let error = ostree_ext::containers_image_proxy::Error::BlobError(error);

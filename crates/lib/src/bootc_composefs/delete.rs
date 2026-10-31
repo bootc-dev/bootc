@@ -223,6 +223,14 @@ pub(crate) async fn delete_composefs_deployment(
         deployment_id
     );
 
+    if super::origin::OriginChange::read(&storage.physical_root)?
+        .is_some_and(|pending| pending.deployment == deployment_id)
+    {
+        super::origin::cancel(&storage.physical_root)?;
+        println!("Cancelled pending origin change; kept the OS deployment");
+        return Ok(());
+    }
+
     let host = get_composefs_status(storage, booted_cfs).await?;
 
     let booted = host.require_composefs_booted()?;

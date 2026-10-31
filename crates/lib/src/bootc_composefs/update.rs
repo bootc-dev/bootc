@@ -257,7 +257,7 @@ pub(crate) fn validate_update(
     Ok(UpdateAction::Proceed)
 }
 
-fn ensure_no_aboot_attempt(storage: &Storage) -> Result<()> {
+pub(crate) fn ensure_no_aboot_attempt(storage: &Storage) -> Result<()> {
     let state = aboot::AbootState::open(&storage.physical_root)?;
     anyhow::ensure!(
         state.read_attempted()?.is_none(),
@@ -318,6 +318,7 @@ pub(crate) async fn do_upgrade(
     booted_cfs: &BootedComposefs,
     host: &Host,
     imgref: &ImageReference,
+    target_imgref: Option<&ImageReference>,
     opts: &DoUpgradeOpts<'_>,
     manifest: &ostree_ext::oci_spec::image::ImageManifest,
 ) -> Result<()> {
@@ -325,6 +326,14 @@ pub(crate) async fn do_upgrade(
     if host.require_composefs_booted()?.boot_type == BootType::Aboot {
         ensure_no_aboot_attempt(storage)?;
     }
+
+    // A pending origin change is not another OS deployment. Boot setup must
+    // retain the real booted/rollback entries when replacing it with new content.
+    let mut host = host.clone();
+    if super::origin::OriginChange::read_active(&storage.physical_root, &host)?.is_some() {
+        host.status.staged = None;
+    }
+    let host = &host;
 
     // Pre-flight disk space check before pulling.
     crate::deploy::check_disk_space_composefs(&*booted_cfs.repo, manifest, imgref)?;
@@ -465,7 +474,8 @@ pub(crate) async fn do_upgrade(
     write_composefs_state(
         &Utf8PathBuf::from("/sysroot"),
         &deploy_id,
-        imgref,
+        target_imgref.unwrap_or(imgref),
+        Some(imgref),
         false,
         boot_type,
         boot_digest,
@@ -485,6 +495,7 @@ pub(crate) async fn do_upgrade(
         state.write_pending(&pending)?;
     }
     write_staged_deployment(&staged_state)?;
+    super::origin::cancel(&storage.physical_root)?;
 
     // We take into account the staged bootloader entries so this won't remove
     // the currently staged entry
@@ -545,6 +556,24 @@ pub(crate) async fn apply_upgrade_from_downloaded(
     host: &Host,
     do_upgrade_opts: &DoUpgradeOpts<'_>,
 ) -> Result<()> {
+    if let Some(mut pending) =
+        super::origin::OriginChange::read_active(&storage.physical_root, host)?
+    {
+        let reboot = super::origin::should_reboot(
+            do_upgrade_opts.soft_reboot,
+            do_upgrade_opts.apply,
+            false,
+        )?;
+        pending.validate(&storage.physical_root, host)?;
+        start_finalize_stated_svc()?;
+        pending.finalization_locked = false;
+        pending.write(&storage.physical_root)?;
+        if reboot {
+            crate::reboot::reboot()?;
+        }
+        return Ok(());
+    }
+
     let staged = host
         .status
         .staged
@@ -559,9 +588,35 @@ pub(crate) async fn apply_upgrade_from_downloaded(
     }
 
     let staged_id = &staged.require_composefs()?.verity;
-    if host.require_composefs_booted()?.boot_type == BootType::Aboot {
+    set_staged_lock(storage, staged, false)?;
+
+    start_finalize_stated_svc()?;
+
+    return apply_upgrade(storage, composefs, staged_id, &do_upgrade_opts).await;
+}
+
+pub(crate) fn set_staged_lock(
+    storage: &Storage,
+    staged: &crate::spec::BootEntry,
+    locked: bool,
+) -> Result<()> {
+    let staged_cfs = staged.require_composefs()?;
+    if staged_cfs.boot_type == BootType::Aboot {
         let mut state = aboot::AbootState::open(&storage.physical_root)?;
-        let pending = state.unlock_pending(staged_id)?;
+        let pending = if locked {
+            let mut pending = state
+                .read_pending()?
+                .context("No pending aboot deployment")?;
+            anyhow::ensure!(
+                pending.depl_id == staged_cfs.verity,
+                "Pending aboot deployment changed"
+            );
+            pending.finalization_locked = true;
+            state.write_pending(&pending)?;
+            pending
+        } else {
+            state.unlock_pending(&staged_cfs.verity)?
+        };
         write_staged_deployment(&pending.staged())?;
     } else {
         let staged_depl_dir =
@@ -572,13 +627,14 @@ pub(crate) async fn apply_upgrade_from_downloaded(
             .context("Reading staged file")?;
         let mut new_staged: StagedDeployment =
             serde_json::from_str(&current).context("Deserializing staged file")?;
-        new_staged.finalization_locked = false;
+        anyhow::ensure!(
+            new_staged.depl_id == staged_cfs.verity,
+            "Staged deployment changed"
+        );
+        new_staged.finalization_locked = locked;
         write_staged_deployment(&new_staged)?;
     }
-
-    start_finalize_stated_svc()?;
-
-    return apply_upgrade(storage, composefs, staged_id, &do_upgrade_opts).await;
+    Ok(())
 }
 
 #[context("Upgrading composefs")]
@@ -643,11 +699,11 @@ pub(crate) async fn upgrade_composefs(
     // already in bootc-owned containers-storage, OR if the booted image is —
     // the latter means the user has opted into unified storage and all
     // subsequent operations should use it.
-    let current_unified = if let Some(current) = current_image {
-        crate::deploy::image_exists_in_unified_storage(storage, current).await?
-    } else {
-        false
-    };
+    let current_unified = crate::deploy::deployment_uses_unified_storage(
+        storage,
+        host.status.staged.as_ref().or(host.status.booted.as_ref()),
+    )
+    .await?;
     do_upgrade_opts.use_unified = current_unified
         || crate::deploy::image_exists_in_unified_storage(storage, booted_imgref).await?;
 
@@ -684,6 +740,19 @@ pub(crate) async fn upgrade_composefs(
         // We have a staged image and it has the same digest as the currently booted image's latest
         // digest
         if staged_image.image_digest == manifest_digest {
+            if let Some(pending) =
+                super::origin::OriginChange::read_active(&storage.physical_root, &host)?
+            {
+                if super::origin::should_reboot(
+                    opts.soft_reboot,
+                    opts.apply,
+                    pending.finalization_locked,
+                )? {
+                    crate::reboot::reboot()?;
+                }
+                println!("Update origin already staged.");
+                return Ok(());
+            }
             if opts.apply {
                 return crate::reboot::reboot();
             }
@@ -723,6 +792,7 @@ pub(crate) async fn upgrade_composefs(
                         composefs,
                         &host,
                         booted_imgref,
+                        None,
                         &do_upgrade_opts,
                         &manifest,
                     )
@@ -755,6 +825,7 @@ pub(crate) async fn upgrade_composefs(
                     composefs,
                     &host,
                     booted_imgref,
+                    None,
                     &do_upgrade_opts,
                     &manifest,
                 )
@@ -775,6 +846,7 @@ pub(crate) async fn upgrade_composefs(
         composefs,
         &host,
         booted_imgref,
+        None,
         &do_upgrade_opts,
         &manifest,
     )
