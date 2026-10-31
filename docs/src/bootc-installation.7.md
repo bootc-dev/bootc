@@ -663,6 +663,10 @@ works on Linux will work with bootc. Common approaches include:
 The choice of provisioning tool depends on your base image and deployment
 environment—bootc itself is agnostic.
 
+Growing the root filesystem to fill a larger disk is commonly done by
+a separate service in the image rather than by the provisioning tool;
+see [expanding the root filesystem](bootc-sysroot.7.md#expanding-the-root-filesystem).
+
 ### SSH key injection
 
 For simple SSH access without a full provisioning system, bootc provides the
