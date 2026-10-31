@@ -1552,7 +1552,16 @@ async fn upgrade(
     // Ensure the bootc storage directory is initialized; the --check path
     // needs this for update_mtime() and the non-check path needs it for
     // unified pull detection.
-    let use_unified = crate::deploy::image_exists_in_unified_storage(storage, imgref).await?;
+    let use_unified = crate::deploy::image_exists_in_unified_storage(storage, imgref).await?
+        || crate::deploy::deployment_uses_unified_storage(
+            storage,
+            host.status
+                .staged
+                .as_ref()
+                .or(host.status.booted.as_ref())
+                .context("No current deployment")?,
+        )
+        .await?;
     if let Some(delta) = delta.as_deref() {
         crate::delta::reject_unified_storage(delta, use_unified)?;
     }
@@ -1883,6 +1892,15 @@ async fn switch_ostree(
         true
     } else {
         crate::deploy::image_exists_in_unified_storage(storage, &source).await?
+            || crate::deploy::deployment_uses_unified_storage(
+                storage,
+                host.status
+                    .staged
+                    .as_ref()
+                    .or(host.status.booted.as_ref())
+                    .context("No current deployment")?,
+            )
+            .await?
     };
     if let Some(delta) = delta.as_deref() {
         crate::delta::reject_unified_storage(delta, use_unified)?;
