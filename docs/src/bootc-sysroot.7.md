@@ -19,11 +19,13 @@ In the future, this functionality will be exposed and used by `bootc`.
 ## /sysroot mount
 
 When booted, the physical root will be available at `/sysroot` as a
-read-only mount point and the logical root `/` will be a bind mount
-pointing to a deployment directory under `/sysroot/ostree`.  This is a
-key aspect of how `bootc upgrade` operates: it fetches the updated
-container image and writes the base image files (using OSTree storage
-to `/sysroot/ostree/repo`).
+read-only mount point. With composefs enabled (as recommended in
+[filesystem](bootc-filesystem.7.md), and always with the composefs
+backend), the logical root `/` is a read-only composefs mount of the
+deployed image; otherwise it is a bind mount of a deployment directory
+under `/sysroot/ostree`.  This is a key aspect of how `bootc upgrade`
+operates: it fetches the updated container image and writes the base
+image files (using OSTree storage to `/sysroot/ostree/repo`).
 
 Beyond that and debugging/introspection, there are few use cases for tooling to
 operate on the physical root.
