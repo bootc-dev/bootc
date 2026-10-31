@@ -308,6 +308,16 @@ fn handle_bls_conf(
     let loader_dir = boot_dir.open_dir("loader").context("Opening loader dir")?;
     rename_exchange_bls_entries(&loader_dir)?;
 
+    // The binaries were renamed, so the menu's paths are stale.
+    if !is_uki
+        && matches!(
+            crate::bootc_composefs::status::get_bootloader()?.kind()?,
+            crate::spec::BootloaderKind::GRUBClassic
+        )
+    {
+        crate::bootc_composefs::grub_bls::sync_grub_bls_menu(boot_dir)?;
+    }
+
     Ok(())
 }
 

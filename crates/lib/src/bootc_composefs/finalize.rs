@@ -2,6 +2,7 @@ use std::{path::Path, process::Command};
 
 use crate::bootc_composefs::boot::{GLOBAL_UKI_ADDONS_DIR, STAGED_GLOBAL_UKI_ADDONS_DIR};
 use crate::bootc_composefs::gc::{GCOpts, composefs_gc};
+use crate::bootc_composefs::grub_bls::sync_grub_bls_menu;
 use crate::bootc_composefs::rollback::{rename_exchange_bls_entries, rename_exchange_user_cfg};
 use crate::bootc_composefs::status::get_composefs_status;
 use crate::bootc_composefs::{aboot, boot::BootType};
@@ -198,6 +199,7 @@ pub(crate) async fn composefs_backend_finalize(
             BootType::Bls => {
                 let entries_dir = boot_dir.open_dir("loader")?;
                 rename_exchange_bls_entries(&entries_dir)?;
+                sync_grub_bls_menu(boot_dir)?;
             }
             BootType::Uki => finalize_staged_grub_uki(boot_dir)?,
             BootType::Aboot => unreachable!(),

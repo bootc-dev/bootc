@@ -152,7 +152,14 @@ fn delete_depl_boot_entries(
 
     match deployment.deployment.bootloader.kind()? {
         BootloaderKind::GRUBClassic => match deployment.deployment.boot_type {
-            BootType::Bls => delete_type1_conf_file(deployment, boot_dir, deleting_staged),
+            BootType::Bls => {
+                delete_type1_conf_file(deployment, boot_dir, deleting_staged)?;
+                // A staged entry was never on the menu.
+                if !deleting_staged {
+                    crate::bootc_composefs::grub_bls::sync_grub_bls_menu(boot_dir)?;
+                }
+                Ok(())
+            }
             BootType::Uki => {
                 remove_grub_menucfg_entry(&deployment.deployment.verity, boot_dir, deleting_staged)
             }
