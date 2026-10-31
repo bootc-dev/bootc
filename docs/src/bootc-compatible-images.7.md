@@ -64,6 +64,12 @@ e.g. `dracut` to ensure the initramfs is set up, etc.
 
 The `bootc container lint` command will check this.
 
+Disk images made from your image will often be booted on a larger
+disk, for example in the cloud, and something in the image needs to
+grow the root filesystem to fill it; bootc does not. See
+[expanding the root filesystem](bootc-sysroot.7.md#expanding-the-root-filesystem)
+for how existing base images do this.
+
 ## SELinux
 
 The default mechanism for labeling today is that bootc will load the file contexts from the image (e.g. `/etc/selinux/policy`) and apply labels dynamically. This is the only mechanism that will work today with a generic bootc-unaware build tooling.
