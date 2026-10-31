@@ -62,6 +62,7 @@ use ostree::{gio, glib};
 use ostree_container::OstreeImageReference;
 use ostree_ext::container as ostree_container;
 use ostree_ext::container::store::{ImageImporter, ImportProgress, PrepareResult, PreparedImport};
+use ostree_ext::keyfileext::KeyFileExt;
 use ostree_ext::oci_spec::image::{Descriptor, Digest};
 use ostree_ext::ostree::Deployment;
 use ostree_ext::ostree::{self, Sysroot};
@@ -445,27 +446,40 @@ pub(crate) async fn prune_container_store(sysroot: &Storage) -> Result<()> {
     let ostree = sysroot.get_ostree()?;
     let deployments = ostree.deployments();
     let mut all_bound_images = Vec::new();
+    let mut image_ids = Vec::new();
     for deployment in deployments {
         let bound = crate::boundimage::query_bound_images_for_deployment(ostree, &deployment)?;
         all_bound_images.extend(bound.into_iter());
         // Also include the host image itself
         // Note: Use just the image name (not the full transport:image format) because
         // podman's image names don't include the transport prefix.
-        if let Some(host_image) = crate::status::boot_entry_from_deployment(ostree, &deployment)?
-            .image
-            .map(|i| i.image)
+        let entry = crate::status::boot_entry_from_deployment(ostree, &deployment)?;
+        // A redirected deployment may have no containers-storage tag matching its origin.
+        if let Some(origin) = deployment.origin()
+            && origin
+                .optional_string(ORIGIN_BOOTC, ORIGIN_SOURCE_IMAGE)?
+                .is_some()
+            && let Some(id) = entry.container_image_id(sysroot)?
         {
+            image_ids.push(id);
+        }
+        if let Some(host_image) = entry.image.map(|i| i.image) {
             all_bound_images.push(crate::boundimage::BoundImage {
                 image: host_image.image.clone(),
                 auth_file: None,
             });
         }
     }
-    // Convert to a hashset of just the image names
-    let image_names = HashSet::from_iter(all_bound_images.iter().map(|img| img.image.as_str()));
+    // Names retain bound images; IDs also retain host images with a redirected origin.
+    let roots = HashSet::from_iter(
+        all_bound_images
+            .iter()
+            .map(|img| img.image.as_str())
+            .chain(image_ids.iter().map(String::as_str)),
+    );
     let pruned = sysroot
         .get_ensure_imgstore()?
-        .prune_except_roots(&image_names)
+        .prune_except_roots(&roots)
         .await?;
     tracing::debug!("Pruned images: {}", pruned.len());
     Ok(())
@@ -689,6 +703,21 @@ pub(crate) async fn image_exists_in_unified_storage(
     imgstore.exists(&image_ref_str).await
 }
 
+/// Detect a deployment's stored image even when its pull source and origin differ.
+pub(crate) async fn deployment_uses_unified_storage(
+    store: &Storage,
+    deployment: &crate::spec::BootEntry,
+) -> Result<bool> {
+    // Non-container OSTree deployments have no image to keep in unified storage.
+    if deployment.image.is_none() {
+        return Ok(false);
+    }
+    let id = deployment
+        .container_image_id(store)?
+        .context("No container image associated with deployment")?;
+    store.get_ensure_imgstore()?.exists(&id).await
+}
+
 /// Unified approach: Use bootc's CStorage to pull the image, then prepare from containers-storage.
 /// This reuses the same infrastructure as LBIs.
 pub(crate) async fn prepare_for_pull_unified(
@@ -710,12 +739,21 @@ pub(crate) async fn prepare_for_pull_unified(
         &imgref.transport
     );
 
-    // Pull the image into bootc containers-storage with per-layer
-    // download progress via the podman native API.
-    imgstore
-        .pull_with_progress(&image_ref_str)
-        .await
-        .context("Pulling image into bootc containers-storage")?;
+    // Refresh host-storage deliveries, but preserve the existing pull path for
+    // images built directly in bootc storage.
+    if imgref.to_image_proxy_ref()?.transport == ostree_container::Transport::ContainerStorage
+        && crate::image::image_exists_in_host_storage(&imgref.image).await?
+    {
+        imgstore
+            .pull_from_host_storage(&imgref.image)
+            .await
+            .context("Copying image from host containers-storage into bootc storage")?;
+    } else {
+        imgstore
+            .pull_with_progress(&image_ref_str)
+            .await
+            .context("Pulling image into bootc containers-storage")?;
+    }
 
     // Now create a containers-storage reference to read from bootc storage
     tracing::info!("Unified pull: now importing from containers-storage transport");
@@ -1643,7 +1681,6 @@ pub(crate) fn fixup_etc_fstab(root: &Dir) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ostree_ext::keyfileext::KeyFileExt;
     use tokio::io::{AsyncBufReadExt, BufReader};
 
     #[test]
