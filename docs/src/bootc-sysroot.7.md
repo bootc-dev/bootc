@@ -19,11 +19,14 @@ In the future, this functionality will be exposed and used by `bootc`.
 ## /sysroot mount
 
 When booted, the physical root will be available at `/sysroot` as a
-read-only mount point and the logical root `/` will be a bind mount
-pointing to a deployment directory under `/sysroot/ostree`.  This is a
-key aspect of how `bootc upgrade` operates: it fetches the updated
-container image and writes the base image files (using OSTree storage
-to `/sysroot/ostree/repo`).
+read-only mount point. With composefs enabled (as recommended in
+[filesystem](bootc-filesystem.7.md), and always with the composefs
+backend), the logical root `/` is a read-only composefs mount of the
+deployed image; otherwise it is a bind mount of a deployment directory
+under `/sysroot/ostree`.  This is a key aspect of how `bootc upgrade`
+operates: it fetches the updated container image and writes the base
+image files (in `/sysroot/ostree/repo` with the OSTree backend, or in
+`/sysroot/composefs` with the composefs backend).
 
 Beyond that and debugging/introspection, there are few use cases for tooling to
 operate on the physical root.
@@ -45,10 +48,44 @@ This [unified storage issue](https://github.com/bootc-dev/bootc/issues/20) track
 One notable use case that *does* need to operate on `/sysroot`
 is expanding the root filesystem.
 
+Disk images are often booted on a disk larger than the image, for
+example in the cloud, so the root partition and filesystem need to be
+grown at boot. bootc does not do this itself; the base image (or an
+image derived from it) needs to include something that does.
+
+Provisioning tools such as cloud-init or Ignition are commonly expected
+to handle this, but the image based systems below each do it with a
+dedicated systemd service:
+
+- The [Fedora and CentOS Stream bootc base images](https://gitlab.com/fedora/bootc/base-images/-/tree/9b469901d99583d59b270e802795be8676dc8d19/standard)
+  ship `bootc-generic-growpart.service`, which runs early in boot on
+  virtual machines, grows the root partition with `growpart`, and then
+  grows the filesystem as described [below](#growing-the-filesystem).
+  Despite its name, it is not part of bootc. Only the `standard` variant
+  includes it; the `minimal` and `minimal-plus` variants do not.
+- Fedora CoreOS grows the root on first boot with
+  `ignition-ostree-growfs.service`, which runs in the initramfs after
+  Ignition has set up the disks; see its
+  [storage documentation](https://docs.fedoraproject.org/en-US/fedora-coreos/storage/#_disk_layout).
+- Flatcar Container Linux checks on every boot and grows the root when
+  the disk has grown, with `extend-filesystems.service`; see
+  [adding disk space](https://www.flatcar.org/docs/latest/setup/storage/adding-disk-space/).
+
+Your distribution may also have image variants that don't include
+a solution, such as the minimal variants above. If you build on one of
+those and need the root grown, add a service like these in your
+derived image.
+
 Some higher level tools such as e.g. `cloud-init` may (reasonably)
 expect the `/` mount point to be the physical root.  Tools like
 this will need to be adjusted to instead detect this and operate
-on `/sysroot`.
+on `/sysroot`. For example, cloud-init's
+[growpart](https://docs.cloud-init.io/en/latest/reference/modules.html#growpart)
+and [resizefs](https://docs.cloud-init.io/en/latest/reference/modules.html#resizefs)
+modules find the device from the source of the `/` mount, which is
+`composefs` when composefs is enabled, so they currently grow neither
+the partition nor the filesystem on such a system (see
+[cloud-init#6293](https://github.com/canonical/cloud-init/issues/6293)).
 
 ### Growing the block device
 
@@ -68,11 +105,13 @@ root filesystem type and running the underlying tool such as
 
 At the current time, most Linux filesystems require
 the target to be mounted writable in order to grow.  Hence,
-an invocation of `system-growfs /sysroot` or `xfs_growfs /sysroot`
+an invocation of `systemd-growfs /sysroot` or `xfs_growfs /sysroot`
 will need to be further wrapped in a temporary mount namespace.
 
 Using a `MountFlags=slave` drop-in stanza for `systemd-growfs@sysroot.service`
 is recommended, along with an `ExecStartPre=mount -o remount,rw /sysroot`.
+`bootc-generic-growpart.service` above uses the same approach, with
+`MountFlags=slave` on its own unit.
 
 ### Detecting bootc/ostree systems
 
