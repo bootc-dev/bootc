@@ -445,27 +445,34 @@ pub(crate) async fn prune_container_store(sysroot: &Storage) -> Result<()> {
     let ostree = sysroot.get_ostree()?;
     let deployments = ostree.deployments();
     let mut all_bound_images = Vec::new();
+    let mut image_ids = Vec::new();
     for deployment in deployments {
         let bound = crate::boundimage::query_bound_images_for_deployment(ostree, &deployment)?;
         all_bound_images.extend(bound.into_iter());
         // Also include the host image itself
         // Note: Use just the image name (not the full transport:image format) because
         // podman's image names don't include the transport prefix.
-        if let Some(host_image) = crate::status::boot_entry_from_deployment(ostree, &deployment)?
-            .image
-            .map(|i| i.image)
-        {
+        let entry = crate::status::boot_entry_from_deployment(ostree, &deployment)?;
+        if let Some(id) = entry.container_image_id(sysroot)? {
+            image_ids.push(id);
+        }
+        if let Some(host_image) = entry.image.map(|i| i.image) {
             all_bound_images.push(crate::boundimage::BoundImage {
                 image: host_image.image.clone(),
                 auth_file: None,
             });
         }
     }
-    // Convert to a hashset of just the image names
-    let image_names = HashSet::from_iter(all_bound_images.iter().map(|img| img.image.as_str()));
+    // Names retain bound images; IDs also retain host images with a redirected origin.
+    let roots = HashSet::from_iter(
+        all_bound_images
+            .iter()
+            .map(|img| img.image.as_str())
+            .chain(image_ids.iter().map(String::as_str)),
+    );
     let pruned = sysroot
         .get_ensure_imgstore()?
-        .prune_except_roots(&image_names)
+        .prune_except_roots(&roots)
         .await?;
     tracing::debug!("Pruned images: {}", pruned.len());
     Ok(())
@@ -687,6 +694,20 @@ pub(crate) async fn image_exists_in_unified_storage(
     let imgstore = store.get_ensure_imgstore()?;
     let image_ref_str = imgref.to_transport_image()?;
     imgstore.exists(&image_ref_str).await
+}
+
+/// Detect a deployment's stored image even when its pull source and origin differ.
+pub(crate) async fn deployment_uses_unified_storage(
+    store: &Storage,
+    deployment: Option<&crate::spec::BootEntry>,
+) -> Result<bool> {
+    let Some(deployment) = deployment else {
+        return Ok(false);
+    };
+    let Some(id) = deployment.container_image_id(store)? else {
+        return Ok(false);
+    };
+    store.get_ensure_imgstore()?.exists(&id).await
 }
 
 /// Unified approach: Use bootc's CStorage to pull the image, then prepare from containers-storage.

@@ -699,11 +699,11 @@ pub(crate) async fn upgrade_composefs(
     // already in bootc-owned containers-storage, OR if the booted image is —
     // the latter means the user has opted into unified storage and all
     // subsequent operations should use it.
-    let current_unified = if let Some(current) = current_image {
-        crate::deploy::image_exists_in_unified_storage(storage, current).await?
-    } else {
-        false
-    };
+    let current_unified = crate::deploy::deployment_uses_unified_storage(
+        storage,
+        host.status.staged.as_ref().or(host.status.booted.as_ref()),
+    )
+    .await?;
     do_upgrade_opts.use_unified = current_unified
         || crate::deploy::image_exists_in_unified_storage(storage, booted_imgref).await?;
 
