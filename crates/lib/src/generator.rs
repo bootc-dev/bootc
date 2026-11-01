@@ -39,6 +39,7 @@ pub(crate) fn fstab_generator_impl(root: &Dir, unit_dir: &Dir) -> Result<bool> {
         .map(std::io::BufReader::new)
     {
         let mut from_anaconda = false;
+        let mut root_is_readonly = false;
         for line in fd.lines() {
             let line = line.context("Reading /etc/fstab")?;
             if line.contains(BOOTC_EDITED_STAMP) {
@@ -48,8 +49,17 @@ pub(crate) fn fstab_generator_impl(root: &Dir, unit_dir: &Dir) -> Result<bool> {
             if line.contains(FSTAB_ANACONDA_STAMP) {
                 from_anaconda = true;
             }
+            let fields = line.split_ascii_whitespace().collect::<Vec<_>>();
+            if !line.trim_start().starts_with('#')
+                && fields.get(1) == Some(&"/")
+                && fields
+                    .get(3)
+                    .is_some_and(|options| options.split(',').any(|option| option == "ro"))
+            {
+                root_is_readonly = true;
+            }
         }
-        if !from_anaconda {
+        if !from_anaconda || root_is_readonly {
             return Ok(false);
         }
         tracing::debug!("/etc/fstab from anaconda: {from_anaconda}");
@@ -603,6 +613,24 @@ UUID=341c4712-54e8-4839-8020-d94073b1dc8b /boot                   xfs     defaul
             tempdir.atomic_write("etc/fstab", anaconda_fstab)?;
             tempdir.atomic_write(OSTREE_BOOTED, "ostree booted")?;
             let updated = fstab_generator_impl(&tempdir, &unit_dir).unwrap();
+            assert!(!updated);
+            assert_eq!(unit_dir.entries()?.count(), 0);
+
+            Ok(())
+        }
+
+        #[test]
+        fn test_generator_fstab_readonly_root() -> Result<()> {
+            let anaconda_fstab = indoc::indoc! { "
+# Created by anaconda
+UUID=715be2b7-c458-49f2-acec-b2fdb53d9089 / xfs defaults,ro 0 0
+" };
+            let tempdir = fixture()?;
+            let unit_dir = &tempdir.open_dir("run/systemd/system")?;
+
+            tempdir.atomic_write("etc/fstab", anaconda_fstab)?;
+            tempdir.atomic_write(OSTREE_BOOTED, "ostree booted")?;
+            let updated = fstab_generator_impl(&tempdir, unit_dir)?;
             assert!(!updated);
             assert_eq!(unit_dir.entries()?.count(), 0);
 
