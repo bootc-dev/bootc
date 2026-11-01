@@ -27,7 +27,7 @@ def main [] {
     
     tap run_install $"bootc install to-filesystem --disable-selinux --bootloader=none --source-imgref ($target_image) /var/mnt"
 
-    umount /var/mnt
+    umount -l /var/mnt
     rm -f disk.img
 
     tap ok

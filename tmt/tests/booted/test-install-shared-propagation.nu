@@ -34,7 +34,7 @@ def main [] {
 bootc install to-filesystem --disable-selinux --bootloader=none --source-imgref ($target_image) /var/mnt
 if findmnt /run/bootc/storage; then echo 'error: /run/bootc/storage mount leaked'; exit 1; fi"
 
-    umount /var/mnt
+    umount -l /var/mnt
     rm -f disk.img
 
     tap ok

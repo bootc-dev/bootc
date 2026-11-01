@@ -93,7 +93,7 @@ def second_boot [] {
     # A switch/upgrade must *stage* the global addon under loader/addons.staged
     # and leave the live loader/addons dir untouched until the next boot.
     # Remount the ESP so our view is coherent with the mount bootc wrote through.
-    umount /var/tmp/efi
+    umount -l /var/tmp/efi
     mount /dev/disk/by-partlabel/EFI-SYSTEM /var/tmp/efi
 
     assert ("/var/tmp/efi/loader/addons.staged/bootc_composefs-global-cmdline.addon.efi" | path exists) "Global addon should be staged under loader/addons.staged"
@@ -166,7 +166,7 @@ def third_boot [] {
     # The switch above staged a deployment and carried the global addon forward
     # into loader/addons.staged, while the live loader/addons is left intact.
     # Remount the ESP for a view coherent with bootc's own mount.
-    umount /var/tmp/efi
+    umount -l /var/tmp/efi
     mount /dev/disk/by-partlabel/EFI-SYSTEM /var/tmp/efi
 
     assert ("/var/tmp/efi/loader/addons.staged/bootc_composefs-global-cmdline.addon.efi" | path exists) "Global addon should be staged after switch"
@@ -183,7 +183,7 @@ def third_boot [] {
     assert ($remove_result.exit_code == 0) "Removing the staged global addon should succeed"
     assert ($remove_result.stdout | str contains "last staged global addon") "Should warn about removing the last staged global addon"
 
-    umount /var/tmp/efi
+    umount -l /var/tmp/efi
     mount /dev/disk/by-partlabel/EFI-SYSTEM /var/tmp/efi
 
     assert (not ("/var/tmp/efi/loader/addons.staged" | path exists)) "loader/addons.staged must be deleted after removing the last staged global addon"
@@ -193,7 +193,7 @@ def third_boot [] {
     # check. With a deployment staged, `add` writes back into loader/addons.staged.
     bootc uki-addon add global-cmdline global
 
-    umount /var/tmp/efi
+    umount -l /var/tmp/efi
     mount /dev/disk/by-partlabel/EFI-SYSTEM /var/tmp/efi
 
     assert ("/var/tmp/efi/loader/addons.staged/bootc_composefs-global-cmdline.addon.efi" | path exists) "Global addon should be re-staged"

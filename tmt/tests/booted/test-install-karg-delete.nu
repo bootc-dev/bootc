@@ -41,7 +41,7 @@ let foo_found = ($entries | find "foo" | is-empty)
 assert $foo_found "Found foo in bootloader entries, but it should have been deleted"
 
 # Clean up
-umount /var/mnt
+umount -l /var/mnt
 rm -rf disk.img
 
 tap ok
