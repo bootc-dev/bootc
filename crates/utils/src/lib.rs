@@ -6,8 +6,12 @@ mod chroot;
 pub use chroot::*;
 mod command;
 pub use command::*;
+mod fd;
+pub use fd::*;
 mod iterators;
 pub use iterators::*;
+mod pairs;
+pub use pairs::*;
 mod path;
 pub use path::*;
 /// Re-execute the current process

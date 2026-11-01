@@ -71,6 +71,12 @@ For GRUB, container base images that ship a BLI-capable build should
 set `discoverable-partitions = true` in their install configuration
 (see **bootc-install-config**(5)).
 
+## Install result
+
+The `--output-*` options write a machine-readable summary of the
+installation, such as the paths of the new deployment's `/etc` and
+`/var`; see **bootc-install-to-filesystem**(8).
+
 # OPTIONS
 
 <!-- BEGIN GENERATED OPTIONS -->
@@ -208,6 +214,22 @@ set `discoverable-partitions = true` in their install configuration
 **--run-repart**
 
     Whether to use systemd-repart for partitioning. This requires the image to have repart.d definitions
+
+**--output-json-path**=*PATH*
+
+    Write the result of the installation as JSON to this path, replacing it atomically
+
+**--output-json-fd**=*FD*
+
+    Write the result of the installation as JSON to this inherited file descriptor, which must be open for writing, then close it
+
+**--output-pairs-path**=*PATH*
+
+    Write the result of the installation as shell-quoted KEY="value" lines, like `lsblk --pairs --shell`, to this path, replacing it atomically
+
+**--output-pairs-fd**=*FD*
+
+    Write the result of the installation as shell-quoted KEY="value" lines to this inherited file descriptor, which must be open for writing, then close it
 
 <!-- END GENERATED OPTIONS -->
 
