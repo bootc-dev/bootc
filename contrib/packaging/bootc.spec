@@ -20,7 +20,7 @@
     %bcond_with rhel9
 %endif
 
-%global rust_minor %(rustc --version | cut -f2 -d" " | cut -f2 -d".")
+%global rust_minor %(rustc --version 2>/dev/null | cut -f2 -d" " | cut -f2 -d".")
 
 # https://github.com/bootc-dev/bootc/issues/1640
 %if 0%{?fedora} || 0%{?rhel} >= 10 || 0%{?rust_minor} >= 89
@@ -95,7 +95,8 @@ Recommends: podman
 # The reinstall subpackage intentionally does not require bootc, as it pulls in many unnecessary dependencies
 
 %description -n system-reinstall-bootc
-This package provides a utility to simplify reinstalling the current system to a given bootc image.
+This package provides a utility to simplify reinstalling the current system
+to a given bootc image.
 
 %if %{with tests}
 %package tests
@@ -123,8 +124,8 @@ cat vendor-config.toml >> .cargo/config.toml
 rm vendor-config.toml
 %else
 # Container build: source already at _builddir (/src), nothing to extract
-# RPM's %mkbuilddir creates a subdirectory; symlink it back to the source.
-# F45+ RPM also creates rpmbuild.env in the subdir that %build will source,
+# RPM's %%mkbuilddir creates a subdirectory; symlink it back to the source.
+# F45+ RPM also creates rpmbuild.env in the subdir that %%build will source,
 # so preserve it before replacing the directory with a symlink.
 cd ..
 if [ -f %{name}-%{version}-build/rpmbuild.env ]; then
@@ -181,7 +182,7 @@ EOF
 chmod +x %{?buildroot}/%{system_reinstall_bootc_install_podman_path}
 # generate doc file list excluding directories; workaround for
 # https://github.com/coreos/rpm-ostree/issues/5420
-touch %{?buildroot}/%{_docdir}/bootc/baseimage/base/sysroot/.keepdir
+echo "Placeholder to preserve this directory, see https://github.com/coreos/rpm-ostree/issues/5420" > %{?buildroot}/%{_docdir}/bootc/baseimage/base/sysroot/.keepdir
 find %{?buildroot}/%{_docdir} ! -type d -printf '%{_docdir}/%%P\n' | sort > bootcdoclist.txt
 
 rm -f %{buildroot}/%{_datadir}/elvish/lib/bootc.elv
@@ -213,6 +214,7 @@ fi
 %endif
 %{_unitdir}/*
 %{_mandir}/man*/*bootc*
+%exclude %{_mandir}/man8/system-reinstall-bootc.8*
 %if 0%{?rhel} && 0%{?rhel} <= 9
 %{_datadir}/bash-completion/completions/bootc
 %{_datadir}/zsh/site-functions/_bootc
@@ -226,6 +228,7 @@ fi
 %files -n system-reinstall-bootc
 %{_bindir}/system-reinstall-bootc
 %{system_reinstall_bootc_install_podman_path}
+%{_mandir}/man8/system-reinstall-bootc.8*
 
 %if %{with tests}
 %files tests
