@@ -228,9 +228,6 @@ pub(crate) fn print_uki_dumpfile_diff(
     let dumpfile_name = mismatch
         .uki_name()
         .and_then(|x| x.strip_suffix(EFI_EXT).map(|x| format!("{x}.dump")));
-    // .uki_name
-    // .strip_suffix(EFI_EXT)
-    // .map(|x| format!("{x}.dump"));
 
     let Some(dumpfile_name) = &dumpfile_name else {
         return;

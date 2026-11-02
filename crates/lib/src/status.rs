@@ -991,7 +991,7 @@ pub(crate) fn container_inspect(
     )?;
     let kargs = crate::bootc_kargs::get_kargs_in_root(&root, std::env::consts::ARCH)?;
     let kargs: Vec<String> = kargs.iter_str().map(|s| s.to_owned()).collect();
-    let kernel = crate::kernel::find_kernel(&root)?;
+    let kernel = crate::kernel::find_kernel(&root, None)?;
     let image_type = kernel.as_ref().map(|k| k.k_type.image_type());
     let kernel = kernel.map(Into::into);
     let inspect = crate::spec::ContainerInspect {

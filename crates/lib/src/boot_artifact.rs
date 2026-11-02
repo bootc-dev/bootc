@@ -69,7 +69,7 @@ pub(crate) async fn prepare_boot_artifact(
             )
         }
         None => {
-            let kernel = crate::kernel::find_kernel(&root)?
+            let kernel = crate::kernel::find_kernel(&root, None)?
                 .ok_or_else(|| anyhow::anyhow!("No kernel found in {rootfs}"))?;
             match kernel.k_type {
                 KernelType::Vmlinuz { path, initramfs } => {
