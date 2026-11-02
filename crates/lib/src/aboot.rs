@@ -11,6 +11,7 @@ use fn_error_context::context;
 use linux_kernel_cmdline::utf8::Cmdline;
 
 use crate::boot_artifact::prepare_boot_artifact;
+use crate::cli::BootArtifactErofsVersionArg;
 
 #[context("Building aboot image")]
 pub(crate) async fn build_aboot(
@@ -18,6 +19,7 @@ pub(crate) async fn build_aboot(
     kernel_dir: Option<&Utf8Path>,
     out: Option<&Utf8Path>,
     allow_missing_fsverity: bool,
+    erofs_version: Option<BootArtifactErofsVersionArg>,
     write_dumpfile_to: Option<&Utf8Path>,
 ) -> Result<()> {
     if !crate::utils::have_executable("aboot-update")? {
@@ -29,7 +31,7 @@ pub(crate) async fn build_aboot(
         kernel_dir,
         &[],
         allow_missing_fsverity,
-        None,
+        erofs_version,
         write_dumpfile_to,
     )
     .await?;
