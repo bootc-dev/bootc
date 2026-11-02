@@ -16,6 +16,12 @@ The image is written to `aboot-<kernel-version>.img` in the output directory.  B
 that directory is `/boot` within the supplied root filesystem.  `aboot-update` must be
 available in the build environment.
 
+By default, or with `--erofs-version=v1`, the command line contains the V1
+composefs argument followed by a V2 compatibility fallback. Use
+`--erofs-version=v1-only` to omit the V2 fallback and shorten the kernel command
+line. This requires a V1 composefs repository on the target machine.
+Explicit `--erofs-version=v2` emits only the legacy V2 argument.
+
 # OPTIONS
 
 <!-- BEGIN GENERATED OPTIONS -->
@@ -28,6 +34,15 @@ available in the build environment.
 **--allow-missing-verity**
 
     Make fs-verity validation optional in case the filesystem doesn't support it
+
+**--erofs-version**=*EROFS_VERSION*
+
+    EROFS format version to use when computing the composefs digest
+
+    Possible values:
+    - v1
+    - v1-only
+    - v2
 
 **--write-dumpfile-to**=*WRITE_DUMPFILE_TO*
 

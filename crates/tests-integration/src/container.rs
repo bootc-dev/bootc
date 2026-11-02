@@ -374,6 +374,8 @@ pub(crate) fn test_compute_composefs_digest() -> Result<()> {
 /// - `compute-composefs-digest --erofs-version=v1` and `=v2` produce distinct,
 ///   valid 128-char SHA-512 hex digests (different EROFS layouts → different IDs).
 /// - the default producer passes both V1 and V2 composefs kargs to ukify.
+/// - V1-only passes the V1 digest without a V2 fallback.
+/// - the aboot producer also supports V1-only and validates the generated image.
 /// - explicit V2 selection passes only the V2 karg, including for an old-style
 ///   initramfs artifact.
 pub(crate) fn test_container_ukify_erofs_versions() -> Result<()> {
@@ -475,7 +477,8 @@ pub(crate) fn test_container_ukify_erofs_versions() -> Result<()> {
         "V1 and V2 EROFS digests must differ (they use different on-disk layouts)"
     );
 
-    let fake_bin = td.path().join("fake-bin");
+    let tools_dir = tempfile::tempdir()?;
+    let fake_bin = tools_dir.path().join("fake-bin");
     fs::create_dir(&fake_bin)?;
     let fake_ukify = fake_bin.join("ukify");
     fs::write(
@@ -483,7 +486,7 @@ pub(crate) fn test_container_ukify_erofs_versions() -> Result<()> {
         "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$UKIFY_ARGS\"\n",
     )?;
     fs::set_permissions(&fake_ukify, fs::Permissions::from_mode(0o755))?;
-    let ukify_args = td.path().join("ukify-args");
+    let ukify_args = tools_dir.path().join("ukify-args");
     let path_with_fake_ukify = format!("{}:{}", fake_bin.display(), std::env::var("PATH")?);
 
     // The default producer emits both kargs without probing the initramfs.
@@ -508,6 +511,78 @@ pub(crate) fn test_container_ukify_erofs_versions() -> Result<()> {
     let v1 = cmdline.find("composefs.digest=v1-sha512-12:").unwrap();
     let v2 = cmdline.find("composefs=").unwrap();
     assert!(v1 < v2, "expected ordered V1 then V2 kargs: {cmdline}");
+
+    let v1_only = Command::new("bootc")
+        .env("PATH", &path_with_fake_ukify)
+        .env("UKIFY_ARGS", &ukify_args)
+        .args([
+            "container",
+            "ukify",
+            "--rootfs",
+            root_str,
+            "--erofs-version=v1-only",
+        ])
+        .output()?;
+    assert!(
+        v1_only.status.success(),
+        "V1-only producer failed: {}",
+        String::from_utf8_lossy(&v1_only.stderr)
+    );
+    let args = fs::read_to_string(&ukify_args)?;
+    let cmdline = args
+        .lines()
+        .skip_while(|arg| *arg != "--cmdline")
+        .nth(1)
+        .context("fake ukify did not receive --cmdline for V1-only")?;
+    assert_eq!(
+        cmdline,
+        format!("composefs.digest=v1-sha512-12:{digest_v1}")
+    );
+
+    // Supply a minimal Android v2 image so aboot's output validation also runs.
+    let mut image = vec![0; 4097];
+    image[..8].copy_from_slice(b"ANDROID!");
+    for (offset, value) in [(8, 1u32), (16, 1), (36, 2048), (40, 2), (1644, 1660)] {
+        image[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+    }
+    image[64..64 + cmdline.len()].copy_from_slice(cmdline.as_bytes());
+    let aboot_image = tools_dir.path().join("android.img");
+    fs::write(&aboot_image, image)?;
+    let fake_aboot = fake_bin.join("aboot-update");
+    fs::write(
+        &fake_aboot,
+        "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$ABOOT_ARGS\"\ncp \"$ABOOT_IMAGE\" \"$ABOOT_OUTPUT\"\n",
+    )?;
+    fs::set_permissions(&fake_aboot, fs::Permissions::from_mode(0o755))?;
+    let aboot_args = tools_dir.path().join("aboot-args");
+    let aboot_output = tools_dir.path().join(format!("aboot-{kver}.img"));
+    let aboot_v1_only = Command::new("bootc")
+        .env("PATH", &path_with_fake_ukify)
+        .env("ABOOT_ARGS", &aboot_args)
+        .env("ABOOT_IMAGE", &aboot_image)
+        .env("ABOOT_OUTPUT", &aboot_output)
+        .args([
+            "container",
+            "aboot",
+            "--rootfs",
+            root_str,
+            "--erofs-version=v1-only",
+            "--out",
+            tools_dir.path().to_str().unwrap(),
+        ])
+        .output()?;
+    assert!(
+        aboot_v1_only.status.success(),
+        "V1-only aboot producer failed: {}",
+        String::from_utf8_lossy(&aboot_v1_only.stderr)
+    );
+    let args = fs::read_to_string(&aboot_args)?;
+    let aboot_cmdline = args
+        .lines()
+        .skip_while(|arg| *arg != "--cmdline")
+        .nth(1)
+        .context("fake aboot-update did not receive --cmdline for V1-only")?;
+    assert_eq!(aboot_cmdline, cmdline);
 
     // An old initramfs has no composefs capability marker. Explicit V2 is
     // still usable because selecting V2 does not depend on that artifact.
