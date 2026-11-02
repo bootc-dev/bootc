@@ -62,6 +62,23 @@ no_auto_local_deps := env("BOOTC_no_auto_local_deps", "")
 nocache := env("BOOTC_nocache", "")
 _nocache_arg := if nocache != "" { "--no-cache" } else { "" }
 _baseconfigs_env := if baseconfigs != "" { "--env=BOOTC_baseconfigs=" + baseconfigs } else { "" }
+# Build settings as `just` command line overrides, for forwarding to nested
+# `just` invocations. Command line overrides only apply to a single
+# invocation, so recipes which nest other recipes must pass
+# the current settings along themselves. Exported BOOTC_* environment
+# variables reach nested invocations on their own, so CI does not depend on
+# this. Recipes which force a setting (e.g. variant=composefs) pass it after
+# these, and the last override wins.
+# https://just.systems/man/en/dependencies.html#running-recipes-in-the-middle-of-a-recipe
+_forward_settings := "base_img=" + base_img + \
+    " base=" + base + \
+    " variant=" + variant + \
+    " bootloader=" + bootloader + \
+    " filesystem=" + filesystem + \
+    " boot_type=" + boot_type + \
+    " seal_state=" + seal_state + \
+    ' baseconfigs="' + baseconfigs + '"' + \
+    " erofs_version=" + erofs_version
 testimage_label := "bootc.testimage=1"
 # Pinned to ubi9/podman 9.8-1793032728: the 9.8-1793203936 build that
 # replaced it has no sigstore signature for the registry.access.redhat.com
@@ -189,13 +206,15 @@ list-variants:
 # Build a sealed composefs image (alias for variant=composefs-sealeduki-sdboot)
 [group('core')]
 build-sealed:
-    @just --justfile {{justfile()}} variant=composefs bootloader=systemd boot_type=uki seal_state=sealed build
+    @just --justfile {{justfile()}} {{_forward_settings}} variant=composefs bootloader=systemd boot_type=uki seal_state=sealed build
 
 # Run tmt integration tests in VMs (e.g. `just test-tmt readonly`)
 [group('core')]
 test-tmt *ARGS: build
-    @just _build-upgrade-image
-    @just test-tmt-nobuild {{ARGS}}
+    # Nested invocations do not inherit command line overrides, so the
+    # current settings are passed along explicitly (see _forward_settings).
+    @just {{_forward_settings}} _build-upgrade-image
+    @just {{_forward_settings}} test-tmt-nobuild {{ARGS}}
 
 [group('testing')]
 build-ukiboot-test-image: build
@@ -240,7 +259,7 @@ test-composefs bootloader filesystem boot_type seal_state *ARGS:
         exit 1; \
     fi
 
-    just variant=composefs \
+    just {{_forward_settings}} variant=composefs \
         bootloader={{bootloader}} \
         filesystem={{filesystem}} \
         boot_type={{boot_type}} \
@@ -316,11 +335,11 @@ test-tmt-nobuild *ARGS:
     cargo xtask run-tmt --env=BOOTC_variant={{variant}} --env=BOOTC_erofs_version={{erofs_version}} {{_baseconfigs_env}} --upgrade-image={{upgrade_img}} {{base_img}} {{ARGS}}
 
 # Run readonly tests with a baseconfig baked into the image at build time.
-# Requires composefs variant. Example: just variant=composefs test-tmt-baseconfig root-transient
+# Requires composefs variant. Example: just test-tmt-baseconfig root-transient
 [group('testing')]
 test-tmt-baseconfig baseconfig *ARGS:
-    just variant=composefs baseconfigs={{baseconfig}} build
-    just variant=composefs baseconfigs={{baseconfig}} _build-upgrade-image
+    just {{_forward_settings}} variant=composefs baseconfigs={{baseconfig}} build
+    just {{_forward_settings}} variant=composefs baseconfigs={{baseconfig}} _build-upgrade-image
     cargo xtask run-tmt \
         --env=BOOTC_variant=composefs \
         --env=BOOTC_erofs_version={{erofs_version}} \
@@ -334,9 +353,9 @@ test-tmt-baseconfig baseconfig *ARGS:
 # Run readonly tests for all standard baseconfigs
 [group('testing')]
 test-baseconfigs *ARGS:
-    just test-tmt-baseconfig etc-transient {{ARGS}}
-    just test-tmt-baseconfig root-transient {{ARGS}}
-    just test-tmt-baseconfig var-volatile {{ARGS}}
+    just {{_forward_settings}} test-tmt-baseconfig etc-transient {{ARGS}}
+    just {{_forward_settings}} test-tmt-baseconfig root-transient {{ARGS}}
+    just {{_forward_settings}} test-tmt-baseconfig var-volatile {{ARGS}}
 
 # Run tmt tests on Fedora CoreOS
 [group('testing')]
@@ -351,7 +370,7 @@ run-container-external-tests:
 # Remove all test VMs created by tmt tests
 [group('testing')]
 tmt-vm-cleanup:
-    bcvk libvirt rm --stop --force --label bootc.test=1
+    bcvk libvirt rm-all --stop --force --label bootc.test=1
 
 # Build test image for Fedora CoreOS testing
 [group('testing')]
