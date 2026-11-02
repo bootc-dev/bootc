@@ -79,6 +79,11 @@ struct Cli {
 enum Commands {
     /// Generate man pages
     Manpages {
+        /// Only convert the markdown in docs/src/man, without first building
+        /// bootc to sync its generated CLI sections. CI verifies those are up
+        /// to date, so this is suitable for packaging a release.
+        #[arg(long, conflicts_with = "cargo_options")]
+        no_sync: bool,
         /// Extra options for cargo when building bootc, after `--`
         /// (e.g. `-- --no-default-features --features install-to-disk`)
         #[arg(last = true)]
@@ -395,7 +400,16 @@ fn try_main() -> Result<()> {
     let sh = xshell::Shell::new()?;
 
     match cli.command {
-        Commands::Manpages { cargo_options } => man::generate_man_pages(&sh, &cargo_options),
+        Commands::Manpages {
+            no_sync,
+            cargo_options,
+        } => {
+            if no_sync {
+                man::generate_man_pages_no_sync(&sh)
+            } else {
+                man::generate_man_pages(&sh, &cargo_options)
+            }
+        }
         Commands::GuideManpages => man::generate_guide_man_pages(&sh),
         Commands::CheckDocs => man::check_docs(),
         Commands::UpdateGenerated { command } => match command {

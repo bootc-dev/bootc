@@ -83,7 +83,6 @@ uapi-version = "0.4.0"
 ostree-ext = { path = "../ostree-ext", features = ["bootc", "internal-testing-api"] }
 similar-asserts = { workspace = true }
 static_assertions = { workspace = true }
-tokio = { workspace = true, features = ["test-util"] }
 
 [features]
 default = ["install-to-disk", "selinux"]

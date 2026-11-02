@@ -137,8 +137,6 @@ cd %{name}-%{version}-build
 
 %build
 export SYSTEM_REINSTALL_BOOTC_INSTALL_PODMAN_PATH=%{system_reinstall_bootc_install_podman_path}
-# Build this first to avoid feature skew
-make manpages
 
 # Build all binaries
 %if 0%{?container_build}
@@ -156,6 +154,17 @@ cargo build -j%{_smp_build_ncpus} --release %{?with_rhsm:--features rhsm} %{?wit
 %endif
 %endif
 
+# The generated CLI sections in the man page sources are kept in sync by CI,
+# so just convert them; this avoids building bootc a second time.
+# Outside of container builds, use the same cargo environment and profile as
+# %%cargo_build/%%cargo_test, so xtask doesn't invalidate their shared state
+# (target/release is a symlink to target/rpm, created by %%cargo_prep).
+%if 0%{?container_build}
+make manpages-no-sync
+%else
+make manpages-no-sync XTASK_PROFILE=rpm CARGO="%{__cargo}"
+%endif
+
 %if ! 0%{?container_build}
 %cargo_vendor_manifest
 # https://pagure.io/fedora-rust/rust-packaging/issue/33
@@ -165,8 +174,10 @@ sed -i -e '/https:\/\//d' cargo-vendor.txt
 %endif
 
 %install
-# Pass CARGO_FEATURES explicitly to prevent auto-detection rebuild in install environment
-%make_install INSTALL="install -p -c" CARGO_FEATURES="%{?with_rhsm:rhsm} %{?with_rhel9:rhel9}"
+# Everything was built in %%build; SKIP_BUILD=1 keeps make from invoking cargo
+# again (which would also overwrite the %%cargo_build output in target/rpm via
+# the target/release symlink created by %%cargo_prep).
+%make_install INSTALL="install -p -c" SKIP_BUILD=1
 %if %{with ostree_ext}
 make install-ostree-hooks DESTDIR=%{?buildroot}
 %endif
