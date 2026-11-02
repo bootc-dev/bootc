@@ -2188,35 +2188,41 @@ enum BoundImages {
 
 impl BoundImages {
     async fn from_state(state: &State) -> Result<Self> {
-        let bound_images = match state.config_opts.bound_images {
-            BoundImagesOpt::Skip => BoundImages::Skip,
-            others => {
-                let queried_images = crate::boundimage::query_bound_images(&state.container_root)?;
-                match others {
-                    BoundImagesOpt::Stored => {
-                        // Verify each bound image is present in the container storage
-                        let mut r = Vec::with_capacity(queried_images.len());
-                        for image in queried_images {
-                            let resolved = ResolvedBoundImage::from_image(&image).await?;
-                            tracing::debug!("Resolved {}: {}", resolved.image, resolved.digest);
-                            r.push(resolved)
-                        }
-                        BoundImages::Resolved(r)
-                    }
-                    BoundImagesOpt::Pull => {
-                        // No need to resolve the images, we will pull them into the target later
-                        BoundImages::Unresolved(queried_images)
-                    }
-                    BoundImagesOpt::Skip => anyhow::bail!("unreachable error"),
-                }
-            }
-        };
+        let bound_images_opt = state.config_opts.bound_images;
+        if bound_images_opt == BoundImagesOpt::Skip {
+            return Ok(BoundImages::Skip);
+        }
 
-        Ok(bound_images)
+        let queried_images = crate::boundimage::query_bound_images(&state.container_root)?;
+        Self::from_queried(bound_images_opt, queried_images).await
+    }
+
+    async fn from_queried(
+        bound_images_opt: BoundImagesOpt,
+        queried_images: Vec<BoundImage>,
+    ) -> Result<Self> {
+        match bound_images_opt {
+            BoundImagesOpt::Stored => {
+                let mut resolved_images = Vec::with_capacity(queried_images.len());
+                for image in queried_images {
+                    let resolved = ResolvedBoundImage::from_image(&image).await?;
+                    tracing::debug!("Resolved {}: {}", resolved.image, resolved.digest);
+                    resolved_images.push(resolved);
+                }
+                Ok(BoundImages::Resolved(resolved_images))
+            }
+            BoundImagesOpt::Pull => Ok(BoundImages::Unresolved(queried_images)),
+            BoundImagesOpt::Skip => Ok(BoundImages::Skip),
+        }
     }
 }
 
-async fn ostree_install(state: &State, rootfs: &RootSetup, cleanup: Cleanup) -> Result<()> {
+async fn ostree_install(
+    state: &State,
+    rootfs: &RootSetup,
+    cleanup: Cleanup,
+    pre_resolved_bound_images: Option<BoundImages>,
+) -> Result<()> {
     // We verify this upfront because it's currently required by bootupd
     let boot_uuid = rootfs
         .get_boot_uuid()?
@@ -2224,7 +2230,10 @@ async fn ostree_install(state: &State, rootfs: &RootSetup, cleanup: Cleanup) -> 
         .ok_or_else(|| anyhow!("No uuid for boot/root"))?;
     tracing::debug!("boot uuid={boot_uuid}");
 
-    let bound_images = BoundImages::from_state(state).await?;
+    let bound_images = match pre_resolved_bound_images {
+        Some(bound_images) => bound_images,
+        None => BoundImages::from_state(state).await?,
+    };
 
     // Initialize the ostree sysroot (repo, stateroot, etc.)
 
@@ -2266,6 +2275,7 @@ async fn install_to_filesystem_impl(
     state: &State,
     rootfs: &mut RootSetup,
     cleanup: Cleanup,
+    pre_resolved_bound_images: Option<BoundImages>,
 ) -> Result<()> {
     if matches!(state.selinux_state, SELinuxFinalState::ForceTargetDisabled) {
         rootfs.kargs.extend(&Cmdline::from("selinux=0"));
@@ -2361,7 +2371,7 @@ async fn install_to_filesystem_impl(
             .context("SELinux labeling of composefs objects")?;
         }
     } else {
-        ostree_install(state, rootfs, cleanup).await?;
+        ostree_install(state, rootfs, cleanup, pre_resolved_bound_images).await?;
 
         // For s390x, we set zipl as the bootloader
         // this needs to be done after the ostree commit is deployed,
@@ -2484,7 +2494,7 @@ pub(crate) async fn install_to_disk(mut opts: InstallToDiskOpts) -> Result<()> {
         (rootfs, loopback_dev)
     };
 
-    install_to_filesystem_impl(&state, &mut rootfs, Cleanup::Skip).await?;
+    install_to_filesystem_impl(&state, &mut rootfs, Cleanup::Skip, None).await?;
 
     // Drop all data about the root except the bits we need to ensure any file descriptors etc. are closed.
     let (root_path, luksdev) = rootfs.into_storage();
@@ -2760,6 +2770,7 @@ pub(crate) async fn install_to_filesystem(
     opts: InstallToFilesystemOpts,
     targeting_host_root: bool,
     cleanup: Cleanup,
+    resolve_bound_images_early: bool,
 ) -> Result<()> {
     // Log the installation operation to systemd journal
     const INSTALL_FILESYSTEM_JOURNAL_ID: &str = "9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3";
@@ -2871,6 +2882,18 @@ pub(crate) async fn install_to_filesystem(
         false,
     )
     .await?;
+
+    // Callers may opt in when stored bound images must be validated before
+    // target mutations. Other install flows retain their existing resolution
+    // timing by passing false.
+    let pre_resolved_bound_images = if targeting_host_root
+        && resolve_bound_images_early
+        && !state.composefs_options.composefs_backend
+    {
+        Some(BoundImages::from_state(&state).await?)
+    } else {
+        None
+    };
 
     // Check to see if this happens to be the real host root
     if !fsopts.acknowledge_destructive {
@@ -3034,7 +3057,7 @@ pub(crate) async fn install_to_filesystem(
         skip_finalize,
     };
 
-    install_to_filesystem_impl(&state, &mut rootfs, cleanup).await?;
+    install_to_filesystem_impl(&state, &mut rootfs, cleanup, pre_resolved_bound_images).await?;
 
     // Drop all data about the root except the path to ensure any file descriptors etc. are closed.
     drop(rootfs);
@@ -3089,7 +3112,7 @@ pub(crate) async fn install_to_existing_root(opts: InstallToExistingRootOpts) ->
         composefs_opts: opts.composefs_opts,
     };
 
-    install_to_filesystem(opts, true, cleanup).await
+    install_to_filesystem(opts, true, cleanup, false).await
 }
 
 /// Read the /boot entry from /etc/fstab, if it exists
@@ -3671,5 +3694,22 @@ UUID=boot-uuid /boot ext4 defaults 0 0
         assert!(result.contains("foo=baz"));
 
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_bound_images_pull_mode_stays_unresolved() {
+        let queried_images = vec![BoundImage {
+            image: "quay.io/example/app:latest".to_string(),
+            auth_file: None,
+        }];
+
+        let bound_images = BoundImages::from_queried(BoundImagesOpt::Pull, queried_images)
+            .await
+            .unwrap();
+        let BoundImages::Unresolved(images) = bound_images else {
+            panic!("pull mode should defer bound image resolution until deployment");
+        };
+        assert_eq!(images.len(), 1);
+        assert_eq!(images[0].image, "quay.io/example/app:latest");
     }
 }
