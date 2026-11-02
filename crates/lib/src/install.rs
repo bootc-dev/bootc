@@ -1833,7 +1833,7 @@ async fn prepare_install(
 
     let kernel = target_rootfs
         .as_ref()
-        .map(crate::kernel::find_kernel)
+        .map(|rootfs| crate::kernel::find_kernel(rootfs, Some(&composefs_options.uki_addon_opts)))
         .transpose()?
         .flatten();
     let composefs_required = kernel.as_ref().is_some_and(|k| k.k_type.is_unified());
