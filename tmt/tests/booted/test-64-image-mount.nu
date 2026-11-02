@@ -98,7 +98,7 @@ let mount_cleanup_errors = (cleanup_targets $test_outcome.mounted)
 let cleanup_errors = if (($mount_cleanup_errors | length) > 0) {
     $mount_cleanup_errors | append $"($base): directory retained because a mount could not be unmounted"
 } else {
-    let remove_result = (do -i { rm --recursive $base } | complete)
+    let remove_result = (do -i { ^rm --recursive $base } | complete)
     if $remove_result.exit_code == 0 {
         []
     } else {

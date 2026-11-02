@@ -371,19 +371,26 @@ fn source_relative_path(source: &Utf8Path) -> Result<Utf8PathBuf> {
 }
 
 pub(crate) fn unmount(opts: UnmountOpts) -> Result<()> {
-    // Pin the object named by the explicit target and ask the kernel to unmount
-    // through its procfs fd link. The kernel rejects the operation unless this
-    // descriptor resolves to a mount root; no recursive flag is used.
-    let target = open_existing_path(&opts.target)?;
+    // Resolve through directory descriptors so parent path components cannot
+    // be swapped for symlinks. Keep the parent, but close the target before
+    // unmounting: an open descriptor to the mount root makes it busy.
+    let (target, parent) = open_path_no_symlinks(&opts.target, false)?;
     ensure_not_root_target(&target, &opts.target)?;
-    let fd_path = format!("/proc/self/fd/{}", target.as_raw_fd());
-    unmount_path(fd_path.as_str(), UnmountFlags::empty())
+    let parent = parent.ok_or_else(|| anyhow::anyhow!("Cannot unmount filesystem root"))?;
+    ensure!(
+        mount_id(&target)? != mount_id(&parent)?,
+        "{} is not a mountpoint",
+        opts.target
+    );
+    let name = opts
+        .target
+        .file_name()
+        .ok_or_else(|| anyhow::anyhow!("Invalid unmount target {}", opts.target))?;
+    let fd_path = format!("/proc/self/fd/{}/{}", parent.as_raw_fd(), name);
+    drop(target);
+    unmount_path(fd_path.as_str(), UnmountFlags::NOFOLLOW)
         .with_context(|| format!("Unmounting {}", opts.target))?;
     Ok(())
-}
-
-fn open_existing_path(path: &Utf8Path) -> Result<std::fs::File> {
-    open_path_no_symlinks(path, false).map(|(target, _)| target)
 }
 
 fn open_mount_target(path: &Utf8Path) -> Result<(std::fs::File, Option<std::fs::File>)> {
@@ -504,7 +511,7 @@ fn ensure_not_root_target(target: &std::fs::File, path: &Utf8Path) -> Result<()>
 mod tests {
     use super::{
         Deployment, MountOpts, UnmountOpts, ensure_directory_empty, ensure_not_mountpoint,
-        ensure_not_root_target, open_existing_path, open_mount_target, open_source,
+        ensure_not_root_target, open_mount_target, open_path_no_symlinks, open_source,
         source_relative_path,
     };
     use crate::cli::{ImageOpts, InstallOpts, Opt};
@@ -572,18 +579,18 @@ mod tests {
 
     #[test]
     fn refuses_root_as_mount_or_unmount_target() {
-        let root = open_existing_path(Utf8Path::new("/")).unwrap();
+        let (root, _) = open_path_no_symlinks(Utf8Path::new("/"), false).unwrap();
         assert!(ensure_not_root_target(&root, Utf8Path::new("/")).is_err());
 
         let temp = tempfile::tempdir().unwrap();
         let target = Utf8PathBuf::from_path_buf(temp.path().to_owned()).unwrap();
-        let target_fd = open_existing_path(&target).unwrap();
+        let (target_fd, _) = open_path_no_symlinks(&target, false).unwrap();
         assert!(ensure_not_root_target(&target_fd, &target).is_ok());
 
         let root_alias = temp.path().join("root-alias");
         symlink("/", &root_alias).unwrap();
         let root_alias = Utf8PathBuf::from_path_buf(root_alias).unwrap();
-        assert!(open_existing_path(&root_alias).is_err());
+        assert!(open_path_no_symlinks(&root_alias, false).is_err());
     }
 
     #[test]
