@@ -50,9 +50,21 @@ pub(crate) async fn switch_composefs(
         delta.validate_image_reference(&target)?;
     }
 
-    if discard_failed_aboot_update(storage, &host)? {
+    // There may be an existing failed update with the same name as "target", and
+    // in that case we don't want the "nothing changed" check below to trigger.
+    // Instead we want to discard the failed attempt and redo the update.
+    let failed_target_matches = host
+        .status
+        .staged
+        .as_ref()
+        .and_then(|entry| entry.image.as_ref())
+        .is_some_and(|image| image.image == target);
+    let discarded_failed_update = discard_failed_aboot_update(storage, &host)?;
+    if discarded_failed_update {
+        // Refresh host to skip discarded update
         host = get_composefs_status(storage, booted_cfs).await?;
     }
+    let retry_failed_target = discarded_failed_update && failed_target_matches;
 
     let new_spec = {
         let mut new_spec = host.spec.clone();
@@ -60,7 +72,7 @@ pub(crate) async fn switch_composefs(
         new_spec
     };
 
-    if new_spec == host.spec {
+    if new_spec == host.spec && !retry_failed_target {
         println!("Image specification is unchanged.");
         if opts.apply && host.status.staged.is_some() {
             crate::reboot::reboot()?;
