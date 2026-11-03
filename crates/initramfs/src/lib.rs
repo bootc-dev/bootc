@@ -94,6 +94,17 @@ pub fn set_mount_tree_readonly(fd: impl AsFd) -> Result<()> {
     mount_setattr(fd, libc::AT_EMPTY_PATH | libc::AT_RECURSIVE, &attr)
 }
 
+/// Clear the read-only attribute on a detached mount without changing its children.
+pub fn clear_mount_readonly(fd: impl AsFd) -> Result<()> {
+    let attr = MountAttr {
+        attr_set: 0,
+        attr_clr: MOUNT_ATTR_RDONLY,
+        propagation: 0,
+        userns_fd: 0,
+    };
+    mount_setattr(fd, libc::AT_EMPTY_PATH, &attr)
+}
+
 /// Set a mount tree read-only, nosuid, nodev, and prevent symlink traversal within it.
 ///
 /// A bind-mounted image tree is not a chroot: absolute and escaping symlinks
