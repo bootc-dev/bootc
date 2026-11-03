@@ -3,8 +3,12 @@
 //! This deliberately does not assemble deployment state: in particular, it
 //! never bind-mounts `/var` or the deployment's mutable `/etc` over the image.
 
-use std::os::fd::{AsFd, AsRawFd, OwnedFd};
 use std::os::unix::fs::MetadataExt;
+use std::{
+    os::fd::{AsFd, AsRawFd, OwnedFd},
+    path::PathBuf,
+    thread,
+};
 
 use anyhow::{Context, Result, bail, ensure};
 use camino::{Utf8Path, Utf8PathBuf};
@@ -16,6 +20,10 @@ use ostree_ext::{ostree, ostree_prepareroot, sysroot::SysrootLock};
 use rustix::fs::{AtFlags, CWD, Mode, OFlags, StatxFlags, openat, statx};
 use rustix::mount::{
     MoveMountFlags, OpenTreeFlags, UnmountFlags, move_mount, open_tree, unmount as unmount_path,
+};
+use rustix::{
+    mount::{MountPropagationFlags, mount_change},
+    thread::{UnshareFlags, unshare_unsafe},
 };
 
 #[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
@@ -62,7 +70,9 @@ enum StorageGuard {
         _repo: crate::store::ComposefsRepository,
     },
     Ostree {
+        // Drop the lock before closing the detached mount it was opened through.
         _sysroot: SysrootLock,
+        _mount: OwnedFd,
     },
 }
 
@@ -113,13 +123,13 @@ pub(crate) async fn mount(opts: MountOpts) -> Result<()> {
         opts.target
     );
 
-    let source_path = format!("/proc/self/fd/{}", source.as_raw_fd());
-    let source_tree = open_tree(
-        CWD,
-        source_path.as_str(),
-        OpenTreeFlags::OPEN_TREE_CLONE | OpenTreeFlags::OPEN_TREE_CLOEXEC,
-    )
-    .with_context(|| format!("Cloning image source {}", opts.source))?;
+    // `tree` is a detached mount. Kernel 6.12 rejects open_tree() paths which
+    // resolve through a directory fd inside an unattached mount. Attach it in
+    // an isolated worker namespace before cloning the already-validated source
+    // fd; never change mount visibility in the caller's namespace.
+    drop(image_root);
+    let source_tree = clone_source_in_staging_namespace(tree, source)
+        .with_context(|| format!("Cloning image source {}", opts.source))?;
     bootc_initramfs_setup::set_mount_tree_readonly_nosymfollow(&source_tree)
         .context("Making selected image content read-only and preventing symlink traversal")?;
 
@@ -140,6 +150,102 @@ pub(crate) async fn mount(opts: MountOpts) -> Result<()> {
     .with_context(|| format!("Attaching image source {} at {}", opts.source, opts.target))?;
 
     Ok(())
+}
+
+/// Temporarily attach a detached image mount in a private worker namespace so
+/// that the kernel can clone a validated directory fd from inside it.
+#[allow(unsafe_code)]
+fn clone_source_in_staging_namespace(tree: OwnedFd, source: std::fs::File) -> Result<OwnedFd> {
+    thread::Builder::new()
+        .name("bootc-image-mount-stage".to_owned())
+        .spawn(move || -> Result<OwnedFd> {
+            // A dedicated OS thread is required because mount namespace
+            // unsharing applies to the calling thread, not the whole process.
+            // SAFETY: This is a dedicated worker thread and only CLONE_NEWNS
+            // is requested (not CLONE_FILES), so the operation cannot alter
+            // the calling thread's namespace or invalidate shared fd tables.
+            unsafe { unshare_unsafe(UnshareFlags::NEWNS) }
+                .context("Unsharing image mount staging thread namespace")?;
+            mount_change(
+                c"/",
+                MountPropagationFlags::PRIVATE | MountPropagationFlags::REC,
+            )
+            .context("Making image mount staging namespace private")?;
+
+            let directory =
+                tempfile::tempdir().context("Creating image mount staging directory")?;
+            let mut attachment = TemporaryMountAttachment {
+                path: directory.path().to_owned(),
+                _directory: directory,
+                mounted: false,
+            };
+            move_mount(
+                &tree,
+                "",
+                CWD,
+                attachment.path.as_path(),
+                MoveMountFlags::MOVE_MOUNT_F_EMPTY_PATH,
+            )
+            .context("Attaching image mount in staging namespace")?;
+            attachment.mounted = true;
+
+            // Use AT_EMPTY_PATH only after the fd has a path in this namespace.
+            // Do not recurse: image-mount source selection has always cloned
+            // only the selected mount, not its mounted children.
+            let cloned = open_tree(
+                &source,
+                "",
+                OpenTreeFlags::OPEN_TREE_CLONE
+                    | OpenTreeFlags::OPEN_TREE_CLOEXEC
+                    | OpenTreeFlags::AT_EMPTY_PATH,
+            )
+            .context("Cloning validated image source fd");
+
+            // Drop all handles into the attached mount before its synchronous,
+            // non-recursive unmount. The detached clone (if successful) remains
+            // alive independently and is returned to the caller.
+            drop(source);
+            drop(tree);
+            let unmounted = attachment.unmount();
+            match (cloned, unmounted) {
+                (Ok(cloned), Ok(())) => Ok(cloned),
+                (Err(error), Ok(())) => Err(error),
+                (Ok(_), Err(error)) => Err(error),
+                (Err(error), Err(unmount_error)) => Err(error.context(format!(
+                    "Also failed to unmount staging attachment: {unmount_error:#}"
+                ))),
+            }
+        })
+        .context("Starting image mount staging thread")?
+        .join()
+        .map_err(|_| anyhow::anyhow!("Image mount staging thread panicked"))?
+}
+
+/// Normal-unmount guard for the temporary staging attachment. Drop retries
+/// synchronously during error unwinding; it intentionally never lazy-detaches.
+struct TemporaryMountAttachment {
+    path: PathBuf,
+    _directory: tempfile::TempDir,
+    mounted: bool,
+}
+
+impl TemporaryMountAttachment {
+    fn unmount(&mut self) -> Result<()> {
+        if self.mounted {
+            unmount_path(&self.path, UnmountFlags::empty())
+                .context("Unmounting image mount staging attachment")?;
+            self.mounted = false;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for TemporaryMountAttachment {
+    fn drop(&mut self) {
+        if let Err(error) = self.unmount() {
+            tracing::error!("Failed to unmount image staging attachment: {error:#}");
+        }
+    }
 }
 
 /// Read the composefs staged selector without constructing `BootedStorage`.
@@ -207,12 +313,27 @@ fn mount_composefs_image(
 }
 
 async fn mount_ostree_image(opts: &MountOpts) -> Result<MountedImageRoot> {
-    // Open /sysroot through a retained directory fd and do the same narrow
-    // load/lock sequence used by install-mount. In particular, do not call
-    // prepare_for_write() or initialize boot storage for this read-only query.
+    // OSTree's sysroot lock creates/opens a lock file, but /sysroot is normally
+    // mounted read-only. Clone the mount so that only this private mount view
+    // can be made writable; never call prepare_for_write(), which changes the
+    // mount namespace and would hide the image mount from the caller.
     let sysroot_dir = Dir::open_ambient_dir("/sysroot", ambient_authority())
         .context("Opening booted system sysroot")?;
-    let path = format!("/proc/self/fd/{}", sysroot_dir.as_raw_fd());
+    let sysroot_mount = open_tree(
+        &sysroot_dir,
+        ".",
+        OpenTreeFlags::OPEN_TREE_CLONE
+            | OpenTreeFlags::AT_RECURSIVE
+            | OpenTreeFlags::OPEN_TREE_CLOEXEC,
+    )
+    .context("Cloning booted system sysroot mount")?;
+    bootc_initramfs_setup::clear_mount_readonly(&sysroot_mount)
+        .context("Making cloned booted system sysroot writable for OSTree locking")?;
+
+    // OSTree opens the supplied path during load and uses its resulting
+    // directory fd for the genuine inter-process lock. Keep sysroot_mount
+    // alive for that fd and lock's full lifetime.
+    let path = format!("/proc/self/fd/{}", sysroot_mount.as_raw_fd());
     let sysroot_file = gio::File::for_path(path);
     let sysroot = ostree::Sysroot::new(Some(&sysroot_file));
     sysroot
@@ -221,24 +342,39 @@ async fn mount_ostree_image(opts: &MountOpts) -> Result<MountedImageRoot> {
     let sysroot = SysrootLock::new_from_sysroot(&sysroot)
         .await
         .context("Locking booted OSTree sysroot")?;
+    sysroot
+        .load(gio::Cancellable::NONE)
+        .context("Reloading locked booted OSTree sysroot")?;
 
-    let deployment = match opts.deployment {
-        Deployment::Booted => sysroot
+    // libostree identifies the booted deployment only when its Sysroot points
+    // at the current root (/), not the physical backing sysroot (/sysroot).
+    // Read that identity while holding the lock above, then resolve it against
+    // the deployments from the locked backing sysroot below.
+    let booted_sysroot = ostree::Sysroot::new_default();
+    booted_sysroot
+        .load(gio::Cancellable::NONE)
+        .context("Loading current OSTree root")?;
+    let selected_deployment = match opts.deployment {
+        Deployment::Booted => booted_sysroot
             .require_booted_deployment()
             .context("No booted OSTree deployment found")?
             .clone(),
         Deployment::Staged => {
-            let booted = sysroot
+            let booted = booted_sysroot
                 .require_booted_deployment()
                 .context("No booted OSTree deployment found")?;
-            sysroot
+            booted_sysroot
                 .deployments()
                 .into_iter()
                 .find(|deployment| deployment.is_staged() && deployment.osname() == booted.osname())
                 .ok_or_else(|| anyhow::anyhow!("No staged OSTree deployment found"))?
         }
     };
-    let sysroot_dir = crate::utils::sysroot_dir(&sysroot)?;
+    let deployments = sysroot.deployments();
+    let deployment = resolve_locked_deployment(&selected_deployment, &deployments)?;
+    // Keep composefs lower/data paths rooted on the attached /sysroot mount.
+    // On older supported kernels (including 6.12), overlayfs cannot clone a
+    // lowerpath reached through the detached mount used for OSTree locking.
     let deployment_path = sysroot.deployment_dirpath(&deployment);
     let deployment_dir = sysroot_dir
         .open_dir(deployment_path.as_str())
@@ -269,9 +405,61 @@ async fn mount_ostree_image(opts: &MountOpts) -> Result<MountedImageRoot> {
     };
     Ok(MountedImageRoot {
         tree,
-        _storage: StorageGuard::Ostree { _sysroot: sysroot },
+        _storage: StorageGuard::Ostree {
+            _sysroot: sysroot,
+            _mount: sysroot_mount,
+        },
         checkout,
     })
+}
+
+/// Resolve the deployment selected from the current-root view to its matching
+/// object in the locked backing sysroot. Deployment indexes and staged flags
+/// can differ between these views, so use only the stable OSTree identity.
+fn resolve_locked_deployment(
+    selected: &ostree::Deployment,
+    locked_deployments: &[ostree::Deployment],
+) -> Result<ostree::Deployment> {
+    let identity = deployment_identity(selected);
+    let identities = locked_deployments
+        .iter()
+        .map(deployment_identity)
+        .collect::<Vec<_>>();
+    let index = matching_deployment_index(&identity, &identities)?;
+    Ok(locked_deployments[index].clone())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DeploymentIdentity {
+    osname: String,
+    checksum: String,
+    deploy_serial: i32,
+}
+
+fn deployment_identity(deployment: &ostree::Deployment) -> DeploymentIdentity {
+    DeploymentIdentity {
+        osname: deployment.osname().to_string(),
+        checksum: deployment.csum().to_string(),
+        deploy_serial: deployment.deployserial(),
+    }
+}
+
+fn matching_deployment_index(
+    selected: &DeploymentIdentity,
+    candidates: &[DeploymentIdentity],
+) -> Result<usize> {
+    let mut matches = candidates
+        .iter()
+        .enumerate()
+        .filter(|(_, candidate)| *candidate == selected);
+    let (index, _) = matches.next().ok_or_else(|| {
+        anyhow::anyhow!("Selected OSTree deployment is absent from locked sysroot")
+    })?;
+    ensure!(
+        matches.next().is_none(),
+        "Selected OSTree deployment is ambiguous in locked sysroot"
+    );
+    Ok(index)
 }
 
 fn mount_pristine_etc(tree: &impl AsFd) -> Result<()> {
@@ -510,9 +698,9 @@ fn ensure_not_root_target(target: &std::fs::File, path: &Utf8Path) -> Result<()>
 #[cfg(test)]
 mod tests {
     use super::{
-        Deployment, MountOpts, UnmountOpts, ensure_directory_empty, ensure_not_mountpoint,
-        ensure_not_root_target, open_mount_target, open_path_no_symlinks, open_source,
-        source_relative_path,
+        Deployment, DeploymentIdentity, MountOpts, UnmountOpts, ensure_directory_empty,
+        ensure_not_mountpoint, ensure_not_root_target, open_mount_target, open_path_no_symlinks,
+        open_source, source_relative_path,
     };
     use crate::cli::{ImageOpts, InstallOpts, Opt};
     use camino::{Utf8Path, Utf8PathBuf};
@@ -670,5 +858,29 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn locked_deployment_resolution_requires_one_exact_identity_match() {
+        let identity = |osname: &str, checksum: &str, deploy_serial: i32| DeploymentIdentity {
+            osname: osname.to_owned(),
+            checksum: checksum.to_owned(),
+            deploy_serial,
+        };
+        let selected = identity("default", &"aa".repeat(32), 3);
+        let candidates = [
+            identity("other", &"aa".repeat(32), 3),
+            identity("default", &"bb".repeat(32), 3),
+            identity("default", &"aa".repeat(32), 4),
+            selected.clone(),
+        ];
+
+        assert_eq!(
+            super::matching_deployment_index(&selected, &candidates).unwrap(),
+            3
+        );
+        assert!(super::matching_deployment_index(&selected, &[]).is_err());
+        let ambiguous = [selected.clone(), selected.clone()];
+        assert!(super::matching_deployment_index(&selected, &ambiguous).is_err());
     }
 }

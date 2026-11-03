@@ -42,6 +42,11 @@ def mount_image [deployment source target] {
 }
 
 def verify_image_mounts [base] {
+    let sysroot_options = (
+        findmnt --mountpoint /sysroot --json
+        | from json
+        | get filesystems.0.options
+    )
     let root_target = ($base | path join "root")
     let usr_target = ($base | path join "usr")
     let staged_target = ($base | path join "staged")
@@ -64,7 +69,7 @@ def verify_image_mounts [base] {
         assert_mount_options $usr_target
 
         let write_path = ($usr_target | path join ".bootc-image-mount-write-test")
-        let write_result = (do -i { touch $write_path } | complete)
+        let write_result = (do -i { ^touch $write_path } | complete)
         assert ($write_result.exit_code != 0) "writes to mounted image content should fail"
         assert (not ($write_path | path exists)) "failed write should not create a file"
 
@@ -83,6 +88,12 @@ def verify_image_mounts [base] {
         } else {
             print "SKIP: staged image-mount coverage unavailable (active backend reports no staged deployment)"
         }
+        let sysroot_options_after = (
+            findmnt --mountpoint /sysroot --json
+            | from json
+            | get filesystems.0.options
+        )
+        assert equal $sysroot_options_after $sysroot_options "image mounts should not change /sysroot mount options"
         true
     } catch { |error| $error }
 
