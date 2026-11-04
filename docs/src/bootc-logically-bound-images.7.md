@@ -77,8 +77,8 @@ This writes the changed quadlet files to `/run/containers/systemd/`, which
 podman gives precedence over `/etc` and `/usr`, reloads systemd and restarts
 the affected `.container` units (removed units are stopped). Pass `--dry-run`
 to see what would change, or `--no-restart` to write the definitions without
-touching any units; a later plain invocation restarts the units still
-pending, as does re-running after a failed restart.
+touching any units; a later plain invocation stops and restarts the units
+still pending, as does re-running after a failed stop or restart.
 
 If the staged deployment contains any other change, the command fails and
 lists the out-of-scope paths; a reboot is required to apply it. Note that a
@@ -88,9 +88,12 @@ the image is reported this way, since the local copy wins in `/etc`.
 Because `/run` is transient, the override disappears on the next boot, at
 which point the staged deployment's own content applies. (A soft reboot
 preserves `/run`; the override is cleared when one is prepared.) The applied
-state is shown in `bootc status` and recorded in `/run/bootc/apply-live/`;
-images recorded there are protected from garbage collection until reboot,
-even if the staged deployment is discarded (for example by `bootc rollback`).
+state is shown in `bootc status`. Each quadlet written to
+`/run/containers/systemd/` carries a leading marker comment (checksum,
+pending restart, and any unit still needing a stop); a small flat list under
+`/run/bootc/apply-live/` protects the staged images from garbage collection
+until reboot, and records pending stops for pure removals, even if the staged
+deployment is discarded (for example by `bootc rollback`).
 
 Limitations: only the `.container` or `.image` file referenced from
 `bound-images.d` is applied. Quadlet drop-ins (`*.container.d/`) and other
