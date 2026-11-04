@@ -1340,16 +1340,28 @@ fn has_soft_reboot_capability(deployment: Option<&crate::spec::BootEntry>) -> bo
     deployment.map(|d| d.soft_reboot_capable).unwrap_or(false)
 }
 
-/// Prepare a soft reboot for the given deployment
+/// Prepare a soft reboot for the given deployment.
+///
+/// Does not clear live-applied `/run` state: soft-reboot without `--apply`
+/// leaves containers running, and clearing protection early would allow GC
+/// to prune in-use images. Clear at reboot handoff via
+/// [`clear_live_state_before_reboot`] instead.
 #[context("Preparing soft reboot")]
 fn prepare_soft_reboot(sysroot: &SysrootLock, deployment: &ostree::Deployment) -> Result<()> {
     let cancellable = ostree::gio::Cancellable::NONE;
     sysroot
         .deployment_set_soft_reboot(deployment, false, cancellable)
         .context("Failed to prepare soft-reboot")?;
-    // A soft reboot preserves /run, so anything applied live must not leak
-    // into the target deployment.
-    crate::applylive::clear_state_from_host()?;
+    Ok(())
+}
+
+/// Clear live-applied bound-image state immediately before reboot when a
+/// soft reboot was prepared. Soft reboot preserves `/run`, so overrides and
+/// image protection must not leak into the target deployment.
+fn clear_live_state_before_reboot(soft_reboot: Option<SoftRebootMode>) -> Result<()> {
+    if soft_reboot.is_some() {
+        crate::applylive::clear_state_from_host()?;
+    }
     Ok(())
 }
 
@@ -1486,6 +1498,7 @@ async fn apply_from_downloaded_ostree(
 
     handle_staged_soft_reboot(booted_ostree, opts.soft_reboot, &host)?;
     if opts.apply {
+        clear_live_state_before_reboot(opts.soft_reboot)?;
         crate::reboot::reboot()?;
     }
     return Ok(());
@@ -1671,6 +1684,7 @@ async fn upgrade(
 
             handle_staged_soft_reboot(booted_ostree, opts.soft_reboot, &host)?;
             if opts.apply {
+                clear_live_state_before_reboot(opts.soft_reboot)?;
                 crate::reboot::reboot()?;
             }
         } else if booted_unchanged {
@@ -1708,6 +1722,7 @@ async fn upgrade(
         }
 
         if opts.apply {
+            clear_live_state_before_reboot(opts.soft_reboot)?;
             crate::reboot::reboot()?;
         }
     } else {
@@ -1886,6 +1901,7 @@ async fn switch_ostree(
     // `--apply` cannot be passed along with `--download-only` (handled by clap)
     // but for sanity nonetheless
     if opts.apply {
+        clear_live_state_before_reboot(opts.soft_reboot)?;
         crate::reboot::reboot()?;
     }
 
@@ -2294,6 +2310,7 @@ async fn run_from_opt(opt: Opt) -> Result<CliExitStatus> {
         Opt::Rollback(opts) => {
             rollback(&opts).await?;
             if opts.apply {
+                clear_live_state_before_reboot(opts.soft_reboot)?;
                 crate::reboot::reboot()?;
             }
             Ok(())

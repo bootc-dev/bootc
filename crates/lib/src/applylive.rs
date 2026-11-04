@@ -25,13 +25,17 @@
 //!
 //! Rather than a separate state file, each quadlet written to
 //! `/run/containers/systemd/` carries its own state as a leading comment
-//! (see [`marker_line`]): the staged checksum, the image reference, and
-//! whether its unit still needs restarting ("pending"). Re-running the
-//! command re-derives everything by scanning that directory (see
-//! [`scan_live_quadlets`]), so a failure part way through is safe to
-//! resume from. The one exception is garbage-collection protection for
-//! bound images with no quadlet override (unchanged definitions); see
-//! [`write_protected_images`].
+//! (see [`marker_line`]): the staged checksum, the image reference,
+//! whether its unit still needs restarting ("pending"), and optionally a
+//! unit that still needs stopping (e.g. after a `ServiceName=` rename).
+//! Pure removals and stale-override reverts record their pending stops in
+//! a small flat list under `/run/bootc/apply-live/` (see
+//! [`PENDING_STOPS_LIST`]). Re-running the command re-derives everything
+//! from that directory (see [`scan_live_quadlets`]) plus the pending-stops
+//! list, so a failure part way through -- including a failed stop -- is
+//! safe to resume from. Garbage-collection protection for bound images
+//! with no quadlet override (unchanged definitions) lives in the same
+//! directory; see [`write_protected_images`].
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
@@ -56,6 +60,16 @@ const STATE_DIR: &str = "bootc/apply-live";
 /// every bound image of an in-progress (or completed) apply-live from
 /// garbage collection; see [`write_protected_images`].
 const PROTECTED_IMAGES_LIST: &str = "bootc/apply-live/protected-images.list";
+/// Flat, one-unit-per-line list (relative to `/run`) of systemd units that
+/// still need to be stopped (pure removals and stale-override reverts).
+/// Rename stops are recorded on the replacement's marker instead; see
+/// [`marker_line`]. Cleared entry-by-entry only after each `systemctl stop`
+/// succeeds, so `--no-restart` and failed stops remain retryable.
+const PENDING_STOPS_LIST: &str = "bootc/apply-live/pending-stops.list";
+/// Records the staged deployment checksum for which materialization (and
+/// image protection) has completed. Needed so removal-only and pull-only
+/// changes (no `/run` override) don't look "already applied" on first run.
+const APPLIED_CHECKSUM: &str = "bootc/apply-live/applied-checksum";
 /// Prefix of the leading marker comment line bootc writes at the top of
 /// each quadlet file it materializes under [`QUADLET_RUN_DIR`]; see
 /// [`marker_line`] and [`parse_marker`].
@@ -64,6 +78,10 @@ const MARKER_PREFIX: &str = "# X-Bootc-Apply-Live:";
 /// Paths are relative to the root (not `/run`) so that SELinux labels are
 /// computed for the real absolute path.
 const QUADLET_RUN_DIR: &str = "run/containers/systemd";
+/// Host `/etc` quadlet search directory (relative to `/`), which takes
+/// precedence over vendor (`usr/share`) definitions. Used to refuse
+/// materializing a vendor-bound quadlet that would clobber an admin override.
+const QUADLET_ETC_DIR: &str = "etc/containers/systemd";
 /// Quadlet search directories relative to a deployment root, in decreasing
 /// precedence (excluding `/run`, which is what we write to).
 const QUADLET_SEARCH_DIRS: &[&str] = &["etc/containers/systemd", "usr/share/containers/systemd"];
@@ -143,6 +161,10 @@ struct LiveQuadlet {
     contents: String,
     /// The systemd unit generated from the quadlet, if any.
     unit: Option<String>,
+    /// A previous unit that still needs stopping (e.g. after a
+    /// `ServiceName=` rename), recorded in the marker until the stop
+    /// succeeds.
+    stop: Option<String>,
 }
 
 /// If `path` (relative to a root) is inside a quadlet search directory,
@@ -239,8 +261,12 @@ pub(crate) fn compute_changes(
     Ok(changes)
 }
 
-/// Recursively collect the files under `dir` (a commit-form absolute path)
-/// in the given root, as commit-form absolute paths.
+/// Recursively collect every non-directory entry under `dir` (a commit-form
+/// absolute path) in the given root, as commit-form absolute paths.
+/// Symlinks are included: [`check_diff_scope`] needs them so a symlink
+/// inside an added in-scope directory is still reported as out of scope.
+/// Callers that only want regular files (e.g. [`scan_live_quadlets`]) must
+/// filter themselves.
 fn walk_files(root: &Dir, dir: &str, out: &mut Vec<String>) -> Result<()> {
     let rel = dir.trim_start_matches('/');
     let Some(d) = root.open_dir_optional(rel)? else {
@@ -256,13 +282,9 @@ fn walk_files(root: &Dir, dir: &str, out: &mut Vec<String>) -> Result<()> {
         let ft = entry.file_type()?;
         if ft.is_dir() {
             walk_files(root, &path, out)?;
-        } else if ft.is_file() {
+        } else {
             out.push(path);
         }
-        // Symlinks (e.g. a unit masked via `-> /dev/null`) and other
-        // non-regular entries are neither traversed nor reported: they
-        // aren't files bootc itself would have written, and following them
-        // can fail cap-std's path resolution for absolute targets.
     }
     Ok(())
 }
@@ -330,33 +352,43 @@ pub(crate) fn check_diff_scope(
 }
 
 /// Build the leading marker comment for a quadlet file; see [`parse_marker`].
-fn marker_line(checksum: &str, pending: bool, image: &str) -> String {
-    format!("{MARKER_PREFIX} checksum={checksum} pending={pending} image={image}\n")
+/// `stop` records a unit that still needs stopping (e.g. the old name after
+/// a `ServiceName=` change); omit it once the stop has succeeded.
+fn marker_line(checksum: &str, pending: bool, image: &str, stop: Option<&str>) -> String {
+    let mut line = format!("{MARKER_PREFIX} checksum={checksum} pending={pending} image={image}");
+    if let Some(stop) = stop {
+        line.push_str(&format!(" stop={stop}"));
+    }
+    line.push('\n');
+    line
 }
 
 /// Parse a [`marker_line`] from the start of `contents`, returning
-/// `(checksum, pending, image, rest)` where `rest` is the original quadlet
-/// contents with the marker removed. Returns `None` if there's no marker,
-/// e.g. a quadlet bootc didn't write.
-fn parse_marker(contents: &str) -> Option<(String, bool, String, &str)> {
+/// `(checksum, pending, image, stop, rest)` where `rest` is the original
+/// quadlet contents with the marker removed. Returns `None` if there's no
+/// marker, e.g. a quadlet bootc didn't write.
+fn parse_marker(contents: &str) -> Option<(String, bool, String, Option<String>, &str)> {
     let (first, rest) = contents.split_once('\n')?;
     let kvs = first.strip_prefix(MARKER_PREFIX)?;
-    let (mut checksum, mut pending, mut image) = (None, None, None);
+    let (mut checksum, mut pending, mut image, mut stop) = (None, None, None, None);
     for kv in kvs.split_whitespace() {
         let (k, v) = kv.split_once('=')?;
         match k {
             "checksum" => checksum = Some(v.to_owned()),
             "pending" => pending = Some(v.parse().ok()?),
             "image" => image = Some(v.to_owned()),
+            "stop" => stop = Some(v.to_owned()),
             _ => {}
         }
     }
-    Some((checksum?, pending?, image?, rest))
+    Some((checksum?, pending?, image?, stop, rest))
 }
 
 /// Scan [`QUADLET_RUN_DIR`] for quadlet files bootc has written, parsing
 /// their marker comments back into [`LiveQuadlet`]s. Files with no
-/// recognized marker are skipped.
+/// recognized marker are skipped. Symlinks and other non-regular entries
+/// (e.g. a unit masked via `-> /dev/null`) are skipped before reading, so
+/// cap-std's absolute-symlink resolution can't break `bootc status`.
 fn scan_live_quadlets(rootfs: &Dir) -> Result<Vec<LiveQuadlet>> {
     let mut paths = Vec::new();
     walk_files(rootfs, &format!("/{QUADLET_RUN_DIR}"), &mut paths)?;
@@ -366,10 +398,19 @@ fn scan_live_quadlets(rootfs: &Dir) -> Result<Vec<LiveQuadlet>> {
         let Some(relpath) = p.strip_prefix(prefix.as_str()) else {
             continue;
         };
-        let Some(contents) = rootfs.read_to_string_optional(p.trim_start_matches('/'))? else {
+        let rel = p.trim_start_matches('/');
+        // Don't follow symlinks: an absolute target like `/dev/null` fails
+        // cap-std path resolution, and bootc only writes regular files.
+        let Some(meta) = rootfs.symlink_metadata_optional(rel)? else {
             continue;
         };
-        let Some((checksum, pending, image, body)) = parse_marker(&contents) else {
+        if !meta.is_file() {
+            continue;
+        }
+        let Some(contents) = rootfs.read_to_string_optional(rel)? else {
+            continue;
+        };
+        let Some((checksum, pending, image, stop, body)) = parse_marker(&contents) else {
             continue;
         };
         let relpath = Utf8PathBuf::from(relpath);
@@ -381,6 +422,7 @@ fn scan_live_quadlets(rootfs: &Dir) -> Result<Vec<LiveQuadlet>> {
             image,
             contents: body.to_owned(),
             unit,
+            stop,
         });
     }
     Ok(out)
@@ -426,8 +468,71 @@ pub(crate) fn protected_images_from_host() -> Result<Vec<String>> {
     protected_images_from_host_at(&run)
 }
 
+/// Read the pending-stop unit names from [`PENDING_STOPS_LIST`], if any.
+fn pending_stops_from(run: &Dir) -> Result<BTreeSet<String>> {
+    let Some(contents) = run.read_to_string_optional(PENDING_STOPS_LIST)? else {
+        return Ok(BTreeSet::new());
+    };
+    Ok(contents.lines().map(ToOwned::to_owned).collect())
+}
+
+/// Replace [`PENDING_STOPS_LIST`] with `units` (creating the state dir if
+/// needed). An empty set removes the file.
+fn write_pending_stops(run: &Dir, units: &BTreeSet<String>) -> Result<()> {
+    if units.is_empty() {
+        run.remove_file_optional(PENDING_STOPS_LIST)?;
+        return Ok(());
+    }
+    run.create_dir_all(STATE_DIR)?;
+    run.atomic_replace_with(PENDING_STOPS_LIST, |w| -> Result<()> {
+        for unit in units {
+            writeln!(w, "{unit}")?;
+        }
+        Ok(())
+    })
+    .with_context(|| format!("Writing /run/{PENDING_STOPS_LIST}"))
+}
+
+/// Units that still need stopping: the flat list plus any `stop=` recorded
+/// on live markers (renames).
+fn collect_pending_stops(run: &Dir, live: &[LiveQuadlet]) -> Result<BTreeSet<String>> {
+    let mut stops = pending_stops_from(run)?;
+    for q in live {
+        if let Some(unit) = q.stop.as_deref() {
+            stops.insert(unit.to_owned());
+        }
+    }
+    Ok(stops)
+}
+
+/// Read the staged checksum recorded by [`write_applied_checksum`], if any.
+fn applied_checksum_from(run: &Dir) -> Result<Option<String>> {
+    let Some(contents) = run.read_to_string_optional(APPLIED_CHECKSUM)? else {
+        return Ok(None);
+    };
+    let csum = contents.trim();
+    if csum.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(csum.to_owned()))
+}
+
+/// Record that materialization for `checksum` has finished (protected images
+/// written, `/run` overrides updated). Cleared with the rest of live state.
+fn write_applied_checksum(run: &Dir, checksum: &str) -> Result<()> {
+    run.create_dir_all(STATE_DIR)?;
+    run.atomic_replace_with(APPLIED_CHECKSUM, |w| -> Result<()> {
+        writeln!(w, "{checksum}")?;
+        Ok(())
+    })
+    .with_context(|| format!("Writing /run/{APPLIED_CHECKSUM}"))
+}
+
 /// Build the `bootc status` view of live-applied bound images by scanning
-/// [`QUADLET_RUN_DIR`]. Returns `None` if nothing is applied live.
+/// [`QUADLET_RUN_DIR`]. Returns `None` if nothing is applied live, or if
+/// the markers disagree on the staged checksum (e.g. a partial apply left
+/// a mix of deployments) -- status then shows no live state rather than
+/// attributing every image to whichever file the scan returned first.
 /// `deploy_serial` isn't recorded in the markers, so it's left as `0` for
 /// callers to fill in by matching `checksum` against a deployment.
 pub(crate) fn status_from_host() -> Result<Option<LiveBoundImages>> {
@@ -436,6 +541,12 @@ pub(crate) fn status_from_host() -> Result<Option<LiveBoundImages>> {
     let Some(checksum) = live.first().map(|q| q.checksum.clone()) else {
         return Ok(None);
     };
+    if live.iter().any(|q| q.checksum != checksum) {
+        tracing::warn!(
+            "Live bound-image markers disagree on staged checksum; omitting liveBoundImages from status"
+        );
+        return Ok(None);
+    }
     let images = live
         .into_iter()
         .map(|q| LiveBoundImage {
@@ -452,9 +563,10 @@ pub(crate) fn status_from_host() -> Result<Option<LiveBoundImages>> {
     }))
 }
 
-/// Remove any live-applied bound image overrides and state. This is used when
-/// preparing a soft reboot, which preserves `/run` but must boot into the
-/// target deployment's own definitions.
+/// Remove any live-applied bound image overrides and state. Call this at the
+/// soft-reboot / reboot handoff (which preserves `/run`), not when merely
+/// preparing a soft reboot without `--apply`, so live containers keep their
+/// overrides and GC protection until the system actually transitions.
 #[context("Clearing live bound image state")]
 pub(crate) fn clear_state_from_host() -> Result<()> {
     let rootfs = Dir::open_ambient_dir("/", cap_std::ambient_authority()).context("Opening /")?;
@@ -465,7 +577,9 @@ pub(crate) fn clear_state_from_host() -> Result<()> {
     let run =
         Dir::open_ambient_dir("/run", cap_std::ambient_authority()).context("Opening /run")?;
     let had_protected = run.remove_file_optional(PROTECTED_IMAGES_LIST)?;
-    if live.is_empty() && !had_protected {
+    let had_stops = run.remove_file_optional(PENDING_STOPS_LIST)?;
+    let had_applied = run.remove_file_optional(APPLIED_CHECKSUM)?;
+    if live.is_empty() && !had_protected && !had_stops && !had_applied {
         return Ok(());
     }
     println!("Cleared live-applied bound image definitions");
@@ -486,9 +600,10 @@ fn ensure_quadlet_dir(
     sepolicy: Option<&ostree_ext::ostree::SePolicy>,
 ) -> Result<()> {
     let mode = rustix::fs::Mode::from_raw_mode(0o755);
+    // Walk parents under `/run` but not `/run` itself (podman owns that).
     let ancestors: Vec<_> = path
         .ancestors()
-        .take_while(|p| p.as_str().len() > "run".len())
+        .take_while(|p| p.components().count() > 1)
         .collect();
     for dir in ancestors.into_iter().rev() {
         if rootfs.try_exists(dir)? {
@@ -499,30 +614,48 @@ fn ensure_quadlet_dir(
     Ok(())
 }
 
-/// Rewrite the marker on an already-materialized quadlet file, leaving its
-/// contents otherwise untouched. Used to flip `pending` to `false` once a
-/// unit has been restarted.
-fn set_quadlet_pending(
+/// Rewrite the marker on an already-materialized quadlet, leaving its
+/// body untouched. `pending`/`stop` override the values on `q`.
+fn set_quadlet_marker(
     rootfs: &Dir,
-    relpath: &Utf8Path,
-    checksum: &str,
+    q: &LiveQuadlet,
     pending: bool,
-    image: &str,
-    body: &str,
+    stop: Option<&str>,
     sepolicy: Option<&ostree_ext::ostree::SePolicy>,
 ) -> Result<()> {
-    let dest = Utf8Path::new(QUADLET_RUN_DIR).join(relpath);
+    let dest = Utf8Path::new(QUADLET_RUN_DIR).join(&q.relpath);
     let filemode = rustix::fs::Mode::from_raw_mode(0o644);
     crate::lsm::atomic_replace_labeled(rootfs, &dest, filemode, sepolicy, |w| {
-        w.write_all(marker_line(checksum, pending, image).as_bytes())?;
-        w.write_all(body.as_bytes())?;
+        w.write_all(marker_line(&q.checksum, pending, &q.image, stop).as_bytes())?;
+        w.write_all(q.contents.as_bytes())?;
         Ok(())
     })
 }
 
+/// Stop every unit in `units`, then clear matching `stop=` markers and the
+/// pending-stops list. Each stop is attempted before clearing, so a failure
+/// leaves the remaining entries for the next run.
+fn stop_pending(
+    rootfs: &Dir,
+    run: &Dir,
+    live: &[LiveQuadlet],
+    units: &BTreeSet<String>,
+    sepolicy: Option<&ostree_ext::ostree::SePolicy>,
+) -> Result<()> {
+    for unit in units {
+        systemctl(&["stop", unit])?;
+    }
+    for q in live.iter().filter(|q| q.stop.is_some()) {
+        set_quadlet_marker(rootfs, q, q.pending, None, sepolicy)?;
+    }
+    write_pending_stops(run, &BTreeSet::new())?;
+    Ok(())
+}
+
 /// Restart every unit still marked pending among `live`, updating each
 /// quadlet's marker as it succeeds so a failure part way through can be
-/// retried on the next run.
+/// retried on the next run. `stop=` has already been cleared by
+/// [`stop_pending`] when applicable.
 fn restart_pending(
     rootfs: &Dir,
     live: &[LiveQuadlet],
@@ -533,15 +666,138 @@ fn restart_pending(
             // `restart` also starts a unit which is not running (the added case).
             systemctl(&["restart", unit])?;
         }
-        set_quadlet_pending(
-            rootfs,
-            &q.relpath,
-            &q.checksum,
-            false,
-            &q.image,
-            &q.contents,
-            sepolicy,
-        )?;
+        set_quadlet_marker(rootfs, q, false, None, sepolicy)?;
+    }
+    Ok(())
+}
+
+/// True when every change has already been materialized for `staged_csum`.
+/// Added/Updated with a quadlet need a matching `/run` override; Removed
+/// destinations that aren't being replaced must be gone; pull-only and
+/// removal-only cases require [`APPLIED_CHECKSUM`] so a first run doesn't
+/// treat "nothing on disk" as already applied. A removal with its unit still
+/// listed in `pending_stops` (after `--no-restart`) also counts as complete.
+fn materialization_complete(
+    changes: &[QuadletChange],
+    live_by_path: &BTreeMap<&Utf8Path, &LiveQuadlet>,
+    staged_csum: &str,
+    rootfs: &Dir,
+    applied_csum: Option<&str>,
+    pending_stops: &BTreeSet<String>,
+) -> Result<bool> {
+    let already_applied = applied_csum == Some(staged_csum);
+    let materialized: BTreeSet<&Utf8Path> = changes
+        .iter()
+        .filter(|c| matches!(c.kind, ChangeKind::Added | ChangeKind::Updated))
+        .filter_map(|c| c.quadlet.as_deref())
+        .collect();
+    for c in changes {
+        match c.kind {
+            ChangeKind::Added | ChangeKind::Updated => {
+                let Some(quadlet) = c.quadlet.as_deref() else {
+                    // Pull-only: no `/run` override to inspect; require the
+                    // applied-checksum record (written with protected images).
+                    if !already_applied {
+                        return Ok(false);
+                    }
+                    continue;
+                };
+                let Some(prev) = live_by_path.get(quadlet) else {
+                    return Ok(false);
+                };
+                if prev.checksum != staged_csum || prev.contents != c.spec.contents {
+                    return Ok(false);
+                }
+            }
+            ChangeKind::Removed => {
+                let Some(quadlet) = c.quadlet.as_deref() else {
+                    if !already_applied {
+                        return Ok(false);
+                    }
+                    continue;
+                };
+                if materialized.contains(quadlet) {
+                    continue;
+                }
+                if rootfs.try_exists(Utf8Path::new(QUADLET_RUN_DIR).join(quadlet))? {
+                    return Ok(false);
+                }
+                // Absent `/run` override is only proof after a prior successful
+                // materialization, or when a pending stop remains from
+                // `--no-restart` (file deleted, stop not yet run).
+                if already_applied {
+                    continue;
+                }
+                if c.unit.as_deref().is_some_and(|u| pending_stops.contains(u)) {
+                    continue;
+                }
+                return Ok(false);
+            }
+        }
+    }
+    Ok(true)
+}
+
+/// Refuse to clobber or delete a `/run` quadlet bootc didn't write. Runs
+/// before any pull or write so a conflict can't leave a half-applied `/run`
+/// state. Removals are included so an admin override isn't deleted when the
+/// staged image drops the bound definition.
+fn check_run_destinations(
+    rootfs: &Dir,
+    changes: &[QuadletChange],
+    live_by_path: &BTreeMap<&Utf8Path, &LiveQuadlet>,
+) -> Result<()> {
+    let quadlet_run_dir = Utf8Path::new(QUADLET_RUN_DIR);
+    for c in changes {
+        if !matches!(
+            c.kind,
+            ChangeKind::Added | ChangeKind::Updated | ChangeKind::Removed
+        ) {
+            continue;
+        }
+        let Some(quadlet) = c.quadlet.as_deref() else {
+            continue;
+        };
+        let dest = quadlet_run_dir.join(quadlet);
+        if !live_by_path.contains_key(quadlet) && rootfs.try_exists(&dest)? {
+            anyhow::bail!(
+                "Refusing to {} non-bootc quadlet override at /{dest}",
+                match c.kind {
+                    ChangeKind::Removed => "delete",
+                    _ => "overwrite",
+                }
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Refuse to materialize a vendor-bound quadlet that is shadowed by a higher-
+/// precedence `/etc/containers/systemd/` definition on the running system.
+/// Writing into `/run` would override the administrator's configuration.
+fn check_host_etc_shadowing(rootfs: &Dir, changes: &[QuadletChange]) -> Result<()> {
+    for c in changes {
+        if !matches!(c.kind, ChangeKind::Added | ChangeKind::Updated) {
+            continue;
+        }
+        let Some(quadlet) = c.quadlet.as_deref() else {
+            continue;
+        };
+        if !c
+            .spec
+            .path
+            .as_str()
+            .starts_with("usr/share/containers/systemd/")
+        {
+            continue;
+        }
+        let etc_path = Utf8Path::new(QUADLET_ETC_DIR).join(quadlet);
+        if rootfs.try_exists(&etc_path)? {
+            anyhow::bail!(
+                "Refusing to apply-live bound quadlet /{}: shadowed by /{etc_path} on the running system",
+                c.spec.path
+            );
+        }
     }
     Ok(())
 }
@@ -566,59 +822,22 @@ pub(crate) async fn apply_bound_images(
     let staged_csum = staged.csum();
 
     let rootfs = &Dir::open_ambient_dir("/", cap_std::ambient_authority()).context("Opening /")?;
+    let run =
+        &Dir::open_ambient_dir("/run", cap_std::ambient_authority()).context("Opening /run")?;
     let booted_root = crate::utils::deployment_fd(sysroot, booted_deployment)?;
     let staged_root = crate::utils::deployment_fd(sysroot, &staged)?;
     let sepolicy = crate::lsm::new_sepolicy_at(&booted_root)?;
 
     let live = scan_live_quadlets(rootfs)?;
+    let live_by_path: BTreeMap<&Utf8Path, &LiveQuadlet> =
+        live.iter().map(|q| (q.relpath.as_path(), q)).collect();
     let staged_specs = crate::boundimage::query_bound_image_specs(&staged_root)?;
-
-    // The definitions from this staged deployment are already on disk; all
-    // that may be left is restarting units (after `--no-restart`, or a
-    // failure). Checking checksums alone isn't enough: if a previous run
-    // only got partway through materializing new overrides, the live set
-    // may simply be missing some of them. Require every quadlet-bearing
-    // staged spec to already have a live entry for this checksum.
-    let expected_quadlets: BTreeSet<&Utf8Path> = staged_specs
-        .iter()
-        .filter_map(|s| quadlet_relpath(&s.path))
-        .collect();
-    let live_quadlets: BTreeSet<&Utf8Path> = live.iter().map(|q| q.relpath.as_path()).collect();
-    if live_quadlets == expected_quadlets && live.iter().all(|q| q.checksum == staged_csum) {
-        let pending: Vec<_> = live
-            .iter()
-            .filter(|q| q.pending)
-            .filter_map(|q| q.unit.as_deref())
-            .collect();
-        if pending.is_empty() {
-            println!("Bound images from staged deployment are already applied");
-            return Ok(());
-        }
-        for unit in pending {
-            println!("restart pending: {unit}");
-        }
-        if opts.dry_run || opts.no_restart {
-            return Ok(());
-        }
-        systemctl(&["daemon-reload"])?;
-        return restart_pending(rootfs, &live, sepolicy.as_ref());
-    }
-
     let booted_specs = crate::boundimage::query_bound_image_specs(&booted_root)?;
     let changes = compute_changes(&booted_specs, &staged_specs, &staged_root)?;
-
-    if booted_csum != staged_csum {
-        let diff =
-            ostree_ext::diff::diff(&sysroot.repo(), &booted_csum, &staged_csum, None::<&str>)?;
-        tracing::debug!("Diff booted -> staged: {diff}");
-        check_diff_scope(&diff, &changes, &booted_root, &staged_root)?;
-    }
 
     // Overrides from a previous apply-live that aren't part of this one
     // need to be removed so the system converges on the current staged
     // definitions rather than a mix of the two.
-    let live_by_path: BTreeMap<&Utf8Path, &LiveQuadlet> =
-        live.iter().map(|q| (q.relpath.as_path(), q)).collect();
     let current_quadlets: BTreeSet<&Utf8Path> = changes
         .iter()
         .filter_map(|c| c.quadlet.as_deref())
@@ -627,6 +846,64 @@ pub(crate) async fn apply_bound_images(
         .iter()
         .filter(|q| !current_quadlets.contains(q.relpath.as_path()))
         .collect();
+
+    // Scope check before the fast path so dry-run (and empty change sets)
+    // still reject staged deployments with unrelated file changes.
+    if booted_csum != staged_csum {
+        let diff =
+            ostree_ext::diff::diff(&sysroot.repo(), &booted_csum, &staged_csum, None::<&str>)?;
+        tracing::debug!("Diff booted -> staged: {diff}");
+        check_diff_scope(&diff, &changes, &booted_root, &staged_root)?;
+    }
+
+    let pending_stops = collect_pending_stops(run, &live)?;
+    let applied_csum = applied_checksum_from(run)?;
+    let materialize_done = stale.is_empty()
+        && materialization_complete(
+            &changes,
+            &live_by_path,
+            staged_csum.as_str(),
+            rootfs,
+            applied_csum.as_deref(),
+            &pending_stops,
+        )?;
+
+    // Fast path: definitions are already on disk for this staged checksum.
+    // All that may be left is stopping units (after `--no-restart` or a
+    // failed stop) and/or restarting pending ones. Derived from
+    // `compute_changes` so unchanged bound quadlets (which never get a
+    // `/run` override) don't block it, and an empty change set with
+    // nothing pending doesn't spuriously report "already applied".
+    if materialize_done {
+        let pending_restarts: Vec<&LiveQuadlet> = live
+            .iter()
+            .filter(|q| q.pending && q.checksum == staged_csum)
+            .collect();
+        if changes.is_empty() && pending_stops.is_empty() && pending_restarts.is_empty() {
+            println!("No bound image changes to apply");
+            return Ok(());
+        }
+        if pending_stops.is_empty() && pending_restarts.is_empty() {
+            println!("Bound images from staged deployment are already applied");
+            return Ok(());
+        }
+        for unit in &pending_stops {
+            println!("stop pending: {unit}");
+        }
+        for q in &pending_restarts {
+            if let Some(unit) = q.unit.as_deref() {
+                println!("restart pending: {unit}");
+            }
+        }
+        if opts.dry_run || opts.no_restart {
+            return Ok(());
+        }
+        if !pending_stops.is_empty() {
+            stop_pending(rootfs, run, &live, &pending_stops, sepolicy.as_ref())?;
+        }
+        systemctl(&["daemon-reload"])?;
+        return restart_pending(rootfs, &live, sepolicy.as_ref());
+    }
 
     if changes.is_empty() && stale.is_empty() {
         println!("No bound image changes to apply");
@@ -640,6 +917,12 @@ pub(crate) async fn apply_bound_images(
     for q in stale.iter() {
         println!("reverting stale override: {}", q.relpath);
     }
+
+    // Ownership / shadowing before any pull/write (and before dry-run returns)
+    // so conflicts are visible without mutating `/run`.
+    check_run_destinations(rootfs, &changes, &live_by_path)?;
+    check_host_etc_shadowing(rootfs, &changes)?;
+
     if opts.dry_run {
         return Ok(());
     }
@@ -660,8 +943,6 @@ pub(crate) async fn apply_bound_images(
     // Protect every bound image of the staged deployment from GC, not just
     // the changed ones. Written first since it's the one piece of state
     // that can't be recovered later by scanning `/run/containers/systemd/`.
-    let run =
-        &Dir::open_ambient_dir("/run", cap_std::ambient_authority()).context("Opening /run")?;
     write_protected_images(run, staged_specs.iter().map(|s| s.image.image.as_str()))?;
 
     // A quadlet moving between search dirs (e.g. vendor -> /etc override)
@@ -673,14 +954,31 @@ pub(crate) async fn apply_bound_images(
         .filter_map(|c| c.quadlet.as_deref())
         .collect();
 
+    // Units that a Removed change (or its live override) would stop. When the
+    // same destination is also Added with matching already-live contents,
+    // those units must still be marked pending so a stop doesn't leave them down.
+    let units_stopped_by_removal: BTreeSet<String> = changes
+        .iter()
+        .filter(|c| c.kind == ChangeKind::Removed)
+        .filter_map(|c| {
+            let quadlet = c.quadlet.as_deref()?;
+            live_by_path
+                .get(quadlet)
+                .and_then(|p| p.unit.clone())
+                .or_else(|| c.unit.clone())
+        })
+        .collect();
+
     // Materialize the definitions into /run, each carrying a marker. A
     // definition may already be live from a previous apply, in which case
     // its unit doesn't need a restart -- but the marker is still refreshed
     // to the current checksum so status and the fast path above stay
-    // accurate.
+    // accurate. Rename stops (`old_unit` / previous live unit) are recorded
+    // on the marker so a later re-run still stops them after `--no-restart`.
     let quadlet_run_dir = Utf8Path::new(QUADLET_RUN_DIR);
     let filemode = rustix::fs::Mode::from_raw_mode(0o644);
     let mut written: BTreeMap<&Utf8Path, bool> = BTreeMap::new();
+    let mut stops = pending_stops;
     for c in changes.iter() {
         let Some(quadlet) = c.quadlet.as_deref() else {
             continue;
@@ -691,21 +989,48 @@ pub(crate) async fn apply_bound_images(
                 let already_live = live_by_path
                     .get(quadlet)
                     .is_some_and(|prev| !prev.pending && prev.contents == c.spec.contents);
-                // Refuse to clobber a `/run` quadlet we didn't write.
-                if live_by_path.get(quadlet).is_none() && rootfs.try_exists(&dest)? {
-                    anyhow::bail!("Refusing to overwrite non-bootc quadlet override at /{dest}");
-                }
                 // SAFETY: We know there's a parent
                 ensure_quadlet_dir(rootfs, dest.parent().unwrap(), sepolicy.as_ref())?;
-                let pending = !already_live && c.unit.is_some();
+                let pending = c
+                    .unit
+                    .as_ref()
+                    .is_some_and(|u| !already_live || units_stopped_by_removal.contains(u));
+                // Prefer the previous *live* unit when it differs from the
+                // staged unit (a→b→c: stop b, not the booted a). Fall back to
+                // `old_unit` from compute_changes, then any recorded `stop=`.
+                let stop = live_by_path
+                    .get(quadlet)
+                    .and_then(|prev| {
+                        let live_unit = prev.unit.as_ref()?;
+                        if Some(live_unit) != c.unit.as_ref() {
+                            Some(live_unit.clone())
+                        } else {
+                            prev.stop.clone()
+                        }
+                    })
+                    .or_else(|| c.old_unit.clone());
+                if let Some(unit) = stop.as_deref() {
+                    stops.insert(unit.to_owned());
+                }
+                // Also stop the booted-side rename target when it differs from
+                // both the live and staged units (covers a still running after b→c).
+                if let Some(old) = c.old_unit.as_deref() {
+                    if Some(old) != stop.as_deref() && Some(old) != c.unit.as_deref() {
+                        stops.insert(old.to_owned());
+                    }
+                }
                 crate::lsm::atomic_replace_labeled(
                     rootfs,
                     &dest,
                     filemode,
                     sepolicy.as_ref(),
                     |w| {
-                        let marker =
-                            marker_line(staged_csum.as_str(), pending, c.spec.image.image.as_str());
+                        let marker = marker_line(
+                            staged_csum.as_str(),
+                            pending,
+                            c.spec.image.image.as_str(),
+                            stop.as_deref(),
+                        );
                         w.write_all(marker.as_bytes())?;
                         w.write_all(c.spec.contents.as_bytes())?;
                         Ok(())
@@ -714,6 +1039,15 @@ pub(crate) async fn apply_bound_images(
                 written.insert(quadlet, pending);
             }
             ChangeKind::Removed => {
+                // Prefer the live unit (may differ after ServiceName= renames)
+                // over the booted definition's unit name.
+                let unit = live_by_path
+                    .get(quadlet)
+                    .and_then(|p| p.unit.as_deref())
+                    .or(c.unit.as_deref());
+                if let Some(unit) = unit {
+                    stops.insert(unit.to_owned());
+                }
                 if !materialized.contains(quadlet) {
                     rootfs.remove_file_optional(&dest)?;
                 }
@@ -723,39 +1057,41 @@ pub(crate) async fn apply_bound_images(
     for q in stale.iter() {
         // `stale` is disjoint from `materialized` by construction (it's
         // exactly the live quadlets not touched by any change).
+        if let Some(unit) = q.unit.as_deref() {
+            stops.insert(unit.to_owned());
+        }
         rootfs.remove_file_optional(quadlet_run_dir.join(&q.relpath))?;
     }
+    // Persist stops and applied-checksum before attempting stops so
+    // `--no-restart` and a failed `systemctl stop` remain retryable.
+    write_pending_stops(run, &stops)?;
+    write_applied_checksum(run, staged_csum.as_str())?;
 
     if opts.no_restart {
-        println!("Skipping unit restart; re-run without --no-restart to restart pending units");
+        println!(
+            "Skipping unit stop/restart; re-run without --no-restart to apply pending unit changes"
+        );
         return Ok(());
     }
 
-    // Units for removed definitions, and old units left behind by a rename
-    // (e.g. `ServiceName=` changing), must be stopped before the daemon
-    // reload which makes them disappear from systemd's view.
-    let removed_units = changes
-        .iter()
-        .filter(|c| c.kind == ChangeKind::Removed)
-        .filter_map(|c| c.unit.as_deref())
-        .chain(changes.iter().filter_map(|c| c.old_unit.as_deref()))
-        .chain(stale.iter().filter_map(|q| q.unit.as_deref()));
-    for unit in removed_units {
-        systemctl(&["stop", unit])?;
-    }
+    // Re-scan so stop_pending can clear `stop=` from the markers we just wrote.
+    let live_after = scan_live_quadlets(rootfs)?;
+    stop_pending(rootfs, run, &live_after, &stops, sepolicy.as_ref())?;
     systemctl(&["daemon-reload"])?;
     // A stale override reverts to the booted deployment's definition if
-    // there is one, otherwise the unit is simply gone.
+    // there is one. Start the *booted* unit name (ServiceName= may differ
+    // from the live override we just removed).
     for q in stale.iter() {
-        let Some(unit) = q.unit.as_deref() else {
+        let Some(booted_spec) = booted_specs
+            .iter()
+            .find(|s| quadlet_relpath(&s.path) == Some(q.relpath.as_path()))
+        else {
             continue;
         };
-        let booted_has = booted_specs
-            .iter()
-            .any(|s| quadlet_relpath(&s.path) == Some(q.relpath.as_path()));
-        if booted_has {
-            systemctl(&["start", unit])?;
-        }
+        let Some(unit) = quadlet_unit_name(&q.relpath, &booted_spec.contents)? else {
+            continue;
+        };
+        systemctl(&["start", &unit])?;
     }
 
     // Restart units for the definitions we just materialized, flipping
@@ -776,6 +1112,7 @@ pub(crate) async fn apply_bound_images(
                     image: c.spec.image.image.clone(),
                     contents: c.spec.contents.clone(),
                     unit: c.unit.clone(),
+                    stop: None,
                 })
         })
         .collect();
@@ -1040,6 +1377,15 @@ mod tests {
         staged_root.remove_dir_all(format!("{Q}/sub"))?;
         check(&diff).unwrap();
 
+        // A symlink inside an added in-scope dir is also out of scope
+        // (walk_files must report non-directory entries, not only regular
+        // files -- otherwise a masked/unbound symlink would slip through).
+        staged_root.symlink_contents("/dev/null", format!("{Q}/masked.container"))?;
+        let e = check(&diff).unwrap_err().to_string();
+        assert!(e.contains(&format!("/{Q}/masked.container")), "{e}");
+        staged_root.remove_file(format!("{Q}/masked.container"))?;
+        check(&diff).unwrap();
+
         // Likewise for a removed directory, which is checked in the booted root
         booted_root.create_dir_all("usr/lib/bootc/bound-images.d")?;
         booted_root.write("usr/lib/bootc/bound-images.d/old.image", "")?;
@@ -1061,17 +1407,24 @@ mod tests {
 
     #[test]
     fn test_marker_roundtrip() {
-        let line = marker_line("abc123", true, "quay.io/foo/foo:v2");
+        let line = marker_line("abc123", true, "quay.io/foo/foo:v2", None);
         assert_eq!(
             line,
             "# X-Bootc-Apply-Live: checksum=abc123 pending=true image=quay.io/foo/foo:v2\n"
         );
         let contents = format!("{line}[Container]\nImage=quay.io/foo/foo:v2\n");
-        let (checksum, pending, image, rest) = parse_marker(&contents).unwrap();
+        let (checksum, pending, image, stop, rest) = parse_marker(&contents).unwrap();
         assert_eq!(checksum, "abc123");
         assert!(pending);
         assert_eq!(image, "quay.io/foo/foo:v2");
+        assert_eq!(stop, None);
         assert_eq!(rest, "[Container]\nImage=quay.io/foo/foo:v2\n");
+
+        let with_stop = marker_line("abc123", true, "quay.io/foo/foo:v2", Some("old.service"));
+        assert!(with_stop.contains("stop=old.service"));
+        let contents = format!("{with_stop}[Container]\nImage=quay.io/foo/foo:v2\n");
+        let (_, _, _, stop, _) = parse_marker(&contents).unwrap();
+        assert_eq!(stop.as_deref(), Some("old.service"));
 
         // A quadlet bootc didn't write has no marker
         assert_eq!(
@@ -1091,7 +1444,7 @@ mod tests {
             format!("{QUADLET_RUN_DIR}/foo.container"),
             format!(
                 "{}{body}",
-                marker_line("abc123", true, "quay.io/foo/foo:v2")
+                marker_line("abc123", true, "quay.io/foo/foo:v2", Some("old.service"))
             ),
         )?;
         // A sibling file bootc didn't write is ignored
@@ -1115,6 +1468,211 @@ mod tests {
         assert_eq!(q.image, "quay.io/foo/foo:v2");
         assert_eq!(q.contents, body);
         assert_eq!(q.unit.as_deref(), Some("foo.service"));
+        assert_eq!(q.stop.as_deref(), Some("old.service"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_pending_stops_roundtrip() -> Result<()> {
+        let run = &tempdir()?;
+        assert!(pending_stops_from(run)?.is_empty());
+        let units = BTreeSet::from(["foo.service".to_string(), "bar.service".to_string()]);
+        write_pending_stops(run, &units)?;
+        assert_eq!(pending_stops_from(run)?, units);
+        write_pending_stops(run, &BTreeSet::new())?;
+        assert!(pending_stops_from(run)?.is_empty());
+        assert!(!run.try_exists(PENDING_STOPS_LIST)?);
+        Ok(())
+    }
+
+    #[test]
+    fn test_materialization_complete() -> Result<()> {
+        let rootfs = &tempdir()?;
+        rootfs.create_dir_all(QUADLET_RUN_DIR)?;
+        const Q: &str = "usr/share/containers/systemd";
+        let body = "[Container]\nImage=quay.io/foo/foo:v2\n";
+        let changes = vec![QuadletChange {
+            kind: ChangeKind::Updated,
+            spec: spec(&format!("{Q}/foo.container"), "quay.io/foo/foo:v2", body),
+            quadlet: Some("foo.container".into()),
+            unit: Some("foo.service".into()),
+            old_unit: None,
+        }];
+        let live_by_path = BTreeMap::new();
+        let empty_stops = BTreeSet::new();
+        assert!(!materialization_complete(
+            &changes,
+            &live_by_path,
+            "abc123",
+            rootfs,
+            None,
+            &empty_stops,
+        )?);
+
+        rootfs.write(
+            format!("{QUADLET_RUN_DIR}/foo.container"),
+            format!(
+                "{}{body}",
+                marker_line("abc123", true, "quay.io/foo/foo:v2", None)
+            ),
+        )?;
+        let live = scan_live_quadlets(rootfs)?;
+        let live_by_path: BTreeMap<&Utf8Path, &LiveQuadlet> =
+            live.iter().map(|q| (q.relpath.as_path(), q)).collect();
+        assert!(materialization_complete(
+            &changes,
+            &live_by_path,
+            "abc123",
+            rootfs,
+            None,
+            &empty_stops,
+        )?);
+        // Wrong checksum => not complete
+        assert!(!materialization_complete(
+            &changes,
+            &live_by_path,
+            "other",
+            rootfs,
+            None,
+            &empty_stops,
+        )?);
+
+        // Removal-only: absent /run must not look complete without applied-checksum
+        // or a pending stop.
+        let removed = vec![QuadletChange {
+            kind: ChangeKind::Removed,
+            spec: spec(&format!("{Q}/gone.container"), "quay.io/foo/gone:v1", body),
+            quadlet: Some("gone.container".into()),
+            unit: Some("gone.service".into()),
+            old_unit: None,
+        }];
+        let live_by_path = BTreeMap::new();
+        assert!(!materialization_complete(
+            &removed,
+            &live_by_path,
+            "abc123",
+            rootfs,
+            None,
+            &empty_stops,
+        )?);
+        assert!(materialization_complete(
+            &removed,
+            &live_by_path,
+            "abc123",
+            rootfs,
+            Some("abc123"),
+            &empty_stops,
+        )?);
+        let pending = BTreeSet::from(["gone.service".to_string()]);
+        assert!(materialization_complete(
+            &removed,
+            &live_by_path,
+            "abc123",
+            rootfs,
+            None,
+            &pending,
+        )?);
+
+        // Pull-only (no quadlet) requires applied-checksum
+        let pull_only = vec![QuadletChange {
+            kind: ChangeKind::Added,
+            spec: spec("usr/lib/misc/pull.container", "quay.io/foo/pull:v1", body),
+            quadlet: None,
+            unit: None,
+            old_unit: None,
+        }];
+        assert!(!materialization_complete(
+            &pull_only,
+            &live_by_path,
+            "abc123",
+            rootfs,
+            None,
+            &empty_stops,
+        )?);
+        assert!(materialization_complete(
+            &pull_only,
+            &live_by_path,
+            "abc123",
+            rootfs,
+            Some("abc123"),
+            &empty_stops,
+        )?);
+        Ok(())
+    }
+
+    #[test]
+    fn test_check_run_destinations_removed() -> Result<()> {
+        let rootfs = &tempdir()?;
+        rootfs.create_dir_all(QUADLET_RUN_DIR)?;
+        rootfs.write(
+            format!("{QUADLET_RUN_DIR}/foo.container"),
+            "[Container]\nImage=admin\n",
+        )?;
+        let changes = vec![QuadletChange {
+            kind: ChangeKind::Removed,
+            spec: spec(
+                "usr/share/containers/systemd/foo.container",
+                "quay.io/foo/foo:v1",
+                "",
+            ),
+            quadlet: Some("foo.container".into()),
+            unit: Some("foo.service".into()),
+            old_unit: None,
+        }];
+        let live_by_path = BTreeMap::new();
+        let e = check_run_destinations(rootfs, &changes, &live_by_path)
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("delete"), "{e}");
+        assert!(e.contains("non-bootc"), "{e}");
+        Ok(())
+    }
+
+    #[test]
+    fn test_check_host_etc_shadowing() -> Result<()> {
+        let rootfs = &tempdir()?;
+        rootfs.create_dir_all(QUADLET_ETC_DIR)?;
+        rootfs.write(
+            format!("{QUADLET_ETC_DIR}/foo.container"),
+            "[Container]\nImage=admin\n",
+        )?;
+        let changes = vec![QuadletChange {
+            kind: ChangeKind::Updated,
+            spec: spec(
+                "usr/share/containers/systemd/foo.container",
+                "quay.io/foo/foo:v2",
+                "[Container]\nImage=vendor\n",
+            ),
+            quadlet: Some("foo.container".into()),
+            unit: Some("foo.service".into()),
+            old_unit: None,
+        }];
+        let e = check_host_etc_shadowing(rootfs, &changes)
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("shadowed"), "{e}");
+        // /etc-bound definitions are fine
+        let etc_bound = vec![QuadletChange {
+            kind: ChangeKind::Updated,
+            spec: spec(
+                "etc/containers/systemd/foo.container",
+                "quay.io/foo/foo:v2",
+                "[Container]\nImage=etc\n",
+            ),
+            quadlet: Some("foo.container".into()),
+            unit: Some("foo.service".into()),
+            old_unit: None,
+        }];
+        check_host_etc_shadowing(rootfs, &etc_bound)?;
+        Ok(())
+    }
+
+    #[test]
+    fn test_applied_checksum_roundtrip() -> Result<()> {
+        let run = &tempdir()?;
+        assert_eq!(applied_checksum_from(run)?, None);
+        write_applied_checksum(run, "deadbeef")?;
+        assert_eq!(applied_checksum_from(run)?.as_deref(), Some("deadbeef"));
         Ok(())
     }
 
