@@ -2830,7 +2830,7 @@ pub(crate) async fn setup_composefs_boot(
 
     let mut repo = open_composefs_repo(&root_setup.physical_root)?;
     if allow_missing_fsverity {
-        repo.set_insecure();
+        repo.set_insecure()?;
     }
 
     let repo = Arc::new(repo);

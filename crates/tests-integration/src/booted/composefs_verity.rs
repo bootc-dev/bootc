@@ -28,11 +28,11 @@ use composefs_ctl::composefs::{
         writer::{ValidatedFileSystem, mkfs_erofs_versioned},
     },
     fsverity::{
-        Algorithm, EnableVerityError, FsVerityHashValue, MeasureVerityError, Sha512HashValue,
-        enable_verity_raw, measure_verity_opt,
+        Algorithm, CompareVerityError, EnableVerityError, FsVerityHashValue, MeasureVerityError,
+        Sha512HashValue, enable_verity_raw, measure_verity_opt,
     },
     mountcompat::prepare_mount,
-    repository::{Repository, RepositoryConfig},
+    repository::{ImageNotFound, Repository, RepositoryConfig},
     tree::{FileSystem, Inode, LeafContent, RegularFile, Stat},
 };
 use rustix::{
@@ -42,15 +42,79 @@ use rustix::{
     thread::{UnshareFlags, unshare_unsafe},
 };
 
+/// How the repository is tampered with after the image has been written.
 #[derive(Clone, Copy, Debug)]
 enum Tamper {
+    /// Nothing; the control case.
     None,
+    /// The image is replaced by a byte-identical copy without fs-verity.
     Image,
+    /// Like `Image`, but meta.json also loses fs-verity and a data object is
+    /// replaced: the state an offline attacker would leave behind.
     ImageAndMetadata,
+    /// A data object is replaced while the image stays intact.
     Data,
+    /// `images/<digest>` is repointed at a different image that does carry
+    /// fs-verity.
+    ImageSwap,
+    /// `images/<digest>` is removed and `images/refs/<digest>` points at a
+    /// different image that does carry fs-verity.
     RefDigest,
+    /// `images/<digest>` is removed and `images/refs/<digest>` is a copy of
+    /// the image without fs-verity.
     RefVerity,
 }
+
+/// What `mount_composefs_image` must do with the tampered repository.
+#[derive(Clone, Copy, Debug)]
+enum Expect {
+    /// The mount succeeds and `data` reads back its original contents.
+    Original,
+    /// The mount succeeds and `data` reads back the replaced contents.
+    Replaced,
+    /// The mount succeeds, but reading `data` fails with `EIO`.
+    ReadEio,
+    /// The mount is refused because the image has no fs-verity.
+    VerityMissing,
+    /// The mount is refused because the image found does not have the
+    /// requested digest.
+    DigestMismatch,
+    /// The mount is refused because no image has the requested digest.
+    NotFound,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct Case {
+    /// Whether meta.json records fs-verity as enabled.
+    metadata_verity: bool,
+    tamper: Tamper,
+    /// Whether the cmdline carries the `?` marker allowing missing fs-verity.
+    relaxed: bool,
+    expect: Expect,
+}
+
+/// A strict cmdline gets the same verdict whatever meta.json says: only the
+/// image named by the digest, carrying fs-verity, is ever mounted.
+const STRICT: &[(Tamper, Expect)] = &[
+    (Tamper::None, Expect::Original),
+    (Tamper::Image, Expect::VerityMissing),
+    (Tamper::ImageAndMetadata, Expect::VerityMissing),
+    (Tamper::Data, Expect::ReadEio),
+    (Tamper::ImageSwap, Expect::DigestMismatch),
+    (Tamper::RefDigest, Expect::NotFound),
+    (Tamper::RefVerity, Expect::NotFound),
+];
+
+/// A relaxed cmdline tolerates missing fs-verity but still verifies whatever
+/// can be measured, and never consults `images/refs/` either. The first
+/// element is `metadata_verity`.
+const RELAXED: &[(bool, Tamper, Expect)] = &[
+    (true, Tamper::Data, Expect::ReadEio),
+    (false, Tamper::ImageAndMetadata, Expect::Replaced),
+    (false, Tamper::ImageSwap, Expect::DigestMismatch),
+    (false, Tamper::RefDigest, Expect::NotFound),
+    (false, Tamper::RefVerity, Expect::NotFound),
+];
 
 fn replace(path: &Path, data: &[u8]) -> Result<()> {
     let copy = path.with_extension("replacement");
@@ -77,20 +141,38 @@ fn read_data(root: impl AsFd) -> std::io::Result<Vec<u8>> {
     Ok(data)
 }
 
-fn check_case(parent: &Path, metadata_verity: bool, tamper: Tamper, relaxed: bool) -> Result<()> {
+fn is_expected_rejection(error: &anyhow::Error, expect: Expect) -> bool {
+    match expect {
+        Expect::VerityMissing => matches!(
+            error.downcast_ref::<CompareVerityError>(),
+            Some(CompareVerityError::Measure(
+                MeasureVerityError::VerityMissing
+            ))
+        ),
+        Expect::DigestMismatch => matches!(
+            error.downcast_ref::<CompareVerityError>(),
+            Some(CompareVerityError::DigestMismatch { .. })
+        ),
+        Expect::NotFound => error.downcast_ref::<ImageNotFound>().is_some(),
+        Expect::Original | Expect::Replaced | Expect::ReadEio => false,
+    }
+}
+
+fn check_case(parent: &Path, case: Case) -> Result<()> {
     let tmp = tempfile::tempdir_in(parent)?;
     let sysroot: OwnedFd = File::open(tmp.path())?.into();
     let config = RepositoryConfig::new(Algorithm::SHA512);
-    let config = if metadata_verity {
+    let config = if case.metadata_verity {
         config
     } else {
         config.set_insecure()
     };
     let (repo, _) = Repository::<Sha512HashValue>::init_path(&sysroot, "composefs", config)?;
     let repo_path = tmp.path().join("composefs");
-    ensure!(repo.is_insecure() != metadata_verity);
+    ensure!(repo.is_insecure() != case.metadata_verity);
 
     let contents = b"original data\n".repeat(1024);
+    let replaced = vec![b'x'; contents.len()];
     let object = repo.ensure_object(&contents)?;
     let object_path = repo_path.join("objects").join(object.to_object_pathname());
     let mut stat = Stat::uninitialized();
@@ -107,22 +189,27 @@ fn check_case(parent: &Path, metadata_verity: bool, tamper: Tamper, relaxed: boo
     let image_link = repo_path.join("images").join(&digest);
     let image_path = fs::canonicalize(&image_link)?;
 
-    match tamper {
+    match case.tamper {
         Tamper::None => {}
         Tamper::Image => strip_verity(&image_path)?,
         Tamper::ImageAndMetadata => {
             strip_verity(&repo_path.join("meta.json"))?;
             strip_verity(&image_path)?;
-            replace(&object_path, &vec![b'x'; contents.len()])?;
+            replace(&object_path, &replaced)?;
         }
-        Tamper::Data => replace(&object_path, &vec![b'x'; contents.len()])?,
-        Tamper::RefDigest => {
+        Tamper::Data => replace(&object_path, &replaced)?,
+        Tamper::ImageSwap | Tamper::RefDigest => {
             tree.root.stat.st_mtim_sec += 1;
             let other_image =
                 mkfs_erofs_versioned(&ValidatedFileSystem::new(tree)?, FormatVersion::V1);
-            let other = repo.write_image(Some(&digest), &other_image)?.to_hex();
+            let swap = matches!(case.tamper, Tamper::ImageSwap);
+            let reference = (!swap).then_some(digest.as_str());
+            let other = repo.write_image(reference, &other_image)?.to_hex();
             ensure!(other != digest);
             fs::remove_file(&image_link)?;
+            if swap {
+                std::os::unix::fs::symlink(&other, &image_link)?;
+            }
         }
         Tamper::RefVerity => {
             fs::create_dir_all(repo_path.join("images/refs"))?;
@@ -132,42 +219,28 @@ fn check_case(parent: &Path, metadata_verity: bool, tamper: Tamper, relaxed: boo
     }
     drop(repo);
 
-    let mounted = mount_composefs_image(&sysroot, &digest, relaxed);
-    if !relaxed
-        && matches!(
-            tamper,
-            Tamper::Image | Tamper::ImageAndMetadata | Tamper::RefVerity
-        )
-    {
-        let error = mounted.err().context("unverified image was mounted")?;
-        ensure!(
-            matches!(
-                error.downcast_ref::<MeasureVerityError>(),
-                Some(MeasureVerityError::VerityMissing)
-            ),
-            "Unexpected error: {error:#}"
-        );
-    } else if matches!(tamper, Tamper::RefDigest) {
-        let error = mounted
-            .err()
-            .context("a different image under the pinned ref was mounted")?;
-        ensure!(
-            format!("{error:#}").contains("composefs image fs-verity digest mismatch"),
-            "Unexpected error: {error:#}"
-        );
-    } else {
-        let root = prepare_mount(mounted?)?;
-        let data = read_data(&root);
-        if matches!(tamper, Tamper::Data) {
-            let error = data.err().context("tampered object was readable")?;
+    let mounted = mount_composefs_image(&sysroot, &digest, case.relaxed);
+    let root = match case.expect {
+        Expect::Original | Expect::Replaced | Expect::ReadEio => prepare_mount(mounted?)?,
+        Expect::VerityMissing | Expect::DigestMismatch | Expect::NotFound => {
+            let error = mounted.err().context("a tampered image was mounted")?;
+            ensure!(
+                is_expected_rejection(&error, case.expect),
+                "Unexpected error: {error:#}"
+            );
+            return Ok(());
+        }
+    };
+    let read = read_data(&root);
+    match case.expect {
+        Expect::Original => ensure!(read? == contents),
+        Expect::Replaced => ensure!(read? == replaced),
+        _ => {
+            let error = read.err().context("a tampered object was readable")?;
             ensure!(
                 error.raw_os_error() == Some(Errno::IO.raw_os_error()),
                 "Unexpected read error: {error}"
             );
-        } else if relaxed && matches!(tamper, Tamper::ImageAndMetadata) {
-            ensure!(data? == vec![b'x'; contents.len()]);
-        } else {
-            ensure!(data? == contents);
         }
     }
     Ok(())
@@ -195,21 +268,25 @@ pub(crate) fn run() -> Result<()> {
         }
         Err(error) => return Err(error.into()),
     }
-    for metadata_verity in [true, false] {
-        for tamper in [
-            Tamper::None,
-            Tamper::Image,
-            Tamper::ImageAndMetadata,
-            Tamper::Data,
-            Tamper::RefDigest,
-            Tamper::RefVerity,
-        ] {
-            check_case(tmp.path(), metadata_verity, tamper, false)
-                .with_context(|| format!("metadata_verity={metadata_verity}, tamper={tamper:?}"))?;
-        }
+    let strict = [true, false].into_iter().flat_map(|metadata_verity| {
+        STRICT.iter().map(move |&(tamper, expect)| Case {
+            metadata_verity,
+            tamper,
+            relaxed: false,
+            expect,
+        })
+    });
+    let relaxed = RELAXED
+        .iter()
+        .map(|&(metadata_verity, tamper, expect)| Case {
+            metadata_verity,
+            tamper,
+            relaxed: true,
+            expect,
+        });
+    for case in strict.chain(relaxed) {
+        check_case(tmp.path(), case).with_context(|| format!("{case:?}"))?;
     }
-    check_case(tmp.path(), false, Tamper::ImageAndMetadata, true)
-        .context("explicitly relaxed command line")?;
     super::tap_ok();
     Ok(())
 }
