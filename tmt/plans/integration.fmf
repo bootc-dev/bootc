@@ -428,4 +428,11 @@ execute:
     test:
       - /tmt/tests/tests/test-63-install-shared-propagation
   extra-fixme_skip_if_composefs: true
+
+/plan-66-encrypted-swap-ordering:
+  summary: Verify a random-key encrypted swap boots without an ordering cycle
+  discover:
+    how: fmf
+    test:
+      - /tmt/tests/tests/test-66-encrypted-swap-ordering
 # END GENERATED PLANS

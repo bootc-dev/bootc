@@ -276,3 +276,8 @@ check:
   summary: Install from a shared mount namespace without leaking the storage bind mount
   duration: 30m
   test: nu booted/test-install-shared-propagation.nu
+
+/test-66-encrypted-swap-ordering:
+  summary: Verify a random-key encrypted swap boots without an ordering cycle
+  duration: 30m
+  test: nu booted/test-encrypted-swap-ordering.nu
