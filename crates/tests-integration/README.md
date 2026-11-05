@@ -23,9 +23,10 @@ bootc-integration-tests booted composefs-verity
 
 This also runs through the `composefs-verity` TMT plan. It creates disposable
 repositories in `/var/tmp` and mounts them in a private mount namespace. It
-checks strict image verification, compatibility with unprotected repository
-metadata, rejection of substituted image refs, and `EIO` when reading tampered
-data objects. An explicitly relaxed mount is tested separately. The test skips
+checks that a strict mount verifies the image digest independently of the
+repository metadata, ignores `images/refs/`, and gets `EIO` when reading
+tampered data objects, and that an explicitly relaxed mount still rejects an
+image whose digest does not match. The test skips
 filesystems without fs-verity support; it does not modify the host's repository
 or boot files.
 

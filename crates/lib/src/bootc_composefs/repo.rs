@@ -231,7 +231,7 @@ pub(crate) fn initialize_composefs_repository(
     // correctly derives the durable policy from meta.json and does not rewrite
     // it merely because this session permits missing fs-verity.
     if allow_missing_fsverity && (created || repository_insecure) {
-        repo.set_insecure();
+        repo.set_insecure()?;
     }
 
     let repo = Arc::new(repo);
@@ -561,7 +561,7 @@ pub(crate) async fn pull_composefs_repo(
 
     let mut repo = open_composefs_repo(&rootfs_dir).context("Opening composefs repo")?;
     if allow_missing_fsverity {
-        repo.set_insecure();
+        repo.set_insecure()?;
     }
 
     let repo = Arc::new(repo);
@@ -625,7 +625,7 @@ pub(crate) async fn pull_composefs_repo(
         anyhow::anyhow!("BUG: Arc<Repository> still has other references after pull completed")
     })?;
     if allow_missing_fsverity {
-        repo.set_insecure();
+        repo.set_insecure()?;
     }
 
     Ok(PullRepoResult {
