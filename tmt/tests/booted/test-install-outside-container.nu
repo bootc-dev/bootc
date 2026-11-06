@@ -49,7 +49,16 @@ umount /var/mnt
 # And using systemd-run here breaks our install_t so we disable SELinux enforcement
 setenforce 0
 
-let base_args = $"bootc install to-disk --disable-selinux --via-loopback --source-imgref ($target_image)"
+# An --output-*-fd that wasn't passed is rejected as the arguments are parsed
+# (the device doesn't exist either, so a regression can't install).
+let result = (do { ^bootc install to-disk --output-json-fd 9 /var/tmp/nonexistent.img } | complete)
+assert ($result.exit_code != 0) "install with a closed output fd must fail"
+assert ($result.stderr | str contains "invalid value '9' for '--output-json-fd <FD>'") $"unexpected error: ($result.stderr)"
+
+let install_result = "/var/tmp/install-result.json"
+# Only recorded as the origin; nothing here fetches it.
+let update_image = "quay.io/example/bootc-test:latest"
+let base_args = $"bootc install to-disk --disable-selinux --via-loopback --source-imgref ($target_image) --target-imgref ($update_image) --output-json-path ($install_result)"
 
 let install_cmd = if (tap is_composefs) {
     let st = bootc status --json | from json
@@ -242,6 +251,18 @@ let state = if (tap is_composefs) {
 let deployment = (ls ($sysroot | path join $state.deployments) | where type == dir | get name | first)
 assert equal (open ($deployment | path join etc/sentinel)) "etc sentinel"
 assert equal (open ($sysroot | path join $state.var sentinel)) "var sentinel"
+
+# The install result points at the same deployment and state directories.
+let result = (open $install_result)
+assert equal $result.backend (if (tap is_composefs) { "composefs" } else { "ostree" })
+assert equal $result.stateroot "default"
+assert equal ($sysroot | path join $result.deploymentPath) $deployment
+assert equal $result.etcPath ($result.deploymentPath | path join etc)
+assert equal $result.varPath $state.var
+assert equal (open ($sysroot | path join $result.etcPath sentinel)) "etc sentinel"
+assert equal $result.imageTransport "registry"
+assert equal $result.image $update_image
+assert ($result.imageDigest | str starts-with "sha256:") $"unexpected digest: ($result.imageDigest)"
 
 # /etc follows prepare-root's etc.transient: a throwaway overlay of /usr/etc
 # instead of the persistent copy.  The composefs equivalent is baked into the

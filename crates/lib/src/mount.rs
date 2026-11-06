@@ -30,6 +30,7 @@ use ostree_ext::{ostree, ostree_prepareroot};
 use rustix::mount::{MoveMountFlags, OpenTreeFlags, move_mount, open_tree};
 
 use crate::composefs_consts::STATE_DIR_RELATIVE;
+use crate::store::Backend;
 
 const ETC: &str = "etc";
 const VAR: &str = "var";
@@ -70,19 +71,10 @@ fn open_mount_target(target: &Utf8Path) -> Result<Dir> {
     Ok(target_dir)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DeploymentBackend {
-    Ostree,
-    Composefs,
-}
-
-fn select_backend(
-    ostree_deployments: usize,
-    composefs_deployments: usize,
-) -> Result<DeploymentBackend> {
+fn select_backend(ostree_deployments: usize, composefs_deployments: usize) -> Result<Backend> {
     match (ostree_deployments, composefs_deployments) {
-        (1, 0) => Ok(DeploymentBackend::Ostree),
-        (0, 1) => Ok(DeploymentBackend::Composefs),
+        (1, 0) => Ok(Backend::Ostree),
+        (0, 1) => Ok(Backend::Composefs),
         (0, 0) => bail!("target contains no deployment"),
         (o, c) => bail!(
             "target must contain exactly one deployment (found {o} OSTree, {c} composefs); refusing ambiguous selection"
@@ -127,7 +119,7 @@ pub(crate) async fn mount(opts: MountOpts) -> Result<()> {
 
     let (root_tree, state) =
         match select_backend(ostree_deployments.len(), composefs_deployments.len())? {
-            DeploymentBackend::Composefs => {
+            Backend::Composefs => {
                 let id = &composefs_deployments[0];
                 let state = sysroot_dir
                     .open_dir(format!("{STATE_DIR_RELATIVE}/{id}"))
@@ -136,7 +128,7 @@ pub(crate) async fn mount(opts: MountOpts) -> Result<()> {
                 let image = repo.mount(id).context("Mounting composefs image")?;
                 (image, DeploymentState::Composefs(state))
             }
-            DeploymentBackend::Ostree => {
+            Backend::Ostree => {
                 let sysroot = ostree_sysroot.as_deref().expect("OSTree backend selected");
                 let repo = ostree_repo.as_ref().expect("OSTree backend selected");
                 let deployment = &ostree_deployments[0];
@@ -292,8 +284,9 @@ fn attach(tree: impl AsFd, target: &Dir, name: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{DeploymentBackend, open_mount_target, select_backend};
+    use super::{open_mount_target, select_backend};
     use crate::cli::{InstallOpts, Opt};
+    use crate::store::Backend;
     use camino::Utf8Path;
     use clap::Parser;
 
@@ -328,8 +321,8 @@ mod tests {
     fn selects_only_unambiguous_backend() {
         let cases = [
             (0, 0, None),
-            (1, 0, Some(DeploymentBackend::Ostree)),
-            (0, 1, Some(DeploymentBackend::Composefs)),
+            (1, 0, Some(Backend::Ostree)),
+            (0, 1, Some(Backend::Composefs)),
             (1, 1, None),
             (2, 0, None),
             (0, 2, None),
