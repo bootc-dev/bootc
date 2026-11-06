@@ -22,6 +22,8 @@ const image = "localhost/bootc-delta-target:latest"
 const delta = "/var/tmp/image-1-to-2.oci-delta"
 const state = "/var/tmp/bootc-delta-state.json"
 const marker = "/usr/share/testing-bootc-delta"
+# Largest file (in MiB) oci-delta diffs with bsdiff; see initial_build
+const max_bsdiff_mib = 64
 
 def initial_build [] {
     tap begin "switch from OCI delta"
@@ -56,7 +58,9 @@ def initial_build [] {
     let reference = $"localhost/bootc-delta-target@($target.Digest)"
     assert ($target.Digest != $st.status.booted.image.imageDigest)
 
-    oci-delta create $"oci-archive:($source_archive)" $"containers-storage:($image)" $delta
+    # bsdiff needs ~16 bytes of memory per byte of the old file; the ~120 MiB
+    # UKI (under oci-delta's default 192 MiB cap) got it OOM killed in the 4G VM.
+    oci-delta create --max-bsdiff-size $max_bsdiff_mib $"oci-archive:($source_archive)" $"containers-storage:($image)" $delta
     # Keep the target available only through the delta.
     podman rmi $image
 
