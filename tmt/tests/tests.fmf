@@ -281,3 +281,8 @@ check:
   summary: Verify a random-key encrypted swap boots without an ordering cycle
   duration: 30m
   test: nu booted/test-encrypted-swap-ordering.nu
+
+/test-68-composefs-restage-uki:
+  summary: Stage a UKI over a staged UKI of another version
+  duration: 30m
+  test: nu booted/test-composefs-restage-uki.nu
