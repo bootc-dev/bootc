@@ -428,4 +428,16 @@ execute:
     test:
       - /tmt/tests/tests/test-63-install-shared-propagation
   extra-fixme_skip_if_composefs: true
+
+/plan-64-system-reinstall-composefs:
+  summary: Test system-reinstall with composefs backend and bootloader compatibility
+  discover:
+    how: fmf
+    test:
+      - /tmt/tests/tests/test-64-system-reinstall-composefs
+  adjust:
+  - when: distro != fedora
+    enabled: false
+    because: we don't have new enough bootupd in centos
+  extra-skip_if_ostree: true
 # END GENERATED PLANS
