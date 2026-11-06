@@ -277,6 +277,11 @@ check:
   duration: 30m
   test: nu booted/test-install-shared-propagation.nu
 
+/test-64-boot-automount-idle-update-timer:
+  summary: Apply an update from the timer after the /boot automount idles out
+  duration: 30m
+  test: nu booted/test-boot-automount-idle-update-timer.nu
+
 /test-66-encrypted-swap-ordering:
   summary: Verify a random-key encrypted swap boots without an ordering cycle
   duration: 30m
