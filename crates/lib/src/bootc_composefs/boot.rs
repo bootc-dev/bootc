@@ -1895,6 +1895,12 @@ fn write_systemd_uki_config(
         }
 
         BootSetupType::Upgrade((_, booted_cfs, ..)) => {
+            // An earlier staged deployment's entry may have another version in
+            // its file name, so writing ours wouldn't overwrite it
+            esp_dir
+                .remove_all_optional(TYPE1_ENT_PATH_STAGED)
+                .with_context(|| format!("Removing {TYPE1_ENT_PATH_STAGED}"))?;
+
             esp_dir
                 .create_dir_all(TYPE1_ENT_PATH_STAGED)
                 .with_context(|| format!("Creating {TYPE1_ENT_PATH_STAGED}"))?;

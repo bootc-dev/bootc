@@ -15,9 +15,40 @@ let booted = $st.status.booted.image
 let uki_prefix = "bootc_composefs-"
 
 let is_uki = (($st.status.booted.composefs.bootType | str downcase) == "uki")
+let is_sdboot = (($st.status.booted.composefs.bootloader | str downcase) == "systemd")
 
 if not $is_uki {
     exit 0
+}
+
+# Build an image with this VERSION_ID and stage it
+def stage_version [version: string] {
+    let containerfile = $"
+        FROM localhost/bootc as base
+        RUN sed -i 's/^VERSION_ID=.*/VERSION_ID=($version)/' /usr/lib/os-release
+    "
+
+    (tap make_uki_containerfile $containerfile) | podman build -t $"localhost/bootc-($version)" . -f -
+
+    bootc switch --transport containers-storage $"localhost/bootc-($version)"
+}
+
+# A UKI's boot entry has the version from its os-release in its file name, so
+# staging an image of another version doesn't overwrite the staged entry. Make
+# sure that entry goes away, along with the deployment it belongs to.
+def restage_another_version [] {
+    stage_version "restage1"
+    let replaced = (bootc status --json | from json).status.staged.composefs.verity
+
+    stage_version "restage2"
+
+    let staged = (glob /var/tmp/efi/loader/entries.staged/*.conf)
+    assert equal ($staged | length) 2 $"Expected the new and booted entries, found ($staged)"
+    assert (not ($staged | any { |f| $f | str contains "restage1" }))
+
+    let status = (bootc status --json | from json).status
+    assert ($status.staged.image.image.image | str ends-with "bootc-restage2")
+    assert (not ($"/sysroot/state/deploy/($replaced)" | path exists))
 }
 
 # Create a large file in a new container image, then bootc switch to the image
@@ -170,6 +201,10 @@ def fourth_boot [] {
 
     let path = cat /var/large-file-marker-objpath
     assert (not ($path | path exists))
+
+    if $is_sdboot {
+        restage_another_version
+    }
 
     tap ok
 }
