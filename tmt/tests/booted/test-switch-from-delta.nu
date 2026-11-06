@@ -22,6 +22,8 @@ const image = "localhost/bootc-delta-target:latest"
 const delta = "/var/tmp/image-1-to-2.oci-delta"
 const state = "/var/tmp/bootc-delta-state.json"
 const marker = "/usr/share/testing-bootc-delta"
+# Largest file (in MiB) oci-delta diffs with bsdiff; see initial_build
+const max_bsdiff_mib = 64
 
 def initial_build [] {
     tap begin "switch from OCI delta"
@@ -56,7 +58,15 @@ def initial_build [] {
     let reference = $"localhost/bootc-delta-target@($target.Digest)"
     assert ($target.Digest != $st.status.booted.image.imageDigest)
 
-    oci-delta create $"oci-archive:($source_archive)" $"containers-storage:($image)" $delta
+    # oci-delta's bsdiff needs about 16 bytes of memory per byte of the old
+    # file (two int arrays, see bsdiff and qsufsort in
+    # https://github.com/containers/tar-diff/blob/v0.6.1/pkg/tar-diff/bsdiff.go).
+    # On UKI systems the rebuilt UKI (~120 MiB) is under its default
+    # 192 MiB bsdiff cap, which takes oci-delta to 2.3 GiB of anonymous
+    # memory or more, depending on GC timing, and has gotten it OOM killed
+    # in the 4G test VM. Above the cap the UKI goes through rollsums
+    # instead, which give a delta of about the same size here.
+    oci-delta create --max-bsdiff-size $max_bsdiff_mib $"oci-archive:($source_archive)" $"containers-storage:($image)" $delta
     # Keep the target available only through the delta.
     podman rmi $image
 
