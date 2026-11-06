@@ -19,6 +19,7 @@ journalctl --list-boots
 
 let st = bootc status --json | from json
 let booted = $st.status.booted.image
+let is_composefs = (tap is_composefs)
 
 def imgsrc [] {
     $env.BOOTC_upgrade_image? | default "localhost/bootc-derived-local"
@@ -30,6 +31,29 @@ def imgsrc [] {
 def assert_rollback_queued [expected: bool] {
     let queued = (bootc status --json | from json).status.rollbackQueued
     assert equal $queued $expected
+}
+
+# The name each boot entry starts with and its sort-key, which a rollback keeps
+# while swapping the versions they belong to. Only systemd-boot orders entries
+# by sort-key.
+def boot_entries [] {
+    if not $is_composefs or (($st.status.booted.composefs.bootloader | str downcase) != "systemd") {
+        return []
+    }
+
+    if not ("/var/tmp/efi/loader" | path exists) {
+        mkdir /var/tmp/efi
+        mount /dev/disk/by-partlabel/EFI-SYSTEM /var/tmp/efi
+    }
+
+    glob /var/tmp/efi/loader/entries/*.conf
+    | each { |f|
+        {
+            name: ($f | path basename | split row "-" | first),
+            sort_key: (open $f | lines | parse "sort-key {key}" | get 0.key),
+        }
+    }
+    | sort-by sort_key
 }
 
 # Run on the first boot - capture initial state and switch to new image
@@ -81,7 +105,9 @@ def second_boot_rollback [] {
     assert_rollback_queued false
 
     print "Performing bootc rollback..."
+    let entries = (boot_entries)
     bootc rollback
+    assert equal (boot_entries) $entries
 
     # ...and a real queued rollback must be reported as one
     assert_rollback_queued true
