@@ -553,6 +553,13 @@ pub(crate) fn secondary_sort_key(os_id: &str) -> String {
     format!("bootc-{os_id}-{SORTKEY_PRIORITY_SECONDARY}")
 }
 
+/// Returns the os_id in a sort key from [`primary_sort_key`] or
+/// [`secondary_sort_key`], or `None` if it isn't in their format.
+pub(crate) fn os_id_from_sort_key(sort_key: &str) -> Option<&str> {
+    let (os_id, _priority) = sort_key.strip_prefix("bootc-")?.rsplit_once('-')?;
+    Some(os_id)
+}
+
 /// Returns the name of the directory where we store Type1 boot entries
 pub(crate) fn get_type1_dir_name(depl_verity: &str) -> String {
     format!("{TYPE1_BOOT_DIR_PREFIX}{depl_verity}")
@@ -3331,6 +3338,21 @@ mod tests {
         assert_eq!(parts[0], "1"); // release
         assert_eq!(parts[1], "41.20251125.0"); // version
         assert_eq!(parts[2], "bootc_fedora_coreos"); // name
+    }
+
+    #[test]
+    fn test_os_id_from_sort_key() {
+        for (sort_key, expected) in [
+            (primary_sort_key("fedora"), Some("fedora")),
+            (secondary_sort_key("fedora"), Some("fedora")),
+            (primary_sort_key("fedora-coreos"), Some("fedora-coreos")),
+            (secondary_sort_key("bootc"), Some("bootc")),
+            ("1".to_owned(), None),
+            ("bootc".to_owned(), None),
+            ("other-fedora-0".to_owned(), None),
+        ] {
+            assert_eq!(os_id_from_sort_key(&sort_key), expected, "{sort_key}");
+        }
     }
 
     #[test]
