@@ -428,4 +428,11 @@ execute:
     test:
       - /tmt/tests/tests/test-63-install-shared-propagation
   extra-fixme_skip_if_composefs: true
+
+/plan-64-image-mount:
+  summary: Verify booted and staged deployment image mounts
+  discover:
+    how: fmf
+    test:
+      - /tmt/tests/tests/test-64-image-mount
 # END GENERATED PLANS
