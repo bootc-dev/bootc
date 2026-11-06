@@ -682,8 +682,14 @@ pub(crate) async fn composefs_gc(
 
         if let Some(ini) = read_origin(sysroot, verity)? {
             // Collect the container image name for containers-storage GC.
-            if let Some(container_ref) =
-                ini.get::<String>("origin", ostree_ext::container::deploy::ORIGIN_CONTAINER)
+            if let Some(container_ref) = ini
+                .get::<String>(
+                    crate::deploy::ORIGIN_BOOTC,
+                    crate::deploy::ORIGIN_SOURCE_IMAGE,
+                )
+                .or_else(|| {
+                    ini.get::<String>("origin", ostree_ext::container::deploy::ORIGIN_CONTAINER)
+                })
             {
                 // Parse the ostree image reference to extract the bare image name
                 // (e.g. "quay.io/foo:tag" from "ostree-unverified-image:docker://quay.io/foo:tag")
@@ -692,6 +698,12 @@ pub(crate) async fn composefs_gc(
                     .map(|r| r.imgref.name)
                     .unwrap_or_else(|_| container_ref.clone());
                 live_container_images.insert(image_name);
+            }
+
+            // A delivery tag may have moved since a rollback deployment was pulled.
+            // Retain its immutable image ID even if that image no longer has a name.
+            if let Some(id) = deployment.container_image_id(storage)? {
+                live_container_images.insert(id);
             }
 
             if let Some(manifest_digest_str) =

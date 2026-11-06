@@ -327,6 +327,7 @@ pub(crate) async fn do_upgrade(
     booted_cfs: &BootedComposefs,
     host: &Host,
     imgref: &ImageReference,
+    target_imgref: Option<&ImageReference>,
     opts: &DoUpgradeOpts<'_>,
     manifest: &ostree_ext::oci_spec::image::ImageManifest,
 ) -> Result<()> {
@@ -482,6 +483,7 @@ pub(crate) async fn do_upgrade(
         &Utf8PathBuf::from("/sysroot"),
         &deploy_id,
         imgref,
+        target_imgref,
         false,
         boot_type,
         boot_digest,
@@ -668,11 +670,15 @@ pub(crate) async fn upgrade_composefs(
     // already in bootc-owned containers-storage, OR if the booted image is —
     // the latter means the user has opted into unified storage and all
     // subsequent operations should use it.
-    let current_unified = if let Some(current) = current_image {
-        crate::deploy::image_exists_in_unified_storage(storage, current).await?
-    } else {
-        false
-    };
+    let current_unified = crate::deploy::deployment_uses_unified_storage(
+        storage,
+        host.status
+            .staged
+            .as_ref()
+            .or(host.status.booted.as_ref())
+            .context("No current deployment")?,
+    )
+    .await?;
     do_upgrade_opts.use_unified = current_unified
         || crate::deploy::image_exists_in_unified_storage(storage, booted_imgref).await?;
 
@@ -748,6 +754,7 @@ pub(crate) async fn upgrade_composefs(
                         composefs,
                         &host,
                         booted_imgref,
+                        None,
                         &do_upgrade_opts,
                         &manifest,
                     )
@@ -780,6 +787,7 @@ pub(crate) async fn upgrade_composefs(
                     composefs,
                     &host,
                     booted_imgref,
+                    None,
                     &do_upgrade_opts,
                     &manifest,
                 )
@@ -800,6 +808,7 @@ pub(crate) async fn upgrade_composefs(
         composefs,
         &host,
         booted_imgref,
+        None,
         &do_upgrade_opts,
         &manifest,
     )
