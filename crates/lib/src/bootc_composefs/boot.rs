@@ -102,6 +102,7 @@ use rustix::{mount::MountFlags, path::Arg};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::bootc_composefs::boot_partition::BootPartition;
 use crate::bootc_composefs::state::{get_booted_bls, write_composefs_state};
 use crate::bootc_composefs::status::build_composefs_karg;
 use crate::bootc_composefs::uki_addon::{UkiAddonType, UkiAddonsList, list_installed_uki_addons};
@@ -111,7 +112,6 @@ use crate::composefs_consts::{
 };
 use crate::parsers::bls_config::{BLSConfig, BLSConfigType, EFIKey};
 use crate::spec::BootloaderKind;
-use crate::store::find_booted_from_esp;
 use crate::task::Task;
 use crate::{
     bootc_composefs::repo::open_composefs_repo,
@@ -822,7 +822,7 @@ pub(crate) fn setup_composefs_bls_boot(
 ) -> Result<String> {
     let id_hex = id.to_hex();
 
-    let (esp_device, mut cmdline_refs, bootloader) = match setup_type {
+    let (boot_partition, mut cmdline_refs, bootloader) = match setup_type {
         BootSetupType::Setup((root_setup, state, postfetch, allow_missing_fsverity)) => {
             // root_setup.kargs has [root=UUID=<UUID>, "rw"]
             let mut cmdline_options = Cmdline::new();
@@ -862,7 +862,7 @@ pub(crate) fn setup_composefs_bls_boot(
             let esp_part = root_setup.device_info.find_first_colocated_esp()?;
 
             (
-                esp_part.path(),
+                BootPartition::for_install(esp_part.path(), postfetch.detected_bootloader)?,
                 cmdline_options,
                 postfetch.detected_bootloader.clone(),
             )
@@ -895,7 +895,7 @@ pub(crate) fn setup_composefs_bls_boot(
             )?;
 
             (
-                find_booted_from_esp(&storage.physical_root)?,
+                storage.require_boot_partition()?.clone(),
                 cmdline,
                 bootloader,
             )
@@ -931,7 +931,8 @@ pub(crate) fn setup_composefs_bls_boot(
         }
 
         BootloaderKind::BLSCompatible => {
-            let efi_mount = mount_esp_writable(&esp_device).context("Mounting ESP")?;
+            let efi_mount =
+                mount_esp_writable(boot_partition.device()).context("Mounting boot partition")?;
 
             let mounted_efi = Utf8PathBuf::from(efi_mount.dir.path().as_str()?);
             let efi_linux_dir = mounted_efi.join(EFI_LINUX);
@@ -1775,7 +1776,7 @@ fn write_grub_uki_menuentry(
     setup_type: &BootSetupType,
     boot_label: String,
     id: &Sha512HashValue,
-    esp_device: &String,
+    esp_device: &str,
 ) -> Result<()> {
     let boot_dir = setup_type.grub_boot_path()?;
     create_dir_all(&boot_dir).context("Failed to create boot dir")?;
@@ -1826,7 +1827,7 @@ fn write_grub_uki_menuentry(
     // Open grub2/efiuuid.cfg and write the EFI partition fs-UUID in there
     // This will be sourced by grub2/user.cfg to be used for `--fs-uuid`
     let esp_uuid = Task::new("blkid for ESP UUID", "blkid")
-        .args(["-s", "UUID", "-o", "value", &esp_device])
+        .args(["-s", "UUID", "-o", "value", esp_device])
         .read()?;
 
     grub_dir.atomic_write(
@@ -1930,7 +1931,7 @@ pub(crate) fn setup_composefs_uki_boot(
     entries: Vec<ComposefsBootEntry<Sha512HashValue>>,
 ) -> Result<(String, Sha512HashValue)> {
     let (
-        esp_device,
+        boot_partition,
         bootloader,
         missing_fsverity_allowed,
         uki_addons_via_cli,
@@ -1968,7 +1969,7 @@ pub(crate) fn setup_composefs_uki_boot(
             }
 
             (
-                esp_part.path(),
+                BootPartition::for_install(esp_part.path(), postfetch.detected_bootloader)?,
                 postfetch.detected_bootloader.clone(),
                 allow_missing_fsverity,
                 addons,
@@ -2021,7 +2022,7 @@ pub(crate) fn setup_composefs_uki_boot(
             }
 
             (
-                find_booted_from_esp(&storage.physical_root)?,
+                storage.require_boot_partition()?.clone(),
                 bootloader,
                 booted_cfs.cmdline.allow_missing_fsverity,
                 addons_via_cli,
@@ -2065,7 +2066,8 @@ pub(crate) fn setup_composefs_uki_boot(
         }
     }
 
-    let esp_mount = mount_esp_writable(&esp_device).context("Mounting ESP")?;
+    let esp_mount =
+        mount_esp_writable(boot_partition.device()).context("Mounting boot partition")?;
 
     let mut uki_info = UKIInfo {
         boot_label: "".into(),
@@ -2185,7 +2187,7 @@ pub(crate) fn setup_composefs_uki_boot(
 
     match bootloader.kind()? {
         BootloaderKind::GRUBClassic => {
-            write_grub_uki_menuentry(&setup_type, boot_label, &deploy_id, &esp_device)?
+            write_grub_uki_menuentry(&setup_type, boot_label, &deploy_id, boot_partition.device())?
         }
 
         BootloaderKind::BLSCompatible => write_systemd_uki_config(
@@ -2208,8 +2210,7 @@ pub(crate) fn setup_composefs_uki_boot(
 /// The composefs image (a detached `fsmount(2)` fd with no VFS path) is
 /// attached to a tmpdir via `move_mount(2)`, giving us a real filesystem path
 /// that `mount(2)` and bootctl can use.  The ESP is mounted at
-/// `<tmpdir>/efi` (if that directory exists in the image) or `<tmpdir>/boot`,
-/// per the Boot Loader Specification.  A tmpfs is also mounted at
+/// `<tmpdir>/boot`.  A tmpfs is also mounted at
 /// `<tmpdir>/tmp` to provide a writable scratch area for tools invoked with
 /// `--root`.
 ///
@@ -2264,10 +2265,11 @@ impl MountedImageRoot {
         let composefs = TempMount::mount_fd(composefs_mnt_fd)
             .context("Attaching composefs image to temporary directory")?;
 
-        // TODO: support XBOOTLDR.  Per BLS, the ESP should be mounted at /efi
-        // when a separate XBOOTLDR partition is present at /boot.  bootc does
-        // not yet detect or use XBOOTLDR in the composefs install path, so
-        // unconditionally mount the ESP at /boot for now.
+        // The ESP goes on /boot even when there's an XBOOTLDR partition,
+        // where BLS would mount it on /efi: that would need an /efi
+        // directory in the image, and only the bootloader is installed
+        // through this mount, with the ESP's path passed explicitly. bootc
+        // writes the boot entries itself (see `BootPartition`).
         let esp_subdir = "boot";
 
         // Mount a tmpfs over /tmp so that tools invoked with --root have a

@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 //! Partition type GUIDs from the Discoverable Partitions Specification (DPS)
 //!
 //! This module contains constants for partition type GUIDs as defined by the
@@ -55,12 +53,10 @@
 //! - **Verity signature partitions**: Signed verity root hashes
 //! - **Special partitions**: ESP, XBOOTLDR, swap, home, var, etc.
 //!
-//! # Usage (internal)
-//!
-//! This is an internal module. Within bootc, it is used like:
+//! # Usage
 //!
 //! ```ignore
-//! use crate::discoverable_partition_specification::{this_arch_root, ESP};
+//! use bootc_blockdev::dps::{this_arch_root, ESP};
 //!
 //! // Get the root partition type GUID for the current architecture
 //! let root_type: &str = this_arch_root();

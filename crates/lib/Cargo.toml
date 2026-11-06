@@ -31,7 +31,6 @@ anyhow = { workspace = true }
 camino = { workspace = true, features = ["serde1"] }
 canon-json = { workspace = true }
 cap-std-ext = { workspace = true, features = ["fs_utf8"] }
-cfg-if = { workspace = true }
 chrono = { workspace = true, features = ["serde"] }
 clap = { workspace = true, features = ["derive","cargo"] }
 clap_complete = "4"
@@ -48,7 +47,6 @@ indoc = { workspace = true }
 libc = { workspace = true }
 openssl = { workspace = true }
 percent-encoding = { workspace = true }
-regex = { workspace = true }
 rustix = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }

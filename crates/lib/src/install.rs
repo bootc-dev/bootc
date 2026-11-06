@@ -82,7 +82,7 @@
 //! - **Future extensibility**: Enables systemd-repart for declarative partition
 //!   management
 //!
-//! See [`crate::discoverable_partition_specification`] for the partition type GUIDs.
+//! See [`bootc_blockdev::dps`] for the partition type GUIDs.
 //!
 //! ## Installation Flow
 //!
