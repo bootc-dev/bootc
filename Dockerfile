@@ -360,6 +360,14 @@ rm -rf /var/lib
 rm -rf /var/cache
 rm -rf /run/rhsm
 
+# TODO: drop once https://src.fedoraproject.org/rpms/filesystem/pull-request/44 or equivalent
+# is widely available. For now, manually ensure that /usr has the correct permissions.
+# Note also that this must run before the UKI is sealed in the sealed-uki stage below because
+# it embeds the composefs digest of this stage's rootfs, so changing /usr afterwards leaves
+# the image with a composefs digest that no longer matches the one in the UKI, breaking
+# bootc install for UKI images.
+chmod 0555 /usr
+
 EORUN
 
 # Generate the sealed UKI in a separate stage
