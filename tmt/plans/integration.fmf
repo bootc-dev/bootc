@@ -435,4 +435,12 @@ execute:
     how: fmf
     test:
       - /tmt/tests/tests/test-66-encrypted-swap-ordering
+
+/plan-68-composefs-restage-uki:
+  summary: Stage a UKI over a staged UKI of another version
+  discover:
+    how: fmf
+    test:
+      - /tmt/tests/tests/test-68-composefs-restage-uki
+  extra-skip_if_ostree: true
 # END GENERATED PLANS
