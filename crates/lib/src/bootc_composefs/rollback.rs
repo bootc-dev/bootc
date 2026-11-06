@@ -10,7 +10,7 @@ use rustix::fs::{AtFlags, RenameFlags, fsync, renameat_with};
 use crate::bootc_composefs::aboot;
 use crate::bootc_composefs::boot::{
     BootType, FILENAME_PRIORITY_PRIMARY, FILENAME_PRIORITY_SECONDARY, STAGED_GLOBAL_UKI_ADDONS_DIR,
-    primary_sort_key, secondary_sort_key, type1_entry_conf_file_name,
+    os_id_from_sort_key, primary_sort_key, secondary_sort_key, type1_entry_conf_file_name,
 };
 use crate::bootc_composefs::status::{get_composefs_status, get_sorted_type1_boot_entries};
 use crate::composefs_consts::{
@@ -136,10 +136,16 @@ fn rollback_composefs_entries(host: &Host, boot_dir: &Dir, bootloader: Bootloade
     // TODO(Johan-Liebert): Currently assuming there are only two deployments
     assert!(all_configs.len() == 2);
 
+    // Keep the os_id the entries were written with, so rolling back only swaps them.
+    // Use "bootc" as default os_id for entries with a sort-key we didn't write.
+    let os_id = all_configs
+        .iter()
+        .find_map(|cfg| os_id_from_sort_key(cfg.sort_key.as_deref()?))
+        .unwrap_or("bootc")
+        .to_owned();
+    let os_id = os_id.as_str();
+
     // For rollback: previous gets primary sort-key, booted gets secondary sort-key
-    // Use "bootc" as default os_id for rollback scenarios
-    // TODO: Extract actual os_id from deployment
-    let os_id = "bootc";
 
     // This is the currently booted deployment - it should become secondary
     // OR if rollback was queued, it would become primary
