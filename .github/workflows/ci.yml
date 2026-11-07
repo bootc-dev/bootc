@@ -300,7 +300,7 @@ jobs:
       matrix:
         test_os: ${{ fromJson(needs.compute-ci-level.outputs.integration_os_matrix) }}
         variant: [ostree, composefs]
-        filesystem: ["ext4", "xfs"]
+        filesystem: ["ext4", "xfs", "btrfs"]
         bootloader: ["grub", "grub-cc", "systemd"]
         boot_type: ["bls", "uki"]
         seal_state: ["sealed", "unsealed"]
@@ -334,6 +334,23 @@ jobs:
             boot_type: uki
           - variant: ostree
             bootloader: systemd
+
+          # btrfs only on Fedora (CentOS Stream doesn't ship it), with
+          # composefs: one sealed UKI and one GRUB BLS cell.
+          - test_os: centos-9
+            filesystem: btrfs
+          - test_os: centos-10
+            filesystem: btrfs
+          - variant: ostree
+            filesystem: btrfs
+          - filesystem: btrfs
+            bootloader: grub-cc
+          - filesystem: btrfs
+            bootloader: systemd
+            boot_type: bls
+          - filesystem: btrfs
+            boot_type: uki
+            seal_state: unsealed
 
           # For now only have grub-cc tests in F44
           - test_os: fedora-45
