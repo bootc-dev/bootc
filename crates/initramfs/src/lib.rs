@@ -23,7 +23,7 @@ use rustix::{
 use serde::Deserialize;
 
 use composefs::{
-    fsverity::{FsVerityHashValue, Sha512HashValue},
+    fsverity::{CompareVerityError, FsVerityHashValue, MeasureVerityError, Sha512HashValue},
     mount::{FsHandle, MountOptions},
     mountcompat::{overlayfs_set_fd, overlayfs_set_lower_and_data_fds, prepare_mount},
     repository::{ImageNotFound, IntegrityPolicy, Repository, VerityState},
@@ -349,6 +349,25 @@ fn open_root_fs(path: &Path) -> Result<OwnedFd> {
     Ok(rootfs)
 }
 
+/// Shown when a strict `composefs=` boot finds a root filesystem without
+/// fs-verity support, e.g. ext4 made without `-O verity` by another tool.
+const STRICT_BOOT_WITHOUT_FSVERITY_HELP: &str = "This boot entry requires fs-verity \
+(its composefs= argument has no '?'), but the root filesystem does not support it (for \
+example ext4 created without '-O verity'). To boot, select the previous deployment in \
+the boot menu, or add '?' right after 'composefs=' (or 'composefs.digest=') in this \
+entry's kernel command line, which boots without fs-verity enforcement. To keep \
+enforcement, reinstall onto a filesystem with fs-verity enabled";
+
+/// Whether `error` comes from a filesystem that cannot do fs-verity at all.
+fn is_fsverity_unsupported(error: &anyhow::Error) -> bool {
+    matches!(
+        error.downcast_ref::<CompareVerityError>(),
+        Some(CompareVerityError::Measure(
+            MeasureVerityError::FilesystemNotSupported
+        ))
+    )
+}
+
 /// Prepares a floating mount for composefs and returns the fd
 ///
 /// # Arguments
@@ -380,7 +399,15 @@ pub fn mount_composefs_image(
     };
     repo.set_integrity_policy(IntegrityPolicy::Explicit(verity))?;
     // mount_digest only ever looks at images/<digest>, never at named refs.
-    let rootfs = repo.mount_digest(&digest, &MountOptions::default())?;
+    let rootfs = repo
+        .mount_digest(&digest, &MountOptions::default())
+        .map_err(|error| {
+            if !allow_missing_fsverity && is_fsverity_unsupported(&error) {
+                error.context(STRICT_BOOT_WITHOUT_FSVERITY_HELP)
+            } else {
+                error
+            }
+        })?;
 
     set_mount_readonly(&rootfs)?;
 
@@ -719,6 +746,12 @@ mod tests {
                     MeasureVerityError::VerityMissing | MeasureVerityError::FilesystemNotSupported
                 ))
             ),
+            "{error:#}"
+        );
+        // Only a filesystem without fs-verity support gets the recovery hint.
+        assert_eq!(
+            format!("{error:#}").contains(STRICT_BOOT_WITHOUT_FSVERITY_HELP),
+            is_fsverity_unsupported(&error),
             "{error:#}"
         );
 
