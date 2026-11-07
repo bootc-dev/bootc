@@ -1,7 +1,7 @@
-use crate::{ReinstallOpts, prompt};
+use crate::{prompt, ReinstallOpts};
 
 use super::ROOT_KEY_MOUNT_POINT;
-use anyhow::{Context, Result, ensure};
+use anyhow::{ensure, Context, Result};
 use bootc_utils::CommandRunExt;
 use fn_error_context::context;
 use std::process::Command;
@@ -24,10 +24,29 @@ pub(crate) fn bootc_has_clean(image: &str) -> Result<bool> {
     Ok(stdout_str.contains("--cleanup"))
 }
 
+#[context("image_has_cloud_init")]
+pub(crate) fn image_has_cloud_init(image: &str) -> Result<bool> {
+    let result = Command::new("podman")
+        .args([
+            "run",
+            "--rm",
+            "--entrypoint",
+            "sh",
+            image,
+            "-c",
+            "command -v cloud-init",
+        ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()?;
+
+    Ok(result.success())
+}
+
 #[context("reinstall_command")]
 pub(crate) fn reinstall_command(
     opts: &ReinstallOpts,
-    ssh_key_file: &str,
+    ssh_key_file: Option<&str>,
     has_clean: bool,
 ) -> Result<Command> {
     let mut podman_command_and_args = [
@@ -88,11 +107,13 @@ pub(crate) fn reinstall_command(
         bootc_command_and_args.push("--cleanup".to_string());
     }
 
-    podman_command_and_args.push("-v".to_string());
-    podman_command_and_args.push(format!("{ssh_key_file}:{ROOT_KEY_MOUNT_POINT}"));
+    if let Some(ssh_key_file) = ssh_key_file {
+        podman_command_and_args.push("-v".to_string());
+        podman_command_and_args.push(format!("{ssh_key_file}:{ROOT_KEY_MOUNT_POINT}"));
 
-    bootc_command_and_args.push("--root-ssh-authorized-keys".to_string());
-    bootc_command_and_args.push(ROOT_KEY_MOUNT_POINT.to_string());
+        bootc_command_and_args.push("--root-ssh-authorized-keys".to_string());
+        bootc_command_and_args.push(ROOT_KEY_MOUNT_POINT.to_string());
+    }
 
     let all_args = [
         podman_command_and_args,
