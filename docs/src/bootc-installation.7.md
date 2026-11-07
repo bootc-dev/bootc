@@ -294,6 +294,19 @@ and data from the old system (now accessible at `/sysroot`) to the new system. T
 useful for preserving network settings, user accounts, or application data from the
 previous installation.
 
+With the OSTree backend, `--preserve-var` copies the old `/var` into the new
+deployment before rebooting. It uses reflinks when supported and otherwise makes a
+full copy. Each new entry is staged and renamed into place atomically for
+namespace visibility. This is not a tree-wide point-in-time snapshot or a
+global all-or-nothing transaction: the copy proceeds over time, and a later
+failure can leave a partial migration. Neither strategy provides a consistent
+snapshot of live data; stop stateful services before copying their data. There
+is no crash-durability guarantee: copied content and renames are not guaranteed
+to survive sudden power loss or a kernel failure. `/var/tmp`, `/var/cache`,
+`/var/log/journal`, and `/var/lib/containers` are always excluded. Use repeatable
+`--preserve-var-skip PATH` options or the `preserve-var-skip` install configuration
+key for additional relative paths below `/var`.
+
 ##### Before reboot: Injecting new configuration
 
 After running `bootc install to-existing-root`, you may want to inject
