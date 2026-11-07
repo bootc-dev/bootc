@@ -424,8 +424,13 @@ pub(crate) struct InstallComposefsOpts {
     #[serde(default)]
     pub(crate) composefs_backend: bool,
 
-    /// Make fs-verity validation optional in case the filesystem doesn't support it
-    /// (composefs backend only)
+    /// Make fs-verity optional: add the `?` marker to the composefs kernel argument
+    /// (`composefs.digest=?...` or `composefs=?...`) and don't require fs-verity in the
+    /// repository (composefs backend only). Installing onto ext4 created without `-O verity`
+    /// still fails; use ext4 with `-O verity`, or XFS.
+    ///
+    /// This is the default on XFS. For an image with a UKI or an aboot image, the command line
+    /// built into it decides instead (see `bootc container ukify --allow-missing-verity`).
     #[clap(long, default_value_t)]
     #[serde(default)]
     pub(crate) allow_missing_verity: bool,
