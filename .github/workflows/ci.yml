@@ -108,6 +108,20 @@ jobs:
             echo "enabled=false" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Discover Operating System bases
+        id: os-discovery
+        run: |
+          set -euo pipefail
+          # Discover Fedora latest stable version dynamically
+          fedora_latest=$(skopeo inspect --no-tags docker://quay.io/fedora/fedora:latest | \
+            jq -r '.Labels."org.opencontainers.image.version"')
+          echo "fedora_latest=fedora-${fedora_latest}" >> "$GITHUB_OUTPUT"
+
+          # Emit a warning if the discovered version diverges from expectations
+          if [[ "fedora-${fedora_latest}" != "fedora-45" ]]; then
+            echo "::warning::Fedora latest is now ${fedora_latest}, but CI is expecting 45. Update CI configuration."
+          fi
+
       - name: Compute OS matrices
         id: matrix
         run: |
@@ -115,14 +129,15 @@ jobs:
           EVENT='${{ github.event_name }}'
           MERGE_QUEUE_ENABLED='${{ steps.merge-queue.outputs.enabled }}'
           DOCS_ONLY='${{ steps.docs-check.outputs.docs_only }}'
+          FEDORA_LATEST='${{ steps.os-discovery.outputs.fedora_latest }}'
 
           if [[ "$DOCS_ONLY" != "true" ]] && { [[ "$EVENT" == "merge_group" || "$EVENT" == "workflow_dispatch" ]] \
               || [[ "$EVENT" == "pull_request" && "$MERGE_QUEUE_ENABLED" != "true" ]] \
               || echo "$LABELS" | jq -e 'index("ci/merge")' > /dev/null; }; then
             # Full suite: all OSes
-            echo 'package_os_matrix=["fedora-44","fedora-45","fedora-46","centos-9","centos-10"]' >> "$GITHUB_OUTPUT"
-            echo 'integration_os_matrix=["fedora-44","centos-9","centos-10"]' >> "$GITHUB_OUTPUT"
-            echo 'upgrade_os_matrix=["fedora-44","centos-10"]' >> "$GITHUB_OUTPUT"
+            echo "package_os_matrix=[\"${FEDORA_LATEST}\",\"centos-9\",\"centos-10\"]" >> "$GITHUB_OUTPUT"
+            echo "integration_os_matrix=[\"${FEDORA_LATEST}\",\"centos-9\",\"centos-10\"]" >> "$GITHUB_OUTPUT"
+            echo "upgrade_os_matrix=[\"${FEDORA_LATEST}\",\"centos-10\"]" >> "$GITHUB_OUTPUT"
             echo 'run_heavy=true' >> "$GITHUB_OUTPUT"
           elif [[ "$DOCS_ONLY" != "true" ]] && echo "$LABELS" | jq -e 'index("ci/tier-1")' > /dev/null; then
             # Tier-1 only: centos-10
@@ -255,8 +270,6 @@ jobs:
         test_os: ${{ fromJson(needs.compute-ci-level.outputs.package_os_matrix) }}
 
     runs-on: ubuntu-26.04
-    # Rawhide is best-effort; don't let it block merges
-    continue-on-error: ${{ matrix.test_os == 'fedora-46' }}
 
     steps:
       - uses: actions/checkout@v7
@@ -335,9 +348,7 @@ jobs:
           - variant: ostree
             bootloader: systemd
 
-          # For now only have grub-cc tests in F44
-          - test_os: fedora-45
-            bootloader: grub-cc
+          # For now only have grub-cc tests in Fedora (latest stable, discovered dynamically)
           - test_os: centos-9
             bootloader: grub-cc
           - test_os: centos-10
@@ -445,10 +456,6 @@ jobs:
       matrix:
         test_os: ${{ fromJson(needs.compute-ci-level.outputs.upgrade_os_matrix) }}
         variant: [ostree, composefs]
-        # TODO: Re-enable this after 1.16.8 is released
-        exclude:
-          - test_os: fedora-44
-            variant: composefs
 
     runs-on: ubuntu-26.04
 
