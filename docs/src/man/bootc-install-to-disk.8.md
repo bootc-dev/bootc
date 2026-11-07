@@ -193,7 +193,7 @@ set `discoverable-partitions = true` in their install configuration
 
 **--allow-missing-verity**
 
-    Make fs-verity validation optional in case the filesystem doesn't support it (composefs backend only)
+    Make fs-verity optional: add the `?` marker to the composefs kernel argument (`composefs.digest=?...` or `composefs=?...`) and don't require fs-verity in the repository (composefs backend only). Installing onto ext4 created without `-O verity` still fails; use ext4 with `-O verity`, or XFS
 
     Default: false
 
