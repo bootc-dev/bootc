@@ -5,7 +5,9 @@ and the composefs backend uses [composefs-rs](https://github.com/composefs/compo
 instead of ostree to store and manage deployments. Both are supported and
 covered by the project's [stability guarantees](https://github.com/bootc-dev/bootc/blob/main/RELEASES.md#stability-guarantees).
 In particular, the project is committed to upgrading every composefs system
-installed since bootc 1.16.0 in place.
+installed since bootc 1.16.0 in place. Some installs made by bootc 1.16.0
+through 1.16.14 need a one-time change to their boot entry first; see
+[Strict boot entries without fs-verity](#strict-boot-entries-without-fs-verity).
 
 The composefs backend is required for [sealed images](building/bootc-sealed-images.7.md),
 and the image determines which backend `bootc install` uses; see
@@ -16,18 +18,81 @@ on-disk layout is described in [Filesystem: sysroot](bootc-sysroot.7.md#composef
 
 The composefs backend has two independent integrity controls:
 
-- **fs-verity enforcement.** By default every object in the composefs
-  repository must have fs-verity enabled, and the root filesystem is only
-  mounted if its digest matches the one on the kernel command line. Building a
-  UKI with `--allow-missing-verity` adds a `?` marker to that argument, which
-  makes fs-verity optional (for filesystems such as XFS that lack it). Both UKI
-  and traditional kernel/initramfs installs can enforce fs-verity.
+- **fs-verity enforcement.** A strict `composefs=<digest>` (or
+  `composefs.digest=`) kernel argument requires fs-verity: every object of the
+  booted image must have fs-verity enabled, and the root filesystem is only
+  mounted if its digest matches the one on the kernel command line. The kernel
+  command line alone decides this, whatever the repository's metadata
+  (`meta.json`) says. A `?` marker right after the `=`, as in
+  `composefs=?<digest>`, makes fs-verity optional (for filesystems such as XFS
+  that lack it), though a digest that can be measured must still match.
+  For a traditional kernel, `bootc install` adds the marker on XFS or with
+  `--allow-missing-verity`; a UKI gets it when built with
+  `bootc container ukify --allow-missing-verity`. Both UKI and
+  traditional kernel/initramfs installs can enforce fs-verity. See
+  [Strict boot entries without fs-verity](#strict-boot-entries-without-fs-verity)
+  if a strict entry stops booting after an upgrade.
 - **Boot authentication.** In a *sealed* deployment fs-verity is enforced and
   the expected root digest is embedded in a UKI signed for Secure Boot, so
   firmware authenticates the digest and the digest authenticates the root
   filesystem. A BLS entry or an
   unsigned UKI still has fs-verity checked at mount time, but nothing
   authenticates the digest itself.
+
+## Strict boot entries without fs-verity
+
+Earlier versions of bootc's initramfs did not enforce fs-verity for a strict
+entry when the repository had been created without it. bootc 1.16.0 through
+1.16.14 could install a strict entry that way, with
+`bootc install to-filesystem` or `to-existing-root` (including
+`system-reinstall-bootc`) onto ext4 created without `-O verity` by another
+tool, for example Anaconda or a cloud image. Those systems booted without
+fs-verity. The first deployment whose initramfs enforces it stops in
+`bootc-root-setup.service` with an error saying that the boot entry requires
+fs-verity but the root filesystem does not support it.
+
+Other installs are not affected: XFS installs get the `?` marker;
+`install to-disk`, image-builder and bootc-image-builder create ext4 with
+fs-verity; btrfs installs have fs-verity on the image and its objects; other
+bootc versions refuse a strict install onto ext4 without fs-verity; and the
+ostree backend is not involved. To check a system before upgrading, run
+this script as root (`/sysroot/composefs` is mode 0700):
+
+```sh
+#!/bin/sh
+args=$(tr ' ' '\n' </proc/cmdline | grep -E '^composefs(\.digest)?=') || { echo "unaffected: not booted with composefs"; exit 0; }
+for arg in $args; do
+  val=${arg#*=}
+  case $val in \?*) echo "unaffected: '?' set, fs-verity is optional"; exit 0;; esac
+  img=$(readlink -e /sysroot/composefs/images/${val##*:}) || continue
+  if lsattr "$img" 2>/dev/null | cut -d' ' -f1 | grep -q V; then echo "unaffected: strict, and the image has fs-verity"; exit 0; fi
+  echo "AFFECTED: strict $arg but $img has no fs-verity ($(findmnt -no FSTYPE /sysroot) root)"; exit 1
+done
+echo "unknown: no composefs image found for $args"; exit 2
+```
+
+If it prints AFFECTED, add `?` right after `composefs=` (or
+`composefs.digest=`) in the booted entry, reboot, then upgrade; upgrades copy
+the marker into the new entry. For systemd-boot the entries are
+`/boot/loader/entries/*.conf` on the ESP; for GRUB with `/boot` on the root
+filesystem they are `/sysroot/boot/loader/entries/*.conf`. These are usually
+mounted read-only; see
+[Kernel arguments](building/bootc-kernel-arguments.7.md#kernel-arguments-injected-at-installation-time)
+for how to edit them. This gives up fs-verity enforcement, which these systems
+never had.
+
+If the new deployment already stopped, select the previous deployment in the
+boot menu (press a key while systemd-boot starts, or Shift, Esc or F4 for
+GRUB); it boots with its own initramfs, and nothing falls back automatically.
+Then add `?` to the new entry's file and reboot. From the GRUB editor, adding
+`?` lasts for one boot. A UKI's command line is inside the UKI, so the marker
+can't be added to it: select the previous UKI, then upgrade to an image whose
+UKI is built with `bootc container ukify --allow-missing-verity`.
+
+To enforce fs-verity instead, reinstall onto a filesystem with
+fs-verity enabled, such as ext4 created with `-O verity`. Turning the ext4
+feature on afterwards doesn't by itself give the objects already stored
+fs-verity.
 
 ## EROFS formats
 

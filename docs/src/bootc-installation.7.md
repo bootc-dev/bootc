@@ -155,9 +155,10 @@ root. That module is not enabled by default: the reference
 enables it, and other base images need to as well; see
 [bootc-root-setup.service(5)](man/bootc-root-setup.service.5.md).
 
-On a root filesystem without fs-verity support (such as XFS), fs-verity is
-made optional automatically for a traditional kernel install;
-`--allow-missing-verity` does this explicitly.
+On XFS, which lacks fs-verity, fs-verity is made optional automatically for
+a traditional kernel install; `--allow-missing-verity` does this explicitly.
+On ext4, fs-verity is required, so with `to-filesystem` or `to-existing-root`
+the filesystem must have been created with `-O verity` (`to-disk` does this).
 
 ## More advanced installation with `to-filesystem`
 
