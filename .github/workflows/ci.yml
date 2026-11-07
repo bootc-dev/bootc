@@ -462,10 +462,22 @@ jobs:
       matrix:
         test_os: ${{ fromJson(needs.compute-ci-level.outputs.upgrade_os_matrix) }}
         variant: [ostree, composefs]
-        # TODO: Re-enable this after 1.16.8 is released
+        filesystem: [xfs, ext4, btrfs]
         exclude:
+          # ostree installs on the image's default filesystem (xfs)
+          - variant: ostree
+            filesystem: ext4
+          - variant: ostree
+            filesystem: btrfs
+          - variant: composefs
+            filesystem: xfs
+          # composefs runs on btrfs on Fedora, its default, and on ext4 on
+          # CentOS Stream, which doesn't ship btrfs
           - test_os: fedora-44
             variant: composefs
+            filesystem: ext4
+          - test_os: centos-10
+            filesystem: btrfs
 
     runs-on: ubuntu-26.04
 
@@ -485,6 +497,7 @@ jobs:
           printf 'BOOTC_base=%s\n' "$BASE" >> "$GITHUB_ENV"
           printf 'BOOTC_buildroot_base=%s\n' "$BUILDROOT_BASE" >> "$GITHUB_ENV"
           echo "BOOTC_variant=${{ matrix.variant }}" >> $GITHUB_ENV
+          echo "BOOTC_filesystem=${{ matrix.filesystem }}" >> $GITHUB_ENV
           echo "BOOTC_SKIP_PACKAGE=1" >> $GITHUB_ENV
           echo "RUST_BACKTRACE=full" >> $GITHUB_ENV
 
