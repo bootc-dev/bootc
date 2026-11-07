@@ -38,7 +38,8 @@ ukiboot_img := base_img + "-ukiboot"
 # Build variant: ostree (default) or composefs
 variant := env("BOOTC_variant", "ostree")
 bootloader := env("BOOTC_bootloader", "grub")
-# Only used for composefs tests
+# Root filesystem for composefs test installs. Exported as BOOTC_filesystem,
+# it also applies to ostree test installs, which otherwise use the image's default.
 filesystem := env("BOOTC_filesystem", "ext4")
 # Only used for composefs tests
 boot_type := env("BOOTC_boot_type", "bls")
