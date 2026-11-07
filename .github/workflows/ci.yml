@@ -326,8 +326,8 @@ jobs:
           - bootloader: grub
             boot_type: "uki"
 
-          # We only test filesystems for composefs to test if composefs backend will work on fs
-          # without fsverity
+          # ostree runs on xfs, and on btrfs (below); the other filesystems
+          # are for composefs, with and without fs-verity
           - variant: ostree
             filesystem: ext4
           - variant: ostree
@@ -335,13 +335,11 @@ jobs:
           - variant: ostree
             bootloader: systemd
 
-          # btrfs only on Fedora (CentOS Stream doesn't ship it), with
-          # composefs: one sealed UKI and one GRUB BLS cell.
+          # btrfs only on Fedora (CentOS Stream doesn't ship it): ostree,
+          # and composefs with one sealed UKI and one GRUB BLS cell.
           - test_os: centos-9
             filesystem: btrfs
           - test_os: centos-10
-            filesystem: btrfs
-          - variant: ostree
             filesystem: btrfs
           - filesystem: btrfs
             bootloader: grub-cc
