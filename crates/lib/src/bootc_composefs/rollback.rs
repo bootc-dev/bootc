@@ -209,7 +209,13 @@ fn rollback_composefs_entries(host: &Host, boot_dir: &Dir, bootloader: Bootloade
     // Atomically exchange "entries" <-> "entries.rollback"
     let dir = boot_dir.open_dir("loader").context("Opening loader dir")?;
 
-    rename_exchange_bls_entries(&dir)
+    rename_exchange_bls_entries(&dir)?;
+
+    if matches!(bootloader.kind()?, BootloaderKind::GRUBClassic) {
+        crate::bootc_composefs::grub_bls::sync_grub_bls_menu(boot_dir)?;
+    }
+
+    Ok(())
 }
 
 #[context("Rolling back composefs")]
