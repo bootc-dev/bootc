@@ -106,7 +106,7 @@ The following are supported with the composefs backend:
   [Bootloaders](bootc-bootloaders.7.md#composefs-backend).
 - Root filesystems with fs-verity support, and filesystems without it (such
   as XFS) with fs-verity made optional. Sealed images require fs-verity.
-  CI covers ext4 and XFS; btrfs is expected to work but is not tested.
+  CI covers ext4 and XFS, and btrfs on Fedora.
 - The [EROFS formats](#erofs-formats) and kernel arguments described above.
 - The image build commands `bootc container ukify`,
   `bootc container split-kernel-and-rootfs` and
