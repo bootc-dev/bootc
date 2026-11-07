@@ -783,13 +783,13 @@ checksum = "55b672471b4e9f9e95499ea597ff64941a309b2cdbffcc46f2cc5e2d971fd335"
 [[package]]
 name = "composefs"
 version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4d7e1513737dcf10ea93c116fe1de51f5160d782cdb78cd4399895069338f47b"
+source = "git+https://github.com/jeckersb/composefs-rs?rev=500b287742bce5b3ccbb6e9a7841034c1980e5fb#500b287742bce5b3ccbb6e9a7841034c1980e5fb"
 dependencies = [
  "anyhow",
  "composefs-ioctls",
  "fn-error-context",
  "hex",
+ "libc",
  "log",
  "once_cell",
  "openssl",
@@ -811,8 +811,7 @@ dependencies = [
 [[package]]
 name = "composefs-boot"
 version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5cae88df3ad0f69be4b615b4921fd639c6a1fd1519209f780fd61a8c692fa5ca"
+source = "git+https://github.com/jeckersb/composefs-rs?rev=500b287742bce5b3ccbb6e9a7841034c1980e5fb#500b287742bce5b3ccbb6e9a7841034c1980e5fb"
 dependencies = [
  "anyhow",
  "composefs",
@@ -827,8 +826,7 @@ dependencies = [
 [[package]]
 name = "composefs-ctl"
 version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d0bf6a54f7f6e3db14b83f035a2f8625ad9826de188c861be5c9307e3e503314"
+source = "git+https://github.com/jeckersb/composefs-rs?rev=500b287742bce5b3ccbb6e9a7841034c1980e5fb#500b287742bce5b3ccbb6e9a7841034c1980e5fb"
 dependencies = [
  "anyhow",
  "cap-std-ext",
@@ -857,8 +855,7 @@ dependencies = [
 [[package]]
 name = "composefs-fuse"
 version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "93d031d10f125a677778f3c359295e5046b19a96cb7cf64915a79b24b2da12a7"
+source = "git+https://github.com/jeckersb/composefs-rs?rev=500b287742bce5b3ccbb6e9a7841034c1980e5fb#500b287742bce5b3ccbb6e9a7841034c1980e5fb"
 dependencies = [
  "anyhow",
  "composefs",
@@ -873,8 +870,7 @@ dependencies = [
 [[package]]
 name = "composefs-ioctls"
 version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1d1e1dbf64a4a2dda8db3cbdb3109d29274b0cbeedc1ee68fdc8ccfdefc17cb9"
+source = "git+https://github.com/jeckersb/composefs-rs?rev=500b287742bce5b3ccbb6e9a7841034c1980e5fb#500b287742bce5b3ccbb6e9a7841034c1980e5fb"
 dependencies = [
  "rustix",
  "thiserror 2.0.21",
@@ -883,8 +879,7 @@ dependencies = [
 [[package]]
 name = "composefs-oci"
 version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6402e698c01b839294a2787128a2357c47886054d6d249136a54c80693fdad22"
+source = "git+https://github.com/jeckersb/composefs-rs?rev=500b287742bce5b3ccbb6e9a7841034c1980e5fb#500b287742bce5b3ccbb6e9a7841034c1980e5fb"
 dependencies = [
  "anyhow",
  "async-compression",
@@ -919,8 +914,7 @@ dependencies = [
 [[package]]
 name = "composefs-splitdirfdstream"
 version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d9847c8dd85e017d2615c41c46b9af9e7ce3e4f4021b841c6603cc62e184083"
+source = "git+https://github.com/jeckersb/composefs-rs?rev=500b287742bce5b3ccbb6e9a7841034c1980e5fb#500b287742bce5b3ccbb6e9a7841034c1980e5fb"
 dependencies = [
  "openssl",
  "rand 0.10.3",
@@ -933,8 +927,7 @@ dependencies = [
 [[package]]
 name = "composefs-storage"
 version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "390fac98c3953f41ec4e65aefc303b1a3e5a2c0e739898471b9ea0cc478f5152"
+source = "git+https://github.com/jeckersb/composefs-rs?rev=500b287742bce5b3ccbb6e9a7841034c1980e5fb#500b287742bce5b3ccbb6e9a7841034c1980e5fb"
 dependencies = [
  "anyhow",
  "base64 0.23.0",

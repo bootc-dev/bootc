@@ -132,3 +132,15 @@ todo = "deny"
 needless_borrow = "allow"
 needless_borrows_for_generic_args = "allow"
 
+
+# Temporary: test against the fs-verity helper from
+# https://github.com/composefs/composefs-rs/pull/447 (not yet released).
+[patch.crates-io]
+composefs = { git = "https://github.com/jeckersb/composefs-rs", rev = "500b287742bce5b3ccbb6e9a7841034c1980e5fb" }
+composefs-boot = { git = "https://github.com/jeckersb/composefs-rs", rev = "500b287742bce5b3ccbb6e9a7841034c1980e5fb" }
+composefs-ctl = { git = "https://github.com/jeckersb/composefs-rs", rev = "500b287742bce5b3ccbb6e9a7841034c1980e5fb" }
+composefs-fuse = { git = "https://github.com/jeckersb/composefs-rs", rev = "500b287742bce5b3ccbb6e9a7841034c1980e5fb" }
+composefs-ioctls = { git = "https://github.com/jeckersb/composefs-rs", rev = "500b287742bce5b3ccbb6e9a7841034c1980e5fb" }
+composefs-oci = { git = "https://github.com/jeckersb/composefs-rs", rev = "500b287742bce5b3ccbb6e9a7841034c1980e5fb" }
+composefs-splitdirfdstream = { git = "https://github.com/jeckersb/composefs-rs", rev = "500b287742bce5b3ccbb6e9a7841034c1980e5fb" }
+composefs-storage = { git = "https://github.com/jeckersb/composefs-rs", rev = "500b287742bce5b3ccbb6e9a7841034c1980e5fb" }
