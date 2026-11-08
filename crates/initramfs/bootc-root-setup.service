@@ -9,6 +9,9 @@ After=sysroot.mount
 After=ostree-prepare-root.service
 Requires=sysroot.mount
 Before=initrd-root-fs.target
+# The dracut module links this unit into initrd-root-fs.target.requires,
+# so that a failure here stops the boot instead of switching root into an
+# unverified /sysroot.
 
 OnFailure=emergency.target
 OnFailureJobMode=isolate

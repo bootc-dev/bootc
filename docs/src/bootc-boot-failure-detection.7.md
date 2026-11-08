@@ -30,7 +30,9 @@ note that the failure occurred during the previous boot's shutdown.
 There is a `bootc-finalize-staged.service` which is similar to `ostree-finalize-staged.service`,
 but there is not currently a similar `-boot-complete.service`. There is also a `bootc-root-setup.service`
 that runs during initramfs to mount the composefs image and set up `/etc` and `/var` - but if this
-service fails, the system will not boot at all (emergency mode or hang).
+service fails, the system will not boot at all (emergency mode, or a power-off with `rd.shell=0`):
+the initramfs does not switch root without it. See
+[bootc-root-setup.service(5)](man/bootc-root-setup.service.5.md).
 
 At the current time then, it is recommended to check the journal for failures from the previous boot:
 

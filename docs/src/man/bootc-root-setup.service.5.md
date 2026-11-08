@@ -23,6 +23,18 @@ The service is ordered after `sysroot.mount` and before
    directory at `/sysroot/state/deploy/<digest>/`.
 5. Replaces `/sysroot` with the fully assembled root, ready for switch-root.
 
+# FAILURE
+
+`initrd-root-fs.target` requires this service, so if it fails the target
+fails with it and the initramfs never switches root: the boot stops rather
+than continue into a `/sysroot` whose composefs image was not mounted or
+verified. As with any failed initramfs unit, `emergency.target` is started;
+if the emergency shell exits (or cannot start, for example because root is
+locked), starting the default target again runs this service again, and the
+boot continues only if it then succeeds. With `rd.shell=0` dracut offers no
+shell and powers off instead, or does what `rd.emergency=` names (see
+**dracut.cmdline(7)**); sealed images will usually want both.
+
 # CONFIGURATION
 
 Behaviour is controlled by an optional TOML file installed into the initramfs:
@@ -44,7 +56,7 @@ in e.g. `/usr/lib/dracut/dracut.conf.d`.
 
 # SEE ALSO
 
-**bootc-setup-root-conf.toml(5)**, **bootc(8)**
+**bootc-setup-root-conf.toml(5)**, **bootc(8)**, **dracut.cmdline(7)**
 
 # VERSION
 
