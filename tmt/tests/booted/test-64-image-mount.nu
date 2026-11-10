@@ -41,7 +41,7 @@ def mount_image [deployment source target] {
     }
 }
 
-def verify_image_mounts [base] {
+def verify_image_mounts [base deployment_etc_marker] {
     let sysroot_options = (
         findmnt --mountpoint /sysroot --json
         | from json
@@ -54,19 +54,33 @@ def verify_image_mounts [base] {
     let result = try {
         mkdir $root_target $usr_target $staged_target
 
-        mount_image booted / $root_target
-        $mounted = ($mounted | append $root_target)
+        let marker_result = (do -i { ^touch $deployment_etc_marker } | complete)
+        assert equal $marker_result.exit_code 0 $"failed to create deployment-local /etc marker: ($marker_result.stderr)"
+        let root_result = (do -i {
+            bootc image mount --deployment booted --source / --target $root_target
+        } | complete)
+        if $root_result.exit_code == 0 {
+            $mounted = ($mounted | append $root_target)
+            let root_os_release = ($root_target | path join "usr/lib/os-release")
+            let mounted_deployment_marker = ($root_target | path join "etc" ($deployment_etc_marker | path basename))
+            assert ($root_os_release | path exists) "booted root mount should contain usr/lib/os-release"
+            assert (not ($mounted_deployment_marker | path exists)) "image root must not expose deployment-local /etc"
+            assert_mount_options $root_target
+        } else {
+            assert ($root_result.stderr | str contains "OSTree checkout fallback does not support --source /") $"unexpected root mount failure: ($root_result.stderr)"
+            print "SKIP: image-root mount is unsupported for OSTree checkout fallback"
+        }
         mount_image booted /usr $usr_target
         $mounted = ($mounted | append $usr_target)
 
-        let root_os_release = ($root_target | path join "usr/lib/os-release")
         let usr_os_release = ($usr_target | path join "lib/os-release")
-        assert ($root_os_release | path exists) "booted root mount should contain usr/lib/os-release"
         assert ($usr_os_release | path exists) "/usr mount should contain lib/os-release"
-        assert equal (open $root_os_release | into string) (open $usr_os_release | into string)
 
-        assert_mount_options $root_target
         assert_mount_options $usr_target
+        if ($mounted | any { |target| $target == $root_target }) {
+            let root_os_release = ($root_target | path join "usr/lib/os-release")
+            assert equal (open $root_os_release | into string) (open $usr_os_release | into string)
+        }
 
         let write_path = ($usr_target | path join ".bootc-image-mount-write-test")
         let write_result = (do -i { ^touch $write_path } | complete)
@@ -104,17 +118,25 @@ def verify_image_mounts [base] {
 }
 
 let base = (^mktemp -d /run/bootc-image-mount.XXXXXX | str trim)
-let test_outcome = (verify_image_mounts $base)
+let deployment_etc_marker = $"/etc/.bootc-image-mount-deployment-local-(($base | path basename))"
+let test_outcome = (verify_image_mounts $base $deployment_etc_marker)
 let mount_cleanup_errors = (cleanup_targets $test_outcome.mounted)
-let cleanup_errors = if (($mount_cleanup_errors | length) > 0) {
-    $mount_cleanup_errors | append $"($base): directory retained because a mount could not be unmounted"
-} else {
+mut cleanup_errors = $mount_cleanup_errors
+if ($deployment_etc_marker | path exists) {
+    let marker_cleanup = (do -i { ^rm -- $deployment_etc_marker } | complete)
+    if $marker_cleanup.exit_code != 0 {
+        $cleanup_errors = ($cleanup_errors | append $"($deployment_etc_marker): failed to remove deployment-local /etc marker: ($marker_cleanup.stderr)")
+    }
+}
+if (($cleanup_errors | length) == 0) {
     let remove_result = (do -i { ^rm --recursive $base } | complete)
     if $remove_result.exit_code == 0 {
-        []
+        $cleanup_errors = []
     } else {
-        [$"($base): failed to remove test directory: ($remove_result.stderr)"]
+        $cleanup_errors = [$"($base): failed to remove test directory: ($remove_result.stderr)"]
     }
+} else {
+    $cleanup_errors = ($cleanup_errors | append $"($base): directory retained because a mount could not be unmounted")
 }
 
 if (($cleanup_errors | length) > 0) {

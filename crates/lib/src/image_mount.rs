@@ -39,7 +39,8 @@ pub(crate) struct MountOpts {
     #[arg(long, value_enum)]
     pub(crate) deployment: Deployment,
 
-    /// Absolute directory path inside the selected image to expose (`/` selects its root).
+    /// Absolute directory path inside the selected image to expose (`/` selects its root when
+    /// supported). OSTree checkout fallback rejects `/` and maps `/etc` to pristine `/usr/etc`.
     /// No path component may be a symlink.
     #[arg(long, value_parser = crate::cli::parse_absolute_path)]
     pub(crate) source: Utf8PathBuf,
@@ -60,8 +61,8 @@ struct MountedImageRoot {
     tree: OwnedFd,
     // Keep the repository/sysroot locked while cloning and attaching its tree.
     _storage: StorageGuard,
-    // A non-composefs OSTree checkout has deployment-local /etc. Replace it
-    // with pristine image content from /usr/etc before exposing the tree.
+    // A non-composefs OSTree checkout has deployment-local /etc. Source
+    // selection maps /etc to pristine image content in /usr/etc instead.
     checkout: bool,
 }
 
@@ -100,14 +101,12 @@ pub(crate) async fn mount(opts: MountOpts) -> Result<()> {
         checkout,
     } = image;
 
-    if checkout {
-        mount_pristine_etc(&tree)?;
-    }
+    let source_path = select_source_path(checkout, &opts.source)?;
     bootc_initramfs_setup::set_mount_tree_readonly(&tree)
         .context("Making selected deployment image read-only")?;
 
     let image_root = Dir::reopen_dir(&tree).context("Opening selected image root")?;
-    let source = open_source(&image_root, &opts.source)?;
+    let source = open_source(&image_root, &source_path)?;
     // Open once and retain this descriptor through validation and attachment.
     // This avoids checking one pathname and mounting on a replacement object.
     let (target, target_parent) = open_mount_target(&opts.target)?;
@@ -462,25 +461,25 @@ fn matching_deployment_index(
     Ok(index)
 }
 
-fn mount_pristine_etc(tree: &impl AsFd) -> Result<()> {
-    let root = Dir::reopen_dir(tree).context("Opening selected OSTree checkout")?;
-    let usr_etc = root
-        .open_dir("usr/etc")
-        .context("Opening pristine image /usr/etc")?;
-    let etc_tree = open_tree(
-        &usr_etc,
-        ".",
-        OpenTreeFlags::OPEN_TREE_CLONE | OpenTreeFlags::OPEN_TREE_CLOEXEC,
-    )
-    .context("Cloning pristine image /usr/etc")?;
-    move_mount(
-        &etc_tree,
-        "",
-        &root,
-        "etc",
-        MoveMountFlags::MOVE_MOUNT_F_EMPTY_PATH,
-    )
-    .context("Replacing deployment-local /etc with pristine image /usr/etc")
+fn select_source_path(checkout: bool, source: &Utf8Path) -> Result<Utf8PathBuf> {
+    if !checkout {
+        return Ok(source.to_owned());
+    }
+    ensure!(
+        source != Utf8Path::new("/"),
+        "OSTree checkout fallback does not support --source /: refusing to expose deployment-local /etc"
+    );
+    if source == Utf8Path::new("/etc") || source.starts_with("/etc/") {
+        let suffix = source
+            .strip_prefix("/etc")
+            .expect("/etc source prefix was checked");
+        let mut selected = Utf8PathBuf::from("/usr/etc");
+        if !suffix.as_str().is_empty() {
+            selected.push(suffix);
+        }
+        return Ok(selected);
+    }
+    Ok(source.to_owned())
 }
 
 fn open_source(root: &Dir, source: &Utf8Path) -> Result<std::fs::File> {
@@ -700,11 +699,11 @@ mod tests {
     use super::{
         Deployment, DeploymentIdentity, MountOpts, UnmountOpts, ensure_directory_empty,
         ensure_not_mountpoint, ensure_not_root_target, open_mount_target, open_path_no_symlinks,
-        open_source, source_relative_path,
+        open_source, select_source_path, source_relative_path,
     };
     use crate::cli::{ImageOpts, InstallOpts, Opt};
     use camino::{Utf8Path, Utf8PathBuf};
-    use cap_std_ext::cap_std::ambient_authority;
+    use cap_std_ext::cap_std::{ambient_authority, fs::Dir};
     use clap::Parser;
     use std::os::unix::fs::symlink;
 
@@ -815,6 +814,49 @@ mod tests {
                 .unwrap()
                 .is_dir()
         );
+    }
+
+    #[test]
+    fn checkout_sources_map_etc_to_pristine_image_content() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        std::fs::create_dir_all(root.join("etc/subdir")).unwrap();
+        std::fs::create_dir_all(root.join("usr/etc/subdir")).unwrap();
+        std::fs::create_dir_all(root.join("etc-other")).unwrap();
+        std::fs::create_dir_all(root.join("usr/lib")).unwrap();
+        std::fs::write(root.join("etc/marker"), b"deployment-local").unwrap();
+        std::fs::write(root.join("usr/etc/marker"), b"image-pristine").unwrap();
+        std::fs::write(root.join("etc/subdir/marker"), b"deployment-local-child").unwrap();
+        std::fs::write(root.join("usr/etc/subdir/marker"), b"image-pristine-child").unwrap();
+        std::fs::write(root.join("etc-other/marker"), b"etc-other").unwrap();
+
+        let image = Dir::open_ambient_dir(root, ambient_authority()).unwrap();
+        assert_eq!(image.read("etc/marker").unwrap(), b"deployment-local");
+        // Resolve through open_source as the mount path does, then read the
+        // marker relative to that selected source directory.
+        let read_source_marker = |source: &str| {
+            let selected = select_source_path(true, Utf8Path::new(source)).unwrap();
+            let dir = Dir::reopen_dir(&image).unwrap();
+            let source = open_source(&dir, &selected).unwrap();
+            let source = Dir::reopen_dir(&source).unwrap();
+            source.read("marker").unwrap()
+        };
+        assert_eq!(read_source_marker("/etc"), b"image-pristine");
+        assert_eq!(read_source_marker("/etc/subdir"), b"image-pristine-child");
+        assert_eq!(read_source_marker("/etc-other"), b"etc-other");
+        assert_eq!(
+            select_source_path(true, Utf8Path::new("/usr")).unwrap(),
+            Utf8Path::new("/usr")
+        );
+        assert_eq!(
+            select_source_path(false, Utf8Path::new("/etc")).unwrap(),
+            Utf8Path::new("/etc")
+        );
+        assert_eq!(
+            select_source_path(false, Utf8Path::new("/")).unwrap(),
+            Utf8Path::new("/")
+        );
+        assert!(select_source_path(true, Utf8Path::new("/")).is_err());
     }
 
     #[test]
