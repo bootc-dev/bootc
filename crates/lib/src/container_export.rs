@@ -388,7 +388,7 @@ fn handle_kernel_relocation<W: Write>(
 ) -> Result<()> {
     use crate::kernel::KernelType;
 
-    let kernel_info = match crate::kernel::find_kernel(root_dir)? {
+    let kernel_info = match crate::kernel::find_kernel(root_dir, None)? {
         Some(kernel) => kernel,
         None => return Ok(()),
     };

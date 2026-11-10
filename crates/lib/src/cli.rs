@@ -548,9 +548,10 @@ pub(crate) enum ContainerOpts {
         /// By default, produce V1 then V2 kargs for compatibility. V1 produces a
         /// `composefs.digest=v1-sha512-12:<hex>` karg (C-tool compatible), while V2
         /// produces the legacy `composefs=<hex>` karg (composefs-rs native).
+        /// V1-only omits the V2 fallback to shorten the kernel command line.
         /// Explicit V2 produces only the V2 karg as a compatibility escape hatch.
         #[clap(long)]
-        erofs_version: Option<ErofsVersionArg>,
+        erofs_version: Option<BootArtifactErofsVersionArg>,
 
         /// Write a dumpfile to this path
         #[clap(long)]
@@ -576,6 +577,14 @@ pub(crate) enum ContainerOpts {
         /// Make fs-verity validation optional in case the filesystem doesn't support it
         #[clap(long)]
         allow_missing_verity: bool,
+
+        /// EROFS format version to use when computing the composefs digest.
+        ///
+        /// By default, produce V1 then V2 kargs for compatibility.
+        /// V1-only omits the V2 fallback to shorten the kernel command line.
+        /// Explicit V2 produces only the legacy V2 karg.
+        #[clap(long)]
+        erofs_version: Option<BootArtifactErofsVersionArg>,
 
         /// Write a dumpfile to this path
         #[clap(long)]
@@ -621,7 +630,7 @@ pub(crate) enum ContainerOpts {
     },
 }
 
-/// EROFS format version for `bootc container ukify --erofs-version`.
+/// EROFS format version for computing a composefs digest.
 #[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
 pub(crate) enum ErofsVersionArg {
     /// V1 EROFS (C-tool compatible, `composefs.digest=v1-sha512-12:<hex>` karg).  Default.
@@ -637,6 +646,17 @@ impl From<ErofsVersionArg> for FormatVersion {
             ErofsVersionArg::V2 => FormatVersion::V2,
         }
     }
+}
+
+/// EROFS format and compatibility arguments to embed in a boot artifact.
+#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
+pub(crate) enum BootArtifactErofsVersionArg {
+    /// V1 EROFS with a V2 compatibility fallback. Default.
+    V1,
+    /// V1 EROFS without a backwards compatibility V2 fallback.
+    V1Only,
+    /// V2 EROFS with only the legacy `composefs=` argument.
+    V2,
 }
 
 #[derive(Debug, Clone, ValueEnum, PartialEq, Eq)]
@@ -2416,6 +2436,7 @@ async fn run_from_opt(opt: Opt) -> Result<CliExitStatus> {
             ContainerOpts::Aboot {
                 rootfs,
                 allow_missing_verity,
+                erofs_version,
                 write_dumpfile_to,
                 kernel_dir,
                 out,
@@ -2425,6 +2446,7 @@ async fn run_from_opt(opt: Opt) -> Result<CliExitStatus> {
                     kernel_dir.as_deref(),
                     out.as_deref(),
                     allow_missing_verity,
+                    erofs_version,
                     write_dumpfile_to.as_deref(),
                 )
                 .await
@@ -3052,23 +3074,26 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_ukify_erofs_version_args() {
-        for (command, expected) in [
-            (&["bootc", "container", "ukify"][..], None),
-            (
-                &["bootc", "container", "ukify", "--erofs-version=v1"][..],
-                Some(ErofsVersionArg::V1),
-            ),
-            (
-                &["bootc", "container", "ukify", "--erofs-version=v2"][..],
-                Some(ErofsVersionArg::V2),
-            ),
-        ] {
-            let opt = Opt::try_parse_from(command).unwrap();
-            let Opt::Container(ContainerOpts::Ukify { erofs_version, .. }) = opt else {
-                panic!("expected container ukify options");
-            };
-            assert_eq!(erofs_version, expected);
+    fn test_parse_boot_artifact_erofs_version_args() {
+        for command in ["ukify", "aboot"] {
+            for (arg, expected) in [
+                (None, None),
+                (Some("v1"), Some(BootArtifactErofsVersionArg::V1)),
+                (Some("v1-only"), Some(BootArtifactErofsVersionArg::V1Only)),
+                (Some("v2"), Some(BootArtifactErofsVersionArg::V2)),
+            ] {
+                let mut args = vec!["bootc", "container", command];
+                if let Some(arg) = arg {
+                    args.extend(["--erofs-version", arg]);
+                }
+                let opt = Opt::try_parse_from(args).unwrap();
+                let erofs_version = match opt {
+                    Opt::Container(ContainerOpts::Ukify { erofs_version, .. })
+                    | Opt::Container(ContainerOpts::Aboot { erofs_version, .. }) => erofs_version,
+                    _ => panic!("expected container boot artifact options"),
+                };
+                assert_eq!(erofs_version, expected, "{command} {arg:?}");
+            }
         }
     }
 

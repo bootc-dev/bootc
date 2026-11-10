@@ -600,7 +600,7 @@ impl BootedStorage {
                 }
                 let mut composefs = ComposefsRepository::open_path(&physical_root, COMPOSEFS)?;
                 if cmdline.allow_missing_fsverity {
-                    composefs.set_insecure();
+                    composefs.set_insecure()?;
                 }
                 let composefs = Arc::new(composefs);
 
@@ -987,7 +987,7 @@ impl Storage {
         let composefs = match ComposefsRepository::open_path(&composefs_dir, ".") {
             Ok(mut repo) => {
                 if !ostree_verity.enabled {
-                    repo.set_insecure();
+                    repo.set_insecure()?;
                 }
                 repo
             }
@@ -1009,7 +1009,7 @@ impl Storage {
                 // the algorithm and writes meta.json.
                 let (mut repo, _upgraded) = ComposefsRepository::open_upgrade(&composefs_dir, ".")?;
                 if !ostree_verity.enabled {
-                    repo.set_insecure();
+                    repo.set_insecure()?;
                 }
                 repo
             }

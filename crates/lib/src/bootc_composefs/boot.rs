@@ -137,10 +137,6 @@ pub(crate) const EFI_UUID_FILE: &str = "efiuuid.cfg";
 /// The EFI Linux directory
 pub(crate) const EFI_LINUX: &str = "EFI/Linux";
 
-/// Timeout for systemd-boot bootloader menu
-const SYSTEMD_TIMEOUT: &str = "timeout 5";
-const SYSTEMD_LOADER_CONF_PATH: &str = "loader/loader.conf";
-
 pub(crate) const INITRD: &str = "initrd";
 pub(crate) const VMLINUZ: &str = "vmlinuz";
 
@@ -228,9 +224,6 @@ pub(crate) fn print_uki_dumpfile_diff(
     let dumpfile_name = mismatch
         .uki_name()
         .and_then(|x| x.strip_suffix(EFI_EXT).map(|x| format!("{x}.dump")));
-    // .uki_name
-    // .strip_suffix(EFI_EXT)
-    // .map(|x| format!("{x}.dump"));
 
     let Some(dumpfile_name) = &dumpfile_name else {
         return;
@@ -558,6 +551,13 @@ pub(crate) fn primary_sort_key(os_id: &str) -> String {
 /// Format: bootc-{id}-1
 pub(crate) fn secondary_sort_key(os_id: &str) -> String {
     format!("bootc-{os_id}-{SORTKEY_PRIORITY_SECONDARY}")
+}
+
+/// Returns the os_id in a sort key from [`primary_sort_key`] or
+/// [`secondary_sort_key`], or `None` if it isn't in their format.
+pub(crate) fn os_id_from_sort_key(sort_key: &str) -> Option<&str> {
+    let (os_id, _priority) = sort_key.strip_prefix("bootc-")?.rsplit_once('-')?;
+    Some(os_id)
 }
 
 /// Returns the name of the directory where we store Type1 boot entries
@@ -1926,13 +1926,6 @@ fn write_systemd_uki_config(
         )?;
     }
 
-    // Write the timeout for bootloader menu if not exists
-    if !esp_dir.exists(SYSTEMD_LOADER_CONF_PATH) {
-        esp_dir
-            .atomic_write(SYSTEMD_LOADER_CONF_PATH, SYSTEMD_TIMEOUT)
-            .with_context(|| format!("Writing to {SYSTEMD_LOADER_CONF_PATH}"))?;
-    }
-
     let esp_dir = esp_dir
         .reopen_as_ownedfd()
         .context("Reopening as owned fd")?;
@@ -2448,8 +2441,6 @@ fn install_ukiboot(
         "aarch64" => ("aa64", "BOOTAA64.EFI"),
         arch => bail!("ukiboot is not supported on {arch}"),
     };
-    let (vendor, ..) =
-        parse_os_release(root)?.ok_or_else(|| anyhow!("Failed to parse os-release"))?;
     let get_file = |path: &str| {
         source
             .as_dir()
@@ -2457,36 +2448,69 @@ fn install_ukiboot(
             .and_then(|(dir, name)| dir.get_file(name))
     };
 
-    for (vendor_path, fallback_path, packaged_name) in [
+    let loader_name = format!("ukiboot{efi_arch}.efi");
+    let files = [
         (
-            format!("ukiboot{efi_arch}.efi"),
-            fallback_name.to_string(),
-            format!("ukiboot{efi_arch}.efi"),
+            loader_name.clone(),
+            Some(fallback_name.to_string()),
+            loader_name.clone(),
         ),
         (
             "ukiboot_a.efi.extra.d/slot_a.addon.efi".into(),
-            "ukiboot_a.efi.extra.d/slot_a.addon.efi".into(),
+            None,
             "slot_a.addon.efi".into(),
         ),
         (
             "ukiboot_b.efi.extra.d/slot_b.addon.efi".into(),
-            "ukiboot_b.efi.extra.d/slot_b.addon.efi".into(),
+            None,
             "slot_b.addon.efi".into(),
         ),
-    ] {
-        // We prefer files in /boot, because they can be signed without affecting the boot-transformed cfs digest
-        let preferred = format!("boot/efi/EFI/{vendor}/{vendor_path}");
-        let fallback = format!("usr/libexec/ukiboot/efi/{packaged_name}");
-        let file = match get_file(&preferred) {
-            Err(ImageError::NotFound(..)) => get_file(&fallback),
-            result => result,
+    ];
+    let packaged_root_path = "usr/libexec/ukiboot/efi";
+    let packaged_root = root
+        .open_dir_optional(packaged_root_path)
+        .context("Opening packaged ukiboot EFI directory")?;
+    let mut vendor = "BOOT".to_string();
+    let mut packaged_path = Path::new(packaged_root_path).to_path_buf();
+    if let Some(efidir) = &packaged_root {
+        // Find expected vendor name from packaged_root subdir
+        for entry in efidir.entries_utf8()? {
+            let entry = entry?;
+            let vendor_name = entry.file_name()?;
+            let vendor_path = Path::new(packaged_root_path).join(&vendor_name);
+            if !root.is_file(vendor_path.join(&loader_name)) {
+                continue;
+            }
+            vendor = vendor_name;
+            packaged_path = vendor_path;
+            break;
         }
-        .with_context(|| format!("Finding {preferred} or {fallback}"))?;
-        let data = read_file(file, repo).context("Reading ukiboot EFI file")?;
-        for target in [
-            format!("EFI/{vendor}/{vendor_path}"),
-            format!("EFI/BOOT/{fallback_path}"),
-        ] {
+    }
+
+    // Prefer a complete set under /boot, where binaries can be signed independently.
+    let boot_dir = format!("boot/efi/EFI/{vendor}");
+    let use_boot_files = files.iter().all(|(ukiboot_part_path, _, _)| {
+        // Leave errors other than missing files for the read below.
+        !matches!(
+            get_file(&format!("{boot_dir}/{ukiboot_part_path}")),
+            Err(ImageError::NotFound(..))
+        )
+    });
+
+    for (vendor_path, fallback_path, packaged_name) in files {
+        let data = if use_boot_files {
+            let source_path = format!("{boot_dir}/{vendor_path}");
+            let file = get_file(&source_path)
+                .with_context(|| format!("Finding ukiboot EFI file {source_path}"))?;
+            read_file(file, repo).context("Reading ukiboot EFI file")?
+        } else {
+            root.read(packaged_path.join(&packaged_name))
+                .with_context(|| format!("Reading packaged ukiboot EFI file {packaged_name}"))?
+                .into_boxed_slice()
+        };
+        for target in std::iter::once(format!("EFI/{vendor}/{vendor_path}"))
+            .chain(fallback_path.map(|path| format!("EFI/BOOT/{path}")))
+        {
             let target = Utf8Path::new(&target);
             if let Some(parent) = target.parent() {
                 esp.create_dir_all(parent)?;
@@ -2498,7 +2522,7 @@ fn install_ukiboot(
     Ok(())
 }
 
-fn validate_bootloader(
+pub(crate) fn validate_bootloader(
     entry: &ComposefsBootEntry<Sha512HashValue>,
     bootloader: Bootloader,
 ) -> Result<()> {
@@ -2850,7 +2874,7 @@ pub(crate) async fn setup_composefs_boot(
 
     let mut repo = open_composefs_repo(&root_setup.physical_root)?;
     if allow_missing_fsverity {
-        repo.set_insecure();
+        repo.set_insecure()?;
     }
 
     let repo = Arc::new(repo);
@@ -2876,6 +2900,10 @@ pub(crate) async fn setup_composefs_boot(
         .mount(&id.to_hex())
         .context("Failed to mount composefs image")?;
     let image_root = Dir::reopen_dir(&composefs_mnt_fd)?;
+
+    if boot_type == BootType::Aboot {
+        super::aboot::require_aboot_deploy_in_image(&image_root)?;
+    }
 
     let postfetch = PostFetchState::new(state, &image_root, image_bootloader(entry))?;
 
@@ -3094,9 +3122,6 @@ mod tests {
         let config = RepositoryConfig::new(composefs::fsverity::Algorithm::SHA512).set_insecure();
         let (repo, _) = ComposefsRepository::init_path(&*temp, "repo", config)?;
         let repo = Arc::new(repo);
-        let root = cap_std_ext::cap_tempfile::tempdir(ambient_authority())?;
-        root.create_dir_all("usr/lib")?;
-        root.write("usr/lib/os-release", "ID=testos\n")?;
 
         let (loader, fallback) = match std::env::consts::ARCH {
             "x86_64" => ("ukibootx64.efi", "BOOTX64.EFI"),
@@ -3104,66 +3129,117 @@ mod tests {
             _ => return Ok(()),
         };
         let files = [
-            (loader, loader, fallback),
-            (
-                "slot_a.addon.efi",
-                "ukiboot_a.efi.extra.d/slot_a.addon.efi",
-                "ukiboot_a.efi.extra.d/slot_a.addon.efi",
-            ),
-            (
-                "slot_b.addon.efi",
-                "ukiboot_b.efi.extra.d/slot_b.addon.efi",
-                "ukiboot_b.efi.extra.d/slot_b.addon.efi",
-            ),
+            (loader, loader),
+            ("slot_a.addon.efi", "ukiboot_a.efi.extra.d/slot_a.addon.efi"),
+            ("slot_b.addon.efi", "ukiboot_b.efi.extra.d/slot_b.addon.efi"),
         ];
-        for signed_mask in 0..8 {
-            let source = cap_std_ext::cap_tempfile::tempdir(ambient_authority())?;
-            let esp = cap_std_ext::cap_tempfile::tempdir(ambient_authority())?;
-            source.create_dir_all("usr/libexec/ukiboot/efi")?;
-            for (index, (name, vendor_path, _)) in files.iter().enumerate() {
-                source.write(
-                    format!("usr/libexec/ukiboot/efi/{name}"),
-                    format!("unsigned-{name}").repeat(if index == 0 { 512 } else { 1 }),
-                )?;
-                if signed_mask & (1 << index) != 0 {
-                    let path = format!("boot/efi/EFI/testos/{vendor_path}");
-                    let path = Utf8Path::new(&path);
-                    source.create_dir_all(path.parent().unwrap())?;
+        let all_signed = (1 << files.len()) - 1;
+        for (vendor, os_id, layout) in [
+            ("redhat", Some("rhel"), "symlink"),
+            ("centos", Some("autosd"), "symlink"),
+            ("custom", None, "directory"),
+            ("custom", None, "nested-symlink"),
+            ("custom", None, "parent-symlink"),
+            ("BOOT", None, "symlink"),
+            ("Linux", None, "directory"),
+            ("BOOT", None, "flat"),
+        ] {
+            for signed_mask in 0..=all_signed {
+                let source = cap_std_ext::cap_tempfile::tempdir(ambient_authority())?;
+                let esp = cap_std_ext::cap_tempfile::tempdir(ambient_authority())?;
+                let packaged_root = "usr/libexec/ukiboot/efi";
+                let packaged_path = match layout {
+                    "directory" => format!("{packaged_root}/{vendor}"),
+                    "nested-symlink" => format!("{packaged_root}/nested/files"),
+                    "parent-symlink" => "usr/libexec/ukiboot/files".to_string(),
+                    _ => packaged_root.to_string(),
+                };
+                source.create_dir_all(packaged_root)?;
+                source.create_dir_all(&packaged_path)?;
+                match layout {
+                    "symlink" => source.symlink(".", format!("{packaged_root}/{vendor}"))?,
+                    "nested-symlink" => {
+                        source.symlink("nested/files", format!("{packaged_root}/{vendor}"))?
+                    }
+                    "parent-symlink" => {
+                        source.symlink("../files", format!("{packaged_root}/{vendor}"))?
+                    }
+                    _ => {}
+                }
+                // Ignore broken links, regular files, and directories without a main binary.
+                source.symlink("missing", format!("{packaged_root}/broken"))?;
+                source.write(format!("{packaged_root}/a-file"), "not a directory")?;
+                source.create_dir_all(format!("{packaged_root}/empty/{loader}"))?;
+                if let Some(os_id) = os_id {
+                    source.create_dir_all("usr/lib")?;
+                    source.write("usr/lib/os-release", format!("ID={os_id}\n"))?;
+                }
+                for (index, (name, vendor_path)) in files.iter().enumerate() {
                     source.write(
-                        path,
-                        format!("signed-{name}").repeat(if index == 0 { 512 } else { 1 }),
+                        format!("{packaged_path}/{name}"),
+                        format!("unsigned-{name}").repeat(if index == 0 { 512 } else { 1 }),
                     )?;
+                    // A complete /boot directory for another vendor must not be selected.
+                    let unrelated = format!("boot/efi/EFI/aaa/{vendor_path}");
+                    source.create_dir_all(Utf8Path::new(&unrelated).parent().unwrap())?;
+                    source.write(unrelated, "other-vendor")?;
+                    if signed_mask & (1 << index) != 0 {
+                        let path = format!("boot/efi/EFI/{vendor}/{vendor_path}");
+                        source.create_dir_all(Utf8Path::new(&path).parent().unwrap())?;
+                        source.write(
+                            path,
+                            format!("signed-{name}").repeat(if index == 0 { 512 } else { 1 }),
+                        )?;
+                    }
                 }
-            }
-            let fs = read_filesystem(source.reopen_as_ownedfd()?, ".".into(), Some(repo.clone()))
-                .await?;
-            install_ukiboot(&root, &fs, &repo, &esp)?;
-            for (index, (name, vendor_path, fallback_path)) in files.iter().enumerate() {
-                let expected = if signed_mask & (1 << index) != 0 {
-                    format!("signed-{name}")
-                } else {
-                    format!("unsigned-{name}")
+                let fs =
+                    read_filesystem(source.reopen_as_ownedfd()?, ".".into(), Some(repo.clone()))
+                        .await?;
+                install_ukiboot(&source, &fs, &repo, &esp)?;
+                for (index, (name, vendor_path)) in files.iter().enumerate() {
+                    let expected = if signed_mask == all_signed {
+                        format!("signed-{name}")
+                    } else {
+                        format!("unsigned-{name}")
+                    }
+                    .repeat(if index == 0 { 512 } else { 1 });
+                    assert_eq!(
+                        esp.read_to_string(format!("EFI/{vendor}/{vendor_path}"))?,
+                        expected,
+                        "vendor={vendor}, layout={layout}, signed_mask={signed_mask}"
+                    );
+                    if index == 0 {
+                        assert_eq!(
+                            esp.read_to_string(format!("EFI/BOOT/{fallback}"))?,
+                            expected
+                        );
+                    } else if vendor != "BOOT" {
+                        assert!(!esp.exists(format!("EFI/BOOT/{vendor_path}")));
+                    }
                 }
-                .repeat(if index == 0 { 512 } else { 1 });
-                for path in [
-                    format!("EFI/testos/{vendor_path}"),
-                    format!("EFI/BOOT/{fallback_path}"),
-                ] {
-                    assert_eq!(esp.read_to_string(path)?, expected);
-                }
-            }
+                assert!(!esp.exists("EFI/aaa"));
 
-            let preferred = format!("boot/efi/EFI/testos/{loader}");
-            source.remove_file_optional(&preferred)?;
-            source.create_dir_all(&preferred)?;
-            let fs = read_filesystem(source.reopen_as_ownedfd()?, ".".into(), Some(repo.clone()))
-                .await?;
-            assert!(install_ukiboot(&root, &fs, &repo, &esp).is_err());
-            source.remove_dir(&preferred)?;
-            source.remove_file(format!("usr/libexec/ukiboot/efi/{loader}"))?;
-            let fs = read_filesystem(source.reopen_as_ownedfd()?, ".".into(), Some(repo.clone()))
-                .await?;
-            assert!(install_ukiboot(&root, &fs, &repo, &esp).is_err());
+                let preferred = format!("boot/efi/EFI/{vendor}/{loader}");
+                source.remove_file_optional(&preferred)?;
+                if signed_mask == all_signed {
+                    source.create_dir_all(&preferred)?;
+                    let fs = read_filesystem(
+                        source.reopen_as_ownedfd()?,
+                        ".".into(),
+                        Some(repo.clone()),
+                    )
+                    .await?;
+                    assert!(install_ukiboot(&source, &fs, &repo, &esp).is_err());
+                    source.remove_dir(&preferred)?;
+                }
+                // Vendor discovery only needs the loader; missing add-ons fail when read.
+                source.remove_file(format!("{packaged_path}/slot_b.addon.efi"))?;
+                let fs =
+                    read_filesystem(source.reopen_as_ownedfd()?, ".".into(), Some(repo.clone()))
+                        .await?;
+                let error = install_ukiboot(&source, &fs, &repo, &esp).unwrap_err();
+                assert!(format!("{error:#}").contains("slot_b.addon.efi"));
+            }
         }
         Ok(())
     }
@@ -3347,6 +3423,21 @@ mod tests {
         assert_eq!(parts[0], "1"); // release
         assert_eq!(parts[1], "41.20251125.0"); // version
         assert_eq!(parts[2], "bootc_fedora_coreos"); // name
+    }
+
+    #[test]
+    fn test_os_id_from_sort_key() {
+        for (sort_key, expected) in [
+            (primary_sort_key("fedora"), Some("fedora")),
+            (secondary_sort_key("fedora"), Some("fedora")),
+            (primary_sort_key("fedora-coreos"), Some("fedora-coreos")),
+            (secondary_sort_key("bootc"), Some("bootc")),
+            ("1".to_owned(), None),
+            ("bootc".to_owned(), None),
+            ("other-fedora-0".to_owned(), None),
+        ] {
+            assert_eq!(os_id_from_sort_key(&sort_key), expected, "{sort_key}");
+        }
     }
 
     #[test]

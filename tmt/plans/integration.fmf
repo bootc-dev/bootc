@@ -352,6 +352,18 @@ execute:
       - /tmt/tests/tests/test-51-composefs-uki-addons
   extra-skip_if_ostree: true
 
+/plan-51-composefs-verity:
+  summary: Enforce composefs image and object integrity independently of repository metadata
+  discover:
+    how: fmf
+    test:
+      - /tmt/tests/tests/test-51-composefs-verity
+  adjust:
+  - when: running_env != image_mode
+    enabled: false
+    because: only the image_mode test image installs bootc-tests
+  extra-skip_if_ostree: true
+
 /plan-51-switch-from-delta:
   summary: Switch to a derived image using an OCI delta and verify after reboot
   discover:
@@ -362,6 +374,9 @@ execute:
   - when: distro != fedora
     enabled: false
     because: oci-delta is packaged in Fedora
+  - when: distro == fedora-43
+    enabled: false
+    because: oci-delta is not packaged for Fedora 43 (https://github.com/bootc-dev/bootc/issues/2604)
   - when: boot_type == uki and seal_state == sealed
     enabled: false
     because: the guest-local UKI builder produces unsigned images
@@ -425,4 +440,11 @@ execute:
     test:
       - /tmt/tests/tests/test-63-install-shared-propagation
   extra-fixme_skip_if_composefs: true
+
+/plan-66-encrypted-swap-ordering:
+  summary: Verify a random-key encrypted swap boots without an ordering cycle
+  discover:
+    how: fmf
+    test:
+      - /tmt/tests/tests/test-66-encrypted-swap-ordering
 # END GENERATED PLANS

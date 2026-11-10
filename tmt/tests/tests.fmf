@@ -221,6 +221,15 @@ check:
   duration: 30m
   test: nu booted/test-composefs-uki-addons.nu
 
+/test-51-composefs-verity:
+  summary: Enforce composefs image and object integrity independently of repository metadata
+  duration: 5m
+  adjust:
+  - when: running_env != image_mode
+    enabled: false
+    because: only the image_mode test image installs bootc-tests
+  test: bootc-integration-tests booted composefs-verity
+
 /test-51-switch-from-delta:
   summary: Switch to a derived image using an OCI delta and verify after reboot
   duration: 30m
@@ -228,6 +237,9 @@ check:
   - when: distro != fedora
     enabled: false
     because: oci-delta is packaged in Fedora
+  - when: distro == fedora-43
+    enabled: false
+    because: oci-delta is not packaged for Fedora 43 (https://github.com/bootc-dev/bootc/issues/2604)
   - when: boot_type == uki and seal_state == sealed
     enabled: false
     because: the guest-local UKI builder produces unsigned images
@@ -273,3 +285,8 @@ check:
   summary: Install from a shared mount namespace without leaking the storage bind mount
   duration: 30m
   test: nu booted/test-install-shared-propagation.nu
+
+/test-66-encrypted-swap-ordering:
+  summary: Verify a random-key encrypted swap boots without an ordering cycle
+  duration: 30m
+  test: nu booted/test-encrypted-swap-ordering.nu

@@ -13,13 +13,16 @@ use cap_std_ext::cap_std::fs::Dir;
 use cap_std_ext::dirext::CapStdExtDirExt;
 use composefs_boot::{
     android_boot::{AndroidBootImage, Component},
-    bootloader::AbootEncoding,
+    bootloader::{AbootEncoding, EFI_ADDON_FILE_EXT},
+    cmdline::{KARG_COMPOSEFS_DIGEST, KARG_V2},
 };
 use composefs_ctl::composefs_boot;
 use linux_kernel_cmdline::utf8::Cmdline;
+use ostree_ext::composefs_boot::bootloader::EFI_ADDON_DIR_EXT;
 use serde::Serialize;
 
-use crate::bootc_composefs::boot::EFI_LINUX;
+use crate::bootc_composefs::boot::{EFI_LINUX, GLOBAL_UKI_ADDONS_DIR};
+use crate::install::UkiAddonOpts;
 
 /// Information about the kernel in a container image.
 #[derive(Debug, Serialize)]
@@ -81,7 +84,10 @@ impl From<KernelInternal> for Kernel {
 /// are detected in `/boot/aboot-<version>.img` and cannot coexist with either.
 ///
 /// Returns `None` if no kernel is found.
-pub(crate) fn find_kernel(root: &Dir) -> Result<Option<KernelInternal>> {
+pub(crate) fn find_kernel(
+    root: &Dir,
+    uki_addon_opts: Option<&UkiAddonOpts>,
+) -> Result<Option<KernelInternal>> {
     if let Some(aboot) = find_aboot_kernel(root)? {
         anyhow::ensure!(
             find_uki_path(root)?.is_none()
@@ -101,21 +107,22 @@ pub(crate) fn find_kernel(root: &Dir) -> Result<Option<KernelInternal>> {
         // Best effort to check for composefs=?verity in the UKI cmdline
         let cmdline = composefs_boot::uki::get_section_buffered(&mut uki, ".cmdline");
 
-        let cmdline = match cmdline {
+        let mut cmdline = match cmdline {
             Ok(cmdline) => {
                 let cmdline_str = std::str::from_utf8(&cmdline)?;
-                Some(Cmdline::from(cmdline_str.to_owned()))
+                Cmdline::from(cmdline_str.to_owned())
             }
 
             Err(uki_error) => match uki_error {
-                composefs_boot::uki::UkiError::MissingSection(_) => {
-                    // TODO(Johan-Liebert1): Check this when we have full UKI Addons support
-                    // The cmdline might be in an addon, so don't allow missing verity
-                    None
-                }
-
+                composefs_boot::uki::UkiError::MissingSection(_) => Cmdline::new(),
                 e => anyhow::bail!("Failed to read UKI cmdline: {e:?}"),
             },
+        };
+
+        if let Some(uki_addon_opts) = uki_addon_opts {
+            // This has to exist since we found a UKI.
+            let boot = root.open_dir(crate::install::BOOT)?;
+            validate_uki_addon_cmdlines(&boot, uki_addon_opts, &mut cmdline)?;
         };
 
         return Ok(Some(KernelInternal {
@@ -125,7 +132,7 @@ pub(crate) fn find_kernel(root: &Dir) -> Result<Option<KernelInternal>> {
             },
             k_type: KernelType::Uki {
                 path: uki_path,
-                cmdline,
+                cmdline: Some(cmdline),
             },
         }));
     }
@@ -310,7 +317,8 @@ pub(crate) const KERNEL_COMPANION_FILES: &[&str] = &[".vmlinuz.hmac"];
 /// along with any [`KERNEL_COMPANION_FILES`] present, under the same names.
 /// UKIs are not supported. Returns the kernel version.
 pub(crate) fn split_kernel(root: &Dir, output: &Dir) -> Result<String> {
-    let kernel = find_kernel(root)?.ok_or_else(|| anyhow::anyhow!("No kernel found in rootfs"))?;
+    let kernel =
+        find_kernel(root, None)?.ok_or_else(|| anyhow::anyhow!("No kernel found in rootfs"))?;
     let KernelType::Vmlinuz { path, initramfs } = &kernel.k_type else {
         anyhow::bail!("Only traditional kernels can be split");
     };
@@ -385,6 +393,113 @@ fn find_uki_path(root: &Dir) -> Result<Option<Utf8PathBuf>> {
         .map(|filename| Utf8PathBuf::from(format!("boot/{EFI_LINUX}/{filename}"))))
 }
 
+fn cmdline_has_composefs(cmdline: &str) -> bool {
+    Cmdline::from(cmdline).iter().any(|parameter| {
+        let key = &*parameter.key();
+        key == KARG_V2 || key == KARG_COMPOSEFS_DIGEST
+    })
+}
+
+#[fn_error_context::context("Getting cmdline from addon {name}")]
+fn get_cmdline_in_addon<'a>(dir: &'a Dir, name: &'a str) -> Result<Option<Cmdline<'static>>> {
+    let mut file = dir.open(name).with_context(|| format!("Opening {name}"))?;
+
+    match composefs_boot::uki::get_cmdline_buffered(&mut file) {
+        Ok(cmdline) => Ok(Some(Cmdline::from(cmdline))),
+        Err(composefs_boot::uki::UkiError::MissingSection(_)) => Ok(None),
+        Err(e) => Err(e).with_context(|| format!("Reading cmdline from {name}")),
+    }
+}
+
+/// Make sure of the following
+/// - We don't see a composefs cmdline in a global addon
+/// - We don't see multiple composefs comdlines across UKIs and UKI Addons
+#[fn_error_context::context("Validating UKI Addon Cmdlines")]
+fn validate_uki_addon_cmdlines(
+    boot: &Dir,
+    uki_addon_opts: &UkiAddonOpts,
+    final_cmdline: &mut Cmdline,
+) -> Result<()> {
+    let selected_global = uki_addon_opts.global.as_deref().unwrap_or(&[]);
+    let selected_scoped = uki_addon_opts.scoped.as_deref().unwrap_or(&[]);
+
+    if let Some(addons_dir) = boot.open_dir_optional(GLOBAL_UKI_ADDONS_DIR)? {
+        for ent in addons_dir.entries_utf8()? {
+            let filename = ent?.file_name()?;
+
+            let Some(name) = filename.strip_suffix(EFI_ADDON_FILE_EXT) else {
+                continue;
+            };
+
+            if !selected_global.iter().any(|n| n == name) {
+                // This addon isn't going to be included
+                continue;
+            }
+
+            if let Some(addon_cmdline) = get_cmdline_in_addon(&addons_dir, &filename)? {
+                if cmdline_has_composefs(&addon_cmdline) {
+                    anyhow::bail!("composefs cmdline found in global UKI addon {name}");
+                }
+
+                final_cmdline.extend(&addon_cmdline);
+            }
+        }
+    };
+
+    let efi_linux = boot
+        .open_dir(EFI_LINUX)
+        .with_context(|| format!("Opening {EFI_LINUX}"))?;
+
+    for ent in efi_linux.entries_utf8()? {
+        let ent = ent.context("Reading directory entry")?;
+        let filename = ent.file_name().context("Reading filename")?;
+        let file_type = ent
+            .file_type()
+            .with_context(|| format!("Getting file type for {filename}"))?;
+
+        if !(filename.ends_with(EFI_ADDON_DIR_EXT) && file_type.is_dir()) {
+            continue;
+        }
+
+        let addon_dir = efi_linux
+            .open_dir(&filename)
+            .with_context(|| format!("Opening directory {filename}"))?;
+
+        for addon_dir_ent in addon_dir
+            .entries_utf8()
+            .with_context(|| format!("Reading dirents {filename}"))?
+        {
+            let addon_entry = addon_dir_ent?;
+            let addon_name = addon_entry.file_name().context("Reading UKI Addon name")?;
+
+            let Some(addon_name_wo_suffix) = addon_name.strip_suffix(EFI_ADDON_FILE_EXT) else {
+                continue;
+            };
+
+            if !selected_scoped.iter().any(|n| n == addon_name_wo_suffix) {
+                continue;
+            }
+
+            let final_cmdline_has_cfs = cmdline_has_composefs(final_cmdline);
+            let addon_cmdline = get_cmdline_in_addon(&addon_dir, &addon_name)?;
+
+            if let Some(addon_cmdline) = addon_cmdline {
+                let cfs_in_addon_cmdline = cmdline_has_composefs(&addon_cmdline);
+
+                if final_cmdline_has_cfs && cfs_in_addon_cmdline {
+                    anyhow::bail!(
+                        "Multiple composefs cmdlines found across the UKI and its addons (duplicate in scoped addon {addon_name})"
+                    );
+                }
+
+                final_cmdline.extend(&addon_cmdline);
+            };
+        }
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -434,7 +549,7 @@ mod tests {
             let root = cap_tempfile::tempdir(cap_std::ambient_authority())?;
             root.create_dir("boot")?;
             root.write("boot/aboot-6.12.img", payload)?;
-            let kernel = find_kernel(&root)?.unwrap();
+            let kernel = find_kernel(&root, None)?.unwrap();
             assert_eq!(kernel.kernel.version, "6.12");
             assert_eq!(kernel.k_type.image_type(), image_type);
             assert!(kernel.kernel.unified);
@@ -458,7 +573,7 @@ mod tests {
             assert_eq!(path, "boot/aboot-6.12.img");
             assert_eq!(actual, encoding);
             root.write("boot/aboot-6.13.img", android_image())?;
-            assert!(find_kernel(&root).is_err());
+            assert!(find_kernel(&root, None).is_err());
         }
         Ok(())
     }
@@ -505,14 +620,14 @@ mod tests {
                 root.create_dir_all(path.parent().unwrap())?;
                 root.write(path, contents)?;
             }
-            assert_eq!(find_kernel(&root).is_ok(), valid);
+            assert_eq!(find_kernel(&root, None).is_ok(), valid);
         }
         let root = cap_tempfile::tempdir(cap_std::ambient_authority())?;
         root.create_dir_all("usr/lib/modules/6.12")?;
         root.write("usr/lib/modules/6.12/vmlinuz", b"kernel")?;
         root.write("usr/lib/modules/6.12/aboot.img", b"legacy")?;
         assert!(matches!(
-            find_kernel(&root)?.unwrap().k_type,
+            find_kernel(&root, None)?.unwrap().k_type,
             KernelType::Vmlinuz { .. }
         ));
         Ok(())
@@ -521,7 +636,7 @@ mod tests {
     #[test]
     fn test_find_kernel_none() -> Result<()> {
         let tempdir = cap_tempfile::tempdir(cap_std::ambient_authority())?;
-        assert!(find_kernel(&tempdir)?.is_none());
+        assert!(find_kernel(&tempdir, None)?.is_none());
         Ok(())
     }
 
@@ -534,7 +649,7 @@ mod tests {
             b"fake kernel",
         )?;
 
-        let kernel_internal = find_kernel(&tempdir)?.expect("should find kernel");
+        let kernel_internal = find_kernel(&tempdir, None)?.expect("should find kernel");
         assert_eq!(kernel_internal.kernel.version, "6.12.0-100.fc41.x86_64");
         assert!(!kernel_internal.kernel.unified);
         assert!(!kernel_internal.k_type.is_unified());
@@ -561,7 +676,7 @@ mod tests {
         tempdir.create_dir_all("boot/EFI/Linux")?;
         tempdir.atomic_write("boot/EFI/Linux/fedora-6.12.0.efi", &create_minimal_pe())?;
 
-        let kernel_internal = find_kernel(&tempdir)?.expect("should find kernel");
+        let kernel_internal = find_kernel(&tempdir, None)?.expect("should find kernel");
         assert_eq!(kernel_internal.kernel.version, "fedora-6.12.0");
         assert!(kernel_internal.kernel.unified);
         assert!(kernel_internal.k_type.is_unified());
@@ -586,7 +701,7 @@ mod tests {
         tempdir.create_dir_all("boot/EFI/Linux")?;
         tempdir.atomic_write("boot/EFI/Linux/fedora-6.12.0.efi", &create_minimal_pe())?;
 
-        let kernel_internal = find_kernel(&tempdir)?.expect("should find kernel");
+        let kernel_internal = find_kernel(&tempdir, None)?.expect("should find kernel");
         // UKI should take precedence
         assert_eq!(kernel_internal.kernel.version, "fedora-6.12.0");
         assert!(kernel_internal.kernel.unified);
@@ -689,7 +804,7 @@ mod tests {
                 root.write("usr/lib/modules/6.12/vmlinuz", b"kernel")?;
             }
 
-            let kernel = find_kernel(&root)?;
+            let kernel = find_kernel(&root, None)?;
             assert_eq!(kernel.as_ref().map(|k| k.kernel.unified), expected_unified);
             if let Some(kernel) = kernel {
                 assert_eq!(
@@ -700,7 +815,7 @@ mod tests {
                     assert_eq!(path, "boot/EFI/Linux/kernel.efi");
                     assert_eq!(
                         cmdline.as_ref().map(ToString::to_string).as_deref(),
-                        has_cmdline.then_some("quiet splash")
+                        has_cmdline.then_some("quiet splash").or_else(|| Some(""))
                     );
                 } else {
                     let KernelType::Vmlinuz { path, .. } = kernel.k_type else {

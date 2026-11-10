@@ -835,6 +835,13 @@ pub fn generate_man_pages(sh: &Shell, cargo_options: &[String]) -> Result<()> {
     generate_pages(sh, false)
 }
 
+/// Generate manuals from the Markdown as-is, without building bootc to sync
+/// the generated CLI sections first.
+#[context("Generating manpages")]
+pub fn generate_man_pages_no_sync(sh: &Shell) -> Result<()> {
+    generate_pages(sh, false)
+}
+
 /// Get version from Cargo.toml
 #[context("Querying package version")]
 fn get_package_version() -> Result<String> {

@@ -2,8 +2,9 @@
 # Secrets (e.g. container pull secrets)
 
 To have `bootc` fetch updates from registry which requires authentication,
-you must include a pull secret in one of `/etc/ostree/auth.json`,
-`/run/ostree/auth.json` or `/usr/lib/ostree/auth.json`.
+you must include a pull secret in one of `/run/ostree/auth.json`,
+`/etc/ostree/auth.json` or `/usr/lib/ostree/auth.json`. They are checked
+in this order.
 
 The path to the authentication file differs from that used
 by e.g. `podman` by default as some of the file paths used
@@ -42,6 +43,22 @@ as suggested by [this document](https://docs.aws.amazon.com/AmazonECR/latest/use
 
 You can also use the machine-local persistent location `/etc/ostree/auth.json`
 via this method.
+
+## Persisting the pull secret with a transient /etc
+
+If `/etc` is transient (see `bootc-setup-root-conf(5)`), changes to
+`/etc/ostree/auth.json` will be lost on reboot. Instead, keep the pull
+secret in `/var` and include a `tmpfiles.d` entry in the image that links
+it into `/run/ostree/auth.json`, e.g.:
+
+```
+# /usr/lib/tmpfiles.d/bootc-auth.conf
+d /var/lib/ostree 0700 root root -
+L /run/ostree/auth.json - - - - /var/lib/ostree/auth.json
+```
+
+Then log in with `--authfile /var/lib/ostree/auth.json`. Note that this
+pull secret will take precedence over one included in the image.
 
 ## Using a credential helper
 

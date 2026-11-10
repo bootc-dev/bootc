@@ -24,9 +24,9 @@ use serde::Deserialize;
 
 use composefs::{
     fsverity::{FsVerityHashValue, Sha512HashValue},
-    mount::FsHandle,
+    mount::{FsHandle, MountOptions},
     mountcompat::{overlayfs_set_fd, overlayfs_set_lower_and_data_fds, prepare_mount},
-    repository::{ImageNotFound, Repository},
+    repository::{ImageNotFound, IntegrityPolicy, Repository, VerityState},
 };
 use composefs_boot::cmdline::{ComposefsCmdline, KARG_COMPOSEFS_DIGEST, KARG_V2};
 use composefs_ctl::composefs;
@@ -353,7 +353,7 @@ fn open_root_fs(path: &Path) -> Result<OwnedFd> {
 ///
 /// # Arguments
 /// * sysroot                - fd for /sysroot
-/// * name                   - Name of the EROFS image to be mounted
+/// * name                   - Expected fs-verity digest of the EROFS image
 /// * allow_missing_fsverity - Whether to allow mount without fsverity support
 #[context("Mounting composefs image")]
 pub fn mount_composefs_image(
@@ -361,16 +361,26 @@ pub fn mount_composefs_image(
     name: &str,
     allow_missing_fsverity: bool,
 ) -> Result<OwnedFd> {
+    let digest = Sha512HashValue::from_hex(name).context("Parsing composefs digest")?;
     // Use open_upgrade to handle upgrades from older composefs-rs versions
     // that lack meta.json: it infers the algorithm and verity mode from
     // existing objects, writes meta.json, and opens normally.
     let (mut repo, _upgraded) = Repository::<Sha512HashValue>::open_upgrade(sysroot, "composefs")?;
-    if allow_missing_fsverity {
-        repo.set_insecure();
-    }
-    let rootfs = repo
-        .mount(name)
-        .context("Failed to mount composefs image")?;
+    // The cmdline decides the mode, not the repository's mutable metadata:
+    // meta.json lives on the same unverified filesystem as the images, and
+    // older installs can legitimately have written it without fs-verity.
+    // The explicit policy is final for this handle.
+    let verity = if allow_missing_fsverity {
+        // Missing fs-verity is tolerated, but an image whose digest can be
+        // measured still has to match.
+        VerityState::Disabled
+    } else {
+        // fs-verity is required on the image and on every object it serves.
+        VerityState::Enabled
+    };
+    repo.set_integrity_policy(IntegrityPolicy::Explicit(verity))?;
+    // mount_digest only ever looks at images/<digest>, never at named refs.
+    let rootfs = repo.mount_digest(&digest, &MountOptions::default())?;
 
     set_mount_readonly(&rootfs)?;
 
@@ -381,10 +391,8 @@ fn parse_composefs_candidates(cmdline: &str) -> Result<Vec<ComposefsCmdline<Sha5
     let mut candidates = Vec::new();
     let mut seen_legacy = false;
 
-    // The repository policy is deliberately kept separate from the cmdline:
-    // the '?' marker only requests that policy, and setup_root decides below
-    // whether the repository permits it.  Parse the cmdline with the kernel
-    // parser so quoted parameters remain a single parameter.
+    // Parse the cmdline with the kernel parser so quoted parameters remain a
+    // single parameter. setup_root checks that all candidates agree on policy.
     for parameter in Cmdline::from(cmdline).iter() {
         let key = parameter.key();
         if &*key != KARG_COMPOSEFS_DIGEST && &*key != KARG_V2 {
@@ -432,12 +440,10 @@ fn mount_composefs_candidate(
     candidate: &ComposefsCmdline<Sha512HashValue>,
     allow_missing_fsverity: bool,
 ) -> Result<Option<OwnedFd>> {
-    // `allow_missing_fsverity` is repository policy, not a trust decision
-    // supplied by the kernel command line.  A cmdline '?' may only request
-    // the already-permitted insecure mode; it must never weaken strict policy.
+    // A candidate must not relax the fs-verity policy selected for this boot.
     if candidate.is_insecure() && !allow_missing_fsverity {
         anyhow::bail!(
-            "composefs candidate requests insecure fs-verity, but the repository policy is strict"
+            "composefs candidate requests insecure fs-verity, but the boot policy is strict"
         );
     }
 
@@ -669,7 +675,58 @@ pub fn setup_root(args: Args) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::{fs, fs::File};
+
+    use composefs::{
+        fsverity::{Algorithm, CompareVerityError, MeasureVerityError, compute_verity},
+        repository::RepositoryConfig,
+    };
+
     use super::*;
+
+    #[test]
+    fn test_strict_mount_rejects_unverified_images() -> Result<()> {
+        // A strict cmdline must not be overridden by the repository's insecure
+        // mode, and an image under images/refs/ must not stand in for the
+        // digest whatever the cmdline says. All of these are rejected before
+        // anything is mounted, so this runs unprivileged and on tmpfs.
+        let tmp = tempfile::tempdir()?;
+        let sysroot: OwnedFd = File::open(tmp.path())?.into();
+        let (repo, _) = Repository::<Sha512HashValue>::init_path(
+            &sysroot,
+            "composefs",
+            RepositoryConfig::new(Algorithm::SHA512).set_insecure(),
+        )?;
+        drop(repo);
+        let images = tmp.path().join("composefs/images");
+        fs::create_dir_all(images.join("refs"))?;
+        let data = b"unverified image";
+        let digest = compute_verity::<Sha512HashValue>(data).to_hex();
+
+        fs::write(images.join("refs").join(&digest), data)?;
+        for allow_missing_fsverity in [false, true] {
+            let error =
+                mount_composefs_image(&sysroot, &digest, allow_missing_fsverity).unwrap_err();
+            assert!(error.downcast_ref::<ImageNotFound>().is_some(), "{error:#}");
+        }
+
+        fs::write(images.join(&digest), data)?;
+        let error = mount_composefs_image(&sysroot, &digest, false).unwrap_err();
+        assert!(
+            matches!(
+                error.downcast_ref::<CompareVerityError>(),
+                Some(CompareVerityError::Measure(
+                    MeasureVerityError::VerityMissing | MeasureVerityError::FilesystemNotSupported
+                ))
+            ),
+            "{error:#}"
+        );
+
+        let missing = Sha512HashValue::EMPTY.to_hex();
+        let error = mount_composefs_image(&sysroot, &missing, false).unwrap_err();
+        assert!(error.downcast_ref::<ImageNotFound>().is_some(), "{error:#}");
+        Ok(())
+    }
 
     fn parse(toml: &str) -> Config {
         toml::from_str(toml).expect("TOML parse failed")

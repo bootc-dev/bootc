@@ -438,16 +438,24 @@ pub(crate) struct InstallComposefsOpts {
 impl InstallComposefsOpts {
     /// Check that the options fit together, once `composefs_backend` says
     /// whether the composefs backend is used (passed, or selected by the image).
+    /// `config_stateroot` comes from the install configuration; the caller
+    /// passes `None` when `--stateroot` overrides it.
     pub(crate) fn validate(
         &self,
         bootloader: Option<&Bootloader>,
         stateroot: Option<&str>,
+        config_stateroot: Option<&str>,
     ) -> Result<()> {
         if self.composefs_backend {
             let default = ostree_container::deploy::STATEROOT_DEFAULT;
             if let Some(stateroot) = stateroot.filter(|&s| s != default) {
                 anyhow::bail!(
                     "--stateroot {stateroot} is not supported with the composefs backend, which only uses {default}"
+                );
+            }
+            if let Some(stateroot) = config_stateroot.filter(|&s| s != default) {
+                anyhow::bail!(
+                    "stateroot {stateroot} in the install configuration is not supported with the composefs backend, which only uses {default}"
                 );
             }
         } else {
@@ -1825,7 +1833,7 @@ async fn prepare_install(
 
     let kernel = target_rootfs
         .as_ref()
-        .map(crate::kernel::find_kernel)
+        .map(|rootfs| crate::kernel::find_kernel(rootfs, Some(&composefs_options.uki_addon_opts)))
         .transpose()?
         .flatten();
     let composefs_required = kernel.as_ref().is_some_and(|k| k.k_type.is_unified());
@@ -1869,9 +1877,17 @@ async fn prepare_install(
     )?;
     tracing::debug!("Composefs default: {composefs_default}");
     composefs_options.composefs_backend |= composefs_required || composefs_default;
+    // An image may set a stateroot in its install configuration for its ostree
+    // installs, so only check it when the image can't be installed with ostree.
+    let config_stateroot = install_config
+        .as_ref()
+        .and_then(|c| c.stateroot.as_deref())
+        .filter(|_| config_opts.stateroot.is_none())
+        .filter(|_| composefs_required || composefs_default);
     composefs_options.validate(
         config_opts.bootloader.as_ref(),
         config_opts.stateroot.as_deref(),
+        config_stateroot,
     )?;
 
     composefs_options.validate_bound_images(config_opts.bound_images, &rootfs)?;
@@ -3284,7 +3300,7 @@ mod tests {
                 },
             };
             assert_eq!(
-                opts.validate(bootloader.as_ref(), stateroot).is_ok(),
+                opts.validate(bootloader.as_ref(), stateroot, None).is_ok(),
                 valid,
                 "{opts:?} {bootloader:?} {stateroot:?}"
             );
@@ -3295,8 +3311,23 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            opts.validate(None, Some("myroot")).unwrap_err().to_string(),
+            opts.validate(None, Some("myroot"), None)
+                .unwrap_err()
+                .to_string(),
             "--stateroot myroot is not supported with the composefs backend, which only uses default"
+        );
+
+        assert!(opts.validate(None, None, Some("default")).is_ok());
+        assert!(
+            InstallComposefsOpts::default()
+                .validate(None, None, Some("myroot"))
+                .is_ok()
+        );
+        assert_eq!(
+            opts.validate(None, None, Some("myroot"))
+                .unwrap_err()
+                .to_string(),
+            "stateroot myroot in the install configuration is not supported with the composefs backend, which only uses default"
         );
     }
 

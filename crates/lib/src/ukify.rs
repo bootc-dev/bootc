@@ -13,7 +13,7 @@ use camino::Utf8Path;
 use fn_error_context::context;
 
 use crate::boot_artifact::prepare_boot_artifact;
-use crate::cli::ErofsVersionArg;
+use crate::cli::BootArtifactErofsVersionArg;
 
 /// Build a UKI from the given rootfs.
 ///
@@ -26,7 +26,7 @@ pub(crate) async fn build_ukify(
     args: &[OsString],
     kernel_dir: Option<&Utf8Path>,
     allow_missing_fsverity: bool,
-    erofs_version: Option<ErofsVersionArg>,
+    erofs_version: Option<BootArtifactErofsVersionArg>,
     write_dumpfile_to: Option<&Utf8Path>,
 ) -> Result<()> {
     if !extra_kargs.is_empty() {

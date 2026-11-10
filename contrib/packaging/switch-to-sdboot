@@ -37,3 +37,8 @@ sdboot=$(ls /usr/lib/systemd/boot/efi/systemd-boot*.efi)
 sdboot_bn=$(basename "${sdboot}")
 # Override with our signed binary
 install -m 0644 "${src}/${sdboot_bn}" "${sdboot}"
+
+mkdir -p /usr/lib/bootc/install/systemd-boot
+cat <<EOF > /usr/lib/bootc/install/systemd-boot/loader.conf
+timeout 1
+EOF

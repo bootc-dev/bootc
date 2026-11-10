@@ -5,9 +5,9 @@ use crate::{
     bootc_composefs::{
         status::get_composefs_status,
         update::{
-            DoUpgradeOpts, UpdateAction, apply_upgrade_from_downloaded, do_upgrade,
-            ensure_delta_source_present, is_image_pulled, lookup_config_splitstream,
-            validate_update,
+            DoUpgradeOpts, UpdateAction, apply_upgrade_from_downloaded,
+            discard_failed_aboot_update, do_upgrade, ensure_delta_source_present, is_image_pulled,
+            lookup_config_splitstream, validate_update,
         },
     },
     cli::{SwitchOpts, imgref_for_switch},
@@ -22,7 +22,7 @@ pub(crate) async fn switch_composefs(
     booted_cfs: &BootedComposefs,
 ) -> Result<()> {
     // TODO: Handle in-place
-    let host = get_composefs_status(storage, booted_cfs)
+    let mut host = get_composefs_status(storage, booted_cfs)
         .await
         .context("Getting composefs deployment status")?;
 
@@ -50,13 +50,29 @@ pub(crate) async fn switch_composefs(
         delta.validate_image_reference(&target)?;
     }
 
+    // There may be an existing failed update with the same name as "target", and
+    // in that case we don't want the "nothing changed" check below to trigger.
+    // Instead we want to discard the failed attempt and redo the update.
+    let failed_target_matches = host
+        .status
+        .staged
+        .as_ref()
+        .and_then(|entry| entry.image.as_ref())
+        .is_some_and(|image| image.image == target);
+    let discarded_failed_update = discard_failed_aboot_update(storage, &host)?;
+    if discarded_failed_update {
+        // Refresh host to skip discarded update
+        host = get_composefs_status(storage, booted_cfs).await?;
+    }
+    let retry_failed_target = discarded_failed_update && failed_target_matches;
+
     let new_spec = {
         let mut new_spec = host.spec.clone();
         new_spec.image = Some(target.clone());
         new_spec
     };
 
-    if new_spec == host.spec {
+    if new_spec == host.spec && !retry_failed_target {
         println!("Image specification is unchanged.");
         if opts.apply && host.status.staged.is_some() {
             crate::reboot::reboot()?;

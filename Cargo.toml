@@ -7,8 +7,6 @@ opt-level = 1 # No optimizations are too slow for us.
 
 [profile.release]
 lto = "thin"
-# We use FFI so this is safest
-panic = "abort"
 # We assume we're being delivered via e.g. RPM which supports split debuginfo
 debug = true
 
@@ -45,7 +43,7 @@ clap_mangen = { version = "0.3.0" }
 # pulls), which drags in rustls-webpki/untrusted/webpki-root-certs whose
 # licenses aren't in our cargo-deny allow list. Re-enable once that's sorted.
 # See: https://github.com/bootc-dev/bootc/pull/2295
-composefs-ctl = { version = "0.9.4", default-features = false, features = [
+composefs-ctl = { version = "0.10.0", default-features = false, features = [
     "pre-6.15",
     "pre-6.16",
     "oci",
@@ -76,7 +74,7 @@ similar-asserts = "2.0.0"
 static_assertions = "1.1.0"
 tempfile = "3.10.1"
 thiserror = "2.0.11"
-tokio = ">= 1.37.0"
+tokio = { version = ">= 1.37.0", features = ["test-util"] }
 tokio-util = { features = ["io-util"], version = "0.7.10" }
 toml = "1.0.0"
 tracing = "0.1.40"

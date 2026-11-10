@@ -8,11 +8,17 @@ use linux_kernel_cmdline::utf8::Cmdline;
 
 use crate::bootc_composefs::digest::compute_composefs_digest;
 use crate::bootc_composefs::status::build_composefs_karg;
-use crate::cli::ErofsVersionArg;
+use crate::cli::BootArtifactErofsVersionArg;
 use crate::kernel::KernelType;
 
-fn resolve_erofs_version(requested: Option<ErofsVersionArg>) -> FormatVersion {
-    requested.map(Into::into).unwrap_or(FormatVersion::V1)
+fn resolve_erofs_versions(
+    requested: Option<BootArtifactErofsVersionArg>,
+) -> (FormatVersion, Option<FormatVersion>) {
+    match requested.unwrap_or(BootArtifactErofsVersionArg::V1) {
+        BootArtifactErofsVersionArg::V1 => (FormatVersion::V1, Some(FormatVersion::V2)),
+        BootArtifactErofsVersionArg::V1Only => (FormatVersion::V1, None),
+        BootArtifactErofsVersionArg::V2 => (FormatVersion::V2, None),
+    }
 }
 
 fn composefs_kargs_for_boot_artifact(
@@ -49,7 +55,7 @@ pub(crate) async fn prepare_boot_artifact(
     kernel_dir: Option<&Utf8Path>,
     extra_kargs: &[String],
     allow_missing_fsverity: bool,
-    erofs_version: Option<ErofsVersionArg>,
+    erofs_version: Option<BootArtifactErofsVersionArg>,
     write_dumpfile_to: Option<&Utf8Path>,
 ) -> Result<BootArtifactInputs> {
     let root = Dir::open_ambient_dir(rootfs, cap_std_ext::cap_std::ambient_authority())
@@ -69,7 +75,7 @@ pub(crate) async fn prepare_boot_artifact(
             )
         }
         None => {
-            let kernel = crate::kernel::find_kernel(&root)?
+            let kernel = crate::kernel::find_kernel(&root, None)?
                 .ok_or_else(|| anyhow::anyhow!("No kernel found in {rootfs}"))?;
             match kernel.k_type {
                 KernelType::Vmlinuz { path, initramfs } => {
@@ -106,13 +112,13 @@ pub(crate) async fn prepare_boot_artifact(
         cmdline.extend(&Cmdline::from(karg));
     }
 
-    let erofs_version = resolve_erofs_version(erofs_version);
+    let (erofs_version, compatibility_version) = resolve_erofs_versions(erofs_version);
     let composefs_digest =
         compute_composefs_digest(rootfs, erofs_version, write_dumpfile_to).await?;
     let composefs_digest = Sha512HashValue::from_hex(&composefs_digest)
         .context("Parsing computed composefs digest")?;
-    let compatibility_v2_digest = if erofs_version == FormatVersion::V1 {
-        let digest = compute_composefs_digest(rootfs, FormatVersion::V2, None).await?;
+    let compatibility_v2_digest = if let Some(version) = compatibility_version {
+        let digest = compute_composefs_digest(rootfs, version, None).await?;
         Some(Sha512HashValue::from_hex(&digest).context("Parsing computed V2 digest")?)
     } else {
         None
@@ -177,36 +183,50 @@ mod tests {
     fn test_composefs_kargs_for_boot_artifact() {
         let v1 = Sha512HashValue::EMPTY;
         let v2 = Sha512HashValue::from_hex("aa".repeat(64)).unwrap();
-        for (requested, expected_version, fallback, expected_len, expected_prefixes) in [
+        let v1_arg = format!("composefs.digest=v1-sha512-12:{}", v1.to_hex());
+        let v2_arg = format!("composefs={}", v2.to_hex());
+        for (requested, expected_version, expected_fallback, expected_kargs) in [
             (
                 None,
                 FormatVersion::V1,
-                Some(v2.clone()),
-                2,
-                ["composefs.digest=v1-sha512-12:", "composefs="],
+                Some(FormatVersion::V2),
+                vec![v1_arg.clone(), v2_arg.clone()],
             ),
             (
-                Some(ErofsVersionArg::V1),
+                Some(BootArtifactErofsVersionArg::V1),
                 FormatVersion::V1,
-                Some(v2.clone()),
-                2,
-                ["composefs.digest=v1-sha512-12:", "composefs="],
+                Some(FormatVersion::V2),
+                vec![v1_arg.clone(), v2_arg.clone()],
             ),
             (
-                Some(ErofsVersionArg::V2),
+                Some(BootArtifactErofsVersionArg::V1Only),
+                FormatVersion::V1,
+                None,
+                vec![v1_arg],
+            ),
+            (
+                Some(BootArtifactErofsVersionArg::V2),
                 FormatVersion::V2,
                 None,
-                1,
-                ["composefs=", ""],
+                vec![v2_arg],
             ),
         ] {
-            let version = resolve_erofs_version(requested);
-            let kargs = composefs_kargs_for_boot_artifact(v1.clone(), version, fallback, false);
-            assert_eq!(kargs.len(), expected_len);
-            for (karg, prefix) in kargs.iter().zip(expected_prefixes) {
-                assert!(karg.starts_with(prefix), "unexpected karg: {karg}");
-            }
+            let (version, compatibility_version) = resolve_erofs_versions(requested);
+            let preferred_digest = if version == FormatVersion::V1 {
+                &v1
+            } else {
+                &v2
+            };
+            let fallback = compatibility_version.map(|_| v2.clone());
+            let kargs = composefs_kargs_for_boot_artifact(
+                preferred_digest.clone(),
+                version,
+                fallback,
+                false,
+            );
+            assert_eq!(kargs, expected_kargs, "{requested:?}");
             assert_eq!(version, expected_version);
+            assert_eq!(compatibility_version, expected_fallback);
         }
     }
 }

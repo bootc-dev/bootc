@@ -7,6 +7,13 @@ RUN --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
     dnf clean all && rm -rf /var/cache /var/log /var/lib/dnf && \
     rm -rf /etc/repart.d /run/repart.d /usr/lib/repart.d /usr/local/lib/repart.d /usr/lib/bootc/bound-images.d && \
     systemctl enable ukiboot-set-success.service
+# Temporary compatibility with ukiboot < 0.2.2.
+# Remove once Fedora ships the upstream vendor symlink:
+# https://gitlab.com/CentOS/automotive/src/ukiboot/-/merge_requests/42
+RUN --network=none \
+    if [ ! -e /usr/libexec/ukiboot/efi/fedora ]; then \
+        ln -s . /usr/libexec/ukiboot/efi/fedora; \
+    fi
 ARG TEST_VERSION=1
 RUN --network=none printf '%s\n' "${TEST_VERSION}" > /usr/share/bootc-aboot-test-version
 

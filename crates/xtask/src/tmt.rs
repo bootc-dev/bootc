@@ -633,7 +633,7 @@ pub(crate) fn run_tmt(sh: &Shell, args: &RunTmtArgs) -> Result<()> {
                 );
             }
             // Add --filesystem=xfs by default on fedora-coreos
-            if variant_id == "coreos" {
+            if variant_id == "coreos" && bcvk_opts.filesystem.is_none() {
                 if distro.starts_with("fedora") {
                     opts.push("--filesystem=xfs".to_string());
                 }
