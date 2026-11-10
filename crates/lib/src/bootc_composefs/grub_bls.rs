@@ -83,12 +83,12 @@ pub(crate) fn render_grub_bls_menu(mut entries: Vec<(String, BLSConfig)>) -> Res
 #[context("Writing GRUB menu for BLS entries")]
 pub(crate) fn sync_grub_bls_menu(boot_dir: &Dir) -> Result<()> {
     let mut entries = vec![];
-    for entry in boot_dir.read_dir(TYPE1_ENT_PATH)? {
+    let entries_dir = boot_dir
+        .open_dir(TYPE1_ENT_PATH)
+        .with_context(|| format!("Opening {TYPE1_ENT_PATH}"))?;
+    for entry in entries_dir.entries_utf8()? {
         let entry = entry?;
-        let file_name = entry.file_name();
-        let Some(file_name) = file_name.to_str() else {
-            anyhow::bail!("Found non UTF-8 characters in filename");
-        };
+        let file_name = entry.file_name()?;
         if !file_name.ends_with(".conf") {
             continue;
         }
@@ -98,7 +98,7 @@ pub(crate) fn sync_grub_bls_menu(boot_dir: &Dir) -> Result<()> {
             .read_to_string(&mut contents)
             .with_context(|| format!("Reading {file_name}"))?;
         let cfg = parse_bls_config(&contents).with_context(|| format!("Parsing {file_name}"))?;
-        entries.push((file_name.to_string(), cfg));
+        entries.push((file_name, cfg));
     }
 
     let menu = render_grub_bls_menu(entries)?;
