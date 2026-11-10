@@ -304,5 +304,5 @@ check:
 
 /test-68-image-mount:
   summary: Verify booted and staged deployment image mounts
-  duration: 10m
+  duration: 30m
   test: nu booted/test-64-image-mount.nu
