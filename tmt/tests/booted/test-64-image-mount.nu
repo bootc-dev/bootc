@@ -1,9 +1,10 @@
 # number: 64
 # tmt:
 #   summary: Verify booted and staged deployment image mounts
-#   duration: 10m
+#   duration: 30m
 
 use std assert
+use tap.nu
 
 def assert_mount_options [target] {
     let options = (
@@ -41,7 +42,32 @@ def mount_image [deployment source target] {
     }
 }
 
-def verify_image_mounts [base deployment_etc_marker] {
+def secure_boot_enabled [] {
+    let secure_boot_var = "/sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c"
+    let read_result = (do -i { ^od -An -t u1 $secure_boot_var } | complete)
+    if $read_result.exit_code != 0 {
+        error make {
+            msg: $"Failed to read Secure Boot EFI variable ($secure_boot_var): ($read_result.stderr)"
+        }
+    }
+    let bytes = try {
+        $read_result.stdout | split words | each { into int }
+    } catch {
+        error make { msg: $"Failed to parse Secure Boot EFI variable ($secure_boot_var)" }
+    }
+    if ($bytes | length) != 5 {
+        error make {
+            msg: $"Unexpected Secure Boot EFI variable size at ($secure_boot_var): expected 5 bytes, got (($bytes | length))"
+        }
+    }
+    let enabled = ($bytes | last)
+    if not ($enabled in [0 1]) {
+        error make { msg: $"Invalid Secure Boot EFI variable value at ($secure_boot_var): ($enabled)" }
+    }
+    $enabled == 1
+}
+
+def verify_image_mounts [base deployment_etc_marker staged_marker staged_fixture] {
     let sysroot_options = (
         findmnt --mountpoint /sysroot --json
         | from json
@@ -75,6 +101,8 @@ def verify_image_mounts [base deployment_etc_marker] {
 
         let usr_os_release = ($usr_target | path join "lib/os-release")
         assert ($usr_os_release | path exists) "/usr mount should contain lib/os-release"
+        let booted_staged_marker = ($usr_target | path join "share" ($staged_marker | path basename))
+        assert (not ($booted_staged_marker | path exists)) "booted /usr must not contain the staged image marker"
 
         assert_mount_options $usr_target
         if ($mounted | any { |target| $target == $root_target }) {
@@ -92,15 +120,15 @@ def verify_image_mounts [base deployment_etc_marker] {
         let executable_result = (do -i { ^$true_path } | complete)
         assert equal $executable_result.exit_code 0 "mounted /usr/bin/true should be executable"
 
-        let status = (bootc status --json | from json)
-        if (($status.status.staged? | default null) != null) {
+        if $staged_fixture {
             mount_image staged /usr $staged_target
             $mounted = ($mounted | append $staged_target)
             let staged_os_release = ($staged_target | path join "lib/os-release")
             assert ($staged_os_release | path exists) "staged /usr mount should contain lib/os-release"
+            let staged_marker_path = ($staged_target | path join "share" ($staged_marker | path basename))
+            assert ($staged_marker_path | path exists) "staged /usr mount should contain the staged image marker"
+            assert equal (open $staged_marker_path | into string) "staged image mount marker\n" "staged image marker content should match exactly"
             assert_mount_options $staged_target
-        } else {
-            print "SKIP: staged image-mount coverage unavailable (active backend reports no staged deployment)"
         }
         let sysroot_options_after = (
             findmnt --mountpoint /sysroot --json
@@ -119,7 +147,48 @@ def verify_image_mounts [base deployment_etc_marker] {
 
 let base = (^mktemp -d /run/bootc-image-mount.XXXXXX | str trim)
 let deployment_etc_marker = $"/etc/.bootc-image-mount-deployment-local-(($base | path basename))"
-let test_outcome = (verify_image_mounts $base $deployment_etc_marker)
+let staged_marker = $"/usr/share/bootc-image-mount-(($base | path basename))"
+let staged_tag = $"localhost/bootc-image-mount:(($base | path basename))"
+let staged_marker_content = "staged image mount marker"
+
+let test_outcome = try {
+    let booted_status = (bootc status --json | from json)
+    let booted_digest = $booted_status.status.booted.image.imageDigest
+    let booted_composefs = ($booted_status.status.booted.composefs? | default null)
+    let is_composefs_uki = if $booted_composefs == null {
+        false
+    } else {
+        (($booted_composefs.bootType? | default "" | str downcase) == "uki")
+    }
+    let skip_staged_fixture = if $is_composefs_uki {
+        secure_boot_enabled
+    } else {
+        false
+    }
+    assert (not ($staged_marker | path exists)) "staged image marker must be absent from booted /usr before building the fixture"
+    let staged_fixture = if $skip_staged_fixture {
+        print "SKIP: Secure Boot composefs UKI; tap's staged fixture is unsealed and cannot be signed; booted checks still run"
+        false
+    } else {
+        bootc image copy-to-storage
+        let containerfile = (tap make_uki_containerfile $"FROM localhost/bootc as base\nRUN printf '%s\\n' '($staged_marker_content)' > ($staged_marker)")
+        let build_result = (do -i { $containerfile | podman build --network=none -t $staged_tag $base -f - } | complete)
+        assert equal $build_result.exit_code 0 $"failed to build staged image fixture: ($build_result.stderr)"
+
+        let switch_result = (do -i { bootc switch --transport containers-storage $staged_tag } | complete)
+        assert equal $switch_result.exit_code 0 $"failed to stage local image fixture: ($switch_result.stderr)"
+
+        let staged_status = (bootc status --json | from json).status.staged
+        assert ($staged_status != null) "bootc switch should create a staged deployment"
+        assert equal $staged_status.image.image.transport containers-storage "staged image should use containers-storage transport"
+        assert equal $staged_status.image.image.image $staged_tag "staged image should use the derived local image tag"
+        assert (($staged_status.image.imageDigest? | default "") != "") "staged image digest should be reported"
+        assert (($booted_digest | default "") != "") "booted image digest should be reported"
+        assert ($staged_status.image.imageDigest != $booted_digest) "staged image digest should differ from the booted image digest"
+        true
+    }
+    verify_image_mounts $base $deployment_etc_marker $staged_marker $staged_fixture
+} catch { |error| { result: $error, mounted: [] } }
 let mount_cleanup_errors = (cleanup_targets $test_outcome.mounted)
 mut cleanup_errors = $mount_cleanup_errors
 if ($deployment_etc_marker | path exists) {
@@ -136,7 +205,7 @@ if (($cleanup_errors | length) == 0) {
         $cleanup_errors = [$"($base): failed to remove test directory: ($remove_result.stderr)"]
     }
 } else {
-    $cleanup_errors = ($cleanup_errors | append $"($base): directory retained because a mount could not be unmounted")
+    $cleanup_errors = ($cleanup_errors | append $"($base): directory retained because cleanup failed")
 }
 
 if (($cleanup_errors | length) > 0) {
