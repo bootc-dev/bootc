@@ -92,6 +92,8 @@ Provides: ostree-cli(ostree-container)
 %package -n system-reinstall-bootc
 Summary: Utility to reinstall the current system using bootc
 Recommends: podman
+# The man page moved from bootc to this subpackage in 1.17.4
+Conflicts: bootc < 1.17.4
 # The reinstall subpackage intentionally does not require bootc, as it pulls in many unnecessary dependencies
 
 %description -n system-reinstall-bootc
