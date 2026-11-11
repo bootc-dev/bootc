@@ -113,14 +113,15 @@ undefined behavior. There is a check for this in `bootc container lint`.
 
 ### systemd-confext and systemd-sysext
 
-[systemd-confext](https://www.freedesktop.org/software/systemd/man/systemd-confext.html)
-and [systemd-sysext](https://www.freedesktop.org/software/systemd/man/systemd-sysext.html)
-are not currently supported on bootc-managed systems.
+The aim of the bootc project is to work together with
+[systemd-sysext](https://www.freedesktop.org/software/systemd/man/systemd-sysext.html)
+and [systemd-confext](https://www.freedesktop.org/software/systemd/man/systemd-confext.html).
+A discussion in [bootc#7](https://github.com/bootc-dev/bootc/issues/7)
+explores a more integrated approach.
 
-These tools may be present in the operating system image (for example, because
-they ship in the `systemd` package), but bootc has not validated them on deployed
-systems. Using them on a bootc host is not recommended. There are two categories
-of concern to be aware of.
+Support for them today depends mostly on the distribution: the version of
+systemd it ships, and distribution-specific technologies such as SELinux.
+There are two categories of concern to be aware of.
 
 #### Conflicts with transient overlays
 
@@ -133,9 +134,13 @@ stacking. The Linux kernel limits filesystem stacking depth
 (`FILESYSTEM_MAX_STACK_DEPTH = 2`), so combining these features can exhaust the
 available depth and cause confext or sysext overlays to fail.
 
-The `/etc` case in particular is expected to become tractable: configuring the
-composefs backend with `etc = none` (there is not yet a corresponding ostree
-knob) leaves `/etc` free for confext to manage.
+For `/etc`, the composefs backend's default `bind` mount puts the deployment's
+state directory over `/etc`, even with transient root enabled, so it leaves
+room for confext. `[etc] mount = "none"` (which has no ostree equivalent yet)
+adds no overlay of its own either, so it also leaves room, except with
+transient root: `/etc` is then inside the root overlay, which already uses up
+the stacking depth. Both are documented with the composefs
+[root setup configuration](man/bootc-setup-root-conf.5.md).
 
 #### OS-specific integration concerns
 
@@ -144,8 +149,8 @@ integration issues (for example, SELinux labeling) that are specific to a
 particular OS or distribution. Consult your OS/distribution documentation for
 guidance on confext and sysext.
 
-For per-host configuration, use the patterns described in
-[Building images: Configuration](building/bootc-building-images.7.md#configuration) instead:
+For per-host configuration, see also the patterns described in
+[Building images: Configuration](building/bootc-building-images.7.md#configuration):
 image-embedded configuration (prefer `/usr` where possible), persistent `/etc`
 with day-2 configuration management tools, or machine-local kernel arguments
 via `rpm-ostree kargs` or `/usr/lib/bootc/kargs.d`.
