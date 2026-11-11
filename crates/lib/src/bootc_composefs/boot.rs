@@ -122,10 +122,7 @@ use crate::{
     install::{AbootDiskLayout, PostFetchState},
 };
 use crate::{
-    composefs_consts::{
-        BOOT_LOADER_ENTRIES, STAGED_BOOT_LOADER_ENTRIES, STATE_DIR_RELATIVE, UKI_NAME_PREFIX,
-        USER_CFG, USER_CFG_STAGED,
-    },
+    composefs_consts::{STATE_DIR_RELATIVE, UKI_NAME_PREFIX, USER_CFG, USER_CFG_STAGED},
     spec::{Bootloader, Host},
 };
 use crate::{parsers::grub_menuconfig::MenuEntry, store::BootedComposefs};
@@ -1052,58 +1049,9 @@ pub(crate) fn setup_composefs_bls_boot(
         }
     };
 
-    let loader_path = entry_paths.config_path.join("loader");
-
-    let (config_path, booted_bls) = if is_upgrade {
-        let boot_dir = Dir::open_ambient_dir(&entry_paths.config_path, ambient_authority())?;
-
-        let BootSetupType::Upgrade((_, booted_cfs, ..)) = setup_type else {
-            // This is just for sanity
-            unreachable!("enum mismatch");
-        };
-
-        let mut booted_bls = get_booted_bls(&boot_dir, booted_cfs)?;
-        booted_bls.sort_key = Some(secondary_sort_key(&os_id));
-
-        let staged_path = loader_path.join(STAGED_BOOT_LOADER_ENTRIES);
-
-        // Delete the staged entries directory if it exists as we want to overwrite the entries
-        // anyway
-        if boot_dir
-            .remove_all_optional(TYPE1_ENT_PATH_STAGED)
-            .context("Failed to remove staged directory")?
-        {
-            tracing::debug!("Removed existing staged entries directory");
-        }
-
-        // This will be atomically renamed to 'loader/entries' on shutdown/reboot
-        (staged_path, Some(booted_bls))
-    } else {
-        (loader_path.join(BOOT_LOADER_ENTRIES), None)
-    };
-
-    create_dir_all(&config_path).with_context(|| format!("Creating {:?}", config_path))?;
-
-    let loader_entries_dir = Dir::open_ambient_dir(&config_path, ambient_authority())
-        .with_context(|| format!("Opening {config_path:?}"))?;
-
-    loader_entries_dir.atomic_write(
-        type1_entry_conf_file_name(&os_id, &bls_config.version(), FILENAME_PRIORITY_PRIMARY),
-        bls_config.to_string().as_bytes(),
-    )?;
-
-    if let Some(booted_bls) = booted_bls {
-        loader_entries_dir.atomic_write(
-            type1_entry_conf_file_name(&os_id, &booted_bls.version(), FILENAME_PRIORITY_SECONDARY),
-            booted_bls.to_string().as_bytes(),
-        )?;
-    }
-
-    let owned_loader_entries_fd = loader_entries_dir
-        .reopen_as_ownedfd()
-        .context("Reopening as owned fd")?;
-
-    rustix::fs::fsync(owned_loader_entries_fd).context("fsync")?;
+    let boot_dir = Dir::open_ambient_dir(&entry_paths.config_path, ambient_authority())
+        .with_context(|| format!("Opening {:?}", entry_paths.config_path))?;
+    write_type1_entries(&boot_dir, &setup_type, &os_id, &bls_config)?;
 
     Ok(boot_digest)
 }
@@ -1861,6 +1809,54 @@ fn write_grub_uki_menuentry(
     Ok(())
 }
 
+/// Writes a deployment's Type 1 boot entry. A staged deployment replaces any
+/// earlier staged one, whose entry may have another version in its file name,
+/// and keeps the booted deployment's entry next to it.
+fn write_type1_entries(
+    boot_dir: &Dir,
+    setup_type: &BootSetupType,
+    os_id: &str,
+    entry: &BLSConfig,
+) -> Result<()> {
+    let (entries_path, booted_bls) = match setup_type {
+        BootSetupType::Setup(..) => (TYPE1_ENT_PATH, None),
+
+        BootSetupType::Upgrade((_, booted_cfs, ..)) => {
+            boot_dir
+                .remove_all_optional(TYPE1_ENT_PATH_STAGED)
+                .with_context(|| format!("Removing {TYPE1_ENT_PATH_STAGED}"))?;
+
+            let mut booted_bls = get_booted_bls(boot_dir, booted_cfs)?;
+            booted_bls.sort_key = Some(secondary_sort_key(os_id));
+
+            (TYPE1_ENT_PATH_STAGED, Some(booted_bls))
+        }
+    };
+
+    boot_dir
+        .create_dir_all(entries_path)
+        .with_context(|| format!("Creating {entries_path}"))?;
+    let entries_dir = boot_dir.open_dir(entries_path)?;
+
+    entries_dir
+        .atomic_write(
+            type1_entry_conf_file_name(os_id, &entry.version(), FILENAME_PRIORITY_PRIMARY),
+            entry.to_string().as_bytes(),
+        )
+        .context("Writing conf file")?;
+
+    if let Some(booted_bls) = booted_bls {
+        entries_dir.atomic_write(
+            type1_entry_conf_file_name(os_id, &booted_bls.version(), FILENAME_PRIORITY_SECONDARY),
+            booted_bls.to_string().as_bytes(),
+        )?;
+    }
+
+    rustix::fs::fsync(entries_dir.reopen_as_ownedfd()?).context("fsync")?;
+
+    Ok(())
+}
+
 #[context("Writing systemd UKI config")]
 fn write_systemd_uki_config(
     esp_dir: &Dir,
@@ -1872,7 +1868,6 @@ fn write_systemd_uki_config(
     bootloader: &Bootloader,
 ) -> Result<()> {
     let os_id = os_id.as_deref().unwrap_or("bootc");
-    let primary_sort_key = primary_sort_key(os_id);
 
     let mut bls_conf = BLSConfig::default();
     bls_conf
@@ -1883,56 +1878,10 @@ fn write_systemd_uki_config(
                 bootloader,
             ),
         })
-        .with_sort_key(primary_sort_key.clone())
+        .with_sort_key(primary_sort_key(os_id))
         .with_version(version.unwrap_or_else(|| id.to_hex()));
 
-    let (entries_dir, booted_bls) = match setup_type {
-        BootSetupType::Setup(..) => {
-            esp_dir
-                .create_dir_all(TYPE1_ENT_PATH)
-                .with_context(|| format!("Creating {TYPE1_ENT_PATH}"))?;
-
-            (esp_dir.open_dir(TYPE1_ENT_PATH)?, None)
-        }
-
-        BootSetupType::Upgrade((_, booted_cfs, ..)) => {
-            // An earlier staged deployment's entry may have another version in
-            // its file name, so writing ours wouldn't overwrite it
-            esp_dir
-                .remove_all_optional(TYPE1_ENT_PATH_STAGED)
-                .with_context(|| format!("Removing {TYPE1_ENT_PATH_STAGED}"))?;
-
-            esp_dir
-                .create_dir_all(TYPE1_ENT_PATH_STAGED)
-                .with_context(|| format!("Creating {TYPE1_ENT_PATH_STAGED}"))?;
-
-            let mut booted_bls = get_booted_bls(&esp_dir, booted_cfs)?;
-            booted_bls.sort_key = Some(secondary_sort_key(os_id));
-
-            (esp_dir.open_dir(TYPE1_ENT_PATH_STAGED)?, Some(booted_bls))
-        }
-    };
-
-    entries_dir
-        .atomic_write(
-            type1_entry_conf_file_name(os_id, &bls_conf.version(), FILENAME_PRIORITY_PRIMARY),
-            bls_conf.to_string().as_bytes(),
-        )
-        .context("Writing conf file")?;
-
-    if let Some(booted_bls) = booted_bls {
-        entries_dir.atomic_write(
-            type1_entry_conf_file_name(os_id, &booted_bls.version(), FILENAME_PRIORITY_SECONDARY),
-            booted_bls.to_string().as_bytes(),
-        )?;
-    }
-
-    let esp_dir = esp_dir
-        .reopen_as_ownedfd()
-        .context("Reopening as owned fd")?;
-    rustix::fs::fsync(esp_dir).context("fsync")?;
-
-    Ok(())
+    write_type1_entries(esp_dir, setup_type, os_id, &bls_conf)
 }
 
 #[context("Setting up UKI boot")]
