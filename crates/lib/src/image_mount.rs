@@ -345,10 +345,13 @@ async fn mount_ostree_image(opts: &MountOpts) -> Result<MountedImageRoot> {
         .load(gio::Cancellable::NONE)
         .context("Reloading locked booted OSTree sysroot")?;
 
-    // libostree identifies the booted deployment only when its Sysroot points
-    // at the current root (/), not the physical backing sysroot (/sysroot).
-    // Read that identity while holding the lock above, then resolve it against
-    // the deployments from the locked backing sysroot below.
+    // libostree identifies the booted deployment, and exposes runtime staged
+    // deployments, only when its Sysroot points at the current root (/), not
+    // the physical backing sysroot (/sysroot). Select from that view while
+    // holding the lock above. A staged deployment can be absent from the
+    // locked backing sysroot's deployment list, but its deployment path still
+    // names content beneath /sysroot; keep reads on the attached /sysroot
+    // mount for compatibility with overlayfs/kernel lower paths.
     let booted_sysroot = ostree::Sysroot::new_default();
     booted_sysroot
         .load(gio::Cancellable::NONE)
@@ -369,12 +372,10 @@ async fn mount_ostree_image(opts: &MountOpts) -> Result<MountedImageRoot> {
                 .ok_or_else(|| anyhow::anyhow!("No staged OSTree deployment found"))?
         }
     };
-    let deployments = sysroot.deployments();
-    let deployment = resolve_locked_deployment(&selected_deployment, &deployments)?;
     // Keep composefs lower/data paths rooted on the attached /sysroot mount.
     // On older supported kernels (including 6.12), overlayfs cannot clone a
     // lowerpath reached through the detached mount used for OSTree locking.
-    let deployment_path = sysroot.deployment_dirpath(&deployment);
+    let deployment_path = sysroot.deployment_dirpath(&selected_deployment);
     let deployment_dir = sysroot_dir
         .open_dir(deployment_path.as_str())
         .with_context(|| format!("Opening selected OSTree deployment {deployment_path}"))?;
@@ -386,7 +387,7 @@ async fn mount_ostree_image(opts: &MountOpts) -> Result<MountedImageRoot> {
     let (tree, checkout) = match ostree_prepareroot::mount_composefs(
         &deployment_dir,
         &repo,
-        deployment.csum().as_str(),
+        selected_deployment.csum().as_str(),
         config.as_ref(),
     )
     .context("Mounting selected OSTree deployment image")?
@@ -410,55 +411,6 @@ async fn mount_ostree_image(opts: &MountOpts) -> Result<MountedImageRoot> {
         },
         checkout,
     })
-}
-
-/// Resolve the deployment selected from the current-root view to its matching
-/// object in the locked backing sysroot. Deployment indexes and staged flags
-/// can differ between these views, so use only the stable OSTree identity.
-fn resolve_locked_deployment(
-    selected: &ostree::Deployment,
-    locked_deployments: &[ostree::Deployment],
-) -> Result<ostree::Deployment> {
-    let identity = deployment_identity(selected);
-    let identities = locked_deployments
-        .iter()
-        .map(deployment_identity)
-        .collect::<Vec<_>>();
-    let index = matching_deployment_index(&identity, &identities)?;
-    Ok(locked_deployments[index].clone())
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct DeploymentIdentity {
-    osname: String,
-    checksum: String,
-    deploy_serial: i32,
-}
-
-fn deployment_identity(deployment: &ostree::Deployment) -> DeploymentIdentity {
-    DeploymentIdentity {
-        osname: deployment.osname().to_string(),
-        checksum: deployment.csum().to_string(),
-        deploy_serial: deployment.deployserial(),
-    }
-}
-
-fn matching_deployment_index(
-    selected: &DeploymentIdentity,
-    candidates: &[DeploymentIdentity],
-) -> Result<usize> {
-    let mut matches = candidates
-        .iter()
-        .enumerate()
-        .filter(|(_, candidate)| *candidate == selected);
-    let (index, _) = matches.next().ok_or_else(|| {
-        anyhow::anyhow!("Selected OSTree deployment is absent from locked sysroot")
-    })?;
-    ensure!(
-        matches.next().is_none(),
-        "Selected OSTree deployment is ambiguous in locked sysroot"
-    );
-    Ok(index)
 }
 
 fn select_source_path(checkout: bool, source: &Utf8Path) -> Result<Utf8PathBuf> {
@@ -697,9 +649,9 @@ fn ensure_not_root_target(target: &std::fs::File, path: &Utf8Path) -> Result<()>
 #[cfg(test)]
 mod tests {
     use super::{
-        Deployment, DeploymentIdentity, MountOpts, UnmountOpts, ensure_directory_empty,
-        ensure_not_mountpoint, ensure_not_root_target, open_mount_target, open_path_no_symlinks,
-        open_source, select_source_path, source_relative_path,
+        Deployment, MountOpts, UnmountOpts, ensure_directory_empty, ensure_not_mountpoint,
+        ensure_not_root_target, open_mount_target, open_path_no_symlinks, open_source,
+        select_source_path, source_relative_path,
     };
     use crate::cli::{ImageOpts, InstallOpts, Opt};
     use camino::{Utf8Path, Utf8PathBuf};
@@ -900,29 +852,5 @@ mod tests {
             )
             .is_err()
         );
-    }
-
-    #[test]
-    fn locked_deployment_resolution_requires_one_exact_identity_match() {
-        let identity = |osname: &str, checksum: &str, deploy_serial: i32| DeploymentIdentity {
-            osname: osname.to_owned(),
-            checksum: checksum.to_owned(),
-            deploy_serial,
-        };
-        let selected = identity("default", &"aa".repeat(32), 3);
-        let candidates = [
-            identity("other", &"aa".repeat(32), 3),
-            identity("default", &"bb".repeat(32), 3),
-            identity("default", &"aa".repeat(32), 4),
-            selected.clone(),
-        ];
-
-        assert_eq!(
-            super::matching_deployment_index(&selected, &candidates).unwrap(),
-            3
-        );
-        assert!(super::matching_deployment_index(&selected, &[]).is_err());
-        let ambiguous = [selected.clone(), selected.clone()];
-        assert!(super::matching_deployment_index(&selected, &ambiguous).is_err());
     }
 }
