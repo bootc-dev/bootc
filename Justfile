@@ -232,9 +232,10 @@ test-ukiboot: build-ukiboot-update-test-image
 # Run the package-mode migration plan against the current checkout image.
 # The VM cannot share controller Podman storage, so transfer it as an OCI archive.
 [group('testing')]
-test-tmt-package-mode:
+test-tmt-package-mode image="centos-stream-10":
     #!/bin/bash
     set -euo pipefail
+    lbi_images="{{lbi_images}}"
     just build
     archive_dir=$(mktemp -d -- tmt/plans/.package-mode-local.XXXXXX)
     cleanup() {
@@ -248,12 +249,23 @@ test-tmt-package-mode:
         echo "Refusing to overwrite existing archive: $archive_path" >&2
         exit 1
     fi
-    podman save --format oci-archive --output "$archive_path" localhost/bootc
+    podman save --format oci-archive --output "$archive_path" {{base_img}}
+    # TMT syncs the plan workdir to the same absolute guest path. Use a
+    # world-writable root so non-root local runs can place it under preserved
+    # /var/lib on the guest without a symlink or a separate VM harness.
+    if [[ "$EUID" -eq 0 ]]; then
+        install -d -m 1777 /var/lib/bootc-tmt-workdirs
+    else
+        sudo install -d -m 1777 /var/lib/bootc-tmt-workdirs
+    fi
     tmt \
         --context=running_env=packit \
         --context=package_source=local \
-        --context="test_disk_image=${test_disk_image:-centos-stream-10}" \
-        run --environment "PACKAGE_MODE_IMAGE_ARCHIVE=$archive_path" \
+        --context="test_disk_image={{image}}" \
+        run --workdir-root /var/lib/bootc-tmt-workdirs \
+        --environment "PACKAGE_MODE_IMAGE_NAME={{base_img}}" \
+        --environment "PACKAGE_MODE_LBI_IMAGES=${lbi_images// /,}" \
+        --environment "PACKAGE_MODE_IMAGE_ARCHIVE=$archive_path" \
         plans --name '^/tmt/plans/package-mode$'
 
 # Split out from `test-container` because, unlike the container integration tests,

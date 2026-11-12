@@ -1,7 +1,7 @@
 # The VM cannot share controller Podman storage, so TMT syncs the local OCI
-# archive to the single guest before migration. It reboots once, then verifies
-# preserved /var data.
-summary: Package-mode /var preservation
+# archive to one guest before migration. The test checks preflight failure,
+# separate and temporary mounts, stateful data, then reboots and verifies them.
+summary: Package-mode preserve-var state and mounts
 duration: 45m
 adjust:
   - when: running_env == image_mode
