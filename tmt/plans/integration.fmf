@@ -441,6 +441,13 @@ execute:
       - /tmt/tests/tests/test-63-install-shared-propagation
   extra-fixme_skip_if_composefs: true
 
+/plan-64-image-mount:
+  summary: Verify booted and staged deployment image mounts
+  discover:
+    how: fmf
+    test:
+      - /tmt/tests/tests/test-64-image-mount
+
 /plan-66-encrypted-swap-ordering:
   summary: Verify a random-key encrypted swap boots without an ordering cycle
   discover:
@@ -459,11 +466,4 @@ execute:
     enabled: false
     because: the derived images are built in the VM, which has no keys to sign their UKIs for Secure Boot
   extra-skip_if_ostree: true
-
-/plan-68-image-mount:
-  summary: Verify booted and staged deployment image mounts
-  discover:
-    how: fmf
-    test:
-      - /tmt/tests/tests/test-64-image-mount
 # END GENERATED PLANS
