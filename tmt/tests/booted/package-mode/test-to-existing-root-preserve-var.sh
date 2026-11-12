@@ -669,13 +669,15 @@ case ${TMT_REBOOT_COUNT:-0} in
                 install -d -m 0755 "$deployment/etc/ssh"
                 ssh-keygen -q -t ed25519 -N "" \
                     -f "$deployment/etc/ssh/ssh_host_ed25519_key"
-                chroot "$deployment" restorecon -RF /etc/ssh
+                # restorecon cannot write labels when the source kernel disables SELinux.
                 for ssh_path in \
                     /etc/ssh/ssh_host_ed25519_key \
                     /etc/ssh/ssh_host_ed25519_key.pub; do
+                    expected_label=$(chroot "$deployment" matchpathcon -n "$ssh_path")
+                    setfattr -n security.selinux -v "$expected_label" \
+                        "$deployment$ssh_path"
                     actual_label=$(getfattr --only-values -n security.selinux \
                         "$deployment$ssh_path")
-                    expected_label=$(chroot "$deployment" matchpathcon -n "$ssh_path")
                     if [[ $actual_label != "$expected_label" ]]; then
                         printf "Unexpected SELinux label on target SSH key %s: %s (expected %s)\n" \
                             "$ssh_path" "$actual_label" "$expected_label" >&2
