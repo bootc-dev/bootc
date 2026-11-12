@@ -431,20 +431,20 @@ case ${TMT_REBOOT_COUNT:-0} in
         # the test also works when the guest and bootc base use different OSes.
         install -d -m 0755 /var/lib/pgsql
         podman --remote=false run --rm \
-            -v /var/lib/pgsql:/mnt/pgsql "$target_image" \
+            -v /var/lib/pgsql:/var/lib/pgsql "$target_image" \
             bash -euo pipefail -c '
                 postgres_uid=$(id -u postgres)
                 postgres_gid=$(id -g postgres)
-                chown "$postgres_uid:$postgres_gid" /mnt/pgsql
-                chmod 0700 /mnt/pgsql
-                test "$(stat -c %u:%g /mnt/pgsql)" = "$postgres_uid:$postgres_gid"
-                test "$(stat -c %a /mnt/pgsql)" = 700
-                runuser -u postgres -- initdb -D /mnt/pgsql/data
-                if ! runuser -u postgres -- pg_ctl -D /mnt/pgsql/data \
-                    -l /mnt/pgsql/server.log \
+                chown "$postgres_uid:$postgres_gid" /var/lib/pgsql
+                chmod 0700 /var/lib/pgsql
+                test "$(stat -c %u:%g /var/lib/pgsql)" = "$postgres_uid:$postgres_gid"
+                test "$(stat -c %a /var/lib/pgsql)" = 700
+                runuser -u postgres -- initdb -D /var/lib/pgsql/data
+                if ! runuser -u postgres -- pg_ctl -D /var/lib/pgsql/data \
+                    -l /var/lib/pgsql/server.log \
                     -o "-c listen_addresses=localhost -c unix_socket_directories=/tmp" -w start
                 then
-                    cat /mnt/pgsql/server.log >&2
+                    cat /var/lib/pgsql/server.log >&2
                     exit 1
                 fi
                 runuser -u postgres -- psql -h 127.0.0.1 -v ON_ERROR_STOP=1 \
@@ -452,7 +452,7 @@ case ${TMT_REBOOT_COUNT:-0} in
                 runuser -u postgres -- psql -h 127.0.0.1 -v ON_ERROR_STOP=1 -d bootc_preserve_var \
                     -c "CREATE TABLE app_state (id integer PRIMARY KEY, value text NOT NULL); \
                         INSERT INTO app_state VALUES (1, \$\$postgres-state-preserved\$\$)"
-                runuser -u postgres -- pg_ctl -D /mnt/pgsql/data -m fast -w stop
+                runuser -u postgres -- pg_ctl -D /var/lib/pgsql/data -m fast -w stop
             '
         test -f "$postgres_version_file"
         if getfattr --only-values -n security.selinux "$app_state" >/dev/null 2>&1; then
