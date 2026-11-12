@@ -1,6 +1,6 @@
 #!/bin/bash
-# Both local and Packit runs prepare one package-mode guest, then convert and
-# reboot that same guest; local TMT workdirs live under preserved /var.
+# Both local and Packit runs prepare one package-mode guest, then migrate and
+# reboot that same guest. Local TMT workdirs are staged under preserved /var.
 set -xeuo pipefail
 
 target_image=localhost/bootc-preserve-var-test
@@ -14,10 +14,14 @@ bind_source=$bind_dir/source
 bind_target=$bind_dir/target
 preflight_mountpoint=$var_state/preflight-special
 tmt_plan_data_suffix=/tmt/plans/package-mode/data
+tmt_plan_data_sentinel_name=plan-workdir-persistence-sentinel
 tmt_artifacts_parent=/var/ARTIFACTS
 tmt_test_data_sentinel_name=workdir-persistence-sentinel
 tmt_test_data_post_reboot_marker_name=post-reboot-marker
+postgres_version_file=/var/lib/pgsql/data/PG_VERSION
 freeze_may_be_active=0
+persistent_workdir_root=
+persistent_run_dir=
 
 is_always_excluded_var_path() {
     case $1 in
@@ -87,15 +91,8 @@ get_tmt_run_dir() {
             printf 'TMT workdir root does not exist: %s\n' "$workdir_root" >&2
             return 1
         }
-        case $resolved_workdir_root in
-            /var/*) ;;
-            *)
-                printf 'TMT workdir root must resolve under preserved /var (got %q -> %q)\n' \
-                    "$workdir_root" "$resolved_workdir_root" >&2
-                return 1
-                ;;
-        esac
-        if is_always_excluded_var_path "$resolved_workdir_root"; then
+        if [[ $resolved_workdir_root == /var/* ]] && \
+            is_always_excluded_var_path "$resolved_workdir_root"; then
             printf 'TMT workdir root is excluded from preserve-var: %s\n' \
                 "$resolved_workdir_root" >&2
             return 1
@@ -128,6 +125,9 @@ get_tmt_run_dir() {
             return 1
         fi
         verify_tmt_workdir_directory "$run_dir" "$resolved_run_dir" || return 1
+        case $resolved_run_dir in
+            /var/*) verify_tmt_workdir_in_preserved_var "$resolved_run_dir" || return 1 ;;
+        esac
         resolved_plan_data=$(realpath -e -- "$plan_data") || {
             printf 'TMT_PLAN_DATA does not exist: %s\n' "$plan_data" >&2
             return 1
@@ -171,7 +171,7 @@ get_tmt_run_dir() {
         return 1
     fi
     case ${TMT_REBOOT_COUNT:-0} in
-        0|1) ;;
+        0|1|2) ;;
         *)
             printf 'Unexpected TMT_REBOOT_COUNT=%s\n' "${TMT_REBOOT_COUNT}" >&2
             return 1
@@ -182,9 +182,27 @@ get_tmt_run_dir() {
 
 verify_tmt_workdir_in_preserved_var() {
     local run_dir=$1
+    local resolved_run_dir
     local mount_target
 
-    if ! mount_target=$(findmnt --noheadings --output TARGET --target "$run_dir"); then
+    if ! resolved_run_dir=$(realpath -e -- "$run_dir"); then
+        printf 'TMT workdir path does not exist: %s\n' "$run_dir" >&2
+        return 1
+    fi
+    case $resolved_run_dir in
+        /var/*) ;;
+        *)
+            printf 'TMT workdir must resolve under preserved /var (got %q -> %q)\n' \
+                "$run_dir" "$resolved_run_dir" >&2
+            return 1
+            ;;
+    esac
+    if is_always_excluded_var_path "$resolved_run_dir"; then
+        printf 'TMT workdir is excluded from preserve-var: %s\n' \
+            "$resolved_run_dir" >&2
+        return 1
+    fi
+    if ! mount_target=$(findmnt --noheadings --output TARGET --target "$resolved_run_dir"); then
         printf 'Could not determine the filesystem containing TMT workdir %s\n' \
             "$run_dir" >&2
         return 1
@@ -195,6 +213,120 @@ verify_tmt_workdir_in_preserved_var() {
             "$run_dir" "$mount_target" >&2
         return 1
     fi
+}
+
+prepare_tmt_workdir_persistence() {
+    local run_dir=$1
+    local resolved_run_dir
+    local resolved_root
+    local run_id
+    local relative_run_dir
+    local relative_root
+    local stage_parent
+    local stage_run_dir
+    local resolved_plan_data
+    local resolved_test_data
+    local resolved_metadata
+    local plan_sentinel
+    local test_sentinel
+
+    resolved_run_dir=$(realpath -e -- "$run_dir") || return 1
+    run_id=${run_dir##*/}
+    if [[ -n ${PACKAGE_MODE_TMT_WORKDIR_ROOT:-} ]]; then
+        resolved_root=$(realpath -e -- "$PACKAGE_MODE_TMT_WORKDIR_ROOT") || return 1
+    fi
+
+    # Packit already puts workdirs in /var/ARTIFACTS. Likewise, a local
+    # workdir that resolves under /var is already in the preserved tree.
+    if [[ $resolved_run_dir == /var/* ]]; then
+        persistent_run_dir=$resolved_run_dir
+        if [[ -n ${PACKAGE_MODE_TMT_WORKDIR_ROOT:-} ]]; then
+            persistent_workdir_root=$resolved_root
+        fi
+        verify_tmt_workdir_in_preserved_var "$persistent_run_dir"
+        return
+    fi
+
+    case $run_dir in
+        /home/*) relative_run_dir=${run_dir#/home/} ;;
+        *)
+            printf 'TMT workdir outside /var must be under /home to persist it (got %q -> %q)\n' \
+                "$run_dir" "$resolved_run_dir" >&2
+            return 1
+            ;;
+    esac
+    case $resolved_run_dir in
+        /home/*) ;;
+        *)
+            printf 'TMT workdir resolves outside /home and /var (got %q -> %q)\n' \
+                "$run_dir" "$resolved_run_dir" >&2
+            return 1
+            ;;
+    esac
+    if [[ -z ${PACKAGE_MODE_TMT_WORKDIR_ROOT:-} || $resolved_root != /home/* ]]; then
+        printf 'Local TMT workdir root must resolve below /home or /var (got %q)\n' \
+            "${PACKAGE_MODE_TMT_WORKDIR_ROOT:-}" >&2
+        return 1
+    fi
+
+    relative_root=${resolved_root#/home/}
+    persistent_workdir_root=/var/home/$relative_root
+    persistent_run_dir=/var/home/$relative_run_dir
+    if is_always_excluded_var_path "$persistent_run_dir"; then
+        printf 'Persistent TMT workdir is excluded from preserve-var: %s\n' \
+            "$persistent_run_dir" >&2
+        return 1
+    fi
+    if [[ -e $persistent_run_dir || -L $persistent_run_dir ]]; then
+        printf 'Refusing to overwrite existing persistent TMT workdir: %s\n' \
+            "$persistent_run_dir" >&2
+        return 1
+    fi
+
+    install -d -m 0755 -- "$persistent_workdir_root"
+    verify_tmt_workdir_in_preserved_var "$persistent_workdir_root"
+    stage_parent=$(mktemp -d -- "$persistent_workdir_root/.${run_id}.stage.XXXXXX")
+    stage_run_dir=$stage_parent/$run_id
+    (
+        set -euo pipefail
+        trap 'rm -rf -- "$stage_parent"' EXIT
+        cp --reflink=auto -a -- "$run_dir" "$stage_run_dir"
+
+        resolved_plan_data=$(realpath -e -- "$TMT_PLAN_DATA")
+        resolved_test_data=$(realpath -e -- "$TMT_TEST_DATA")
+        resolved_metadata=$(realpath -e -- "$TMT_TEST_METADATA")
+        plan_sentinel=$TMT_PLAN_DATA/$tmt_plan_data_sentinel_name
+        test_sentinel=$TMT_TEST_DATA/$tmt_test_data_sentinel_name
+        for source_path in "$resolved_plan_data" "$resolved_test_data" "$resolved_metadata"; do
+            case $source_path in
+                "$resolved_run_dir"/*) ;;
+                *)
+                    printf 'TMT data path is outside its run directory: %s\n' \
+                        "$source_path" >&2
+                    exit 1
+                    ;;
+            esac
+            copied_path=$stage_run_dir/${source_path#"$resolved_run_dir"/}
+            test -e "$copied_path"
+        done
+        test -d "$stage_run_dir${tmt_plan_data_suffix}"
+        cmp -- "$resolved_metadata" "$stage_run_dir/${resolved_metadata#"$resolved_run_dir"/}"
+        cmp -- "$plan_sentinel" \
+            "$stage_run_dir/${resolved_plan_data#"$resolved_run_dir"/}/$tmt_plan_data_sentinel_name"
+        cmp -- "$test_sentinel" \
+            "$stage_run_dir/${resolved_test_data#"$resolved_run_dir"/}/$tmt_test_data_sentinel_name"
+        if [[ -e $persistent_run_dir || -L $persistent_run_dir ]]; then
+            printf 'Refusing to overwrite existing persistent TMT workdir: %s\n' \
+                "$persistent_run_dir" >&2
+            exit 1
+        fi
+        mv -Tn -- "$stage_run_dir" "$persistent_run_dir"
+        if [[ -e $stage_run_dir || ! -d $persistent_run_dir ]]; then
+            printf 'Could not publish staged TMT workdir at %s\n' "$persistent_run_dir" >&2
+            exit 1
+        fi
+    )
+    verify_tmt_workdir_in_preserved_var "$persistent_run_dir"
 }
 
 is_local_tmt_workdir() {
@@ -211,17 +343,30 @@ is_local_tmt_workdir() {
 
 case ${TMT_REBOOT_COUNT:-0} in
     0)
+        test ! -e /run/ostree-booted
+        # Always request the disabled source boot; this is harmless when the
+        # initial VM already has the argument and makes reboot accounting stable.
+        grubby --update-kernel=ALL --args=selinux=0
+        tmt-reboot
+        ;;
+    1)
         podman --remote=false image exists "$target_image"
 
-        # The guest is still the original package-mode system.
+        # This must be a real HostDisabled boot, not setenforce or a container
+        # label override. /proc/1/root checks the host's SELinux filesystem.
         test ! -e /run/ostree-booted
+        grep -Eq '(^|[[:space:]])selinux=0([[:space:]]|$)' /proc/cmdline
+        test "$(getenforce)" = Disabled
+        test ! -e /proc/1/root/sys/fs/selinux/enforce
+
         tmt_run_dir=$(get_tmt_run_dir)
         if [[ ! -d $tmt_run_dir || -L $tmt_run_dir ]]; then
             printf 'TMT workdir is missing or not a real directory: %s\n' "$tmt_run_dir" >&2
             exit 1
         fi
-        verify_tmt_workdir_in_preserved_var "$tmt_run_dir"
 
+        test ! -e "$app_state"
+        test ! -e "$postgres_version_file"
         install -d -m 0755 "$var_state" "${app_state%/*}" "$bind_source" "$bind_target"
         printf '%s\n' preserved-application-state > "$app_state"
         printf '%s\n' bind-source-data > "$bind_source/sentinel"
@@ -233,7 +378,7 @@ case ${TMT_REBOOT_COUNT:-0} in
 
         # Seed a database using the new deployment's own PostgreSQL version so
         # the test also works when the guest and bootc base use different OSes.
-        podman --remote=false run --rm --security-opt label=disable \
+        podman --remote=false run --rm \
             -v /var/lib/pgsql:/var/lib/pgsql "$target_image" \
             bash -euo pipefail -c '
                 postgresql-setup --initdb
@@ -246,6 +391,17 @@ case ${TMT_REBOOT_COUNT:-0} in
                         INSERT INTO app_state VALUES (1, \$\$postgres-state-preserved\$\$)"
                 runuser -u postgres -- pg_ctl -D /var/lib/pgsql/data -m fast -w stop
             '
+        test -f "$postgres_version_file"
+        if getfattr --only-values -n security.selinux "$app_state" >/dev/null 2>&1; then
+            printf 'Application state unexpectedly has a SELinux label on the disabled source: %s\n' \
+                "$app_state" >&2
+            exit 1
+        fi
+        if getfattr --only-values -n security.selinux "$postgres_version_file" >/dev/null 2>&1; then
+            printf 'PostgreSQL state unexpectedly has a SELinux label on the disabled source: %s\n' \
+                "$postgres_version_file" >&2
+            exit 1
+        fi
 
         # Exercise source preflight with a nested mount whose source is a
         # device node. No target boot configuration may be changed on failure.
@@ -287,18 +443,24 @@ case ${TMT_REBOOT_COUNT:-0} in
         umount "$preflight_mountpoint"
         rm -f "$preflight_mountpoint" "$boot_snapshot" "$boot_snapshot_after"
 
-        # TMT 1.69 rsyncs to the same absolute path on the guest. The configured
-        # controller path resolves under /var here (including /home -> /var/home).
+        # Add a sentinel before copying so the full plan/test data and metadata
+        # are verified in the persistent copy, not just an empty run directory.
         test -f "$TMT_TEST_METADATA"
+        tmt_plan_data_sentinel=$TMT_PLAN_DATA/$tmt_plan_data_sentinel_name
+        test ! -e "$tmt_plan_data_sentinel"
+        printf '%s\n' plan-workdir-persistence-sentinel > "$tmt_plan_data_sentinel"
         tmt_test_data_sentinel=$TMT_TEST_DATA/$tmt_test_data_sentinel_name
         test ! -e "$tmt_test_data_sentinel"
         printf '%s\n' workdir-persistence-sentinel > "$tmt_test_data_sentinel"
+        prepare_tmt_workdir_persistence "$tmt_run_dir"
+        if [[ -n $persistent_run_dir ]]; then
+            verify_tmt_workdir_in_preserved_var "$persistent_run_dir"
+        fi
 
         # TMT connects as root. Preserve its authorized key in /var so it can
-        # reconnect after the migration reboot.
+        # reconnect after migration; the target policy relabeler labels it.
         install -d -m 0700 /var/roothome/.ssh
         install -m 0600 /root/.ssh/authorized_keys /var/roothome/.ssh/authorized_keys
-        restorecon -RF /var/roothome/.ssh
 
         # Keep the backing image for the separate /var/log filesystem stable
         # while preserve-var copies its image file from /var/lib.
@@ -338,6 +500,10 @@ case ${TMT_REBOOT_COUNT:-0} in
         test "$(<"$new_var${bind_source#/var}/sentinel")" = bind-source-data
         test "$(<"$new_var${app_state#/var}")" = preserved-application-state
         test -f "$new_var${log_fs_image#/var}"
+        test "$(getfattr --only-values -n security.selinux "$new_var${app_state#/var}")" = \
+            "$(podman --remote=false run --rm "$target_image" matchpathcon -n "$app_state")"
+        test "$(getfattr --only-values -n security.selinux "$new_var${postgres_version_file#/var}")" = \
+            "$(podman --remote=false run --rm "$target_image" matchpathcon -n "$postgres_version_file")"
         bind_target_in_new_var=$new_var${bind_target#/var}
         test -d "$bind_target_in_new_var"
         test -z "$(find "$bind_target_in_new_var" -mindepth 1 -print -quit)"
@@ -375,6 +541,7 @@ case ${TMT_REBOOT_COUNT:-0} in
                 install -d -m 0755 "$deployment/etc/ssh"
                 ssh-keygen -q -t ed25519 -N "" \
                     -f "$deployment/etc/ssh/ssh_host_ed25519_key"
+                chroot "$deployment" restorecon -RF /etc/ssh
 
                 if [[ $local_workdir_root == 1 ]]; then
                     rule=$deployment/etc/tmpfiles.d/bootc-tmt-workdir.conf
@@ -388,15 +555,27 @@ case ${TMT_REBOOT_COUNT:-0} in
                 fi
             ' install-test-configuration \
             "$(is_local_tmt_workdir "$tmt_run_dir" && printf 1 || printf 0)" \
-            "$(realpath -e -- "$tmt_run_dir")" \
-            "$(if [[ -n ${PACKAGE_MODE_TMT_WORKDIR_ROOT:-} ]]; then realpath -e -- "$PACKAGE_MODE_TMT_WORKDIR_ROOT"; fi)"
+            "$(if [[ -n $persistent_run_dir ]]; then printf '%s' "$persistent_run_dir"; else realpath -e -- "$tmt_run_dir"; fi)" \
+            "$(if [[ -n $persistent_workdir_root ]]; then printf '%s' "$persistent_workdir_root"; elif [[ -n ${PACKAGE_MODE_TMT_WORKDIR_ROOT:-} ]]; then realpath -e -- "$PACKAGE_MODE_TMT_WORKDIR_ROOT"; fi)"
+
+        # New target boot entries are generated by the migration; remove the
+        # source-only HostDisabled argument before rebooting into the target.
+        grubby --update-kernel=ALL --remove-args=selinux=0
+        if grubby --info=ALL | grep -Eq '(^|[[:space:]"])selinux=0([[:space:]"]|$)'; then
+            printf 'selinux=0 remains in a target boot entry after migration\n' >&2
+            exit 1
+        fi
 
         bootc status
         # Reboot the guest itself; this avoids testcloud's ACPI soft-poweroff.
         tmt-reboot -c 'systemctl reboot'
         ;;
-    1)
+    2)
         test -e /run/ostree-booted
+        ! grep -Eq '(^|[[:space:]])selinux=0([[:space:]]|$)' /proc/cmdline
+        test "$(getenforce)" = Enforcing
+        test -e /proc/1/root/sys/fs/selinux/enforce
+        test "$(</proc/1/root/sys/fs/selinux/enforce)" = 1
         tmt_run_dir=$(get_tmt_run_dir)
         if is_local_tmt_workdir "$tmt_run_dir"; then
             test -d "$tmt_run_dir"
@@ -417,8 +596,10 @@ case ${TMT_REBOOT_COUNT:-0} in
         test -d "$TMT_PLAN_DATA"
         test -d "$TMT_TEST_DATA"
         test -f "$TMT_TEST_METADATA"
+        tmt_plan_data_sentinel=$TMT_PLAN_DATA/$tmt_plan_data_sentinel_name
         tmt_test_data_sentinel=$TMT_TEST_DATA/$tmt_test_data_sentinel_name
         tmt_test_data_post_reboot_marker=$TMT_TEST_DATA/$tmt_test_data_post_reboot_marker_name
+        test "$(<"$tmt_plan_data_sentinel")" = plan-workdir-persistence-sentinel
         test "$(<"$tmt_test_data_sentinel")" = workdir-persistence-sentinel
         printf '%s\n' post-reboot-workdir-writable > "$tmt_test_data_post_reboot_marker"
         test "$(<"$tmt_test_data_post_reboot_marker")" = post-reboot-workdir-writable
@@ -439,6 +620,10 @@ case ${TMT_REBOOT_COUNT:-0} in
             -d bootc_preserve_var -c 'SELECT value FROM app_state WHERE id = 1')
         test "$postgres_value" = postgres-state-preserved
         test "$(<"$app_state")" = preserved-application-state
+        test "$(getfattr --only-values -n security.selinux "$app_state")" = \
+            "$(matchpathcon -n "$app_state")"
+        test "$(getfattr --only-values -n security.selinux "$postgres_version_file")" = \
+            "$(matchpathcon -n "$postgres_version_file")"
         test -s /etc/ssh/ssh_host_ed25519_key
         test -s /etc/ssh/ssh_host_ed25519_key.pub
 
