@@ -237,28 +237,6 @@ test-tmt-package-mode image="centos-stream-10":
     #!/bin/bash
     set -euo pipefail
     source_tree=$(git rev-parse --show-toplevel)
-    mapfile -d '' -t preexisting_build_secrets < <(
-        find "$source_tree" -maxdepth 1 \
-            \( -type f -o -type l \) \
-            -name 'podman-build-secret-*' -print0
-    )
-    cleanup_build_secrets() {
-        local path preexisting found
-        while IFS= read -r -d '' path; do
-            found=false
-            for preexisting in "${preexisting_build_secrets[@]}"; do
-                if [[ "$path" == "$preexisting" ]]; then
-                    found=true
-                    break
-                fi
-            done
-            if [[ "$found" == false && ( -f "$path" || -L "$path" ) ]]; then
-                rm -f -- "$path" || true
-            fi
-        done < <(find "$source_tree" -maxdepth 1 \
-            \( -type f -o -type l \) \
-            -name 'podman-build-secret-*' -print0)
-    }
     lbi_images="{{lbi_images}}"
     case "{{image}}" in
         fedora-44)
@@ -284,13 +262,11 @@ test-tmt-package-mode image="centos-stream-10":
         if [[ -n "$test_tree" ]]; then
             rm -rf -- "$test_tree" || true
         fi
-        cleanup_build_secrets
         exit "$status"
     }
     trap cleanup EXIT
     build_status=0
     BOOTC_base="$image_base" just {{_forward_settings}} base="$image_base" variant=ostree build || build_status=$?
-    cleanup_build_secrets
     if [[ "$build_status" -ne 0 ]]; then
         exit "$build_status"
     fi
@@ -301,6 +277,8 @@ test-tmt-package-mode image="centos-stream-10":
     trap 'exit 130' INT
     trap 'exit 143' TERM
     test_tree=$(mktemp -d -- "${TMPDIR:-/tmp}/bootc-tmt-package-mode.XXXXXX")
+    # Podman-generated build secrets use shared temp paths; leave cleanup to Podman.
+    # Stale artifacts are not deleted here, only excluded from the test snapshot.
     rsync -a --delete \
         --exclude='/.git' \
         --exclude='/target' \
@@ -353,14 +331,7 @@ test-tmt-package-mode-dry-run:
     fi
     grep -Fq 'podman save --format oci-archive --output "$archive_path" localhost/package-mode-test:latest' <<< "$output"
     grep -Fq -- "--exclude='/podman-build-secret-*'" <<< "$output"
-    grep -Fq -- "-name 'podman-build-secret-*' -print0" <<< "$output"
-    grep -Fq "mapfile -d '' -t preexisting_build_secrets" <<< "$output"
     grep -Fq 'trap cleanup EXIT' <<< "$output"
-    if [[ $(grep -Fc 'cleanup_build_secrets' <<< "$output") -lt 3 ]]; then
-        echo "package-mode dry-run did not show post-build and EXIT cleanup:" >&2
-        echo "$output" >&2
-        exit 1
-    fi
 
 # Split out from `test-container` because, unlike the container integration tests,
 # unit tests don't depend on variant/filesystem/bootloader/boot_type/seal_state, so
