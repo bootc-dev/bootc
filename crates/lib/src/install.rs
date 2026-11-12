@@ -3265,7 +3265,13 @@ pub(crate) async fn install_to_existing_root(opts: InstallToExistingRootOpts) ->
         let physical_root = physical_sysroot_path(&root_path);
         let deploy_dir = physical_root.join(deployment_path);
         let new_var = migrate::deployment_var_path(&deploy_dir)?;
-        migrate::preserve_var(&var_migration, &new_var)
+        let sysroot = Dir::open_ambient_dir(&physical_root, cap_std::ambient_authority())
+            .with_context(|| format!("Opening physical sysroot {physical_root:?}"))?;
+        let deployment_dir = sysroot
+            .open_dir(deployment_path)
+            .with_context(|| format!("Opening installed deployment {deployment_path:?}"))?;
+        let target_policy = crate::lsm::new_sepolicy_at(&deployment_dir)?;
+        migrate::preserve_var(&var_migration, &new_var, target_policy.as_ref())
             .context("Post-install /var preservation")?;
     }
 
