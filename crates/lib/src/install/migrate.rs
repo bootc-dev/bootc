@@ -65,7 +65,7 @@ use std::path::{Component, Path};
 use std::{
     collections::BTreeSet,
     ffi::OsStr,
-    os::fd::AsFd,
+    os::fd::{AsFd, AsRawFd},
     path::PathBuf,
     process::{Command, Stdio},
     sync::{
@@ -162,20 +162,40 @@ fn validate_mountpoint_types(
 ///
 /// `new_var` is the new deployment's `var/` directory, which may have
 /// image-seeded content.
-pub(crate) fn preserve_var(plan: &VarMigrationPlan, new_var: &Path) -> Result<()> {
+pub(crate) fn preserve_var(
+    plan: &VarMigrationPlan,
+    new_var: &Path,
+    policy: Option<&ostree_ext::ostree::SePolicy>,
+) -> Result<()> {
     let src_var = CapStdDir::open_ambient_dir(&plan.src_var, ambient_authority())
         .with_context(|| format!("Opening source {}", plan.src_var.display()))?;
     let new_var = open_or_create_var_dir(new_var)?;
+    let labeler = policy.map(|policy| TargetPolicyLabeler { policy });
+    let labeler = labeler
+        .as_ref()
+        .map(|labeler| labeler as &dyn StagedLabeler);
 
     let effective_exclusions = &plan.exclusions;
     let nested_mounts = &plan.nested_mounts;
 
     let copy_result = if supports_reflink(&src_var, &new_var)? {
         println!("  Filesystem supports reflinks — using copy-on-write clone (Strategy C)");
-        preserve_var_reflink_mounts(&src_var, &new_var, effective_exclusions, nested_mounts)
+        preserve_var_reflink_mounts_labeled(
+            &src_var,
+            &new_var,
+            effective_exclusions,
+            nested_mounts,
+            labeler,
+        )
     } else {
         println!("  Filesystem does not support reflinks — falling back to full copy (Strategy D)");
-        preserve_var_copy_mounts(&src_var, &new_var, effective_exclusions, nested_mounts)
+        preserve_var_copy_mounts_labeled(
+            &src_var,
+            &new_var,
+            effective_exclusions,
+            nested_mounts,
+            labeler,
+        )
     };
     copy_result?;
 
@@ -285,11 +305,22 @@ fn preserve_var_reflink(
     preserve_var_reflink_mounts(src_var, new_var, exclusions, &BTreeSet::new())
 }
 
+#[cfg(test)]
 fn preserve_var_reflink_mounts(
     src_var: &CapStdDir,
     new_var: &CapStdDir,
     exclusions: &[String],
     mountpoints: &BTreeSet<PathBuf>,
+) -> Result<()> {
+    preserve_var_reflink_mounts_labeled(src_var, new_var, exclusions, mountpoints, None)
+}
+
+fn preserve_var_reflink_mounts_labeled(
+    src_var: &CapStdDir,
+    new_var: &CapStdDir,
+    exclusions: &[String],
+    mountpoints: &BTreeSet<PathBuf>,
+    labeler: Option<&dyn StagedLabeler>,
 ) -> Result<()> {
     copy_var_filtered(
         src_var,
@@ -299,6 +330,7 @@ fn preserve_var_reflink_mounts(
         mountpoints,
         true,
         false,
+        labeler,
         OsStr::new(GNU_CP),
     )
     .context("Reflink-copying /var into new deployment (Strategy C)")?;
@@ -321,6 +353,7 @@ fn copy_var_filtered(
     mountpoints: &BTreeSet<PathBuf>,
     reflink: bool,
     destination_created: bool,
+    labeler: Option<&dyn StagedLabeler>,
     cp_program: &OsStr,
 ) -> Result<()> {
     // Existing directories are merged in place, so capture their own metadata
@@ -354,6 +387,7 @@ fn copy_var_filtered(
         exclusions,
         mountpoints,
         reflink,
+        labeler,
         cp_program,
     );
     let restore_result = match (source_metadata.as_ref(), destination_metadata.as_ref()) {
@@ -386,6 +420,7 @@ fn copy_var_filtered_inner(
     exclusions: &[String],
     mountpoints: &BTreeSet<PathBuf>,
     reflink: bool,
+    labeler: Option<&dyn StagedLabeler>,
     cp_program: &OsStr,
 ) -> Result<()> {
     let entries = src_dir
@@ -411,7 +446,7 @@ fn copy_var_filtered_inner(
                 "    Creating empty mountpoint placeholder for {}",
                 relative.display()
             );
-            create_staged_placeholder(src_dir, dst_dir, &name, &relative)?;
+            create_staged_placeholder(src_dir, dst_dir, &name, &relative, labeler)?;
             continue;
         }
 
@@ -439,6 +474,7 @@ fn copy_var_filtered_inner(
                     mountpoints,
                     reflink,
                     false,
+                    labeler,
                     cp_program,
                 )?;
             } else if destination_entry_exists(dst_dir, &name)? {
@@ -458,6 +494,7 @@ fn copy_var_filtered_inner(
                     exclusions,
                     mountpoints,
                     reflink,
+                    labeler,
                     cp_program,
                 )?;
             } else {
@@ -481,7 +518,16 @@ fn copy_var_filtered_inner(
             .iter()
             .map(|name| name.as_os_str())
             .collect::<Vec<_>>();
-        copy_batch_staged(cp_program, src_dir, &names, dst_dir, reflink, relative_dir)?;
+        copy_batch_staged(
+            cp_program,
+            src_dir,
+            &names,
+            dst_dir,
+            reflink,
+            relative_dir,
+            mountpoints,
+            labeler,
+        )?;
     }
 
     Ok(())
@@ -590,6 +636,183 @@ fn publish_staged_entry(
     }
 }
 
+/// The target used to apply a policy label to one staged inode. Regular files
+/// and directories use an already-open fd; symlinks and other special files
+/// use a no-follow path anchored at the opened parent directory.
+enum StagedLabelTarget<'a> {
+    Fd(std::os::fd::BorrowedFd<'a>),
+    NoFollowPath(&'a CapStdDir, &'a OsStr),
+}
+
+trait StagedLabeler {
+    fn lookup(&self, logical_path: &Path, mode: u32) -> Result<Option<Vec<u8>>>;
+    fn apply(&self, logical_path: &Path, target: StagedLabelTarget<'_>, label: &[u8])
+    -> Result<()>;
+}
+
+struct TargetPolicyLabeler<'a> {
+    policy: &'a ostree_ext::ostree::SePolicy,
+}
+
+impl StagedLabeler for TargetPolicyLabeler<'_> {
+    fn lookup(&self, logical_path: &Path, mode: u32) -> Result<Option<Vec<u8>>> {
+        crate::lsm::optional_label_os(self.policy, logical_path, mode)
+    }
+
+    fn apply(
+        &self,
+        _logical_path: &Path,
+        target: StagedLabelTarget<'_>,
+        label: &[u8],
+    ) -> Result<()> {
+        match target {
+            StagedLabelTarget::Fd(fd) => crate::lsm::set_security_selinux(fd, label),
+            StagedLabelTarget::NoFollowPath(parent, name) => {
+                let parent_fd = parent.as_filelike_view::<std::fs::File>();
+                let mut path = PathBuf::from(format!("/proc/self/fd/{}", parent_fd.as_raw_fd()));
+                path.push(name);
+                rustix::fs::lsetxattr(path, SELINUX_XATTR, label, rustix::fs::XattrFlags::empty())
+                    .context("lsetxattr(security.selinux)")?;
+                Ok(())
+            }
+        }
+    }
+}
+
+const VAR_LOGICAL_ROOT: &str = "/var";
+
+fn logical_var_path(relative: &Path) -> PathBuf {
+    Path::new(VAR_LOGICAL_ROOT).join(relative)
+}
+
+fn lookup_and_apply_label(
+    labeler: &dyn StagedLabeler,
+    logical_path: &Path,
+    mode: u32,
+    target: StagedLabelTarget<'_>,
+) -> Result<()> {
+    let label = labeler
+        .lookup(logical_path, mode)?
+        .with_context(|| format!("No SELinux policy label for {logical_path:?}"))?;
+    labeler.apply(logical_path, target, &label)
+}
+
+/// Relabel only staged entries. Logical lookup paths are composed from the
+/// source-relative path, never from the private staging directory name.
+fn relabel_staged_names(
+    labeler: &dyn StagedLabeler,
+    staging: &CapStdDir,
+    names: &[&OsStr],
+    relative_dir: &Path,
+    mountpoints: &BTreeSet<PathBuf>,
+) -> Result<()> {
+    let staging_device = staging.metadata(".")?.dev();
+    for name in names {
+        let relative_path = relative_dir.join(name);
+        relabel_staged_entry(
+            labeler,
+            staging,
+            name,
+            &logical_var_path(&relative_path),
+            mountpoints,
+            Some(staging_device),
+            false,
+        )?;
+    }
+    Ok(())
+}
+
+/// Relabel one staged inode and, for same-device directories, recursively
+/// relabel its staged children without following symlinks. Device changes and
+/// known nested-mount placeholders are labeled at the mount root but never
+/// traversed.
+fn relabel_staged_entry(
+    labeler: &dyn StagedLabeler,
+    parent: &CapStdDir,
+    name: &OsStr,
+    logical_path: &Path,
+    mountpoints: &BTreeSet<PathBuf>,
+    root_device: Option<libc::dev_t>,
+    stop_at_entry: bool,
+) -> Result<()> {
+    use rustix::fs::{Mode, OFlags, openat};
+
+    let metadata = parent
+        .symlink_metadata(name)
+        .with_context(|| format!("Inspecting staged /var entry {logical_path:?} before relabel"))?;
+    if metadata.is_dir() {
+        let directory = open_child_dir_nofollow(parent, name)
+            .with_context(|| format!("Opening staged directory {logical_path:?}"))?;
+        let metadata = directory.metadata(".")?;
+        let device = root_device.unwrap_or_else(|| metadata.dev());
+        let fd = directory.as_filelike_view::<std::fs::File>();
+        lookup_and_apply_label(
+            labeler,
+            logical_path,
+            metadata.mode(),
+            StagedLabelTarget::Fd(fd.as_fd()),
+        )?;
+
+        let relative = logical_path
+            .strip_prefix(VAR_LOGICAL_ROOT)
+            .with_context(|| format!("Invalid logical migration path {logical_path:?}"))?;
+        if stop_at_entry || metadata.dev() != device || mountpoints.contains(relative) {
+            return Ok(());
+        }
+        for entry in directory.read_dir(".")? {
+            let entry = entry?;
+            let child_name = entry.file_name();
+            relabel_staged_entry(
+                labeler,
+                &directory,
+                &child_name,
+                &logical_path.join(&child_name),
+                mountpoints,
+                Some(device),
+                false,
+            )?;
+        }
+        return Ok(());
+    }
+
+    if metadata.is_symlink() {
+        return lookup_and_apply_label(
+            labeler,
+            logical_path,
+            metadata.mode(),
+            StagedLabelTarget::NoFollowPath(parent, name),
+        );
+    }
+
+    if metadata.is_file() {
+        let fd = openat(
+            parent.as_filelike_view::<std::fs::File>().as_fd(),
+            name,
+            OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::RDONLY,
+            Mode::empty(),
+        )
+        .with_context(|| format!("Opening staged file {logical_path:?} without following links"))?;
+        let stat = rustix::fs::fstat(&fd)?;
+        anyhow::ensure!(
+            stat.st_mode & libc::S_IFMT == libc::S_IFREG,
+            "Staged entry {logical_path:?} changed type before relabel"
+        );
+        return lookup_and_apply_label(
+            labeler,
+            logical_path,
+            stat.st_mode,
+            StagedLabelTarget::Fd(fd.as_fd()),
+        );
+    }
+
+    lookup_and_apply_label(
+        labeler,
+        logical_path,
+        metadata.mode(),
+        StagedLabelTarget::NoFollowPath(parent, name),
+    )
+}
+
 /// Move staged children into an existing destination directory without
 /// replacing entries already present there. Keep the destination directory's
 /// metadata unchanged; moving children updates its timestamps, so restore its
@@ -630,6 +853,8 @@ fn copy_batch_staged(
     destination: &CapStdDir,
     reflink: bool,
     relative_dir: &Path,
+    mountpoints: &BTreeSet<PathBuf>,
+    labeler: Option<&dyn StagedLabeler>,
 ) -> Result<()> {
     with_staging_dir(destination, |_, staging| {
         let options = if reflink {
@@ -653,6 +878,10 @@ fn copy_batch_staged(
             relative_dir.display()
         );
 
+        if let Some(labeler) = labeler {
+            relabel_staged_names(labeler, staging, names, relative_dir, mountpoints)?;
+        }
+
         for name in names {
             publish_staged_entry(staging, destination, name, &relative_dir.join(name))?;
         }
@@ -668,6 +897,7 @@ fn copy_filtered_directory_staged(
     exclusions: &[String],
     mountpoints: &BTreeSet<PathBuf>,
     reflink: bool,
+    labeler: Option<&dyn StagedLabeler>,
     cp_program: &OsStr,
 ) -> Result<()> {
     with_staging_dir(destination_parent, |_, staging| {
@@ -681,8 +911,20 @@ fn copy_filtered_directory_staged(
             mountpoints,
             reflink,
             true,
+            labeler,
             cp_program,
         )?;
+        if let Some(labeler) = labeler {
+            relabel_staged_entry(
+                labeler,
+                staging,
+                name,
+                &logical_var_path(relative),
+                mountpoints,
+                Some(staging.metadata(".")?.dev()),
+                false,
+            )?;
+        }
         publish_staged_entry(staging, destination_parent, name, relative)?;
         Ok(())
     })
@@ -693,9 +935,21 @@ fn create_staged_placeholder(
     dst_parent: &CapStdDir,
     name: &OsStr,
     relative: &Path,
+    labeler: Option<&dyn StagedLabeler>,
 ) -> Result<()> {
     with_staging_dir(dst_parent, |_, staging| {
         create_mountpoint_placeholder(src_parent, staging, name)?;
+        if let Some(labeler) = labeler {
+            relabel_staged_entry(
+                labeler,
+                staging,
+                name,
+                &logical_var_path(relative),
+                &BTreeSet::from([relative.to_owned()]),
+                Some(staging.metadata(".")?.dev()),
+                true,
+            )?;
+        }
         if !publish_staged_entry(staging, dst_parent, name, relative)? {
             validate_existing_placeholder(
                 dst_parent,
@@ -1021,11 +1275,22 @@ fn preserve_var_copy(
 /// live database consistent.
 ///
 /// See: <https://github.com/bootc-dev/bootc/issues/2220>
+#[cfg(test)]
 fn preserve_var_copy_mounts(
     src_var: &CapStdDir,
     new_var: &CapStdDir,
     exclusions: &[String],
     mountpoints: &BTreeSet<PathBuf>,
+) -> Result<()> {
+    preserve_var_copy_mounts_labeled(src_var, new_var, exclusions, mountpoints, None)
+}
+
+fn preserve_var_copy_mounts_labeled(
+    src_var: &CapStdDir,
+    new_var: &CapStdDir,
+    exclusions: &[String],
+    mountpoints: &BTreeSet<PathBuf>,
+    labeler: Option<&dyn StagedLabeler>,
 ) -> Result<()> {
     copy_var_filtered(
         src_var,
@@ -1035,6 +1300,7 @@ fn preserve_var_copy_mounts(
         mountpoints,
         false,
         false,
+        labeler,
         OsStr::new(GNU_CP),
     )
     .context("Copying /var into new deployment (Strategy D)")?;
@@ -1127,9 +1393,47 @@ mod tests {
     use cap_std_ext::dirext::CapStdExtDirExt;
     use std::{
         fs,
-        os::unix::fs::{MetadataExt as StdMetadataExt, PermissionsExt, symlink},
+        os::unix::{
+            ffi::{OsStrExt, OsStringExt},
+            fs::{MetadataExt as StdMetadataExt, PermissionsExt, symlink},
+        },
+        sync::Mutex,
         time::{Duration, SystemTime},
     };
+
+    #[derive(Default)]
+    struct FakeLabeler {
+        lookups: Mutex<Vec<PathBuf>>,
+        applied: Mutex<Vec<PathBuf>>,
+        fail_lookup: bool,
+        fail_apply: bool,
+    }
+
+    impl StagedLabeler for FakeLabeler {
+        fn lookup(&self, logical_path: &Path, _mode: u32) -> Result<Option<Vec<u8>>> {
+            self.lookups.lock().unwrap().push(logical_path.to_owned());
+            anyhow::ensure!(
+                logical_path.starts_with(VAR_LOGICAL_ROOT),
+                "policy lookup used non-logical path {logical_path:?}"
+            );
+            anyhow::ensure!(!self.fail_lookup, "injected SELinux policy lookup failure");
+            Ok(Some(b"test-label".to_vec()))
+        }
+
+        fn apply(
+            &self,
+            logical_path: &Path,
+            _target: StagedLabelTarget<'_>,
+            _label: &[u8],
+        ) -> Result<()> {
+            self.applied.lock().unwrap().push(logical_path.to_owned());
+            anyhow::ensure!(
+                !self.fail_apply,
+                "injected SELinux label application failure"
+            );
+            Ok(())
+        }
+    }
 
     fn cap_dir(path: &Path) -> CapStdDir {
         CapStdDir::open_ambient_dir(path, ambient_authority()).unwrap()
@@ -1147,6 +1451,144 @@ mod tests {
         )
         .unwrap();
         CapStdDir::from_std_file(std::fs::File::from(fd))
+    }
+
+    #[test]
+    fn relabels_only_staged_entries_with_logical_paths_for_both_copy_strategies() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let src_path = temp.path().join("src");
+        fs::create_dir_all(src_path.join("state"))?;
+        fs::write(src_path.join("state/existing"), b"source collision")?;
+        fs::write(src_path.join("state/new"), b"new source state")?;
+        let non_utf8_name = std::ffi::OsString::from_vec(vec![b'n', 0xff]);
+        fs::write(src_path.join(&non_utf8_name), b"non-UTF8 name")?;
+        symlink("state", src_path.join("link-to-state"))?;
+        let source = cap_dir(&src_path);
+
+        for (strategy, reflink) in [("copy", false), ("reflink", true)] {
+            let dst_path = temp.path().join(format!("dst-{strategy}"));
+            fs::create_dir_all(dst_path.join("state"))?;
+            fs::write(dst_path.join("state/existing"), b"seeded winner")?;
+            let destination = cap_dir(&dst_path);
+            let labeler = FakeLabeler::default();
+            if reflink {
+                preserve_var_reflink_mounts_labeled(
+                    &source,
+                    &destination,
+                    &[],
+                    &BTreeSet::new(),
+                    Some(&labeler),
+                )?;
+            } else {
+                preserve_var_copy_mounts_labeled(
+                    &source,
+                    &destination,
+                    &[],
+                    &BTreeSet::new(),
+                    Some(&labeler),
+                )?;
+            }
+
+            assert_eq!(fs::read(dst_path.join("state/existing"))?, b"seeded winner");
+            let lookups = labeler.lookups.lock().unwrap();
+            assert!(
+                lookups
+                    .iter()
+                    .all(|path| path.starts_with(VAR_LOGICAL_ROOT))
+            );
+            assert!(lookups.iter().all(|path| {
+                !path
+                    .as_os_str()
+                    .as_bytes()
+                    .windows(b".bootc-preserve-var.".len())
+                    .any(|window| window == b".bootc-preserve-var.")
+            }));
+            assert!(lookups.contains(&PathBuf::from("/var/state/new")));
+            assert!(!lookups.contains(&PathBuf::from("/var/state/existing")));
+            assert!(!lookups.contains(&PathBuf::from("/var/state")));
+            assert!(lookups.contains(&PathBuf::from("/var/link-to-state")));
+            assert!(!lookups.contains(&PathBuf::from("/var/link-to-state/new")));
+            assert!(
+                lookups
+                    .iter()
+                    .any(|path| path.as_os_str().as_bytes().ends_with(&[b'n', 0xff]))
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn relabels_empty_mount_placeholders_without_walking_into_them() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let src_path = temp.path().join("src");
+        let dst_path = temp.path().join("dst");
+        fs::create_dir_all(src_path.join("tree/bound"))?;
+        fs::write(src_path.join("tree/bound/mounted-only"), b"not copied")?;
+        fs::write(src_path.join("tree/sibling"), b"copied")?;
+        fs::create_dir(&dst_path)?;
+        let source = cap_dir(&src_path);
+        let destination = cap_dir(&dst_path);
+        let labeler = FakeLabeler::default();
+        let mountpoints = BTreeSet::from([PathBuf::from("tree/bound")]);
+
+        preserve_var_copy_mounts_labeled(&source, &destination, &[], &mountpoints, Some(&labeler))?;
+
+        assert_eq!(fs::read_dir(dst_path.join("tree/bound"))?.count(), 0);
+        let lookups = labeler.lookups.lock().unwrap();
+        assert!(lookups.contains(&PathBuf::from("/var/tree")));
+        assert!(lookups.contains(&PathBuf::from("/var/tree/bound")));
+        assert!(lookups.contains(&PathBuf::from("/var/tree/sibling")));
+        assert!(!lookups.contains(&PathBuf::from("/var/tree/bound/mounted-only")));
+        Ok(())
+    }
+
+    #[test]
+    fn label_failure_cleans_stage_and_does_not_publish_for_both_strategies() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let src_path = temp.path().join("src");
+        fs::create_dir(&src_path)?;
+        fs::write(src_path.join("new-entry"), b"state")?;
+        let source = cap_dir(&src_path);
+
+        for (failure, fail_lookup, fail_apply) in [("lookup", true, false), ("apply", false, true)]
+        {
+            for (strategy, reflink) in [("copy", false), ("reflink", true)] {
+                let dst_path = temp.path().join(format!("dst-{failure}-{strategy}"));
+                fs::create_dir(&dst_path)?;
+                let destination = cap_dir(&dst_path);
+                let labeler = FakeLabeler {
+                    fail_lookup,
+                    fail_apply,
+                    ..FakeLabeler::default()
+                };
+                let error = if reflink {
+                    preserve_var_reflink_mounts_labeled(
+                        &source,
+                        &destination,
+                        &[],
+                        &BTreeSet::new(),
+                        Some(&labeler),
+                    )
+                } else {
+                    preserve_var_copy_mounts_labeled(
+                        &source,
+                        &destination,
+                        &[],
+                        &BTreeSet::new(),
+                        Some(&labeler),
+                    )
+                }
+                .unwrap_err();
+                let expected_error = if fail_lookup {
+                    "SELinux policy lookup failure"
+                } else {
+                    "SELinux label application failure"
+                };
+                assert!(format!("{error:#}").contains(expected_error));
+                assert_eq!(fs::read_dir(&dst_path)?.count(), 0);
+            }
+        }
+        Ok(())
     }
 
     #[test]
@@ -1656,6 +2098,7 @@ mod tests {
                 &BTreeSet::new(),
                 reflink,
                 false,
+                None,
                 failing_cp.as_os_str(),
             );
             assert!(error.is_err());
