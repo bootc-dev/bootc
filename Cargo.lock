@@ -1375,6 +1375,7 @@ dependencies = [
  "openssl",
  "owo-colors",
  "rustix",
+ "serde",
  "tracing",
 ]
 

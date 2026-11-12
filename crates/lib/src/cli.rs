@@ -940,6 +940,9 @@ pub(crate) enum InternalsOpts {
         /// Whether to perform the three way merge or not
         #[clap(long)]
         merge: bool,
+        /// Output the diff as json
+        #[clap(long)]
+        json: bool,
     },
     #[cfg(feature = "docgen")]
     /// Dump CLI structure as JSON for documentation generation
@@ -2741,6 +2744,7 @@ async fn run_from_opt(opt: Opt) -> Result<CliExitStatus> {
                 current_etc,
                 new_etc,
                 merge,
+                json,
             } => {
                 let pristine_etc =
                     Dir::open_ambient_dir(pristine_etc, cap_std::ambient_authority())?;
@@ -2755,7 +2759,13 @@ async fn run_from_opt(opt: Opt) -> Result<CliExitStatus> {
                     .ok_or_else(|| anyhow::anyhow!("Failed to get new directory tree"))?;
 
                 let diff = compute_diff(&p, &c, &n, &current_etc, &pristine_etc)?;
-                print_diff(&diff, &mut std::io::stdout());
+
+                if json {
+                    serde_json::to_writer(std::io::stdout(), &diff)
+                        .context("Writing JSON output")?;
+                } else {
+                    print_diff(&diff, &mut std::io::stdout());
+                }
 
                 if merge {
                     etc_merge::merge(&current_etc, &c, &new_etc, &n, &diff)?;
