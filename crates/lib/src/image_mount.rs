@@ -299,7 +299,7 @@ fn mount_composefs_image(
     let mut repo = crate::bootc_composefs::repo::open_composefs_repo(&sysroot)
         .context("Opening existing composefs repository")?;
     if allow_missing_fsverity {
-        repo.set_insecure();
+        repo.set_insecure()?;
     }
     let tree = repo
         .mount(&id)
