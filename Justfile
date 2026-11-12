@@ -238,34 +238,36 @@ test-tmt-package-mode image="centos-stream-10":
     lbi_images="{{lbi_images}}"
     just build
     archive_dir=$(mktemp -d -- tmt/plans/.package-mode-local.XXXXXX)
+    archive_path="$archive_dir/bootc.oci"
+    environment_file="$archive_dir/package-mode.env"
     cleanup() {
         rm -rf -- "$archive_dir"
     }
     trap cleanup EXIT
     trap 'cleanup; exit 130' INT
     trap 'cleanup; exit 143' TERM
-    archive_path="$archive_dir/bootc.oci"
     if [[ -e "$archive_path" ]]; then
         echo "Refusing to overwrite existing archive: $archive_path" >&2
         exit 1
     fi
     podman save --format oci-archive --output "$archive_path" {{base_img}}
-    # TMT syncs the plan workdir to the same absolute guest path. Use a
-    # world-writable root so non-root local runs can place it under preserved
-    # /var/lib on the guest without a symlink or a separate VM harness.
-    if [[ "$EUID" -eq 0 ]]; then
-        install -d -m 1777 /var/lib/bootc-tmt-workdirs
-    else
-        sudo install -d -m 1777 /var/lib/bootc-tmt-workdirs
-    fi
+    # TMT syncs its workdir to the same absolute guest path. On bootc guests,
+    # /home resolves to /var/home, which preserve-var carries across migration.
+    workdir_root="$HOME/.cache/bootc-tmt-workdirs"
+    mkdir -p -- "$workdir_root"
+    workdir_root=$(realpath -e -- "$workdir_root")
+    # The test consumes comma-separated refs, and tmt 1.69 supports these in
+    # a dotenv environment file without splitting the value on whitespace.
+    printf 'PACKAGE_MODE_LBI_IMAGES=%s\n' "${lbi_images// /,}" > "$environment_file"
     tmt \
         --context=running_env=packit \
         --context=package_source=local \
         --context="test_disk_image={{image}}" \
-        run --workdir-root /var/lib/bootc-tmt-workdirs \
+        run --workdir-root "$workdir_root" \
+        --environment-file "$environment_file" \
         --environment "PACKAGE_MODE_IMAGE_NAME={{base_img}}" \
-        --environment "PACKAGE_MODE_LBI_IMAGES=${lbi_images// /,}" \
         --environment "PACKAGE_MODE_IMAGE_ARCHIVE=$archive_path" \
+        --environment "PACKAGE_MODE_TMT_WORKDIR_ROOT=$workdir_root" \
         plans --name '^/tmt/plans/package-mode$'
 
 # Split out from `test-container` because, unlike the container integration tests,
