@@ -22,9 +22,10 @@ just test-tmt-package-mode centos-stream-10
 
 The snapshot excludes `.git`, `/target`, `.worktrees`, and local package-mode
 archives, while retaining uncommitted source changes. The controller workdir is
-created under `$HOME/.cache/bootc-tmt-workdirs`. TMT 1.69 mirrors it to
-the same absolute guest path; on bootc guests `/home/...` resolves to
-`/var/home/...`, which is preserved by the migration. The test checks the
-resolved path is under preserved `/var` and rejects nested mounts, so it does
-not rely on `/var/tmp` or symlinks. TMT run logs and the testcloud image cache
-remain under that workdir root.
+created under `$HOME/.cache/bootc-tmt-workdirs` without sudo or symlinks. On a
+package-mode guest where `/home` is a real directory, the test stages the full
+TMT run directory into the corresponding `/var/home/...` location before
+migration; after boot, the normal `/home -> /var/home` view resolves the same
+lexical path. Already-persistent `/var` workdirs are not duplicated. The test
+checks the persistent path and rejects excluded or nested mounts. TMT run logs
+and the testcloud image cache remain under that workdir root.
