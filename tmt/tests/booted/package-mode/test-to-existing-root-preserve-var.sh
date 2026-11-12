@@ -20,7 +20,7 @@ tmt_test_data_sentinel_name=workdir-persistence-sentinel
 tmt_test_data_post_reboot_marker_name=post-reboot-marker
 postgres_version_file=/var/lib/pgsql/data/PG_VERSION
 freeze_may_be_active=0
-persistent_workdir_root=
+persistent_tmt_root=
 persistent_run_dir=
 
 is_always_excluded_var_path() {
@@ -218,115 +218,166 @@ verify_tmt_workdir_in_preserved_var() {
 prepare_tmt_workdir_persistence() {
     local run_dir=$1
     local resolved_run_dir
-    local resolved_root
-    local run_id
-    local relative_run_dir
-    local relative_root
+    local canonical_plan_data
+    local canonical_test_data
+    local canonical_metadata
     local stage_parent
     local stage_run_dir
-    local resolved_plan_data
-    local resolved_test_data
-    local resolved_metadata
     local plan_sentinel
     local test_sentinel
+    local data_path
 
     resolved_run_dir=$(realpath -e -- "$run_dir") || return 1
-    run_id=${run_dir##*/}
-    if [[ -n ${PACKAGE_MODE_TMT_WORKDIR_ROOT:-} ]]; then
-        resolved_root=$(realpath -e -- "$PACKAGE_MODE_TMT_WORKDIR_ROOT") || return 1
-    fi
+    set_persistent_tmt_paths "$run_dir" || return 1
 
-    # Packit already puts workdirs in /var/ARTIFACTS. Likewise, a local
-    # workdir that resolves under /var is already in the preserved tree.
-    if [[ $resolved_run_dir == /var/* ]]; then
-        persistent_run_dir=$resolved_run_dir
-        if [[ -n ${PACKAGE_MODE_TMT_WORKDIR_ROOT:-} ]]; then
-            persistent_workdir_root=$resolved_root
-        fi
-        verify_tmt_workdir_in_preserved_var "$persistent_run_dir"
-        return
+    canonical_plan_data=$(realpath -e -- "$TMT_PLAN_DATA") || return 1
+    canonical_test_data=$(realpath -e -- "$TMT_TEST_DATA") || return 1
+    canonical_metadata=$(realpath -e -- "$TMT_TEST_METADATA") || return 1
+    for data_path in "$canonical_plan_data" "$canonical_test_data" "$canonical_metadata"; do
+        case $data_path in
+            "$resolved_run_dir"/*) ;;
+            *)
+                printf 'TMT data path is outside its run directory: %s\n' \
+                    "$data_path" >&2
+                return 1
+                ;;
+        esac
+    done
+    if [[ ! -d $canonical_plan_data || ! -d $canonical_test_data || ! -f $canonical_metadata ]]; then
+        printf 'TMT plan data, test data, or metadata is missing from %s\n' \
+            "$resolved_run_dir" >&2
+        return 1
     fi
-
-    case $run_dir in
-        /home/*) relative_run_dir=${run_dir#/home/} ;;
-        *)
-            printf 'TMT workdir outside /var must be under /home to persist it (got %q -> %q)\n' \
-                "$run_dir" "$resolved_run_dir" >&2
-            return 1
-            ;;
-    esac
-    case $resolved_run_dir in
-        /home/*) ;;
-        *)
-            printf 'TMT workdir resolves outside /home and /var (got %q -> %q)\n' \
-                "$run_dir" "$resolved_run_dir" >&2
-            return 1
-            ;;
-    esac
-    if [[ -z ${PACKAGE_MODE_TMT_WORKDIR_ROOT:-} || $resolved_root != /home/* ]]; then
-        printf 'Local TMT workdir root must resolve below /home or /var (got %q)\n' \
-            "${PACKAGE_MODE_TMT_WORKDIR_ROOT:-}" >&2
+    plan_sentinel=$canonical_plan_data/$tmt_plan_data_sentinel_name
+    test_sentinel=$canonical_test_data/$tmt_test_data_sentinel_name
+    if [[ ! -f $plan_sentinel || ! -f $test_sentinel || \
+        $(<"$plan_sentinel") != plan-workdir-persistence-sentinel || \
+        $(<"$test_sentinel") != workdir-persistence-sentinel ]]; then
+        printf 'TMT source plan/test data sentinels do not match expected values\n' >&2
         return 1
     fi
 
-    relative_root=${resolved_root#/home/}
-    persistent_workdir_root=/var/home/$relative_root
-    persistent_run_dir=/var/home/$relative_run_dir
     if is_always_excluded_var_path "$persistent_run_dir"; then
         printf 'Persistent TMT workdir is excluded from preserve-var: %s\n' \
             "$persistent_run_dir" >&2
         return 1
     fi
-    if [[ -e $persistent_run_dir || -L $persistent_run_dir ]]; then
-        printf 'Refusing to overwrite existing persistent TMT workdir: %s\n' \
+    if [[ $resolved_run_dir != "$persistent_run_dir" ]]; then
+        install -d -m 0755 -- "$persistent_tmt_root"
+        verify_tmt_workdir_in_preserved_var "$persistent_tmt_root"
+        if [[ -L $persistent_run_dir ]]; then
+            printf 'Refusing symlink at persistent TMT workdir destination: %s\n' \
+                "$persistent_run_dir" >&2
+            return 1
+        elif [[ -e $persistent_run_dir ]]; then
+            printf 'Refusing to overwrite existing persistent TMT workdir: %s\n' \
+                "$persistent_run_dir" >&2
+            return 1
+        fi
+
+        stage_parent=$(mktemp -d -- "$persistent_tmt_root/.${persistent_run_dir##*/}.stage.XXXXXX")
+        stage_run_dir=$stage_parent/${persistent_run_dir##*/}
+        (
+            set -euo pipefail
+            trap 'rm -rf -- "$stage_parent"' EXIT
+            cp --reflink=auto -a -- "$resolved_run_dir" "$stage_run_dir"
+            cmp -- "$canonical_metadata" "$stage_run_dir/${canonical_metadata#"$resolved_run_dir"/}"
+            cmp -- "$plan_sentinel" \
+                "$stage_run_dir/${canonical_plan_data#"$resolved_run_dir"/}/$tmt_plan_data_sentinel_name"
+            cmp -- "$test_sentinel" \
+                "$stage_run_dir/${canonical_test_data#"$resolved_run_dir"/}/$tmt_test_data_sentinel_name"
+            if [[ -L $persistent_run_dir ]]; then
+                printf 'Refusing symlink at persistent TMT workdir destination: %s\n' \
+                    "$persistent_run_dir" >&2
+                exit 1
+            elif [[ -e $persistent_run_dir ]]; then
+                printf 'Refusing to overwrite existing persistent TMT workdir: %s\n' \
+                    "$persistent_run_dir" >&2
+                exit 1
+            fi
+            mv -Tn -- "$stage_run_dir" "$persistent_run_dir"
+            if [[ -e $stage_run_dir || -L $persistent_run_dir || ! -d $persistent_run_dir ]]; then
+                printf 'Could not publish staged TMT workdir at %s\n' "$persistent_run_dir" >&2
+                exit 1
+            fi
+        )
+    fi
+    if [[ -L $persistent_run_dir || ! -d $persistent_run_dir ]]; then
+        printf 'Persistent TMT workdir is missing or is a symlink: %s\n' \
             "$persistent_run_dir" >&2
         return 1
     fi
-
-    install -d -m 0755 -- "$persistent_workdir_root"
-    verify_tmt_workdir_in_preserved_var "$persistent_workdir_root"
-    stage_parent=$(mktemp -d -- "$persistent_workdir_root/.${run_id}.stage.XXXXXX")
-    stage_run_dir=$stage_parent/$run_id
-    (
-        set -euo pipefail
-        trap 'rm -rf -- "$stage_parent"' EXIT
-        cp --reflink=auto -a -- "$run_dir" "$stage_run_dir"
-
-        resolved_plan_data=$(realpath -e -- "$TMT_PLAN_DATA")
-        resolved_test_data=$(realpath -e -- "$TMT_TEST_DATA")
-        resolved_metadata=$(realpath -e -- "$TMT_TEST_METADATA")
-        plan_sentinel=$TMT_PLAN_DATA/$tmt_plan_data_sentinel_name
-        test_sentinel=$TMT_TEST_DATA/$tmt_test_data_sentinel_name
-        for source_path in "$resolved_plan_data" "$resolved_test_data" "$resolved_metadata"; do
-            case $source_path in
-                "$resolved_run_dir"/*) ;;
-                *)
-                    printf 'TMT data path is outside its run directory: %s\n' \
-                        "$source_path" >&2
-                    exit 1
-                    ;;
-            esac
-            copied_path=$stage_run_dir/${source_path#"$resolved_run_dir"/}
-            test -e "$copied_path"
-        done
-        test -d "$stage_run_dir${tmt_plan_data_suffix}"
-        cmp -- "$resolved_metadata" "$stage_run_dir/${resolved_metadata#"$resolved_run_dir"/}"
-        cmp -- "$plan_sentinel" \
-            "$stage_run_dir/${resolved_plan_data#"$resolved_run_dir"/}/$tmt_plan_data_sentinel_name"
-        cmp -- "$test_sentinel" \
-            "$stage_run_dir/${resolved_test_data#"$resolved_run_dir"/}/$tmt_test_data_sentinel_name"
-        if [[ -e $persistent_run_dir || -L $persistent_run_dir ]]; then
-            printf 'Refusing to overwrite existing persistent TMT workdir: %s\n' \
-                "$persistent_run_dir" >&2
-            exit 1
-        fi
-        mv -Tn -- "$stage_run_dir" "$persistent_run_dir"
-        if [[ -e $stage_run_dir || ! -d $persistent_run_dir ]]; then
-            printf 'Could not publish staged TMT workdir at %s\n' "$persistent_run_dir" >&2
-            exit 1
-        fi
-    )
+    if [[ $(realpath -e -- "$persistent_run_dir") != "$persistent_run_dir" ]]; then
+        printf 'Persistent TMT workdir does not resolve to its canonical destination: %s\n' \
+            "$persistent_run_dir" >&2
+        return 1
+    fi
+    cmp -- "$canonical_metadata" "$persistent_run_dir/${canonical_metadata#"$resolved_run_dir"/}"
+    cmp -- "$plan_sentinel" \
+        "$persistent_run_dir/${canonical_plan_data#"$resolved_run_dir"/}/$tmt_plan_data_sentinel_name"
+    cmp -- "$test_sentinel" \
+        "$persistent_run_dir/${canonical_test_data#"$resolved_run_dir"/}/$tmt_test_data_sentinel_name"
     verify_tmt_workdir_in_preserved_var "$persistent_run_dir"
+}
+
+set_persistent_tmt_paths() {
+    local run_dir=$1
+    local workdir_root=${PACKAGE_MODE_TMT_WORKDIR_ROOT:-}
+    local canonical_root
+    local canonical_run_dir
+    local run_id
+
+    if [[ -n $workdir_root ]]; then
+        canonical_root=$(realpath -e -- "$workdir_root") || {
+            printf 'TMT workdir root does not exist: %s\n' "$workdir_root" >&2
+            return 1
+        }
+        case $run_dir in
+            "$workdir_root"/run-*) run_id=${run_dir#"$workdir_root"/} ;;
+            "$canonical_root"/run-*) run_id=${run_dir#"$canonical_root"/} ;;
+            *)
+                printf 'TMT run directory is not a direct run-* child of its root: %s\n' \
+                    "$run_dir" >&2
+                return 1
+                ;;
+        esac
+        if [[ ! $run_id =~ ^run-[[:alnum:]_.-]+$ ]]; then
+            printf 'Unexpected TMT run ID: %q\n' "$run_id" >&2
+            return 1
+        fi
+    else
+        canonical_root=$(realpath -e -- "$tmt_artifacts_parent") || {
+            printf 'TMT artifact root does not exist: %s\n' "$tmt_artifacts_parent" >&2
+            return 1
+        }
+        if [[ $canonical_root != "$tmt_artifacts_parent" ||
+            ! $run_dir =~ ^/var/ARTIFACTS/work-[[:alnum:]_.-]+$ ]]; then
+            printf 'Unexpected TMT artifact root or run directory: %q\n' "$run_dir" >&2
+            return 1
+        fi
+        run_id=${run_dir##*/}
+    fi
+
+    canonical_run_dir=$(realpath -e -- "$run_dir") || {
+        printf 'TMT run directory does not exist: %s\n' "$run_dir" >&2
+        return 1
+    }
+    if [[ $canonical_run_dir != "$canonical_root/$run_id" ]]; then
+        printf 'TMT run directory is not the canonical direct child of its root (%q -> %q)\n' \
+            "$run_dir" "$canonical_run_dir" >&2
+        return 1
+    fi
+
+    case $canonical_root in
+        /home/*) persistent_tmt_root=/var/home/${canonical_root#/home/} ;;
+        /var/home/*|/var/ARTIFACTS|/var/ARTIFACTS/*) persistent_tmt_root=$canonical_root ;;
+        *)
+            printf 'Unsupported canonical TMT root; expected /home, /var/home, or /var/ARTIFACTS: %s\n' \
+                "$canonical_root" >&2
+            return 1
+            ;;
+    esac
+    persistent_run_dir=$persistent_tmt_root/$run_id
 }
 
 is_local_tmt_workdir() {
@@ -542,6 +593,18 @@ case ${TMT_REBOOT_COUNT:-0} in
                 ssh-keygen -q -t ed25519 -N "" \
                     -f "$deployment/etc/ssh/ssh_host_ed25519_key"
                 chroot "$deployment" restorecon -RF /etc/ssh
+                for ssh_path in \
+                    /etc/ssh/ssh_host_ed25519_key \
+                    /etc/ssh/ssh_host_ed25519_key.pub; do
+                    actual_label=$(getfattr --only-values -n security.selinux \
+                        "$deployment$ssh_path")
+                    expected_label=$(chroot "$deployment" matchpathcon -n "$ssh_path")
+                    if [[ $actual_label != "$expected_label" ]]; then
+                        printf "Unexpected SELinux label on target SSH key %s: %s (expected %s)\n" \
+                            "$ssh_path" "$actual_label" "$expected_label" >&2
+                        exit 1
+                    fi
+                done
 
                 if [[ $local_workdir_root == 1 ]]; then
                     rule=$deployment/etc/tmpfiles.d/bootc-tmt-workdir.conf
@@ -556,7 +619,7 @@ case ${TMT_REBOOT_COUNT:-0} in
             ' install-test-configuration \
             "$(is_local_tmt_workdir "$tmt_run_dir" && printf 1 || printf 0)" \
             "$(if [[ -n $persistent_run_dir ]]; then printf '%s' "$persistent_run_dir"; else realpath -e -- "$tmt_run_dir"; fi)" \
-            "$(if [[ -n $persistent_workdir_root ]]; then printf '%s' "$persistent_workdir_root"; elif [[ -n ${PACKAGE_MODE_TMT_WORKDIR_ROOT:-} ]]; then realpath -e -- "$PACKAGE_MODE_TMT_WORKDIR_ROOT"; fi)"
+            "$(if [[ -n $persistent_tmt_root ]]; then printf '%s' "$persistent_tmt_root"; elif [[ -n ${PACKAGE_MODE_TMT_WORKDIR_ROOT:-} ]]; then realpath -e -- "$PACKAGE_MODE_TMT_WORKDIR_ROOT"; fi)"
 
         # New target boot entries are generated by the migration; remove the
         # source-only HostDisabled argument before rebooting into the target.
@@ -577,13 +640,20 @@ case ${TMT_REBOOT_COUNT:-0} in
         test -e /proc/1/root/sys/fs/selinux/enforce
         test "$(</proc/1/root/sys/fs/selinux/enforce)" = 1
         tmt_run_dir=$(get_tmt_run_dir)
+        set_persistent_tmt_paths "$tmt_run_dir"
+        resolved_tmt_run_dir=$(realpath -e -- "$tmt_run_dir")
+        if [[ $resolved_tmt_run_dir != "$persistent_run_dir" ]]; then
+            printf 'Post-reboot TMT path resolves to %s, expected canonical persistent path %s\n' \
+                "$resolved_tmt_run_dir" "$persistent_run_dir" >&2
+            exit 1
+        fi
         if is_local_tmt_workdir "$tmt_run_dir"; then
             test -d "$tmt_run_dir"
             test ! -L "$tmt_run_dir"
             verify_tmt_workdir_in_preserved_var "$tmt_run_dir"
             expected_tmpfiles_rule=(
-                "d $(realpath -e -- "$PACKAGE_MODE_TMT_WORKDIR_ROOT") - - - - -"
-                "d $(realpath -e -- "$tmt_run_dir") - - - - -"
+                "d $persistent_tmt_root - - - - -"
+                "d $persistent_run_dir - - - - -"
             )
             printf "%s\n" "${expected_tmpfiles_rule[@]}" | \
                 cmp - /etc/tmpfiles.d/bootc-tmt-workdir.conf
@@ -624,8 +694,13 @@ case ${TMT_REBOOT_COUNT:-0} in
             "$(matchpathcon -n "$app_state")"
         test "$(getfattr --only-values -n security.selinux "$postgres_version_file")" = \
             "$(matchpathcon -n "$postgres_version_file")"
-        test -s /etc/ssh/ssh_host_ed25519_key
-        test -s /etc/ssh/ssh_host_ed25519_key.pub
+        for ssh_path in \
+            /etc/ssh/ssh_host_ed25519_key \
+            /etc/ssh/ssh_host_ed25519_key.pub; do
+            test -s "$ssh_path"
+            test "$(getfattr --only-values -n security.selinux "$ssh_path")" = \
+                "$(matchpathcon -n "$ssh_path")"
+        done
 
         booted_image=$(bootc status --json | jq -r '.status.booted.image.image.image')
         test "$booted_image" = "$target_image"
