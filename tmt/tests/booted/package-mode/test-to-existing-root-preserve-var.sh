@@ -17,6 +17,7 @@ tmt_plan_data_suffix=/tmt/plans/package-mode/data
 tmt_artifacts_parent=/var/ARTIFACTS
 tmt_test_data_sentinel_name=workdir-persistence-sentinel
 tmt_test_data_post_reboot_marker_name=post-reboot-marker
+freeze_may_be_active=0
 
 is_always_excluded_var_path() {
     case $1 in
@@ -42,69 +43,22 @@ verify_tmt_workdir_directory() {
     fi
 }
 
-get_trap_action() {
-    local signal=$1
-    local trap_definition
-
-    trap_definition=$(trap -p "$signal")
-    if [[ -n $trap_definition ]]; then
-        eval "set -- $trap_definition"
-        printf '%s' "$3"
-    fi
-}
-
-restore_signal_trap() {
-    local signal=$1
-    local previous_signal_trap=$2
-
-    if [[ -n $previous_signal_trap ]]; then
-        trap -- "$previous_signal_trap" "$signal"
-    else
-        trap - "$signal"
-    fi
-}
-
-restore_log_freeze_signal_traps() {
-    restore_signal_trap HUP "${previous_hup_trap:-}"
-    restore_signal_trap INT "${previous_int_trap:-}"
-    restore_signal_trap TERM "${previous_term_trap:-}"
-}
-
-thaw_log_filesystem() {
-    if (( log_fs_frozen )); then
-        fsfreeze -u /var/log || return 1
-        log_fs_frozen=0
-        restore_log_freeze_signal_traps
-    fi
-}
-
 cleanup_log_freeze() {
     local status=$?
 
+    # Prevent a second signal from interrupting or reentering the thaw attempt.
+    trap '' HUP INT TERM
     trap - EXIT
-    if ! thaw_log_filesystem; then
-        printf 'Failed to thaw /var/log during cleanup\n' >&2
-        if (( status == 0 )); then
-            status=1
+    set +e
+    if (( freeze_may_be_active )); then
+        if fsfreeze -u /var/log; then
+            freeze_may_be_active=0
+        else
+            printf 'Failed to thaw /var/log during cleanup\n' >&2
+            if (( status == 0 )); then
+                status=1
+            fi
         fi
-    fi
-    if [[ -n $previous_exit_trap ]]; then
-        eval "$previous_exit_trap" || :
-    fi
-    exit "$status"
-}
-
-handle_log_freeze_signal() {
-    local status=$1
-    local signal=$2
-    local previous_signal_trap=$3
-
-    trap - "$signal"
-    if ! thaw_log_filesystem; then
-        printf 'Failed to thaw /var/log after %s\n' "$signal" >&2
-    fi
-    if [[ -n $previous_signal_trap ]]; then
-        eval "$previous_signal_trap" || :
     fi
     exit "$status"
 }
@@ -348,27 +302,29 @@ case ${TMT_REBOOT_COUNT:-0} in
 
         # Keep the backing image for the separate /var/log filesystem stable
         # while preserve-var copies its image file from /var/lib.
-        fsfreeze -f /var/log
-        log_fs_frozen=1
-        previous_exit_trap=$(get_trap_action EXIT)
-        previous_hup_trap=$(get_trap_action HUP)
-        previous_int_trap=$(get_trap_action INT)
-        previous_term_trap=$(get_trap_action TERM)
         trap cleanup_log_freeze EXIT
-        trap 'handle_log_freeze_signal 129 HUP "$previous_hup_trap"' HUP
-        trap 'handle_log_freeze_signal 130 INT "$previous_int_trap"' INT
-        trap 'handle_log_freeze_signal 143 TERM "$previous_term_trap"' TERM
-        if ! podman --remote=false run --rm --privileged --pid=host --user=root:root \
+        trap 'exit 129' HUP
+        trap 'exit 130' INT
+        trap 'exit 143' TERM
+        # Set before invoking fsfreeze: it may freeze successfully and still
+        # return failure or be interrupted before the shell observes success.
+        freeze_may_be_active=1
+        fsfreeze -f /var/log
+        podman --remote=false run --rm --privileged --pid=host --user=root:root \
             -v /dev:/dev \
             -v /:/target \
             -v /boot:/target/boot \
             -v /var/lib/containers:/var/lib/containers \
             --security-opt label=type:unconfined_t \
             "$target_image" \
-            bootc install to-existing-root --preserve-var --acknowledge-destructive; then
-            exit 1
+            bootc install to-existing-root --preserve-var --acknowledge-destructive
+        if fsfreeze -u /var/log; then
+            freeze_may_be_active=0
+        else
+            status=$?
+            printf 'Failed to thaw /var/log after migration\n' >&2
+            exit "$status"
         fi
-        thaw_log_filesystem
 
         # Find the generated stateroot by the copied bind-source sentinel.
         new_var=
