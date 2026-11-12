@@ -2754,7 +2754,7 @@ async fn run_from_opt(opt: Opt) -> Result<CliExitStatus> {
                     .as_ref()
                     .ok_or_else(|| anyhow::anyhow!("Failed to get new directory tree"))?;
 
-                let diff = compute_diff(&p, &c, &n)?;
+                let diff = compute_diff(&p, &c, &n, &current_etc, &pristine_etc)?;
                 print_diff(&diff, &mut std::io::stdout());
 
                 if merge {

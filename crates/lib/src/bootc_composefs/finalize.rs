@@ -52,6 +52,8 @@ pub(crate) async fn get_etc_diff(
         &new_etc_files
             .as_ref()
             .unwrap_or(&FileSystem::new(Stat::uninitialized())),
+        &current_etc,
+        &pristine_etc,
     )?;
 
     Ok(diff)
@@ -134,7 +136,13 @@ pub(crate) async fn composefs_backend_finalize(
     let new_files =
         new_files.ok_or_else(|| anyhow::anyhow!("Failed to get dirtree for new etc"))?;
 
-    let diff = compute_diff(&pristine_files, &current_files, &new_files)?;
+    let diff = compute_diff(
+        &pristine_files,
+        &current_files,
+        &new_files,
+        &current_etc,
+        &pristine_etc,
+    )?;
     merge(&current_etc, &current_files, &new_etc, &new_files, &diff)?;
 
     // Remove /etc/.updated from the new deployment so that ConditionNeedsUpdate=|/etc
