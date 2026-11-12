@@ -532,10 +532,12 @@ case ${TMT_REBOOT_COUNT:-0} in
         : > "$preflight_mountpoint"
         mount --bind /dev/null "$preflight_mountpoint"
 
-        expected_bls_entry=$(find /boot/loader/entries -maxdepth 1 -type f \
-            -name 'ostree-*.conf' -print -quit)
-        if [[ -z $expected_bls_entry ]]; then
-            printf 'No expected OSTree BLS entry found under /boot/loader/entries\n' >&2
+        # The package-mode baseline has a normal BLS entry; migration creates
+        # the OSTree-prefixed entries later. Snapshot all existing boot paths.
+        baseline_bls_entry=$(find /boot/loader/entries -maxdepth 1 -type f \
+            -name '*.conf' -print -quit)
+        if [[ -z $baseline_bls_entry ]]; then
+            printf 'No BLS entry found under /boot/loader/entries before migration\n' >&2
             exit 1
         fi
         if [[ ! -f /boot/grub2/grub.cfg ]]; then
