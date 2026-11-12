@@ -2825,21 +2825,8 @@ pub(crate) async fn install_to_filesystem(
     // And the last bit of state here is the fsopts, which we also destructure now.
     let mut fsopts = opts.filesystem_opts;
 
-    // If we're doing an alongside install, automatically set up the host rootfs
-    // mount if it wasn't done already.
-    if targeting_host_root
-        && fsopts.root_path.as_str() == ALONGSIDE_ROOT_MOUNT
-        && !fsopts.root_path.try_exists()?
-    {
-        tracing::debug!("Mounting host / to {ALONGSIDE_ROOT_MOUNT}");
-        std::fs::create_dir(ALONGSIDE_ROOT_MOUNT)?;
-        bootc_mount::bind_mount_from_pidns(
-            bootc_mount::PID1,
-            "/".into(),
-            ALONGSIDE_ROOT_MOUNT.into(),
-            true,
-        )
-        .context("Mounting host / to {ALONGSIDE_ROOT_MOUNT}")?;
+    if targeting_host_root {
+        mount_alongside_root_if_needed(&fsopts.root_path)?;
     }
 
     let target_root_path = fsopts.root_path.clone();
@@ -3103,6 +3090,23 @@ pub(crate) async fn install_to_filesystem(
     Ok(deployment_path)
 }
 
+/// Set up the host root mount for the default alongside target if it has not
+/// already been provided by the caller (e.g. with `-v /:/target`).
+fn mount_alongside_root_if_needed(root_path: &Utf8Path) -> Result<()> {
+    if root_path.as_str() == ALONGSIDE_ROOT_MOUNT && !root_path.try_exists()? {
+        tracing::debug!("Mounting host / to {ALONGSIDE_ROOT_MOUNT}");
+        std::fs::create_dir(ALONGSIDE_ROOT_MOUNT)?;
+        bootc_mount::bind_mount_from_pidns(
+            bootc_mount::PID1,
+            "/".into(),
+            ALONGSIDE_ROOT_MOUNT.into(),
+            true,
+        )
+        .context("Mounting host / to {ALONGSIDE_ROOT_MOUNT}")?;
+    }
+    Ok(())
+}
+
 fn validate_migration_backend(require_ostree_backend: bool, composefs_backend: bool) -> Result<()> {
     anyhow::ensure!(
         !require_ostree_backend || !composefs_backend,
@@ -3194,6 +3198,19 @@ pub(crate) async fn install_to_existing_root(opts: InstallToExistingRootOpts) ->
         opts.composefs_opts.composefs_backend,
     )?;
 
+    // Inspect source /var before installation can remove or replace the old
+    // system's bootable state. The actual copy runs afterward and can still
+    // fail, for example from concurrent changes or insufficient space.
+    let var_migration = if preserve_var {
+        mount_alongside_root_if_needed(&opts.root_path)?;
+        Some(migrate::VarMigrationPlan::prepare(
+            &root_path.join("var"),
+            &preserve_var_skip,
+        )?)
+    } else {
+        None
+    };
+
     let fs_opts = InstallToFilesystemOpts {
         filesystem_opts: InstallTargetFilesystemOpts {
             root_path: opts.root_path,
@@ -3221,7 +3238,7 @@ pub(crate) async fn install_to_existing_root(opts: InstallToExistingRootOpts) ->
     )
     .await?;
 
-    if preserve_var {
+    if let Some(var_migration) = var_migration {
         println!();
         println!("Preserving /var...");
         let deployment_path = deployment_path
@@ -3230,7 +3247,7 @@ pub(crate) async fn install_to_existing_root(opts: InstallToExistingRootOpts) ->
         let physical_root = physical_sysroot_path(&root_path);
         let deploy_dir = physical_root.join(deployment_path);
         let new_var = migrate::deployment_var_path(&deploy_dir)?;
-        migrate::preserve_var(&root_path.join("var"), &new_var, &preserve_var_skip)
+        migrate::preserve_var(&var_migration, &new_var)
             .context("Post-install /var preservation")?;
     }
 

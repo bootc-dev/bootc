@@ -83,32 +83,99 @@ use cap_std_ext::cmdext::{CapStdExtCommandExt, CmdFds};
 #[cfg(test)]
 use fn_error_context::context;
 
+/// Paths below `/var` which `--preserve-var` never copies.
+const ALWAYS_EXCLUDED: &[&str] = &["tmp", "cache", "log/journal", "lib/containers"];
+
+/// Source-side work identified before the install starts. Copying remains a
+/// post-install operation and can still fail (for example, due to space or
+/// concurrent source changes).
+#[derive(Debug)]
+pub(crate) struct VarMigrationPlan {
+    /// Canonical path of the running system's `/var`.
+    src_var: PathBuf,
+    /// Mounts below `src_var`, relative to it, which get empty placeholders.
+    nested_mounts: BTreeSet<PathBuf>,
+    /// Built-in and requested exclusions, relative to `src_var`.
+    exclusions: Vec<String>,
+}
+
+impl VarMigrationPlan {
+    /// Resolve and inspect source `/var` before installation touches the target.
+    pub(crate) fn prepare(src_var: &Path, exclusions: &[String]) -> Result<Self> {
+        let canonical_src_var = std::fs::canonicalize(src_var)
+            .with_context(|| format!("Canonicalizing source /var {}", src_var.display()))?;
+        let source = CapStdDir::open_ambient_dir(&canonical_src_var, ambient_authority())
+            .with_context(|| format!("Opening source {}", canonical_src_var.display()))?;
+        for entry in source
+            .entries()
+            .with_context(|| format!("Listing source {}", canonical_src_var.display()))?
+        {
+            entry.with_context(|| format!("Reading source {}", canonical_src_var.display()))?;
+        }
+
+        let nested_mounts = mountinfo::nested_mountpoints_for(&canonical_src_var)?;
+        let exclusions = ALWAYS_EXCLUDED
+            .iter()
+            .map(|path| (*path).to_string())
+            .chain(exclusions.iter().cloned())
+            .collect::<Vec<_>>();
+
+        validate_mountpoint_types(&canonical_src_var, &exclusions, &nested_mounts)?;
+
+        Ok(Self {
+            src_var: canonical_src_var,
+            nested_mounts,
+            exclusions,
+        })
+    }
+}
+
+/// Only directories and regular files can receive safe placeholders. Do not
+/// inspect mountpoints the filtered copy will never reach.
+fn validate_mountpoint_types(
+    src_var: &Path,
+    exclusions: &[String],
+    nested_mounts: &BTreeSet<PathBuf>,
+) -> Result<()> {
+    for mount in nested_mounts {
+        let is_excluded = exclusions
+            .iter()
+            .any(|excluded| mount.starts_with(excluded));
+        let is_below_another_mount = nested_mounts
+            .iter()
+            .any(|other| other != mount && mount.starts_with(other));
+        if is_excluded || is_below_another_mount {
+            continue;
+        }
+        let metadata = std::fs::symlink_metadata(src_var.join(mount))
+            .with_context(|| format!("Inspecting mountpoint /var/{}", mount.display()))?;
+        anyhow::ensure!(
+            metadata.is_dir() || metadata.is_file(),
+            "/var/{} is a mountpoint that is neither a directory nor a file; exclude it with --preserve-var-skip",
+            mount.display()
+        );
+    }
+    Ok(())
+}
+
 /// Preserve the running `/var` into the new deployment's `var/` directory.
 ///
-/// `src_var` is the running system's `/var` (at `<root_path>/var`).
-/// `new_var` is the new deployment's empty `var/` directory.
-pub(crate) fn preserve_var(src_var: &Path, new_var: &Path, exclusions: &[String]) -> Result<()> {
-    // Resolve symlink aliases and path components before comparing against the
-    // absolute, kernel-resolved mountpoints in mountinfo.
-    let canonical_src_var = std::fs::canonicalize(src_var)
-        .with_context(|| format!("Canonicalizing source /var {}", src_var.display()))?;
-    let nested_mounts = mountinfo::nested_mountpoints_for(&canonical_src_var)?;
-    let src_var = CapStdDir::open_ambient_dir(&canonical_src_var, ambient_authority())
-        .with_context(|| format!("Opening source {}", canonical_src_var.display()))?;
+/// `new_var` is the new deployment's `var/` directory, which may have
+/// image-seeded content.
+pub(crate) fn preserve_var(plan: &VarMigrationPlan, new_var: &Path) -> Result<()> {
+    let src_var = CapStdDir::open_ambient_dir(&plan.src_var, ambient_authority())
+        .with_context(|| format!("Opening source {}", plan.src_var.display()))?;
     let new_var = open_or_create_var_dir(new_var)?;
 
-    let mut effective_exclusions = ["tmp", "cache", "log/journal", "lib/containers"]
-        .into_iter()
-        .map(String::from)
-        .collect::<Vec<_>>();
-    effective_exclusions.extend(exclusions.iter().cloned());
+    let effective_exclusions = &plan.exclusions;
+    let nested_mounts = &plan.nested_mounts;
 
     let copy_result = if supports_reflink(&src_var, &new_var)? {
         println!("  Filesystem supports reflinks — using copy-on-write clone (Strategy C)");
-        preserve_var_reflink_mounts(&src_var, &new_var, &effective_exclusions, &nested_mounts)
+        preserve_var_reflink_mounts(&src_var, &new_var, effective_exclusions, nested_mounts)
     } else {
         println!("  Filesystem does not support reflinks — falling back to full copy (Strategy D)");
-        preserve_var_copy_mounts(&src_var, &new_var, &effective_exclusions, &nested_mounts)
+        preserve_var_copy_mounts(&src_var, &new_var, effective_exclusions, nested_mounts)
     };
     copy_result?;
 
@@ -1083,6 +1150,59 @@ mod tests {
         assert!(validate_exclusions(&["../etc".into()]).is_err());
         assert!(validate_exclusions(&["/etc".into()]).is_err());
         assert!(validate_exclusions(&["lib/containers/storage".into()]).is_err());
+    }
+
+    #[test]
+    fn migration_plan_preflights_source_and_combines_exclusions() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let src_var = temp.path().join("var");
+        fs::create_dir(&src_var)?;
+        fs::write(src_var.join("sentinel"), b"source remains untouched")?;
+
+        let plan = VarMigrationPlan::prepare(&src_var, &["lib/rpm".to_string()])?;
+        assert_eq!(plan.src_var, fs::canonicalize(&src_var)?);
+        assert_eq!(
+            plan.exclusions,
+            ["tmp", "cache", "log/journal", "lib/containers", "lib/rpm"]
+        );
+        assert_eq!(
+            fs::read(src_var.join("sentinel"))?,
+            b"source remains untouched"
+        );
+
+        let error = VarMigrationPlan::prepare(&temp.path().join("missing"), &[]).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("Canonicalizing source /var"),
+            "{error:#}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn preflight_checks_only_reachable_mountpoint_types() -> Result<()> {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir()?;
+        let src_var = temp.path().join("var");
+        fs::create_dir_all(src_var.join("directory"))?;
+        fs::write(src_var.join("file"), b"")?;
+        symlink("file", src_var.join("symlink"))?;
+        let mounts = BTreeSet::from([
+            PathBuf::from("directory"),
+            PathBuf::from("file"),
+            PathBuf::from("symlink"),
+            PathBuf::from("tmp/excluded"),
+            PathBuf::from("directory/nested"),
+        ]);
+
+        let error = validate_mountpoint_types(&src_var, &["tmp".to_string()], &mounts).unwrap_err();
+        assert!(format!("{error:#}").contains("/var/symlink"));
+        validate_mountpoint_types(
+            &src_var,
+            &["tmp".to_string(), "symlink".to_string()],
+            &mounts,
+        )?;
+        Ok(())
     }
 
     #[test]
