@@ -820,12 +820,24 @@ fn collect_staged_entry_labels(
             .strip_prefix(VAR_LOGICAL_ROOT)
             .with_context(|| format!("Invalid logical migration path {logical_path:?}"))?;
         let is_placeholder = mountpoints.contains(relative);
+        let is_empty_placeholder = if is_placeholder {
+            let mut entries = directory
+                .read_dir(".")
+                .with_context(|| format!("Reading staged mountpoint directory {logical_path:?}"))?;
+            entries
+                .next()
+                .transpose()
+                .with_context(|| format!("Reading staged mountpoint directory {logical_path:?}"))?
+                .is_none()
+        } else {
+            false
+        };
         collect_label(
             labeler,
             logical_path,
             metadata.mode(),
             None,
-            is_placeholder,
+            is_empty_placeholder,
             labels,
             regular_file_labels,
         )?;
@@ -1768,8 +1780,12 @@ mod tests {
         let temp = tempfile::tempdir()?;
         let src_path = temp.path().join("src");
         let dst_path = temp.path().join("dst");
-        fs::create_dir_all(src_path.join("tree/bound"))?;
-        fs::write(src_path.join("tree/bound/mounted-only"), b"not copied")?;
+        fs::create_dir_all(src_path.join("lib/nfs/rpc_pipefs"))?;
+        fs::write(
+            src_path.join("lib/nfs/rpc_pipefs/mounted-only"),
+            b"not copied",
+        )?;
+        fs::create_dir_all(src_path.join("tree"))?;
         fs::write(src_path.join("tree/file-bound"), b"")?;
         fs::write(src_path.join("tree/sibling"), b"copied")?;
         fs::create_dir(&dst_path)?;
@@ -1777,28 +1793,31 @@ mod tests {
         let destination = cap_dir(&dst_path);
         let labeler = FakeLabeler {
             no_match: BTreeSet::from([
-                PathBuf::from("/var/tree/bound"),
+                PathBuf::from("/var/lib/nfs/rpc_pipefs"),
                 PathBuf::from("/var/tree/file-bound"),
             ]),
             ..FakeLabeler::default()
         };
         let mountpoints = BTreeSet::from([
-            PathBuf::from("tree/bound"),
+            PathBuf::from("lib/nfs/rpc_pipefs"),
             PathBuf::from("tree/file-bound"),
         ]);
 
         preserve_var_copy_mounts_labeled(&source, &destination, &[], &mountpoints, Some(&labeler))?;
 
-        assert_eq!(fs::read_dir(dst_path.join("tree/bound"))?.count(), 0);
+        assert_eq!(
+            fs::read_dir(dst_path.join("lib/nfs/rpc_pipefs"))?.count(),
+            0
+        );
         assert_eq!(fs::read(dst_path.join("tree/file-bound"))?, b"");
         let lookups = labeler.lookups.lock().unwrap();
+        assert!(lookups.contains(&PathBuf::from("/var/lib/nfs/rpc_pipefs")));
         assert!(lookups.contains(&PathBuf::from("/var/tree")));
-        assert!(lookups.contains(&PathBuf::from("/var/tree/bound")));
         assert!(lookups.contains(&PathBuf::from("/var/tree/sibling")));
         assert!(lookups.contains(&PathBuf::from("/var/tree/file-bound")));
-        assert!(!lookups.contains(&PathBuf::from("/var/tree/bound/mounted-only")));
+        assert!(!lookups.contains(&PathBuf::from("/var/lib/nfs/rpc_pipefs/mounted-only")));
         let applied = labeler.applied.lock().unwrap();
-        assert!(!applied.contains(&PathBuf::from("/var/tree/bound")));
+        assert!(!applied.contains(&PathBuf::from("/var/lib/nfs/rpc_pipefs")));
         assert!(!applied.contains(&PathBuf::from("/var/tree/file-bound")));
 
         let matched_dst_path = temp.path().join("dst-matched");
@@ -1812,9 +1831,42 @@ mod tests {
             Some(&matched_labeler),
         )?;
         let applied = matched_labeler.applied.lock().unwrap();
-        assert!(applied.contains(&PathBuf::from("/var/tree/bound")));
+        assert!(applied.contains(&PathBuf::from("/var/lib/nfs/rpc_pipefs")));
         assert!(applied.contains(&PathBuf::from("/var/tree/file-bound")));
-        assert!(!applied.contains(&PathBuf::from("/var/tree/bound/mounted-only")));
+        assert!(!applied.contains(&PathBuf::from("/var/lib/nfs/rpc_pipefs/mounted-only")));
+        Ok(())
+    }
+
+    #[test]
+    fn unmatched_nonempty_mountpoint_directory_fails_before_publish() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let destination_path = temp.path().join("destination");
+        fs::create_dir(&destination_path)?;
+        let destination = cap_dir(&destination_path);
+        let labeler = FakeLabeler {
+            no_match: BTreeSet::from([PathBuf::from("/var/lib/nfs/rpc_pipefs")]),
+            ..FakeLabeler::default()
+        };
+        let mountpoints = BTreeSet::from([PathBuf::from("lib/nfs/rpc_pipefs")]);
+
+        let error = with_staging_dir(&destination, |_, staging| {
+            staging.create_dir_all("lib/nfs/rpc_pipefs")?;
+            staging.write("lib/nfs/rpc_pipefs/unexpected-child", b"not empty")?;
+
+            let names = [OsStr::new("lib")];
+            relabel_staged_names(&labeler, staging, &names, Path::new(""), &mountpoints)?;
+            for name in names {
+                publish_staged_entry(staging, &destination, name, Path::new(name))?;
+            }
+            Ok(())
+        })
+        .unwrap_err();
+
+        assert!(
+            format!("{error:#}")
+                .contains("No SELinux policy label for \"/var/lib/nfs/rpc_pipefs\"")
+        );
+        assert_eq!(fs::read_dir(&destination_path)?.count(), 0);
         Ok(())
     }
 
