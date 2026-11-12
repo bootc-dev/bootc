@@ -25,12 +25,25 @@ persistent_run_dir=
 
 boot_config_manifest() {
     local relative_path
+    local absolute_path
     local digest
+    local link_target
 
     while IFS= read -r -d '' relative_path; do
-        digest=$(sha256sum -- "/boot/$relative_path")
-        digest=${digest%% *}
-        printf '%s  %s\n' "$digest" "$relative_path"
+        absolute_path=/boot/$relative_path
+        if [[ -L $absolute_path ]]; then
+            link_target=$(readlink -- "$absolute_path")
+            digest=-
+            if [[ -f $absolute_path ]]; then
+                digest=$(sha256sum -- "$absolute_path")
+                digest=${digest%% *}
+            fi
+            printf 'symlink %s  %q -> %q\n' "$digest" "$relative_path" "$link_target"
+        else
+            digest=$(sha256sum -- "$absolute_path")
+            digest=${digest%% *}
+            printf 'file %s  %q\n' "$digest" "$relative_path"
+        fi
     done < <(
         {
             find /boot/loader/entries -maxdepth 1 \
@@ -46,6 +59,12 @@ boot_config_manifest() {
                     \( -type f -o -type l \) \
                     \( -name grub.cfg -o -iname '*.efi' \) \
                     -printf 'efi/EFI/fedora/%f\0'
+            fi
+            if [[ -d /boot/efi/EFI/BOOT ]]; then
+                find /boot/efi/EFI/BOOT -maxdepth 1 \
+                    \( -type f -o -type l \) \
+                    \( -name grub.cfg -o -iname '*.efi' \) \
+                    -printf 'efi/EFI/BOOT/%f\0'
             fi
         } | LC_ALL=C sort -z -u
     )
