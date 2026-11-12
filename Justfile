@@ -237,12 +237,28 @@ test-tmt-package-mode image="centos-stream-10":
     #!/bin/bash
     set -euo pipefail
     source_tree=$(git rev-parse --show-toplevel)
-    cleanup_build_secrets() {
+    mapfile -d '' -t preexisting_build_secrets < <(
         find "$source_tree" -maxdepth 1 \
             \( -type f -o -type l \) \
-            -name 'podman-build-secret-*' -delete
+            -name 'podman-build-secret-*' -print0
+    )
+    cleanup_build_secrets() {
+        local path preexisting found
+        while IFS= read -r -d '' path; do
+            found=false
+            for preexisting in "${preexisting_build_secrets[@]}"; do
+                if [[ "$path" == "$preexisting" ]]; then
+                    found=true
+                    break
+                fi
+            done
+            if [[ "$found" == false && ( -f "$path" || -L "$path" ) ]]; then
+                rm -f -- "$path" || true
+            fi
+        done < <(find "$source_tree" -maxdepth 1 \
+            \( -type f -o -type l \) \
+            -name 'podman-build-secret-*' -print0)
     }
-    trap cleanup_build_secrets EXIT
     lbi_images="{{lbi_images}}"
     case "{{image}}" in
         fedora-44)
@@ -261,19 +277,26 @@ test-tmt-package-mode image="centos-stream-10":
     if [[ "{{base}}" != "{{_default_base}}" ]]; then
         image_base="{{base}}"
     fi
-    BOOTC_base="$image_base" just {{_forward_settings}} base="$image_base" variant=ostree build
+    test_tree=
+    cleanup() {
+        local status=$?
+        trap - EXIT
+        if [[ -n "$test_tree" ]]; then
+            rm -rf -- "$test_tree" || true
+        fi
+        cleanup_build_secrets
+        exit "$status"
+    }
+    trap cleanup EXIT
+    build_status=0
+    BOOTC_base="$image_base" just {{_forward_settings}} base="$image_base" variant=ostree build || build_status=$?
     cleanup_build_secrets
+    if [[ "$build_status" -ne 0 ]]; then
+        exit "$build_status"
+    fi
 
     # TMT 1.69 copies the whole git root during fmf discovery. Use a small
     # snapshot so ignored build outputs and local worktrees are never copied.
-    test_tree=
-    cleanup() {
-        if [[ -n "$test_tree" ]]; then
-            rm -rf -- "$test_tree"
-        fi
-        cleanup_build_secrets
-    }
-    trap cleanup EXIT
     trap 'exit 129' HUP
     trap 'exit 130' INT
     trap 'exit 143' TERM
@@ -323,15 +346,15 @@ test-tmt-package-mode-dry-run:
     set -euo pipefail
     output=$(BOOTC_variant=composefs BOOTC_image=localhost/package-mode-test:latest just --dry-run base=localhost/package-mode-base:latest test-tmt-package-mode 2>&1)
     build_command=$(grep 'just .* variant=ostree build' <<< "$output")
-    if [[ ! "$build_command" =~ base=localhost/package-mode-base:latest.*variant=composefs.*variant=ostree\ build$ ]]; then
+    if [[ ! "$build_command" =~ base=localhost/package-mode-base:latest.*variant=composefs.*variant=ostree\ build ]]; then
         echo "package-mode dry-run did not force OSTree while preserving settings:" >&2
         echo "$build_command" >&2
         exit 1
     fi
     grep -Fq 'podman save --format oci-archive --output "$archive_path" localhost/package-mode-test:latest' <<< "$output"
     grep -Fq -- "--exclude='/podman-build-secret-*'" <<< "$output"
-    grep -Fq -- "-name 'podman-build-secret-*' -delete" <<< "$output"
-    grep -Fq 'trap cleanup_build_secrets EXIT' <<< "$output"
+    grep -Fq -- "-name 'podman-build-secret-*' -print0" <<< "$output"
+    grep -Fq "mapfile -d '' -t preexisting_build_secrets" <<< "$output"
     grep -Fq 'trap cleanup EXIT' <<< "$output"
     if [[ $(grep -Fc 'cleanup_build_secrets' <<< "$output") -lt 3 ]]; then
         echo "package-mode dry-run did not show post-build and EXIT cleanup:" >&2
