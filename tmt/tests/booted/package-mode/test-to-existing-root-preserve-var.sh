@@ -781,8 +781,15 @@ case ${TMT_REBOOT_COUNT:-0} in
                 "$(matchpathcon -n "$ssh_path")"
         done
 
-        booted_image=$(bootc status --json | jq -r '.status.booted.image.image.image')
-        test "$booted_image" = "$target_image"
+        bootc_status=$(bootc status --json)
+        booted_image=$(jq -r '.status.booted.image.image.image' <<<"$bootc_status")
+        if [[ $booted_image != "$target_image" && \
+            $booted_image != "${target_image}:latest" ]]; then
+            printf 'Expected booted image %s or %s, got %s\n' \
+                "$target_image" "${target_image}:latest" "$booted_image" >&2
+            printf 'Full bootc status:\n%s\n' "$bootc_status" >&2
+            exit 1
+        fi
         ;;
     *)
         printf 'Unexpected TMT_REBOOT_COUNT=%s\n' "$TMT_REBOOT_COUNT" >&2
