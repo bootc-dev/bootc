@@ -18,10 +18,10 @@
 //!
 //! Two strategies are tried in order:
 //!
-//! - **Strategy C — reflink copy** (btrfs / XFS with reflinks): `cp --reflink=always`
-//!   clones files copy-on-write, avoiding an immediate second copy of their data.
-//!   Files are cloned individually, so this is not an atomic snapshot of the
-//!   `/var` tree or of a live database.
+//! - **Strategy C — reflink copy** (btrfs / XFS with reflinks): `cp --reflink=auto`
+//!   clones files copy-on-write where possible and falls back to a regular copy
+//!   for individual files that cannot be cloned. Files are handled individually,
+//!   so this is not an atomic snapshot of the `/var` tree or of a live database.
 //!
 //! - **Strategy D — plain copy** (ext4 and other non-reflink filesystems):
 //!   `cp -a` copies each non-ephemeral subdirectory of `/var` into the new
@@ -497,6 +497,7 @@ const STAGING_NAME_ATTEMPTS: u32 = 100;
 // Do not resolve privileged copy commands through a caller-controlled PATH.
 // Lower-level helpers still accept an executable parameter for test injection.
 const GNU_CP: &str = "/usr/bin/cp";
+const CP_REFLINK_OPTIONS: &[&str] = &["--reflink=auto", "-a"];
 
 /// Make an empty, uniquely-named staging directory beneath the destination
 /// capability. Publishing from the same parent keeps the final rename atomic.
@@ -632,7 +633,7 @@ fn copy_batch_staged(
 ) -> Result<()> {
     with_staging_dir(destination, |_, staging| {
         let options = if reflink {
-            &["--reflink=always", "-a"][..]
+            CP_REFLINK_OPTIONS
         } else {
             &["-a"][..]
         };
@@ -696,41 +697,43 @@ fn create_staged_placeholder(
     with_staging_dir(dst_parent, |_, staging| {
         create_mountpoint_placeholder(src_parent, staging, name)?;
         if !publish_staged_entry(staging, dst_parent, name, relative)? {
-            validate_empty_placeholder(dst_parent, name, src_parent.symlink_metadata(name)?)?;
+            validate_existing_placeholder(
+                dst_parent,
+                name,
+                relative,
+                src_parent.symlink_metadata(name)?,
+            )?;
         }
         Ok(())
     })
 }
 
-fn validate_empty_placeholder(
+fn validate_existing_placeholder(
     destination_parent: &CapStdDir,
     name: &OsStr,
+    relative: &Path,
     source_metadata: Metadata,
 ) -> Result<()> {
     let destination_metadata = destination_parent.symlink_metadata(name)?;
-    if source_metadata.is_dir() {
-        anyhow::ensure!(
-            destination_metadata.is_dir(),
-            "Mountpoint placeholder {} exists with the wrong type",
-            name.to_string_lossy()
-        );
-        let destination = open_child_dir_nofollow(destination_parent, name)?;
-        let mut entries = destination.read_dir(".")?;
-        anyhow::ensure!(
-            entries.next().transpose()?.is_none(),
-            "Mountpoint placeholder {} is not empty",
-            name.to_string_lossy()
-        );
+    let same_type = (source_metadata.is_dir() && destination_metadata.is_dir())
+        || (source_metadata.is_file() && destination_metadata.is_file());
+    anyhow::ensure!(
+        same_type,
+        "Mountpoint placeholder /var/{} already exists in the new deployment with a different type",
+        relative.display()
+    );
+    let has_content = if destination_metadata.is_dir() {
+        open_child_dir_nofollow(destination_parent, name)?
+            .entries()?
+            .next()
+            .is_some()
     } else {
-        anyhow::ensure!(
-            source_metadata.is_file() && destination_metadata.is_file(),
-            "Mountpoint placeholder {} exists with the wrong type",
-            name.to_string_lossy()
-        );
-        anyhow::ensure!(
-            destination_metadata.len() == 0,
-            "Mountpoint placeholder {} is not empty",
-            name.to_string_lossy()
+        destination_metadata.len() > 0
+    };
+    if has_content {
+        println!(
+            "    Keeping the image's content at mountpoint /var/{}; the mount hides it at boot",
+            relative.display()
         );
     }
     Ok(())
@@ -895,8 +898,12 @@ fn preserve_metadata<Fd: AsFd>(
     preserve_metadata_timestamps(metadata, &dst_fd)
 }
 
-/// Make the destination xattr set exactly match the source snapshot. Removing
-/// extras first matters for inherited ACLs and labels as well as user xattrs.
+const SELINUX_XATTR: &str = "security.selinux";
+
+/// Make the destination xattr set match the source snapshot, except that a
+/// destination SELinux label is retained when the source has no label.
+/// Removing extras first matters for inherited ACLs and labels as well as user
+/// xattrs.
 fn apply_xattrs_exact<Fd: AsFd>(
     destination: Fd,
     source_xattrs: &[(std::ffi::OsString, Vec<u8>)],
@@ -910,7 +917,8 @@ fn apply_xattrs_exact<Fd: AsFd>(
         .map(|(name, _)| name.as_os_str())
         .collect::<BTreeSet<_>>();
     for name in destination_names {
-        if !source_names.contains(name.as_os_str()) {
+        if !source_names.contains(name.as_os_str()) && name.as_os_str() != OsStr::new(SELINUX_XATTR)
+        {
             fremovexattr(&destination, &name).with_context(|| {
                 format!("Removing destination xattr {}", name.to_string_lossy())
             })?;
@@ -1409,6 +1417,30 @@ mod tests {
     }
 
     #[test]
+    fn apply_xattrs_exact_preserves_destination_selinux_when_source_lacks_it() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let path = temp.path().join("destination");
+        fs::write(&path, b"")?;
+        let destination = cap_dir(temp.path());
+        if destination
+            .setxattr("destination", SELINUX_XATTR, b"test-label")
+            .is_err()
+        {
+            // Some test filesystems or unprivileged environments cannot set
+            // security.selinux; exercise the behavior where supported.
+            return Ok(());
+        }
+
+        let file = fs::File::open(&path)?;
+        apply_xattrs_exact(&file, &[])?;
+        assert_eq!(
+            destination.getxattr("destination", SELINUX_XATTR)?,
+            Some(b"test-label".to_vec())
+        );
+        Ok(())
+    }
+
+    #[test]
     fn filtered_copy_does_not_change_existing_destination_directory() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let src_path = temp.path().join("src");
@@ -1604,7 +1636,7 @@ mod tests {
         let failing_cp = temp.path().join("cp-fails-after-copy");
         fs::write(
             &failing_cp,
-            b"#!/bin/sh\nreflink=no\nwhile [ \"$1\" != -- ]; do\n  [ \"$1\" = --reflink=always ] && reflink=yes\n  shift\ndone\nshift\nsource=$1\nshift\nwhile [ \"$#\" -gt 1 ]; do shift; done\ndestination=$1\nif [ \"$reflink\" = yes ]; then\n  /bin/cp --reflink=always -a -- \"$source\" \"$destination\"\nelse\n  /bin/cp -a -- \"$source\" \"$destination\"\nfi\nexit 1\n",
+            b"#!/bin/sh\nreflink=no\nwhile [ \"$1\" != -- ]; do\n  [ \"$1\" = --reflink=auto ] && reflink=yes\n  shift\ndone\nshift\nsource=$1\nshift\nwhile [ \"$#\" -gt 1 ]; do shift; done\ndestination=$1\nif [ \"$reflink\" = yes ]; then\n  /bin/cp --reflink=auto -a -- \"$source\" \"$destination\"\nelse\n  /bin/cp -a -- \"$source\" \"$destination\"\nfi\nexit 1\n",
         )?;
         fs::set_permissions(&failing_cp, fs::Permissions::from_mode(0o755))?;
 
@@ -1643,7 +1675,12 @@ mod tests {
     }
 
     #[test]
-    fn empty_mountpoint_placeholders_are_retry_safe_and_type_checked() -> Result<()> {
+    fn reflink_copy_uses_auto_fallback_for_individual_files() {
+        assert_eq!(CP_REFLINK_OPTIONS, ["--reflink=auto", "-a"]);
+    }
+
+    #[test]
+    fn mountpoint_placeholders_reuse_seeded_destinations_and_check_type() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let src_path = temp.path().join("src");
         fs::create_dir_all(src_path.join("directory-mount"))?;
@@ -1674,25 +1711,19 @@ mod tests {
             assert_eq!(fs::read_dir(dst_path.join("directory-mount"))?.count(), 0);
             assert_eq!(fs::metadata(dst_path.join("file-mount"))?.len(), 0);
 
+            // Image-seeded content at a destination that will be hidden by
+            // the mount is safe to retain when its type matches.
             fs::write(dst_path.join("directory-mount/sentinel"), b"keep")?;
-            let error = if reflink {
-                preserve_var_reflink_mounts(&src, &dst, &[], &mounts)
+            fs::write(dst_path.join("file-mount"), b"keep file")?;
+            if reflink {
+                preserve_var_reflink_mounts(&src, &dst, &[], &mounts)?;
             } else {
-                preserve_var_copy_mounts(&src, &dst, &[], &mounts)
-            };
-            assert!(error.is_err());
+                preserve_var_copy_mounts(&src, &dst, &[], &mounts)?;
+            }
             assert_eq!(
                 fs::read(dst_path.join("directory-mount/sentinel"))?,
                 b"keep"
             );
-            fs::remove_file(dst_path.join("directory-mount/sentinel"))?;
-            fs::write(dst_path.join("file-mount"), b"keep file")?;
-            let error = if reflink {
-                preserve_var_reflink_mounts(&src, &dst, &[], &mounts)
-            } else {
-                preserve_var_copy_mounts(&src, &dst, &[], &mounts)
-            };
-            assert!(error.is_err());
             assert_eq!(fs::read(dst_path.join("file-mount"))?, b"keep file");
 
             let wrong_type = temp.path().join(format!("wrong-type-{strategy}"));

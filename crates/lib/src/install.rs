@@ -669,10 +669,10 @@ pub(crate) struct InstallToExistingRootOpts {
 
     /// Preserve the running system's `/var` data into the new bootc deployment.
     ///
-    /// Non-excluded content is copied with reflinks when supported, or with a
-    /// full copy otherwise. Reflinks are created per file and are not a
-    /// snapshot; stop stateful services or use a consistent snapshot before
-    /// copying live database data.
+    /// Non-excluded content is copied with reflinks where individual files
+    /// support them, falling back to ordinary copies as needed. Reflinks are
+    /// created per file and are not a snapshot; stop stateful services or use
+    /// a consistent snapshot before copying live database data.
     ///
     /// `/var/tmp`, `/var/cache`, `/var/log/journal`, and `/var/lib/containers`
     /// are always excluded. Repeat `--preserve-var-skip` to add paths relative
