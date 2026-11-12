@@ -236,6 +236,13 @@ test-ukiboot: build-ukiboot-update-test-image
 test-tmt-package-mode image="centos-stream-10":
     #!/bin/bash
     set -euo pipefail
+    source_tree=$(git rev-parse --show-toplevel)
+    cleanup_build_secrets() {
+        find "$source_tree" -maxdepth 1 \
+            \( -type f -o -type l \) \
+            -name 'podman-build-secret-*' -delete
+    }
+    trap cleanup_build_secrets EXIT
     lbi_images="{{lbi_images}}"
     case "{{image}}" in
         fedora-44)
@@ -255,6 +262,7 @@ test-tmt-package-mode image="centos-stream-10":
         image_base="{{base}}"
     fi
     BOOTC_base="$image_base" just {{_forward_settings}} base="$image_base" variant=ostree build
+    cleanup_build_secrets
 
     # TMT 1.69 copies the whole git root during fmf discovery. Use a small
     # snapshot so ignored build outputs and local worktrees are never copied.
@@ -263,17 +271,18 @@ test-tmt-package-mode image="centos-stream-10":
         if [[ -n "$test_tree" ]]; then
             rm -rf -- "$test_tree"
         fi
+        cleanup_build_secrets
     }
     trap cleanup EXIT
     trap 'exit 129' HUP
     trap 'exit 130' INT
     trap 'exit 143' TERM
     test_tree=$(mktemp -d -- "${TMPDIR:-/tmp}/bootc-tmt-package-mode.XXXXXX")
-    source_tree=$(git rev-parse --show-toplevel)
     rsync -a --delete \
         --exclude='/.git' \
         --exclude='/target' \
         --exclude='/.worktrees' \
+        --exclude='/podman-build-secret-*' \
         --exclude='.package-mode-local.*' \
         "$source_tree/" "$test_tree/"
     git -C "$test_tree" init -q
@@ -320,6 +329,15 @@ test-tmt-package-mode-dry-run:
         exit 1
     fi
     grep -Fq 'podman save --format oci-archive --output "$archive_path" localhost/package-mode-test:latest' <<< "$output"
+    grep -Fq -- "--exclude='/podman-build-secret-*'" <<< "$output"
+    grep -Fq -- "-name 'podman-build-secret-*' -delete" <<< "$output"
+    grep -Fq 'trap cleanup_build_secrets EXIT' <<< "$output"
+    grep -Fq 'trap cleanup EXIT' <<< "$output"
+    if [[ $(grep -Fc 'cleanup_build_secrets' <<< "$output") -lt 3 ]]; then
+        echo "package-mode dry-run did not show post-build and EXIT cleanup:" >&2
+        echo "$output" >&2
+        exit 1
+    fi
 
 # Split out from `test-container` because, unlike the container integration tests,
 # unit tests don't depend on variant/filesystem/bootloader/boot_type/seal_state, so
