@@ -1,6 +1,6 @@
 #!/bin/bash
 # Both local and Packit runs prepare one package-mode guest, then convert and
-# reboot that same guest; local TMT workdirs live under preserved /var/lib.
+# reboot that same guest; local TMT workdirs live under preserved /var.
 set -xeuo pipefail
 
 target_image=localhost/bootc-preserve-var-test
@@ -8,12 +8,12 @@ var_state=/var/lib/bootc-tmt-preserve-var
 app_state=$var_state/app-state/state
 log_fs_image=$var_state/logfs.img
 empty_tmpfs=$var_state/empty_tmpfs
+empty_tmpfs_marker=$empty_tmpfs/marker
 bind_dir=/var/lib/bootc-tmt-preserve-var-bind
 bind_source=$bind_dir/source
 bind_target=$bind_dir/target
 preflight_mountpoint=$var_state/preflight-special
 tmt_plan_data_suffix=/tmt/plans/package-mode/data
-tmt_local_workdir_root=/var/lib/bootc-tmt-workdirs
 tmt_artifacts_parent=/var/ARTIFACTS
 tmt_test_data_sentinel_name=workdir-persistence-sentinel
 tmt_test_data_post_reboot_marker_name=post-reboot-marker
@@ -22,29 +22,106 @@ get_tmt_run_dir() {
     local plan_data=${TMT_PLAN_DATA:-}
     local run_dir
     local resolved_plan_data
+    local resolved_run_dir
+    local workdir_root=${PACKAGE_MODE_TMT_WORKDIR_ROOT:-}
+    local resolved_workdir_root
+    local run_id
 
     if [[ $plan_data != *"$tmt_plan_data_suffix" ]]; then
         printf 'TMT_PLAN_DATA must end in %s (got %q)\n' "$tmt_plan_data_suffix" "$plan_data" >&2
         return 1
     fi
     run_dir=${plan_data%"$tmt_plan_data_suffix"}
-    if [[ $run_dir =~ ^/var/lib/bootc-tmt-workdirs/run-[[:alnum:]_.-]+$ ||
-          $run_dir =~ ^/var/ARTIFACTS/work-[[:alnum:]_.-]+$ ]]; then
-        :
+    if [[ -n $workdir_root ]]; then
+        if [[ $workdir_root != /* || $workdir_root == */ ]]; then
+            printf 'PACKAGE_MODE_TMT_WORKDIR_ROOT must be an absolute path without a trailing slash (got %q)\n' \
+                "$workdir_root" >&2
+            return 1
+        fi
+        resolved_workdir_root=$(realpath -e -- "$workdir_root") || {
+            printf 'TMT workdir root does not exist: %s\n' "$workdir_root" >&2
+            return 1
+        }
+        case $resolved_workdir_root in
+            /var/*) ;;
+            *)
+                printf 'TMT workdir root must resolve under preserved /var (got %q -> %q)\n' \
+                    "$workdir_root" "$resolved_workdir_root" >&2
+                return 1
+                ;;
+        esac
+        case $resolved_workdir_root in
+            /var/tmp|/var/tmp/*|/var/cache|/var/cache/*|/var/log/journal|/var/log/journal/*|/var/lib/containers|/var/lib/containers/*)
+                printf 'TMT workdir root is excluded from preserve-var: %s\n' \
+                    "$resolved_workdir_root" >&2
+                return 1
+                ;;
+        esac
+        case $run_dir in
+            "$workdir_root"/run-*)
+                run_id=${run_dir#"$workdir_root"/}
+                ;;
+            "$resolved_workdir_root"/run-*)
+                run_id=${run_dir#"$resolved_workdir_root"/}
+                ;;
+            *)
+                printf 'Expected TMT run directory under configured root %q (got %q)\n' \
+                    "$workdir_root" "$run_dir" >&2
+                return 1
+                ;;
+        esac
+        if [[ ! $run_id =~ ^run-[[:alnum:]_.-]+$ ]]; then
+            printf 'Unexpected TMT run directory under configured root: %q\n' \
+                "$run_dir" >&2
+            return 1
+        fi
+        resolved_run_dir=$(realpath -e -- "$run_dir") || {
+            printf 'TMT run directory does not exist: %s\n' "$run_dir" >&2
+            return 1
+        }
+        if [[ $resolved_run_dir != "$resolved_workdir_root/$run_id" ]]; then
+            printf 'TMT run directory must be a real directory below its configured root (got %q -> %q)\n' \
+                "$run_dir" "$resolved_run_dir" >&2
+            return 1
+        fi
+        resolved_plan_data=$(realpath -e -- "$plan_data") || {
+            printf 'TMT_PLAN_DATA does not exist: %s\n' "$plan_data" >&2
+            return 1
+        }
+        if [[ $resolved_plan_data != "$resolved_run_dir$tmt_plan_data_suffix" ]]; then
+            printf 'TMT_PLAN_DATA resolves outside its run directory (got %q -> %q)\n' \
+                "$plan_data" "$resolved_plan_data" >&2
+            return 1
+        fi
+    elif [[ $run_dir =~ ^/var/ARTIFACTS/work-[[:alnum:]_.-]+$ ]]; then
+        resolved_run_dir=$(realpath -e -- "$run_dir") || {
+            printf 'TMT artifact workdir does not exist: %s\n' "$run_dir" >&2
+            return 1
+        }
+        case $resolved_run_dir in
+            /var/*) ;;
+            *)
+                printf 'TMT artifact workdir must resolve under /var (got %q)\n' \
+                    "$resolved_run_dir" >&2
+                return 1
+                ;;
+        esac
+        resolved_plan_data=$(realpath -e -- "$plan_data") || {
+            printf 'TMT_PLAN_DATA does not exist: %s\n' "$plan_data" >&2
+            return 1
+        }
+        if [[ $resolved_plan_data != "$resolved_run_dir$tmt_plan_data_suffix" ]]; then
+            printf 'TMT_PLAN_DATA resolves outside its run directory (got %q -> %q)\n' \
+                "$plan_data" "$resolved_plan_data" >&2
+            return 1
+        fi
     else
-        printf 'Expected TMT workdir under %s or %s (got %q)\n' \
-            "$tmt_local_workdir_root" "$tmt_artifacts_parent" "$run_dir" >&2
+        printf 'Expected TMT workdir under PACKAGE_MODE_TMT_WORKDIR_ROOT or %s (got %q)\n' \
+            "$tmt_artifacts_parent" "$run_dir" >&2
         return 1
     fi
     case ${TMT_REBOOT_COUNT:-0} in
-        0|1)
-            if ! resolved_plan_data=$(realpath -e -- "$plan_data") ||
-                [[ $resolved_plan_data != "$plan_data" ]]; then
-                printf 'TMT_PLAN_DATA must be a canonical real path (got %q, resolves to %q)\n' \
-                    "$plan_data" "${resolved_plan_data:-}" >&2
-                return 1
-            fi
-            ;;
+        0|1) ;;
         *)
             printf 'Unexpected TMT_REBOOT_COUNT=%s\n' "${TMT_REBOOT_COUNT}" >&2
             return 1
@@ -68,6 +145,18 @@ verify_tmt_workdir_in_preserved_var() {
             "$run_dir" "$mount_target" >&2
         return 1
     fi
+}
+
+is_local_tmt_workdir() {
+    local workdir_root=${PACKAGE_MODE_TMT_WORKDIR_ROOT:-}
+    local resolved_workdir_root
+
+    [[ -n $workdir_root ]] || return 1
+    if [[ $1 == "$workdir_root"/run-* ]]; then
+        return 0
+    fi
+    resolved_workdir_root=$(realpath -e -- "$workdir_root") || return 1
+    [[ $1 == "$resolved_workdir_root"/run-* ]]
 }
 
 case ${TMT_REBOOT_COUNT:-0} in
@@ -119,8 +208,10 @@ case ${TMT_REBOOT_COUNT:-0} in
         mount -o loop "$log_fs_image" /var/log
         printf '%s\n' separate-var-log-filesystem > /var/log/bootc-tmt-sentinel
         install -d -m 0755 "$empty_tmpfs"
-        mount -t tmpfs -o size=16m tmpfs "$empty_tmpfs"
+        mount -t tmpfs -o size=16m '' "$empty_tmpfs"
         test -z "$(find "$empty_tmpfs" -mindepth 1 -print -quit)"
+        printf '%s\n' transient-tmpfs-data > "$empty_tmpfs_marker"
+        test "$(<"$empty_tmpfs_marker")" = transient-tmpfs-data
         : > "$preflight_mountpoint"
         mount --bind /dev/null "$preflight_mountpoint"
 
@@ -146,8 +237,8 @@ case ${TMT_REBOOT_COUNT:-0} in
         umount "$preflight_mountpoint"
         rm -f "$preflight_mountpoint" "$boot_snapshot" "$boot_snapshot_after"
 
-        # TMT 1.69 rsyncs to the same absolute path on the guest. Keeping its
-        # real workdir under /var/lib avoids both excluded /var/tmp and symlinks.
+        # TMT 1.69 rsyncs to the same absolute path on the guest. The configured
+        # controller path resolves under /var here (including /home -> /var/home).
         test -f "$TMT_TEST_METADATA"
         tmt_test_data_sentinel=$TMT_TEST_DATA/$tmt_test_data_sentinel_name
         test ! -e "$tmt_test_data_sentinel"
@@ -216,6 +307,7 @@ case ${TMT_REBOOT_COUNT:-0} in
 
                 local_workdir_root=$1
                 run_dir=$2
+                workdir_root=$3
                 mkdir -p "$deployment"
                 bootc install mount --sysroot /target --latest "$deployment"
 
@@ -228,15 +320,16 @@ case ${TMT_REBOOT_COUNT:-0} in
                     rule=$deployment/etc/tmpfiles.d/bootc-tmt-workdir.conf
                     install -d -m 0755 "${rule%/*}"
                     tmpfiles_rule=(
-                        "d /var/lib/bootc-tmt-workdirs - - - - -"
+                        "d $workdir_root - - - - -"
                         "d $run_dir - - - - -"
                     )
                     printf "%s\n" "${tmpfiles_rule[@]}" > "$rule"
                     printf "%s\n" "${tmpfiles_rule[@]}" | cmp - "$rule"
                 fi
             ' install-test-configuration \
-            "$([[ $tmt_run_dir == "$tmt_local_workdir_root"/* ]] && printf 1 || printf 0)" \
-            "$tmt_run_dir"
+            "$(is_local_tmt_workdir "$tmt_run_dir" && printf 1 || printf 0)" \
+            "$(realpath -e -- "$tmt_run_dir")" \
+            "$(if [[ -n ${PACKAGE_MODE_TMT_WORKDIR_ROOT:-} ]]; then realpath -e -- "$PACKAGE_MODE_TMT_WORKDIR_ROOT"; fi)"
 
         bootc status
         # Reboot the guest itself; this avoids testcloud's ACPI soft-poweroff.
@@ -245,13 +338,13 @@ case ${TMT_REBOOT_COUNT:-0} in
     1)
         test -e /run/ostree-booted
         tmt_run_dir=$(get_tmt_run_dir)
-        if [[ $tmt_run_dir == "$tmt_local_workdir_root"/* ]]; then
+        if is_local_tmt_workdir "$tmt_run_dir"; then
             test -d "$tmt_run_dir"
             test ! -L "$tmt_run_dir"
             verify_tmt_workdir_in_preserved_var "$tmt_run_dir"
             expected_tmpfiles_rule=(
-                "d /var/lib/bootc-tmt-workdirs - - - - -"
-                "d $tmt_run_dir - - - - -"
+                "d $(realpath -e -- "$PACKAGE_MODE_TMT_WORKDIR_ROOT") - - - - -"
+                "d $(realpath -e -- "$tmt_run_dir") - - - - -"
             )
             printf "%s\n" "${expected_tmpfiles_rule[@]}" | \
                 cmp - /etc/tmpfiles.d/bootc-tmt-workdir.conf
@@ -278,6 +371,7 @@ case ${TMT_REBOOT_COUNT:-0} in
         test "$(</var/log/bootc-tmt-sentinel)" = separate-var-log-filesystem
         mountpoint -q "$empty_tmpfs"
         test "$(findmnt --noheadings --output FSTYPE --target "$empty_tmpfs")" = tmpfs
+        test ! -e "$empty_tmpfs_marker"
         test -z "$(find "$empty_tmpfs" -mindepth 1 -print -quit)"
 
         systemctl is-active --quiet postgresql.service
