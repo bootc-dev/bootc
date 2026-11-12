@@ -331,6 +331,7 @@ fn preserve_var_reflink_mounts_labeled(
         true,
         false,
         labeler,
+        labeler.is_some(),
         OsStr::new(GNU_CP),
     )
     .context("Reflink-copying /var into new deployment (Strategy C)")?;
@@ -354,6 +355,7 @@ fn copy_var_filtered(
     reflink: bool,
     destination_created: bool,
     labeler: Option<&dyn StagedLabeler>,
+    target_policy_available: bool,
     cp_program: &OsStr,
 ) -> Result<()> {
     // Existing directories are merged in place, so capture their own metadata
@@ -388,6 +390,7 @@ fn copy_var_filtered(
         mountpoints,
         reflink,
         labeler,
+        target_policy_available,
         cp_program,
     );
     let restore_result = match (source_metadata.as_ref(), destination_metadata.as_ref()) {
@@ -421,6 +424,7 @@ fn copy_var_filtered_inner(
     mountpoints: &BTreeSet<PathBuf>,
     reflink: bool,
     labeler: Option<&dyn StagedLabeler>,
+    target_policy_available: bool,
     cp_program: &OsStr,
 ) -> Result<()> {
     let entries = src_dir
@@ -446,7 +450,14 @@ fn copy_var_filtered_inner(
                 "    Creating empty mountpoint placeholder for {}",
                 relative.display()
             );
-            create_staged_placeholder(src_dir, dst_dir, &name, &relative, labeler)?;
+            create_staged_placeholder(
+                src_dir,
+                dst_dir,
+                &name,
+                &relative,
+                labeler,
+                target_policy_available,
+            )?;
             continue;
         }
 
@@ -475,6 +486,7 @@ fn copy_var_filtered_inner(
                     reflink,
                     false,
                     labeler,
+                    target_policy_available,
                     cp_program,
                 )?;
             } else if destination_entry_exists(dst_dir, &name)? {
@@ -495,6 +507,7 @@ fn copy_var_filtered_inner(
                     mountpoints,
                     reflink,
                     labeler,
+                    target_policy_available,
                     cp_program,
                 )?;
             } else {
@@ -685,7 +698,7 @@ fn logical_var_path(relative: &Path) -> PathBuf {
     Path::new(VAR_LOGICAL_ROOT).join(relative)
 }
 
-type StagedLabels = HashMap<PathBuf, Vec<u8>>;
+type StagedLabels = HashMap<PathBuf, Option<Vec<u8>>>;
 type RegularFileLabels = HashMap<(libc::dev_t, libc::ino_t), (PathBuf, Vec<u8>)>;
 
 fn collect_label(
@@ -693,12 +706,19 @@ fn collect_label(
     logical_path: &Path,
     mode: u32,
     regular_file_id: Option<(libc::dev_t, libc::ino_t)>,
+    allow_missing_label: bool,
     labels: &mut StagedLabels,
     regular_file_labels: &mut RegularFileLabels,
 ) -> Result<()> {
-    let label = labeler
-        .lookup(logical_path, mode)?
-        .with_context(|| format!("No SELinux policy label for {logical_path:?}"))?;
+    let label = labeler.lookup(logical_path, mode)?;
+    let Some(label) = label else {
+        anyhow::ensure!(
+            allow_missing_label,
+            "No SELinux policy label for {logical_path:?}"
+        );
+        labels.insert(logical_path.to_owned(), None);
+        return Ok(());
+    };
 
     if let Some(file_id) = regular_file_id {
         if let Some((alias_path, alias_label)) = regular_file_labels.get(&file_id) {
@@ -710,7 +730,7 @@ fn collect_label(
             regular_file_labels.insert(file_id, (logical_path.to_owned(), label.clone()));
         }
     }
-    labels.insert(logical_path.to_owned(), label);
+    labels.insert(logical_path.to_owned(), Some(label));
     Ok(())
 }
 
@@ -723,7 +743,11 @@ fn apply_staged_label(
     let label = labels
         .get(logical_path)
         .with_context(|| format!("No collected SELinux label for {logical_path:?}"))?;
-    labeler.apply(logical_path, target, label)
+    if let Some(label) = label {
+        labeler.apply(logical_path, target, label)
+    } else {
+        Ok(())
+    }
 }
 
 /// Relabel only staged entries. Logical lookup paths are composed from the
@@ -792,18 +816,20 @@ fn collect_staged_entry_labels(
             .with_context(|| format!("Opening staged directory {logical_path:?}"))?;
         let metadata = directory.metadata(".")?;
         let device = root_device.unwrap_or_else(|| metadata.dev());
+        let relative = logical_path
+            .strip_prefix(VAR_LOGICAL_ROOT)
+            .with_context(|| format!("Invalid logical migration path {logical_path:?}"))?;
+        let is_placeholder = mountpoints.contains(relative);
         collect_label(
             labeler,
             logical_path,
             metadata.mode(),
             None,
+            is_placeholder,
             labels,
             regular_file_labels,
         )?;
 
-        let relative = logical_path
-            .strip_prefix(VAR_LOGICAL_ROOT)
-            .with_context(|| format!("Invalid logical migration path {logical_path:?}"))?;
         if stop_at_entry || metadata.dev() != device || mountpoints.contains(relative) {
             return Ok(());
         }
@@ -831,6 +857,7 @@ fn collect_staged_entry_labels(
             logical_path,
             metadata.mode(),
             None,
+            false,
             labels,
             regular_file_labels,
         );
@@ -854,6 +881,10 @@ fn collect_staged_entry_labels(
             logical_path,
             stat.st_mode,
             Some((stat.st_dev, stat.st_ino)),
+            stat.st_size == 0
+                && logical_path
+                    .strip_prefix(VAR_LOGICAL_ROOT)
+                    .is_ok_and(|relative| mountpoints.contains(relative)),
             labels,
             regular_file_labels,
         );
@@ -864,6 +895,7 @@ fn collect_staged_entry_labels(
         logical_path,
         metadata.mode(),
         None,
+        false,
         labels,
         regular_file_labels,
     )
@@ -1080,6 +1112,7 @@ fn copy_filtered_directory_staged(
     mountpoints: &BTreeSet<PathBuf>,
     reflink: bool,
     labeler: Option<&dyn StagedLabeler>,
+    target_policy_available: bool,
     cp_program: &OsStr,
 ) -> Result<()> {
     with_staging_dir(destination_parent, |_, staging| {
@@ -1094,6 +1127,7 @@ fn copy_filtered_directory_staged(
             reflink,
             true,
             None,
+            target_policy_available,
             cp_program,
         )?;
         if let Some(labeler) = labeler {
@@ -1118,9 +1152,10 @@ fn create_staged_placeholder(
     name: &OsStr,
     relative: &Path,
     labeler: Option<&dyn StagedLabeler>,
+    target_policy_available: bool,
 ) -> Result<()> {
     with_staging_dir(dst_parent, |_, staging| {
-        create_mountpoint_placeholder(src_parent, staging, name)?;
+        create_mountpoint_placeholder(src_parent, staging, name, target_policy_available)?;
         if let Some(labeler) = labeler {
             relabel_staged_entry(
                 labeler,
@@ -1179,6 +1214,7 @@ fn create_mountpoint_placeholder(
     src_parent: &CapStdDir,
     dst_parent: &CapStdDir,
     name: &OsStr,
+    target_policy_available: bool,
 ) -> Result<()> {
     let metadata = src_parent.symlink_metadata(name)?;
     if metadata.is_dir() {
@@ -1195,8 +1231,13 @@ fn create_mountpoint_placeholder(
         })?;
         let dst_dir = open_child_dir_nofollow(dst_parent, name)
             .context("Opening mountpoint directory placeholder")?;
-        preserve_directory_metadata(&src_dir, &dst_dir, &directory_metadata)
-            .context("Preserving mountpoint directory metadata")?;
+        preserve_directory_metadata(
+            &src_dir,
+            &dst_dir,
+            &directory_metadata,
+            target_policy_available,
+        )
+        .context("Preserving mountpoint directory metadata")?;
         return Ok(());
     }
     anyhow::ensure!(
@@ -1213,6 +1254,7 @@ fn create_mountpoint_placeholder(
         name,
         &metadata,
         dst_file.as_filelike_view::<std::fs::File>().as_fd(),
+        target_policy_available,
     )
     .context("Preserving mountpoint file metadata")
 }
@@ -1223,11 +1265,13 @@ fn preserve_directory_metadata(
     src_dir: &CapStdDir,
     dst_dir: &CapStdDir,
     metadata: &Metadata,
+    target_policy_available: bool,
 ) -> Result<()> {
-    restore_directory_metadata(
-        dst_dir,
-        &snapshot_directory_metadata_from_source(src_dir, metadata)?,
-    )
+    let mut snapshot = snapshot_directory_metadata_from_source(src_dir, metadata)?;
+    snapshot
+        .xattrs
+        .retain(|(name, _)| should_copy_placeholder_xattr(name, target_policy_available));
+    restore_directory_metadata(dst_dir, &snapshot)
 }
 
 struct DirectoryMetadataSnapshot {
@@ -1320,11 +1364,16 @@ fn preserve_metadata<Fd: AsFd>(
     src_name: &OsStr,
     metadata: &Metadata,
     dst_fd: Fd,
+    target_policy_available: bool,
 ) -> Result<()> {
     use cap_std_ext::dirext::CapStdExtDirExt;
 
     let mut source_xattrs = Vec::new();
     for attribute in src_parent.listxattrs(src_name)?.iter() {
+        let attribute_name = attribute.to_os_string();
+        if !should_copy_placeholder_xattr(&attribute_name, target_policy_available) {
+            continue;
+        }
         if let Some(value) = src_parent.getxattr(src_name, attribute)? {
             source_xattrs.push((attribute.to_os_string(), value));
         }
@@ -1335,6 +1384,10 @@ fn preserve_metadata<Fd: AsFd>(
 }
 
 const SELINUX_XATTR: &str = "security.selinux";
+
+fn should_copy_placeholder_xattr(name: &OsStr, target_policy_available: bool) -> bool {
+    !target_policy_available || name != OsStr::new(SELINUX_XATTR)
+}
 
 /// Make the destination xattr set match the source snapshot, except that a
 /// destination SELinux label is retained when the source has no label.
@@ -1483,6 +1536,7 @@ fn preserve_var_copy_mounts_labeled(
         false,
         false,
         labeler,
+        labeler.is_some(),
         OsStr::new(GNU_CP),
     )
     .context("Copying /var into new deployment (Strategy D)")?;
@@ -1587,6 +1641,7 @@ mod tests {
     struct FakeLabeler {
         lookups: Mutex<Vec<PathBuf>>,
         applied: Mutex<Vec<PathBuf>>,
+        no_match: BTreeSet<PathBuf>,
         fail_lookup: bool,
         fail_apply: bool,
         different_labels: bool,
@@ -1600,6 +1655,9 @@ mod tests {
                 "policy lookup used non-logical path {logical_path:?}"
             );
             anyhow::ensure!(!self.fail_lookup, "injected SELinux policy lookup failure");
+            if self.no_match.contains(logical_path) {
+                return Ok(None);
+            }
             let label = if self.different_labels && logical_path == Path::new("/var/alias-b") {
                 b"different-label".to_vec()
             } else {
@@ -1706,27 +1764,92 @@ mod tests {
     }
 
     #[test]
-    fn relabels_empty_mount_placeholders_without_walking_into_them() -> Result<()> {
+    fn unmatched_mount_placeholders_are_allowed_without_walking_into_them() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let src_path = temp.path().join("src");
         let dst_path = temp.path().join("dst");
         fs::create_dir_all(src_path.join("tree/bound"))?;
         fs::write(src_path.join("tree/bound/mounted-only"), b"not copied")?;
+        fs::write(src_path.join("tree/file-bound"), b"")?;
         fs::write(src_path.join("tree/sibling"), b"copied")?;
         fs::create_dir(&dst_path)?;
         let source = cap_dir(&src_path);
         let destination = cap_dir(&dst_path);
-        let labeler = FakeLabeler::default();
-        let mountpoints = BTreeSet::from([PathBuf::from("tree/bound")]);
+        let labeler = FakeLabeler {
+            no_match: BTreeSet::from([
+                PathBuf::from("/var/tree/bound"),
+                PathBuf::from("/var/tree/file-bound"),
+            ]),
+            ..FakeLabeler::default()
+        };
+        let mountpoints = BTreeSet::from([
+            PathBuf::from("tree/bound"),
+            PathBuf::from("tree/file-bound"),
+        ]);
 
         preserve_var_copy_mounts_labeled(&source, &destination, &[], &mountpoints, Some(&labeler))?;
 
         assert_eq!(fs::read_dir(dst_path.join("tree/bound"))?.count(), 0);
+        assert_eq!(fs::read(dst_path.join("tree/file-bound"))?, b"");
         let lookups = labeler.lookups.lock().unwrap();
         assert!(lookups.contains(&PathBuf::from("/var/tree")));
         assert!(lookups.contains(&PathBuf::from("/var/tree/bound")));
         assert!(lookups.contains(&PathBuf::from("/var/tree/sibling")));
+        assert!(lookups.contains(&PathBuf::from("/var/tree/file-bound")));
         assert!(!lookups.contains(&PathBuf::from("/var/tree/bound/mounted-only")));
+        let applied = labeler.applied.lock().unwrap();
+        assert!(!applied.contains(&PathBuf::from("/var/tree/bound")));
+        assert!(!applied.contains(&PathBuf::from("/var/tree/file-bound")));
+
+        let matched_dst_path = temp.path().join("dst-matched");
+        fs::create_dir(&matched_dst_path)?;
+        let matched_labeler = FakeLabeler::default();
+        preserve_var_copy_mounts_labeled(
+            &source,
+            &cap_dir(&matched_dst_path),
+            &[],
+            &mountpoints,
+            Some(&matched_labeler),
+        )?;
+        let applied = matched_labeler.applied.lock().unwrap();
+        assert!(applied.contains(&PathBuf::from("/var/tree/bound")));
+        assert!(applied.contains(&PathBuf::from("/var/tree/file-bound")));
+        assert!(!applied.contains(&PathBuf::from("/var/tree/bound/mounted-only")));
+        Ok(())
+    }
+
+    #[test]
+    fn unmatched_label_for_ordinary_files_fails_before_publish() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        for (name, contents) in [
+            ("ordinary-empty", b"".as_slice()),
+            ("ordinary-data", b"data"),
+        ] {
+            let src_path = temp.path().join(format!("src-{name}"));
+            let dst_path = temp.path().join(format!("dst-{name}"));
+            fs::create_dir(&src_path)?;
+            fs::create_dir(&dst_path)?;
+            fs::write(src_path.join(name), contents)?;
+            let labeler = FakeLabeler {
+                no_match: BTreeSet::from([PathBuf::from(format!("/var/{name}"))]),
+                ..FakeLabeler::default()
+            };
+
+            let error = preserve_var_copy_mounts_labeled(
+                &cap_dir(&src_path),
+                &cap_dir(&dst_path),
+                &[],
+                &BTreeSet::new(),
+                Some(&labeler),
+            )
+            .unwrap_err();
+
+            assert!(
+                format!("{error:#}")
+                    .contains(&format!("No SELinux policy label for \"/var/{name}\""))
+            );
+            assert_eq!(fs::read_dir(dst_path)?.count(), 0);
+        }
         Ok(())
     }
 
@@ -1806,6 +1929,25 @@ mod tests {
         assert!(format!("{error:#}").contains("resolve to different SELinux labels"));
         assert!(mismatch_labeler.applied.lock().unwrap().is_empty());
         assert_eq!(fs::read_dir(&mismatch_path)?.count(), 0);
+
+        let missing_path = temp.path().join("dst-missing-label");
+        fs::create_dir(&missing_path)?;
+        let missing_destination = cap_dir(&missing_path);
+        let missing_labeler = FakeLabeler {
+            no_match: BTreeSet::from([PathBuf::from("/var/alias-b")]),
+            ..FakeLabeler::default()
+        };
+        let error = preserve_var_copy_mounts_labeled(
+            &source,
+            &missing_destination,
+            &[],
+            &BTreeSet::new(),
+            Some(&missing_labeler),
+        )
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("No SELinux policy label for \"/var/alias-b\""));
+        assert!(missing_labeler.applied.lock().unwrap().is_empty());
+        assert_eq!(fs::read_dir(&missing_path)?.count(), 0);
 
         let matching_path = temp.path().join("dst-matching");
         fs::create_dir(&matching_path)?;
@@ -2119,6 +2261,48 @@ mod tests {
     }
 
     #[test]
+    fn target_policy_placeholder_xattrs_do_not_copy_source_selinux() -> Result<()> {
+        let source_xattrs: Vec<(std::ffi::OsString, Vec<u8>)> = vec![
+            (SELINUX_XATTR.into(), b"source-label".to_vec()),
+            ("user.bootc_placeholder".into(), b"source".to_vec()),
+        ];
+        let filtered = source_xattrs
+            .iter()
+            .filter(|(name, _)| should_copy_placeholder_xattr(name, true))
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(
+            filtered[0].0,
+            std::ffi::OsString::from("user.bootc_placeholder")
+        );
+        assert_eq!(
+            source_xattrs
+                .iter()
+                .filter(|(name, _)| should_copy_placeholder_xattr(name, false))
+                .count(),
+            source_xattrs.len()
+        );
+
+        let temp = tempfile::tempdir()?;
+        let path = temp.path().join("placeholder");
+        fs::write(&path, b"")?;
+        let parent = cap_dir(temp.path());
+        if parent
+            .setxattr("placeholder", SELINUX_XATTR, b"inherited-label")
+            .is_ok()
+        {
+            let file = fs::File::open(&path)?;
+            apply_xattrs_exact(&file, &filtered)?;
+            assert_eq!(
+                parent.getxattr("placeholder", SELINUX_XATTR)?,
+                Some(b"inherited-label".to_vec())
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
     fn filtered_copy_does_not_change_existing_destination_directory() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let src_path = temp.path().join("src");
@@ -2335,6 +2519,7 @@ mod tests {
                 reflink,
                 false,
                 None,
+                false,
                 failing_cp.as_os_str(),
             );
             assert!(error.is_err());
@@ -2443,8 +2628,13 @@ mod tests {
 
         let src = cap_dir(&src_path);
         let dst = cap_dir(&dst_path);
-        assert!(create_mountpoint_placeholder(&src, &dst, OsStr::new("directory-mount")).is_err());
-        assert!(create_mountpoint_placeholder(&src, &dst, OsStr::new("file-mount")).is_err());
+        assert!(
+            create_mountpoint_placeholder(&src, &dst, OsStr::new("directory-mount"), false)
+                .is_err()
+        );
+        assert!(
+            create_mountpoint_placeholder(&src, &dst, OsStr::new("file-mount"), false).is_err()
+        );
         assert_eq!(
             fs::read(dst_path.join("directory-mount/sentinel"))?,
             b"keep"
@@ -2478,7 +2668,7 @@ mod tests {
         fs::create_dir(src_path.join("mount"))?;
         symlink(&target, parent_path.join("mount"))?;
         assert!(
-            create_mountpoint_placeholder(&cap_dir(&src_path), &parent, OsStr::new("mount"))
+            create_mountpoint_placeholder(&cap_dir(&src_path), &parent, OsStr::new("mount"), false)
                 .is_err()
         );
 
