@@ -1,6 +1,10 @@
-summary: Test package-mode to-existing-root migration flags
+summary: Package-mode preserve-var integration test
 environment:
   PACKAGE_SOURCE: $@{package_source}
+  PACKAGE_MODE_IMAGE_NAME: localhost/bootc
+  # Keep these comma-separated refs aligned with Justfile's lbi_images. The
+  # podman LBI uses the signed version rather than the moving :latest tag.
+  PACKAGE_MODE_LBI_IMAGES: quay.io/curl/curl:latest,quay.io/curl/curl-base:latest,registry.access.redhat.com/ubi9/podman:9.8-1793032728
 provision:
   how: virtual
   image: $@{test_disk_image}
@@ -13,6 +17,8 @@ prepare:
     package:
       - podman
       - jq
+      - e2fsprogs
+      - util-linux
       - bootc
     when: package_source == local
   # Packit build-only preparation needs the full integration toolchain.
@@ -33,6 +39,7 @@ prepare:
       - lvm2
       - dosfstools
       - e2fsprogs
+      - util-linux
     when: package_source == artifacts
   # Reject missing/unknown sources before any mode-specific setup runs.
   - how: shell
@@ -112,7 +119,7 @@ prepare:
         exit 1
       fi
       podman --remote=false load --input "$archive_path"
-      podman --remote=false image exists localhost/bootc
+      podman --remote=false image exists "${PACKAGE_MODE_IMAGE_NAME:-localhost/bootc}"
     when: package_source == local
   - how: shell
     order: 98
@@ -122,22 +129,28 @@ prepare:
       - cd bootc && rpm2cpio *.src.rpm > pkg.cpio && cpio -idmv < pkg.cpio && rm pkg.cpio && rm -f *-vendor.tar.zstd && zstd -d *.tar.zstd && tar -xvf *.tar -C . --strip-components=1 && ls -al
       - cd bootc/hack && BOOTC_PROVISION_PACKIT_SKIP_REINSTALL=1 ./provision-packit.sh
     when: package_source == artifacts
-  # Both sources now provide localhost/bootc in the guest's rootful storage.
+  # Both sources now provide the configured test image in guest rootful storage.
   # Pull the LBI references needed to install the image.
   - how: shell
     order: 99
     script: |
-      podman --remote=false image exists localhost/bootc
-      podman --remote=false pull quay.io/curl/curl:latest
-      podman --remote=false pull quay.io/curl/curl-base:latest
-      podman --remote=false pull registry.access.redhat.com/ubi9/podman:latest
+      set -eu
+      image_name=${PACKAGE_MODE_IMAGE_NAME:-localhost/bootc}
+      podman --remote=false image exists "$image_name"
+      IFS=, read -r -a lbi_images <<< "${PACKAGE_MODE_LBI_IMAGES:?PACKAGE_MODE_LBI_IMAGES is required}"
+      for image in "${lbi_images[@]}"; do
+        podman --remote=false pull "$image"
+      done
       workdir=$(mktemp -d)
       trap 'rm -rf -- "$workdir"' EXIT
-      cat > "$workdir/Containerfile" <<'EOF'
-      FROM localhost/bootc
-      RUN unit='var-lib-bootc\x2dtmt\x2dpreserve\x2dvar\x2dbind-target.mount' && \
-          mkdir -p /usr/etc/systemd/system/local-fs.target.wants && \
-          printf '%s\n' \
+      cat > "$workdir/Containerfile" <<EOF
+      FROM $image_name
+      RUN dnf -y install openssh-server postgresql-server && \
+          systemctl --root=/ enable postgresql.service sshd.service && \
+          bind_unit='var-lib-bootc\x2dtmt\x2dpreserve\x2dvar\x2dbind-target.mount' && \
+          tmpfs_unit='var-lib-bootc\x2dtmt\x2dpreserve\x2dvar-empty_tmpfs.mount' && \
+          mkdir -p /etc/systemd/system/local-fs.target.wants && \
+          printf "%s\n" \
             '[Unit]' \
             'Description=bootc TMT preserve-var bind mount' \
             '' \
@@ -149,8 +162,36 @@ prepare:
             '' \
             '[Install]' \
             'WantedBy=local-fs.target' \
-            > "/usr/etc/systemd/system/$unit" && \
-          ln -s "../$unit" "/usr/etc/systemd/system/local-fs.target.wants/$unit"
+            > "/etc/systemd/system/\$bind_unit" && \
+          ln -s "../\$bind_unit" "/etc/systemd/system/local-fs.target.wants/\$bind_unit" && \
+          printf "%s\n" \
+            '[Unit]' \
+            'Description=bootc TMT preserve-var /var/log filesystem' \
+            '' \
+            '[Mount]' \
+            'What=/var/lib/bootc-tmt-preserve-var/logfs.img' \
+            'Where=/var/log' \
+            'Type=ext4' \
+            'Options=loop' \
+            '' \
+            '[Install]' \
+            'WantedBy=local-fs.target' \
+            > /etc/systemd/system/var-log.mount && \
+          ln -s ../var-log.mount /etc/systemd/system/local-fs.target.wants/var-log.mount && \
+          printf "%s\n" \
+            '[Unit]' \
+            'Description=bootc TMT preserve-var empty tmpfs' \
+            '' \
+            '[Mount]' \
+            'What=tmpfs' \
+            'Where=/var/lib/bootc-tmt-preserve-var/empty_tmpfs' \
+            'Type=tmpfs' \
+            'Options=mode=0755,size=16m' \
+            '' \
+            '[Install]' \
+            'WantedBy=local-fs.target' \
+            > "/etc/systemd/system/\$tmpfs_unit" && \
+          ln -s "../\$tmpfs_unit" "/etc/systemd/system/local-fs.target.wants/\$tmpfs_unit"
       EOF
       podman --remote=false build -t localhost/bootc-preserve-var-test "$workdir"
       podman --remote=false image exists localhost/bootc-preserve-var-test
