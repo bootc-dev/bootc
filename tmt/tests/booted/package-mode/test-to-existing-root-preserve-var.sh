@@ -442,14 +442,14 @@ case ${TMT_REBOOT_COUNT:-0} in
                 runuser -u postgres -- initdb -D /mnt/pgsql/data
                 if ! runuser -u postgres -- pg_ctl -D /mnt/pgsql/data \
                     -l /mnt/pgsql/server.log \
-                    -o "-c listen_addresses=localhost" -w start
+                    -o "-c listen_addresses=localhost -c unix_socket_directories=/tmp" -w start
                 then
                     cat /mnt/pgsql/server.log >&2
                     exit 1
                 fi
-                runuser -u postgres -- psql -v ON_ERROR_STOP=1 \
+                runuser -u postgres -- psql -h 127.0.0.1 -v ON_ERROR_STOP=1 \
                     -c "CREATE DATABASE bootc_preserve_var"
-                runuser -u postgres -- psql -v ON_ERROR_STOP=1 -d bootc_preserve_var \
+                runuser -u postgres -- psql -h 127.0.0.1 -v ON_ERROR_STOP=1 -d bootc_preserve_var \
                     -c "CREATE TABLE app_state (id integer PRIMARY KEY, value text NOT NULL); \
                         INSERT INTO app_state VALUES (1, \$\$postgres-state-preserved\$\$)"
                 runuser -u postgres -- pg_ctl -D /mnt/pgsql/data -m fast -w stop
