@@ -1,6 +1,7 @@
 //! Lib for /etc merge
 
 use fn_error_context::context;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::io::BufReader;
@@ -76,14 +77,14 @@ fn stat_eq_ignore_mtime(this: &Stat, other: &Stat) -> bool {
     return true;
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct UnmergablePaths {
     pub path: PathBuf,
     pub reason: String,
 }
 
 /// Represents the differences between two directory trees.
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Diff {
     /// Paths that exist in the current /etc but not in the pristine
     added: Vec<PathBuf>,
