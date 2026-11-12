@@ -429,6 +429,7 @@ case ${TMT_REBOOT_COUNT:-0} in
 
         # Seed a database using the new deployment's own PostgreSQL version so
         # the test also works when the guest and bootc base use different OSes.
+        install -d -m 0755 /var/lib/pgsql
         podman --remote=false run --rm \
             -v /var/lib/pgsql:/var/lib/pgsql "$target_image" \
             bash -euo pipefail -c '
