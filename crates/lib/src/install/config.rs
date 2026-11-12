@@ -132,7 +132,7 @@ pub(crate) struct InstallConfiguration {
     /// Enforce that the containers-storage stack has a non-default
     /// (i.e. not `insecureAcceptAnything`) container image signature policy.
     pub(crate) enforce_container_sigpolicy: Option<bool>,
-    /// Paths below `/var` which should not be copied by `--preserve-var`.
+    /// Additional paths below `/var` to skip when `--preserve-var` is enabled.
     pub(crate) preserve_var_skip: Option<Vec<String>>,
 }
 
