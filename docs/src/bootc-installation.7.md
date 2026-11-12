@@ -376,6 +376,14 @@ to automatically inherit root's SSH keys (which may have been injected from e.g.
 cloud instance userdata via a tool like `cloud-init`). To do this, add
 `--root-ssh-authorized-keys /target/root/.ssh/authorized_keys` to the install command.
 
+This only preserves root's **authorized keys** for inbound access; SSH host keys
+from the old `/etc/ssh` are not migrated. Provision host keys for the new system
+before rebooting, or arrange for the new system to generate them on first boot.
+If `/var/lib/cloud` is preserved, cloud-init may consider its initialization
+already complete and skip first-boot key generation. An image that relies on
+cloud-init for SSH host keys can therefore boot without usable SSH service
+credentials unless they are provisioned separately.
+
 See also the [bootc-install-to-existing-root(8)](man/bootc-install-to-existing-root.8.md)
 man page for more details.
 
