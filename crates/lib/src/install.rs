@@ -689,7 +689,12 @@ pub(crate) struct InstallToExistingRootOpts {
     pub(crate) preserve_var: bool,
 
     /// Relative paths below `/var` to leave out while preserving `/var`.
-    #[clap(long = "preserve-var-skip", value_name = "PATH")]
+    /// Requires `--preserve-var`.
+    #[clap(
+        long = "preserve-var-skip",
+        value_name = "PATH",
+        requires = "preserve_var"
+    )]
     pub(crate) preserve_var_skip: Vec<String>,
 }
 
@@ -3115,6 +3120,22 @@ fn validate_migration_backend(require_ostree_backend: bool, composefs_backend: b
     Ok(())
 }
 
+/// Resolve skip paths only for preserve-var installs. The loader is deferred
+/// so an unrelated to-existing-root install never validates these options.
+fn resolve_preserve_var_skip(
+    preserve_var: bool,
+    mut cli_skip: Vec<String>,
+    load_config_skip: impl FnOnce() -> Result<Option<Vec<String>>>,
+) -> Result<Vec<String>> {
+    if !preserve_var {
+        return Ok(Vec::new());
+    }
+    if let Some(config_skip) = load_config_skip()? {
+        cli_skip.extend(config_skip);
+    }
+    migrate::validate_exclusions(&cli_skip)
+}
+
 fn validate_preserve_var_replace(preserve_var: bool, replace: Option<ReplaceMode>) -> Result<()> {
     anyhow::ensure!(
         !(preserve_var && matches!(replace, Some(ReplaceMode::Wipe))),
@@ -3185,13 +3206,10 @@ pub(crate) async fn install_to_existing_root(opts: InstallToExistingRootOpts) ->
     let preserve_var = opts.preserve_var;
     let defer_cleanup = opts.cleanup && preserve_var;
     let root_path = std::path::PathBuf::from(opts.root_path.as_str());
-    let mut preserve_var_skip = opts.preserve_var_skip;
-    if let Some(config) = config::load_config()? {
-        if let Some(config_skip) = config.preserve_var_skip {
-            preserve_var_skip.extend(config_skip);
-        }
-    }
-    let preserve_var_skip = migrate::validate_exclusions(&preserve_var_skip)?;
+    let preserve_var_skip =
+        resolve_preserve_var_skip(preserve_var, opts.preserve_var_skip, || {
+            Ok(config::load_config()?.and_then(|config| config.preserve_var_skip))
+        })?;
     let require_ostree_backend = preserve_var;
     validate_migration_backend(
         require_ostree_backend,
@@ -3437,6 +3455,7 @@ pub(crate) async fn install_finalize(target: &Utf8Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Parser;
 
     #[test]
     fn test_composefs_opts_validate() {
@@ -3854,6 +3873,51 @@ UUID=boot-uuid /boot ext4 defaults 0 0
                 "require_ostree_backend={require_ostree_backend}, composefs_backend={composefs_backend}"
             );
         }
+    }
+
+    #[test]
+    fn preserve_var_skip_requires_preserve_var() {
+        assert!(
+            InstallToExistingRootOpts::try_parse_from(["bootc", "--preserve-var-skip", "lib/rpm"])
+                .is_err()
+        );
+        assert!(
+            InstallToExistingRootOpts::try_parse_from([
+                "bootc",
+                "--preserve-var",
+                "--preserve-var-skip",
+                "lib/rpm"
+            ])
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn preserve_var_skip_config_is_ignored_unless_preserving_var() -> Result<()> {
+        let mut config_loaded = false;
+        let ordinary = resolve_preserve_var_skip(false, Vec::new(), || {
+            config_loaded = true;
+            Ok(Some(vec!["../invalid".to_string()]))
+        })?;
+        assert!(ordinary.is_empty());
+        assert!(
+            !config_loaded,
+            "ordinary installs must not load skip config"
+        );
+
+        let error = resolve_preserve_var_skip(true, Vec::new(), || {
+            Ok(Some(vec!["../invalid".to_string()]))
+        })
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("invalid /var exclusion"));
+
+        assert_eq!(
+            resolve_preserve_var_skip(true, vec!["lib/cli".to_string()], || {
+                Ok(Some(vec!["lib/config".to_string()]))
+            })?,
+            ["lib/cli", "lib/config"]
+        );
+        Ok(())
     }
 
     #[test]
