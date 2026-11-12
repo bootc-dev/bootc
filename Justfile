@@ -236,16 +236,47 @@ test-tmt-package-mode image="centos-stream-10":
     #!/bin/bash
     set -euo pipefail
     lbi_images="{{lbi_images}}"
-    just build
-    archive_dir=$(mktemp -d -- tmt/plans/.package-mode-local.XXXXXX)
-    archive_path="$archive_dir/bootc.oci"
-    environment_file="$archive_dir/package-mode.env"
+    case "{{image}}" in
+        fedora-44)
+            image_base=quay.io/fedora/fedora-bootc:44
+            ;;
+        centos-stream-10)
+            image_base=quay.io/centos-bootc/centos-bootc:stream10
+            ;;
+        *)
+            echo "Unsupported package-mode test image: {{image}}" >&2
+            exit 1
+            ;;
+    esac
+    image_base=${BOOTC_base:-$image_base}
+    BOOTC_base="$image_base" just build
+
+    # TMT 1.69 copies the whole git root during fmf discovery. Use a small
+    # snapshot so ignored build outputs and local worktrees are never copied.
+    test_tree=
     cleanup() {
-        rm -rf -- "$archive_dir"
+        if [[ -n "$test_tree" ]]; then
+            rm -rf -- "$test_tree"
+        fi
     }
     trap cleanup EXIT
-    trap 'cleanup; exit 130' INT
-    trap 'cleanup; exit 143' TERM
+    trap 'exit 129' HUP
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    test_tree=$(mktemp -d -- "${TMPDIR:-/tmp}/bootc-tmt-package-mode.XXXXXX")
+    source_tree=$(git rev-parse --show-toplevel)
+    rsync -a --delete \
+        --exclude='/.git' \
+        --exclude='/target' \
+        --exclude='/.worktrees' \
+        --exclude='.package-mode-local.*' \
+        "$source_tree/" "$test_tree/"
+    git -C "$test_tree" init -q
+
+    archive_dir=$(mktemp -d -- "$test_tree/tmt/plans/.package-mode-local.XXXXXX")
+    archive_path="$archive_dir/bootc.oci"
+    archive_relative="${archive_dir#"$test_tree/"}/bootc.oci"
+    environment_file="$archive_dir/package-mode.env"
     if [[ -e "$archive_path" ]]; then
         echo "Refusing to overwrite existing archive: $archive_path" >&2
         exit 1
@@ -259,14 +290,14 @@ test-tmt-package-mode image="centos-stream-10":
     # The test consumes comma-separated refs, and tmt 1.69 supports these in
     # a dotenv environment file without splitting the value on whitespace.
     printf 'PACKAGE_MODE_LBI_IMAGES=%s\n' "${lbi_images// /,}" > "$environment_file"
-    tmt \
+    tmt --root "$test_tree" \
         --context=running_env=packit \
         --context=package_source=local \
         --context="test_disk_image={{image}}" \
         run --workdir-root "$workdir_root" \
         --environment-file "$environment_file" \
         --environment "PACKAGE_MODE_IMAGE_NAME={{base_img}}" \
-        --environment "PACKAGE_MODE_IMAGE_ARCHIVE=$archive_path" \
+        --environment "PACKAGE_MODE_IMAGE_ARCHIVE=$archive_relative" \
         --environment "PACKAGE_MODE_TMT_WORKDIR_ROOT=$workdir_root" \
         plans --name '^/tmt/plans/package-mode$'
 
