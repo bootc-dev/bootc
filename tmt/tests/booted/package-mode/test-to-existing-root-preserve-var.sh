@@ -18,6 +18,97 @@ tmt_artifacts_parent=/var/ARTIFACTS
 tmt_test_data_sentinel_name=workdir-persistence-sentinel
 tmt_test_data_post_reboot_marker_name=post-reboot-marker
 
+is_always_excluded_var_path() {
+    case $1 in
+        /var/tmp|/var/tmp/*|/var/cache|/var/cache/*|/var/log/journal|/var/log/journal/*|/var/lib/containers|/var/lib/containers/*)
+            return 0
+            ;;
+    esac
+    return 1
+}
+
+verify_tmt_workdir_directory() {
+    local run_dir=$1
+    local canonical_run_dir=$2
+
+    if [[ ! -d $run_dir || -L $run_dir ]]; then
+        printf 'TMT workdir is missing or not a real directory: %s\n' "$run_dir" >&2
+        return 1
+    fi
+    if is_always_excluded_var_path "$canonical_run_dir"; then
+        printf 'TMT workdir is excluded from preserve-var: %s\n' \
+            "$canonical_run_dir" >&2
+        return 1
+    fi
+}
+
+get_trap_action() {
+    local signal=$1
+    local trap_definition
+
+    trap_definition=$(trap -p "$signal")
+    if [[ -n $trap_definition ]]; then
+        eval "set -- $trap_definition"
+        printf '%s' "$3"
+    fi
+}
+
+restore_signal_trap() {
+    local signal=$1
+    local previous_signal_trap=$2
+
+    if [[ -n $previous_signal_trap ]]; then
+        trap -- "$previous_signal_trap" "$signal"
+    else
+        trap - "$signal"
+    fi
+}
+
+restore_log_freeze_signal_traps() {
+    restore_signal_trap HUP "${previous_hup_trap:-}"
+    restore_signal_trap INT "${previous_int_trap:-}"
+    restore_signal_trap TERM "${previous_term_trap:-}"
+}
+
+thaw_log_filesystem() {
+    if (( log_fs_frozen )); then
+        fsfreeze -u /var/log || return 1
+        log_fs_frozen=0
+        restore_log_freeze_signal_traps
+    fi
+}
+
+cleanup_log_freeze() {
+    local status=$?
+
+    trap - EXIT
+    if ! thaw_log_filesystem; then
+        printf 'Failed to thaw /var/log during cleanup\n' >&2
+        if (( status == 0 )); then
+            status=1
+        fi
+    fi
+    if [[ -n $previous_exit_trap ]]; then
+        eval "$previous_exit_trap" || :
+    fi
+    exit "$status"
+}
+
+handle_log_freeze_signal() {
+    local status=$1
+    local signal=$2
+    local previous_signal_trap=$3
+
+    trap - "$signal"
+    if ! thaw_log_filesystem; then
+        printf 'Failed to thaw /var/log after %s\n' "$signal" >&2
+    fi
+    if [[ -n $previous_signal_trap ]]; then
+        eval "$previous_signal_trap" || :
+    fi
+    exit "$status"
+}
+
 get_tmt_run_dir() {
     local plan_data=${TMT_PLAN_DATA:-}
     local run_dir
@@ -50,13 +141,11 @@ get_tmt_run_dir() {
                 return 1
                 ;;
         esac
-        case $resolved_workdir_root in
-            /var/tmp|/var/tmp/*|/var/cache|/var/cache/*|/var/log/journal|/var/log/journal/*|/var/lib/containers|/var/lib/containers/*)
-                printf 'TMT workdir root is excluded from preserve-var: %s\n' \
-                    "$resolved_workdir_root" >&2
-                return 1
-                ;;
-        esac
+        if is_always_excluded_var_path "$resolved_workdir_root"; then
+            printf 'TMT workdir root is excluded from preserve-var: %s\n' \
+                "$resolved_workdir_root" >&2
+            return 1
+        fi
         case $run_dir in
             "$workdir_root"/run-*)
                 run_id=${run_dir#"$workdir_root"/}
@@ -84,6 +173,7 @@ get_tmt_run_dir() {
                 "$run_dir" "$resolved_run_dir" >&2
             return 1
         fi
+        verify_tmt_workdir_directory "$run_dir" "$resolved_run_dir" || return 1
         resolved_plan_data=$(realpath -e -- "$plan_data") || {
             printf 'TMT_PLAN_DATA does not exist: %s\n' "$plan_data" >&2
             return 1
@@ -98,6 +188,12 @@ get_tmt_run_dir() {
             printf 'TMT artifact workdir does not exist: %s\n' "$run_dir" >&2
             return 1
         }
+        verify_tmt_workdir_directory "$run_dir" "$resolved_run_dir" || return 1
+        if [[ $resolved_run_dir != "$run_dir" ]]; then
+            printf 'TMT artifact workdir must be canonical (got %q -> %q)\n' \
+                "$run_dir" "$resolved_run_dir" >&2
+            return 1
+        fi
         case $resolved_run_dir in
             /var/*) ;;
             *)
@@ -253,6 +349,15 @@ case ${TMT_REBOOT_COUNT:-0} in
         # Keep the backing image for the separate /var/log filesystem stable
         # while preserve-var copies its image file from /var/lib.
         fsfreeze -f /var/log
+        log_fs_frozen=1
+        previous_exit_trap=$(get_trap_action EXIT)
+        previous_hup_trap=$(get_trap_action HUP)
+        previous_int_trap=$(get_trap_action INT)
+        previous_term_trap=$(get_trap_action TERM)
+        trap cleanup_log_freeze EXIT
+        trap 'handle_log_freeze_signal 129 HUP "$previous_hup_trap"' HUP
+        trap 'handle_log_freeze_signal 130 INT "$previous_int_trap"' INT
+        trap 'handle_log_freeze_signal 143 TERM "$previous_term_trap"' TERM
         if ! podman --remote=false run --rm --privileged --pid=host --user=root:root \
             -v /dev:/dev \
             -v /:/target \
@@ -261,10 +366,9 @@ case ${TMT_REBOOT_COUNT:-0} in
             --security-opt label=type:unconfined_t \
             "$target_image" \
             bootc install to-existing-root --preserve-var --acknowledge-destructive; then
-            fsfreeze -u /var/log
             exit 1
         fi
-        fsfreeze -u /var/log
+        thaw_log_filesystem
 
         # Find the generated stateroot by the copied bind-source sentinel.
         new_var=
