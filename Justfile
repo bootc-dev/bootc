@@ -297,11 +297,10 @@ test-tmt-package-mode image="centos-stream-10":
         exit 1
     fi
     podman save --format oci-archive --output "$archive_path" {{base_img}}
-    # TMT syncs its workdir to the same absolute guest path. On bootc guests,
-    # /home resolves to /var/home, which preserve-var carries across migration.
+    # Keep TMT's lexical controller path under HOME without sudo or symlinks.
+    # The guest test stages its full /home run directory into preserved /var/home.
     workdir_root="$HOME/.cache/bootc-tmt-workdirs"
     mkdir -p -- "$workdir_root"
-    workdir_root=$(realpath -e -- "$workdir_root")
     # The test consumes comma-separated refs, and tmt 1.69 supports these in
     # a dotenv environment file without splitting the value on whitespace.
     printf 'PACKAGE_MODE_LBI_IMAGES=%s\n' "${lbi_images// /,}" > "$environment_file"

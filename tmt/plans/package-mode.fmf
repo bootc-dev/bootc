@@ -19,7 +19,10 @@ prepare:
       - jq
       - e2fsprogs
       - util-linux
+      - grubby
+      - attr
       - bootc
+      - policycoreutils
     when: package_source == local
   # Packit build-only preparation needs the full integration toolchain.
   - how: install
@@ -40,6 +43,9 @@ prepare:
       - dosfstools
       - e2fsprogs
       - util-linux
+      - grubby
+      - attr
+      - policycoreutils
     when: package_source == artifacts
   # Reject missing/unknown sources before any mode-specific setup runs.
   - how: shell
@@ -145,7 +151,7 @@ prepare:
       trap 'rm -rf -- "$workdir"' EXIT
       cat > "$workdir/Containerfile" <<EOF
       FROM $image_name
-      RUN dnf -y install openssh-server postgresql-server && \
+      RUN dnf -y install openssh-server postgresql-server policycoreutils attr && \
           systemctl --root=/ enable postgresql.service sshd.service && \
           bind_unit='var-lib-bootc\x2dtmt\x2dpreserve\x2dvar\x2dbind-target.mount' && \
           tmpfs_unit='var-lib-bootc\x2dtmt\x2dpreserve\x2dvar-empty_tmpfs.mount' && \
