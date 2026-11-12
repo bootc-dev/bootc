@@ -200,6 +200,8 @@ execute:
   how: tmt
 discover:
   how: fmf
-  prune: true
+  # Keep the plan-local OCI archive in the tree synced to the guest. The
+  # package-mode runner uses a small sanitized snapshot, so pruning is not needed.
+  prune: false
   test:
     - /tmt/tests/test-50-to-existing-root-preserve-var
