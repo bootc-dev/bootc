@@ -63,7 +63,7 @@ mod mountinfo;
 
 use std::path::{Component, Path};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeSet, HashMap},
     ffi::OsStr,
     os::fd::{AsFd, AsRawFd},
     path::PathBuf,
@@ -685,16 +685,45 @@ fn logical_var_path(relative: &Path) -> PathBuf {
     Path::new(VAR_LOGICAL_ROOT).join(relative)
 }
 
-fn lookup_and_apply_label(
+type StagedLabels = HashMap<PathBuf, Vec<u8>>;
+type RegularFileLabels = HashMap<(libc::dev_t, libc::ino_t), (PathBuf, Vec<u8>)>;
+
+fn collect_label(
     labeler: &dyn StagedLabeler,
     logical_path: &Path,
     mode: u32,
-    target: StagedLabelTarget<'_>,
+    regular_file_id: Option<(libc::dev_t, libc::ino_t)>,
+    labels: &mut StagedLabels,
+    regular_file_labels: &mut RegularFileLabels,
 ) -> Result<()> {
     let label = labeler
         .lookup(logical_path, mode)?
         .with_context(|| format!("No SELinux policy label for {logical_path:?}"))?;
-    labeler.apply(logical_path, target, &label)
+
+    if let Some(file_id) = regular_file_id {
+        if let Some((alias_path, alias_label)) = regular_file_labels.get(&file_id) {
+            anyhow::ensure!(
+                alias_label == &label,
+                "Hardlinked staged regular files {alias_path:?} and {logical_path:?} resolve to different SELinux labels"
+            );
+        } else {
+            regular_file_labels.insert(file_id, (logical_path.to_owned(), label.clone()));
+        }
+    }
+    labels.insert(logical_path.to_owned(), label);
+    Ok(())
+}
+
+fn apply_staged_label(
+    labeler: &dyn StagedLabeler,
+    labels: &StagedLabels,
+    logical_path: &Path,
+    target: StagedLabelTarget<'_>,
+) -> Result<()> {
+    let label = labels
+        .get(logical_path)
+        .with_context(|| format!("No collected SELinux label for {logical_path:?}"))?;
+    labeler.apply(logical_path, target, label)
 }
 
 /// Relabel only staged entries. Logical lookup paths are composed from the
@@ -707,9 +736,11 @@ fn relabel_staged_names(
     mountpoints: &BTreeSet<PathBuf>,
 ) -> Result<()> {
     let staging_device = staging.metadata(".")?.dev();
+    let mut labels = StagedLabels::new();
+    let mut regular_file_labels = RegularFileLabels::new();
     for name in names {
         let relative_path = relative_dir.join(name);
-        relabel_staged_entry(
+        collect_staged_entry_labels(
             labeler,
             staging,
             name,
@@ -717,16 +748,30 @@ fn relabel_staged_names(
             mountpoints,
             Some(staging_device),
             false,
+            &mut labels,
+            &mut regular_file_labels,
+        )?;
+    }
+    for name in names {
+        let relative_path = relative_dir.join(name);
+        apply_staged_entry_labels(
+            labeler,
+            staging,
+            name,
+            &logical_var_path(&relative_path),
+            mountpoints,
+            Some(staging_device),
+            false,
+            &labels,
         )?;
     }
     Ok(())
 }
 
-/// Relabel one staged inode and, for same-device directories, recursively
-/// relabel its staged children without following symlinks. Device changes and
-/// known nested-mount placeholders are labeled at the mount root but never
-/// traversed.
-fn relabel_staged_entry(
+/// Look up labels for staged entries without applying them. Regular-file inode
+/// identities are grouped across this staging tree so aliases must agree
+/// before any labels are changed.
+fn collect_staged_entry_labels(
     labeler: &dyn StagedLabeler,
     parent: &CapStdDir,
     name: &OsStr,
@@ -734,6 +779,108 @@ fn relabel_staged_entry(
     mountpoints: &BTreeSet<PathBuf>,
     root_device: Option<libc::dev_t>,
     stop_at_entry: bool,
+    labels: &mut StagedLabels,
+    regular_file_labels: &mut RegularFileLabels,
+) -> Result<()> {
+    use rustix::fs::{Mode, OFlags, openat};
+
+    let metadata = parent
+        .symlink_metadata(name)
+        .with_context(|| format!("Inspecting staged /var entry {logical_path:?} before relabel"))?;
+    if metadata.is_dir() {
+        let directory = open_child_dir_nofollow(parent, name)
+            .with_context(|| format!("Opening staged directory {logical_path:?}"))?;
+        let metadata = directory.metadata(".")?;
+        let device = root_device.unwrap_or_else(|| metadata.dev());
+        collect_label(
+            labeler,
+            logical_path,
+            metadata.mode(),
+            None,
+            labels,
+            regular_file_labels,
+        )?;
+
+        let relative = logical_path
+            .strip_prefix(VAR_LOGICAL_ROOT)
+            .with_context(|| format!("Invalid logical migration path {logical_path:?}"))?;
+        if stop_at_entry || metadata.dev() != device || mountpoints.contains(relative) {
+            return Ok(());
+        }
+        for entry in directory.read_dir(".")? {
+            let entry = entry?;
+            let child_name = entry.file_name();
+            collect_staged_entry_labels(
+                labeler,
+                &directory,
+                &child_name,
+                &logical_path.join(&child_name),
+                mountpoints,
+                Some(device),
+                false,
+                labels,
+                regular_file_labels,
+            )?;
+        }
+        return Ok(());
+    }
+
+    if metadata.is_symlink() {
+        return collect_label(
+            labeler,
+            logical_path,
+            metadata.mode(),
+            None,
+            labels,
+            regular_file_labels,
+        );
+    }
+
+    if metadata.is_file() {
+        let fd = openat(
+            parent.as_filelike_view::<std::fs::File>().as_fd(),
+            name,
+            OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::RDONLY,
+            Mode::empty(),
+        )
+        .with_context(|| format!("Opening staged file {logical_path:?} without following links"))?;
+        let stat = rustix::fs::fstat(&fd)?;
+        anyhow::ensure!(
+            stat.st_mode & libc::S_IFMT == libc::S_IFREG,
+            "Staged entry {logical_path:?} changed type before relabel"
+        );
+        return collect_label(
+            labeler,
+            logical_path,
+            stat.st_mode,
+            Some((stat.st_dev, stat.st_ino)),
+            labels,
+            regular_file_labels,
+        );
+    }
+
+    collect_label(
+        labeler,
+        logical_path,
+        metadata.mode(),
+        None,
+        labels,
+        regular_file_labels,
+    )
+}
+
+/// Apply previously collected labels to staged entries without following
+/// symlinks. This is intentionally a separate walk from label lookup so all
+/// hardlink aliases can be checked before the first inode is relabeled.
+fn apply_staged_entry_labels(
+    labeler: &dyn StagedLabeler,
+    parent: &CapStdDir,
+    name: &OsStr,
+    logical_path: &Path,
+    mountpoints: &BTreeSet<PathBuf>,
+    root_device: Option<libc::dev_t>,
+    stop_at_entry: bool,
+    labels: &StagedLabels,
 ) -> Result<()> {
     use rustix::fs::{Mode, OFlags, openat};
 
@@ -746,10 +893,10 @@ fn relabel_staged_entry(
         let metadata = directory.metadata(".")?;
         let device = root_device.unwrap_or_else(|| metadata.dev());
         let fd = directory.as_filelike_view::<std::fs::File>();
-        lookup_and_apply_label(
+        apply_staged_label(
             labeler,
+            labels,
             logical_path,
-            metadata.mode(),
             StagedLabelTarget::Fd(fd.as_fd()),
         )?;
 
@@ -762,7 +909,7 @@ fn relabel_staged_entry(
         for entry in directory.read_dir(".")? {
             let entry = entry?;
             let child_name = entry.file_name();
-            relabel_staged_entry(
+            apply_staged_entry_labels(
                 labeler,
                 &directory,
                 &child_name,
@@ -770,16 +917,17 @@ fn relabel_staged_entry(
                 mountpoints,
                 Some(device),
                 false,
+                labels,
             )?;
         }
         return Ok(());
     }
 
     if metadata.is_symlink() {
-        return lookup_and_apply_label(
+        return apply_staged_label(
             labeler,
+            labels,
             logical_path,
-            metadata.mode(),
             StagedLabelTarget::NoFollowPath(parent, name),
         );
     }
@@ -797,19 +945,53 @@ fn relabel_staged_entry(
             stat.st_mode & libc::S_IFMT == libc::S_IFREG,
             "Staged entry {logical_path:?} changed type before relabel"
         );
-        return lookup_and_apply_label(
+        return apply_staged_label(
             labeler,
+            labels,
             logical_path,
-            stat.st_mode,
             StagedLabelTarget::Fd(fd.as_fd()),
         );
     }
 
-    lookup_and_apply_label(
+    apply_staged_label(
         labeler,
+        labels,
         logical_path,
-        metadata.mode(),
         StagedLabelTarget::NoFollowPath(parent, name),
+    )
+}
+
+fn relabel_staged_entry(
+    labeler: &dyn StagedLabeler,
+    parent: &CapStdDir,
+    name: &OsStr,
+    logical_path: &Path,
+    mountpoints: &BTreeSet<PathBuf>,
+    root_device: Option<libc::dev_t>,
+    stop_at_entry: bool,
+) -> Result<()> {
+    let mut labels = StagedLabels::new();
+    let mut regular_file_labels = RegularFileLabels::new();
+    collect_staged_entry_labels(
+        labeler,
+        parent,
+        name,
+        logical_path,
+        mountpoints,
+        root_device,
+        stop_at_entry,
+        &mut labels,
+        &mut regular_file_labels,
+    )?;
+    apply_staged_entry_labels(
+        labeler,
+        parent,
+        name,
+        logical_path,
+        mountpoints,
+        root_device,
+        stop_at_entry,
+        &labels,
     )
 }
 
@@ -911,7 +1093,7 @@ fn copy_filtered_directory_staged(
             mountpoints,
             reflink,
             true,
-            labeler,
+            None,
             cp_program,
         )?;
         if let Some(labeler) = labeler {
@@ -1407,6 +1589,7 @@ mod tests {
         applied: Mutex<Vec<PathBuf>>,
         fail_lookup: bool,
         fail_apply: bool,
+        different_labels: bool,
     }
 
     impl StagedLabeler for FakeLabeler {
@@ -1417,7 +1600,12 @@ mod tests {
                 "policy lookup used non-logical path {logical_path:?}"
             );
             anyhow::ensure!(!self.fail_lookup, "injected SELinux policy lookup failure");
-            Ok(Some(b"test-label".to_vec()))
+            let label = if self.different_labels && logical_path == Path::new("/var/alias-b") {
+                b"different-label".to_vec()
+            } else {
+                b"test-label".to_vec()
+            };
+            Ok(Some(label))
         }
 
         fn apply(
@@ -1588,6 +1776,54 @@ mod tests {
                 assert_eq!(fs::read_dir(&dst_path)?.count(), 0);
             }
         }
+        Ok(())
+    }
+
+    #[test]
+    fn hardlinked_paths_require_matching_labels_before_publication() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let src_path = temp.path().join("src");
+        fs::create_dir(&src_path)?;
+        fs::write(src_path.join("alias-a"), b"shared state")?;
+        fs::hard_link(src_path.join("alias-a"), src_path.join("alias-b"))?;
+        let source = cap_dir(&src_path);
+
+        let mismatch_path = temp.path().join("dst-mismatch");
+        fs::create_dir(&mismatch_path)?;
+        let mismatch_destination = cap_dir(&mismatch_path);
+        let mismatch_labeler = FakeLabeler {
+            different_labels: true,
+            ..FakeLabeler::default()
+        };
+        let error = preserve_var_copy_mounts_labeled(
+            &source,
+            &mismatch_destination,
+            &[],
+            &BTreeSet::new(),
+            Some(&mismatch_labeler),
+        )
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("resolve to different SELinux labels"));
+        assert!(mismatch_labeler.applied.lock().unwrap().is_empty());
+        assert_eq!(fs::read_dir(&mismatch_path)?.count(), 0);
+
+        let matching_path = temp.path().join("dst-matching");
+        fs::create_dir(&matching_path)?;
+        let matching_destination = cap_dir(&matching_path);
+        let matching_labeler = FakeLabeler::default();
+        preserve_var_copy_mounts_labeled(
+            &source,
+            &matching_destination,
+            &[],
+            &BTreeSet::new(),
+            Some(&matching_labeler),
+        )?;
+        let alias_a = fs::metadata(matching_path.join("alias-a"))?;
+        let alias_b = fs::metadata(matching_path.join("alias-b"))?;
+        assert_eq!(alias_a.ino(), alias_b.ino());
+        let applied = matching_labeler.applied.lock().unwrap();
+        assert!(applied.contains(&PathBuf::from("/var/alias-a")));
+        assert!(applied.contains(&PathBuf::from("/var/alias-b")));
         Ok(())
     }
 
