@@ -23,6 +23,34 @@ freeze_may_be_active=0
 persistent_tmt_root=
 persistent_run_dir=
 
+boot_config_manifest() {
+    local relative_path
+    local digest
+
+    while IFS= read -r -d '' relative_path; do
+        digest=$(sha256sum -- "/boot/$relative_path")
+        digest=${digest%% *}
+        printf '%s  %s\n' "$digest" "$relative_path"
+    done < <(
+        {
+            find /boot/loader/entries -maxdepth 1 \
+                \( -type f -o -type l \) -name '*.conf' \
+                -printf 'loader/entries/%f\0'
+            for relative_path in grub2/grub.cfg grub2/grubenv; do
+                if [[ -f /boot/$relative_path ]]; then
+                    printf '%s\0' "$relative_path"
+                fi
+            done
+            if [[ -d /boot/efi/EFI/fedora ]]; then
+                find /boot/efi/EFI/fedora -maxdepth 1 \
+                    \( -type f -o -type l \) \
+                    \( -name grub.cfg -o -iname '*.efi' \) \
+                    -printf 'efi/EFI/fedora/%f\0'
+            fi
+        } | LC_ALL=C sort -z -u
+    )
+}
+
 is_always_excluded_var_path() {
     case $1 in
         /var/tmp|/var/tmp/*|/var/cache|/var/cache/*|/var/log/journal|/var/log/journal/*|/var/lib/containers|/var/lib/containers/*)
@@ -485,9 +513,20 @@ case ${TMT_REBOOT_COUNT:-0} in
         : > "$preflight_mountpoint"
         mount --bind /dev/null "$preflight_mountpoint"
 
+        expected_bls_entry=$(find /boot/loader/entries -maxdepth 1 -type f \
+            -name 'ostree-*.conf' -print -quit)
+        if [[ -z $expected_bls_entry ]]; then
+            printf 'No expected OSTree BLS entry found under /boot/loader/entries\n' >&2
+            exit 1
+        fi
+        if [[ ! -f /boot/grub2/grub.cfg ]]; then
+            printf 'Expected GRUB configuration is missing: /boot/grub2/grub.cfg\n' >&2
+            exit 1
+        fi
+
         boot_snapshot=$(mktemp /run/boot-config-before.XXXXXX)
         boot_snapshot_after=$(mktemp /run/boot-config-after.XXXXXX)
-        tar --sort=name --numeric-owner --xattrs --acls -cf "$boot_snapshot" -C /boot .
+        boot_config_manifest > "$boot_snapshot"
         if podman --remote=false run --rm --privileged --pid=host --user=root:root \
             -v /dev:/dev \
             -v /:/target \
@@ -500,10 +539,14 @@ case ${TMT_REBOOT_COUNT:-0} in
             printf 'preserve-var unexpectedly accepted the special-file mountpoint\n' >&2
             exit 1
         fi
+        boot_config_manifest > "$boot_snapshot_after"
+        if ! diff -u --label 'boot manifest before preflight' \
+            --label 'boot manifest after preflight' "$boot_snapshot" "$boot_snapshot_after"; then
+            printf 'Boot-critical file contents or paths changed during rejected preflight\n' >&2
+            exit 1
+        fi
         grep -F "$preflight_mountpoint is a mountpoint that is neither a directory nor a file" \
             /run/preserve-var-preflight.log
-        tar --sort=name --numeric-owner --xattrs --acls -cf "$boot_snapshot_after" -C /boot .
-        cmp "$boot_snapshot" "$boot_snapshot_after"
         umount "$preflight_mountpoint"
         rm -f "$preflight_mountpoint" "$boot_snapshot" "$boot_snapshot_after"
 
