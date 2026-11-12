@@ -433,6 +433,12 @@ case ${TMT_REBOOT_COUNT:-0} in
         podman --remote=false run --rm \
             -v /var/lib/pgsql:/var/lib/pgsql "$target_image" \
             bash -euo pipefail -c '
+                postgres_uid=$(id -u postgres)
+                postgres_gid=$(id -g postgres)
+                chown "$postgres_uid:$postgres_gid" /var/lib/pgsql
+                chmod 0700 /var/lib/pgsql
+                test "$(stat -c %u:%g /var/lib/pgsql)" = "$postgres_uid:$postgres_gid"
+                test "$(stat -c %a /var/lib/pgsql)" = 700
                 postgresql-setup --initdb
                 runuser -u postgres -- pg_ctl -D /var/lib/pgsql/data \
                     -o "-c listen_addresses=localhost" -w start
