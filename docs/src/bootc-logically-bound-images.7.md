@@ -77,20 +77,30 @@ This writes the changed quadlet files to `/run/containers/systemd/`, which
 podman gives precedence over `/etc` and `/usr`, reloads systemd and restarts
 the affected `.container` units (removed units are stopped). Pass `--dry-run`
 to see what would change, or `--no-restart` to write the definitions without
-touching any units; a later plain invocation restarts the units still
-pending, as does re-running after a failed restart.
+touching any units; a later plain invocation stops and restarts the units
+still pending, as does re-running after a failed stop or restart.
 
 If the staged deployment contains any other change, the command fails and
 lists the out-of-scope paths; a reboot is required to apply it. Note that a
 locally modified quadlet in `/etc/containers/systemd` that also changed in
-the image is reported this way, since the local copy wins in `/etc`.
+the image is reported this way, since the local copy wins in `/etc`. For the
+same reason, a changed bound quadlet in `/usr/share/containers/systemd` that
+a quadlet of the same name in `/etc/containers/systemd` overrides is refused,
+as is a change that would replace or remove a quadlet in
+`/run/containers/systemd/` that bootc did not write.
 
 Because `/run` is transient, the override disappears on the next boot, at
 which point the staged deployment's own content applies. (A soft reboot
-preserves `/run`; the override is cleared when one is prepared.) The applied
-state is shown in `bootc status` and recorded in `/run/bootc/apply-live/`;
-images recorded there are protected from garbage collection until reboot,
-even if the staged deployment is discarded (for example by `bootc rollback`).
+preserves `/run`; the override is cleared when one is prepared.) The quadlets
+applied this way are shown in `bootc status`. Each quadlet written to
+`/run/containers/systemd/` carries a leading marker comment (checksum and
+whether its unit still needs a restart). Small flat lists under
+`/run/bootc/apply-live/` protect the staged images from garbage collection
+until reboot, even if the staged deployment is discarded (for example by
+`bootc rollback`), and record the units still to be stopped (removed or
+renamed units) or restarted (units reverting to the booted definition), as
+well as the units that were stopped, which a later invocation starts again
+if the staged deployment then defines them once more.
 
 Limitations: only the `.container` or `.image` file referenced from
 `bound-images.d` is applied. Quadlet drop-ins (`*.container.d/`) and other

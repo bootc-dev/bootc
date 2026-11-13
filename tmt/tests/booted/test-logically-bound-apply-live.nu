@@ -16,6 +16,12 @@
 # <verify apply-live refuses>
 # <reboot>
 # <verify the /run override is gone and v2 is booted>
+# bootc upgrade to an image with only an unrelated change
+# <verify apply-live refuses>
+# bootc upgrade to an image that removes the bound .container
+# <verify apply-live stops the unit>
+# bootc upgrade to an image with the booted definition again
+# <verify apply-live starts the unit again>
 
 use std assert
 use tap.nu
@@ -177,7 +183,56 @@ def third_boot [] {
     assert (open $quadlet | str contains $image_v2)
     systemctl is-active $unit
     assert equal (running_image) $image_v2
+
+    # Keep the booted image as the base for the images derived below
+    podman tag localhost/bootc-lbi-live localhost/bootc-lbi-live-base
+
+    # A staged deployment whose only change is out of scope is refused, even
+    # though it has no bound image changes at all
+    print "bootc upgrade with only an out-of-scope change"
+    derive_image "RUN echo other > /usr/share/apply-live-other.txt"
+    bootc upgrade
+    let r = do { bootc apply-live bound-images } | complete
+    print $r.stderr
+    assert not equal $r.exit_code 0
+    assert ($r.stderr | str contains "/usr/share/apply-live-other.txt")
+
+    # Removing the bound container stops its unit, though no override is
+    # written for it
+    print "bootc upgrade removing the bound container"
+    derive_image $"RUN rm /usr/lib/bootc/bound-images.d/lbi-sleeper.container ($quadlet)"
+    bootc upgrade
+    let out = bootc apply-live bound-images --no-restart
+    print $out
+    assert ($out | str contains $"removed: ($image_v2) \(($unit)\)")
+    systemctl is-active $unit
+    let out = bootc apply-live bound-images
+    print $out
+    assert ($out | str contains $"stop pending: ($unit)")
+    let r = do { systemctl is-active $unit } | complete
+    assert not equal $r.exit_code 0
+    let out = bootc apply-live bound-images
+    assert ($out | str contains "already applied")
+
+    # Staging the booted definition again starts the unit the removal stopped
+    print "bootc upgrade restoring the bound container"
+    derive_image "LABEL apply-live-restore=1"
+    bootc upgrade
+    let out = bootc apply-live bound-images
+    print $out
+    assert ($out | str contains $"restart: ($unit)")
+    systemctl is-active $unit
+    assert equal (running_image) $image_v2
     tap ok
+}
+
+# Build localhost/bootc-lbi-live from the image booted in the third boot plus
+# one Dockerfile instruction.
+def derive_image [instruction] {
+    let td = mktemp -d
+    cd $td
+    $"FROM localhost/bootc-lbi-live-base\n($instruction)\n" | save Dockerfile
+    podman build -t localhost/bootc-lbi-live .
 }
 
 def main [] {
