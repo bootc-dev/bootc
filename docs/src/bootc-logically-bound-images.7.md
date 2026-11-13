@@ -91,8 +91,8 @@ as is a change that would replace or remove a quadlet in
 
 Because `/run` is transient, the override disappears on the next boot, at
 which point the staged deployment's own content applies. (A soft reboot
-preserves `/run`; the override is cleared when one is prepared.) The quadlets
-applied this way are shown in `bootc status`. Each quadlet written to
+preserves `/run`; the override is cleared at the reboot handoff with
+`--apply`, not when soft-reboot is merely prepared.) Each quadlet written to
 `/run/containers/systemd/` carries a leading marker comment (checksum and
 whether its unit still needs a restart). Small flat lists under
 `/run/bootc/apply-live/` protect the staged images from garbage collection

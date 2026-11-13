@@ -20,8 +20,8 @@
 //! Because `/run` is transient, the override disappears on the next boot,
 //! at which point the staged deployment's own `/usr` content applies and
 //! the system converges without any further action. (A soft reboot
-//! preserves `/run`, so the override is explicitly cleared when one is
-//! prepared.)
+//! preserves `/run`, so the override is cleared at the reboot handoff
+//! with `--apply`, not when soft-reboot is merely prepared.)
 //!
 //! Rather than a separate state file, each quadlet written to
 //! `/run/containers/systemd/` carries its own state as a leading comment
@@ -716,9 +716,10 @@ pub(crate) fn status_from_host() -> Result<Option<LiveBoundImages>> {
     }))
 }
 
-/// Remove any live-applied bound image overrides and state. This is used when
-/// preparing a soft reboot, which preserves `/run` but must boot into the
-/// target deployment's own definitions.
+/// Remove any live-applied bound image overrides and state. Soft reboot
+/// preserves `/run`, so call this at the reboot handoff (with `--apply`),
+/// not when soft-reboot is only prepared — otherwise live containers lose
+/// their overrides and GC protection while still running.
 #[context("Clearing live bound image state")]
 pub(crate) fn clear_state_from_host() -> Result<()> {
     let rootfs = Dir::open_ambient_dir("/", cap_std::ambient_authority()).context("Opening /")?;
