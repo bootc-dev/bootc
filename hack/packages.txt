@@ -1,6 +1,5 @@
 # Needed by tmt
 rsync
-cloud-init
 /usr/bin/flock
 /usr/bin/awk
 # Needed by tmt avc check
