@@ -60,6 +60,33 @@ fn assert_err_contains<T>(r: Result<T>, s: impl AsRef<str>) {
     }
 }
 
+/// Verify that a commit's root directory mode/uid/gid matches `/usr`.
+fn assert_root_dirmeta_matches_usr(repo: &ostree::Repo, commit: &str) {
+    let root = repo.read_commit(commit, gio::Cancellable::NONE).unwrap().0;
+    let root = root.downcast::<ostree::RepoFile>().unwrap();
+    root.ensure_resolved().unwrap();
+
+    let usr = root.resolve_relative_path("usr");
+    let usr = usr.downcast::<ostree::RepoFile>().unwrap();
+    usr.ensure_resolved().unwrap();
+
+    let query = |f: &ostree::RepoFile| {
+        let info = f
+            .query_info(
+                "unix::mode,unix::uid,unix::gid",
+                gio::FileQueryInfoFlags::NOFOLLOW_SYMLINKS,
+                gio::Cancellable::NONE,
+            )
+            .unwrap();
+        (
+            info.attribute_uint32("unix::mode"),
+            info.attribute_uint32("unix::uid"),
+            info.attribute_uint32("unix::gid"),
+        )
+    };
+    assert_eq!(query(&root), query(&usr), "root dirmeta should match /usr");
+}
+
 static TEST_REGISTRY: LazyLock<String> =
     LazyLock::new(|| match std::env::var_os("TEST_REGISTRY") {
         Some(t) => t.to_str().unwrap().to_owned(),
@@ -709,6 +736,7 @@ async fn test_export_as_container_nonderived() -> Result<()> {
     let reimported = fixture.must_import(&dest).await?;
     let reimport_ls = fixture::ostree_ls(fixture.destrepo(), &reimported.merge_commit).unwrap();
     similar_asserts::assert_eq!(initimport_ls, reimport_ls);
+    assert_root_dirmeta_matches_usr(fixture.destrepo(), &reimported.merge_commit);
     Ok(())
 }
 
@@ -1021,6 +1049,85 @@ async fn test_export_etc_remapping() -> Result<()> {
         "Did not expect /usr/etc/export-test.conf in exported image"
     );
 
+    Ok(())
+}
+
+/// Verify that a derived layer that changes `/usr` mode (e.g. `RUN chmod 0555 /usr`)
+/// is preserved through the merge commit, even when a later layer only
+/// implies `/usr` by adding a file under it.
+#[tokio::test]
+async fn test_derived_layer_usr_mode() -> Result<()> {
+    if !check_skopeo() {
+        return Ok(());
+    }
+    let fixture = Fixture::new_v1()?;
+    let src_imgref = fixture.export_container().await.unwrap().0;
+
+    // Build a derived image with a layer that changes /usr to mode 0555.
+    let derived_path = &fixture.path.join("derived-usr-mode.oci");
+    oci_clone(src_imgref.name.as_str(), derived_path)
+        .await
+        .unwrap();
+    ostree_ext::integrationtest::generate_derived_oci_from_tar(
+        derived_path,
+        |w| {
+            let mut layer_tar = tar::Builder::new(w);
+            append_tar_dir(&mut layer_tar, "usr", 0o555)?;
+            layer_tar.finish()?;
+            Ok(())
+        },
+        None,
+        None,
+    )?;
+    // A later layer only implies /usr, so the tar import synthesizes a
+    // default 0755 parent which must not mask the explicit 0555.
+    ostree_ext::integrationtest::generate_derived_oci_from_tar(
+        derived_path,
+        |w| {
+            let mut layer_tar = tar::Builder::new(w);
+            append_tar_file(&mut layer_tar, "usr/bin/newfile", b"newfile")?;
+            layer_tar.finish()?;
+            Ok(())
+        },
+        None,
+        None,
+    )?;
+
+    let derived_imgref = ImageReference {
+        transport: Transport::OciDir,
+        name: derived_path.to_string(),
+    };
+    let imp = fixture.must_import(&derived_imgref).await?;
+
+    // Verify /usr has mode 0555 in the merge commit.
+    let root = fixture
+        .destrepo()
+        .read_commit(&imp.merge_commit, gio::Cancellable::NONE)?
+        .0;
+    let usr = root.resolve_relative_path("usr");
+    let usr = usr.downcast::<ostree::RepoFile>().unwrap();
+    usr.ensure_resolved().unwrap();
+
+    let info = usr.query_info(
+        "unix::mode",
+        gio::FileQueryInfoFlags::NOFOLLOW_SYMLINKS,
+        gio::Cancellable::NONE,
+    )?;
+    let mode = info.attribute_uint32("unix::mode") & 0o7777; // mask to get only permissions bits
+    assert_eq!(
+        mode, 0o555,
+        "/usr mode should be 0555 after derived layer, got '{mode:#o}'"
+    );
+
+    let newfile = root.resolve_relative_path("usr/bin/newfile");
+    let newfile_info = newfile.query_info(
+        "standard::type",
+        gio::FileQueryInfoFlags::NOFOLLOW_SYMLINKS,
+        gio::Cancellable::NONE,
+    )?;
+    assert_eq!(newfile_info.file_type(), gio::FileType::Regular);
+
+    assert_root_dirmeta_matches_usr(fixture.destrepo(), &imp.merge_commit);
     Ok(())
 }
 
@@ -1653,6 +1760,37 @@ async fn test_non_ostree() -> Result<()> {
         similar_asserts::assert_eq!(&src_manifest, &dest_manifest);
     }
     assert_eq!(imp.manifest_digest, src_digest);
+    assert_root_dirmeta_matches_usr(fixture.destrepo(), &imp.merge_commit);
+    Ok(())
+}
+
+fn append_tar_dir<W: std::io::Write>(
+    builder: &mut tar::Builder<W>,
+    path: &str,
+    mode: u32,
+) -> Result<()> {
+    let mut h = tar::Header::new_gnu();
+    h.set_uid(0);
+    h.set_gid(0);
+    h.set_size(0);
+    h.set_mode(mode);
+    h.set_entry_type(tar::EntryType::Directory);
+    builder.append_data(&mut h, path, std::io::empty())?;
+    Ok(())
+}
+
+fn append_tar_file<W: std::io::Write>(
+    builder: &mut tar::Builder<W>,
+    path: &str,
+    data: &[u8],
+) -> Result<()> {
+    let mut h = tar::Header::new_gnu();
+    h.set_uid(0);
+    h.set_gid(0);
+    h.set_size(data.len().try_into().unwrap());
+    h.set_mode(0o644);
+    h.set_entry_type(tar::EntryType::Regular);
+    builder.append_data(&mut h, path, std::io::Cursor::new(data))?;
     Ok(())
 }
 

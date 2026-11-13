@@ -158,7 +158,9 @@ use oci_spec::image::{
 };
 use ocidir::oci_spec::distribution::Reference;
 use ostree::prelude::{Cast, FileEnumeratorExt, FileExt, ToVariant};
-use ostree::{gio, glib};
+use ostree::{DirMetaParsed, gio, glib};
+use rustix::fs::{Gid, Mode, OFlags, ResolveFlags, Uid};
+use rustix::io::Errno;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Write as _;
 use std::iter::FromIterator;
@@ -640,6 +642,225 @@ fn cleanup_root(root: &Dir) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Collect the dirmeta checksum for every directory, keyed by path relative
+/// to the commit root.
+fn collect_dirmeta_checksums(
+    dir: &ostree::RepoFile,
+    path: &Utf8Path,
+    out: &mut HashMap<Utf8PathBuf, glib::GString>,
+    cancellable: Option<&gio::Cancellable>,
+) -> Result<()> {
+    dir.ensure_resolved()?;
+
+    let checksum = dir
+        .tree_get_metadata_checksum()
+        .ok_or_else(|| anyhow!("Missing metadata checksum for {path}"))?;
+    out.insert(path.to_owned(), checksum);
+
+    // Recurse over child directories, without following symlinks
+    let query_flags = gio::FileQueryInfoFlags::NOFOLLOW_SYMLINKS;
+    let files =
+        dir.enumerate_children("standard::name,standard::type", query_flags, cancellable)?;
+    while let Some(child_info) = files.next_file(cancellable)? {
+        if child_info.file_type() != gio::FileType::Directory {
+            continue;
+        }
+        let name = child_info.name();
+        let name = name.to_str().expect("UTF-8 ostree name");
+        let child = files
+            .child(&child_info)
+            .downcast::<ostree::RepoFile>()
+            .expect("downcast");
+        collect_dirmeta_checksums(&child, &path.join(name), out, cancellable)?;
+    }
+
+    Ok(())
+}
+
+/// Apply directory mode and ownership from an ostree DirMeta to a filesystem
+/// directory.
+///
+/// We intentionally skip xattrs here since the SELinux relabelling pass in
+/// `write_dfd_to_mtree` overwrites `security.selinux` on every directory,
+/// and no other directory xattrs are meaningful in practice.
+fn apply_dirmeta(
+    dir: impl rustix::fd::AsFd,
+    metadata: &ostree::DirMetaParsed,
+    should_fchown: bool,
+) -> Result<()> {
+    if should_fchown {
+        rustix::fs::fchown(
+            &dir,
+            Some(Uid::from_raw(metadata.uid)),
+            Some(Gid::from_raw(metadata.gid)),
+        )
+        .context("fchown")?;
+    }
+    let mode = Mode::from_raw_mode(metadata.mode);
+    rustix::fs::fchmod(&dir, mode).context("fchmod")?;
+    Ok(())
+}
+
+/// The tar import (`ostree commit --tar-autocreate-parents`) synthesizes a
+/// parent directory for every path a layer's tar doesn't mention, with a
+/// default mode of 0755. Those are indistinguishable from an explicit
+/// `chmod 0755`, so they are treated as if the layer never mentioned the
+/// directory. The trade-off is that a deliberate chmod to exactly 0755 (or
+/// an ownership-only change, since only the mode is checked) is skipped
+/// too. Telling these apart would require the tar import to record which
+/// entries were explicit.
+fn is_default_mode(metadata: &ostree::DirMetaParsed) -> bool {
+    metadata.mode & 0o7777 == 0o755
+}
+
+/// Load the dirmeta for `checksum`, returning `None` if it matches the tar
+/// import's synthesized-parent default, so it cannot override metadata that
+/// an earlier layer or the base set explicitly.
+fn load_explicit_dirmeta(
+    repo: &ostree::Repo,
+    path: &Utf8Path,
+    checksum: &str,
+) -> Result<Option<ostree::DirMetaParsed>> {
+    let parsed = repo
+        .read_dirmeta(checksum)
+        .with_context(|| format!("Loading dirmeta {checksum}"))?;
+    if is_default_mode(&parsed) {
+        tracing::debug!("Skipping {path}, dirmeta matches the tar import default mode");
+        return Ok(None);
+    }
+    Ok(Some(parsed))
+}
+
+/// A `UnionFiles` checkout keeps the directory metadata from the first layer
+/// that created the directory, so later layers that only change a directory's
+/// mode or ownership (e.g. `RUN chmod 0555 /usr`) are silently lost.
+/// OCI semantics (and composefs-rs) require last-layer-wins, so we reapply
+/// directory metadata after all layers have been checked out. The last
+/// layer to explicitly mention a directory wins. Entries matching the tar
+/// import's synthesized-parent default are ignored (see `is_default_mode()`).
+///
+/// For efficiency, we first collect only the cheap dirmeta *checksums* from
+/// each layer. Only directories whose final checksum differs from the base
+/// layer need to be updated.
+fn apply_layer_dirmeta(
+    repo: &ostree::Repo,
+    base_commit: Option<&str>,
+    layer_commits: &[LayerRef],
+    root: &Dir,
+    should_fchown: bool,
+    cancellable: Option<&gio::Cancellable>,
+) -> Result<()> {
+    if layer_commits.is_empty() {
+        return Ok(());
+    }
+
+    // Collect the base layer's dirmeta checksums to skip unchanged directories
+    let base_checksums = match base_commit {
+        Some(base) => {
+            let mut base_map = HashMap::new();
+            let (base_root, _) = repo.read_commit(base, cancellable)?;
+            let base_root = base_root.downcast::<ostree::RepoFile>().expect("downcast");
+            collect_dirmeta_checksums(&base_root, Utf8Path::new("."), &mut base_map, cancellable)
+                .context("Reading base directory metadata checksums")?;
+            base_map
+        }
+        None => HashMap::new(),
+    };
+
+    // Walk the derived layers in order. The last layer to explicitly mention
+    // a directory wins (see is_default_mode()).
+    let mut final_checksums: BTreeMap<Utf8PathBuf, glib::GString> = BTreeMap::new();
+    for lc in layer_commits {
+        let (commit_root, _) = repo.read_commit(&lc.commit, cancellable)?;
+        let commit_root = commit_root
+            .downcast::<ostree::RepoFile>()
+            .expect("downcast");
+        let mut layer_checksums = HashMap::new();
+        collect_dirmeta_checksums(
+            &commit_root,
+            Utf8Path::new("."),
+            &mut layer_checksums,
+            cancellable,
+        )
+        .with_context(|| format!("Reading directory metadata checksums of {}", lc.commit))?;
+        for (path, checksum) in layer_checksums {
+            // A synthesized parent in this layer must not override metadata
+            // that an earlier layer set explicitly.
+            let overrides_explicit = final_checksums
+                .get(&path)
+                .is_some_and(|existing| existing.as_str() != checksum.as_str());
+            if overrides_explicit
+                && load_explicit_dirmeta(repo, &path, checksum.as_str())
+                    .with_context(|| format!("Reading dirmeta in layer {}", lc.commit))?
+                    .is_none()
+            {
+                continue;
+            }
+            final_checksums.insert(path, checksum);
+        }
+    }
+
+    // Only parse + apply directories whose checksum differs from the base.
+    // Descendants sort after their ancestors, so reverse iteration applies
+    // children first and a parent that drops search permission can't block
+    // their updates.
+    for (path, checksum) in final_checksums.iter().rev() {
+        if base_checksums
+            .get(path)
+            .is_some_and(|s| s.as_str() == checksum.as_str())
+        {
+            tracing::debug!("Skipping {path}, metadata checksum is the same as the base layer");
+            continue;
+        }
+        let Some(parsed) = load_explicit_dirmeta(repo, path, checksum.as_str())? else {
+            continue;
+        };
+        tracing::debug!("Applying directory metadata for {path}");
+
+        let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+        let resolve = ResolveFlags::BENEATH | ResolveFlags::NO_SYMLINKS;
+        let fd = match rustix::fs::openat2(root, path.as_std_path(), flags, Mode::empty(), resolve)
+        {
+            Ok(fd) => fd,
+            // Gone, replaced by a later layer, or unreachable because an
+            // ancestor lacks search permission
+            Err(e @ (Errno::NOENT | Errno::NOTDIR | Errno::LOOP | Errno::ACCESS)) => {
+                tracing::debug!("Skipping {path}: {e}");
+                continue;
+            }
+            Err(e) => return Err(e).with_context(|| format!("Getting FD for {path}")),
+        };
+        apply_dirmeta(fd, &parsed, should_fchown)
+            .with_context(|| format!("Updating metadata for {path}"))?;
+    }
+    Ok(())
+}
+
+/// Copy the `/usr` directory mode and ownership to the root, like composefs-rs's
+/// `copy_root_metadata_from_usr`. OCI images don't reliably include root dir
+/// metadata, so layer root metadata (including an explicit `.` entry) is
+/// intentionally overridden. Must run before the merged tree is committed, so
+/// the root still gets its own SELinux label (root_t).
+///
+/// See:
+///   - <https://github.com/coreos/fedora-coreos-tracker/issues/2238>
+///   - <https://github.com/coreos/fedora-coreos-tracker/issues/2238#issuecomment-6082074286>
+fn normalize_root_dirmeta(root: &Dir, should_fchown: bool) -> Result<()> {
+    let usr = root.symlink_metadata("usr").context("looking up /usr")?;
+    anyhow::ensure!(usr.is_dir(), "image has no /usr directory");
+    // `root` may be an `O_PATH` fd, on which fchmod/fchown fail with EBADF.
+    let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC;
+    let rootfd = rustix::fs::openat(root, ".", flags, Mode::empty()).context("opening root")?;
+
+    let metadata = DirMetaParsed {
+        uid: usr.uid(),
+        gid: usr.gid(),
+        mode: usr.mode(),
+        xattrs: vec![],
+    };
+    apply_dirmeta(rootfd, &metadata, should_fchown).context("applying /usr metadata to root")
 }
 
 impl ImageImporter {
@@ -1430,6 +1651,21 @@ impl ImageImporter {
         }
 
         cleanup_root(&root_dir)?;
+
+        // Apply the layer uid/gid only for bare checkouts, where the
+        // checked-out files carry real ownership.
+        let should_fchown = checkout_mode == ostree::RepoCheckoutMode::None;
+        apply_layer_dirmeta(
+            repo,
+            base_commit,
+            layer_commits,
+            &root_dir,
+            should_fchown,
+            cancellable,
+        )
+        .context("applying layer directory metadata")?;
+        normalize_root_dirmeta(&root_dir, should_fchown)
+            .context("normalizing root dir metadata")?;
 
         let mt = ostree::MutableTree::new();
         repo.write_dfd_to_mtree(

@@ -270,18 +270,17 @@ fn mount_tmpfs_for_overlay() -> Result<OwnedFd> {
 }
 
 /// Build an overlayfs fsmount fd from an existing state dir (upper+work).
-///
-/// upper is 0755: the merged view inherits permissions from upperdir, so 0700
-/// would make the mountpoint inaccessible to non-root processes.  work is
-/// kernel-internal and never visible; 0700 is fine.
+/// The merged view takes its dir metadata from the upper, hence the explicit
+/// upper mode. The work dir is kernel-internal; 0700 is fine.
 /// See: <https://github.com/composefs/composefs-rs/issues/287>
 fn build_overlay_fd(
     base: impl AsFd,
     state: impl AsFd,
     source: &str,
+    upper_mode: rustix::fs::Mode,
     mount_attr_flags: Option<MountAttrFlags>,
 ) -> Result<OwnedFd> {
-    let upper = ensure_dir(state.as_fd(), "upper", Some(0o755.into()))?;
+    let upper = ensure_dir(state.as_fd(), "upper", Some(upper_mode))?;
     let work = ensure_dir(state.as_fd(), "work", Some(0o700.into()))?;
 
     let overlayfs = FsHandle::open("overlay")?;
@@ -306,7 +305,7 @@ fn overlay_state(
     source: &str,
     mount_attr_flags: Option<MountAttrFlags>,
 ) -> Result<()> {
-    let fs = build_overlay_fd(&base, state, source, mount_attr_flags)?;
+    let fs = build_overlay_fd(&base, state, source, 0o755.into(), mount_attr_flags)?;
     mount_at_wrapper(fs, base, ".").context("Moving mount")
 }
 
@@ -333,7 +332,10 @@ pub fn overlay_transient(
 ) -> Result<OwnedFd> {
     let tmpfs = mount_tmpfs_for_overlay()?;
     let state = prepare_mount(tmpfs)?;
-    build_overlay_fd(base, state, source, mount_attr_flags)
+    // The merged dir metadata comes from the upper, so match the lower root
+    let stat = rustix::fs::fstat(base.as_fd())?;
+    let upper_mode = rustix::fs::Mode::from_raw_mode(stat.st_mode);
+    build_overlay_fd(base, state, source, upper_mode, mount_attr_flags)
 }
 
 #[context("Opening rootfs")]
