@@ -342,8 +342,8 @@ pub(crate) enum ApplyLiveOpts {
     /// shared by all deployments.
     ///
     /// Because `/run` is transient this state is discarded on reboot, at which
-    /// point the staged deployment's own content applies. The applied state is
-    /// visible in `bootc status`.
+    /// point the staged deployment's own content applies. Live state lives in
+    /// `/run/containers/systemd/` markers and `/run/bootc/apply-live/`.
     #[clap(alias = "lbi")]
     BoundImages(ApplyLiveBoundImagesOpts),
 }

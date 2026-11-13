@@ -11,7 +11,7 @@
 # <verify the container runs v1>
 # bootc upgrade to an image whose only change is the bound .container (v2)
 # bootc apply-live bound-images --dry-run / --no-restart / (plain)
-# <verify the container runs v2 without a reboot, and status/GC state>
+# <verify the container runs v2 without a reboot, and /run/GC state>
 # bootc upgrade to an image with an unrelated change
 # <verify apply-live refuses>
 # <reboot>
@@ -39,6 +39,7 @@ const quadlet = "/usr/share/containers/systemd/lbi-sleeper.container"
 const run_quadlet = "/run/containers/systemd/lbi-sleeper.container"
 const unit = "lbi-sleeper.service"
 const protected_images_list = "/run/bootc/apply-live/protected-images.list"
+const applied_checksum = "/run/bootc/apply-live/applied-checksum"
 
 def initial_setup [] {
     bootc image copy-to-storage
@@ -93,7 +94,7 @@ def second_boot [] {
     systemctl is-active $unit
     assert equal (running_image) $image_v1
     assert not ($run_quadlet | path exists)
-    assert equal $st.status.liveBoundImages? null
+    assert not ($applied_checksum | path exists)
 
     # Without a staged deployment there's nothing to apply
     let r = do { bootc apply-live bound-images } | complete
@@ -121,10 +122,8 @@ def second_boot [] {
     assert (open $run_quadlet | str contains $image_v2)
     assert equal (getfattr --only-values -n security.selinux $run_quadlet | split row ':' | get 2) container_var_run_t
     assert equal (running_image) $image_v1
-    let live = bootc status --json | from json | get status.liveBoundImages
-    assert equal $live.checksum $staged_checksum
-    let entry = $live.images | where unit? == $unit | first
-    assert equal $entry.pending true
+    assert equal (open $applied_checksum | str trim) $staged_checksum
+    assert (open $run_quadlet | str contains "pending=true")
     assert (open $protected_images_list | str contains $image_v2)
 
     # A plain re-run restarts the pending unit
@@ -133,12 +132,8 @@ def second_boot [] {
     assert ($out | str contains $"restart pending: ($unit)")
     systemctl is-active $unit
     assert equal (running_image) $image_v2
-    let live = bootc status --json | from json | get status.liveBoundImages
-    let entry = $live.images | where unit? == $unit | first
-    assert equal ($entry.pending? | default false) false
-    let human = bootc status --format humanreadable
-    print $human
-    assert ($human | str contains "Live bound images")
+    assert equal (open $applied_checksum | str trim) $staged_checksum
+    assert (open $run_quadlet | str contains "pending=false")
 
     # And is idempotent afterwards
     let out = bootc apply-live bound-images
@@ -179,7 +174,7 @@ def third_boot [] {
     # definition (v2) is what runs.
     assert not ($run_quadlet | path exists)
     assert not ($protected_images_list | path exists)
-    assert equal $st.status.liveBoundImages? null
+    assert not ($applied_checksum | path exists)
     assert (open $quadlet | str contains $image_v2)
     systemctl is-active $unit
     assert equal (running_image) $image_v2

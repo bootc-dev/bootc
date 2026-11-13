@@ -9,19 +9,13 @@
 //! between deployments via the bootc-owned container storage; what is
 //! pinned to a deployment is only the *definition*: the symlink in
 //! `/usr/lib/bootc/bound-images.d` and the quadlet file it references.
-//!
-//! On the ostree backend, that shared container storage is just a plain
-//! directory, so applying a definition change live does not require
-//! mounting anything new -- podman already reads the same storage the
-//! booted and staged deployments share. (The composefs backend lays out
-//! storage differently and is not handled here yet.) Changed quadlet files
-//! are written to `/run/containers/systemd/`, which podman gives
-//! precedence over `/etc` and `/usr`, and the affected units are restarted.
-//! Because `/run` is transient, the override disappears on the next boot,
-//! at which point the staged deployment's own `/usr` content applies and
-//! the system converges without any further action. (A soft reboot
-//! preserves `/run`, so the override is cleared at the reboot handoff
-//! with `--apply`, not when soft-reboot is merely prepared.)
+//! Changed quadlet files are written to `/run/containers/systemd/`, which
+//! podman gives precedence over `/etc` and `/usr`, and the affected units
+//! are restarted. Because `/run` is transient, the override disappears on
+//! the next boot, at which point the staged deployment's own `/usr`
+//! content applies and the system converges without any further action.
+//! (A soft reboot preserves `/run`, so the override is cleared at the
+//! reboot handoff with `--apply`, not when soft-reboot is merely prepared.)
 //!
 //! Rather than a separate state file, each quadlet written to
 //! `/run/containers/systemd/` carries its own state as a leading comment
@@ -56,7 +50,6 @@ use ostree_ext::diff::FileTreeDiff;
 
 use crate::boundimage::{BOUND_IMAGE_DIR, BoundImageSpec};
 use crate::cli::ApplyLiveBoundImagesOpts;
-use crate::spec::{LiveBoundImage, LiveBoundImages};
 use crate::store::{BootedOstree, Storage};
 
 /// Directory (relative to `/run`) holding apply-live state.
@@ -425,7 +418,7 @@ fn parse_marker(contents: &str) -> Option<(String, bool, String, &str)> {
 /// their marker comments back into [`LiveQuadlet`]s. Files with no
 /// recognized marker are skipped. Symlinks and other non-regular entries
 /// (e.g. a unit masked via `-> /dev/null`) are skipped before reading, so
-/// cap-std's absolute-symlink resolution can't break `bootc status`.
+/// cap-std's absolute-symlink resolution can't break live-state scans.
 fn scan_live_quadlets(rootfs: &Dir) -> Result<Vec<LiveQuadlet>> {
     let mut paths = Vec::new();
     walk_files(rootfs, &format!("/{QUADLET_RUN_DIR}"), &mut paths)?;
@@ -679,41 +672,6 @@ fn plan_unit_actions(
         }
     }
     Ok(actions)
-}
-
-/// Build the `bootc status` view of live-applied bound images by scanning
-/// [`QUADLET_RUN_DIR`]. Returns `None` if nothing is applied live, or if
-/// the markers disagree on the staged checksum (e.g. a partial apply left
-/// a mix of deployments) -- status then shows no live state rather than
-/// attributing every image to whichever file the scan returned first.
-/// `deploy_serial` isn't recorded in the markers, so it's left as `0` for
-/// callers to fill in by matching `checksum` against a deployment.
-pub(crate) fn status_from_host() -> Result<Option<LiveBoundImages>> {
-    let rootfs = Dir::open_ambient_dir("/", cap_std::ambient_authority()).context("Opening /")?;
-    let live = scan_live_quadlets(&rootfs)?;
-    let Some(checksum) = live.first().map(|q| q.checksum.clone()) else {
-        return Ok(None);
-    };
-    if live.iter().any(|q| q.checksum != checksum) {
-        tracing::warn!(
-            "Live bound-image markers disagree on staged checksum; omitting liveBoundImages from status"
-        );
-        return Ok(None);
-    }
-    let images = live
-        .into_iter()
-        .map(|q| LiveBoundImage {
-            image: q.image,
-            quadlet: Some(q.relpath.to_string()),
-            unit: q.unit,
-            pending: q.pending,
-        })
-        .collect();
-    Ok(Some(LiveBoundImages {
-        checksum,
-        deploy_serial: 0,
-        images,
-    }))
 }
 
 /// Remove any live-applied bound image overrides and state. Soft reboot
@@ -1039,10 +997,19 @@ pub(crate) async fn apply_bound_images(
 
     let previous = UnitActions::load(run)?;
 
+    // Always validate scope before the fast path: an empty change set with
+    // no live state must still refuse unrelated staged changes (including
+    // in dry-run), and must not report success without checking.
+    if booted_csum != staged_csum {
+        let diff =
+            ostree_ext::diff::diff(&sysroot.repo(), &booted_csum, &staged_csum, None::<&str>)?;
+        tracing::debug!("Diff booted -> staged: {diff}");
+        check_diff_scope(&diff, &changes, &booted_root, &staged_root)?;
+    }
+
     // Fast path: a previous run already wrote every definition for this
-    // staged checksum (it passed the scope check then). All that may be
-    // left is the unit operations it recorded (after `--no-restart` or a
-    // failed `systemctl` call).
+    // staged checksum. All that may be left is the unit operations it
+    // recorded (after `--no-restart` or a failed `systemctl` call).
     if already_materialized(run, rootfs, &staged_csum, &changes, &live_by_path)? {
         let pending_restarts = live.iter().filter(|q| q.pending).count();
         if previous.is_empty() && pending_restarts == 0 {
@@ -1066,13 +1033,6 @@ pub(crate) async fn apply_bound_images(
             return Ok(());
         }
         return run_unit_actions(rootfs, run, previous, &live, sepolicy.as_ref());
-    }
-
-    if booted_csum != staged_csum {
-        let diff =
-            ostree_ext::diff::diff(&sysroot.repo(), &booted_csum, &staged_csum, None::<&str>)?;
-        tracing::debug!("Diff booted -> staged: {diff}");
-        check_diff_scope(&diff, &changes, &booted_root, &staged_root)?;
     }
 
     let stopped = read_list(run, STOPPED_UNITS_LIST)?;
@@ -1149,8 +1109,7 @@ pub(crate) async fn apply_bound_images(
     // Materialize the definitions into /run, each carrying a marker. A
     // definition may already be live from a previous apply, in which case
     // its unit doesn't need a restart -- but the marker is still refreshed
-    // to the current checksum so status and the fast path above stay
-    // accurate.
+    // to the current checksum so the fast path above stays accurate.
     let quadlet_run_dir = Utf8Path::new(QUADLET_RUN_DIR);
     let filemode = rustix::fs::Mode::from_raw_mode(0o644);
     for c in changes.iter() {
