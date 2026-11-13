@@ -1,8 +1,7 @@
 //! Lib for /etc merge
 
-#![allow(dead_code)]
-
 use fn_error_context::context;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::io::BufReader;
@@ -78,14 +77,14 @@ fn stat_eq_ignore_mtime(this: &Stat, other: &Stat) -> bool {
     return true;
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct UnmergablePaths {
     pub path: PathBuf,
     pub reason: String,
 }
 
 /// Represents the differences between two directory trees.
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Diff {
     /// Paths that exist in the current /etc but not in the pristine
     added: Vec<PathBuf>,
@@ -255,6 +254,8 @@ fn get_modifications(
     pristine_leaves: &[Leaf<CustomMetadata>],
     current_leaves: &[Leaf<CustomMetadata>],
     new: &Directory<CustomMetadata>,
+    current_etc_fd: &CapStdDir,
+    pristine_etc_fd: &CapStdDir,
     mut current_path: PathBuf,
     diff: &mut Diff,
 ) -> anyhow::Result<()> {
@@ -281,6 +282,8 @@ fn get_modifications(
                             pristine_leaves,
                             current_leaves,
                             new,
+                            current_etc_fd,
+                            pristine_etc_fd,
                             current_path.clone(),
                             diff,
                         )?;
@@ -334,61 +337,101 @@ fn get_modifications(
                 }
             }
 
-            Inode::Leaf(leaf_id, _) => match pristine.leaf_id(path) {
-                Ok(old_leaf_id) => {
-                    let leaf = &current_leaves[leaf_id.0];
-                    let old_leaf = &pristine_leaves[old_leaf_id.0];
+            Inode::Leaf(leaf_id, _) => {
+                match pristine.leaf_id(path) {
+                    Ok(old_leaf_id) => {
+                        let leaf = &current_leaves[leaf_id.0];
+                        let old_leaf = &pristine_leaves[old_leaf_id.0];
 
-                    if !stat_eq_ignore_mtime(&old_leaf.stat, &leaf.stat) {
-                        diff.modified.push(current_path.clone());
-                        check_if_mergable(new, inode, &current_path, diff)?;
-                        current_path.pop();
-                        continue;
-                    }
-
-                    match (&old_leaf.content, &leaf.content) {
-                        (Regular(old_meta), Regular(current_meta)) => {
-                            if old_meta.content_hash != current_meta.content_hash {
-                                // File modified in some way
-                                diff.modified.push(current_path.clone());
-                                check_if_mergable(new, inode, &current_path, diff)?;
-                            }
-                        }
-
-                        (Symlink(old_link), Symlink(current_link)) => {
-                            if old_link != current_link {
-                                // Symlink modified in some way
-                                diff.modified.push(current_path.clone());
-                                check_if_mergable(new, inode, &current_path, diff)?;
-                            }
-                        }
-
-                        (Symlink(..), Regular(..)) | (Regular(..), Symlink(..)) => {
-                            // File changed to symlink or vice-versa
+                        if !stat_eq_ignore_mtime(&old_leaf.stat, &leaf.stat) {
                             diff.modified.push(current_path.clone());
                             check_if_mergable(new, inode, &current_path, diff)?;
+                            current_path.pop();
+                            continue;
                         }
 
-                        (a, b) => {
-                            unreachable!("{a:?} modified to {b:?}")
+                        match (&old_leaf.content, &leaf.content) {
+                            (Regular(old_meta), Regular(current_meta)) => {
+                                let modified = match (&old_meta.verity, &current_meta.verity) {
+                                    (None, None) => {
+                                        old_meta.content_hash != current_meta.content_hash
+                                    }
+                                    // We have fsverity enabled for one file, but not the other
+                                    // This could happen but is unlikely. The file may or may not
+                                    // have been modified, compute the content hash to check
+                                    (None, Some(_)) | (Some(_), None) => {
+                                        let mut pristine_hash = old_meta.content_hash.clone();
+                                        let mut current_hash = current_meta.content_hash.clone();
+
+                                        let compute_hash = |mut file: cap_std::fs::File| -> anyhow::Result<String> {
+                                            let mut hasher = openssl::hash::Hasher::new(
+                                                openssl::hash::MessageDigest::sha256(),
+                                            )?;
+                                            std::io::copy(&mut file, &mut hasher)?;
+                                            Ok(hex::encode(hasher.finish()?))
+                                        };
+
+                                        if pristine_hash.len() == 0 {
+                                            let file = pristine_etc_fd.open(&current_path)
+                                                .with_context(|| anyhow::anyhow!("Opening {} in pristine etc for computing hash", current_path.display()))?;
+                                            pristine_hash = compute_hash(file)?;
+                                        }
+
+                                        if current_hash.len() == 0 {
+                                            let file = current_etc_fd.open(&current_path)
+                                                .with_context(|| anyhow::anyhow!("Opening {} in current etc for computing hash", current_path.display()))?;
+                                            current_hash = compute_hash(file)?;
+                                        }
+
+                                        pristine_hash != current_hash
+                                    }
+                                    (Some(old_verity), Some(current_verity)) => {
+                                        old_verity != current_verity
+                                    }
+                                };
+
+                                if modified {
+                                    // File modified in some way
+                                    diff.modified.push(current_path.clone());
+                                    check_if_mergable(new, inode, &current_path, diff)?;
+                                }
+                            }
+
+                            (Symlink(old_link), Symlink(current_link)) => {
+                                if old_link != current_link {
+                                    // Symlink modified in some way
+                                    diff.modified.push(current_path.clone());
+                                    check_if_mergable(new, inode, &current_path, diff)?;
+                                }
+                            }
+
+                            (Symlink(..), Regular(..)) | (Regular(..), Symlink(..)) => {
+                                // File changed to symlink or vice-versa
+                                diff.modified.push(current_path.clone());
+                                check_if_mergable(new, inode, &current_path, diff)?;
+                            }
+
+                            (a, b) => {
+                                unreachable!("{a:?} modified to {b:?}")
+                            }
                         }
                     }
-                }
 
-                Err(ImageError::IsADirectory(..)) => {
-                    // A directory was changed to a file
-                    diff.modified.push(current_path.clone());
-                    check_if_mergable(new, inode, &current_path, diff)?;
-                }
+                    Err(ImageError::IsADirectory(..)) => {
+                        // A directory was changed to a file
+                        diff.modified.push(current_path.clone());
+                        check_if_mergable(new, inode, &current_path, diff)?;
+                    }
 
-                Err(ImageError::NotFound(..)) => {
-                    // File not found in original /etc, file was added
-                    diff.added.push(current_path.clone());
-                    check_if_mergable(new, inode, &current_path, diff)?;
-                }
+                    Err(ImageError::NotFound(..)) => {
+                        // File not found in original /etc, file was added
+                        diff.added.push(current_path.clone());
+                        check_if_mergable(new, inode, &current_path, diff)?;
+                    }
 
-                Err(e) => Err(e).with_context(|| format!("Opening pristine {path:?}"))?,
-            },
+                    Err(e) => Err(e).with_context(|| format!("Opening pristine {path:?}"))?,
+                }
+            }
         }
 
         current_path.pop();
@@ -470,6 +513,8 @@ pub fn compute_diff(
     pristine_etc_files: &FileSystem<CustomMetadata>,
     current_etc_files: &FileSystem<CustomMetadata>,
     new_etc_files: &FileSystem<CustomMetadata>,
+    current_etc_fd: &CapStdDir,
+    pristine_etc_fd: &CapStdDir,
 ) -> anyhow::Result<Diff> {
     let mut diff = Diff {
         added: vec![],
@@ -484,6 +529,8 @@ pub fn compute_diff(
         &pristine_etc_files.leaves,
         &current_etc_files.leaves,
         &new_etc_files.root,
+        current_etc_fd,
+        pristine_etc_fd,
         PathBuf::new(),
         &mut diff,
     )?;
@@ -637,17 +684,19 @@ fn recurse_dir(
             continue;
         }
 
-        // TODO: Another generic here but constrained to Sha256HashValue
-        // Regarding this, we'll definitely get DigestMismatch error if SHA512 is being used
-        // So we query the verity again if we get a DigestMismatch error
+        // NOTE: Currently this path isn't taken in practice (yet) since "current etc" is a mounted
+        // overlay which doesn't actually have FSVerity enabled on the files and `fsverity measure
+        // <file>` fails with `ERROR: FS_IOC_MEASURE_VERITY failed on '<file>': Inappropriate ioctl for device`
+        //
+        // Related: https://github.com/bootc-dev/bootc/issues/2627
         let measured_verity =
-            composefs::fsverity::measure_verity_opt::<Sha256HashValue>(entry.open()?);
+            composefs::fsverity::measure_verity_opt::<Sha512HashValue>(entry.open()?);
 
         let measured_verity = match measured_verity {
             Ok(mv) => mv.map(|verity| verity.to_hex()),
 
             Err(composefs::fsverity::MeasureVerityError::InvalidDigestAlgorithm { .. }) => {
-                composefs::fsverity::measure_verity_opt::<Sha512HashValue>(entry.open()?)?
+                composefs::fsverity::measure_verity_opt::<Sha256HashValue>(entry.open()?)?
                     .map(|verity| verity.to_hex())
             }
 
@@ -705,6 +754,7 @@ impl std::fmt::Display for ModificationType {
 }
 
 impl ModificationType {
+    #[allow(dead_code)]
     fn symbol(&self) -> &'static str {
         match self {
             ModificationType::Added => "+",
@@ -1007,6 +1057,8 @@ mod tests {
             &pristine_etc_files,
             &current_etc_files,
             new_etc_files.as_ref().unwrap(),
+            &c,
+            &p,
         )?;
 
         merge(
@@ -1207,6 +1259,8 @@ mod tests {
             &pristine_etc_files,
             &current_etc_files,
             &new_etc_files.as_ref().unwrap(),
+            &c,
+            &p,
         )?;
         merge(&c, &current_etc_files, &n, &new_etc_files.unwrap(), &diff)?;
 
@@ -1287,6 +1341,8 @@ mod tests {
             &pristine_etc_files,
             &current_etc_files,
             &new_etc_files.as_ref().unwrap(),
+            &c,
+            &p,
         )?;
 
         let merge_res = merge(&c, &current_etc_files, &n, &new_etc_files.unwrap(), &diff);

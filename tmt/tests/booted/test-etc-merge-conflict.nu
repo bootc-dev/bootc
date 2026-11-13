@@ -71,6 +71,33 @@ RUN echo "now a file" > /etc/test-etc-merge-dir
 
     # Again verify nothing was staged
     assert ((bootc status --json | from json | get status.staged) == null) "No deployment should be staged after directory-to-file conflict failure"
+    
+    let missingVerityAllowed = bootc status --json | from json | get status.booted.composefs.missingVerityAllowed
+
+    # Test that a change in fsverity on a file actually shows up as modified
+    if not $missingVerityAllowed {
+      mkdir /var/etc-test/current /var/etc-test/new /var/etc-test/pristine
+      echo "hello" | save /var/etc-test/pristine/hello
+      echo "hello-new" | save /var/etc-test/current/hello
+
+      ^find /var/etc-test/ -type f -exec fsverity enable {} ';'
+
+      let out = bootc internals dir-diff /var/etc-test/pristine/ /var/etc-test/current/ /var/etc-test/new/ --json | from json | get modified
+      assert equal ($out | length) 1
+      assert equal ($out | first) "hello"
+
+      # Test one file with fs-verity enable and other without
+      rm -rf /var/etc-test
+      mkdir /var/etc-test/current /var/etc-test/new /var/etc-test/pristine
+      echo "hello" | save /var/etc-test/pristine/hello
+      echo "hello-new" | save /var/etc-test/current/hello
+
+      fsverity enable /var/etc-test/pristine/hello
+
+      let out = bootc internals dir-diff /var/etc-test/pristine/ /var/etc-test/current/ /var/etc-test/new/ --json | from json | get modified
+      assert equal ($out | length) 1
+      assert equal ($out | first) "hello"
+    }
 
     tap ok
 }

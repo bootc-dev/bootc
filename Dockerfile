@@ -126,15 +126,18 @@ RUN --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
 
     cd /run/hack/ && SKIP_CONFIGS="${SKIP_CONFIGS}" ./provision-fetch.sh
 
-    pkgs_to_install=()
+    pkgs_to_install=(fsverity-utils)
+
+    . /usr/lib/os-release
+
+    case "${ID}${ID_LIKE:-}" in
+      *centos*|*rhel*)
+        # Enable EPEL for sbsigntools and fsverity-utils
+        dnf -y install epel-release
+        ;;
+    esac
+
     if [[ "${seal_state}" == "sealed" ]]; then
-        . /usr/lib/os-release
-        case "${ID}${ID_LIKE:-}" in
-          *centos*|*rhel*)
-            # Enable EPEL for sbsigntools
-            dnf -y install epel-release
-            ;;
-        esac
         pkgs_to_install+=(sbsigntools)
     fi
 
