@@ -38,6 +38,9 @@ use linux_kernel_cmdline::utf8::Cmdline;
 
 // mount_setattr syscall support
 const MOUNT_ATTR_RDONLY: u64 = 0x00000001;
+const MOUNT_ATTR_NOSUID: u64 = 0x00000002;
+const MOUNT_ATTR_NODEV: u64 = 0x00000004;
+const MOUNT_ATTR_NOSYMFOLLOW: u64 = 0x00200000;
 
 #[repr(C)]
 struct MountAttr {
@@ -84,6 +87,36 @@ pub fn set_mount_readonly(fd: impl AsFd) -> Result<()> {
 pub fn set_mount_tree_readonly(fd: impl AsFd) -> Result<()> {
     let attr = MountAttr {
         attr_set: MOUNT_ATTR_RDONLY,
+        attr_clr: 0,
+        propagation: 0,
+        userns_fd: 0,
+    };
+    mount_setattr(fd, libc::AT_EMPTY_PATH | libc::AT_RECURSIVE, &attr)
+}
+
+/// Clear the read-only attribute on a detached mount without changing its children.
+pub fn clear_mount_readonly(fd: impl AsFd) -> Result<()> {
+    let attr = MountAttr {
+        attr_set: 0,
+        attr_clr: MOUNT_ATTR_RDONLY,
+        propagation: 0,
+        userns_fd: 0,
+    };
+    mount_setattr(fd, libc::AT_EMPTY_PATH, &attr)
+}
+
+/// Set a mount tree read-only, nosuid, nodev, and prevent symlink traversal within it.
+///
+/// A bind-mounted image tree is not a chroot: absolute and escaping symlinks
+/// can otherwise resolve against the caller's root. `nosymfollow` keeps the
+/// exposed tree confined to the image while leaving the underlying image
+/// untouched. `nosuid` also prevents set-user-ID and set-group-ID bits in the
+/// image from affecting processes that access the mounted tree. This deliberately
+/// does not set `noexec`, so image executables remain runnable.
+#[context("Setting mount tree readonly and nosymfollow")]
+pub fn set_mount_tree_readonly_nosymfollow(fd: impl AsFd) -> Result<()> {
+    let attr = MountAttr {
+        attr_set: MOUNT_ATTR_RDONLY | MOUNT_ATTR_NOSUID | MOUNT_ATTR_NODEV | MOUNT_ATTR_NOSYMFOLLOW,
         attr_clr: 0,
         propagation: 0,
         userns_fd: 0,
