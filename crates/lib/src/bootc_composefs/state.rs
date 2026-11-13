@@ -236,7 +236,8 @@ pub(crate) fn update_boot_digest_in_origin(
 ///
 /// * `root_path`         - The root filesystem path (typically `/sysroot`)
 /// * `deployment_id`     - Unique SHA512 hash identifier for this deployment
-/// * `imgref`            - Container image reference for the deployment
+/// * `source_imgref`     - Container image reference used to obtain this image
+/// * `target_imgref`     - Optional reference for subsequent updates
 /// * `initialize_var`    - Whether to populate the shared `/var` from the image
 /// * `boot_type`         - Boot artifact type (`Bls`, `Uki`, or `Aboot`)
 /// * `boot_digest`       - Optional boot digest for verification
@@ -254,7 +255,8 @@ pub(crate) fn update_boot_digest_in_origin(
 pub(crate) async fn write_composefs_state(
     root_path: &Utf8PathBuf,
     deployment_id: &Sha512HashValue,
-    target_imgref: &ImageReference,
+    source_imgref: &ImageReference,
+    target_imgref: Option<&ImageReference>,
     initialize_var: bool,
     boot_type: BootType,
     boot_digest: String,
@@ -285,13 +287,22 @@ pub(crate) async fn write_composefs_state(
         allow_missing_fsverity,
     )?;
 
+    let target_imgref = target_imgref.unwrap_or(source_imgref);
     let imgref = target_imgref.to_image_proxy_ref()?;
-
-    let mut config = tini::Ini::new().section("origin").item(
-        ORIGIN_CONTAINER,
+    let mut config = tini::Ini::new()
+        .section("origin")
         // TODO (Johan-Liebert1): The image won't always be unverified
-        format!("ostree-unverified-image:{imgref}"),
-    );
+        .item(
+            ORIGIN_CONTAINER,
+            format!("ostree-unverified-image:{imgref}"),
+        );
+
+    if source_imgref != target_imgref {
+        config = config.section(crate::deploy::ORIGIN_BOOTC).item(
+            crate::deploy::ORIGIN_SOURCE_IMAGE,
+            source_imgref.to_string(),
+        );
+    }
 
     config = config
         .section(ORIGIN_KEY_BOOT)

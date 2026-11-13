@@ -70,6 +70,18 @@ RUN echo 'unified-storage-test-marker' > /usr/share/unified-storage-test.txt
   print "Switching to localhost/bootc-unified-derived"
   bootc switch --transport containers-storage localhost/bootc-unified-derived
 
+  # A second delivery exists only in host storage. Switching must copy it into
+  # bootc storage while retaining a separate update origin.
+  $"FROM localhost/bootc
+RUN echo 'host-storage-test-marker' > /usr/share/unified-storage-test.txt
+" | save --force Dockerfile
+  podman build -t localhost/bootc-host-derived .
+  let stored = bootc image cmd list --format json --filter reference=localhost/bootc-host-derived | from json
+  assert equal ($stored | length) 0
+  bootc switch --transport containers-storage --target-imgref containers-storage:localhost/bootc-updates localhost/bootc-host-derived
+  let stored = bootc image cmd list --format json --filter reference=localhost/bootc-host-derived | from json
+  assert equal ($stored | length) 1
+
   tmt-reboot
 }
 
@@ -78,12 +90,14 @@ def third_boot [] {
 
   # Verify we're booted from containers-storage transport
   assert equal $booted.image.transport containers-storage
-  assert equal $booted.image.image localhost/bootc-unified-derived
+  assert equal $booted.image.image localhost/bootc-updates
 
   # Verify the marker file from our derived image exists
   assert ("/usr/share/unified-storage-test.txt" | path exists)
   let marker = open /usr/share/unified-storage-test.txt | str trim
-  assert equal $marker "unified-storage-test-marker"
+  assert equal $marker "host-storage-test-marker"
+  let stored = bootc image cmd list --format json --filter reference=localhost/bootc-host-derived | from json
+  assert equal ($stored | length) 1
 
   # Verify that bootc storage is accessible
   print "Listing images in bootc storage:"
@@ -93,11 +107,6 @@ def third_boot [] {
   print "Testing podman access to bootc storage"
   let images = podman --storage-opt=additionalimagestore=/usr/lib/bootc/storage images --format "{{.Repository}}"
   print $"Images visible via podman: ($images)"
-
-  # The derived image (localhost/bootc-unified-derived) should persist in bootc storage
-  # since /usr/lib/bootc/storage is a symlink to persistent storage under /sysroot.
-  # The key verification is that we successfully booted into the derived image,
-  # which we already confirmed above via transport and image name checks.
 
   tap ok
 }

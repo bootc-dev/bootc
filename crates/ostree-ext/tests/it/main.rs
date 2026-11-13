@@ -757,11 +757,67 @@ async fn test_no_fetch_digested() -> Result<()> {
         .unwrap();
     // And the key test, we shouldn't reach out to the registry here
     imp.set_offline();
+    let redirected = OstreeImageReference {
+        imgref: ImageReference::try_from("docker://quay.io/exampleos/redirected:latest")?,
+        ..target_imgref.clone()
+    };
+    imp.set_target(&redirected);
     match imp.prepare().await.context("Init prep derived").unwrap() {
         store::PrepareResult::AlreadyPresent(_) => {}
         store::PrepareResult::Ready(_) => panic!("Should have image already"),
     };
+    assert_eq!(
+        store::query_image(fixture.destrepo(), &redirected.imgref)?
+            .unwrap()
+            .merge_commit,
+        r.merge_commit
+    );
 
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_cached_import_target() -> Result<()> {
+    if !check_skopeo() {
+        return Ok(());
+    }
+    let fixture = Fixture::new_v1()?;
+    let (source, _) = fixture.export_container().await?;
+    let imported = fixture.must_import(&source).await?;
+    let source = OstreeImageReference {
+        sigverify: SignatureSource::ContainerPolicyAllowInsecure,
+        imgref: source,
+    };
+    let target = OstreeImageReference {
+        imgref: ImageReference::try_from("docker://quay.io/exampleos/cached:latest")?,
+        ..source.clone()
+    };
+    for no_imgref in [true, false] {
+        let mut imp =
+            store::ImageImporter::new(fixture.destrepo(), &source, Default::default()).await?;
+        imp.set_target(&target);
+        if no_imgref {
+            imp.set_no_imgref();
+        }
+        let store::PrepareResult::AlreadyPresent(state) = imp.prepare().await? else {
+            panic!("Cached image must not require another import");
+        };
+        assert_eq!(state.merge_commit, imported.merge_commit);
+        let retained = store::query_image(fixture.destrepo(), &target.imgref)?;
+        if no_imgref {
+            assert!(retained.is_none());
+        } else {
+            assert_eq!(retained.unwrap().merge_commit, imported.merge_commit);
+        }
+    }
+    // Source aliases remain independently removable; the target retains the layers.
+    assert!(store::remove_image(fixture.destrepo(), &source.imgref)?);
+    assert_eq!(store::gc_image_layers(fixture.destrepo())?, 0);
+    assert!(store::query_image(fixture.destrepo(), &source.imgref)?.is_none());
+    assert_eq!(store::list_images(fixture.destrepo())?.len(), 1);
+    assert!(store::remove_image(fixture.destrepo(), &target.imgref)?);
+    assert!(store::gc_image_layers(fixture.destrepo())? > 0);
+    assert!(store::list_images(fixture.destrepo())?.is_empty());
     Ok(())
 }
 
@@ -850,10 +906,21 @@ async fn test_prepare_from_manifest() -> Result<()> {
 
     // And now it is present, established without ever contacting a registry.
     let mut imp = store::ImageImporter::new_without_proxy(fixture.destrepo(), &imgref)?;
+    let target = OstreeImageReference {
+        imgref: ImageReference::try_from("docker://quay.io/exampleos/from-manifest:latest")?,
+        ..imgref.clone()
+    };
+    imp.set_target(&target);
     let prep = imp
         .prepare_from_manifest(expected_digest, manifest, config, open_source()?)
         .await?;
     assert!(matches!(prep, store::PrepareResult::AlreadyPresent(_)));
+    assert_eq!(
+        store::query_image(fixture.destrepo(), &target.imgref)?
+            .unwrap()
+            .merge_commit,
+        state.merge_commit
+    );
 
     Ok(())
 }

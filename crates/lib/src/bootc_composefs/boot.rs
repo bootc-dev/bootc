@@ -2925,6 +2925,7 @@ pub(crate) async fn setup_composefs_boot(
         &root_setup.physical_root_path,
         &deploy_id,
         &crate::spec::ImageReference::from(state.target_imgref.clone()),
+        None,
         true,
         boot_type,
         boot_digest,
