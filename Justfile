@@ -50,7 +50,8 @@ erofs_version := env("BOOTC_erofs_version", "v1")
 # Baseconfigs to inject into the image for testing (e.g. "etc-transient" or "root-transient")
 baseconfigs := env("BOOTC_baseconfigs", "")
 # Base container image to build from
-base := env("BOOTC_base", "quay.io/centos-bootc/centos-bootc:stream10")
+_default_base := "quay.io/centos-bootc/centos-bootc:stream10"
+base := env("BOOTC_base", _default_base)
 # Buildroot base image
 buildroot_base := env("BOOTC_buildroot_base", "quay.io/centos/centos:stream10")
 # Optional: path to extra source (e.g. composefs-rs) for local development
@@ -228,6 +229,108 @@ build-ukiboot-update-test-image: build-ukiboot-test-image
 [group('testing')]
 test-ukiboot: build-ukiboot-update-test-image
     cargo xtask run-tmt --env=BOOTC_variant=composefs --filesystem=ext4 --boot-type=aboot --seal-state=unsealed --upgrade-image={{ukiboot_img}}:v2 {{ukiboot_img}}:v1 aboot
+
+# Run the package-mode migration plan against the current checkout image.
+# The VM cannot share controller Podman storage, so transfer it as an OCI archive.
+[group('testing')]
+test-tmt-package-mode image="centos-stream-10":
+    #!/bin/bash
+    set -euo pipefail
+    source_tree=$(git rev-parse --show-toplevel)
+    lbi_images="{{lbi_images}}"
+    case "{{image}}" in
+        fedora-44)
+            image_base=quay.io/fedora/fedora-bootc:44
+            ;;
+        centos-stream-10)
+            image_base=quay.io/centos-bootc/centos-bootc:stream10
+            ;;
+        *)
+            echo "Unsupported package-mode test image: {{image}}" >&2
+            exit 1
+            ;;
+    esac
+    # Respect an explicit base override from the caller, while keeping the
+    # image-specific default selected above (e.g. Fedora for fedora-44).
+    if [[ "{{base}}" != "{{_default_base}}" ]]; then
+        image_base="{{base}}"
+    fi
+    test_tree=
+    cleanup() {
+        local status=$?
+        trap - EXIT
+        if [[ -n "$test_tree" ]]; then
+            rm -rf -- "$test_tree" || true
+        fi
+        exit "$status"
+    }
+    trap cleanup EXIT
+    build_status=0
+    BOOTC_base="$image_base" just {{_forward_settings}} base="$image_base" variant=ostree build || build_status=$?
+    if [[ "$build_status" -ne 0 ]]; then
+        exit "$build_status"
+    fi
+
+    # TMT 1.69 copies the whole git root during fmf discovery. Use a small
+    # snapshot so ignored build outputs and local worktrees are never copied.
+    trap 'exit 129' HUP
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    test_tree=$(mktemp -d -- "${TMPDIR:-/tmp}/bootc-tmt-package-mode.XXXXXX")
+    # Podman-generated build secrets use shared temp paths; leave cleanup to Podman.
+    # Stale artifacts are not deleted here, only excluded from the test snapshot.
+    rsync -a --delete \
+        --exclude='/.git' \
+        --exclude='/target' \
+        --exclude='/.worktrees' \
+        --exclude='/podman-build-secret-*' \
+        --exclude='.package-mode-local.*' \
+        "$source_tree/" "$test_tree/"
+    git -C "$test_tree" init -q
+
+    archive_dir=$(mktemp -d -- "$test_tree/tmt/plans/.package-mode-local.XXXXXX")
+    archive_path="$archive_dir/bootc.oci"
+    archive_relative="${archive_dir#"$test_tree/"}/bootc.oci"
+    environment_file="$archive_dir/package-mode.env"
+    if [[ -e "$archive_path" ]]; then
+        echo "Refusing to overwrite existing archive: $archive_path" >&2
+        exit 1
+    fi
+    podman save --format oci-archive --output "$archive_path" {{base_img}}
+    # Keep TMT's lexical controller path under HOME without sudo or symlinks.
+    # The guest test stages its full /home run directory into preserved /var/home.
+    workdir_root="$HOME/.cache/bootc-tmt-workdirs"
+    mkdir -p -- "$workdir_root"
+    # The test consumes comma-separated refs, and tmt 1.69 supports these in
+    # a dotenv environment file without splitting the value on whitespace.
+    printf 'PACKAGE_MODE_LBI_IMAGES=%s\n' "${lbi_images// /,}" > "$environment_file"
+    tmt --root "$test_tree" \
+        --context=running_env=packit \
+        --context=package_source=local \
+        --context="test_disk_image={{image}}" \
+        run --workdir-root "$workdir_root" \
+        --environment-file "$environment_file" \
+        --environment "PACKAGE_MODE_IMAGE_NAME={{base_img}}" \
+        --environment "PACKAGE_MODE_IMAGE_ARCHIVE=$archive_relative" \
+        --environment "PACKAGE_MODE_TMT_WORKDIR_ROOT=$workdir_root" \
+        plans --name '^/tmt/plans/package-mode$'
+
+# Check that a composefs caller still gets an OSTree package-mode test image,
+# without losing its configured base image or image tag.
+[group('testing')]
+test-tmt-package-mode-dry-run:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    output=$(BOOTC_variant=composefs BOOTC_image=localhost/package-mode-test:latest just --dry-run base=localhost/package-mode-base:latest test-tmt-package-mode 2>&1)
+    build_command=$(grep 'just .* variant=ostree build' <<< "$output")
+    if [[ ! "$build_command" =~ base=localhost/package-mode-base:latest.*variant=composefs.*variant=ostree\ build ]]; then
+        echo "package-mode dry-run did not force OSTree while preserving settings:" >&2
+        echo "$build_command" >&2
+        exit 1
+    fi
+    grep -Fq 'podman save --format oci-archive --output "$archive_path" localhost/package-mode-test:latest' <<< "$output"
+    grep -Fq -- "--exclude='/podman-build-secret-*'" <<< "$output"
+    grep -Fq 'trap cleanup EXIT' <<< "$output"
 
 # Split out from `test-container` because, unlike the container integration tests,
 # unit tests don't depend on variant/filesystem/bootloader/boot_type/seal_state, so
