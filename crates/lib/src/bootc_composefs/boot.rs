@@ -1053,6 +1053,12 @@ pub(crate) fn setup_composefs_bls_boot(
         .with_context(|| format!("Opening {:?}", entry_paths.config_path))?;
     write_type1_entries(&boot_dir, &setup_type, &os_id, &bls_config)?;
 
+    // An upgrade's entries go live at finalize, which writes the menu then.
+    if !is_upgrade && matches!(bootloader.kind()?, BootloaderKind::GRUBClassic) {
+        let boot_dir = Dir::open_ambient_dir(&entry_paths.config_path, ambient_authority())?;
+        crate::bootc_composefs::grub_bls::sync_grub_bls_menu(&boot_dir)?;
+    }
+
     Ok(boot_digest)
 }
 
