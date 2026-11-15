@@ -125,6 +125,19 @@ is currently expected to be empty by default.
     - ukiboot
     - none
 
+**--target-arch**=*TARGET_ARCH*
+
+    The architecture of the image being installed. Defaults to the architecture bootc runs on. Installing for another architecture is supported for `install to-disk` with the composefs backend and systemd-boot, and needs a systemd whose `bootctl install` supports `--install-source`
+
+    Possible values:
+    - x86_64
+    - aarch64
+    - s390x
+    - powerpc64
+    - powerpc64le
+    - riscv64
+    - arm
+
 **--composefs-backend**
 
     Use the composefs backend instead of ostree. This is the default for images with a UKI, and for images with /usr/lib/composefs/setup-root-conf.toml and no ostree prepare-root.conf

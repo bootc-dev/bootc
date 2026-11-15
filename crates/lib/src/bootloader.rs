@@ -38,6 +38,10 @@ const KERNEL_INSTALL_CONF_ROOT: &str = "/tmp";
 /// See: <https://www.freedesktop.org/software/systemd/man/latest/bootctl.html>
 const BOOTCTL_RANDOM_SEED_MIN_VERSION: u32 = 257;
 
+/// First systemd release whose `bootctl install` accepts `--all-architectures`
+/// and `--install-source`.
+const BOOTCTL_CROSS_ARCH_MIN_VERSION: u32 = 252;
+
 /// Mount the first ESP found among backing devices at /boot/efi.
 ///
 /// This is used by the install-alongside path to clean stale bootloader
@@ -306,6 +310,21 @@ pub(crate) fn install_systemd_boot(
                 "Skipping --random-seed: requires systemd >= {BOOTCTL_RANDOM_SEED_MIN_VERSION}, found {systemd_version}"
             );
         }
+    }
+
+    if configopts.is_cross_arch() {
+        // bootctl installs only binaries named for its own EFI architecture,
+        // so on another architecture's root it finds none and installs
+        // nothing. Take every architecture the image ships (a single-arch
+        // image ships only its own), and only from the image, never the
+        // host's.
+        let systemd_version = systemd_version()?;
+        anyhow::ensure!(
+            systemd_version >= BOOTCTL_CROSS_ARCH_MIN_VERSION,
+            "Installing systemd-boot for {} requires systemd >= {BOOTCTL_CROSS_ARCH_MIN_VERSION}, found {systemd_version}",
+            configopts.target_arch()
+        );
+        bootctl_args.extend(["--all-architectures", "--install-source=image"]);
     }
 
     Command::new("bootctl")

@@ -268,6 +268,19 @@ pub(crate) async fn pull_install_composefs_repository(
     // ostree/bootc/storage depend on this link.
     crate::store::ensure_composefs_bootc_link(rootfs_dir)?;
 
+    // Select the target's manifest only when it differs from the host's, so
+    // a native install resolves exactly as it always has.
+    let platform = if state.config_opts.is_cross_arch() {
+        anyhow::ensure!(
+            !use_unified,
+            "Installing for {} does not support unified storage",
+            state.config_opts.target_arch()
+        );
+        Some(state.config_opts.target_arch().oci_platform()?)
+    } else {
+        None
+    };
+
     let pull_result = if use_unified {
         // Unified path: first into containers-storage on the target
         // rootfs, then cstor zero-copy into composefs. This ensures the image
@@ -297,7 +310,7 @@ pub(crate) async fn pull_install_composefs_repository(
     } else {
         // Direct path: pull directly into composefs via skopeo, without
         // containers-storage as intermediary.
-        pull_composefs_direct(&repo, &imgref, false, ProgressWriter::default()).await?
+        pull_composefs_direct(&repo, &imgref, false, ProgressWriter::default(), platform).await?
     };
 
     Ok(pull_result)
@@ -406,6 +419,7 @@ async fn pull_composefs_direct(
     imgref: &containers_image_proxy::ImageReference,
     quiet: bool,
     prog: ProgressWriter,
+    platform: Option<ocidir::oci_spec::image::Platform>,
 ) -> Result<PullResult<Sha512HashValue>> {
     let imgref_str = imgref.to_string();
     tracing::info!("Direct pull: fetching {imgref_str} into composefs repository");
@@ -422,6 +436,7 @@ async fn pull_composefs_direct(
         PullOptions {
             img_proxy_config: Some(config),
             progress: Some(reporter),
+            platform,
             ..Default::default()
         },
     )
@@ -594,7 +609,7 @@ pub(crate) async fn pull_composefs_repo(
 
         pull_composefs_unified(&imgstore, &storage_path, &repo, &imgref, quiet, prog).await?
     } else {
-        pull_composefs_direct(&repo, &imgref, quiet, prog).await?
+        pull_composefs_direct(&repo, &imgref, quiet, prog, None).await?
     };
 
     // Tag the manifest as a bootc-owned GC root.

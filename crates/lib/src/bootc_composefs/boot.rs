@@ -2693,6 +2693,14 @@ fn install_composefs_bootloader(
     if bootloader == Bootloader::None {
         return Ok(());
     }
+    // Only systemd-boot installs from the image's own binaries; the other
+    // paths name or run the host's.
+    let target_arch = state.config_opts.target_arch();
+    ensure!(
+        target_arch.is_host() || (bootloader == Bootloader::Systemd && target_arch.uses_efi()),
+        "Installing for {target_arch} from {} requires systemd-boot, not {bootloader:?}",
+        crate::install::target_arch::TargetArch::host()
+    );
     let mounted_root = MountedImageRoot::new(composefs_mnt_fd, &root_setup.device_info)?;
 
     if bootloader == Bootloader::Ukiboot {

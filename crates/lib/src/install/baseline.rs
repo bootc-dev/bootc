@@ -36,6 +36,7 @@ use super::RW_KARG;
 use super::RootSetup;
 use super::State;
 use super::config::Filesystem;
+use super::target_arch::FirmwareBootPartition;
 use crate::bootloader::systemd_version;
 use crate::task::Task;
 use bootc_blockdev::dps::BIOS_BOOT;
@@ -895,6 +896,7 @@ fn sfdisk(
     root_size: Option<u64>,
     composefs_backend: bool,
     requires_bootpart: bool,
+    target_arch: super::TargetArch,
 ) -> Result<PartitionLayout> {
     // Generate partitioning spec as input to sfdisk
     let mut partno = 0;
@@ -902,28 +904,29 @@ fn sfdisk(
     writeln!(partitioning_buf, "label: gpt")?;
     let random_label = uuid::Uuid::new_v4();
     writeln!(&mut partitioning_buf, "label-id: {random_label}")?;
-    if cfg!(target_arch = "x86_64") {
-        partno += 1;
-        writeln!(
-            &mut partitioning_buf,
-            r#"size=1MiB, bootable, type=21686148-6449-6E6F-744E-656564454649, name="BIOS-BOOT""#
-        )?;
-    } else if cfg!(target_arch = "powerpc64") {
-        // PowerPC-PReP-boot
-        partno += 1;
-        let label = PREPBOOT_LABEL;
-        let uuid = PREPBOOT_GUID;
-        writeln!(
-            &mut partitioning_buf,
-            r#"size=4MiB, bootable, type={uuid}, name="{label}""#
-        )?;
-    } else if cfg!(any(target_arch = "aarch64", target_arch = "s390x")) {
+    match target_arch.firmware_boot_partition()? {
+        Some(FirmwareBootPartition::BiosBoot) => {
+            partno += 1;
+            writeln!(
+                &mut partitioning_buf,
+                r#"size=1MiB, bootable, type=21686148-6449-6E6F-744E-656564454649, name="BIOS-BOOT""#
+            )?;
+        }
+        Some(FirmwareBootPartition::PrepBoot) => {
+            // PowerPC-PReP-boot
+            partno += 1;
+            let label = PREPBOOT_LABEL;
+            let uuid = PREPBOOT_GUID;
+            writeln!(
+                &mut partitioning_buf,
+                r#"size=4MiB, bootable, type={uuid}, name="{label}""#
+            )?;
+        }
         // No bootloader partition is necessary
-    } else {
-        anyhow::bail!("Unsupported architecture: {}", std::env::consts::ARCH);
+        None => {}
     }
 
-    let esp_partno = if super::ARCH_USES_EFI {
+    let esp_partno = if target_arch.uses_efi() {
         let esp_guid = bootc_blockdev::dps::ESP;
         partno += 1;
 
@@ -959,7 +962,7 @@ fn sfdisk(
     let root_size = root_size
         .map(|v| Cow::Owned(format!("size={v}MiB, ")))
         .unwrap_or_else(|| Cow::Borrowed(""));
-    let rootpart_uuid = uuid::Uuid::parse_str(bootc_blockdev::dps::this_arch_root())?;
+    let rootpart_uuid = uuid::Uuid::parse_str(target_arch.root_partition_type())?;
     writeln!(
         &mut partitioning_buf,
         r#"{root_size}type={rootpart_uuid}, name="root""#
@@ -1050,13 +1053,21 @@ pub(crate) fn install_create_rootfs(
     let serial = device.serial.as_deref().unwrap_or("<unknown>");
     let model = device.model.as_deref().unwrap_or("<unknown>");
     let discoverable = state.aboot_disk_layout.is_none() && use_discoverable_partitions(state);
+    let target_arch = state.config_opts.target_arch();
+    // systemd-repart lays out partitions for the architecture it runs on, so
+    // only the sfdisk path can lay a disk out for another one.
+    anyhow::ensure!(
+        target_arch.is_host() || (state.aboot_disk_layout.is_none() && !use_systemd_repart),
+        "Installing for {target_arch} from {} is not supported with systemd-repart partitioning",
+        super::TargetArch::host()
+    );
     if let Some(layout) = state.aboot_disk_layout {
         anyhow::ensure!(
             block_setup == BlockSetup::Direct,
             "{layout:?} aboot layout requires --block-setup direct"
         );
         anyhow::ensure!(
-            layout != AbootDiskLayout::Ukiboot || super::ARCH_USES_EFI,
+            layout != AbootDiskLayout::Ukiboot || target_arch.uses_efi(),
             "ukiboot disk layout requires x86_64 or aarch64"
         );
         anyhow::ensure!(
@@ -1125,6 +1136,7 @@ pub(crate) fn install_create_rootfs(
             root_size,
             state.composefs_options.composefs_backend,
             block_setup.requires_bootpart(),
+            target_arch,
         )?
     };
 
@@ -1168,7 +1180,7 @@ pub(crate) fn install_create_rootfs(
     let root_device = device.find_device_by_partno(layout.rootpn)?;
 
     // Verify the partition type matches the DPS root partition type for this architecture
-    let expected_parttype = bootc_blockdev::dps::this_arch_root();
+    let expected_parttype = target_arch.root_partition_type();
     if !root_device
         .parttype
         .as_ref()

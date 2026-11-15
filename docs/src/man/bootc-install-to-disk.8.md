@@ -181,6 +181,19 @@ set `discoverable-partitions = true` in their install configuration
     - ukiboot
     - none
 
+**--target-arch**=*TARGET_ARCH*
+
+    The architecture of the image being installed. Defaults to the architecture bootc runs on. Installing for another architecture is supported for `install to-disk` with the composefs backend and systemd-boot, and needs a systemd whose `bootctl install` supports `--install-source`
+
+    Possible values:
+    - x86_64
+    - aarch64
+    - s390x
+    - powerpc64
+    - powerpc64le
+    - riscv64
+    - arm
+
 **--via-loopback**
 
     Instead of targeting a block device, write to a file via loopback

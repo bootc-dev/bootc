@@ -146,6 +146,9 @@ pub(crate) mod completion;
 pub(crate) mod config;
 mod osbuild;
 pub(crate) mod osconfig;
+pub(crate) mod target_arch;
+
+use target_arch::TargetArch;
 
 use std::collections::HashMap;
 use std::io::Write;
@@ -393,6 +396,27 @@ pub(crate) struct InstallConfigOpts {
     #[clap(long)]
     #[serde(default)]
     pub(crate) bootloader: Option<Bootloader>,
+
+    /// The architecture of the image being installed. Defaults to the
+    /// architecture bootc runs on. Installing for another architecture is
+    /// supported for `install to-disk` with the composefs backend and
+    /// systemd-boot, and needs a systemd whose `bootctl install` supports
+    /// `--install-source`.
+    #[clap(long)]
+    #[serde(default)]
+    pub(crate) target_arch: Option<TargetArch>,
+}
+
+impl InstallConfigOpts {
+    /// The architecture this install targets.
+    pub(crate) fn target_arch(&self) -> TargetArch {
+        self.target_arch.unwrap_or_else(TargetArch::host)
+    }
+
+    /// Whether this install targets an architecture other than the host's.
+    pub(crate) fn is_cross_arch(&self) -> bool {
+        !self.target_arch().is_host()
+    }
 }
 
 #[derive(Debug, Default, Clone, clap::Parser, Serialize, Deserialize, PartialEq, Eq)]
