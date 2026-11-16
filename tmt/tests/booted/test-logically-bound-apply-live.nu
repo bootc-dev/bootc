@@ -1,4 +1,4 @@
-# number: 49
+# number: 68
 # tmt:
 #   summary: Execute logically bound images tests for bootc apply-live bound-images
 #   duration: 30m
