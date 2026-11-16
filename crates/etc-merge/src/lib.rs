@@ -233,6 +233,98 @@ fn check_if_mergable(
     Ok(())
 }
 
+/// Compares a leaf (regular file or symlink) that exists in both the pristine and
+/// current etc, recording it in `diff.modified`
+fn check_leaf_modification(
+    old_leaf: &Leaf<CustomMetadata>,
+    leaf: &Leaf<CustomMetadata>,
+    new: &Directory<CustomMetadata>,
+    inode: &Inode<CustomMetadata>,
+    current_path: &Path,
+    current_etc_fd: &CapStdDir,
+    pristine_etc_fd: &CapStdDir,
+    diff: &mut Diff,
+) -> anyhow::Result<()> {
+    use composefs::generic_tree::LeafContent::*;
+
+    if !stat_eq_ignore_mtime(&old_leaf.stat, &leaf.stat) {
+        diff.modified.push(current_path.to_path_buf());
+        check_if_mergable(new, inode, current_path, diff)?;
+        return Ok(());
+    }
+
+    match (&old_leaf.content, &leaf.content) {
+        (Regular(old_meta), Regular(current_meta)) => {
+            let modified = match (&old_meta.verity, &current_meta.verity) {
+                // We have fsverity enabled for one file, but not the other
+                // This could happen but is unlikely. The file may or may not
+                // have been modified, compute the content hash to check
+                (None, Some(_)) | (Some(_), None) => {
+                    let mut pristine_hash = old_meta.content_hash.clone();
+                    let mut current_hash = current_meta.content_hash.clone();
+
+                    let compute_hash = |mut file: cap_std::fs::File| -> anyhow::Result<String> {
+                        let mut hasher =
+                            openssl::hash::Hasher::new(openssl::hash::MessageDigest::sha256())?;
+                        std::io::copy(&mut file, &mut hasher)?;
+                        Ok(hex::encode(hasher.finish()?))
+                    };
+
+                    if pristine_hash.is_empty() {
+                        let file = pristine_etc_fd.open(current_path).with_context(|| {
+                            anyhow::anyhow!(
+                                "Opening {} in pristine etc for computing hash",
+                                current_path.display()
+                            )
+                        })?;
+                        pristine_hash = compute_hash(file)?;
+                    }
+
+                    if current_hash.is_empty() {
+                        let file = current_etc_fd.open(current_path).with_context(|| {
+                            anyhow::anyhow!(
+                                "Opening {} in current etc for computing hash",
+                                current_path.display()
+                            )
+                        })?;
+                        current_hash = compute_hash(file)?;
+                    }
+
+                    pristine_hash != current_hash
+                }
+                (Some(old_verity), Some(current_verity)) => old_verity != current_verity,
+                _ => old_meta.content_hash != current_meta.content_hash,
+            };
+
+            if modified {
+                // File modified in some way
+                diff.modified.push(current_path.to_path_buf());
+                check_if_mergable(new, inode, current_path, diff)?;
+            }
+        }
+
+        (Symlink(old_link), Symlink(current_link)) => {
+            if old_link != current_link {
+                // Symlink modified in some way
+                diff.modified.push(current_path.to_path_buf());
+                check_if_mergable(new, inode, current_path, diff)?;
+            }
+        }
+
+        (Symlink(..), Regular(..)) | (Regular(..), Symlink(..)) => {
+            // File changed to symlink or vice-versa
+            diff.modified.push(current_path.to_path_buf());
+            check_if_mergable(new, inode, current_path, diff)?;
+        }
+
+        (a, b) => {
+            unreachable!("{a:?} modified to {b:?}")
+        }
+    }
+
+    Ok(())
+}
+
 // 1. Files in the currently booted deployment’s /etc which were modified from the default /usr/etc (of the same deployment) are retained.
 //
 // 2. Files in the currently booted deployment’s /etc which were not modified from the default /usr/etc (of the same deployment)
@@ -259,8 +351,6 @@ fn get_modifications(
     mut current_path: PathBuf,
     diff: &mut Diff,
 ) -> anyhow::Result<()> {
-    use composefs::generic_tree::LeafContent::*;
-
     for (path, inode) in current.sorted_entries() {
         current_path.push(path);
 
@@ -343,78 +433,16 @@ fn get_modifications(
                         let leaf = &current_leaves[leaf_id.0];
                         let old_leaf = &pristine_leaves[old_leaf_id.0];
 
-                        if !stat_eq_ignore_mtime(&old_leaf.stat, &leaf.stat) {
-                            diff.modified.push(current_path.clone());
-                            check_if_mergable(new, inode, &current_path, diff)?;
-                            current_path.pop();
-                            continue;
-                        }
-
-                        match (&old_leaf.content, &leaf.content) {
-                            (Regular(old_meta), Regular(current_meta)) => {
-                                let modified = match (&old_meta.verity, &current_meta.verity) {
-                                    (None, None) => {
-                                        old_meta.content_hash != current_meta.content_hash
-                                    }
-                                    // We have fsverity enabled for one file, but not the other
-                                    // This could happen but is unlikely. The file may or may not
-                                    // have been modified, compute the content hash to check
-                                    (None, Some(_)) | (Some(_), None) => {
-                                        let mut pristine_hash = old_meta.content_hash.clone();
-                                        let mut current_hash = current_meta.content_hash.clone();
-
-                                        let compute_hash = |mut file: cap_std::fs::File| -> anyhow::Result<String> {
-                                            let mut hasher = openssl::hash::Hasher::new(
-                                                openssl::hash::MessageDigest::sha256(),
-                                            )?;
-                                            std::io::copy(&mut file, &mut hasher)?;
-                                            Ok(hex::encode(hasher.finish()?))
-                                        };
-
-                                        if pristine_hash.len() == 0 {
-                                            let file = pristine_etc_fd.open(&current_path)
-                                                .with_context(|| anyhow::anyhow!("Opening {} in pristine etc for computing hash", current_path.display()))?;
-                                            pristine_hash = compute_hash(file)?;
-                                        }
-
-                                        if current_hash.len() == 0 {
-                                            let file = current_etc_fd.open(&current_path)
-                                                .with_context(|| anyhow::anyhow!("Opening {} in current etc for computing hash", current_path.display()))?;
-                                            current_hash = compute_hash(file)?;
-                                        }
-
-                                        pristine_hash != current_hash
-                                    }
-                                    (Some(old_verity), Some(current_verity)) => {
-                                        old_verity != current_verity
-                                    }
-                                };
-
-                                if modified {
-                                    // File modified in some way
-                                    diff.modified.push(current_path.clone());
-                                    check_if_mergable(new, inode, &current_path, diff)?;
-                                }
-                            }
-
-                            (Symlink(old_link), Symlink(current_link)) => {
-                                if old_link != current_link {
-                                    // Symlink modified in some way
-                                    diff.modified.push(current_path.clone());
-                                    check_if_mergable(new, inode, &current_path, diff)?;
-                                }
-                            }
-
-                            (Symlink(..), Regular(..)) | (Regular(..), Symlink(..)) => {
-                                // File changed to symlink or vice-versa
-                                diff.modified.push(current_path.clone());
-                                check_if_mergable(new, inode, &current_path, diff)?;
-                            }
-
-                            (a, b) => {
-                                unreachable!("{a:?} modified to {b:?}")
-                            }
-                        }
+                        check_leaf_modification(
+                            old_leaf,
+                            leaf,
+                            new,
+                            inode,
+                            &current_path,
+                            current_etc_fd,
+                            pristine_etc_fd,
+                            diff,
+                        )?;
                     }
 
                     Err(ImageError::IsADirectory(..)) => {
