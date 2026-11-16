@@ -67,7 +67,7 @@ def secure_boot_enabled [] {
     $enabled == 1
 }
 
-def verify_image_mounts [base deployment_etc_marker staged_marker staged_fixture] {
+def verify_image_mounts [base deployment_etc_marker staged_marker staged_marker_content staged_fixture] {
     let sysroot_options = (
         findmnt --mountpoint /sysroot --json
         | from json
@@ -127,7 +127,7 @@ def verify_image_mounts [base deployment_etc_marker staged_marker staged_fixture
             assert ($staged_os_release | path exists) "staged /usr mount should contain lib/os-release"
             let staged_marker_path = ($staged_target | path join "share" ($staged_marker | path basename))
             assert ($staged_marker_path | path exists) "staged /usr mount should contain the staged image marker"
-            assert equal (open $staged_marker_path | into string) "staged image mount marker\n" "staged image marker content should match exactly"
+            assert equal (open $staged_marker_path | into string) $staged_marker_content "staged image marker content should match exactly"
             assert_mount_options $staged_target
         }
         let sysroot_options_after = (
@@ -171,7 +171,7 @@ let test_outcome = try {
         false
     } else {
         bootc image copy-to-storage
-        let containerfile = (tap make_uki_containerfile $"FROM localhost/bootc as base\nRUN printf '%s\\n' '($staged_marker_content)' > ($staged_marker)")
+        let containerfile = (tap make_uki_containerfile $"FROM localhost/bootc as base\nRUN printf '%s' '($staged_marker_content)' > ($staged_marker)")
         let build_result = (do -i { $containerfile | podman build --network=none -t $staged_tag $base -f - } | complete)
         assert equal $build_result.exit_code 0 $"failed to build staged image fixture: ($build_result.stderr)"
 
@@ -187,7 +187,7 @@ let test_outcome = try {
         assert ($staged_status.image.imageDigest != $booted_digest) "staged image digest should differ from the booted image digest"
         true
     }
-    verify_image_mounts $base $deployment_etc_marker $staged_marker $staged_fixture
+    verify_image_mounts $base $deployment_etc_marker $staged_marker $staged_marker_content $staged_fixture
 } catch { |error| { result: $error, mounted: [] } }
 let mount_cleanup_errors = (cleanup_targets $test_outcome.mounted)
 mut cleanup_errors = $mount_cleanup_errors
