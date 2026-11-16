@@ -5,7 +5,7 @@ use std::borrow::Cow;
 use std::ffi::{CString, OsStr};
 use std::fs::create_dir_all;
 use std::os::unix::process::CommandExt;
-use std::process::Command;
+use std::process::{Command, Output};
 
 use anyhow::{Context, Result};
 use cap_std_ext::camino::Utf8Path;
@@ -207,6 +207,19 @@ impl<'a> ChrootCmd<'a> {
         args: impl IntoIterator<Item = S>,
     ) -> Result<String> {
         self.build_command(args)?.log_debug().run_get_string()
+    }
+
+    /// Run the specified command inside the chroot and return its exit
+    /// status along with its stdout and stderr, like [`Command::output`].
+    /// Unlike the other methods this does not fail when the command exits
+    /// unsuccessfully, only when it cannot be run. `args` must include the
+    /// program as its first element.
+    pub fn output<S: AsRef<OsStr>>(self, args: impl IntoIterator<Item = S>) -> Result<Output> {
+        let mut cmd = self.build_command(args)?;
+        let description = cmd.to_string_pretty();
+        cmd.log_debug()
+            .output()
+            .with_context(|| format!("Running {description}"))
     }
 }
 
