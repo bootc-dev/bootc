@@ -42,10 +42,13 @@ def mount_image [deployment source target] {
     }
 }
 
-def secure_boot_enabled [] {
+def get_secure_boot_state [] {
     let secure_boot_var = "/sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c"
-    let read_result = (do -i { ^od -An -t u1 $secure_boot_var } | complete)
+    let read_result = (do -i { ^env LC_ALL=C od -An -t u1 $secure_boot_var } | complete)
     if $read_result.exit_code != 0 {
+        if ($read_result.stderr | str contains $"od: ($secure_boot_var): No such file or directory") {
+            return "unknown"
+        }
         error make {
             msg: $"Failed to read Secure Boot EFI variable ($secure_boot_var): ($read_result.stderr)"
         }
@@ -64,7 +67,7 @@ def secure_boot_enabled [] {
     if not ($enabled in [0 1]) {
         error make { msg: $"Invalid Secure Boot EFI variable value at ($secure_boot_var): ($enabled)" }
     }
-    $enabled == 1
+    if $enabled == 1 { "enabled" } else { "disabled" }
 }
 
 def verify_image_mounts [base deployment_etc_marker staged_marker staged_marker_content staged_fixture] {
@@ -160,14 +163,18 @@ let test_outcome = try {
     } else {
         (($booted_composefs.bootType? | default "" | str downcase) == "uki")
     }
-    let skip_staged_fixture = if $is_composefs_uki {
-        secure_boot_enabled
+    let secure_boot_state = if $is_composefs_uki {
+        get_secure_boot_state
     } else {
-        false
+        null
     }
     assert (not ($staged_marker | path exists)) "staged image marker must be absent from booted /usr before building the fixture"
-    let staged_fixture = if $skip_staged_fixture {
-        print "SKIP: Secure Boot composefs UKI; tap's staged fixture is unsealed and cannot be signed; booted checks still run"
+    let staged_fixture = if $is_composefs_uki and $secure_boot_state != "disabled" {
+        if $secure_boot_state == "enabled" {
+            print "SKIP: Secure Boot is enabled for the composefs UKI; tap's staged fixture is unsealed and cannot be signed; booted checks still run"
+        } else {
+            print "SKIP: Secure Boot state is unknown because the EFI variable is missing; skipping the unsealed composefs UKI staged fixture; booted checks still run"
+        }
         false
     } else {
         bootc image copy-to-storage
