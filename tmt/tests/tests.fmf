@@ -301,3 +301,10 @@ check:
     enabled: false
     because: the derived images are built in the VM, which has no keys to sign their UKIs for Secure Boot
   test: nu booted/test-composefs-xbootldr.nu
+
+/test-68-install-bcachefs-multi-device:
+  summary: Test install to-filesystem on a multi-device bcachefs root
+  duration: 30m
+  require:
+  - dosfstools
+  test: nu booted/test-install-bcachefs-multi-device.nu
