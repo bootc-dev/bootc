@@ -55,7 +55,9 @@ The `install` section supports these subfields:
 - `preserve-var-skip`: An array of relative paths below `/var` to exclude when
     the experimental `bootc install to-existing-root --experimental --preserve-var`
     copies data. Each path may contain at most one slash. The always-excluded paths
-    cannot be re-included.
+    cannot be re-included. See the
+    [experimental `/var` preservation guide](../bootc-experimental-preserve-var.7.md)
+    for details.
 
 # filesystem
 

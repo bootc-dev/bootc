@@ -27,9 +27,17 @@ can leave a partial migration. The copy is not a consistent snapshot of live
 data; stop stateful services or use a consistent snapshot before copying live
 database data. There is no crash-durability guarantee: copied content and
 renames are not guaranteed to survive sudden power loss or a kernel failure.
+Do not combine `--preserve-var` with `--replace=wipe`, which would erase the
+source `/var` before it can be copied. An interrupted migration may leave
+hidden `.bootc-preserve-var.*` staging directories in the new `/var`; they are
+not automatically cleaned up, so make sure no migration is still running and
+verify an individual directory is abandoned before removing it.
 The paths `tmp`, `cache`, `log/journal`, and `lib/containers` are always excluded. Repeat
 `--preserve-var-skip` to exclude additional paths relative to `/var`; each path
 may contain at most one slash, for example `lib/rpm`.
+
+See the [experimental preserve-var guide](../bootc-experimental-preserve-var.7.md)
+for usage details and limitations.
 
 ## Managing configuration: before and after reboot
 
