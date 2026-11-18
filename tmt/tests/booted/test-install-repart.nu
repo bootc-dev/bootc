@@ -6,6 +6,15 @@
 use std assert
 use tap.nu
 
+# DPS UUIDs
+const ESP_DPS_UUID = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b"
+const XBOOTLDR_DPS_UUID = "bc13c2ff-59e6-4262-a352-b275fd6f7172"
+const BIOS_BOOT_DPS_UUID = "21686148-6449-6e6f-744e-656564454649"
+const HOME_DPS_UUID = "933ac7e1-2eb4-4f13-b844-0e14e2aef915"
+const SWAP_DPS_UUID = "0657fd6d-a4ab-43c4-84e5-0933c84b4f4f"
+# NOTE: This is DPS UUID for x86 root
+const ROOT_DPS_UUID = "4f68bce3-e8cd-4db1-96e7-fbcaf984b709"
+
 let st = bootc status --json | from json
 
 let bootloader = if ($st.status.booted.composefs? != null) {
@@ -18,10 +27,10 @@ let bootloader = if ($st.status.booted.composefs? != null) {
 # installation currently is just a frankeinstined version of grub  
 # install so we need BIOS partition
 let bios = if $bootloader == "grub" or $bootloader == "grub-cc" {
-        "
+        $"
 RUN <<EOF cat > /usr/lib/repart.d/00-bios.conf
 [Partition]
-Type=21686148-6449-6e6f-744e-656564454649
+Type=($BIOS_BOOT_DPS_UUID)
 Label=BIOS-BOOT
 SizeMinBytes=1M
 SizeMaxBytes=1M
@@ -95,13 +104,11 @@ EOF
         let children = ($parts.blockdevices.0.children)
         let part_types = ($children | get parttype)
 
-        # ESP GUID
-        let esp_guid = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b"
-        assert ($part_types | any {|t| ($t | str downcase) == $esp_guid }) "ESP partition not found"
+        assert ($part_types | any {|t| ($t | str downcase) == $ESP_DPS_UUID }) "ESP partition not found"
 
         let esp_mb = if (tap is_composefs) { 2048 } else { 512 }
         # Verify ESP size
-        let esp_part = ($children | where {|t| ($t.parttype | str downcase) == $esp_guid } | first)
+        let esp_part = ($children | where {|t| ($t.parttype | str downcase) == $ESP_DPS_UUID } | first)
         let esp_size_bytes = ($esp_part.size | into int)
         let esp_expected = ($esp_mb * 1024 * 1024)                                                                                                                                       
 
@@ -129,9 +136,7 @@ EOF
         let children = ($parts.blockdevices.0.children)
         let part_types = ($children | get parttype)
 
-        # ESP GUID
-        let esp_guid = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b"
-        assert ($part_types | any {|t| ($t | str downcase) == $esp_guid }) "ESP partition not found"
+        assert ($part_types | any {|t| ($t | str downcase) == $ESP_DPS_UUID }) "ESP partition not found"
 
         # Root partition (architecture-specific, just check it exists beyond ESP)
         assert (($children | length) >= 2) "Expected at least 2 partitions (ESP + root)"
@@ -157,9 +162,7 @@ def verify_part_layout_second_boot [] {
         let children = ($parts.blockdevices.0.children)
         let part_types = ($children | get parttype)
 
-        # ESP GUID
-        let esp_guid = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b"
-        assert ($part_types | any {|t| ($t | str downcase) == $esp_guid }) "ESP partition not found"
+        assert ($part_types | any {|t| ($t | str downcase) == $ESP_DPS_UUID }) "ESP partition not found"
 
         # Should have ESP + root (and Bios for grub)
         assert (($children | length) >= 2) "Expected at least 2 partitions"
@@ -258,11 +261,9 @@ def verify_first_boot [image: string] {
         # Should have ESP + root + home + swap (and Bios for grub)
         assert (($children | length) >= 4) "Expected at least 4 partitions"
 
-        let home_guid = "933ac7e1-2eb4-4f13-b844-0e14e2aef915"
-        assert ($part_types | any {|t| ($t | str downcase) == $home_guid }) "home partition not found"
+        assert ($part_types | any {|t| ($t | str downcase) == $HOME_DPS_UUID }) "home partition not found"
 
-        let swap_guid = "0657fd6d-a4ab-43c4-84e5-0933c84b4f4f"
-        assert ($part_types | any {|t| ($t | str downcase) == $swap_guid }) "swap partition not found"
+        assert ($part_types | any {|t| ($t | str downcase) == $SWAP_DPS_UUID }) "swap partition not found"
 
         print "PASS: repart first boot verified"
     } catch { |e|
@@ -325,9 +326,117 @@ EOF
     rm -rvf /var/disk.img
 }
 
+
+def test_repart_luks [] {
+    tap begin "install with systemd-repart (LUKS)"
+
+    let xbootldr_fstype = if (tap is_composefs) {
+      "vfat"
+    } else {
+      # Ostree creates symlinks here so we can't use vfat
+      "ext4"
+    }
+
+    # GRUB cannot read a LUKS-encrypted /boot, so when booting via grub we need
+    # an unencrypted XBOOTLDR partition (holding the kernel/initramfs) alongside
+    # the BIOS boot partition already provided by $bios. grub-cc and systemd-boot
+    # / UKI don't require this.
+    let xbootldr = if $bootloader == "grub" {
+        $"
+RUN <<EOF cat > /usr/lib/repart.d/05-xbootldr.conf
+[Partition]
+Type=xbootldr
+Format=($xbootldr_fstype)
+SizeMinBytes=512M
+SizeMaxBytes=512M
+EOF
+        "
+    } else {
+        ""
+    }
+
+    # Root partition is LUKS-encrypted; repart enrolls the keyfile baked into
+    # the image, and bootc opens it via KeyFile= during install.
+    let dockerfile = $"FROM localhost/bootc as base
+RUN rm -rf /etc/repart.d /usr/lib/repart.d /usr/local/lib/repart.d /run/repart.d
+RUN rm -rf /usr/lib/bootc/bound-images.d/*
+
+RUN mkdir -p /usr/lib/repart.d
+($bios)
+($xbootldr)
+
+# NOTE: This would usually be in a tmp volume, but okay for testing
+RUN printf '%s' 'luks-test-passphrase' > /etc/luks-keyfile
+
+RUN <<'EOF' cat > /usr/lib/repart.d/00-esp.conf
+[Partition]
+Type=esp
+Format=vfat
+SizeMinBytes=1024M
+SizeMaxBytes=1024M
+EOF
+
+RUN <<'EOF' cat > /usr/lib/repart.d/10-root.conf
+[Partition]
+Type=root
+Format=ext4
+Encrypt=key-file
+KeyFile=/etc/luks-keyfile
+EOF
+"
+    (tap make_uki_containerfile $dockerfile) | podman build -t localhost/bootc-repart-luks . -f -
+
+    truncate -s 10G /var/disk.img
+    setenforce 0
+
+    run_install_to_disk localhost/bootc-repart-luks ["--run-repart"]
+
+    # Verify the root partition is LUKS-encrypted
+    let loop = (losetup -f --show /var/disk.img | str trim)
+    try {
+        partx -u $loop
+        udevadm settle
+        let parts = (lsblk -J -o name,parttype,fstype $loop | from json)
+        let children = ($parts.blockdevices.0.children)
+        let part_types = ($children | get parttype)
+
+        assert ($part_types | any {|t| ($t | str downcase) == $ESP_DPS_UUID }) "ESP partition not found"
+
+        # For grub we also expect an XBOOTLDR partition for /boot
+        if $bootloader == "grub" {
+            assert ($part_types | any {|t| ($t | str downcase) == $XBOOTLDR_DPS_UUID }) "XBOOTLDR partition not found"
+        }
+
+        # Root partition must be LUKS encrypted
+        assert ($children | any {|c| ($c.fstype? | default "") == "crypto_LUKS" }) "Root partition is not LUKS encrypted"
+
+        # Root ptn number
+        let root = (
+            $children
+            | enumerate
+            | where {|c| ($c.item.parttype? | default "" | str downcase) == $ROOT_DPS_UUID }
+            | first
+        )
+        
+        # Make sure the partition opens with the provided keyphrase
+        printf '%s' luks-test-passphrase | cryptsetup luksOpen --key-file=- $"($loop)p($root.index + 1)" root
+        assert ("/dev/mapper/root" | path exists) "LUKS root failed to open"
+        cryptsetup luksClose root
+
+        print "PASS: repart created a LUKS-encrypted root"
+    } catch { |e|
+        losetup -d $loop
+        error make { msg: $"LUKS verification failed: ($e.msg)" }
+    }
+
+    losetup -d $loop
+    rm -rvf /var/disk.img
+}
+
 def main [] {
     test_repart_full
     test_repart_no_root
     test_repart_no_root_growable_esp
+    test_repart_luks
     tap ok
 }
