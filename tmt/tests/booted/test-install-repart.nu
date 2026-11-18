@@ -355,27 +355,23 @@ EOF
         ""
     }
 
-    # Root partition is LUKS-encrypted; repart enrolls the keyfile baked into
-    # the image, and bootc opens it via KeyFile= during install.
-    let dockerfile = $"FROM localhost/bootc as base
-RUN rm -rf /etc/repart.d /usr/lib/repart.d /usr/local/lib/repart.d /run/repart.d
-RUN rm -rf /usr/lib/bootc/bound-images.d/*
+    # repart's KeyFile= was introduced in systemd 259. On older systemd it is
+    # unavailable, so encrypt the root with TPM2 instead of a keyfile
+    # This works as bcvk starts a VM with emulated TPM
+    let systemd_version = (systemctl --version | lines | first | split row ' ' | get 1 | into int)
+    let use_keyfile = $systemd_version >= 259
 
-RUN mkdir -p /usr/lib/repart.d
-($bios)
-($xbootldr)
-
-# NOTE: This would usually be in a tmp volume, but okay for testing
+    # NOTE: This would usually be in a tmp volume, but okay for testing
+    let keyfile_setup = if $use_keyfile {
+        "
 RUN printf '%s' 'luks-test-passphrase' > /etc/luks-keyfile
+"
+    } else {
+        ""
+    }
 
-RUN <<'EOF' cat > /usr/lib/repart.d/00-esp.conf
-[Partition]
-Type=esp
-Format=vfat
-SizeMinBytes=1024M
-SizeMaxBytes=1024M
-EOF
-
+    let root_conf = if $use_keyfile {
+        "
 RUN <<'EOF' cat > /usr/lib/repart.d/10-root.conf
 [Partition]
 Type=root
@@ -383,6 +379,37 @@ Format=ext4
 Encrypt=key-file
 KeyFile=/etc/luks-keyfile
 EOF
+"
+    } else {
+        "
+RUN <<'EOF' cat > /usr/lib/repart.d/10-root.conf
+[Partition]
+Type=root
+Format=ext4
+Encrypt=tpm2
+EOF
+"
+    }
+
+    # Root partition is LUKS-encrypted. On systemd >= 259 repart enrolls the
+    # keyfile baked into the image (bootc opens it via KeyFile= during install);
+    # on older systemd it is sealed to the TPM instead.
+    let dockerfile = $"FROM localhost/bootc as base
+RUN rm -rf /etc/repart.d /usr/lib/repart.d /usr/local/lib/repart.d /run/repart.d
+RUN rm -rf /usr/lib/bootc/bound-images.d/*
+
+RUN mkdir -p /usr/lib/repart.d
+($bios)
+($xbootldr)
+($keyfile_setup)
+RUN <<'EOF' cat > /usr/lib/repart.d/00-esp.conf
+[Partition]
+Type=esp
+Format=vfat
+SizeMinBytes=1024M
+SizeMaxBytes=1024M
+EOF
+($root_conf)
 "
     (tap make_uki_containerfile $dockerfile) | podman build -t localhost/bootc-repart-luks . -f -
 
@@ -418,9 +445,19 @@ EOF
             | first
         )
         
-        # Make sure the partition opens with the provided keyphrase
-        printf '%s' luks-test-passphrase | cryptsetup luksOpen --key-file=- $"($loop)p($root.index + 1)" root
-        assert ("/dev/mapper/root" | path exists) "LUKS root failed to open"
+        let rootdev = $"($loop)p($root.index + 1)"
+        if $use_keyfile {
+            # Make sure the partition opens with the enrolled keyfile passphrase
+            printf '%s' luks-test-passphrase | cryptsetup luksOpen --key-file=- $rootdev root
+            assert ("/dev/mapper/root" | path exists) "LUKS root failed to open"
+        } else {
+            # TPM2-sealed: unlock via the enrolled systemd-tpm2 token. CentOS 9
+            # ships no standalone systemd-cryptsetup binary, so use cryptsetup's
+            # token handler
+            cryptsetup luksOpen --token-only $rootdev root
+            assert ("/dev/mapper/root" | path exists) "LUKS root failed to open via TPM"
+        }
+
         cryptsetup luksClose root
 
         print "PASS: repart created a LUKS-encrypted root"
