@@ -1401,16 +1401,21 @@ pub(crate) fn install_create_rootfs(
 
     let boot_uuid = match bootdev {
         Some(bootdev) => {
-            let u = if layout.used_repart {
+            if layout.used_repart {
                 let u = bootdev
                     .uuid
-                    .as_ref()
+                    .clone()
                     .ok_or_else(|| anyhow::anyhow!("bootdev UUID not found"))?;
 
-                u.parse::<uuid::Uuid>()
-                    .with_context(|| format!("Parsing bootdev UUID {u}"))?
+                // XBOOTLDR (which is of type vfat) does not use 128-bit UUID, but uses
+                // 32-bit identifiers rendering a parse would fail here so we now just
+                // return a string
+                //
+                // We could use PARTUUID, but deep down the call stack we have assumptions
+                // about UUID everywhere
+                Some(u)
             } else {
-                mkfs(
+                let u = mkfs(
                     &bootdev.path(),
                     root_filesystem.as_str().try_into()?,
                     "boot",
@@ -1418,9 +1423,10 @@ pub(crate) fn install_create_rootfs(
                     [],
                 )
                 .context("Initializing /boot")?
-            };
+                .to_string();
 
-            Some(u)
+                Some(u)
+            }
         }
         None => None,
     };
@@ -1508,16 +1514,38 @@ pub(crate) fn install_create_rootfs(
     let fstype = &root_filesystem.to_string();
     bootc_mount::mount_typed(&rootdev_path, fstype, &physical_root_path)?;
     let target_rootfs = Dir::open_ambient_dir(&physical_root_path, cap_std::ambient_authority())?;
-    crate::lsm::ensure_dir_labeled(&target_rootfs, "", Some("/".into()), 0o755.into(), sepolicy)?;
+    crate::lsm::ensure_dir_labeled(&target_rootfs, "", Some("/".into()), 0o755.into(), sepolicy)
+        .context("Labeling rootfs")?;
     let physical_root = Dir::open_ambient_dir(&physical_root_path, cap_std::ambient_authority())?;
+
     let bootfs = physical_root_path.join(BOOT);
+
     // Create the underlying mount point directory, which should be labeled
-    crate::lsm::ensure_dir_labeled(&target_rootfs, BOOT, None, 0o755.into(), sepolicy)?;
+    crate::lsm::ensure_dir_labeled(&target_rootfs, BOOT, None, 0o755.into(), sepolicy)
+        .context("Labeling bootfs")?;
+
     if let Some(bootdev) = bootdev {
-        bootc_mount::mount_typed(&bootdev.path(), fstype, &bootfs)?;
+        let bootfstype = if layout.used_repart {
+            bootdev
+                .fstype
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!("bootfs not found"))?
+        } else {
+            // We use the root_filesystem's fstype for bootfs as well in the
+            // sfdisk case
+            root_filesystem.as_str()
+        };
+
+        bootc_mount::mount_typed(&bootdev.path(), bootfstype, &bootfs)?;
+
+        // And we want to label the root mount of /boot
+        //
+        // vfat doesn't support different selinux labels per file
+        if bootfstype != "vfat" {
+            crate::lsm::ensure_dir_labeled(&target_rootfs, BOOT, None, 0o755.into(), sepolicy)
+                .context("Labeling mounted bootfs")?;
+        }
     }
-    // And we want to label the root mount of /boot
-    crate::lsm::ensure_dir_labeled(&target_rootfs, BOOT, None, 0o755.into(), sepolicy)?;
 
     // Create the EFI system partition, if applicable
     if let Some(esp_partno) = layout.esp_partno {
