@@ -1291,8 +1291,15 @@ pub(crate) fn install_create_rootfs(
                     .any(|id| !covered.contains(id.as_str()));
 
                 if has_tpm {
+                    let headless = if has_plain_slot {
+                        // Don't disable password querying
+                        ""
+                    } else {
+                        ",headless=true"
+                    };
+
                     // TPM + keyfile or TPM only, doesn't really matter
-                    kargs.push("luks.options=tpm2-device=auto,headless=true".into());
+                    kargs.push(format!("luks.options=tpm2-device=auto{headless}"));
                 };
 
                 // LUKS device is opened by a passphrase or a keyfile
