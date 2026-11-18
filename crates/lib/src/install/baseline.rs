@@ -322,6 +322,7 @@ fn repart_partition_is_required(part: &RepartPartition) -> bool {
     let ptype = part.partition_type.as_str();
     ptype.starts_with("root")
         || ptype.starts_with("esp")
+        || ptype.starts_with("xbootldr")
         || ptype == "bios"
         || ptype.eq_ignore_ascii_case(BIOS_BOOT)
 }
@@ -438,20 +439,25 @@ fn systemd_repart(
     if has_root {
         // Root partition is defined in repart.d config, run for real
         let filtered;
+
         let definitions = if need_filtered_definitions(generic_image)? {
             filtered =
                 tempfile::tempdir().context("Creating a directory for repart.d definitions")?;
+
             collect_repart_definitions(
                 &dry_partitions,
                 filtered.path(),
                 repart_partition_is_required,
             )?;
+
             RepartDefinitions::Only(filtered.path())
         } else {
             RepartDefinitions::Image
         };
+
         let partitions = systemd_repart_run(device, generic_image, false, definitions)?;
         let layout = parse_repart_layout(&partitions)?;
+
         return Ok(layout);
     }
 
@@ -565,7 +571,7 @@ impl RepartDefinitions<'_> {
                 // lacks --include-partitions=, callers pass copies of just these
                 // definitions as Only instead, see need_filtered_definitions.
                 if generic_image {
-                    args.push(format!("--include-partitions=root,esp,{BIOS_BOOT}").into());
+                    args.push(format!("--include-partitions=root,esp,xbootldr,{BIOS_BOOT}").into());
                 }
             }
         }
@@ -613,13 +619,13 @@ fn systemd_repart_run(
         anyhow::bail!("systemd-repart failed: {stderr}");
     }
 
-    if !dry_run {
-        tracing::debug!(
-            "Partitions ({}): {}",
-            if dry_run { "Dry Run" } else { "Actual" },
-            std::str::from_utf8(&output.stdout).unwrap_or("Failed to serialize output as UTF-8")
-        );
-    }
+    let str = std::str::from_utf8(&output.stdout).unwrap_or("Failed to serialize output as UTF-8");
+
+    if dry_run {
+        tracing::trace!("Partitions(Dry Run): {str}")
+    } else {
+        tracing::debug!("Partitions(Actual): {str}")
+    };
 
     serde_json::from_slice(&output.stdout).with_context(|| {
         format!(
@@ -1724,7 +1730,11 @@ mod tests {
                     {"type": "xbootldr", "file": "10-xbootldr.conf", "raw_size": 1073741824},
                     {"type": "root-x86-64", "file": "50-root.conf", "raw_size": 7516192768}
                 ]"#,
-                vec![("00-bios.conf", 1048576), ("00-esp.conf", 536870912)],
+                vec![
+                    ("00-bios.conf", 1048576),
+                    ("00-esp.conf", 536870912),
+                    ("10-xbootldr.conf", 1073741824),
+                ],
             ),
             (r#"[]"#, vec![]),
         ];
@@ -1742,7 +1752,7 @@ mod tests {
     #[test]
     fn test_repart_definitions_args() {
         use RepartDefinitions::{Image, Only, WithGenerated};
-        let include = format!("--include-partitions=root,esp,{BIOS_BOOT}");
+        let include = format!("--include-partitions=root,esp,xbootldr,{BIOS_BOOT}");
         let with_generated = [
             "--definitions=/etc/repart.d",
             "--definitions=/run/repart.d",
