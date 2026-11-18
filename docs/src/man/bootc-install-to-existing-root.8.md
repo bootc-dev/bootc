@@ -16,8 +16,9 @@ host root filesystem\'s `/boot` partition will be wiped, but the
 content of the existing root will otherwise be retained, and will need
 to be cleaned up if desired when rebooted into the new root.
 
-The opt-in `--preserve-var` option copies the running system's `/var` into the
-new deployment before rebooting. It requires the OSTree backend, uses reflinks
+The experimental `--preserve-var` option copies the running system's `/var` into
+the new deployment before rebooting. It requires `--experimental` and the OSTree
+backend, uses reflinks
 when supported, and otherwise performs a full copy. Reflinks are created per
 file. Each new entry is staged and renamed into place atomically for namespace
 visibility, but the migration is not a tree-wide point-in-time snapshot or a
@@ -230,14 +231,6 @@ of migrating the fstab entries. See the "Injecting kernel arguments" section abo
 
     Add the bootc-destructive-cleanup systemd service to delete files from the previous install on first boot
 
-**--preserve-var**
-
-    Preserve the running system's `/var` data into the new bootc deployment
-
-**--preserve-var-skip**=*PATH*
-
-    Relative paths below `/var` to leave out while preserving `/var`
-
 **--composefs-backend**
 
     Use the composefs backend instead of ostree. This is the default for images with a UKI, and for images with /usr/lib/composefs/setup-root-conf.toml and no ostree prepare-root.conf
@@ -257,6 +250,18 @@ of migrating the fstab entries. See the "Injecting kernel arguments" section abo
 **--global-uki-addon**=*GLOBAL*
 
     Experimental. Name of the global UKI addons to install without the ".addon.efi" suffix. This option can be provided multiple times if multiple addons are to be installed (composefs backend only). On upgrade and switch, global addons already installed are carried forward; passing this flag adds further addons on top
+
+**--experimental**
+
+    Acknowledge that this feature is experimental
+
+**--preserve-var**
+
+    Experimental. Requires `--experimental`; preserve the running system's `/var` data into the new bootc deployment
+
+**--preserve-var-skip**=*PATH*
+
+    Relative paths below `/var` to leave out while preserving `/var`. Requires `--preserve-var`
 
 <!-- END GENERATED OPTIONS -->
 

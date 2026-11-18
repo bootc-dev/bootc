@@ -555,7 +555,7 @@ case ${TMT_REBOOT_COUNT:-0} in
             -v /var/lib/containers:/var/lib/containers \
             --security-opt label=type:unconfined_t \
             "$target_image" \
-            bootc install to-existing-root --preserve-var --acknowledge-destructive \
+            bootc install to-existing-root --experimental --preserve-var --acknowledge-destructive \
             > /run/preserve-var-preflight.log 2>&1; then
             printf 'preserve-var unexpectedly accepted the special-file mountpoint\n' >&2
             exit 1
@@ -607,7 +607,7 @@ case ${TMT_REBOOT_COUNT:-0} in
             -v /var/lib/containers:/var/lib/containers \
             --security-opt label=type:unconfined_t \
             "$target_image" \
-            bootc install to-existing-root --preserve-var --acknowledge-destructive
+            bootc install to-existing-root --experimental --preserve-var --acknowledge-destructive
         if fsfreeze -u /var/log; then
             freeze_may_be_active=0
         else

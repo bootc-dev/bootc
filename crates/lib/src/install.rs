@@ -672,7 +672,12 @@ pub(crate) struct InstallToExistingRootOpts {
     #[clap(flatten)]
     pub(crate) composefs_opts: InstallComposefsOpts,
 
-    /// Preserve the running system's `/var` data into the new bootc deployment.
+    /// Acknowledge that this feature is experimental.
+    #[clap(long)]
+    pub(crate) experimental: bool,
+
+    /// Experimental. Requires `--experimental`; preserve the running system's `/var` data into the
+    /// new bootc deployment.
     ///
     /// Non-excluded content is copied with reflinks where individual files
     /// support them, falling back to ordinary copies as needed. Reflinks are
@@ -690,7 +695,7 @@ pub(crate) struct InstallToExistingRootOpts {
     /// entry is an abandoned migration artifact before manually removing it.
     /// Staged publication is atomic for visibility, but is not guaranteed
     /// durable across sudden power loss.
-    #[clap(long)]
+    #[clap(long, requires = "experimental")]
     pub(crate) preserve_var: bool,
 
     /// Relative paths below `/var` to leave out while preserving `/var`.
@@ -3887,14 +3892,43 @@ UUID=boot-uuid /boot ext4 defaults 0 0
     }
 
     #[test]
-    fn preserve_var_skip_requires_preserve_var() {
+    fn preserve_var_requires_experimental_and_skip_requires_preserve_var() {
+        assert!(InstallToExistingRootOpts::try_parse_from(["bootc"]).is_ok());
         assert!(
             InstallToExistingRootOpts::try_parse_from(["bootc", "--preserve-var-skip", "lib/rpm"])
                 .is_err()
         );
+        assert!(InstallToExistingRootOpts::try_parse_from(["bootc", "--preserve-var"]).is_err());
         assert!(
             InstallToExistingRootOpts::try_parse_from([
                 "bootc",
+                "--preserve-var",
+                "--experimental"
+            ])
+            .is_ok()
+        );
+        assert!(
+            InstallToExistingRootOpts::try_parse_from([
+                "bootc",
+                "--preserve-var",
+                "--preserve-var-skip",
+                "lib/rpm"
+            ])
+            .is_err()
+        );
+        assert!(
+            InstallToExistingRootOpts::try_parse_from([
+                "bootc",
+                "--experimental",
+                "--preserve-var-skip",
+                "lib/rpm"
+            ])
+            .is_err()
+        );
+        assert!(
+            InstallToExistingRootOpts::try_parse_from([
+                "bootc",
+                "--experimental",
                 "--preserve-var",
                 "--preserve-var-skip",
                 "lib/rpm"

@@ -381,8 +381,8 @@ pub(crate) enum InstallOpts {
     /// will be wiped, but the content of the existing root will otherwise be retained, and will
     /// need to be cleaned up if desired when rebooted into the new root.
     ///
-    /// When migrating from a package-mode system, use `--preserve-var` to copy `/var` data
-    /// into the new deployment before rebooting.
+    /// When migrating from a package-mode system, use `--experimental --preserve-var` to copy
+    /// `/var` data into the new deployment before rebooting. This feature is experimental.
     ToExistingRoot(crate::install::InstallToExistingRootOpts),
     /// Nondestructively create a fresh installation state inside an existing bootc system.
     ///
