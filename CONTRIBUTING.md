@@ -2,7 +2,7 @@
 
 Thanks for your interest in contributing!  At the current time,
 bootc is implemented in Rust, and calls out to important components
-which are written in Go (e.g. https://github.com/containers/image)
+which are written in Go (e.g. https://github.com/containers/container-libs)
 as well as C (e.g. https://github.com/ostreedev/ostree/).  Depending
 on what area you want to work on, you'll need to be familiar with
 the relevant language.
