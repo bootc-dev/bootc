@@ -4,9 +4,13 @@ use anyhow::{Context, Result};
 use cap_std::fs::Dir;
 use cap_std_ext::{cap_std, dirext::CapStdExtDirExt};
 use fn_error_context::context;
+use rustix::fs::StatVfsMountFlags;
 use serde::Serialize;
 
-const FACTS_PATH: &str = "etc/rhsm/facts/bootc.facts";
+/// Where subscription-manager reads facts from, relative to the root
+const FACTS_DIR: &str = "etc/rhsm/facts";
+/// The file the facts are written to, in [`FACTS_DIR`]
+const FACTS_FILE: &str = "bootc.facts";
 
 #[derive(Serialize, PartialEq, Eq, Debug, Default)]
 struct RhsmFacts {
@@ -88,20 +92,42 @@ impl From<crate::spec::HostStatus> for RhsmFacts {
     }
 }
 
+/// Whether `dir` is on a read-only mount.
+fn is_read_only_mount(dir: &Dir) -> Result<bool> {
+    let st = rustix::fs::fstatvfs(dir).context("Querying mount flags")?;
+    Ok(st.f_flag.contains(StatVfsMountFlags::RDONLY))
+}
+
+/// Write `facts` to [`FACTS_FILE`] in `facts_dir`.
+fn write_facts(facts_dir: &Dir, facts: &RhsmFacts) -> Result<()> {
+    facts_dir
+        .atomic_replace_with(FACTS_FILE, |w| {
+            serde_json::to_writer_pretty(w, facts)?;
+            anyhow::Ok(())
+        })
+        .with_context(|| format!("Writing /{FACTS_DIR}/{FACTS_FILE}"))
+}
+
 /// Publish facts for subscription-manager consumption
 #[context("Publishing facts")]
 pub(crate) async fn publish_facts(root: &Dir) -> Result<()> {
+    let facts_dir = root
+        .open_dir(FACTS_DIR)
+        .with_context(|| format!("Opening /{FACTS_DIR}"))?;
+    // /etc can be read-only for a whole boot, for instance while a
+    // systemd-confext is merged over it. There is nowhere to publish the
+    // facts then, which is not an error: the previously published facts stay
+    // until the next run with a writable /etc, such as on the next boot.
+    if is_read_only_mount(&facts_dir)? {
+        tracing::info!("/{FACTS_DIR} is on a read-only mount; not publishing facts");
+        return Ok(());
+    }
+
     let sysroot = super::cli::get_storage().await?;
     let ostree = sysroot.get_ostree()?;
     let (_, _, host) = crate::status::get_status_require_booted(ostree)?;
 
-    let facts = RhsmFacts::from(host.status);
-    root.atomic_replace_with(FACTS_PATH, |w| {
-        serde_json::to_writer_pretty(w, &facts)?;
-        anyhow::Ok(())
-    })
-    .with_context(|| format!("Writing {FACTS_PATH}"))?;
-    Ok(())
+    write_facts(&facts_dir, &RhsmFacts::from(host.status))
 }
 
 #[cfg(test)]
@@ -130,5 +156,26 @@ mod tests {
                 ..Default::default()
             }
         );
+    }
+
+    #[test]
+    fn test_write_facts() -> Result<()> {
+        let td = cap_std_ext::cap_tempfile::tempdir(cap_std_ext::cap_std::ambient_authority())?;
+        assert!(!is_read_only_mount(&td)?);
+
+        let facts = RhsmFacts {
+            booted_image: "quay.io/example/someimage:latest".into(),
+            booted_version: "nightly".into(),
+            ..Default::default()
+        };
+        write_facts(&td, &facts)?;
+        let written: serde_json::Value = serde_json::from_str(&td.read_to_string(FACTS_FILE)?)?;
+        assert_eq!(
+            written["bootc.booted.image"],
+            "quay.io/example/someimage:latest"
+        );
+        assert_eq!(written["bootc.booted.version"], "nightly");
+        assert_eq!(written["bootc.staged.image"], "");
+        Ok(())
     }
 }
