@@ -90,6 +90,21 @@ pub(crate) const PREPBOOT_GUID: &str = "9E1A2D38-C612-4316-AA26-8B49521E5A8B";
 #[cfg(feature = "install-to-disk")]
 pub(crate) const PREPBOOT_LABEL: &str = "PowerPC-PReP-boot";
 
+/// Name of the XBOOTLDR partition created by systemd-repart
+pub(crate) const REPART_XBOOTLDR: &str = "xbootldr";
+/// Name of the ESP created by systemd-repart
+pub(crate) const REPART_ESP: &str = "esp";
+/// Prefix of the name of root partition created by systemd-repart
+/// We have prefix here as the actual name of the partition is
+/// architecture dependent - root-x86-64, root-aarch64 etc
+pub(crate) const REPART_ROOT_PREFIX: &str = "root";
+/// Name of the BIOS partition created by systemd-repart
+pub(crate) const REPART_BIOS: &str = "bios";
+
+/// The name for the decrypted LUKS device
+#[cfg(feature = "install-to-disk")]
+const DECRYPTED_LUKS_NAME: &str = "bootc-root";
+
 #[derive(clap::ValueEnum, Default, Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum BlockSetup {
@@ -320,10 +335,10 @@ fn need_filtered_definitions(generic_image: bool) -> Result<bool> {
 /// even for a generic image: root, ESP or BIOS boot.
 fn repart_partition_is_required(part: &RepartPartition) -> bool {
     let ptype = part.partition_type.as_str();
-    ptype.starts_with("root")
-        || ptype.starts_with("esp")
-        || ptype.starts_with("xbootldr")
-        || ptype == "bios"
+    ptype.starts_with(REPART_ROOT_PREFIX)
+        || ptype == REPART_ESP
+        || ptype == REPART_XBOOTLDR
+        || ptype == REPART_BIOS
         || ptype.eq_ignore_ascii_case(BIOS_BOOT)
 }
 
@@ -434,7 +449,7 @@ fn systemd_repart(
 
     let has_root = dry_partitions
         .iter()
-        .any(|p| p.partition_type.starts_with("root-"));
+        .any(|p| p.partition_type.starts_with(REPART_ROOT_PREFIX));
 
     if has_root {
         // Root partition is defined in repart.d config, run for real
@@ -571,7 +586,11 @@ impl RepartDefinitions<'_> {
                 // lacks --include-partitions=, callers pass copies of just these
                 // definitions as Only instead, see need_filtered_definitions.
                 if generic_image {
-                    args.push(format!("--include-partitions=root,esp,xbootldr,{BIOS_BOOT}").into());
+                    args.push(
+                        format!(
+                            "--include-partitions={REPART_ROOT_PREFIX},{REPART_ESP},{REPART_XBOOTLDR},{BIOS_BOOT}"
+                        )
+                    .into());
                 }
             }
         }
@@ -650,9 +669,9 @@ fn parse_repart_layout(partitions: &[RepartPartition]) -> Result<PartitionLayout
         let partno = part.partno.unwrap_or(idx as u32) + 1;
 
         match part.partition_type.as_str() {
-            "esp" => esp_partno = Some(partno),
-            "xbootldr" => boot_partno = Some(partno),
-            t if t.starts_with("root-") => {
+            REPART_ESP => esp_partno = Some(partno),
+            REPART_XBOOTLDR => boot_partno = Some(partno),
+            t if t.starts_with(REPART_ROOT_PREFIX) => {
                 rootpn = Some(partno);
                 root_partition = Some(part.clone());
             }
@@ -803,7 +822,9 @@ fn aboot_repart_definitions(
     partitions: &[RepartPartition],
 ) -> Result<Vec<(String, String)>> {
     let mut definitions = Vec::new();
-    if layout == AbootDiskLayout::Ukiboot && !partitions.iter().any(|p| p.partition_type == "esp") {
+    if layout == AbootDiskLayout::Ukiboot
+        && !partitions.iter().any(|p| p.partition_type == REPART_ESP)
+    {
         let esp = format!(
             "[Partition]\nType=esp\nFormat=vfat\nSizeMinBytes={UKIBOOT_ESP_SIZE_MB}M\nSizeMaxBytes={UKIBOOT_ESP_SIZE_MB}M\n"
         );
@@ -858,7 +879,7 @@ fn aboot_repart_definitions(
 
     if partitions
         .iter()
-        .any(|p| p.partition_type.starts_with("root-"))
+        .any(|p| p.partition_type.starts_with(REPART_ROOT_PREFIX))
     {
         return Ok(definitions);
     }
@@ -1022,6 +1043,152 @@ fn get_keyfile(root_partition: &RepartPartition) -> Result<String> {
     anyhow::bail!("keyfile not found in repart definition");
 }
 
+/// Prepare the root device for the `Direct` block setup, handling LUKS if present.
+///
+/// `root_device` is the partition systemd-repart produced for the root. If it is
+/// not LUKS (`crypto_LUKS`), this is a no-op that just reports the device as-is.
+///
+/// If it *is* LUKS, this inspects the header, opens the volume, and computes the
+/// kernel arguments needed to unlock it at boot:
+///
+/// - **Opening (install time):** if a plain keyslot exists (passphrase/keyfile),
+///   the keyfile from the repart definition is used (`get_keyfile`); otherwise it
+///   relies on an enrolled token (e.g. TPM2). The decrypted volume is mapped as
+///   [`DECRYPTED_LUKS_NAME`].
+/// - **Kernel args (boot time):** when `discoverable` is false, `luks.uuid=` is
+///   emitted, plus `luks.options=tpm2-device=auto` (with `headless=true` only
+///   when there is no passphrase fallback) if a `systemd-tpm2` token is present.
+///   When `discoverable` is true these are omitted, because
+///   `systemd-gpt-auto-generator` already sets up `systemd-cryptsetup@root` and a
+///   second unit would fight it for the device.
+///
+/// Returns `(rootdev_path, kargs, decrypted_device)`:
+/// - `rootdev_path`: the path to mount as root — the decrypted mapper path for
+///   LUKS, or the original partition path otherwise.
+/// - `kargs`: boot-time LUKS kernel arguments, or `None` when not LUKS.
+/// - `decrypted_device`: the re-queried mapper [`Device`] for LUKS, else `None`.
+fn check_if_luks_encrypted(
+    root_device: &Device,
+    layout: &PartitionLayout,
+    discoverable: bool,
+) -> Result<(String, Option<Vec<String>>, Option<Device>)> {
+    use bootc_blockdev::luks::LuksMetadata;
+    use std::collections::HashSet;
+
+    // If root was created using systemd-repart we need to check if it's LUKS
+    // encrypted
+    if root_device.fstype.as_deref() != Some("crypto_LUKS") {
+        // Not LUKS encrypted
+        return Ok((root_device.path(), None, None));
+    }
+
+    let root_uuid = root_device
+        .uuid
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("No UUID for root device"))?;
+
+    // We need to check the luks volume tokens to figure out what kargs to
+    // add
+    let luks_meta = LuksMetadata::query_json(&root_device.path())?;
+
+    // The set of keyslot ids 0/1/2 etc that are bound to a
+    // token. A token systemd-tpm2 is the metadata that lets
+    // something other than a directly-supplied
+    // key unlock its keyslot. We gather every id listed in every
+    // token's "keyslots" array so the checks below can tell
+    // token backed slots apart from plain ones
+    let covered: HashSet<&str> = luks_meta
+        .tokens
+        .values()
+        .flat_map(|t| t.keyslots.iter().map(String::as_str))
+        .collect();
+
+    // Whether the volume can be unlocked by the TPM, i.e. at least
+    // one token is of type "systemd-tpm2". This alone decides
+    // whether we add the `tpm2-device=auto` karg
+    //
+    // This is independent of whether a passphrase/keyfile slot also exists
+    let has_tpm = luks_meta.tokens.values().any(|t| t.kind == "systemd-tpm2");
+
+    // Whether a plain keyslot exists: one not bound to any token,
+    // unlocked by raw key material supplied directly (a typed
+    // passphrase or a `--key-file`). The LUKS header does not record
+    // how a plain slot was enrolled, so we cannot tell a keyfile
+    // slot from a passphrase slot here and we don't need to,
+    // since both unlock the same way
+    let has_plain_slot = luks_meta
+        .keyslots
+        .keys()
+        .any(|id| !covered.contains(id.as_str()));
+
+    // We do not want this if we have systemd-cryptsetup@root.service else
+    // we get the following error on boot
+    //
+    // Cannot use device /dev/gpt-auto-root-luks which is in use (already mapped or mounted)
+    //
+    // as we get two services 'systemd-gpt-auto-generator' and 'systemd-cryptsetup@root.service'
+    // fighting for the same device
+    let kargs = if !discoverable {
+        let mut kargs = vec![format!("luks.uuid={root_uuid}")];
+
+        if has_tpm {
+            let headless = if has_plain_slot {
+                // Don't disable password querying
+                ""
+            } else {
+                ",headless=true"
+            };
+
+            // TPM + keyfile or TPM only, doesn't really matter
+            kargs.push(format!("luks.options=tpm2-device=auto{headless}"));
+        };
+
+        kargs
+    } else {
+        vec![]
+    };
+
+    // LUKS device is opened by a passphrase or a keyfile
+    //
+    // We never pass --key-file to systemd-repart, not during install,
+    // it should always be in a repart defnition. We also do not allow
+    // interactive passwords during installs, so in this case we can be
+    // sure that there would be a keyfile
+    //
+    // Check for keyfile to open root LUKS device
+    let keyfile = if has_plain_slot {
+        let k =
+            get_keyfile(layout.repart_root_partition.as_ref().ok_or_else(|| {
+                anyhow::anyhow!("No root partition generated by systemd-repart")
+            })?)?;
+
+        Some(k)
+    } else {
+        None
+    };
+
+    let mut luks_open_args = vec!["luksOpen", &root_device.path(), DECRYPTED_LUKS_NAME]
+        .into_iter()
+        .map(|x| x.to_string())
+        .collect::<Vec<String>>();
+
+    if let Some(k) = keyfile {
+        luks_open_args.extend(["--key-file".into(), k.into()]);
+    };
+
+    std::process::Command::new("cryptsetup")
+        .args(luks_open_args)
+        .run_capture_stderr()
+        .context("Opening root LUKS device")?;
+
+    let rootdev = format!("/dev/mapper/{DECRYPTED_LUKS_NAME}");
+
+    let decrypted_root_device =
+        bootc_blockdev::list_dev(Utf8Path::new(&rootdev)).context("Re-querying LUKS root dev")?;
+
+    Ok((rootdev, Some(kargs), Some(decrypted_root_device)))
+}
+
 #[context("Creating rootfs")]
 #[cfg(feature = "install-to-disk")]
 pub(crate) fn install_create_rootfs(
@@ -1029,11 +1196,7 @@ pub(crate) fn install_create_rootfs(
     opts: InstallBlockDeviceOpts,
     run_repart: bool,
 ) -> Result<RootSetup> {
-    use bootc_blockdev::luks::LuksMetadata;
-    use std::collections::HashSet;
-
     let install_config = state.install_config.as_ref();
-    let luks_name = "root";
     // Verify that the target is empty (if not already wiped in particular, but it's
     // also good to verify that the wipe worked)
     let mut device = bootc_blockdev::list_dev(&opts.device)?;
@@ -1229,118 +1392,7 @@ pub(crate) fn install_create_rootfs(
     }
 
     let (rootdev_path, root_blockdev_kargs, decrypted_root_device) = match block_setup {
-        BlockSetup::Direct => {
-            // If root was created using systemd-repart we need to check if it's LUKS
-            // encrypted
-            if root_device.fstype.as_deref() == Some("crypto_LUKS") {
-                let root_uuid = root_device
-                    .uuid
-                    .as_ref()
-                    .ok_or_else(|| anyhow::anyhow!("No UUID for root device"))?;
-
-                // We need to check the luks volume tokens to figure out what kargs to
-                // add
-                let luks_meta = LuksMetadata::query_json(&root_device.path())?;
-
-                // We do not want this if we have systemd-cryptsetup@root.service else
-                // we get the following error on boot
-                //
-                // Cannot use device /dev/gpt-auto-root-luks which is in use (already mapped or mounted)
-                //
-                // as we get two services 'systemd-gpt-auto-generator' and 'systemd-cryptsetup@root.service'
-                // fighting for the same device
-                let mut kargs = if !discoverable {
-                    vec![format!("luks.uuid={root_uuid}")]
-                } else {
-                    vec![]
-                };
-
-                // The set of keyslot ids 0/1/2 etc that are bound to a
-                // token. A token systemd-tpm2 is the metadata that lets
-                // something other than a directly-supplied
-                // key unlock its keyslot. We gather every id listed in every
-                // token's "keyslots" array so the checks below can tell
-                // token backed slots apart from plain ones
-                let covered: HashSet<&str> = luks_meta
-                    .tokens
-                    .values()
-                    .flat_map(|t| t.keyslots.iter().map(String::as_str))
-                    .collect();
-
-                // Whether the volume can be unlocked by the TPM, i.e. at least
-                // one token is of type "systemd-tpm2". This alone decides
-                // whether we add the `tpm2-device=auto` karg
-                //
-                // This is independent of whether a passphrase/keyfile slot also exists
-                let has_tpm = luks_meta.tokens.values().any(|t| t.kind == "systemd-tpm2");
-
-                // Whether a plain keyslot exists: one not bound to any token,
-                // unlocked by raw key material supplied directly (a typed
-                // passphrase or a `--key-file`). The LUKS header does not record
-                // how a plain slot was enrolled, so we cannot tell a keyfile
-                // slot from a passphrase slot here and we don't need to,
-                // since both unlock the same way
-                let has_plain_slot = luks_meta
-                    .keyslots
-                    .keys()
-                    .any(|id| !covered.contains(id.as_str()));
-
-                if has_tpm && !discoverable {
-                    let headless = if has_plain_slot {
-                        // Don't disable password querying
-                        ""
-                    } else {
-                        ",headless=true"
-                    };
-
-                    // TPM + keyfile or TPM only, doesn't really matter
-                    kargs.push(format!("luks.options=tpm2-device=auto{headless}"));
-                };
-
-                // LUKS device is opened by a passphrase or a keyfile
-                //
-                // We never pass --key-file to systemd-repart, not during install,
-                // it should always be in a repart defnition. We also do not allow
-                // interactive passwords during installs, so in this case we can be
-                // sure that there would be a keyfile
-                //
-                // Check for keyfile to open root LUKS device
-                let keyfile = if has_plain_slot {
-                    let k =
-                        get_keyfile(layout.repart_root_partition.as_ref().ok_or_else(|| {
-                            anyhow::anyhow!("No root partition generated by systemd-repart")
-                        })?)?;
-
-                    Some(k)
-                } else {
-                    None
-                };
-
-                let mut luks_open_args = vec!["luksOpen", &root_device.path(), luks_name]
-                    .into_iter()
-                    .map(|x| x.to_string())
-                    .collect::<Vec<String>>();
-
-                if let Some(k) = keyfile {
-                    luks_open_args.extend(["--key-file".into(), k.into()]);
-                };
-
-                std::process::Command::new("cryptsetup")
-                    .args(luks_open_args)
-                    .run_capture_stderr()
-                    .context("Opening root LUKS device")?;
-
-                let rootdev = format!("/dev/mapper/{luks_name}");
-
-                let decrypted_root_device = bootc_blockdev::list_dev(Utf8Path::new(&rootdev))
-                    .context("Re-querying LUKS root dev")?;
-
-                (rootdev, Some(kargs), Some(decrypted_root_device))
-            } else {
-                // Not LUKS encrypted
-                (root_device.path(), None, None)
-            }
-        }
+        BlockSetup::Direct => check_if_luks_encrypted(root_device, &layout, discoverable)?,
 
         BlockSetup::Tpm2Luks => {
             let uuid = uuid::Uuid::new_v4().to_string();
@@ -1368,9 +1420,9 @@ pub(crate) fn install_create_rootfs(
                 .verbose()
                 .run_with_stdin_buf(dummy_passphrase_input)?;
             Task::new("Opening root LUKS device", "cryptsetup")
-                .args(["luksOpen", &root_devpath, luks_name])
+                .args(["luksOpen", &root_devpath, DECRYPTED_LUKS_NAME])
                 .run()?;
-            let rootdev = format!("/dev/mapper/{luks_name}");
+            let rootdev = format!("/dev/mapper/{DECRYPTED_LUKS_NAME}");
             let kargs = vec![
                 format!("luks.uuid={uuid}"),
                 format!("luks.options=tpm2-device=auto,headless=true"),
@@ -1557,9 +1609,11 @@ pub(crate) fn install_create_rootfs(
     }
 
     let luks_device = match block_setup {
-        BlockSetup::Direct if decrypted_root_device.is_some() => Some(luks_name.to_string()),
+        BlockSetup::Direct if decrypted_root_device.is_some() => {
+            Some(DECRYPTED_LUKS_NAME.to_string())
+        }
         BlockSetup::Direct => None,
-        BlockSetup::Tpm2Luks => Some(luks_name.to_string()),
+        BlockSetup::Tpm2Luks => Some(DECRYPTED_LUKS_NAME.to_string()),
     };
     Ok(RootSetup {
         luks_device,
