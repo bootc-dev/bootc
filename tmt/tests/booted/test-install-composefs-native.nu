@@ -62,7 +62,7 @@ def install [image: string, ...args: string] {
     let dropin = glob $"($MNT)/state/deploy/*/etc/tmpfiles.d/bootc-root-ssh.conf"
         | append (glob $"($MNT)/ostree/deploy/*/deploy/*/etc/tmpfiles.d/bootc-root-ssh.conf")
         | each {|p| {content: (open --raw $p | decode utf-8), mode: (stat -c %a $p | str trim)}}
-    umount $MNT
+    umount -l $MNT
     rm -f $DISK
     assert equal $dropin [{content: $"f~ /var/roothome/.ssh/authorized_keys 600 root root - ($KEY | encode base64)\n", mode: "644"}] "root ssh drop-in"
     match [$composefs $ostree] {

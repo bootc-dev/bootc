@@ -13,6 +13,23 @@ run a `podman build` with the bootc git sources.
 
 ## Available suites
 
+### `booted composefs-verity`
+
+Run as root on a test host with composefs support:
+
+```sh
+bootc-integration-tests booted composefs-verity
+```
+
+This also runs through the `composefs-verity` TMT plan. It creates disposable
+repositories in `/var/tmp` and mounts them in a private mount namespace. It
+checks that a strict mount verifies the image digest independently of the
+repository metadata, ignores `images/refs/`, and gets `EIO` when reading
+tampered data objects, and that an explicitly relaxed mount still rejects an
+image whose digest does not match. The test skips
+filesystems without fs-verity support; it does not modify the host's repository
+or boot files.
+
 ### `composefs-bcvk`
 
 Intended only right now to be used with a sealed UKI image,

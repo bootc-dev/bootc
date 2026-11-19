@@ -169,8 +169,8 @@ if $source_is_uki {
         null
     } catch {|err| $err }
 
-    do { umount $target_esp } | complete | ignore
-    do { umount $target_root } | complete | ignore
+    do { umount -l $target_esp } | complete | ignore
+    do { umount -l $target_root } | complete | ignore
     do { losetup -d $loop } | complete | ignore
     if $inspection_error != null {
         error make { msg: $"installed target inspection failed: ($inspection_error)" }
@@ -217,7 +217,7 @@ for path in [$dest ($dest | path join etc) ($dest | path join var)] {
 for path in [root-sentinel usr/sentinel etc/sentinel var/sentinel] {
     assert_write_denied ($dest | path join $path)
 }
-umount -R $dest
+umount -R -l $dest
 rm ($dest | path join preexisting)
 
 # By default only /etc and /var are writable.
@@ -231,7 +231,7 @@ for path in [root-sentinel usr/sentinel] {
 }
 "etc sentinel" | save ($dest | path join etc/sentinel)
 "var sentinel" | save ($dest | path join var/sentinel)
-umount -R $dest
+umount -R -l $dest
 
 # The writes must land in the deployment's persistent state on the sysroot.
 let state = if (tap is_composefs) {
@@ -250,7 +250,7 @@ if not (tap is_composefs) {
     bootc install mount --sysroot $sysroot --latest $dest
     mkdir ($dest | path join etc/ostree)
     "[etc]\ntransient = true\n" | save -f ($dest | path join etc/ostree/prepare-root.conf)
-    umount -R $dest
+    umount -R -l $dest
 
     bootc install mount --sysroot $sysroot --latest $dest
     let etc = ($dest | path join etc)
@@ -258,11 +258,11 @@ if not (tap is_composefs) {
     assert equal $fstype "overlay" "transient /etc must be an overlay"
     assert (not ($etc | path join sentinel | path exists)) "transient /etc must not show the persistent copy"
     "transient" | save ($etc | path join transient-sentinel)
-    umount -R $dest
+    umount -R -l $dest
     assert (not ($deployment | path join etc/transient-sentinel | path exists)) "transient /etc writes must not persist"
 }
 
-umount $sysroot
+umount -l $sysroot
 losetup -d $loop
 
 tap ok

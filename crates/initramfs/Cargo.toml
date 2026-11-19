@@ -18,6 +18,9 @@ tracing.workspace = true
 fn-error-context.workspace = true
 linux-kernel-cmdline = { workspace = true }
 
+[dev-dependencies]
+tempfile.workspace = true
+
 [lints]
 workspace = true
 

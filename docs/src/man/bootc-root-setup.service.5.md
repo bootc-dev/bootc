@@ -6,15 +6,17 @@ bootc-root-setup.service
 
 A oneshot systemd service that runs in the initramfs to set up the root
 filesystem when the composefs backend is active.  It is gated on the
-`composefs=` kernel command line argument and on
+`composefs=` or `composefs.digest=` kernel command line argument and on
 `ConditionPathExists=/etc/initrd-release`, so it only runs inside an initramfs.
 
 The service is ordered after `sysroot.mount` and before
 `initrd-root-fs.target`.  It performs the following steps:
 
 1. Opens the composefs repository at `/sysroot/composefs`.
-2. Mounts the EROFS image identified by the `composefs=<digest>` kernel
-   argument, with fs-verity verification.
+2. Mounts the EROFS image `images/<digest>` named by the `composefs=<digest>`
+   or `composefs.digest=` kernel argument. fs-verity is required unless the
+   digest is preceded by `?`, whatever the repository metadata says; see
+   **bootc-composefs(7)**.
 3. Optionally wraps the root in a transient tmpfs overlay
    (see `root.transient` in **bootc-setup-root-conf.toml(5)**).
 4. Bind-mounts or overlays `/etc` and `/var` from the per-deployment state

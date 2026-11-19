@@ -76,13 +76,17 @@ impl BcvkInstallOpts {
     /// and `--karg` flags.  Note that `--bootloader` is only valid when
     /// `--composefs-backend` is also set (bcvk enforces this via a clap
     /// `requires` relationship).
+    ///
+    /// A filesystem that was asked for is passed for either backend.
+    /// Without one, composefs defaults to ext4 (it needs fs-verity), and
+    /// ostree uses the image's own default.
     pub(crate) fn install_args(&self) -> Vec<String> {
         let mut args = Vec::new();
         if self.composefs_backend {
             args.push("--composefs-backend".into());
         }
-        if self.composefs_backend || self.composefs {
-            let fs = self.filesystem.as_deref().unwrap_or("ext4");
+        let default_fs = (self.composefs_backend || self.composefs).then_some("ext4");
+        if let Some(fs) = self.filesystem.as_deref().or(default_fs) {
             args.push(format!("--filesystem={fs}"));
         }
         if self.composefs_backend {
@@ -140,14 +144,18 @@ mod tests {
 
     #[test]
     fn test_install_args() {
-        // (composefs_backend, composefs) => expected args
-        let cases: &[(bool, bool, &[&str])] = &[
-            (false, false, &[]),
+        // (composefs_backend, composefs, filesystem) => expected args
+        let cases: &[(bool, bool, Option<&str>, &[&str])] = &[
+            // ostree uses the image's default filesystem unless one is given
+            (false, false, None, &[]),
+            (false, false, Some("btrfs"), &["--filesystem=btrfs"]),
             // A composefs-native image selects the backend itself
-            (false, true, &["--filesystem=xfs"]),
+            (false, true, Some("xfs"), &["--filesystem=xfs"]),
+            (false, true, None, &["--filesystem=ext4"]),
             (
                 true,
                 true,
+                Some("xfs"),
                 &[
                     "--composefs-backend",
                     "--filesystem=xfs",
@@ -155,18 +163,18 @@ mod tests {
                 ],
             ),
         ];
-        for &(composefs_backend, composefs, expected) in cases {
+        for &(composefs_backend, composefs, filesystem, expected) in cases {
             let opts = BcvkInstallOpts {
                 composefs_backend,
                 composefs,
                 bootloader: Some(Bootloader::Systemd),
-                filesystem: Some("xfs".into()),
+                filesystem: filesystem.map(Into::into),
                 ..Default::default()
             };
             assert_eq!(
                 opts.install_args(),
                 expected,
-                "composefs_backend={composefs_backend} composefs={composefs}"
+                "composefs_backend={composefs_backend} composefs={composefs} filesystem={filesystem:?}"
             );
         }
     }

@@ -216,6 +216,35 @@ check:
     because: only the image_mode test image installs bootc-tests
   test: bootc-integration-tests booted switch-zstd-chunked
 
+/test-51-composefs-uki-addons:
+  summary: Test composefs UKI Addons
+  duration: 30m
+  test: nu booted/test-composefs-uki-addons.nu
+
+/test-51-composefs-verity:
+  summary: Enforce composefs image and object integrity independently of repository metadata
+  duration: 5m
+  adjust:
+  - when: running_env != image_mode
+    enabled: false
+    because: only the image_mode test image installs bootc-tests
+  test: bootc-integration-tests booted composefs-verity
+
+/test-51-switch-from-delta:
+  summary: Switch to a derived image using an OCI delta and verify after reboot
+  duration: 30m
+  adjust:
+  - when: distro != fedora
+    enabled: false
+    because: oci-delta is packaged in Fedora
+  - when: distro == fedora-43
+    enabled: false
+    because: oci-delta is not packaged for Fedora 43 (https://github.com/bootc-dev/bootc/issues/2604)
+  - when: boot_type == uki and seal_state == sealed
+    enabled: false
+    because: the guest-local UKI builder produces unsigned images
+  test: nu booted/test-switch-from-delta.nu
+
 /test-52-install-repart:
   summary: Test bootc install to-disk with systemd-repart partitioning
   duration: 30m
@@ -233,3 +262,42 @@ check:
   summary: Test that composefs-native images default to the composefs backend
   duration: 45m
   test: nu booted/test-install-composefs-native.nu
+
+/test-61-aboot-install:
+  summary: Test artifact-selected ukiboot installation
+  duration: 30m
+  enabled: false
+  adjust:
+  - when: boot_type == aboot
+    enabled: true
+  test: python3 booted/test-aboot-install.py
+
+/test-62-aboot-update-rollback:
+  summary: Test ukiboot A/B update and rollback
+  duration: 30m
+  enabled: false
+  adjust:
+  - when: boot_type == aboot
+    enabled: true
+  test: python3 booted/test-aboot-update-rollback.py
+
+/test-63-install-shared-propagation:
+  summary: Install from a shared mount namespace without leaking the storage bind mount
+  duration: 30m
+  test: nu booted/test-install-shared-propagation.nu
+
+/test-66-encrypted-swap-ordering:
+  summary: Verify a random-key encrypted swap boots without an ordering cycle
+  duration: 30m
+  test: nu booted/test-encrypted-swap-ordering.nu
+
+/test-67-composefs-xbootldr:
+  summary: Test composefs with systemd-boot and an XBOOTLDR partition
+  duration: 60m
+  require:
+  - dosfstools
+  adjust:
+  - when: seal_state == sealed
+    enabled: false
+    because: the derived images are built in the VM, which has no keys to sign their UKIs for Secure Boot
+  test: nu booted/test-composefs-xbootldr.nu

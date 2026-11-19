@@ -1,0 +1,13 @@
+# "Bootable" is a legitimate term here
+addFilter(r"spelling-error .*Bootable")
+
+# These point into /sysroot, which only exists on a booted bootc system
+addFilter(r"dangling-relative-symlink /usr/lib/bootc/storage ")
+addFilter(r"dangling-relative-symlink /usr/share/doc/bootc/baseimage/base/ostree ")
+
+# A made up provides so that rpm-ostree can depend on it
+addFilter(r"unversioned-explicit-provides ostree-cli\(ostree-container\)")
+
+# Placeholder to preserve an otherwise empty directory,
+# see https://github.com/coreos/rpm-ostree/issues/5420
+addFilter(r"hidden-file-or-dir /usr/share/doc/bootc/baseimage/base/sysroot/\.keepdir")

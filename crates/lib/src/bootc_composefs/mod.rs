@@ -1,5 +1,7 @@
+pub(crate) mod aboot;
 pub(crate) mod backwards_compat;
 pub(crate) mod boot;
+pub(crate) mod boot_partition;
 pub(crate) mod delete;
 pub(crate) mod digest;
 pub(crate) mod export;
@@ -15,5 +17,7 @@ pub(crate) mod soft_reboot;
 pub(crate) mod state;
 pub(crate) mod status;
 pub(crate) mod switch;
+pub(crate) mod uki_addon;
+pub(crate) mod uki_addons_cli;
 pub(crate) mod update;
 pub(crate) mod utils;

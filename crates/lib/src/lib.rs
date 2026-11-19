@@ -33,6 +33,7 @@
 //! ## Container and Image Handling
 //!
 //! - [`image`] - Image operations and queries
+//! - [`delta`] - oci-delta artifacts (`--from-delta`)
 //! - [`boundimage`] - Logically Bound Images (LBIs)
 //! - [`podstorage`] - bootc-owned container storage (`/usr/lib/bootc/storage`)
 //! - [`podman`] - Podman command helpers
@@ -63,6 +64,8 @@
 //! - [`linux-kernel-cmdline`](../linux_kernel_cmdline/index.html) - Cmdline parsing
 //! - [`etc-merge`](../etc_merge/index.html) - `/etc` three-way merge
 
+mod aboot;
+mod boot_artifact;
 mod bootc_composefs;
 pub(crate) mod bootc_kargs;
 mod bootloader;
@@ -71,8 +74,9 @@ pub mod cli;
 mod composefs_consts;
 mod container_export;
 mod containerenv;
+pub(crate) mod delta;
+pub(crate) mod delta_ostree;
 pub(crate) mod deploy;
-mod discoverable_partition_specification;
 pub(crate) mod fsck;
 pub(crate) mod generator;
 mod glyph;

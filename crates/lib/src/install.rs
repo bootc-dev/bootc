@@ -82,7 +82,7 @@
 //! - **Future extensibility**: Enables systemd-repart for declarative partition
 //!   management
 //!
-//! See [`crate::discoverable_partition_specification`] for the partition type GUIDs.
+//! See [`bootc_blockdev::dps`] for the partition type GUIDs.
 //!
 //! ## Installation Flow
 //!
@@ -396,6 +396,27 @@ pub(crate) struct InstallConfigOpts {
 }
 
 #[derive(Debug, Default, Clone, clap::Parser, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct UkiAddonOpts {
+    /// Experimental.
+    /// Name of the local/scoped UKI addons to install without the ".addon.efi" suffix.
+    /// This option can be provided multiple times if multiple addons are to be installed
+    /// (composefs backend only). On upgrade and switch, scoped addons already installed
+    /// are carried forward; passing this flag adds further addons on top.
+    #[clap(long = "uki-addon")]
+    #[serde(default, rename = "uki_addon")]
+    pub(crate) scoped: Option<Vec<String>>,
+
+    /// Experimental.
+    /// Name of the global UKI addons to install without the ".addon.efi" suffix.
+    /// This option can be provided multiple times if multiple addons are to be installed
+    /// (composefs backend only). On upgrade and switch, global addons already installed
+    /// are carried forward; passing this flag adds further addons on top.
+    #[clap(long = "global-uki-addon")]
+    #[serde(default, rename = "global_uki_addon")]
+    pub(crate) global: Option<Vec<String>>,
+}
+
+#[derive(Debug, Default, Clone, clap::Parser, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct InstallComposefsOpts {
     /// Use the composefs backend instead of ostree. This is the default for images with a UKI,
     /// and for images with /usr/lib/composefs/setup-root-conf.toml and no ostree prepare-root.conf
@@ -403,47 +424,61 @@ pub(crate) struct InstallComposefsOpts {
     #[serde(default)]
     pub(crate) composefs_backend: bool,
 
-    /// Make fs-verity validation optional in case the filesystem doesn't support it
-    /// (composefs backend only)
+    /// Make fs-verity optional: add the `?` marker to the composefs kernel argument
+    /// (`composefs.digest=?...` or `composefs=?...`) and don't require fs-verity in the
+    /// repository (composefs backend only). Installing onto ext4 created without `-O verity`
+    /// still fails; use ext4 with `-O verity`, or XFS.
+    ///
+    /// This is the default on XFS. For an image with a UKI or an aboot image, the command line
+    /// built into it decides instead (see `bootc container ukify --allow-missing-verity`).
     #[clap(long, default_value_t)]
     #[serde(default)]
     pub(crate) allow_missing_verity: bool,
 
-    /// Name of the UKI addons to install without the ".efi.addon" suffix.
-    /// This option can be provided multiple times if multiple addons are to be installed
-    /// (composefs backend only).
-    #[clap(long)]
-    #[serde(default)]
-    pub(crate) uki_addon: Option<Vec<String>>,
+    #[clap(flatten)]
+    #[serde(flatten)]
+    pub(crate) uki_addon_opts: UkiAddonOpts,
 }
 
 impl InstallComposefsOpts {
     /// Check that the options fit together, once `composefs_backend` says
     /// whether the composefs backend is used (passed, or selected by the image).
+    /// `config_stateroot` comes from the install configuration; the caller
+    /// passes `None` when `--stateroot` overrides it.
     pub(crate) fn validate(
         &self,
         bootloader: Option<&Bootloader>,
         stateroot: Option<&str>,
+        config_stateroot: Option<&str>,
     ) -> Result<()> {
         if self.composefs_backend {
-            anyhow::ensure!(
-                !matches!(bootloader, Some(Bootloader::None)),
-                "Bootloader set to none is not supported with the composefs backend"
-            );
             let default = ostree_container::deploy::STATEROOT_DEFAULT;
             if let Some(stateroot) = stateroot.filter(|&s| s != default) {
                 anyhow::bail!(
                     "--stateroot {stateroot} is not supported with the composefs backend, which only uses {default}"
                 );
             }
+            if let Some(stateroot) = config_stateroot.filter(|&s| s != default) {
+                anyhow::bail!(
+                    "stateroot {stateroot} in the install configuration is not supported with the composefs backend, which only uses {default}"
+                );
+            }
         } else {
+            anyhow::ensure!(
+                !matches!(bootloader, Some(Bootloader::Ukiboot)),
+                "ukiboot requires the composefs backend"
+            );
             anyhow::ensure!(
                 !self.allow_missing_verity,
                 "--allow-missing-verity requires the composefs backend"
             );
             anyhow::ensure!(
-                self.uki_addon.is_none(),
+                self.uki_addon_opts.scoped.is_none(),
                 "--uki-addon requires the composefs backend"
+            );
+            anyhow::ensure!(
+                self.uki_addon_opts.global.is_none(),
+                "--global-uki-addon requires the composefs backend"
             );
         }
         Ok(())
@@ -508,6 +543,21 @@ pub(crate) struct InstallToDiskOpts {
     #[clap(long)]
     #[serde(default)]
     pub(crate) run_repart: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AbootDiskLayout {
+    Android,
+    Ukiboot,
+}
+
+impl From<composefs_ctl::composefs_boot::bootloader::AbootEncoding> for AbootDiskLayout {
+    fn from(encoding: composefs_ctl::composefs_boot::bootloader::AbootEncoding) -> Self {
+        match encoding {
+            composefs_ctl::composefs_boot::bootloader::AbootEncoding::AndroidV2 => Self::Android,
+            composefs_ctl::composefs_boot::bootloader::AbootEncoding::Uki => Self::Ukiboot,
+        }
+    }
 }
 
 #[derive(ValueEnum, Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -720,6 +770,8 @@ pub(crate) struct State {
     pub(crate) composefs_options: InstallComposefsOpts,
     pub(crate) composefs_fsverity_supported: bool,
     pub(crate) allow_missing_verity_explicit: bool,
+    #[cfg(feature = "install-to-disk")]
+    pub(crate) aboot_disk_layout: Option<AbootDiskLayout>,
 }
 
 // Shared read-only global state
@@ -772,8 +824,8 @@ impl State {
         Ok(())
     }
 
-    /// Return an error if kernel arguments are provided, intended to be used for UKI paths
-    pub(crate) fn require_no_kargs_for_uki(&self) -> Result<()> {
+    /// Return an error if kernel arguments are provided, for prebuilt boot artifacts
+    pub(crate) fn require_no_kargs_for_immutable_boot(&self) -> Result<()> {
         if self
             .config_opts
             .karg
@@ -781,7 +833,9 @@ impl State {
             .map(|v| !v.is_empty())
             .unwrap_or_default()
         {
-            anyhow::bail!("Cannot use externally specified kernel arguments with UKI");
+            anyhow::bail!(
+                "Cannot use externally specified kernel arguments with a prebuilt boot image"
+            );
         }
         Ok(())
     }
@@ -1436,6 +1490,8 @@ pub(crate) struct RootSetup {
     /// Target root path /target.
     pub(crate) target_root_path: Option<Utf8PathBuf>,
     pub(crate) rootfs_uuid: Option<String>,
+    pub(crate) aboot_disk_layout: Option<AbootDiskLayout>,
+    pub(crate) disk_install: bool,
     /// True if we should skip finalizing
     skip_finalize: bool,
     boot: Option<MountSpec>,
@@ -1681,8 +1737,10 @@ async fn prepare_install(
     mut target_opts: InstallTargetOpts,
     mut composefs_options: InstallComposefsOpts,
     target_fs: Option<FilesystemEnum>,
+    disk_install: bool,
 ) -> Result<Arc<State>> {
     tracing::trace!("Preparing install");
+
     let allow_missing_verity_explicit = composefs_options.allow_missing_verity;
     let rootfs = cap_std::fs::Dir::open_ambient_dir("/", cap_std::ambient_authority())
         .context("Opening /")?;
@@ -1778,15 +1836,22 @@ async fn prepare_install(
     };
     tracing::debug!("Target image reference: {target_imgref}");
 
-    let (composefs_required, kernel) = if let Some(root) = target_rootfs.as_ref() {
-        let kernel = crate::kernel::find_kernel(root)?;
-
-        (
-            kernel.as_ref().map(|k| k.kernel.unified).unwrap_or(false),
-            kernel,
-        )
+    let kernel = target_rootfs
+        .as_ref()
+        .map(|rootfs| crate::kernel::find_kernel(rootfs, Some(&composefs_options.uki_addon_opts)))
+        .transpose()?
+        .flatten();
+    let composefs_required = kernel.as_ref().is_some_and(|k| k.k_type.is_unified());
+    #[cfg(feature = "install-to-disk")]
+    let aboot_disk_layout = if disk_install {
+        kernel.as_ref().and_then(|k| match k.k_type {
+            crate::kernel::KernelType::Aboot { encoding, .. } => {
+                Some(AbootDiskLayout::from(encoding))
+            }
+            _ => None,
+        })
     } else {
-        (false, None)
+        None
     };
 
     tracing::debug!("Composefs required: {composefs_required}");
@@ -1809,7 +1874,7 @@ async fn prepare_install(
         })
         .transpose()?;
 
-    // A UKI requires the composefs backend, and a composefs-native image
+    // A UKI or aboot image requires the composefs backend, and a composefs-native image
     // without ostree's configuration defaults to it.
     let composefs_default = crate::bootc_composefs::image::defaults_to_composefs_backend(
         &rootfs,
@@ -1817,12 +1882,27 @@ async fn prepare_install(
     )?;
     tracing::debug!("Composefs default: {composefs_default}");
     composefs_options.composefs_backend |= composefs_required || composefs_default;
+    // An image may set a stateroot in its install configuration for its ostree
+    // installs, so only check it when the image can't be installed with ostree.
+    let config_stateroot = install_config
+        .as_ref()
+        .and_then(|c| c.stateroot.as_deref())
+        .filter(|_| config_opts.stateroot.is_none())
+        .filter(|_| composefs_required || composefs_default);
     composefs_options.validate(
         config_opts.bootloader.as_ref(),
         config_opts.stateroot.as_deref(),
+        config_stateroot,
     )?;
 
     composefs_options.validate_bound_images(config_opts.bound_images, &rootfs)?;
+
+    if !composefs_options.composefs_backend
+        && (composefs_options.uki_addon_opts.scoped.is_some()
+            || composefs_options.uki_addon_opts.global.is_some())
+    {
+        anyhow::bail!("UKI Addons are only supported on composefs backends");
+    }
 
     // Read the file eagerly so we error out early, and before the mount changes
     // below hide a file bind mounted under e.g. /tmp. We may re-exec further down
@@ -1897,7 +1977,7 @@ async fn prepare_install(
         .and_then(|c| c.filesystem_root())
         .and_then(|r| r.fstype));
 
-    let mut is_uki = false;
+    let mut immutable_boot = false;
 
     // For composefs backend, automatically disable fs-verity hard requirement if the
     // filesystem doesn't support it
@@ -1907,11 +1987,9 @@ async fn prepare_install(
     //
     // NOTE: This isn't really 100% accurate 100% of the time as the cmdline can be in an addon
     if let Some(root_filesystem) = root_filesystem {
-        if let Some(k) = kernel
-            && let crate::kernel::KernelType::Uki { cmdline, .. } = k.k_type
-        {
-            let allow_missing_fsverity = match cmdline {
-                Some(cmdline) => ComposefsCmdline::find_in_cmdline(&cmdline)?
+        if let Some(kernel) = kernel.as_ref().filter(|k| k.k_type.is_unified()) {
+            let allow_missing_fsverity = match kernel.k_type.cmdline() {
+                Some(cmdline) => ComposefsCmdline::find_in_cmdline(cmdline)?
                     .is_some_and(|cfs_cmdline| cfs_cmdline.allow_missing_fsverity),
                 None => false,
             };
@@ -1924,11 +2002,13 @@ async fn prepare_install(
             }
 
             composefs_options.allow_missing_verity = allow_missing_fsverity;
-            is_uki = true;
+            immutable_boot = true;
         }
 
         // If `--allow-missing-verity` is already passed via CLI, don't modify
-        if composefs_options.composefs_backend && !composefs_options.allow_missing_verity && !is_uki
+        if composefs_options.composefs_backend
+            && !composefs_options.allow_missing_verity
+            && !immutable_boot
         {
             composefs_options.allow_missing_verity = !root_filesystem.supports_fsverity();
         }
@@ -1939,7 +2019,7 @@ async fn prepare_install(
             .map(|f| f.to_string())
             .unwrap_or("None".into()),
         allow_missing_fsverity = composefs_options.allow_missing_verity,
-        uki = is_uki,
+        immutable_boot = immutable_boot,
         "ComposeFS install prep",
     );
 
@@ -1982,31 +2062,43 @@ async fn prepare_install(
             .map(|fs| fs.supports_fsverity())
             .unwrap_or(true),
         allow_missing_verity_explicit,
+        #[cfg(feature = "install-to-disk")]
+        aboot_disk_layout,
     });
 
     Ok(state)
 }
 
 impl PostFetchState {
-    pub(crate) fn new(state: &State, d: &Dir) -> Result<Self> {
+    pub(crate) fn new(
+        state: &State,
+        d: &Dir,
+        image_bootloader: Option<Bootloader>,
+    ) -> Result<Self> {
         // Determine bootloader type for the target system
-        // Priority: user-specified > bootupd availability > systemd-boot fallback
-        let detected_bootloader = {
-            if let Some(bootloader) = state.config_opts.bootloader.clone() {
-                bootloader
-            } else {
-                if crate::bootloader::supports_bootupd(d)? {
-                    crate::spec::Bootloader::Grub
-                } else {
-                    crate::spec::Bootloader::Systemd
-                }
-            }
-        };
+        // Priority: user-specified > image-required > bootupd availability > systemd-boot fallback
+        let detected_bootloader =
+            select_bootloader(state.config_opts.bootloader, image_bootloader, d)?;
         println!("Bootloader: {detected_bootloader}");
         let r = Self {
             detected_bootloader,
         };
         Ok(r)
+    }
+}
+
+fn select_bootloader(
+    configured: Option<Bootloader>,
+    image: Option<Bootloader>,
+    root: &Dir,
+) -> Result<Bootloader> {
+    if let Some(bootloader) = configured.or(image) {
+        return Ok(bootloader);
+    }
+    if crate::bootloader::supports_bootupd(root)? {
+        Ok(Bootloader::Grub)
+    } else {
+        Ok(Bootloader::Systemd)
     }
 }
 
@@ -2037,7 +2129,7 @@ async fn install_with_sysroot(
         .physical_root
         .open_dir(&deployment_path)
         .context("Opening deployment dir")?;
-    let postfetch = PostFetchState::new(state, &deployment_dir)?;
+    let postfetch = PostFetchState::new(state, &deployment_dir, None)?;
 
     if cfg!(target_arch = "s390x") {
         // TODO: Integrate s390x support into install_via_bootupd
@@ -2060,7 +2152,7 @@ async fn install_with_sysroot(
                     Some(bind_boot_path.as_path()),
                 )?;
             }
-            Bootloader::Systemd | Bootloader::GrubCC => {
+            Bootloader::Systemd | Bootloader::GrubCC | Bootloader::Ukiboot => {
                 anyhow::bail!("bootupd is required for ostree-based installs");
             }
             Bootloader::None => {
@@ -2201,7 +2293,7 @@ async fn install_to_filesystem_impl(
 
     if state.composefs_options.composefs_backend {
         let fetch_ref = state.source.composefs_fetch_reference();
-        let manifest = get_container_manifest_and_config(&fetch_ref).await?;
+        let (manifest, _) = get_container_manifest_and_config(&fetch_ref).await?;
         // A capable filesystem gets a strict provisional repository.  The
         // imported image is inspected below; only a fresh repository may then
         // atomically adopt the image's explicit relaxed policy.
@@ -2225,11 +2317,13 @@ async fn install_to_filesystem_impl(
             fetch_imgref.as_ref(),
         )
         .await?;
-        let uki_policy =
-            crate::bootc_composefs::repo::inspect_uki_policy(&initialized.repo, &pull_result)?;
+        let image_fsverity_policy = crate::bootc_composefs::repo::inspect_image_fsverity_policy(
+            &initialized.repo,
+            &pull_result,
+        )?;
 
         let requested_relaxed = crate::bootc_composefs::repo::final_repository_policy(
-            uki_policy,
+            image_fsverity_policy,
             state.composefs_options.allow_missing_verity,
         );
         if !initialized.created {
@@ -2240,7 +2334,7 @@ async fn install_to_filesystem_impl(
             )?;
         } else if !requested_relaxed && provisional_relaxed {
             anyhow::bail!(
-                "Initial UKI requires fs-verity, but the target filesystem does not support it"
+                "Initial boot artifact requires fs-verity, but the target filesystem does not support it"
             );
         }
         // Repository handles retain LOCK_SH, so no Arc may remain before the
@@ -2370,6 +2464,7 @@ pub(crate) async fn install_to_disk(mut opts: InstallToDiskOpts) -> Result<()> {
         opts.target_opts,
         opts.composefs_opts,
         block_opts.filesystem,
+        true,
     )
     .await?;
 
@@ -2776,6 +2871,7 @@ pub(crate) async fn install_to_filesystem(
         opts.target_opts,
         opts.composefs_opts,
         Some(inspect.fstype.as_str().try_into()?),
+        false,
     )
     .await?;
 
@@ -2934,6 +3030,8 @@ pub(crate) async fn install_to_filesystem(
         physical_root: rootfs_fd,
         target_root_path: Some(target_root_path.clone()),
         rootfs_uuid: inspect.uuid.clone(),
+        aboot_disk_layout: None,
+        disk_install: false,
         boot,
         kargs,
         skip_finalize,
@@ -3189,7 +3287,9 @@ mod tests {
             (false, false, None, None, Some("myroot"), true),
             (true, false, None, None, None, true),
             (true, true, addon(), Some(Bootloader::Systemd), None, true),
-            (true, false, None, Some(Bootloader::None), None, false),
+            (true, false, None, Some(Bootloader::None), None, true),
+            (true, false, None, Some(Bootloader::Ukiboot), None, true),
+            (false, false, None, Some(Bootloader::Ukiboot), None, false),
             (true, false, None, None, Some("default"), true),
             (true, false, None, None, Some("myroot"), false),
         ];
@@ -3199,10 +3299,13 @@ mod tests {
             let opts = InstallComposefsOpts {
                 composefs_backend,
                 allow_missing_verity,
-                uki_addon,
+                uki_addon_opts: UkiAddonOpts {
+                    scoped: uki_addon,
+                    global: None,
+                },
             };
             assert_eq!(
-                opts.validate(bootloader.as_ref(), stateroot).is_ok(),
+                opts.validate(bootloader.as_ref(), stateroot, None).is_ok(),
                 valid,
                 "{opts:?} {bootloader:?} {stateroot:?}"
             );
@@ -3213,9 +3316,43 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            opts.validate(None, Some("myroot")).unwrap_err().to_string(),
+            opts.validate(None, Some("myroot"), None)
+                .unwrap_err()
+                .to_string(),
             "--stateroot myroot is not supported with the composefs backend, which only uses default"
         );
+
+        assert!(opts.validate(None, None, Some("default")).is_ok());
+        assert!(
+            InstallComposefsOpts::default()
+                .validate(None, None, Some("myroot"))
+                .is_ok()
+        );
+        assert_eq!(
+            opts.validate(None, None, Some("myroot"))
+                .unwrap_err()
+                .to_string(),
+            "stateroot myroot in the install configuration is not supported with the composefs backend, which only uses default"
+        );
+    }
+
+    #[test]
+    fn test_select_bootloader() -> Result<()> {
+        let root = cap_std_ext::cap_tempfile::tempdir(cap_std::ambient_authority())?;
+        assert_eq!(select_bootloader(None, None, &root)?, Bootloader::Systemd);
+        assert_eq!(
+            select_bootloader(None, Some(Bootloader::None), &root)?,
+            Bootloader::None
+        );
+        assert_eq!(
+            select_bootloader(None, Some(Bootloader::Ukiboot), &root)?,
+            Bootloader::Ukiboot
+        );
+        assert_eq!(
+            select_bootloader(Some(Bootloader::Grub), Some(Bootloader::None), &root)?,
+            Bootloader::Grub
+        );
+        Ok(())
     }
 
     #[test]

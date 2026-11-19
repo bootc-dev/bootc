@@ -31,8 +31,10 @@ pub(crate) struct InstallAleph {
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub(crate) labels: BTreeMap<String, String>,
     /// The version number
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) version: Option<String>,
     /// The timestamp
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) timestamp: Option<chrono::DateTime<chrono::Utc>>,
     /// The `uname -r` of the kernel doing the installation
     pub(crate) kernel: String,

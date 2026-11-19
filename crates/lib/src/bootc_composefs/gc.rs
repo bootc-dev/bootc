@@ -4,6 +4,8 @@
 //! - We delete the bootloader entry but fail to delete image
 //! - We delete bootloader + image but fail to delete the state/unrefenced objects etc
 
+use std::collections::HashSet;
+
 use anyhow::{Context, Result};
 use cap_std_ext::{cap_std::fs::Dir, dirext::CapStdExtDirExt};
 use composefs::fsverity::FsVerityHashValue;
@@ -15,8 +17,15 @@ use composefs_ctl::composefs_oci;
 use ostree_ext::composefs::fsverity::Sha512HashValue;
 use ostree_ext::composefs_oci::linked_erofs_images;
 use rustix::fs::AtFlags;
+use rustix::fs::FlockOperation;
+use rustix::fs::flock;
 use rustix::fs::{statat, unlinkat};
 
+use crate::bootc_composefs::boot::GLOBAL_UKI_ADDONS_DIR;
+use crate::bootc_composefs::boot::get_global_uki_addon_name;
+use crate::bootc_composefs::uki_addon::UkiAddonType;
+use crate::bootc_composefs::uki_addon::list_installed_uki_addons;
+use crate::bootc_composefs::uki_addon::list_referenced_uki_addons;
 use crate::{
     bootc_composefs::{
         boot::{BOOTC_UKI_DIR, BootType, get_type1_dir_name, get_uki_addon_dir_name, get_uki_name},
@@ -77,10 +86,10 @@ fn image_refs_match(
 fn collect_boot_binaries(storage: &Storage) -> Result<Vec<BootBinary>> {
     let mut boot_binaries = Vec::new();
     let boot_dir = storage.bls_boot_binaries_dir()?;
-    let esp = storage.require_esp()?;
+    let boot_mount = storage.require_boot_mount()?;
 
     // Scan for UKI binaries in EFI/Linux/bootc
-    collect_uki_binaries(&esp.fd, &mut boot_binaries)?;
+    collect_uki_binaries(&boot_mount.fd, &mut boot_binaries)?;
 
     // Scan for Type1 boot binaries (kernels + initrds) in `boot_dir`
     // depending upon whether systemd-boot is being used, or grub
@@ -155,12 +164,9 @@ fn delete_kernel_initrd(storage: &Storage, dir_to_delete: &str, dry_run: bool) -
 /// Deletes the UKI `uki_id` and any addons specific to it
 #[fn_error_context::context("Deleting UKI and UKI addons {uki_id}")]
 fn delete_uki(storage: &Storage, uki_id: &str, dry_run: bool) -> Result<()> {
-    let esp_mnt = storage.require_esp()?;
+    let boot_mount = storage.require_boot_mount()?;
 
-    // NOTE: We don't delete global addons here (see `GLOBAL_UKI_ADDONS_DIR`)
-    // Which is fine as global addons don't belong to any single deployment, but it also
-    // means they're never cleaned up at all: see the TODO on `GLOBAL_UKI_ADDONS_DIR`.
-    let uki_dir = esp_mnt.fd.open_dir(BOOTC_UKI_DIR)?;
+    let uki_dir = boot_mount.fd.open_dir(BOOTC_UKI_DIR)?;
 
     for entry in uki_dir.entries_utf8()? {
         let entry = entry?;
@@ -212,9 +218,260 @@ fn unreferenced_boot_binaries<'a>(
         .collect()
 }
 
+#[fn_error_context::context("GC Global UKI Addons")]
+fn gc_global_uki_addons(
+    storage: &Storage,
+    booted_cfs: &BootedComposefs,
+    gc_opts: &GCOpts,
+    bootloader_entries: &Vec<BootloaderEntry>,
+) -> Result<()> {
+    // GC always runs *after* finalizing deployments so there would be no staged deployment
+    // by definition but still only consider live addons for GC
+    let currently_installed_addons = list_installed_uki_addons(storage, &None)?
+        .into_iter()
+        .filter(|addon| !addon.staged)
+        .collect::<Vec<_>>();
+
+    if !currently_installed_addons
+        .iter()
+        .any(|addon| addon.addon_type == UkiAddonType::Global)
+    {
+        tracing::debug!("No bootc managed Global UKI Addon installed");
+        return Ok(());
+    }
+
+    // Remove unreferenced global UKI Addons
+    // GC always runs *after* finalizing deployments so there would be no staged deployment
+    // by definition
+    let currently_referenced_addons =
+        list_referenced_uki_addons(booted_cfs, &bootloader_entries, &None)?;
+    let mut unreferenced_global_addons = vec![];
+
+    tracing::debug!("currently_referenced_addons: {currently_referenced_addons:#?}");
+    tracing::debug!("currently_installed_addons: {currently_installed_addons:#?}");
+
+    for installed_addon in &currently_installed_addons {
+        // We handle scoped UKI Addons along with the UKI itself
+        if installed_addon.addon_type != UkiAddonType::Global {
+            continue;
+        }
+
+        let is_referenced = currently_referenced_addons.iter().any(|(_, refs)| {
+            refs.iter().any(|r| {
+                r.addon_type == installed_addon.addon_type && r.name == installed_addon.name
+            })
+        });
+
+        if !is_referenced {
+            unreferenced_global_addons.push(installed_addon.name.clone());
+        }
+    }
+
+    tracing::debug!("Unreferenced Global Addons: {unreferenced_global_addons:?}");
+
+    if !unreferenced_global_addons.is_empty() {
+        let global_uki_dir = storage
+            .require_boot_mount()?
+            .fd
+            .open_dir(GLOBAL_UKI_ADDONS_DIR)
+            .context("Opening global UKI Addons dir")?;
+
+        for addon in &unreferenced_global_addons {
+            let global_addon_name = get_global_uki_addon_name(&addon);
+
+            tracing::debug!("Deleting Global UKI Addon: {}", addon);
+
+            if gc_opts.dry_run {
+                continue;
+            }
+
+            global_uki_dir
+                .remove_file(&global_addon_name)
+                .with_context(|| format!("Removing global addon {global_addon_name}"))?;
+        }
+    }
+
+    Ok(())
+}
+
 pub(crate) struct GCOpts {
     pub(crate) dry_run: bool,
     pub(crate) prune_repo: bool,
+}
+
+fn orphaned_state_dirs<'a>(
+    state_dirs: &'a [String],
+    live_deployments: &[&str],
+    bootloader_entries: &[BootloaderEntry],
+    is_aboot: bool,
+) -> Vec<&'a String> {
+    state_dirs
+        .iter()
+        .filter(|state| {
+            if is_aboot {
+                !live_deployments.contains(&state.as_str())
+            } else {
+                !bootloader_entries
+                    .iter()
+                    .any(|entry| &entry.fsverity == *state)
+            }
+        })
+        .collect()
+}
+
+fn get_boot_dump(booted_cfs: &BootedComposefs, verity: &str) -> Result<Option<Vec<u8>>> {
+    let verity_to_sha = Sha512HashValue::from_hex(verity);
+
+    let Ok(verity_to_sha) = verity_to_sha else {
+        // We do not want to block on GC if we find corrupted state
+        tracing::warn!("Bad FSVerity '{verity}' when checkign additional roots, skipping");
+        return Ok(None);
+    };
+
+    let linked_images = match linked_erofs_images(&booted_cfs.repo, &verity_to_sha) {
+        Ok(images) => images,
+        Err(err) => {
+            tracing::warn!(
+                "Unable to inspect linked EROFS images for orphan '{verity}', skipping boot-object cleanup: {err:#}"
+            );
+            return Ok(None);
+        }
+    };
+
+    // Get any image that is non-bootable
+    let Some(non_bootable_img) = linked_images.iter().find(|img| !img.bootable) else {
+        tracing::debug!("No non-bootable image found for {verity}");
+        return Ok(None);
+    };
+
+    let boot_dump = composefs_ctl::dump_files(
+        &booted_cfs.repo,
+        &non_bootable_img.id.to_hex(),
+        &vec![std::path::Path::new("/").join(crate::install::BOOT)],
+        false,
+    )
+    .context("Getting dump for /boot")?;
+
+    if boot_dump.is_empty() {
+        tracing::debug!("Nothing found in /boot in non-bootable image");
+        return Ok(None);
+    }
+
+    Ok(Some(boot_dump))
+}
+
+#[fn_error_context::context("GC UKI Artifacts")]
+fn gc_uki_artifacts(
+    booted_cfs: &BootedComposefs,
+    gc_opts: &GCOpts,
+    additional_roots: &Vec<&str>,
+    all_orphans: &Vec<&String>,
+) -> Result<GcResult> {
+    let mut live_objects: HashSet<String> = HashSet::new();
+    let mut result = GcResult {
+        objects_removed: 0,
+        objects_bytes: 0,
+        ..Default::default()
+    };
+
+    for verity in additional_roots {
+        let Some(boot_dump) = get_boot_dump(booted_cfs, verity)? else {
+            continue;
+        };
+
+        let boot_dump = std::str::from_utf8(&boot_dump).context("dumpfile is not UTF-8")?;
+
+        use composefs::dumpfile_parse::{Entry, Item};
+
+        for line in boot_dump.lines() {
+            let entry =
+                Entry::parse(line).with_context(|| format!("Parsing dumpfile line '{line}'"))?;
+
+            let Item::Regular { path, .. } = entry.item else {
+                continue;
+            };
+
+            live_objects.insert(
+                path.to_str()
+                    .ok_or_else(|| anyhow::anyhow!("Object path is not valid UTF-8"))?
+                    .to_string(),
+            );
+        }
+    }
+
+    flock(&booted_cfs.repo.repo_fd(), FlockOperation::LockExclusive)
+        .context("Acquiring exclusive lock for GC")?;
+
+    // Now GC the UKI/UKI Addons from `.boot` EROFS if we have them.
+    // Aboot artifacts may share repository objects and are left to repository GC.
+    // These won't be GC'd by the above `repo.gc` as the EROFS have `/boot` masked.
+    for verity in all_orphans {
+        let Some(boot_dump) = get_boot_dump(booted_cfs, verity)? else {
+            continue;
+        };
+
+        let boot_dump = std::str::from_utf8(&boot_dump).context("dumpfile is not UTF-8")?;
+
+        let objects_dir = booted_cfs
+            .repo
+            .objects_dir()
+            .context("Opening objects dir")?;
+
+        use composefs::dumpfile_parse::{Entry, Item};
+
+        for line in boot_dump.lines() {
+            let entry =
+                Entry::parse(line).with_context(|| format!("Parsing dumpfile line '{line}'"))?;
+
+            let Item::Regular { path, .. } = entry.item else {
+                continue;
+            };
+
+            let path_string = path
+                .to_str()
+                .ok_or_else(|| anyhow::anyhow!("Object path is not valid UTF-8"))?
+                .to_string();
+
+            if live_objects.contains(&path_string) {
+                tracing::debug!("{path:?} is still referenced. Skipping...");
+                continue;
+            }
+
+            tracing::debug!(
+                "{}: objects/{path:?}",
+                if gc_opts.dry_run {
+                    "would remove"
+                } else {
+                    "removing"
+                },
+            );
+
+            if gc_opts.dry_run {
+                continue;
+            }
+
+            // Get file size before removing
+            match statat(&objects_dir, path.as_ref(), AtFlags::empty()) {
+                Ok(stat) => {
+                    result.objects_bytes += stat.st_size as u64;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    tracing::debug!("Object {} not found... skipping", path.display());
+                    continue;
+                }
+                Err(e) => Err(e).with_context(|| format!("statat {} failed", path.display()))?,
+            }
+
+            result.objects_removed += 1;
+
+            unlinkat(&objects_dir, path.as_ref(), AtFlags::empty())
+                .with_context(|| format!("Unlinking (from bootc) object {path:?}"))?;
+        }
+    }
+
+    flock(booted_cfs.repo.repo_fd(), FlockOperation::Unlock).context("repository unlock failed")?;
+
+    Ok(result)
 }
 
 /// 1. List all bootloader entries
@@ -284,8 +541,15 @@ pub(crate) async fn composefs_gc(
 
     let sysroot = &storage.physical_root;
 
-    let bootloader_entries = list_bootloader_entries(storage)?;
-    let boot_binaries = collect_boot_binaries(storage)?;
+    let is_aboot = booted_cfs_status.boot_type == BootType::Aboot;
+    let (bootloader_entries, boot_binaries) = if is_aboot {
+        (Vec::new(), Vec::new())
+    } else {
+        (
+            list_bootloader_entries(storage)?,
+            collect_boot_binaries(storage)?,
+        )
+    };
 
     tracing::debug!("bootloader_entries: {bootloader_entries:?}");
     tracing::debug!("boot_binaries: {boot_binaries:?}");
@@ -306,13 +570,20 @@ pub(crate) async fn composefs_gc(
         )
     }
 
-    for (ty, verity) in unreferenced_boot_binaries {
+    for (ty, verity) in &unreferenced_boot_binaries {
         match ty {
             BootType::Bls => {
                 delete_kernel_initrd(storage, &get_type1_dir_name(verity), gc_opts.dry_run)?
             }
             BootType::Uki => delete_uki(storage, verity, gc_opts.dry_run)?,
+            BootType::Aboot => {
+                anyhow::bail!("Aboot artifact unexpectedly reached boot binary garbage collection")
+            }
         }
+    }
+
+    if booted_cfs_status.boot_type == BootType::Uki {
+        gc_global_uki_addons(storage, booted_cfs, &gc_opts, &bootloader_entries)?;
     }
 
     if !gc_opts.prune_repo {
@@ -327,18 +598,36 @@ pub(crate) async fn composefs_gc(
 
     let staged = &host.status.staged;
 
-    // State dirs without a bootloader entry are from interrupted deployments.
-    let orphaned_state_dirs: Vec<_> = state_dirs
-        .iter()
-        .filter(|s| !bootloader_entries.iter().any(|entry| &entry.fsverity == *s))
-        .collect();
+    let live_deployments = host
+        .list_deployments()
+        .into_iter()
+        .map(|deployment| {
+            deployment
+                .require_composefs()
+                .map(|cfs| cfs.verity.as_str())
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    // Aboot uses slot/pending references from status (because there are no BLS files).
+    // BLS/UKI use raw boot entries, which can retain deployments omitted from status
+    // after interrupted operations.
+    let orphaned_state_dirs = orphaned_state_dirs(
+        &state_dirs,
+        &live_deployments,
+        &bootloader_entries,
+        is_aboot,
+    );
 
     // Bootloader entries without a state dir are from interrupted cleanups.
-    let orphaned_boot_entries: Vec<_> = bootloader_entries
-        .iter()
-        .map(|entry| &entry.fsverity)
-        .filter(|verity| !state_dirs.contains(verity))
-        .collect();
+    let orphaned_boot_entries: Vec<_> = if is_aboot {
+        Vec::new()
+    } else {
+        bootloader_entries
+            .iter()
+            .map(|entry| &entry.fsverity)
+            .filter(|verity| !state_dirs.contains(verity))
+            .collect()
+    };
 
     let all_orphans: Vec<_> = orphaned_state_dirs
         .iter()
@@ -503,89 +792,12 @@ pub(crate) async fn composefs_gc(
         }
     }
 
-    let (mut objects_bytes, mut objects_removed) = (0, 0);
-
-    // Now GC the UKI/UKI Addons from `.boot` EROFS if we have them
-    // These won't be GC'd by the above `repo.gc` as the EROFS have
-    // `/boot` masked
-    for verity in all_orphans {
-        let verity_to_sha = Sha512HashValue::from_hex(verity);
-
-        let Ok(verity_to_sha) = verity_to_sha else {
-            // We do not want to block on GC if we find corrupted state
-            tracing::warn!("Bad FSVerity '{verity}' when performing GC on orphan, skipping");
-            continue;
-        };
-
-        let linked_images = match linked_erofs_images(&booted_cfs.repo, &verity_to_sha) {
-            Ok(images) => images,
-            Err(err) => {
-                tracing::warn!(
-                    "Unable to inspect linked EROFS images for orphan '{verity}', skipping boot-object cleanup: {err:#}"
-                );
-                continue;
-            }
-        };
-
-        // Get any image that is non-bootable
-        let Some(non_bootable_img) = linked_images.iter().find(|img| !img.bootable) else {
-            tracing::debug!("No non-bootable image found for {verity}");
-            continue;
-        };
-
-        let boot_dump = composefs_ctl::dump_files(
-            &booted_cfs.repo,
-            &non_bootable_img.id.to_hex(),
-            &vec![std::path::Path::new("/").join(crate::install::BOOT)],
-            false,
-        )
-        .context("Getting dump for /boot")?;
-
-        if boot_dump.is_empty() {
-            tracing::debug!("Nothing found in /boot in non-bootable image");
-            continue;
-        }
-
-        let boot_dump = std::str::from_utf8(&boot_dump).context("dumpfile is not UTF-8")?;
-
-        let objects_dir = booted_cfs
-            .repo
-            .objects_dir()
-            .context("Opening objects dir")?;
-
-        use composefs::dumpfile_parse::{Entry, Item};
-
-        for line in boot_dump.lines() {
-            let entry = Entry::parse(line).unwrap();
-
-            let Item::Regular { path, .. } = entry.item else {
-                continue;
-            };
-
-            tracing::debug!(
-                "{}: objects/{path:?}",
-                if gc_opts.dry_run {
-                    "would remove"
-                } else {
-                    "removing"
-                },
-            );
-
-            if gc_opts.dry_run {
-                continue;
-            }
-
-            // Get file size before removing
-            if let Ok(stat) = statat(&objects_dir, path.as_ref(), AtFlags::empty()) {
-                objects_bytes += stat.st_size as u64;
-            }
-
-            objects_removed += 1;
-
-            unlinkat(&objects_dir, path.as_ref(), AtFlags::empty())
-                .with_context(|| format!("Unlinking object {path:?}"))?;
-        }
-    }
+    let uki_gc_result = if booted_cfs_status.boot_type == BootType::Uki {
+        let res = gc_uki_artifacts(booted_cfs, &gc_opts, &additional_roots, &all_orphans)?;
+        Some(res)
+    } else {
+        None
+    };
 
     // Run garbage collection. Tags root the OCI metadata chain
     // (manifest → config → layers). The additional_roots protect EROFS
@@ -602,8 +814,10 @@ pub(crate) async fn composefs_gc(
         booted_cfs.repo.gc(&additional_roots)?
     };
 
-    gc_result.objects_bytes += objects_bytes;
-    gc_result.objects_removed += objects_removed;
+    if let Some(uki_gc_result) = uki_gc_result {
+        gc_result.objects_bytes += uki_gc_result.objects_bytes;
+        gc_result.objects_removed += uki_gc_result.objects_removed;
+    }
 
     Ok(gc_result)
 }
@@ -612,7 +826,85 @@ pub(crate) async fn composefs_gc(
 mod tests {
     use super::*;
     use crate::bootc_composefs::status::list_type1_entries;
+    use crate::bootc_composefs::{aboot, status::ComposefsCmdline};
+    use crate::composefs_consts::STATE_DIR_RELATIVE;
+    use crate::store::ComposefsRepository;
     use crate::testutils::{ChangeType, TestRoot};
+    use cap_std_ext::{cap_std::ambient_authority, cap_tempfile::tempdir};
+    use composefs_ctl::composefs::repository::RepositoryConfig;
+
+    fn write_aboot_origin(root: &Dir, digest: &str) -> Result<()> {
+        let path = format!("{STATE_DIR_RELATIVE}/{digest}");
+        root.create_dir_all(&path)?;
+        root.atomic_write(
+            format!("{path}/{digest}.origin"),
+            "[boot]\nboot_type=aboot\ndigest=boot-digest\n",
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn aboot_orphans_only_unreferenced_state() {
+        let state = ["booted".into(), "rollback".into(), "invalid".into()];
+        let live = ["booted", "rollback"];
+        let orphans = orphaned_state_dirs(&state, &live, &[], true);
+        assert_eq!(
+            orphans.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+            ["invalid"]
+        );
+
+        let live = ["booted"];
+        let orphans = orphaned_state_dirs(&state, &live, &[], true);
+        assert_eq!(
+            orphans.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+            ["rollback", "invalid"]
+        );
+    }
+
+    #[tokio::test]
+    async fn aboot_gc_uses_status_roots() -> Result<()> {
+        let root = tempdir(ambient_authority())?;
+        root.create_dir_all("composefs")?;
+        root.create_dir("run")?;
+        let repo_dir = root.open_dir("composefs")?;
+        let config = RepositoryConfig::new(composefs_ctl::composefs::fsverity::Algorithm::SHA512)
+            .set_insecure();
+        let (repo, _) = ComposefsRepository::init_path(&repo_dir, ".", config)?;
+        let repo = std::sync::Arc::new(repo);
+        let storage = Storage::new_composefs_for_test(&root, &root.open_dir("run")?)?;
+        let booted = "aa".repeat(64);
+        let rollback = "bb".repeat(64);
+        let orphan = "cc".repeat(64);
+        for digest in [&booted, &rollback, &orphan] {
+            write_aboot_origin(&root, digest)?;
+        }
+        let mut aboot_state = aboot::AbootState::open(&root)?;
+        aboot_state.record_booted(
+            &linux_kernel_cmdline::utf8::Cmdline::from("androidboot.slot_suffix=_a"),
+            &booted,
+        )?;
+        aboot_state.record_booted(
+            &linux_kernel_cmdline::utf8::Cmdline::from("androidboot.slot_suffix=_b"),
+            &rollback,
+        )?;
+        let cmdline = Box::leak(Box::new(ComposefsCmdline::new(&booted)));
+        let booted_cfs = BootedComposefs { repo, cmdline };
+
+        composefs_gc(
+            &storage,
+            &booted_cfs,
+            GCOpts {
+                dry_run: false,
+                prune_repo: true,
+            },
+        )
+        .await?;
+
+        assert!(root.try_exists(format!("{STATE_DIR_RELATIVE}/{booted}"))?);
+        assert!(root.try_exists(format!("{STATE_DIR_RELATIVE}/{rollback}"))?);
+        assert!(!root.try_exists(format!("{STATE_DIR_RELATIVE}/{orphan}"))?);
+        Ok(())
+    }
 
     #[test]
     fn test_image_refs_match_v2_when_v1_is_present() {

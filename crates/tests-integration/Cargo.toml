@@ -13,9 +13,11 @@ path = "src/tests-integration.rs"
 [dependencies]
 # Workspace dependencies
 anyhow = { workspace = true }
+bootc-initramfs-setup = { path = "../initramfs" }
 camino = { workspace = true }
 cap-std-ext = { workspace = true }
 clap = { workspace = true, features = ["derive","cargo"] }
+composefs-ctl.workspace = true
 fn-error-context = { workspace = true }
 indoc = { workspace = true }
 rustix = { workspace = true }
@@ -30,7 +32,7 @@ linux-kernel-cmdline = { workspace = true }
 # This is a git dependency — not published to crates.io.
 # When updating, also check the bcvk-qemu Cargo.toml for its own
 # dependency versions (cap-std-ext, etc.) to avoid conflicts.
-bcvk-qemu = { git = "https://github.com/bootc-dev/bcvk", tag = "v0.21.0" }
+bcvk-qemu = { git = "https://github.com/bootc-dev/bcvk", tag = "v0.22.0" }
 data-encoding = "2.9"
 indicatif = { workspace = true }
 libtest-mimic = "0.8.0"

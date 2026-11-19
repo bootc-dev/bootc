@@ -79,6 +79,11 @@ struct Cli {
 enum Commands {
     /// Generate man pages
     Manpages {
+        /// Only convert the markdown in docs/src/man, without first building
+        /// bootc to sync its generated CLI sections. CI verifies those are up
+        /// to date, so this is suitable for packaging a release.
+        #[arg(long, conflicts_with = "cargo_options")]
+        no_sync: bool,
         /// Extra options for cargo when building bootc, after `--`
         /// (e.g. `-- --no-default-features --features install-to-disk`)
         #[arg(last = true)]
@@ -205,6 +210,8 @@ pub enum BootType {
     Bls,
     /// UKI boot
     Uki,
+    /// Aboot boot
+    Aboot,
 }
 
 impl Display for BootType {
@@ -212,6 +219,7 @@ impl Display for BootType {
         match self {
             BootType::Bls => f.write_str("bls"),
             BootType::Uki => f.write_str("uki"),
+            BootType::Aboot => f.write_str("aboot"),
         }
     }
 }
@@ -310,7 +318,7 @@ pub(crate) struct RunTmtArgs {
     #[arg(long, env = "BOOTC_seal_state")]
     pub(crate) seal_state: Option<SealState>,
 
-    /// Boot entry type (bls or uki)
+    /// Boot entry type (bls, uki, or aboot)
     #[arg(long, env = "BOOTC_boot_type", default_value_t)]
     pub(crate) boot_type: BootType,
 
@@ -392,7 +400,16 @@ fn try_main() -> Result<()> {
     let sh = xshell::Shell::new()?;
 
     match cli.command {
-        Commands::Manpages { cargo_options } => man::generate_man_pages(&sh, &cargo_options),
+        Commands::Manpages {
+            no_sync,
+            cargo_options,
+        } => {
+            if no_sync {
+                man::generate_man_pages_no_sync(&sh)
+            } else {
+                man::generate_man_pages(&sh, &cargo_options)
+            }
+        }
         Commands::GuideManpages => man::generate_guide_man_pages(&sh),
         Commands::CheckDocs => man::check_docs(),
         Commands::UpdateGenerated { command } => match command {
@@ -529,7 +546,8 @@ fn vendor_denied_crate(path: &Utf8Path) -> Option<&'static str> {
 /// [`VENDOR_DENYLIST`].
 fn vendor_denied_entries(archive: impl std::io::Read) -> Result<Vec<String>> {
     let mut denied = Vec::new();
-    for entry in tar::Archive::new(archive).entries()? {
+    let mut archive = tar::Archive::new(archive);
+    for entry in archive.entries()? {
         let entry = entry?;
         let path = entry.path()?;
         let path = path.to_string_lossy();
@@ -539,6 +557,9 @@ fn vendor_denied_entries(archive: impl std::io::Read) -> Result<Vec<String>> {
             denied.push(format!("{path} (from {name})"));
         }
     }
+    // Drain trailing padding after the end-of-archive marker so the
+    // writer (zstd) doesn't get SIGPIPE.
+    std::io::copy(&mut archive.into_inner(), &mut std::io::sink())?;
     Ok(denied)
 }
 

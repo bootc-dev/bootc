@@ -5,8 +5,9 @@ use crate::{
     bootc_composefs::{
         status::get_composefs_status,
         update::{
-            DoUpgradeOpts, UpdateAction, apply_upgrade_from_downloaded, do_upgrade,
-            is_image_pulled, validate_update,
+            DoUpgradeOpts, UpdateAction, apply_upgrade_from_downloaded,
+            discard_failed_aboot_update, do_upgrade, ensure_delta_source_present, is_image_pulled,
+            lookup_config_splitstream, validate_update,
         },
     },
     cli::{SwitchOpts, imgref_for_switch},
@@ -21,9 +22,11 @@ pub(crate) async fn switch_composefs(
     booted_cfs: &BootedComposefs,
 ) -> Result<()> {
     // TODO: Handle in-place
-    let host = get_composefs_status(storage, booted_cfs)
+    let mut host = get_composefs_status(storage, booted_cfs)
         .await
         .context("Getting composefs deployment status")?;
+
+    let delta = crate::delta::open_opt(opts.from_delta.as_deref()).await?;
 
     let prog: ProgressWriter = opts.progress.clone().try_into()?;
 
@@ -34,6 +37,8 @@ pub(crate) async fn switch_composefs(
         use_unified: false,
         quiet: opts.quiet,
         prog,
+        delta: delta.as_ref(),
+        uki_addon_opts: opts.uki_addon_opts.clone(),
     };
 
     if opts.download_opts.from_downloaded {
@@ -41,6 +46,25 @@ pub(crate) async fn switch_composefs(
     }
 
     let target = imgref_for_switch(&opts)?;
+    if let Some(delta) = delta.as_ref() {
+        delta.validate_image_reference(&target)?;
+    }
+
+    // There may be an existing failed update with the same name as "target", and
+    // in that case we don't want the "nothing changed" check below to trigger.
+    // Instead we want to discard the failed attempt and redo the update.
+    let failed_target_matches = host
+        .status
+        .staged
+        .as_ref()
+        .and_then(|entry| entry.image.as_ref())
+        .is_some_and(|image| image.image == target);
+    let discarded_failed_update = discard_failed_aboot_update(storage, &host)?;
+    if discarded_failed_update {
+        // Refresh host to skip discarded update
+        host = get_composefs_status(storage, booted_cfs).await?;
+    }
+    let retry_failed_target = discarded_failed_update && failed_target_matches;
 
     let new_spec = {
         let mut new_spec = host.spec.clone();
@@ -48,7 +72,7 @@ pub(crate) async fn switch_composefs(
         new_spec
     };
 
-    if new_spec == host.spec {
+    if new_spec == host.spec && !retry_failed_target {
         println!("Image specification is unchanged.");
         if opts.apply && host.status.staged.is_some() {
             crate::reboot::reboot()?;
@@ -92,14 +116,29 @@ pub(crate) async fn switch_composefs(
         booted_unified || target_unified
     };
 
-    let (image, img_config) = is_image_pulled(repo, &target_imgref).await?;
+    // With a delta the target is whatever the delta says it is, and we can look
+    // it up locally; without one we have to ask the registry.
+    let (image, manifest) = match &delta {
+        Some(delta) => {
+            crate::delta::reject_unified_storage(delta, do_upgrade_opts.use_unified)?;
+            ensure_delta_source_present(repo, delta)?;
+            (
+                lookup_config_splitstream(repo, delta.target_manifest().config().digest())?,
+                delta.target_manifest().clone(),
+            )
+        }
+        None => {
+            let (image, img_config, _) = is_image_pulled(repo, &target_imgref).await?;
+            (image, img_config.manifest)
+        }
+    };
 
     if let Some(cfg_verity) = image {
         let action = validate_update(
             storage,
             booted_cfs,
             &host,
-            img_config.manifest.config().digest().as_ref(),
+            manifest.config().digest().as_ref(),
             &cfg_verity,
             true,
         )?;
@@ -117,7 +156,7 @@ pub(crate) async fn switch_composefs(
                     &host,
                     &target_imgref,
                     &do_upgrade_opts,
-                    &img_config.manifest,
+                    &manifest,
                 )
                 .await;
             }
@@ -130,7 +169,7 @@ pub(crate) async fn switch_composefs(
         &host,
         &target_imgref,
         &do_upgrade_opts,
-        &img_config.manifest,
+        &manifest,
     )
     .await?;
 

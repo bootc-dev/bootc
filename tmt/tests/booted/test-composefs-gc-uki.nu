@@ -15,9 +15,40 @@ let booted = $st.status.booted.image
 let uki_prefix = "bootc_composefs-"
 
 let is_uki = (($st.status.booted.composefs.bootType | str downcase) == "uki")
+let is_sdboot = (($st.status.booted.composefs.bootloader | str downcase) == "systemd")
 
 if not $is_uki {
     exit 0
+}
+
+# Build an image with this VERSION_ID and stage it
+def stage_version [version: string] {
+    let containerfile = $"
+        FROM localhost/bootc as base
+        RUN sed -i 's/^VERSION_ID=.*/VERSION_ID=($version)/' /usr/lib/os-release
+    "
+
+    (tap make_uki_containerfile $containerfile) | podman build -t $"localhost/bootc-($version)" . -f -
+
+    bootc switch --transport containers-storage $"localhost/bootc-($version)"
+}
+
+# A UKI's boot entry has the version from its os-release in its file name, so
+# staging an image of another version doesn't overwrite the staged entry. Make
+# sure that entry goes away, along with the deployment it belongs to.
+def restage_another_version [] {
+    stage_version "restage1"
+    let replaced = (bootc status --json | from json).status.staged.composefs.verity
+
+    stage_version "restage2"
+
+    let staged = (glob /var/tmp/efi/loader/entries.staged/*.conf)
+    assert equal ($staged | length) 2 $"Expected the new and booted entries, found ($staged)"
+    assert (not ($staged | any { |f| $f | str contains "restage1" }))
+
+    let status = (bootc status --json | from json).status
+    assert ($status.staged.image.image.image | str ends-with "bootc-restage2")
+    assert (not ($"/sysroot/state/deploy/($replaced)" | path exists))
 }
 
 # Create a large file in a new container image, then bootc switch to the image
@@ -30,11 +61,22 @@ def first_boot [] {
         RUN echo 'large-file-marker' | dd of=/usr/share/large-test-file conv=notrunc
     "
 
-    $containerfile = (tap make_uki_containerfile $containerfile)
+    let addon_cmds = "
+      mkdir -p /out/${kver}.efi.extra.d
+      ukify build --cmdline 'gc_test=1' --output /out/${kver}.efi.extra.d/gc-test.addon.efi
+      mkdir -p /out/loader/addons
+      ukify build --cmdline 'gc_test=global' --output /out/loader/addons/gc-test-global.addon.efi
+    "
+
+    $containerfile = (tap make_uki_containerfile $containerfile --addon-cmds $addon_cmds)
 
     echo $containerfile | podman build -t localhost/bootc-first . -f -
 
-    bootc switch --transport containers-storage localhost/bootc-first
+    # Installing the global addon from an image that provides it must not warn
+    # about pending removal (the staged image references it).
+    let switch_out = (do { bootc switch --transport containers-storage --uki-addon gc-test --global-uki-addon gc-test-global localhost/bootc-first } | complete)
+    assert ($switch_out.exit_code == 0) "Initial switch should succeed"
+    assert (not ($switch_out.stdout | str contains "will be removed on a future update/switch")) "No pending-removal notice expected when the image provides the global addon"
 
     # Make sure we have the .boot EROFS
     let st = bootc status --json | from json
@@ -51,7 +93,6 @@ def first_boot [] {
 
     # Find the UKI in the objects directory
     # Intentionally not using the dump-files API here
-    # min/max depth = 1 to not include addons (for now)
     let uki_sha = sha512sum $"/var/tmp/efi/EFI/Linux/bootc/($uki_prefix)($st.status.booted.composefs.verity).efi" | awk '{print $1}'
     let uki_in_objs = ^find /sysroot/composefs/objects -type f -exec sha512sum {} + | grep ($uki_sha) | awk '{print $2}'
 
@@ -69,6 +110,11 @@ def second_boot [] {
     assert equal $booted.image.image "localhost/bootc-first"
     assert ($"/var/tmp/efi/EFI/Linux/bootc/($uki_prefix)(cat /var/boot0-verity).efi" | path exists)
 
+    # The scoped addon dir from boot 1 (bootc-first) should exist
+    let boot1_addon_dir = $"/var/tmp/efi/EFI/Linux/bootc/($uki_prefix)($st.status.booted.composefs.verity).efi.extra.d"
+    assert ($boot1_addon_dir | path exists)
+    assert ($"($boot1_addon_dir)/gc-test.addon.efi" | path exists)
+
     echo $st.status.booted.composefs.verity | save /var/boot1-verity
 
     let path = cat /var/large-file-marker-objpath
@@ -77,13 +123,19 @@ def second_boot [] {
     mut containerfile = echo "
         FROM localhost/bootc as base
         RUN echo 'second' > /usr/share/second
-    " 
+    "
 
     $containerfile = (tap make_uki_containerfile $containerfile)
 
     echo $containerfile | podman build -t localhost/bootc-second . -f -
 
-    bootc switch --transport containers-storage localhost/bootc-second
+    # bootc-second does not provide gc-test-global, but the booted deployment
+    # (bootc-first) still does, so we must be warned that the global addon will be
+    # garbage collected on a future update/switch.
+    let switch_out = (do { bootc switch --transport containers-storage localhost/bootc-second } | complete)
+    assert ($switch_out.exit_code == 0) "Switch should succeed"
+    assert ($switch_out.stdout | str contains "will be removed on a future update/switch") "Expected pending-removal notice for the dropped global addon"
+    assert ($switch_out.stdout | str contains "gc-test-global") "Notice should name the global addon"
 
     tmt-reboot
 }
@@ -105,7 +157,7 @@ def third_boot [] {
     mut containerfile = echo "
         FROM localhost/bootc as base
         RUN echo 'third' > /usr/share/third
-    " 
+    "
 
     $containerfile = (tap make_uki_containerfile $containerfile)
 
@@ -128,6 +180,14 @@ def fourth_boot [] {
     assert (not ($"/var/tmp/efi/EFI/Linux/bootc/($uki_prefix)(cat /var/boot1-verity).efi" | path exists))
     assert ($"/var/tmp/efi/EFI/Linux/bootc/($uki_prefix)(cat /var/boot2-verity).efi" | path exists)
 
+    # The scoped addon dir from boot 1 (bootc-first) should be gone
+    let boot1_addon_dir = $"/var/tmp/efi/EFI/Linux/bootc/($uki_prefix)(cat /var/boot1-verity).efi.extra.d"
+    assert (not ($boot1_addon_dir | path exists))
+
+    # The global addon should also be gone
+    let global_addon = $"/var/tmp/efi/loader/addons/bootc_composefs-gc-test-global.addon.efi"
+    assert (not ($global_addon | path exists))
+
     mut containerfile = "
         FROM localhost/bootc as base
         RUN echo 'another file' > /usr/share/another-one
@@ -141,6 +201,10 @@ def fourth_boot [] {
 
     let path = cat /var/large-file-marker-objpath
     assert (not ($path | path exists))
+
+    if $is_sdboot {
+        restage_another_version
+    }
 
     tap ok
 }

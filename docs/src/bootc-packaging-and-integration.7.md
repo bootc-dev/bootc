@@ -35,11 +35,22 @@ make install DESTDIR=/path/to/staging/root
 
 The install target handles:
 - Binary installation to `$(prefix)/bin`
-- Man pages to `$(prefix)/share/man/man{5,8}`
+- Man pages to `$(prefix)/share/man/man{5,7,8}`
 - systemd units to `$(prefix)/lib/systemd/system`
 - Documentation and examples to `$(prefix)/share/doc/bootc`
 - Dracut module to `/usr/lib/dracut/modules.d/51bootc`
 - Base image configuration files
+
+To skip building and installing the man pages, for example when building
+from source into a container image that excludes documentation, set
+`DISABLE_DOCS=1`:
+
+```bash
+make install DISABLE_DOCS=1 DESTDIR=/path/to/staging/root
+```
+
+This also drops the build-time dependency on `go-md2man`. The base image
+files under `$(prefix)/share/doc/bootc` are still installed.
 
 ### Optional Installation Targets
 

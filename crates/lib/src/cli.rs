@@ -39,19 +39,25 @@ use ostree_ext::sysroot::SysrootLock;
 use schemars::schema_for;
 use serde::{Deserialize, Serialize};
 
+use crate::bootc_composefs::boot::BootType;
 use crate::bootc_composefs::delete::delete_composefs_deployment;
 use crate::bootc_composefs::gc::{GCOpts, composefs_gc};
 use crate::bootc_composefs::soft_reboot::{prepare_soft_reboot_composefs, reset_soft_reboot};
 use crate::bootc_composefs::state::get_usr_overlay_status;
+use crate::bootc_composefs::status::get_composefs_status;
+use crate::bootc_composefs::uki_addons_cli::handle_addon_cli_cmd;
 use crate::bootc_composefs::{
+    aboot,
     digest::{compute_composefs_digest, new_temp_composefs_repo},
     finalize::{composefs_backend_finalize, get_etc_diff},
     rollback::composefs_rollback,
+    service::start_finalize_stated_svc,
     state::composefs_usr_overlay,
     switch::switch_composefs,
     update::upgrade_composefs,
 };
 use crate::deploy::{MergeState, RequiredHostSpec};
+use crate::install::UkiAddonOpts;
 use crate::podstorage::set_additional_image_store;
 use crate::progress_jsonl::{ProgressWriter, RawProgressFd};
 use crate::spec::FilesystemOverlayAccessMode;
@@ -101,7 +107,7 @@ pub(crate) struct DownloadOnlyOpts {
     /// This unlocks the staged deployment without fetching updates from the container image source.
     /// The deployment will be applied on the next shutdown or reboot. Use with --apply to
     /// reboot immediately.
-    #[clap(long, conflicts_with = "download_only")]
+    #[clap(long, conflicts_with_all = ["download_only", "scoped", "global"])]
     pub(crate) from_downloaded: bool,
 }
 
@@ -115,7 +121,7 @@ pub(crate) struct UpgradeOpts {
     /// Check if an update is available without applying it.
     ///
     /// This only downloads updated metadata, not the full image layers.
-    #[clap(long, conflicts_with_all = ["apply", "download_only", "from_downloaded"])]
+    #[clap(long, conflicts_with_all = ["apply", "download_only", "from_downloaded", "scoped", "global"])]
     pub(crate) check: bool,
 
     /// Restart or reboot into the new target image.
@@ -141,8 +147,19 @@ pub(crate) struct UpgradeOpts {
     #[clap(long)]
     pub(crate) tag: Option<String>,
 
+    /// Upgrade from a local oci-delta artifact instead of the network.
+    ///
+    /// The delta must have been created against an image that is already
+    /// present on this system.
+    #[clap(long, value_name = "PATH", conflicts_with_all = ["check", "from_downloaded", "tag"])]
+    pub(crate) from_delta: Option<Utf8PathBuf>,
+
     #[clap(flatten)]
     pub(crate) progress: ProgressOptions,
+
+    // This is kinda unfortunate that we can't gate this only for composefs systems
+    #[clap(flatten)]
+    pub(crate) uki_addon_opts: UkiAddonOpts,
 }
 
 /// Perform an switch operation
@@ -203,6 +220,19 @@ pub(crate) struct SwitchOpts {
     #[clap(long = "experimental-unified-storage", hide = true)]
     pub(crate) unified_storage_exp: bool,
 
+    /// Switch using a local oci-delta artifact instead of the network.
+    ///
+    /// The delta must have been created against an image that is already
+    /// present on this system.
+    #[clap(long, value_name = "PATH", conflicts_with_all = [
+        "from_downloaded",
+        "transport",
+        "mutate_in_place",
+        "unified_storage_exp",
+        "enforce_container_sigpolicy",
+    ])]
+    pub(crate) from_delta: Option<Utf8PathBuf>,
+
     /// Target image to use for the next boot.
     /// Required unless `--from-downloaded` is present.
     #[clap(
@@ -213,6 +243,10 @@ pub(crate) struct SwitchOpts {
 
     #[clap(flatten)]
     pub(crate) progress: ProgressOptions,
+
+    // This is kinda unfortunate that we can't gate this only for composefs systems
+    #[clap(flatten)]
+    pub(crate) uki_addon_opts: UkiAddonOpts,
 }
 
 /// Finalize a staged composefs deployment.
@@ -514,9 +548,10 @@ pub(crate) enum ContainerOpts {
         /// By default, produce V1 then V2 kargs for compatibility. V1 produces a
         /// `composefs.digest=v1-sha512-12:<hex>` karg (C-tool compatible), while V2
         /// produces the legacy `composefs=<hex>` karg (composefs-rs native).
+        /// V1-only omits the V2 fallback to shorten the kernel command line.
         /// Explicit V2 produces only the V2 karg as a compatibility escape hatch.
         #[clap(long)]
-        erofs_version: Option<ErofsVersionArg>,
+        erofs_version: Option<BootArtifactErofsVersionArg>,
 
         /// Write a dumpfile to this path
         #[clap(long)]
@@ -532,6 +567,37 @@ pub(crate) enum ContainerOpts {
         /// Additional arguments to pass to ukify (after `--`).
         #[clap(last = true)]
         args: Vec<OsString>,
+    },
+    /// Build an Android boot or ukiboot image using aboot-update.
+    Aboot {
+        /// Operate on the provided rootfs.
+        #[clap(long, default_value = "/")]
+        rootfs: Utf8PathBuf,
+
+        /// Make fs-verity validation optional in case the filesystem doesn't support it
+        #[clap(long)]
+        allow_missing_verity: bool,
+
+        /// EROFS format version to use when computing the composefs digest.
+        ///
+        /// By default, produce V1 then V2 kargs for compatibility.
+        /// V1-only omits the V2 fallback to shorten the kernel command line.
+        /// Explicit V2 produces only the legacy V2 karg.
+        #[clap(long)]
+        erofs_version: Option<BootArtifactErofsVersionArg>,
+
+        /// Write a dumpfile to this path
+        #[clap(long)]
+        write_dumpfile_to: Option<Utf8PathBuf>,
+
+        /// The directory containing vmlinuz and initramfs.img.
+        /// Must be of the format /parent/$kernel_version.
+        #[clap(long)]
+        kernel_dir: Option<Utf8PathBuf>,
+
+        /// Output directory. Defaults to $rootfs/boot.
+        #[clap(long)]
+        out: Option<Utf8PathBuf>,
     },
     /// Export container filesystem as a tar archive.
     ///
@@ -564,7 +630,7 @@ pub(crate) enum ContainerOpts {
     },
 }
 
-/// EROFS format version for `bootc container ukify --erofs-version`.
+/// EROFS format version for computing a composefs digest.
 #[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
 pub(crate) enum ErofsVersionArg {
     /// V1 EROFS (C-tool compatible, `composefs.digest=v1-sha512-12:<hex>` karg).  Default.
@@ -580,6 +646,17 @@ impl From<ErofsVersionArg> for FormatVersion {
             ErofsVersionArg::V2 => FormatVersion::V2,
         }
     }
+}
+
+/// EROFS format and compatibility arguments to embed in a boot artifact.
+#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
+pub(crate) enum BootArtifactErofsVersionArg {
+    /// V1 EROFS with a V2 compatibility fallback. Default.
+    V1,
+    /// V1 EROFS without a backwards compatibility V2 fallback.
+    V1Only,
+    /// V2 EROFS with only the legacy `composefs=` argument.
+    V2,
 }
 
 #[derive(Debug, Clone, ValueEnum, PartialEq, Eq)]
@@ -824,6 +901,8 @@ pub(crate) enum InternalsOpts {
     },
     /// Ensure that a composefs repository is initialized
     TestComposefs,
+    /// Record the booted aboot slot in persistent deployment state.
+    ComposefsAbootReconcile,
     /// Loopback device cleanup helper (internal use only)
     LoopbackCleanupHelper {
         /// Device path to clean up
@@ -861,6 +940,9 @@ pub(crate) enum InternalsOpts {
         /// Whether to perform the three way merge or not
         #[clap(long)]
         merge: bool,
+        /// Output the diff as json
+        #[clap(long)]
+        json: bool,
     },
     #[cfg(feature = "docgen")]
     /// Dump CLI structure as JSON for documentation generation
@@ -974,6 +1056,49 @@ pub(crate) enum StateOpts {
 impl InternalsOpts {
     /// The name of the binary we inject into /usr/lib/systemd/system-generators
     const GENERATOR_BIN: &'static str = "bootc-systemd-generator";
+}
+
+#[derive(Debug, Clone, Copy, clap::ValueEnum, PartialEq, Eq)]
+pub(crate) enum UkiAddonScope {
+    Global,
+    Scoped,
+}
+
+#[derive(Debug, clap::Subcommand, PartialEq, Eq)]
+pub(crate) enum UkiAddonCliOpts {
+    /// List all installed UKI Addons
+    List {
+        /// Output in JSON format
+        #[clap(long)]
+        json: bool,
+        /// List all staged addons as well
+        #[clap(long)]
+        verbose: bool,
+    },
+    /// Remove a UKI Addon from the currently booted deployment. If there is
+    /// a staged deployment present, the operation is performed on the staged
+    /// deployment's addons
+    Remove {
+        /// Addon name to be provided without the `.addon.efi` suffix
+        name: String,
+        /// The type of addon being removed, global or scoped
+        addon_type: UkiAddonScope,
+    },
+    /// Add a UKI Addon to the currently booted deployment. If there is
+    /// a staged deployment present, the operation is performed on the staged
+    /// deployment
+    Add {
+        /// Addon name to be provided without the `.addon.efi` suffix
+        name: String,
+        /// The type of addon being added, global or scoped
+        addon_type: UkiAddonScope,
+    },
+    /// List all referenced UKI Addons across all deployments
+    ListReferenced {
+        /// Output in JSON format
+        #[clap(long)]
+        json: bool,
+    },
 }
 
 /// Deploy and transactionally in-place with bootable container images.
@@ -1107,6 +1232,10 @@ pub(crate) enum Opt {
     },
     #[clap(hide = true)]
     DeleteDeployment { depl_id: String },
+
+    /// Perform operations related to UKI Addons
+    #[clap(subcommand)]
+    UkiAddon(UkiAddonCliOpts),
 }
 
 /// Ensure we've entered a mount namespace, so that we can remount
@@ -1348,6 +1477,10 @@ async fn upgrade(
     storage: &Storage,
     booted_ostree: &BootedOstree<'_>,
 ) -> Result<()> {
+    let delta = crate::delta::open_opt(opts.from_delta.as_deref())
+        .await?
+        .map(std::sync::Arc::new);
+
     let repo = &booted_ostree.repo();
 
     let host = crate::status::get_status(booted_ostree)?.1;
@@ -1412,6 +1545,9 @@ async fn upgrade(
     // needs this for update_mtime() and the non-check path needs it for
     // unified pull detection.
     let use_unified = crate::deploy::image_exists_in_unified_storage(storage, imgref).await?;
+    if let Some(delta) = delta.as_deref() {
+        crate::delta::reject_unified_storage(delta, use_unified)?;
+    }
 
     if opts.check {
         let ostree_imgref = imgref.clone().into();
@@ -1438,7 +1574,17 @@ async fn upgrade(
             }
         }
     } else {
-        let fetched = if use_unified {
+        let fetched = if let Some(delta) = delta.clone() {
+            crate::deploy::pull_delta(
+                repo,
+                imgref,
+                delta,
+                opts.quiet,
+                prog.clone(),
+                Some(&booted_ostree.deployment),
+            )
+            .await?
+        } else if use_unified {
             crate::deploy::pull_unified(
                 repo,
                 imgref,
@@ -1575,6 +1721,10 @@ async fn switch_ostree(
     storage: &Storage,
     booted_ostree: &BootedOstree<'_>,
 ) -> Result<()> {
+    let delta = crate::delta::open_opt(opts.from_delta.as_deref())
+        .await?
+        .map(std::sync::Arc::new);
+
     let (_, host) = crate::status::get_status(booted_ostree)?;
 
     if opts.download_opts.from_downloaded {
@@ -1639,8 +1789,21 @@ async fn switch_ostree(
     } else {
         crate::deploy::image_exists_in_unified_storage(storage, &target).await?
     };
+    if let Some(delta) = delta.as_deref() {
+        crate::delta::reject_unified_storage(delta, use_unified)?;
+    }
 
-    let fetched = if use_unified {
+    let fetched = if let Some(delta) = delta.clone() {
+        crate::deploy::pull_delta(
+            repo,
+            &target,
+            delta,
+            opts.quiet,
+            prog.clone(),
+            Some(&booted_ostree.deployment),
+        )
+        .await?
+    } else if use_unified {
         crate::deploy::pull_unified(
             repo,
             &target,
@@ -1731,6 +1894,10 @@ async fn switch(opts: SwitchOpts) -> Result<()> {
     let storage = &get_storage().await?;
     match storage.kind()? {
         BootedStorageKind::Ostree(booted_ostree) => {
+            if opts.uki_addon_opts.scoped.is_some() || opts.uki_addon_opts.global.is_some() {
+                anyhow::bail!("UKI Addon options are only supported for composefs backend");
+            }
+
             switch_ostree(opts, storage, &booted_ostree).await
         }
         BootedStorageKind::Composefs(booted_cfs) => {
@@ -2090,6 +2257,11 @@ async fn run_from_opt(opt: Opt) -> Result<CliExitStatus> {
             let storage = &get_storage().await?;
             match storage.kind()? {
                 BootedStorageKind::Ostree(booted_ostree) => {
+                    if opts.uki_addon_opts.scoped.is_some() || opts.uki_addon_opts.global.is_some()
+                    {
+                        anyhow::bail!("UKI Addon options are only supported for composefs backend");
+                    }
+
                     upgrade(opts, storage, &booted_ostree).await
                 }
                 BootedStorageKind::Composefs(booted_cfs) => {
@@ -2253,33 +2425,29 @@ async fn run_from_opt(opt: Opt) -> Result<CliExitStatus> {
                 kernel_dir,
                 args,
             } => {
-                let kernel = match kernel_dir {
-                    Some(kernel_dir) => {
-                        let kver = kernel_dir
-                            .components()
-                            .last()
-                            .ok_or_else(|| anyhow::anyhow!("Could not determine kernel version"))?;
-
-                        Some(crate::kernel::KernelInternal {
-                            kernel: crate::kernel::Kernel {
-                                unified: false,
-                                version: kver.to_string(),
-                            },
-                            k_type: crate::kernel::KernelType::Vmlinuz {
-                                path: kernel_dir.join("vmlinuz"),
-                                initramfs: kernel_dir.join("initramfs.img"),
-                            },
-                        })
-                    }
-
-                    None => None,
-                };
-
                 crate::ukify::build_ukify(
                     &rootfs,
                     &kargs,
                     &args,
-                    kernel,
+                    kernel_dir.as_deref(),
+                    allow_missing_verity,
+                    erofs_version,
+                    write_dumpfile_to.as_deref(),
+                )
+                .await
+            }
+            ContainerOpts::Aboot {
+                rootfs,
+                allow_missing_verity,
+                erofs_version,
+                write_dumpfile_to,
+                kernel_dir,
+                out,
+            } => {
+                crate::aboot::build_aboot(
+                    &rootfs,
+                    kernel_dir.as_deref(),
+                    out.as_deref(),
                     allow_missing_verity,
                     erofs_version,
                     write_dumpfile_to.as_deref(),
@@ -2413,6 +2581,25 @@ async fn run_from_opt(opt: Opt) -> Result<CliExitStatus> {
         }
         Opt::Status(opts) => super::status::status(opts).await,
         Opt::Internals(opts) => match opts {
+            InternalsOpts::ComposefsAbootReconcile => {
+                let storage = get_storage().await?;
+                let digest = match storage.kind()? {
+                    BootedStorageKind::Composefs(booted) => booted.cmdline.digest.to_string(),
+                    BootedStorageKind::Ostree(_) => {
+                        anyhow::bail!("Aboot reconciliation requires the composefs backend")
+                    }
+                };
+                ensure!(
+                    crate::bootc_composefs::state::read_boot_type(&storage.physical_root, &digest)?
+                        == Some(crate::bootc_composefs::boot::BootType::Aboot),
+                    "Aboot reconciliation requires an aboot deployment"
+                );
+                let mut state = aboot::AbootState::open(&storage.physical_root)?;
+                if state.reconcile(&digest)? {
+                    start_finalize_stated_svc()?;
+                }
+                Ok(())
+            }
             InternalsOpts::SystemdGenerator {
                 normal_dir,
                 early_dir: _,
@@ -2557,6 +2744,7 @@ async fn run_from_opt(opt: Opt) -> Result<CliExitStatus> {
                 current_etc,
                 new_etc,
                 merge,
+                json,
             } => {
                 let pristine_etc =
                     Dir::open_ambient_dir(pristine_etc, cap_std::ambient_authority())?;
@@ -2570,8 +2758,14 @@ async fn run_from_opt(opt: Opt) -> Result<CliExitStatus> {
                     .as_ref()
                     .ok_or_else(|| anyhow::anyhow!("Failed to get new directory tree"))?;
 
-                let diff = compute_diff(&p, &c, &n)?;
-                print_diff(&diff, &mut std::io::stdout());
+                let diff = compute_diff(&p, &c, &n, &current_etc, &pristine_etc)?;
+
+                if json {
+                    serde_json::to_writer(std::io::stdout(), &diff)
+                        .context("Writing JSON output")?;
+                } else {
+                    print_diff(&diff, &mut std::io::stdout());
+                }
 
                 if merge {
                     etc_merge::merge(&current_etc, &c, &new_etc, &n, &diff)?;
@@ -2768,6 +2962,25 @@ async fn run_from_opt(opt: Opt) -> Result<CliExitStatus> {
                 }
             }
         }
+        Opt::UkiAddon(opts) => {
+            let storage = &get_storage().await?;
+            match storage.kind()? {
+                BootedStorageKind::Ostree(_) => {
+                    anyhow::bail!("UKI Addons are only supported for Composefs Backend")
+                }
+                BootedStorageKind::Composefs(booted_cfs) => {
+                    let status = get_composefs_status(storage, &booted_cfs).await?;
+
+                    if status.require_composefs_booted()?.boot_type != BootType::Uki {
+                        anyhow::bail!(
+                            "Cannot perform UKI Addon operations on systems not booted via UKI"
+                        );
+                    }
+
+                    handle_addon_cli_cmd(storage, &booted_cfs, &status, &opts)
+                }
+            }
+        }
     };
     result.map(|()| CliExitStatus::Success)
 }
@@ -2812,6 +3025,41 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_from_delta() {
+        let o =
+            Opt::try_parse_from(["bootc", "switch", "--from-delta", "/d", "quay.io/e/x"]).unwrap();
+        match o {
+            Opt::Switch(o) => assert_eq!(o.from_delta.as_deref().unwrap(), "/d"),
+            o => panic!("Expected switch opts, not {o:?}"),
+        }
+
+        // A delta carries its own image content; anything that says where else
+        // to get that content, or that asks for a check we can't perform, must
+        // be rejected rather than silently ignored.
+        let conflicting: &[&[&str]] = &[
+            &["switch", "--transport=oci-archive", "quay.io/e/x"],
+            &["switch", "--mutate-in-place", "quay.io/e/x"],
+            &["switch", "--experimental-unified-storage", "quay.io/e/x"],
+            &["switch", "--enforce-container-sigpolicy", "quay.io/e/x"],
+            &["upgrade", "--check"],
+            &["upgrade", "--tag=other"],
+        ];
+        for args in conflicting {
+            let (subcommand, rest) = args.split_first().unwrap();
+            let mut full = vec!["bootc", subcommand, "--from-delta", "/d"];
+            full.extend_from_slice(rest);
+            let err = Opt::try_parse_from(&full)
+                .err()
+                .unwrap_or_else(|| panic!("{args:?}: expected a conflict"));
+            assert_eq!(
+                err.kind(),
+                clap::error::ErrorKind::ArgumentConflict,
+                "{args:?}: {err}"
+            );
+        }
+    }
+
+    #[test]
     fn test_parse_install_args() {
         // Verify we still process the legacy --target-no-signature-verification
         let o = Opt::try_parse_from([
@@ -2836,23 +3084,26 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_ukify_erofs_version_args() {
-        for (command, expected) in [
-            (&["bootc", "container", "ukify"][..], None),
-            (
-                &["bootc", "container", "ukify", "--erofs-version=v1"][..],
-                Some(ErofsVersionArg::V1),
-            ),
-            (
-                &["bootc", "container", "ukify", "--erofs-version=v2"][..],
-                Some(ErofsVersionArg::V2),
-            ),
-        ] {
-            let opt = Opt::try_parse_from(command).unwrap();
-            let Opt::Container(ContainerOpts::Ukify { erofs_version, .. }) = opt else {
-                panic!("expected container ukify options");
-            };
-            assert_eq!(erofs_version, expected);
+    fn test_parse_boot_artifact_erofs_version_args() {
+        for command in ["ukify", "aboot"] {
+            for (arg, expected) in [
+                (None, None),
+                (Some("v1"), Some(BootArtifactErofsVersionArg::V1)),
+                (Some("v1-only"), Some(BootArtifactErofsVersionArg::V1Only)),
+                (Some("v2"), Some(BootArtifactErofsVersionArg::V2)),
+            ] {
+                let mut args = vec!["bootc", "container", command];
+                if let Some(arg) = arg {
+                    args.extend(["--erofs-version", arg]);
+                }
+                let opt = Opt::try_parse_from(args).unwrap();
+                let erofs_version = match opt {
+                    Opt::Container(ContainerOpts::Ukify { erofs_version, .. })
+                    | Opt::Container(ContainerOpts::Aboot { erofs_version, .. }) => erofs_version,
+                    _ => panic!("expected container boot artifact options"),
+                };
+                assert_eq!(erofs_version, expected, "{command} {arg:?}");
+            }
         }
     }
 
@@ -2898,6 +3149,18 @@ mod tests {
                 "{args:?}"
             );
         }
+
+        assert!(matches!(
+            Opt::parse_including_static([
+                "bootc",
+                "container",
+                "aboot",
+                "--out",
+                "/out",
+            ]),
+            Opt::Container(ContainerOpts::Aboot { out, .. })
+                if out.as_deref() == Some(Utf8Path::new("/out"))
+        ));
     }
 
     #[test]

@@ -1,0 +1,21 @@
+[Unit]
+Description=Create /var/lib/systemd for early boot services
+Documentation=man:bootc(1)
+DefaultDependencies=no
+Conflicts=shutdown.target
+# Only the ordering systemd-random-seed.service itself has, so this can
+# run wherever it can. Notably not after local-fs.target, which
+# random-seed may have to precede (e.g. for a random-key encrypted swap).
+After=systemd-remount-fs.service
+RequiresMountsFor=/var/lib/systemd
+Before=systemd-random-seed.service systemd-tpm2-setup.service
+Before=sysinit.target shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=systemd-tmpfiles --create --prefix=/var/lib/systemd
+# As in systemd-tmpfiles-setup.service, so that an unrelated line under
+# the prefix can't fail this unit; a failure to create /var/lib/systemd
+# itself still shows up as systemd-random-seed.service failing.
+SuccessExitStatus=DATAERR CANTCREAT

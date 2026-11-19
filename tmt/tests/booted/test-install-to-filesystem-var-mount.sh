@@ -94,7 +94,7 @@ echo "Using loop device: $LOOP_DEV"
 cleanup() {
     set +e
     echo "Cleaning up..."
-    umount -R /var/mnt/target 2>/dev/null
+    umount -R -l /var/mnt/target 2>/dev/null
     vgchange -an BL 2>/dev/null
     vgremove -f BL 2>/dev/null
     losetup -d "$LOOP_DEV" 2>/dev/null

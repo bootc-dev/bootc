@@ -1,0 +1,7 @@
+# Packages that are only needed by some tests, and that we do not require to
+# be available everywhere we build. Anything listed here must be optional:
+# install-buildroot carries on without it, and the tests that use it skip
+# themselves when it is absent.
+#
+# Generates the deltas the `--from-delta` tests apply.
+oci-delta

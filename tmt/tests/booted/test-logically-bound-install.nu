@@ -12,7 +12,7 @@ use tap.nu
 let expected_images = [
     "quay.io/curl/curl:latest",
     "quay.io/curl/curl-base:latest",
-    "registry.access.redhat.com/ubi9/podman:latest" # this image is signed
+    "registry.access.redhat.com/ubi9/podman:9.8-1793032728" # this image is signed; pinned, see hack/lbi/podman.image
 ]
 
 def validate_images [images: list<string>] {

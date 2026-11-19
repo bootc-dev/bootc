@@ -7,6 +7,14 @@ pub(crate) const COMPOSEFS_STAGED_DEPLOYMENT_FNAME: &str = "staged-deployment";
 pub(crate) const STATE_DIR_ABS: &str = "/sysroot/state/deploy";
 /// Relative path to composefs-backend state directory. Relative to /sysroot
 pub(crate) const STATE_DIR_RELATIVE: &str = "state/deploy";
+pub(crate) const ABOOT_STATE_DIR: &str = "state/boot/aboot";
+pub(crate) const ABOOT_PENDING_FNAME: &str = "pending";
+pub(crate) const ABOOT_ATTEMPTED_FNAME: &str = "attempted";
+pub(crate) const ABOOT_ROLLBACK_FNAME: &str = "rollback";
+pub(crate) const ABOOT_ARTIFACT_DIR: &str = "aboot";
+pub(crate) const ABOOT_IMAGE_FNAME: &str = "aboot.img";
+pub(crate) const ABOOT_VBMETA_FNAME: &str = "vbmeta.img";
+pub(crate) const ABOOT_RECONCILE_SERVICE: &str = "bootc-aboot-reconcile.service";
 /// Relative path to the shared 'var' directory. Relative to /sysroot
 pub(crate) const SHARED_VAR_PATH: &str = "state/os/default/var";
 
@@ -46,6 +54,12 @@ pub(crate) const TYPE1_BOOT_DIR_PREFIX: &str = "bootc_composefs-";
 pub(crate) const BLS_ENTRY_FILE_PREFIX: &str = "bootc_";
 
 /// The prefix for names of UKI and UKI Addons
+///
+/// The actual name of a scoped UKI Addon is NOT prefixed,
+/// only its directory name is prefixed
+///
+/// The actual name of a global UKI Addon IS prefixed, since
+/// they all live in ESP/loader/addons
 pub(crate) const UKI_NAME_PREFIX: &str = TYPE1_BOOT_DIR_PREFIX;
 
 /// Prefix for OCI tags owned by bootc in the composefs repository.

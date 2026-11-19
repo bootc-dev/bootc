@@ -3,7 +3,7 @@
 # This catches first-boot ordering issues such as the race between
 # systemd-tmpfiles-setup and systemd-random-seed/systemd-tpm2-setup
 # when /var/lib/systemd does not yet exist (the bootc generator
-# emits a drop-in to prevent this).
+# emits bootc-early-tmpfiles.service to prevent this).
 use std assert
 use tap.nu
 

@@ -117,8 +117,11 @@ pub(crate) struct InitializedComposefs {
     pub(crate) repository_insecure: bool,
 }
 
-pub(crate) fn final_repository_policy(uki_policy: Option<bool>, requested_relaxed: bool) -> bool {
-    uki_policy == Some(true) || (uki_policy.is_none() && requested_relaxed)
+pub(crate) fn final_repository_policy(
+    image_fsverity_policy: Option<bool>,
+    requested_relaxed: bool,
+) -> bool {
+    image_fsverity_policy == Some(true) || (image_fsverity_policy.is_none() && requested_relaxed)
 }
 
 /// Enforce the durable repository policy after inspecting the imported image.
@@ -136,7 +139,7 @@ pub(crate) fn validate_repository_policy(
     }
     if !repository_insecure && requested_relaxed && !allow_missing_verity_explicit {
         anyhow::bail!(
-            "Initial insecure UKI conflicts with the existing strict composefs repository; explicitly pass --allow-missing-verity to permit this session"
+            "Initial insecure boot artifact conflicts with the existing strict composefs repository; explicitly pass --allow-missing-verity to permit this session"
         );
     }
     Ok(())
@@ -228,7 +231,7 @@ pub(crate) fn initialize_composefs_repository(
     // correctly derives the durable policy from meta.json and does not rewrite
     // it merely because this session permits missing fs-verity.
     if allow_missing_fsverity && (created || repository_insecure) {
-        repo.set_insecure();
+        repo.set_insecure()?;
     }
 
     let repo = Arc::new(repo);
@@ -375,10 +378,10 @@ pub(crate) fn prepare_boot_image(
     })
 }
 
-/// Inspect UKI policy without generating or recovering a boot image.  Boot
-/// image generation is deferred until the durable repository policy has been
-/// finalized and the normal boot setup path runs.
-pub(crate) fn inspect_uki_policy(
+/// Inspect the image's fs-verity policy without generating or recovering a boot
+/// image. Boot image generation is deferred until the durable repository policy
+/// has been finalized and the normal boot setup path runs.
+pub(crate) fn inspect_image_fsverity_policy(
     repo: &Arc<crate::store::ComposefsRepository>,
     pull_result: &PullResult<Sha512HashValue>,
 ) -> Result<Option<bool>> {
@@ -388,9 +391,9 @@ pub(crate) fn inspect_uki_policy(
         Some(&pull_result.config_verity),
         &composefs_oci::OciTransformOptions::default(),
     )
-    .context("Creating composefs filesystem for UKI policy inspection")?;
+    .context("Creating composefs filesystem for image fs-verity policy inspection")?;
     let entries = get_boot_resources(&fs, &**repo).context("Extracting boot entries")?;
-    crate::bootc_composefs::boot::uki_fsverity_policy(repo, &entries)
+    crate::bootc_composefs::boot::image_fsverity_policy(repo, &entries)
 }
 
 /// Pull an image directly into the composefs repository via skopeo.
@@ -516,10 +519,17 @@ async fn pull_composefs_unified(
 /// When `use_unified` is false (the default), the image is pulled directly
 /// into the composefs repo via skopeo.
 ///
+/// With a `delta`, the content is read from the delta file instead and no
+/// network access happens at all; `spec_imgref` then only names what the
+/// resulting deployment tracks. composefs-ctl recognises the delta artifact
+/// from the layout's manifest and reconstructs the changed layers against the
+/// source image in the repository, failing if that image is absent.
+///
 /// Checks for boot entries in the image and returns them.
 #[context("Pulling composefs repository")]
 pub(crate) async fn pull_composefs_repo(
     spec_imgref: &crate::spec::ImageReference,
+    delta: Option<&crate::delta::Delta>,
     allow_missing_fsverity: bool,
     use_unified: bool,
     quiet: bool,
@@ -527,7 +537,14 @@ pub(crate) async fn pull_composefs_repo(
 ) -> Result<PullRepoResult> {
     const COMPOSEFS_PULL_JOURNAL_ID: &str = "4c3b2a1f0e9d8c7b6a5f4e3d2c1b0a9f8";
 
-    let imgref = spec_imgref.to_image_proxy_ref()?;
+    let imgref = match delta {
+        Some(delta) => {
+            delta.validate_image_reference(spec_imgref)?;
+            crate::delta::reject_unified_storage(delta, use_unified)?;
+            delta.pull_ref()?
+        }
+        None => spec_imgref.to_image_proxy_ref()?,
+    };
 
     tracing::info!(
         message_id = COMPOSEFS_PULL_JOURNAL_ID,
@@ -536,6 +553,7 @@ pub(crate) async fn pull_composefs_repo(
         bootc.transport = %imgref.transport,
         bootc.allow_missing_fsverity = allow_missing_fsverity,
         bootc.unified_storage = use_unified,
+        bootc.delta = delta.map(|d| d.path.as_str()),
         "Pulling composefs image {imgref}",
     );
 
@@ -543,7 +561,7 @@ pub(crate) async fn pull_composefs_repo(
 
     let mut repo = open_composefs_repo(&rootfs_dir).context("Opening composefs repo")?;
     if allow_missing_fsverity {
-        repo.set_insecure();
+        repo.set_insecure()?;
     }
 
     let repo = Arc::new(repo);
@@ -607,7 +625,7 @@ pub(crate) async fn pull_composefs_repo(
         anyhow::anyhow!("BUG: Arc<Repository> still has other references after pull completed")
     })?;
     if allow_missing_fsverity {
-        repo.set_insecure();
+        repo.set_insecure()?;
     }
 
     Ok(PullRepoResult {
@@ -752,7 +770,7 @@ mod tests {
 
     #[test]
     fn test_final_repository_policy_matrix() {
-        for (uki_policy, requested_relaxed, expected) in [
+        for (image_fsverity_policy, requested_relaxed, expected) in [
             (Some(false), false, false),
             (Some(false), true, false),
             (Some(true), false, true),
@@ -761,7 +779,7 @@ mod tests {
             (None, true, true),
         ] {
             assert_eq!(
-                final_repository_policy(uki_policy, requested_relaxed),
+                final_repository_policy(image_fsverity_policy, requested_relaxed),
                 expected
             );
         }
@@ -769,7 +787,7 @@ mod tests {
 
     #[test]
     fn test_existing_repository_policy_matrix() {
-        for (insecure, uki_policy, requested, explicit, expected) in [
+        for (insecure, image_fsverity_policy, requested, explicit, expected) in [
             (false, Some(false), false, false, true),
             (false, Some(true), true, false, false),
             (false, Some(true), true, true, true),
@@ -781,11 +799,11 @@ mod tests {
             (true, None, false, false, false),
             (true, None, true, false, true),
         ] {
-            let requested_relaxed = final_repository_policy(uki_policy, requested);
+            let requested_relaxed = final_repository_policy(image_fsverity_policy, requested);
             assert_eq!(
                 validate_repository_policy(insecure, requested_relaxed, explicit).is_ok(),
                 expected,
-                "insecure={insecure} uki_policy={uki_policy:?} requested={requested} explicit={explicit}"
+                "insecure={insecure} image_fsverity_policy={image_fsverity_policy:?} requested={requested} explicit={explicit}"
             );
         }
     }

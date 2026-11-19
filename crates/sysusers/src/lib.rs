@@ -160,7 +160,9 @@ impl SysusersEntry {
 
     pub(crate) fn parse(s: &str) -> Result<Option<SysusersEntry>> {
         let err = || Error::ParseFailure(s.to_owned());
-        let (ftype, s) = Self::next_token(s).ok_or_else(err)?;
+        let (ftype, s) = Self::next_token(s)
+            .filter(|(token, _)| !token.is_empty())
+            .ok_or_else(err)?;
         let r = match ftype {
             "u" | "u!" => {
                 let (name, s) = Self::next_token_owned(s).ok_or_else(err)?;
@@ -485,7 +487,7 @@ mod tests {
                 "{line}"
             );
         }
-        for line in [r#"u "" 123"#, r#"g "" 123"#] {
+        for line in [r#""" user"#, r#"u "" 123"#, r#"g "" 123"#] {
             assert!(SysusersEntry::parse(line).is_err(), "{line}");
         }
         Ok(())

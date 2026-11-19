@@ -6,20 +6,21 @@ name = "bootc-lib"
 repository = "https://github.com/bootc-dev/bootc"
 # The intention is we'll follow semver here, even though this
 # project isn't actually published as a crate.
-version = "1.17.1"
+version = "1.17.4"
 # In general we try to keep this pinned to what's in the latest RHEL9.
 rust-version = "1.85.0"
 
 include = ["/src", "/build.rs", "LICENSE-APACHE", "LICENSE-MIT"]
 
 [dependencies]
+oci-delta = "0.1.1"
 # Internal crates
-bootc-blockdev = { package = "bootc-internal-blockdev", path = "../blockdev", version = "1.17.1" }
+bootc-blockdev = { package = "bootc-internal-blockdev", path = "../blockdev", version = "1.17.4" }
 linux-kernel-cmdline = { workspace = true }
-bootc-mount = { package = "bootc-internal-mount", path = "../mount", version = "1.17.1" }
+bootc-mount = { package = "bootc-internal-mount", path = "../mount", version = "1.17.4" }
 bootc-sysusers = { path = "../sysusers" }
 bootc-tmpfiles = { path = "../tmpfiles" }
-bootc-utils = { package = "bootc-internal-utils", path = "../utils", version = "1.17.1" }
+bootc-utils = { package = "bootc-internal-utils", path = "../utils", version = "1.17.4" }
 ostree-ext = { path = "../ostree-ext", features = ["bootc"] }
 etc-merge = { path = "../etc-merge" }
 bootc-initramfs-setup = { path = "../initramfs" }
@@ -30,7 +31,6 @@ anyhow = { workspace = true }
 camino = { workspace = true, features = ["serde1"] }
 canon-json = { workspace = true }
 cap-std-ext = { workspace = true, features = ["fs_utf8"] }
-cfg-if = { workspace = true }
 chrono = { workspace = true, features = ["serde"] }
 clap = { workspace = true, features = ["derive","cargo"] }
 clap_complete = "4"
@@ -47,7 +47,6 @@ indoc = { workspace = true }
 libc = { workspace = true }
 openssl = { workspace = true }
 percent-encoding = { workspace = true }
-regex = { workspace = true }
 rustix = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
@@ -78,9 +77,10 @@ uuid = { version = "1.8.0", features = ["v4"] }
 uapi-version = "0.4.0"
 
 [dev-dependencies]
+# For the ostree/container test fixtures
+ostree-ext = { path = "../ostree-ext", features = ["bootc", "internal-testing-api"] }
 similar-asserts = { workspace = true }
 static_assertions = { workspace = true }
-tokio = { workspace = true, features = ["test-util"] }
 
 [features]
 default = ["install-to-disk", "selinux"]

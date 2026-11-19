@@ -71,6 +71,24 @@ if $is_composefs {
         let bootc_label = $labels | get "containers.bootc"
         assert ($bootc_label | is-not-empty) "containers.bootc label should be present"
     }
+
+    # The version field is optional (skip_serializing_if = Option::is_none),
+    # but if present it should match the booted image's version.
+    let version = $aleph.version? | default null
+    if $version != null {
+        assert ($version | is-not-empty) "version field, if present, should be non-empty"
+        let booted_version = $booted.image.version
+        assert equal $version $booted_version "version should match the booted image's version"
+    }
+
+    # The timestamp field may be absent if empty (skip_serializing_if), but if
+    # present it should match the booted image's timestamp.
+    let timestamp = $aleph.timestamp? | default null
+    if $timestamp != null {
+        assert ($timestamp | is-not-empty) "timestamp field, if present, should be non-empty"
+        let booted_timestamp = $booted.image.timestamp
+        assert equal $timestamp $booted_timestamp "timestamp should match the booted image's timestamp"
+    }
 }
 
 tap ok
