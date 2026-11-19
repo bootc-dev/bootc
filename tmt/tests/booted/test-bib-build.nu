@@ -5,7 +5,7 @@
 #   require:
 #     - qemu-img
 # extra:
-#   fixme_skip_if_composefs: true
+#   fixme_skip_if_composefs: never enabled on composefs; marked in bulk when PR 1913 inverted works_for_composefs
 #
 # This test validates that bootc-image-builder (bib) can successfully
 # create disk images from the current booted image. This is a critical

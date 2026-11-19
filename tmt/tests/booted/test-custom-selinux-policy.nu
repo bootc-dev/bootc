@@ -7,7 +7,7 @@
 #       enabled: false
 #       because: these tests require features only available in image mode
 # extra:
-#   fixme_skip_if_composefs: true
+#   fixme_skip_if_composefs: never enabled on composefs; marked in bulk when PR 1913 inverted works_for_composefs
 #
 # Verify that correct labels are applied after a deployment
 use std assert

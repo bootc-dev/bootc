@@ -3,7 +3,7 @@
 #   summary: Verify upgrade --check populates cached update in status
 #   duration: 30m
 # extra:
-#   fixme_skip_if_composefs: true
+#   fixme_skip_if_composefs: the composefs backend doesn't persist cachedUpdate from upgrade --check yet
 #
 # TODO: The composefs backend does not yet persist cachedUpdate metadata
 # from `upgrade --check`. Remove the skip once that is implemented.

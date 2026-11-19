@@ -1,6 +1,6 @@
 # number: 42
 # extra:
-#   fixme_skip_if_composefs: true
+#   fixme_skip_if_composefs: loader-entries set-options-for-source uses ostree's bootconfig-extra
 # tmt:
 #   summary: Test bootc loader-entries set-options-for-source
 #   duration: 30m

@@ -2,7 +2,7 @@
 # tmt:
 #   summary: Test the aleph file exist and contains the correct info
 # extra:
-#   fixme_skip_if_composefs: true
+#   fixme_skip_if_composefs: composefs install writes no aleph file
 #
 # Validates the alpeh file exist and contains the image digest
 # and the target-image reference in applicable cases.

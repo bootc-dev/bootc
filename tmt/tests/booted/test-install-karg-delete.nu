@@ -3,7 +3,7 @@
 #   summary: Test bootc install --karg-delete
 #   duration: 30m
 # extra:
-#   fixme_skip_if_composefs: true
+#   fixme_skip_if_composefs: install --karg-delete is ostree-only, and the test uses --bootloader=none
 #
 use std assert
 use tap.nu
