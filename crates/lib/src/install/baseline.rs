@@ -1264,9 +1264,7 @@ pub(crate) fn install_create_rootfs(
                 let covered: HashSet<&str> = luks_meta
                     .tokens
                     .values()
-                    .filter_map(|t| t.get("keyslots").and_then(|k| k.as_array()))
-                    .flatten()
-                    .filter_map(|v| v.as_str())
+                    .flat_map(|t| t.keyslots.iter().map(String::as_str))
                     .collect();
 
                 // Whether the volume can be unlocked by the TPM, i.e. at least
@@ -1274,10 +1272,7 @@ pub(crate) fn install_create_rootfs(
                 // whether we add the `tpm2-device=auto` karg
                 //
                 // This is independent of whether a passphrase/keyfile slot also exists
-                let has_tpm = luks_meta
-                    .tokens
-                    .values()
-                    .any(|t| t.get("type").and_then(|v| v.as_str()) == Some("systemd-tpm2"));
+                let has_tpm = luks_meta.tokens.values().any(|t| t.kind == "systemd-tpm2");
 
                 // Whether a plain keyslot exists: one not bound to any token,
                 // unlocked by raw key material supplied directly (a typed
@@ -1290,7 +1285,7 @@ pub(crate) fn install_create_rootfs(
                     .keys()
                     .any(|id| !covered.contains(id.as_str()));
 
-                if has_tpm {
+                if has_tpm && !discoverable {
                     let headless = if has_plain_slot {
                         // Don't disable password querying
                         ""

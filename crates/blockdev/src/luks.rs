@@ -15,8 +15,8 @@ pub struct LuksMetadata {
     pub keyslots: BTreeMap<String, Keyslot>,
     /// Tokens, keyed by token number. A token describes how a keyslot can be
     /// unlocked by something other than a passphrase (e.g. a TPM2 or FIDO2
-    /// device). The shape is token-type specific, so this is left as raw JSON.
-    pub tokens: BTreeMap<String, serde_json::Value>,
+    /// device).
+    pub tokens: BTreeMap<String, LuksToken>,
     /// Data segments, keyed by segment number. A segment maps a region of the
     /// device to an encryption configuration.
     pub segments: BTreeMap<String, Segment>,
@@ -25,6 +25,22 @@ pub struct LuksMetadata {
     pub digests: BTreeMap<String, Digest>,
     /// Global configuration of the metadata area.
     pub config: Config,
+}
+
+/// A LUKS2 token: metadata binding an external unlock method to one or more
+/// keyslots.
+///
+/// Only the fields common to every token type are modeled; type-specific fields
+/// (e.g. `tpm2-blob` for `systemd-tpm2`) are present in the JSON but ignored
+/// here, as serde skips unknown fields by default.
+#[derive(Debug, Clone, Deserialize)]
+pub struct LuksToken {
+    /// Token type, e.g. `"systemd-tpm2"`, `"systemd-fido2"`, `"clevis"`.
+    #[serde(rename = "type")]
+    pub kind: String,
+    /// Keyslot numbers (as strings) this token can unlock.
+    #[serde(default)]
+    pub keyslots: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -235,10 +251,8 @@ mod test {
 
         // A single systemd-tpm2 token bound to keyslot 0
         assert_eq!(md.tokens.len(), 1);
-        assert_eq!(
-            md.tokens["0"].get("type").and_then(|v| v.as_str()),
-            Some("systemd-tpm2")
-        );
+        assert_eq!(md.tokens["0"].kind, "systemd-tpm2");
+        assert_eq!(md.tokens["0"].keyslots, vec!["0"]);
 
         assert_eq!(md.segments["0"].size, "dynamic");
         assert_eq!(md.digests["0"].keyslots, vec!["0"]);
