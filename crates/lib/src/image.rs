@@ -39,7 +39,7 @@ pub(crate) const IMAGE_DEFAULT: &str = "localhost/bootc";
 /// TODO: Using exit codes to check image existence is not ideal. We should use
 /// the podman native libpod HTTP API to properly communicate with podman and
 /// get structured responses.
-async fn image_exists_in_host_storage(image: &str) -> Result<bool> {
+pub(crate) async fn image_exists_in_host_storage(image: &str) -> Result<bool> {
     use tokio::process::Command as AsyncCommand;
     let mut cmd = AsyncCommand::new(bootc_utils::podman_bin());
     cmd.args(["image", "exists", image]);
