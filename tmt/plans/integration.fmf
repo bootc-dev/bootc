@@ -459,4 +459,12 @@ execute:
     enabled: false
     because: the derived images are built in the VM, which has no keys to sign their UKIs for Secure Boot
   extra-skip_if_ostree: true
+
+/plan-68-logically-bound-apply-live:
+  summary: Execute logically bound images tests for bootc apply-live bound-images
+  discover:
+    how: fmf
+    test:
+      - /tmt/tests/tests/test-68-logically-bound-apply-live
+  extra-fixme_skip_if_composefs: true
 # END GENERATED PLANS
