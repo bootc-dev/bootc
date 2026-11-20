@@ -121,10 +121,11 @@ use crate::bootc_composefs::boot::{
     BootType, EFI_LINUX, mount_esp, mount_esp_readonly, mount_esp_writable,
 };
 use crate::bootc_composefs::boot_partition::BootPartition;
+use crate::bootc_composefs::repo::open_composefs_repo;
 use crate::bootc_composefs::status::{ComposefsCmdline, composefs_booted, get_bootloader};
 use crate::bootc_composefs::{aboot, state::read_boot_type};
 use crate::composefs_consts::{BLS_ENTRY_FILE_PREFIX, TYPE1_ENT_PATH};
-use crate::install::BOOT;
+use crate::install::{BOOT, RootSetup};
 use crate::lsm;
 use crate::podstorage::CStorage;
 use crate::spec::{BootloaderKind, ImageStatus};
@@ -852,6 +853,34 @@ impl Storage {
             boot_partition: None,
             ostree: ostree_cell,
             composefs: Default::default(),
+            imgstore: Default::default(),
+        })
+    }
+
+    /// Create a new storage accessor from an existing composefs sysroot.
+    ///
+    /// This is used for non-booted scenarios (e.g., `bootc install`) where
+    /// we're operating on a target filesystem rather than the running system.
+    pub fn new_composefs_from_state(root_setup: &RootSetup, run: &Dir) -> Result<Self> {
+        let run = run.try_clone()?;
+
+        let repo = open_composefs_repo(&root_setup.physical_root)?;
+        let repo = Arc::new(repo);
+
+        let cell = OnceCell::new();
+        let _ = cell.set(repo);
+
+        Ok(Self {
+            physical_root: root_setup.physical_root.try_clone()?,
+            physical_root_path: root_setup.physical_root_path.clone(),
+            is_ro: false,
+            run,
+            boot_dir: None,
+            grub_boot_path: None,
+            boot_mount: None,
+            boot_partition: None,
+            ostree: Default::default(),
+            composefs: cell,
             imgstore: Default::default(),
         })
     }
