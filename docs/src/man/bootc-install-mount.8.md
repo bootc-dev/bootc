@@ -4,7 +4,7 @@ bootc-install-mount - Mount an installed deployment into a caller-owned director
 
 # SYNOPSIS
 
-bootc install mount **--sysroot**=*SYSROOT* **--latest** [**--read-only**] *TARGET*
+bootc install mount **--sysroot**=*SYSROOT* **--latest** [**--esp**=*ESP*] [**--read-only**] *TARGET*
 
 # DESCRIPTION
 
@@ -14,11 +14,28 @@ and composefs backends are supported. **TARGET** is an absolute path to a
 directory; as with **mount**(8), whatever is there is hidden (bootc warns if
 it is not empty).
 
-A deployment selector is required; currently the only one is **--latest**.
-For now the sysroot must also contain exactly one deployment, as it does
-right after installation; otherwise bootc refuses to guess which one to
-mount. Requiring the selector leaves room to choose among multiple
-deployments in the future without changing what existing invocations mean.
+A deployment selector is required; currently the only one is **--latest**,
+which mounts the deployment the default boot entry boots, as the kernel
+command line of a booted system would name it. Requiring the selector leaves
+room to choose among multiple deployments in the future without changing
+what existing invocations mean.
+
+bootc reads the boot entries from *SYSROOT*`/boot` and the ESP. If `/boot`
+is a separate partition, mount it at *SYSROOT*`/boot` first, where OSTree
+also expects it. The ESP is **--esp** if given. Otherwise, on architectures
+that use an ESP, it is *SYSROOT*`/efi` or *SYSROOT*`/boot/efi` if either is
+mounted (in that order, `/efi` being where **systemd-gpt-auto-generator**(8)
+mounts it), or else the ESP bootc discovers from the block device(s) backing
+*SYSROOT*, as **bootc-install**(8) does, mounting it while reading the
+entries. The entries are ordered as **bootc-status**(8) orders them.
+For GRUB, the default entry is the first of `grub2/user.cfg` (UKIs) or else
+the Type 1 entry whose file name sorts last; for systemd-boot, the first
+Type 1 entry on the ESP (or in `/boot`) in Boot Loader Specification order.
+If that entry boots an OSTree deployment, the deployment is OSTree's default,
+the first in its own order. Staged entries, EFI variables (such as a one-time boot
+entry), boot counting and a configured default are not considered. When no
+boot entries are found at all, the sysroot must contain exactly one
+deployment, as it does right after installation.
 
 The mount remains in the caller's mount namespace after this command exits;
 bootc does not create a container, chroot, or private mount namespace.
@@ -69,7 +86,11 @@ that provides those, such as `bwrap`, `podman run --rootfs`, or
 
 **--latest**
 
-    Mount the latest deployment. Currently the sysroot must contain exactly one
+    Mount the deployment the default boot entry boots
+
+**--esp**=*ESP*
+
+    The mounted EFI System Partition, where systemd-boot keeps its boot entries
 
 **--read-only**
 
