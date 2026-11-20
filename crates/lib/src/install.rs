@@ -2858,7 +2858,7 @@ pub(crate) async fn install_to_filesystem(
     };
 
     // Gather data about the root filesystem
-    let inspect = bootc_mount::inspect_filesystem(&fsopts.root_path)?;
+    let mut inspect = bootc_mount::inspect_filesystem(&fsopts.root_path)?;
 
     // Gather global state, destructuring the provided options.
     // IMPORTANT: We might re-execute the current process in this function (for SELinux among other things)
@@ -2892,6 +2892,20 @@ pub(crate) async fn install_to_filesystem(
         }
         None => require_empty_rootdir(&rootfs_fd)?,
     }
+
+    // Find the real underlying backing device for the root.  This is currently just required
+    // for GRUB (BIOS) and in the future zipl (I think).
+    let device_info = {
+        let devs = bootc_blockdev::list_devs_by_source(&inspect.fstype, &inspect.source)?;
+        // findmnt has no UUID for a multi-device bcachefs source
+        // (`/dev/vda:/dev/vdb`), but each of its devices carries it.
+        if inspect.uuid.is_none() && inspect.fstype == "bcachefs" {
+            inspect.uuid = devs.iter().find_map(|dev| dev.uuid.clone());
+        }
+        let dev = bootc_blockdev::select_bootloader_dev(&devs)?;
+        tracing::debug!("Target filesystem backing device: {}", dev.path());
+        dev
+    };
 
     // We support overriding the mount specification for root (i.e. LABEL vs UUID versus
     // raw paths).
@@ -2958,14 +2972,6 @@ pub(crate) async fn install_to_filesystem(
         None
     };
     tracing::debug!("boot UUID: {boot_uuid:?}");
-
-    // Find the real underlying backing device for the root.  This is currently just required
-    // for GRUB (BIOS) and in the future zipl (I think).
-    let device_info = {
-        let dev = bootc_blockdev::list_dev(Utf8Path::new(&inspect.source))?;
-        tracing::debug!("Target filesystem backing device: {}", dev.path());
-        dev
-    };
 
     let rootarg = format!("root={}", root_info.mount_spec);
     // CLI takes precedence over config file.

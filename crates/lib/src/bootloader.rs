@@ -66,7 +66,7 @@ pub(crate) fn mount_esp_part(root: &Dir, root_path: &Utf8Path, is_ostree: bool) 
         root
     };
 
-    let roots = bootc_blockdev::list_dev_by_dir(physical_root)?.find_all_roots()?;
+    let roots = bootc_blockdev::list_roots_by_dir(physical_root)?;
     for dev in &roots {
         if let Some(esp_dev) = dev.find_partition_of_esp_optional()? {
             let esp_path = esp_dev.path();
