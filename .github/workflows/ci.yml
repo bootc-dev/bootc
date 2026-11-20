@@ -729,15 +729,9 @@ jobs:
     # Cheap aggregation (jq only) — no need for a full VM.
     runs-on: ubuntu-slim
     steps:
-      - name: Check all jobs
-        env:
-          NEEDS: ${{ toJson(needs) }}
-        run: |
-          FAILED=$(echo "$NEEDS" | jq -r 'to_entries[] | select(.value.result | IN("success","skipped") | not) | .key')
-          if [ -n "$FAILED" ]; then
-            echo "The following jobs did not succeed: $FAILED"
-            exit 1
-          fi
+      - uses: bootc-dev/actions/required-checks@main
+        with:
+          needs: ${{ toJson(needs) }}
 
   # Sentinel job — configure this single name in repo required-status-checks settings.
   # With a merge queue active: gates only the light always-run jobs on PRs;
@@ -753,12 +747,6 @@ jobs:
     # Cheap aggregation (jq only) — no need for a full VM.
     runs-on: ubuntu-slim
     steps:
-      - name: Check required jobs
-        env:
-          NEEDS: ${{ toJson(needs) }}
-        run: |
-          FAILED=$(echo "$NEEDS" | jq -r 'to_entries[] | select(.value.result | IN("success","skipped") | not) | .key')
-          if [ -n "$FAILED" ]; then
-            echo "The following jobs did not succeed: $FAILED"
-            exit 1
-          fi
+      - uses: bootc-dev/actions/required-checks@main
+        with:
+          needs: ${{ toJson(needs) }}
