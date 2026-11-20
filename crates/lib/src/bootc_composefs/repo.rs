@@ -289,10 +289,8 @@ pub(crate) async fn pull_install_composefs_repository(
         )
         .await?;
 
-        // SELinux-label the containers-storage now that all pulls are done.
-        imgstore
-            .ensure_labeled()
-            .context("SELinux labeling of containers-storage")?;
+        // NOTE: We do the SELinux-labeling of the containers-storage at the end of the
+        // install
         r
     } else {
         // Direct path: pull directly into composefs via skopeo, without

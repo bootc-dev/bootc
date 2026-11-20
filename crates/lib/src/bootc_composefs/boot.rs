@@ -103,6 +103,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::bootc_composefs::boot_partition::BootPartition;
+use crate::bootc_composefs::repo::BootImage;
 use crate::bootc_composefs::state::{get_booted_bls, write_composefs_state};
 use crate::bootc_composefs::status::build_composefs_karg;
 use crate::bootc_composefs::uki_addon::{UkiAddonType, UkiAddonsList, list_installed_uki_addons};
@@ -112,11 +113,8 @@ use crate::composefs_consts::{
 };
 use crate::parsers::bls_config::{BLSConfig, BLSConfigType, EFIKey};
 use crate::spec::BootloaderKind;
+use crate::store::{ComposefsRepository, Storage};
 use crate::task::Task;
-use crate::{
-    bootc_composefs::repo::open_composefs_repo,
-    store::{ComposefsRepository, Storage},
-};
 use crate::{
     bootc_composefs::status::get_sorted_grub_uki_boot_entries,
     install::{AbootDiskLayout, PostFetchState},
@@ -2813,6 +2811,10 @@ fn validate_aboot_disk_layout(
 pub(crate) async fn setup_composefs_boot(
     root_setup: &RootSetup,
     state: &State,
+    repo: &crate::store::ComposefsRepository,
+    boot_image: BootImage,
+    image_root: &Dir,
+    composefs_mnt_fd: std::os::fd::OwnedFd,
     pull_result: &composefs_oci::PullResult<Sha512HashValue>,
     allow_missing_fsverity: bool,
 ) -> Result<()> {
@@ -2826,19 +2828,13 @@ pub(crate) async fn setup_composefs_boot(
         "Setting up composefs boot",
     );
 
-    let mut repo = open_composefs_repo(&root_setup.physical_root)?;
-    if allow_missing_fsverity {
-        repo.set_insecure()?;
-    }
-
-    let repo = Arc::new(repo);
-
-    let crate::bootc_composefs::repo::BootImage {
-        id,
+    let BootImage {
+        entries,
         boot_ids,
         fs,
-        entries,
-    } = crate::bootc_composefs::repo::prepare_boot_image(&repo, pull_result)?;
+        id,
+    } = boot_image;
+
     let entry = primary_boot_entry(&entries)?;
     let boot_type = BootType::from(entry);
 
@@ -2849,11 +2845,6 @@ pub(crate) async fn setup_composefs_boot(
         };
         validate_aboot_disk_layout(encoding, root_setup.aboot_disk_layout)?;
     }
-
-    let composefs_mnt_fd = repo
-        .mount(&id.to_hex())
-        .context("Failed to mount composefs image")?;
-    let image_root = Dir::reopen_dir(&composefs_mnt_fd)?;
 
     if boot_type == BootType::Aboot {
         super::aboot::require_aboot_deploy_in_image(&image_root)?;
@@ -2874,12 +2865,6 @@ pub(crate) async fn setup_composefs_boot(
         &repo,
         &fs,
     )?;
-
-    let repo = Arc::try_unwrap(repo).map_err(|_| {
-        anyhow::anyhow!(
-            "BUG: Arc<Repository> still has other references after boot image generation"
-        )
-    })?;
 
     let (provisional_deploy_id, provisional_format) = (id.clone(), repo.erofs_version());
     let (boot_digest, deploy_id) = match boot_type {

@@ -37,10 +37,11 @@ pub(crate) struct ResolvedBoundImage {
     pub(crate) digest: String,
 }
 
+const BOUND_IMAGES_JOURNAL_ID: &str = "1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5";
+
 /// Given a deployment, pull all container images it references.
 pub(crate) async fn pull_bound_images(sysroot: &Storage, deployment: &Deployment) -> Result<()> {
     // Log the bound images operation to systemd journal
-    const BOUND_IMAGES_JOURNAL_ID: &str = "1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5";
     tracing::info!(
         message_id = BOUND_IMAGES_JOURNAL_ID,
         bootc.deployment.osname = deployment.osname().as_str(),
@@ -57,6 +58,30 @@ pub(crate) async fn pull_bound_images(sysroot: &Storage, deployment: &Deployment
         bound_images.len()
     );
     pull_images(sysroot, bound_images).await
+}
+
+/// Given a deployment, pull all container images it references.
+#[allow(dead_code)]
+pub(crate) async fn pull_bound_images_composefs(
+    storage: &Storage,
+    mounted_erofs: &Dir,
+) -> Result<()> {
+    // Log the bound images operation to systemd journal
+    tracing::info!(
+        message_id = BOUND_IMAGES_JOURNAL_ID,
+        "Starting pull of bound images for composefs"
+    );
+
+    let bound_images = query_bound_images(mounted_erofs)?;
+
+    tracing::info!(
+        message_id = BOUND_IMAGES_JOURNAL_ID,
+        bootc.bound_images_count = bound_images.len(),
+        "Found {} bound images to pull",
+        bound_images.len()
+    );
+
+    pull_images(storage, bound_images).await
 }
 
 #[context("Querying bound images")]

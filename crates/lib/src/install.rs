@@ -175,6 +175,7 @@ use clap::ValueEnum;
 use fn_error_context::context;
 use linux_kernel_cmdline::utf8::{Cmdline, CmdlineOwned};
 use ostree::gio;
+use ostree_ext::composefs::fsverity::FsVerityHashValue;
 use ostree_ext::ostree;
 use ostree_ext::ostree_prepareroot::{ComposefsState, Tristate};
 use ostree_ext::prelude::Cast;
@@ -197,7 +198,7 @@ use crate::bootc_composefs::{
     status::get_container_manifest_and_config,
 };
 use crate::bootc_kargs::{INITRD_ARG_PREFIX, ROOTFLAGS_KEY};
-use crate::boundimage::{BoundImage, ResolvedBoundImage};
+use crate::boundimage::{BoundImage, ResolvedBoundImage, pull_images};
 use crate::containerenv::ContainerExecutionInfo;
 use crate::deploy::{
     MergeState, PreparedPullResult, PullProgress, prepare_for_pull, pull_from_prepared,
@@ -479,31 +480,6 @@ impl InstallComposefsOpts {
             anyhow::ensure!(
                 self.uki_addon_opts.global.is_none(),
                 "--global-uki-addon requires the composefs backend"
-            );
-        }
-        Ok(())
-    }
-
-    /// The composefs backend doesn't install logically bound images yet
-    /// (<https://github.com/bootc-dev/bootc/issues/2540>), so fail rather
-    /// than install a system that is missing them.
-    pub(crate) fn validate_bound_images(
-        &self,
-        bound_images: BoundImagesOpt,
-        root: &Dir,
-    ) -> Result<()> {
-        if !self.composefs_backend || bound_images == BoundImagesOpt::Skip {
-            return Ok(());
-        }
-        let images = crate::boundimage::query_bound_images(root)?;
-        if !images.is_empty() {
-            let images = images
-                .iter()
-                .map(|i| i.image.as_str())
-                .collect::<Vec<_>>()
-                .join(", ");
-            anyhow::bail!(
-                "Logically bound images are not supported with the composefs backend (found {images}); use --bound-images skip to install without them"
             );
         }
         Ok(())
@@ -1895,8 +1871,6 @@ async fn prepare_install(
         config_stateroot,
     )?;
 
-    composefs_options.validate_bound_images(config_opts.bound_images, &rootfs)?;
-
     if !composefs_options.composefs_backend
         && (composefs_options.uki_addon_opts.scoped.is_some()
             || composefs_options.uki_addon_opts.global.is_some())
@@ -2183,14 +2157,15 @@ async fn install_with_sysroot(
     Ok(())
 }
 
-enum BoundImages {
+#[derive(Debug)]
+pub enum BoundImages {
     Skip,
     Resolved(Vec<ResolvedBoundImage>),
     Unresolved(Vec<BoundImage>),
 }
 
 impl BoundImages {
-    async fn from_state(state: &State) -> Result<Self> {
+    pub(crate) async fn from_state(state: &State) -> Result<Self> {
         let bound_images = match state.config_opts.bound_images {
             BoundImagesOpt::Skip => BoundImages::Skip,
             others => {
@@ -2349,7 +2324,47 @@ async fn install_to_filesystem_impl(
         let allow_missing_verity = requested_relaxed;
         tag_pulled_image(&rootfs.physical_root, &pull_result)?;
 
-        setup_composefs_boot(rootfs, state, &pull_result, allow_missing_verity).await?;
+        state.tempdir.create_dir("temp-run")?;
+        let temp_run = state.tempdir.open_dir("temp-run")?;
+        let storage = Storage::new_composefs_from_state(rootfs, &temp_run)?;
+
+        let repo = storage.get_ensure_composefs()?;
+
+        let boot_image = crate::bootc_composefs::repo::prepare_boot_image(&repo, &pull_result)?;
+
+        let composefs_mnt_fd = repo
+            .mount(&boot_image.id.to_hex())
+            .context("Failed to mount composefs image")?;
+        let image_root = Dir::reopen_dir(&composefs_mnt_fd)?;
+
+        match BoundImages::from_state(state).await? {
+            BoundImages::Skip => {
+                tracing::debug!("Skipping pulling bound images");
+            }
+            BoundImages::Resolved(resolved_bound_images) => {
+                // Now copy each bound image from the host's container storage into the target.
+                for image in resolved_bound_images {
+                    let image = image.image.as_str();
+                    let c_storage = storage.get_ensure_imgstore()?;
+                    c_storage.pull_from_host_storage(image).await?;
+                }
+            }
+            BoundImages::Unresolved(bound_images) => {
+                pull_images(&storage, bound_images).await?;
+            }
+        }
+
+        setup_composefs_boot(
+            rootfs,
+            state,
+            &repo,
+            boot_image,
+            &image_root,
+            composefs_mnt_fd,
+            &pull_result,
+            allow_missing_verity,
+        )
+        .await?;
 
         // Label composefs objects as /usr so they get usr_t rather than
         // default_t (which has no policy match).
@@ -2363,6 +2378,10 @@ async fn install_to_filesystem_impl(
             )
             .context("SELinux labeling of composefs objects")?;
         }
+
+        // Ensure the image storage is SELinux-labeled. This must happen
+        // after all image pulls are complete.
+        storage.ensure_imgstore_labeled()?;
     } else {
         ostree_install(state, rootfs, cleanup).await?;
 
@@ -3363,57 +3382,6 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(c.block_opts.device, "/dev/vda");
-    }
-
-    #[test]
-    fn test_composefs_opts_validate_bound_images() -> Result<()> {
-        use crate::boundimage::BOUND_IMAGE_DIR;
-        let unbound = cap_std_ext::cap_tempfile::TempDir::new(cap_std::ambient_authority())?;
-        unbound.create_dir_all(BOUND_IMAGE_DIR)?;
-        let bound = cap_std_ext::cap_tempfile::TempDir::new(cap_std::ambient_authority())?;
-        bound.create_dir_all("usr/share/containers/systemd")?;
-        bound.write(
-            "usr/share/containers/systemd/app.image",
-            "[Image]\nImage=quay.io/example/app:latest\n",
-        )?;
-        bound.create_dir_all(BOUND_IMAGE_DIR)?;
-        bound.symlink_contents(
-            "/usr/share/containers/systemd/app.image",
-            format!("{BOUND_IMAGE_DIR}/app.image"),
-        )?;
-
-        // (composefs_backend, bound_images, root binds an image, valid)
-        let cases = [
-            (false, BoundImagesOpt::Stored, true, true),
-            (true, BoundImagesOpt::Stored, false, true),
-            (true, BoundImagesOpt::Stored, true, false),
-            (true, BoundImagesOpt::Pull, true, false),
-            (true, BoundImagesOpt::Skip, true, true),
-        ];
-        for (composefs_backend, bound_images, binds, valid) in cases {
-            let opts = InstallComposefsOpts {
-                composefs_backend,
-                ..Default::default()
-            };
-            let root = if binds { &bound } else { &unbound };
-            assert_eq!(
-                opts.validate_bound_images(bound_images, root).is_ok(),
-                valid,
-                "{opts:?} {bound_images:?} {binds}"
-            );
-        }
-
-        let opts = InstallComposefsOpts {
-            composefs_backend: true,
-            ..Default::default()
-        };
-        assert_eq!(
-            opts.validate_bound_images(BoundImagesOpt::Stored, &bound)
-                .unwrap_err()
-                .to_string(),
-            "Logically bound images are not supported with the composefs backend (found quay.io/example/app:latest); use --bound-images skip to install without them"
-        );
-        Ok(())
     }
 
     #[test]
