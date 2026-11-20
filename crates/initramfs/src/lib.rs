@@ -525,6 +525,69 @@ pub fn mount_subdir(
     }
 }
 
+/// What a block device is stacked on, according to its `slaves` in sysfs
+#[derive(Debug)]
+enum Slaves {
+    /// Nothing, as for a partition
+    None,
+    /// One or more devices on a single disk; the first of them
+    OneDisk(String),
+    /// Devices on more than one disk, as for RAID or LVM across disks
+    SeveralDisks,
+}
+
+fn read_devnum(device: &Path) -> Result<String> {
+    let path = device.join("dev");
+    let devnum =
+        std::fs::read_to_string(&path).with_context(|| format!("Reading {}", path.display()))?;
+    Ok(devnum.trim().to_owned())
+}
+
+fn whole_disk(device: &Path) -> Result<String> {
+    if device.join("partition").try_exists()? {
+        read_devnum(&device.join(".."))
+    } else {
+        read_devnum(device)
+    }
+}
+
+fn slaves(sysfs: &Path, devnum: &str) -> Result<Slaves> {
+    let dir = sysfs.join("dev/block").join(devnum).join("slaves");
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == ErrorKind::NotFound => return Ok(Slaves::None),
+        Err(e) => return Err(e).with_context(|| format!("Reading {}", dir.display())),
+    };
+
+    let mut first: Option<(String, String)> = None;
+    for entry in entries {
+        let slave = entry?.path();
+        let disk = whole_disk(&slave)?;
+        match &first {
+            None => first = Some((read_devnum(&slave)?, disk)),
+            Some((_, first_disk)) if *first_disk == disk => {}
+            Some(_) => return Ok(Slaves::SeveralDisks),
+        }
+    }
+
+    Ok(first.map_or(Slaves::None, |(devnum, _)| Slaves::OneDisk(devnum)))
+}
+
+/// Follows a stacked block device, such as an unlocked LUKS volume or an LVM
+/// logical volume, down to the partition it sits on, the same way systemd's
+/// get_block_device_harder() does for a root filesystem that isn't an
+/// overlay. A device stacked on more than one disk is returned as it is.
+fn originating_device(sysfs: &Path, devnum: &str) -> Result<String> {
+    let mut current = devnum.to_owned();
+    loop {
+        match slaves(sysfs, &current)? {
+            Slaves::None => return Ok(current),
+            Slaves::OneDisk(next) => current = next,
+            Slaves::SeveralDisks => return Ok(devnum.to_owned()),
+        }
+    }
+}
+
 #[context("GPT workaround")]
 /// Workaround for /dev/gpt-auto-root
 pub fn gpt_workaround() -> Result<()> {
@@ -537,11 +600,14 @@ pub fn gpt_workaround() -> Result<()> {
         Err(e) => Err(e)?,
     };
 
-    let target = format!(
-        "/dev/block/{}:{}",
-        major(rootdev.st_rdev),
-        minor(rootdev.st_rdev)
-    );
+    // systemd-gpt-auto-generator takes the device named by volatile-root as it
+    // is, without looking beneath dm-crypt as it does for a real root
+    // filesystem, and looks for the ESP and XBOOTLDR partitions on its disk.
+    let device = originating_device(
+        Path::new("/sys"),
+        &format!("{}:{}", major(rootdev.st_rdev), minor(rootdev.st_rdev)),
+    )?;
+    let target = format!("/dev/block/{device}");
     // Handle the case where the symlink was already created before bootc
     // runs, e.g. by ostree-prepare-root
     // (https://github.com/ostreedev/ostree/pull/3608).
@@ -934,5 +1000,75 @@ mod tests {
                 "irrelevant argument was treated as a candidate: {cmdline}"
             );
         }
+    }
+
+    fn add_device(sysfs: &Path, path: &str, devnum: &str) -> Result<PathBuf> {
+        let dir = sysfs.join("devices").join(path);
+        fs::create_dir_all(&dir)?;
+        fs::write(dir.join("dev"), format!("{devnum}\n"))?;
+        fs::create_dir_all(sysfs.join("dev/block"))?;
+        std::os::unix::fs::symlink(&dir, sysfs.join("dev/block").join(devnum))?;
+        Ok(dir)
+    }
+
+    fn add_partition(sysfs: &Path, path: &str, devnum: &str) -> Result<PathBuf> {
+        let dir = add_device(sysfs, path, devnum)?;
+        fs::write(dir.join("partition"), "1\n")?;
+        Ok(dir)
+    }
+
+    fn add_stacked(sysfs: &Path, path: &str, devnum: &str, on: &[&Path]) -> Result<PathBuf> {
+        let dir = add_device(sysfs, path, devnum)?;
+        fs::create_dir(dir.join("slaves"))?;
+        for slave in on {
+            std::os::unix::fs::symlink(slave, dir.join("slaves").join(slave.file_name().unwrap()))?;
+        }
+        Ok(dir)
+    }
+
+    #[test]
+    fn test_originating_device() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let sysfs = tmp.path();
+        add_device(sysfs, "vda", "252:0")?;
+        add_device(sysfs, "vdb", "252:16")?;
+        let vda = |n: u32| add_partition(sysfs, &format!("vda/vda{n}"), &format!("252:{n}"));
+        let vdb = |n: u32| add_partition(sysfs, &format!("vdb/vdb{n}"), &format!("252:{}", 16 + n));
+        let dm = |n: u32, on: &[&Path]| {
+            add_stacked(
+                sysfs,
+                &format!("virtual/block/dm-{n}"),
+                &format!("253:{n}"),
+                on,
+            )
+        };
+
+        let luks = dm(0, &[&vda(3)?])?;
+        dm(1, &[&luks])?;
+        dm(2, &[&vda(4)?, &vda(5)?])?;
+        dm(3, &[&vda(6)?, &vdb(1)?])?;
+        let raid = add_stacked(sysfs, "virtual/block/md0", "9:0", &[&vda(7)?, &vdb(2)?])?;
+        dm(4, &[&raid])?;
+        dm(5, &[])?;
+
+        let cases = [
+            ("252:3", &["252:3"][..], "partition"),
+            ("252:0", &["252:0"], "whole disk"),
+            ("253:0", &["252:3"], "LUKS on a partition"),
+            ("253:1", &["252:3"], "LVM on LUKS"),
+            (
+                "253:2",
+                &["252:4", "252:5"],
+                "dm-verity with data and hash on one disk",
+            ),
+            ("253:3", &["253:3"], "LVM across two disks"),
+            ("253:4", &["253:4"], "LUKS on RAID across two disks"),
+            ("253:5", &["253:5"], "mapping without slaves"),
+        ];
+        for (devnum, expected, case) in cases {
+            let found = originating_device(sysfs, devnum)?;
+            assert!(expected.contains(&found.as_str()), "{case}: {found}");
+        }
+        Ok(())
     }
 }
