@@ -461,62 +461,77 @@ const BLS_ENTRIES_DIR: &str = "/boot/loader/entries";
 /// `/boot/grub` the Debian/Ubuntu one.
 const GRUB_DIRS: [&str; 2] = ["/boot/grub2", "/boot/grub"];
 
-/// Pure classifier for the bootloader kind, split from I/O for testability.
+/// `EFI_LOADER_INFO` substrings naming the bootloaders bootc tells apart.
+const SYSTEMD_BOOT_LOADER: &str = "systemd-boot";
+const GRUB_CC_LOADER: &str = "grub cc";
+
+/// What `/boot` holds, for when the firmware doesn't say which bootloader
+/// reads the boot entries.
+#[derive(Debug, Clone, Copy)]
+struct BootLayout {
+    bls_entries_dir: bool,
+    grub_dir: bool,
+}
+
+impl BootLayout {
+    fn probe() -> Self {
+        Self {
+            bls_entries_dir: std::path::Path::new(BLS_ENTRIES_DIR).is_dir(),
+            grub_dir: GRUB_DIRS.iter().any(|d| std::path::Path::new(d).is_dir()),
+        }
+    }
+
+    /// GRUB with `blscfg` reads the same entries directory, so GRUB's own
+    /// directory wins when both are present: a legacy-BIOS Fedora/RHEL install
+    /// has `/boot/grub2/` *and* `/boot/loader/entries/`, and is unambiguously
+    /// GRUB. Only a BLS layout with no GRUB directory implies a BLS-native
+    /// bootloader.
+    fn bootloader(self) -> Bootloader {
+        if self.bls_entries_dir && !self.grub_dir {
+            tracing::debug!(
+                "{BLS_ENTRIES_DIR} is a directory and there is no GRUB directory; \
+                 treating bootloader as BLS-compatible (systemd-boot)"
+            );
+            return Bootloader::Systemd;
+        }
+        Bootloader::Grub
+    }
+}
+
+/// Classifies the bootloader, split from I/O for testability. `probe_boot`
+/// is only called when `EFI_LOADER_INFO` doesn't settle it.
 ///
-/// - When `EFI_LOADER_INFO` is present, its content selects between systemd-
-///   boot, GRUB Confidential Compute, and generic GRUB (existing behavior).
-/// - When there are no EFI variables to inspect (`SystemNotUEFI` /
-///   `MissingVar`), fall back to a filesystem probe: many non-EFI systems
-///   still lay down the BLS Type 1 entry layout at `/boot/loader/entries/`
-///   (Raspberry Pi with direct-kernel boot from Pi firmware, U-Boot with
-///   the extlinux/BLS loader, coreboot with a linux payload, various
-///   ARM/embedded boards). Treat those as BLS-compatible so `storage::new`
-///   picks the ESP mount as `boot_dir` rather than `/sysroot/boot/`. Only
-///   fall back to GRUB when neither an EFI system nor a BLS layout is
-///   present.
-///
-///   A BLS entries directory alone is not sufficient evidence, because GRUB
-///   with `blscfg` reads the same directory. So GRUB's own directory wins
-///   when both are present: a legacy-BIOS Fedora/RHEL install has
-///   `/boot/grub2/` *and* `/boot/loader/entries/`, and is unambiguously
-///   GRUB. Only a BLS layout with no GRUB directory implies a BLS-native
-///   bootloader.
+/// - `EFI_LOADER_INFO` naming systemd-boot or GRUB Confidential Compute
+///   settles it.
+/// - Any other `EFI_LOADER_INFO` is a GRUB, but not necessarily one that
+///   reads the boot entries: a system set up for systemd-boot can also be
+///   started by a distribution's signed GRUB that boots the kernel from its
+///   own configuration elsewhere, for example from a fallback firmware entry.
+///   That GRUB has no directory of its own under `/boot`, so `/boot` decides.
+/// - With no EFI variables to inspect (`SystemNotUEFI` / `MissingVar`),
+///   `/boot` decides too: many non-EFI systems still lay down the BLS Type 1
+///   entry layout at `/boot/loader/entries/` (Raspberry Pi with direct-kernel
+///   boot from Pi firmware, U-Boot with the extlinux/BLS loader, coreboot with
+///   a linux payload, various ARM/embedded boards). Treating those as
+///   BLS-compatible makes `storage::new` pick the ESP mount as `boot_dir`
+///   rather than `/sysroot/boot/`.
 /// - Other EFI read errors propagate.
 fn classify_bootloader(
     efi_loader_info: Result<String, EfiError>,
-    bls_entries_dir_present: bool,
-    grub_dir_present: bool,
+    probe_boot: impl FnOnce() -> BootLayout,
 ) -> Result<Bootloader> {
     match efi_loader_info {
         Ok(loader) => {
             let loader = loader.to_lowercase();
-            if loader.contains("systemd-boot") {
-                Ok(Bootloader::Systemd)
-            } else if loader.contains("grub cc") {
-                Ok(Bootloader::GrubCC)
-            } else {
-                Ok(Bootloader::Grub)
+            if loader.contains(SYSTEMD_BOOT_LOADER) {
+                return Ok(Bootloader::Systemd);
             }
-        }
-        Err(EfiError::SystemNotUEFI) | Err(EfiError::MissingVar) => {
-            if grub_dir_present {
-                tracing::debug!(
-                    "No EFI vars and a GRUB directory is present; treating \
-                     bootloader as GRUB even if BLS entries also exist \
-                     (GRUB reads them via blscfg)"
-                );
-                Ok(Bootloader::Grub)
-            } else if bls_entries_dir_present {
-                tracing::debug!(
-                    "No EFI vars, no GRUB directory, and {BLS_ENTRIES_DIR} is \
-                     a directory; treating bootloader as BLS-compatible \
-                     (systemd-boot)"
-                );
-                Ok(Bootloader::Systemd)
-            } else {
-                Ok(Bootloader::Grub)
+            if loader.contains(GRUB_CC_LOADER) {
+                return Ok(Bootloader::GrubCC);
             }
+            Ok(probe_boot().bootloader())
         }
+        Err(EfiError::SystemNotUEFI) | Err(EfiError::MissingVar) => Ok(probe_boot().bootloader()),
         Err(e) => anyhow::bail!("Failed to read EfiLoaderInfo: {e:?}"),
     }
 }
@@ -529,19 +544,7 @@ pub(crate) fn get_bootloader() -> Result<Bootloader> {
         return Ok(*bootloader);
     }
 
-    let efi_result = read_uefi_var(EFI_LOADER_INFO);
-    let non_efi = matches!(
-        &efi_result,
-        Err(EfiError::SystemNotUEFI) | Err(EfiError::MissingVar),
-    );
-
-    let bootloader = classify_bootloader(
-        efi_result,
-        // The FS probes are only consulted in the non-EFI classification
-        // branch; skip the `stat(2)`s on EFI systems.
-        non_efi && std::path::Path::new(BLS_ENTRIES_DIR).is_dir(),
-        non_efi && GRUB_DIRS.iter().any(|d| std::path::Path::new(d).is_dir()),
-    )?;
+    let bootloader = classify_bootloader(read_uefi_var(EFI_LOADER_INFO), BootLayout::probe)?;
 
     // The bootloader cannot change over the lifetime of a single bootc
     // invocation, so cache unconditionally.
@@ -1700,6 +1703,20 @@ mod tests {
                 grub_dir: false,
                 expected: Bootloader::Systemd,
             },
+            Case {
+                desc: "UEFI GRUB without a GRUB dir next to BLS entries: BLS",
+                efi: Ok("GRUB 2.12".into()),
+                bls: true,
+                grub_dir: false,
+                expected: Bootloader::Systemd,
+            },
+            Case {
+                desc: "UEFI GRUB with its GRUB dir: GRUB",
+                efi: Ok("GRUB 2.12".into()),
+                bls: true,
+                grub_dir: true,
+                expected: Bootloader::Grub,
+            },
             // UEFI classification must ignore both probes entirely.
             Case {
                 desc: "UEFI systemd-boot with a stray GRUB dir: still systemd",
@@ -1710,7 +1727,11 @@ mod tests {
             },
         ];
         for case in cases {
-            let got = classify_bootloader(case.efi, case.bls, case.grub_dir)
+            let layout = BootLayout {
+                bls_entries_dir: case.bls,
+                grub_dir: case.grub_dir,
+            };
+            let got = classify_bootloader(case.efi, || layout)
                 .unwrap_or_else(|e| panic!("{}: {e}", case.desc));
             assert_eq!(got, case.expected, "{}", case.desc);
         }
@@ -1720,8 +1741,7 @@ mod tests {
     fn classify_bootloader_propagates_other_efi_errors() {
         let result = classify_bootloader(
             Err(EfiError::InvalidData("test-only synthetic error")),
-            false,
-            false,
+            || unreachable!("other EFI errors don't probe /boot"),
         );
         assert!(result.is_err(), "InvalidData should propagate as an error");
     }
