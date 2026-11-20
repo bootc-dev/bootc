@@ -301,3 +301,13 @@ check:
     enabled: false
     because: the derived images are built in the VM, which has no keys to sign their UKIs for Secure Boot
   test: nu booted/test-composefs-xbootldr.nu
+
+/test-70-extensions-separate-var:
+  summary: Merge a systemd-sysext and a systemd-confext on a host whose separate /var starts out empty
+  duration: 30m
+  enabled: false
+  adjust:
+  - when: distro == centos-9, centos-10 and running_env == image_mode
+    enabled: true
+    because: extensions on the RHEL 9 long tail and on RHEL 10 are the cases to cover, in one matrix cell each
+  test: nu booted/test-extensions-separate-var.nu

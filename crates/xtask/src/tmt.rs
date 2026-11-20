@@ -24,6 +24,8 @@ const FIELD_SUMMARY: &str = "summary";
 const FIELD_ADJUST: &str = "adjust";
 const FIELD_ENABLED: &str = "enabled";
 
+/// For tests that can't run on the composefs backend (yet). Its value is the
+/// reason, which run-tmt prints when it skips the test.
 const FIELD_FIXME_SKIP_IF_COMPOSEFS: &str = "fixme_skip_if_composefs";
 const FIELD_FIXME_SKIP_IF_UKI: &str = "fixme_skip_if_uki";
 
@@ -271,11 +273,27 @@ fn verify_ssh_connectivity(sh: &Shell, port: u16, key_path: &Utf8Path) -> Result
     )
 }
 
+/// Read `field` from `map` as the reason a test is skipped: `None` if unset, an
+/// error if it isn't a non-empty string, since every skip has to say why.
+fn skip_reason(map: Option<&serde_yaml::Mapping>, field: &str) -> Result<Option<String>> {
+    let Some(value) = map.and_then(|m| m.get(field)) else {
+        return Ok(None);
+    };
+    match value.as_str().map(str::trim) {
+        Some(reason) if !reason.is_empty() => Ok(Some(reason.to_owned())),
+        _ => anyhow::bail!(
+            "{field} must be a non-empty string saying why the test is skipped, not {}",
+            serde_yaml::to_string(value)?.trim()
+        ),
+    }
+}
+
 #[derive(Debug, Default)]
 struct PlanMetadata {
     try_bind_storage: bool,
     export_image: bool,
-    skip_if_composefs: bool,
+    /// Why the plan is skipped on composefs, if it is
+    skip_if_composefs: Option<String>,
     skip_if_ostree: bool,
     skip_if_uki: bool,
 }
@@ -335,19 +353,16 @@ fn parse_plan_metadata(
             }
         }
 
-        if let Some(works_for_composefs) = plan_data.get(&serde_yaml::Value::String(format!(
-            "extra-{}",
-            FIELD_FIXME_SKIP_IF_COMPOSEFS
-        ))) {
-            if let Some(b) = works_for_composefs.as_bool() {
-                plan_metadata
-                    .entry(plan_name.to_string())
-                    .and_modify(|m| m.skip_if_composefs = b)
-                    .or_insert(PlanMetadata {
-                        skip_if_composefs: b,
-                        ..Default::default()
-                    });
-            }
+        if let Some(reason) = skip_reason(
+            Some(plan_data),
+            &format!("extra-{FIELD_FIXME_SKIP_IF_COMPOSEFS}"),
+        )
+        .with_context(|| format!("Parsing {plan_name}"))?
+        {
+            plan_metadata
+                .entry(plan_name.to_string())
+                .or_default()
+                .skip_if_composefs = Some(reason);
         }
 
         if let Some(skip_if_uki) = plan_data.get(&serde_yaml::Value::String(format!(
@@ -481,11 +496,14 @@ pub(crate) fn run_tmt(sh: &Shell, args: &RunTmtArgs) -> Result<()> {
 
     if args.composefs {
         plans.retain(|plan| {
-            !plan_metadata
+            let reason = plan_metadata
                 .iter()
                 .find(|(key, _)| plan.ends_with(key.as_str()))
-                .map(|(_, v)| v.skip_if_composefs)
-                .unwrap_or(false)
+                .and_then(|(_, v)| v.skip_if_composefs.as_deref());
+            if let Some(reason) = reason {
+                println!("Skipping {plan} on composefs: {reason}");
+            }
+            reason.is_none()
         });
     } else {
         plans.retain(|plan| {
@@ -999,6 +1017,7 @@ pub(crate) fn tmt_provision(sh: &Shell, args: &TmtProvisionArgs) -> Result<()> {
 /// # number: N
 /// # extra:
 /// #   try_bind_storage: true
+/// #   fixme_skip_if_composefs: why it can't run on composefs
 /// # tmt:
 /// #   (yaml content)
 fn parse_tmt_metadata(content: &str, comment: &str) -> Result<Option<TmtMetadata>> {
@@ -1094,8 +1113,8 @@ struct TestDef {
     /// Whether this test wants to try bind storage (if distro supports it)
     try_bind_storage: bool,
     export_image: bool,
-    /// Whether to skip this test for composefs backend
-    skip_if_composefs: bool,
+    /// Why to skip this test for composefs backend, if it is skipped
+    skip_if_composefs: Option<String>,
     /// Whether to skip this test for ostree backend
     skip_if_ostree: bool,
     /// Whether to skip this test for images with UKI
@@ -1271,16 +1290,9 @@ fn generate_integration() -> Result<(String, String)> {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
-        let skip_if_composefs = metadata
-            .extra
-            .as_mapping()
-            .and_then(|m| {
-                m.get(&serde_yaml::Value::String(
-                    FIELD_FIXME_SKIP_IF_COMPOSEFS.to_string(),
-                ))
-            })
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
+        let skip_if_composefs =
+            skip_reason(metadata.extra.as_mapping(), FIELD_FIXME_SKIP_IF_COMPOSEFS)
+                .with_context(|| format!("Parsing extra metadata of {filename}"))?;
 
         let export_image = metadata
             .extra
@@ -1452,10 +1464,10 @@ fn generate_integration() -> Result<(String, String)> {
             );
         }
 
-        if test.skip_if_composefs {
+        if let Some(reason) = &test.skip_if_composefs {
             plan_value.insert(
                 serde_yaml::Value::String(format!("extra-{}", FIELD_FIXME_SKIP_IF_COMPOSEFS)),
-                serde_yaml::Value::Bool(true),
+                serde_yaml::Value::String(reason.clone()),
             );
         }
 
@@ -1680,6 +1692,71 @@ use anyhow::Result;
         assert_eq!(tmt.len(), 1);
 
         assert!(parse_tmt_metadata(content, "#").unwrap().is_none());
+    }
+
+    #[test]
+    fn test_skip_reason() {
+        const FIELD: &str = "fixme_skip_if_composefs";
+        let ok = [
+            ("{}", None),
+            ("other: true", None),
+            (
+                "fixme_skip_if_composefs: needs ostree's aleph file",
+                Some("needs ostree's aleph file"),
+            ),
+            ("fixme_skip_if_composefs: '  padded  '", Some("padded")),
+        ];
+        for (yaml, expected) in ok {
+            let value: serde_yaml::Value = serde_yaml::from_str(yaml).unwrap();
+            let reason = skip_reason(value.as_mapping(), FIELD).unwrap();
+            assert_eq!(reason.as_deref(), expected, "{yaml}");
+        }
+        assert_eq!(skip_reason(None, FIELD).unwrap(), None);
+
+        for yaml in [
+            "fixme_skip_if_composefs: true",
+            "fixme_skip_if_composefs: false",
+            "fixme_skip_if_composefs: ''",
+            "fixme_skip_if_composefs: '   '",
+            "fixme_skip_if_composefs: 42",
+            "fixme_skip_if_composefs:",
+        ] {
+            let value: serde_yaml::Value = serde_yaml::from_str(yaml).unwrap();
+            let err = skip_reason(value.as_mapping(), FIELD).unwrap_err();
+            assert!(
+                err.to_string()
+                    .starts_with("fixme_skip_if_composefs must be a non-empty string"),
+                "{yaml}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_parse_plan_skip_if_composefs() -> Result<()> {
+        let file = tempfile::NamedTempFile::new()?;
+        let path = Utf8Path::from_path(file.path()).unwrap();
+        std::fs::write(
+            path,
+            "/plan-13-aleph:\n  extra-fixme_skip_if_composefs: needs ostree's aleph file\n/plan-14-other:\n  extra-try_bind_storage: true\n",
+        )?;
+        let plans = parse_plan_metadata(path)?;
+        assert_eq!(
+            plans["/plan-13-aleph"].skip_if_composefs.as_deref(),
+            Some("needs ostree's aleph file")
+        );
+        assert_eq!(plans["/plan-14-other"].skip_if_composefs, None);
+
+        std::fs::write(
+            path,
+            "/plan-13-aleph:\n  extra-fixme_skip_if_composefs: true\n",
+        )?;
+        let err = format!("{:#}", parse_plan_metadata(path).unwrap_err());
+        assert!(err.contains("/plan-13-aleph"), "{err}");
+        assert!(
+            err.contains("extra-fixme_skip_if_composefs must be a non-empty string"),
+            "{err}"
+        );
+        Ok(())
     }
 
     #[test]

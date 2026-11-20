@@ -3,10 +3,7 @@
 #   summary: Test bootc install to-filesystem without /boot directory
 #   duration: 30m
 # extra:
-#   # bootloader=none is not supported for composefs and this test fails
-#   # when trying to install bootloader for composefs. For ostree, the
-#   # bootloader installation is simply skipped
-#   fixme_skip_if_composefs: true
+#   fixme_skip_if_composefs: uses --bootloader=none, which composefs install rejects
 
 use std assert
 use tap.nu

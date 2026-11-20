@@ -3,7 +3,7 @@
 #   summary: Execute logically bound images tests for installing image
 #   duration: 30m
 # extra:
-#   fixme_skip_if_composefs: true
+#   fixme_skip_if_composefs: composefs install rejects logically bound images (issue 2540)
 #
 use std assert
 use tap.nu

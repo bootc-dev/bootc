@@ -3,8 +3,7 @@
 #   summary: Install from a shared mount namespace without leaking the storage bind mount
 #   duration: 30m
 # extra:
-#   # bootloader=none is not supported for composefs (see test-install-no-boot-dir.nu)
-#   fixme_skip_if_composefs: true
+#   fixme_skip_if_composefs: uses --bootloader=none, which composefs install rejects
 #
 # Regression test for https://github.com/bootc-dev/bootc/issues/2455
 #

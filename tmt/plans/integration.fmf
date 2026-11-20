@@ -64,7 +64,7 @@ execute:
     how: fmf
     test:
       - /tmt/tests/tests/test-21-logically-bound-switch
-  extra-fixme_skip_if_composefs: true
+  extra-fixme_skip_if_composefs: the composefs backend doesn't pull logically bound images (issue 2540 covers install)
 
 /plan-22-logically-bound-install:
   summary: Execute logically bound images tests for installing image
@@ -72,7 +72,7 @@ execute:
     how: fmf
     test:
       - /tmt/tests/tests/test-22-logically-bound-install
-  extra-fixme_skip_if_composefs: true
+  extra-fixme_skip_if_composefs: composefs install rejects logically bound images (issue 2540)
 
 /plan-23-install-outside-container:
   summary: Execute tests for installing outside of a container
@@ -124,7 +124,7 @@ execute:
   - when: running_env != image_mode
     enabled: false
     because: these tests require features only available in image mode
-  extra-fixme_skip_if_composefs: true
+  extra-fixme_skip_if_composefs: never enabled on composefs; marked in bulk when PR 1913 inverted works_for_composefs
 
 /plan-28-factory-reset:
   summary: Execute factory reset tests
@@ -132,7 +132,7 @@ execute:
     how: fmf
     test:
       - /tmt/tests/tests/test-28-factory-reset
-  extra-fixme_skip_if_composefs: true
+  extra-fixme_skip_if_composefs: install reset (factory reset) only supports ostree
 
 /plan-29-soft-reboot-selinux-policy:
   summary: Test soft reboot with SELinux policy changes
@@ -148,7 +148,7 @@ execute:
     how: fmf
     test:
       - /tmt/tests/tests/test-30-install-unified-flag
-  extra-fixme_skip_if_composefs: true
+  extra-fixme_skip_if_composefs: never enabled on composefs, which only later gained unified storage; marked in bulk by PR 1913
 
 /plan-31-switch-mutate-in-place:
   summary: switch --mutate-in-place
@@ -156,7 +156,7 @@ execute:
     how: fmf
     test:
       - /tmt/tests/tests/test-31-switch-mutate-in-place
-  extra-fixme_skip_if_composefs: true
+  extra-fixme_skip_if_composefs: switch --mutate-in-place only supports ostree deployments
 
 /plan-31-switch-to-unified:
   summary: Onboard to unified storage, build derived image, and switch to it
@@ -164,7 +164,7 @@ execute:
     how: fmf
     test:
       - /tmt/tests/tests/test-31-switch-to-unified
-  extra-fixme_skip_if_composefs: true
+  extra-fixme_skip_if_composefs: never enabled on composefs, which only later gained unified storage; marked in bulk by PR 1913
 
 /plan-32-install-to-filesystem-var-mount:
   summary: Test bootc install to-filesystem with separate /var mount
@@ -186,7 +186,7 @@ execute:
     how: fmf
     test:
       - /tmt/tests/tests/test-33-bib-build
-  extra-fixme_skip_if_composefs: true
+  extra-fixme_skip_if_composefs: never enabled on composefs; marked in bulk when PR 1913 inverted works_for_composefs
 
 /plan-34-user-agent:
   summary: Verify bootc sends correct User-Agent header to registries
@@ -224,7 +224,7 @@ execute:
     how: fmf
     test:
       - /tmt/tests/tests/test-37-install-no-boot-dir
-  extra-fixme_skip_if_composefs: true
+  extra-fixme_skip_if_composefs: uses --bootloader=none, which composefs install rejects
 
 /plan-37-upgrade-check-status:
   summary: Verify upgrade --check populates cached update in status
@@ -232,7 +232,7 @@ execute:
     how: fmf
     test:
       - /tmt/tests/tests/test-37-upgrade-check-status
-  extra-fixme_skip_if_composefs: true
+  extra-fixme_skip_if_composefs: the composefs backend doesn't persist cachedUpdate from upgrade --check yet
 
 /plan-38-install-bootloader-none:
   summary: Test bootc install with --bootloader=none
@@ -240,7 +240,7 @@ execute:
     how: fmf
     test:
       - /tmt/tests/tests/test-38-install-bootloader-none
-  extra-fixme_skip_if_composefs: true
+  extra-fixme_skip_if_composefs: composefs install rejects --bootloader=none
 
 /plan-39-upgrade-tag:
   summary: Test bootc upgrade --tag functionality with containers-storage
@@ -255,7 +255,7 @@ execute:
     how: fmf
     test:
       - /tmt/tests/tests/test-40-install-karg-delete
-  extra-fixme_skip_if_composefs: true
+  extra-fixme_skip_if_composefs: install --karg-delete is ostree-only, and the test uses --bootloader=none
 
 /plan-41-composefs-gc-uki:
   summary: Test composefs garbage collection for UKI
@@ -271,7 +271,7 @@ execute:
     how: fmf
     test:
       - /tmt/tests/tests/test-42-loader-entries-source
-  extra-fixme_skip_if_composefs: true
+  extra-fixme_skip_if_composefs: loader-entries set-options-for-source uses ostree's bootconfig-extra
 
 /plan-43-switch-same-digest:
   summary: Error on bootc switch to image with identical fs-verity digest
@@ -439,7 +439,7 @@ execute:
     how: fmf
     test:
       - /tmt/tests/tests/test-63-install-shared-propagation
-  extra-fixme_skip_if_composefs: true
+  extra-fixme_skip_if_composefs: uses --bootloader=none, which composefs install rejects
 
 /plan-66-encrypted-swap-ordering:
   summary: Verify a random-key encrypted swap boots without an ordering cycle
@@ -459,4 +459,17 @@ execute:
     enabled: false
     because: the derived images are built in the VM, which has no keys to sign their UKIs for Secure Boot
   extra-skip_if_ostree: true
+
+/plan-70-extensions-separate-var:
+  summary: Merge a systemd-sysext and a systemd-confext on a host whose separate /var starts out empty
+  enabled: false
+  discover:
+    how: fmf
+    test:
+      - /tmt/tests/tests/test-70-extensions-separate-var
+  adjust:
+  - when: distro == centos-9, centos-10 and running_env == image_mode
+    enabled: true
+    because: extensions on the RHEL 9 long tail and on RHEL 10 are the cases to cover, in one matrix cell each
+  extra-fixme_skip_if_composefs: scope choice, not a bug; the CentOS Stream 9 cell is ostree, and one cell per distribution is enough
 # END GENERATED PLANS
