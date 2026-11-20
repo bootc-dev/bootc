@@ -3,6 +3,7 @@ use std::borrow::Cow;
 use std::ffi::CString;
 use std::io::Write;
 use std::os::fd::AsRawFd;
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::Command;
@@ -278,6 +279,46 @@ pub(crate) fn optional_label(
     policy
         .label(destname.as_str(), mode, ostree::gio::Cancellable::NONE)
         .map_err(Into::into)
+}
+
+/// Look up a policy label for a Unix path without requiring the path to be
+/// UTF-8. OSTree's safe wrapper accepts `&str`, while the underlying API takes
+/// a NUL-terminated byte string. This narrowly-scoped FFI call owns both
+/// returned GLib allocations before returning, including the label on the
+/// unusual case where OSTree sets both outputs.
+#[allow(unsafe_code)]
+pub(crate) fn optional_label_os(
+    policy: &ostree::SePolicy,
+    path: &Path,
+    mode: u32,
+) -> Result<Option<Vec<u8>>> {
+    use ostree::glib::translate::{ToGlibPtr, from_glib_full};
+
+    let path = std::ffi::CString::new(path.as_os_str().as_bytes())
+        .context("SELinux policy path contains an interior NUL")?;
+    let mut out_label = std::ptr::null_mut();
+    let mut error = std::ptr::null_mut();
+    // SAFETY: `path` is NUL-terminated and lives through the call; `policy`
+    // keeps the instance alive; all output pointers are initialized and their
+    // GLib-owned values are immediately converted with `from_glib_full` below.
+    let succeeded = unsafe {
+        ostree::ffi::ostree_sepolicy_get_label(
+            policy.to_glib_none().0,
+            path.as_ptr(),
+            mode,
+            &mut out_label,
+            std::ptr::null_mut(),
+            &mut error,
+        )
+    };
+    // Convert both outputs so even an unexpected label on error is freed.
+    let label: Option<ostree::glib::GString> = unsafe { from_glib_full(out_label) };
+    let error: Option<ostree::glib::Error> = unsafe { from_glib_full(error) };
+    debug_assert_eq!(succeeded == ostree::glib::ffi::GFALSE, error.is_some());
+    if let Some(error) = error {
+        return Err(error.into());
+    }
+    Ok(label.map(|label| label.as_bytes().to_vec()))
 }
 
 /// A thin wrapper for invoking fsetxattr(security.selinux)

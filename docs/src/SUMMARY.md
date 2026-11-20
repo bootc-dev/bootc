@@ -92,6 +92,7 @@
 - [unified storage](bootc-experimental-unified-storage.7.md)
 - [fsck](bootc-experimental-fsck.7.md)
 - [install reset](bootc-experimental-install-reset.7.md)
+- [`/var` preservation](bootc-experimental-preserve-var.7.md)
 - [--progress-fd](bootc-experimental-progress-fd.7.md)
 - [container export](bootc-experimental-container-export.7.md)
 - [`man bootc-uki-addon.8.md`](man/bootc-uki-addon.8.md)
