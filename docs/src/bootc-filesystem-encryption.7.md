@@ -46,6 +46,37 @@ install boot assets. See
 This is no different from non-LUKS cases; either use discoverable
 partitions or `root=` plus `luks.uuid` style kernel arguments.
 
+## Encryption with `systemd-repart`
+
+A recommended way to provision an encrypted root for a bootc system is to
+declare the partition layout — including LUKS — with
+[`systemd-repart`](https://www.freedesktop.org/software/systemd/man/latest/systemd-repart.html)
+drop-ins, and let it create and encrypt the root partition (via `Encrypt=`
+and `KeyFile=`).
+
+This is **preferred over `bootc install to-disk --block-setup=tpm2-luks`**,
+which will be deprecated in the future.
+
+
+### Required partitions depend on the bootloader
+
+Because GRUB cannot read a LUKS-encrypted `/boot`, the partitions you must
+include in your `systemd-repart` definitions differ by bootloader:
+
+- **GRUB:** a BIOS boot partition **and** a separate unencrypted XBOOTLDR
+  or an unencrypted classic `/boot` partition are **both absolutely required** 
+  for LUKS to work. GRUB's core image lives in the BIOS boot partition, and the
+  kernel and initramfs must sit on the unencrypted XBOOTLDR so the
+  bootloader can load them *before* the LUKS root is unlocked. Without both,
+  a LUKS-encrypted system will not boot under GRUB.
+
+- **BLS Compatible bootloaders (grub-cc / systemd-boot):** a BIOS boot partition
+  and XBOOTLDR are **not needed**, since the bootloader lives on the ESP and
+  loads its kernel/UKI from there. They **can** still be used — for example
+  an XBOOTLDR is useful when the ESP is too small to hold the UKIs of the
+  booted, staged and rollback deployments (see
+  [XBOOTLDR partitions](bootc-bootloaders.7.md#xbootldr-partitions)).
+
 ## First-boot encryption of an already-populated filesystem
 
 It's common to have a "golden image" (a KubeVirt containerdisk, a
