@@ -26,7 +26,9 @@ repositories in `/var/tmp` and mounts them in a private mount namespace. It
 checks that a strict mount verifies the image digest independently of the
 repository metadata, ignores `images/refs/`, and gets `EIO` when reading
 tampered data objects, and that an explicitly relaxed mount still rejects an
-image whose digest does not match. The test skips
+image whose digest does not match. It also checks that a command line naming
+two images of the same EROFS format is refused before anything is mounted. The
+test skips
 filesystems without fs-verity support; it does not modify the host's repository
 or boot files.
 
