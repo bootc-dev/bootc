@@ -16,12 +16,15 @@ use std::{
     ffi::OsStr,
     fs::{self, File},
     io::Read,
-    os::fd::{AsFd, OwnedFd},
+    os::{
+        fd::{AsFd, OwnedFd},
+        unix::fs::MetadataExt,
+    },
     path::Path,
 };
 
 use anyhow::{Context, Result, ensure};
-use bootc_initramfs_setup::mount_composefs_image;
+use bootc_initramfs_setup::{Args, mount_composefs_image, setup_root};
 use composefs_ctl::composefs::{
     erofs::{
         format::FormatVersion,
@@ -35,6 +38,8 @@ use composefs_ctl::composefs::{
     repository::{ImageNotFound, Repository, RepositoryConfig},
     tree::{FileSystem, Inode, LeafContent, RegularFile, Stat},
 };
+use composefs_ctl::composefs_boot::cmdline::ComposefsCmdline;
+use linux_kernel_cmdline::utf8::Cmdline;
 use rustix::{
     fs::{Mode, OFlags, openat},
     io::Errno,
@@ -246,6 +251,65 @@ fn check_case(parent: &Path, case: Case) -> Result<()> {
     Ok(())
 }
 
+/// A command line can carry arguments the boot artifact was not signed with,
+/// so a second image of an EROFS format is refused by `setup_root` before
+/// anything is mounted, even when it is the only one present and verifies.
+fn check_conflicting_candidates(parent: &Path) -> Result<()> {
+    let tmp = tempfile::tempdir_in(parent)?;
+    let sysroot: OwnedFd = File::open(tmp.path())?.into();
+    let config = RepositoryConfig::new(Algorithm::SHA512);
+    let (repo, _) = Repository::<Sha512HashValue>::init_path(&sysroot, "composefs", config)?;
+
+    let contents = [b'x'; 4096];
+    let object = repo.ensure_object(&contents)?;
+    let mut stat = Stat::uninitialized();
+    stat.st_mode = 0o755;
+    let mut tree = FileSystem::<Sha512HashValue>::new(stat.clone());
+    stat.st_mode = 0o644;
+    let leaf = tree.push_leaf(
+        stat,
+        LeafContent::Regular(RegularFile::External(object, contents.len() as u64)),
+    );
+    tree.root.insert(OsStr::new("data"), Inode::leaf(leaf));
+    let image = mkfs_erofs_versioned(&ValidatedFileSystem::new(tree)?, FormatVersion::V1);
+    let present = repo.write_image(None, &image)?;
+    drop(repo);
+
+    // The image mounts by itself, so only the conflict can refuse it below.
+    drop(mount_composefs_image(&sysroot, &present.to_hex(), false)?);
+
+    // The first argument stands for the boot artifact's own image, which is
+    // gone from the repository; the second names the one that is there.
+    let absent = Sha512HashValue::EMPTY;
+    let cmdline = format!(
+        "{} {}",
+        ComposefsCmdline::new_v1(absent, false).to_cmdline_arg(),
+        ComposefsCmdline::new_v1(present, false).to_cmdline_arg()
+    );
+    let target = tmp.path().join("target");
+    fs::create_dir(&target)?;
+    let args = Args {
+        cmd: Vec::new(),
+        sysroot: tmp.path().to_owned(),
+        config: tmp.path().join("setup-root-conf.toml"),
+        root_fs: None,
+        cmdline: Some(Cmdline::from(cmdline)),
+        target: Some(target.clone()),
+    };
+    let error = setup_root(args)
+        .err()
+        .context("a second image of the same format was accepted")?;
+    ensure!(
+        format!("{error:#}").contains("conflicting composefs kernel arguments"),
+        "Unexpected error: {error:#}"
+    );
+    ensure!(
+        fs::metadata(&target)?.dev() == fs::metadata(tmp.path())?.dev(),
+        "something was mounted on the target"
+    );
+    Ok(())
+}
+
 pub(crate) fn run() -> Result<()> {
     super::tap_begin("composefs initramfs verity enforcement");
     // SAFETY: Only the mount namespace is unshared, not the file descriptor
@@ -287,6 +351,7 @@ pub(crate) fn run() -> Result<()> {
     for case in strict.chain(relaxed) {
         check_case(tmp.path(), case).with_context(|| format!("{case:?}"))?;
     }
+    check_conflicting_candidates(tmp.path()).context("Conflicting candidates")?;
     super::tap_ok();
     Ok(())
 }

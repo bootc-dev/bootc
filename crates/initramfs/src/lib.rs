@@ -440,9 +440,27 @@ fn parse_composefs_candidates(cmdline: &str) -> Result<Vec<ComposefsCmdline<Sha5
         }
 
         let parameter = format!("{key}={value}");
-        if let Some(candidate) = ComposefsCmdline::<Sha512HashValue>::from_cmdline(&parameter)? {
-            candidates.push(candidate);
+        let Some(candidate) = ComposefsCmdline::<Sha512HashValue>::from_cmdline(&parameter)? else {
+            continue;
+        };
+        // A boot artifact names one image per EROFS format, and staging checks
+        // each against the container image. The command line seen here is not
+        // only that artifact's: systemd-stub appends SMBIOS strings and UKI
+        // addons to a UKI's own. A second image of a format is therefore not
+        // a fallback to try, but a conflict.
+        let same_format = |other: &&ComposefsCmdline<Sha512HashValue>| {
+            std::mem::discriminant(*other) == std::mem::discriminant(&candidate)
+        };
+        if let Some(other) = candidates.iter().find(same_format) {
+            anyhow::ensure!(
+                other == &candidate,
+                "conflicting composefs kernel arguments: {} and {}",
+                other.digest().to_hex(),
+                candidate.digest().to_hex()
+            );
+            continue;
         }
+        candidates.push(candidate);
     }
     Ok(candidates)
 }
@@ -915,9 +933,35 @@ mod tests {
             );
         }
 
+        // The same image named twice in one format is one candidate.
+        let explicit_v2 = |digest: &Sha512HashValue| {
+            format!("{KARG_COMPOSEFS_DIGEST}=v2-sha512-12:{}", digest.to_hex())
+        };
+        for cmdline in [
+            format!("{} {}", v1(first.clone(), false), v1(first.clone(), false)),
+            format!("{} {}", explicit_v2(&first), v2(first.clone(), false)),
+        ] {
+            let candidates = parse_composefs_candidates(&cmdline).unwrap();
+            assert_eq!(candidates.len(), 1, "{cmdline}");
+            assert_eq!(candidates[0].digest(), &first, "{cmdline}");
+        }
+
         let duplicate_cases = [
             format!("{} {}", v2(first.clone(), false), v2(second.clone(), false)),
             format!("{} {}", v2(first.clone(), false), v2(first.clone(), false)),
+            // A second image of a format, wherever it comes from, is a
+            // conflict and not another candidate.
+            format!("{} {}", v1(first.clone(), false), v1(second.clone(), false)),
+            format!(
+                "{} {} {}",
+                v1(first.clone(), false),
+                v2(second.clone(), false),
+                v1(second.clone(), false)
+            ),
+            format!("{} {}", explicit_v2(&first), v2(second.clone(), false)),
+            format!("{} {}", v2(first.clone(), false), explicit_v2(&second)),
+            // ...and so is the same image with another fs-verity policy.
+            format!("{} {}", v1(first.clone(), false), v1(first.clone(), true)),
         ];
         for cmdline in duplicate_cases {
             assert!(
