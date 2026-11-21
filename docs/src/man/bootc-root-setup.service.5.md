@@ -16,7 +16,8 @@ The service is ordered after `sysroot.mount` and before
 2. Mounts the EROFS image `images/<digest>` named by the `composefs=<digest>`
    or `composefs.digest=` kernel argument. fs-verity is required unless the
    digest is preceded by `?`, whatever the repository metadata says; see
-   **bootc-composefs(7)**.
+   **bootc-composefs(7)**. Two arguments that name different images of the
+   same EROFS format are refused.
 3. Optionally wraps the root in a transient tmpfs overlay
    (see `root.transient` in **bootc-setup-root-conf.toml(5)**).
 4. Bind-mounts or overlays `/etc` and `/var` from the per-deployment state

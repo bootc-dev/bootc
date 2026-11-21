@@ -38,6 +38,12 @@ The composefs backend has two independent integrity controls:
   filesystem. A BLS entry or an
   unsigned UKI still has fs-verity checked at mount time, but nothing
   authenticates the digest itself.
+  The signature covers the UKI's own command line only: systemd-stub appends
+  to it, with Secure Boot on as well, the SMBIOS string
+  `io.systemd.stub.kernel-cmdline-extra=` (except in a confidential VM) and
+  the command line of every UKI addon that Secure Boot accepts. It measures what it appends into PCR 12 and
+  PCR 7 does not change, so a TPM policy that protects the secrets of a sealed
+  system should include PCR 12.
 
 ## Strict boot entries without fs-verity
 
@@ -118,6 +124,11 @@ UKI matches an image bootc generated for that container image. At boot,
 bootc's initramfs tries the arguments in order and moves on to the next one if
 an image is missing, but an image that fails fs-verity checks stops the boot.
 bootc never substitutes a different digest.
+
+The command line names at most one image per format. A second argument of a
+format that names another image, or the same image with another fs-verity
+policy, stops the boot, whether it comes from the boot artifact or was appended
+to its command line at boot.
 
 Existing repositories keep the format configuration recorded in their
 metadata; opening one with a newer bootc doesn't convert it.
