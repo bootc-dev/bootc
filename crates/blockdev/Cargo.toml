@@ -31,3 +31,6 @@ regex = { workspace = true }
 
 [lib]
 path = "src/blockdev.rs"
+
+[lints]
+workspace = true
