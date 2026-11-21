@@ -1248,12 +1248,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "deunicode"
-version = "1.6.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "abd57806937c9cc163efc8ea3910e00a62e2aeb0b8119f1793a978088f8f6b04"
-
-[[package]]
 name = "dialoguer"
 version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2216,16 +2210,6 @@ name = "log"
 version = "0.4.35"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5d15f86d12da44cd8d4ec3c73984537eb7f4cadcb9776a575a0a8a05ca11005c"
-
-[[package]]
-name = "mandown"
-version = "1.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "66ecfea548766885861386391fa3f0a5dee74e4eb4cd5941d965a2ce69f73c25"
-dependencies = [
- "deunicode",
- "pulldown-cmark",
-]
 
 [[package]]
 name = "matchers"
@@ -4379,7 +4363,6 @@ dependencies = [
  "clap",
  "fn-error-context",
  "itertools 0.15.0",
- "mandown",
  "owo-colors",
  "pulldown-cmark",
  "rand 0.10.4",

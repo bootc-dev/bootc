@@ -581,7 +581,7 @@ pub fn is_dir_backing_device_ro(dir: &Dir) -> Result<Option<bool>> {
     let dev = list_dev(&Utf8PathBuf::from(source))?;
     Ok(dev.ro)
 }
-
+#[derive(Debug)]
 pub struct LoopbackDevice {
     pub dev: Option<Utf8PathBuf>,
     // Handle to the cleanup helper process
@@ -589,6 +589,7 @@ pub struct LoopbackDevice {
 }
 
 /// Handle to manage the cleanup helper process for loopback devices
+#[derive(Debug)]
 struct LoopbackCleanupHandle {
     /// Child process handle
     child: std::process::Child,
