@@ -17,6 +17,8 @@ cfg-if = { workspace = true }
 camino = { workspace = true, features = ["serde1"] }
 cap-std-ext = { workspace = true, features = ["fs_utf8"] }
 fn-error-context = { workspace = true }
+gptman = { version = "3.1.1", default-features = false }
+uuid = "1"
 libc = { workspace = true }
 rustix = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
