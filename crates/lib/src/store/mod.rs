@@ -563,16 +563,21 @@ pub(crate) fn find_booted_from_esp(physical_root: &Dir) -> Result<String> {
     tracing::debug!("Found {device_uuid} in {LOADER_DEVICE_PART_UUID}");
 
     for root in all_roots {
-        let Some(children) = root.children else {
-            continue;
-        };
+        if let Some(device) = root.find_device_by_partuuid(&device_uuid) {
+            return Ok(device.path());
+        }
+    }
 
-        for child in children {
-            if child.partuuid.as_ref().is_some_and(|partuuid| {
-                *partuuid.to_ascii_lowercase() == device_uuid.to_ascii_lowercase()
-            }) {
-                return Ok(child.path());
-            }
+    // Partition mappings created by kpartx do not necessarily expose PARTUUID
+    // through lsblk. On a booted composefs system the ESP is already mounted,
+    // so its source is unambiguous even when partition metadata is unavailable.
+    if let Ok(mounts) = run_findmnt(&[], None, Some("/boot/efi")) {
+        if let Some(filesystem) = mounts
+            .filesystems
+            .into_iter()
+            .find(|filesystem| filesystem.source.starts_with("/dev/"))
+        {
+            return Ok(filesystem.source);
         }
     }
 

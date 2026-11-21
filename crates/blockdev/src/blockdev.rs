@@ -314,6 +314,21 @@ impl Device {
             .ok_or_else(|| anyhow!("ESP partition not found on {}", self.path()))
     }
 
+    /// Find a descendant partition by UUID (case-insensitive).
+    pub fn find_device_by_partuuid(&self, partuuid: &str) -> Option<&Device> {
+        self.children.as_ref()?.iter().find_map(|child| {
+            if child
+                .partuuid
+                .as_ref()
+                .is_some_and(|uuid| uuid.eq_ignore_ascii_case(partuuid))
+            {
+                Some(child)
+            } else {
+                child.find_device_by_partuuid(partuuid)
+            }
+        })
+    }
+
     /// Find a child partition by partition number (1-indexed).
     pub fn find_device_by_partno(&self, partno: u32) -> Result<&Device> {
         self.children
@@ -1094,6 +1109,35 @@ mod test {
                 "{parttype} {fstype:?}"
             );
         }
+    }
+
+    #[test]
+    fn test_find_device_by_partuuid_nested() {
+        let disk: Device = serde_json::from_value(serde_json::json!({
+            "name": "sda",
+            "path": "/dev/sda",
+            "size": 242727940096_u64,
+            "children": [{
+                "name": "sda10",
+                "path": "/dev/sda10",
+                "size": 242672721920_u64,
+                "children": [{
+                    "name": "dm-0",
+                    "path": "/dev/mapper/sda10p1",
+                    "size": 2147483648_u64,
+                    "parttype": ESP,
+                    "partuuid": "91dbba6f-fcb1-41a8-9231-c94fba37d3ce",
+                    "fstype": "vfat"
+                }]
+            }]
+        }))
+        .unwrap();
+
+        let esp = disk
+            .find_device_by_partuuid("91DBBA6F-FCB1-41A8-9231-C94FBA37D3CE")
+            .unwrap();
+        assert_eq!(esp.path(), "/dev/mapper/sda10p1");
+        assert!(disk.find_device_by_partuuid("missing").is_none());
     }
 
     #[test]
