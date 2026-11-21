@@ -4,10 +4,37 @@
 # systemd-tmpfiles-setup and systemd-random-seed/systemd-tpm2-setup
 # when /var/lib/systemd does not yet exist (the bootc generator
 # emits bootc-early-tmpfiles.service to prevent this).
+#
+# bootc-destructive-cleanup.service is a best-effort one-shot which
+# erases the previous OS installation from the old root; individual
+# package scriptlets failing during that erase is expected noise, so
+# its failure is tolerated (but still printed) rather than fatal.
 use std assert
 use tap.nu
 
 tap begin "verify no failed systemd/bootc units"
+
+def print-journal [unit: string] {
+    print $"Journal for ($unit):"
+    let journal = (try {
+        do { ^journalctl --boot --unit $unit --no-pager } | complete
+    } catch {|e|
+        null
+    })
+    if $journal == null {
+        print "# Unable to collect journal output"
+    } else {
+        if ($journal.stdout | str trim) != "" {
+            print $journal.stdout
+        }
+        if ($journal.stderr | str trim) != "" {
+            print $"journalctl stderr: ($journal.stderr)"
+        }
+        if $journal.exit_code != 0 {
+            print $"journalctl exited with status ($journal.exit_code)"
+        }
+    }
+}
 
 let selinux_enabled = ("/sys/fs/selinux/enforce" | path exists)
 
@@ -34,30 +61,27 @@ let failed = if $selinux_enabled {
     $failed_candidates
 }
 
-if ($failed | length) > 0 {
-    print $"Failed units:\n($failed | str join "\n")"
-    for unit in ($failed | each { |l| $l | split row " " | first }) {
-        print $"Journal for ($unit):"
-        let journal = (try {
-            do { ^journalctl --boot --unit $unit --no-pager } | complete
-        } catch {|e|
-            null
-        })
-        if $journal == null {
-            print "# Unable to collect journal output"
-        } else {
-            if ($journal.stdout | str trim) != "" {
-                print $journal.stdout
-            }
-            if ($journal.stderr | str trim) != "" {
-                print $"journalctl stderr: ($journal.stderr)"
-            }
-            if $journal.exit_code != 0 {
-                print $"journalctl exited with status ($journal.exit_code)"
-            }
-        }
+# Best-effort units whose failure is tolerated, but still worth logging
+let tolerated_units = ["bootc-destructive-cleanup.service"]
+
+let tolerated = ($failed | filter { |l|
+    ($l | split row " " | first) in $tolerated_units
+})
+let fatal = ($failed | filter { |l|
+    ($l | split row " " | first) not-in $tolerated_units
+})
+
+for unit in ($tolerated | each { |l| $l | split row " " | first }) {
+    print $"# WARNING: tolerated failure of best-effort unit ($unit) (ignoring for test result)"
+    print-journal $unit
+}
+
+if ($fatal | length) > 0 {
+    print $"Failed units:\n($fatal | str join "\n")"
+    for unit in ($fatal | each { |l| $l | split row " " | first }) {
+        print-journal $unit
     }
-    assert equal ($failed | length) 0 "Expected zero failed systemd-*/bootc-* units"
+    assert equal ($fatal | length) 0 "Expected zero failed systemd-*/bootc-* units"
 }
 
 print "No failed systemd-*/bootc-* units"
