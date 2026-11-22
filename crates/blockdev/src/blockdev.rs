@@ -373,23 +373,33 @@ impl Device {
         if self.partn.is_none() {
             self.partn = self.read_sysfs_property("partition")?;
         }
-        // When udev is unavailable, lsblk can't populate parttype/pttype from
-        // the udev database. Fall back to blkid -p which probes the disk
-        // directly. See https://github.com/osbuild/osbuild/pull/2428
-        if !have_udev() && (self.parttype.is_none() || self.pttype.is_none()) {
-            let props = blkid_probe(&self.path())?;
-            if self.parttype.is_none() {
-                self.parttype = props.get("PART_ENTRY_TYPE").cloned();
-            }
-            if self.pttype.is_none() {
-                self.pttype = props.get("PTTYPE").cloned();
-            }
+        // When udev is unavailable, lsblk can't populate the partition and
+        // filesystem properties from the udev database. Fall back to blkid -p
+        // which probes the disk directly.
+        // See https://github.com/osbuild/osbuild/pull/2428
+        if !have_udev() {
+            self.backfill_from_blkid(&blkid_probe(&self.path())?);
         }
         // Recurse to child devices
         for child in self.children.iter_mut().flatten() {
             child.backfill_missing()?;
         }
         Ok(())
+    }
+
+    /// Fill the properties lsblk left empty from `blkid -p` output.
+    fn backfill_from_blkid(&mut self, props: &HashMap<String, String>) {
+        for (field, key) in [
+            (&mut self.parttype, "PART_ENTRY_TYPE"),
+            (&mut self.pttype, "PTTYPE"),
+            (&mut self.fstype, "TYPE"),
+            (&mut self.uuid, "UUID"),
+            (&mut self.label, "LABEL"),
+        ] {
+            if field.is_none() {
+                *field = props.get(key).cloned();
+            }
+        }
     }
 
     /// Query parent devices via `lsblk --inverse`.
@@ -962,7 +972,7 @@ mod test {
     fn test_parse_lsblk_no_udev() {
         let fixture = include_str!("../tests/fixtures/lsblk-no-udev.json");
         let devs: DevicesOutput = serde_json::from_str(fixture).unwrap();
-        let dev = devs.blockdevices.into_iter().next().unwrap();
+        let mut dev = devs.blockdevices.into_iter().next().unwrap();
         // Without udev, parttype and pttype are null
         assert!(dev.pttype.is_none());
         let children = dev.children.as_deref().unwrap();
@@ -970,9 +980,18 @@ mod test {
         assert!(children[0].parttype.is_none());
         assert!(children[1].parttype.is_none());
         assert!(children[2].parttype.is_none());
+        assert!(children[1].uuid.is_none());
         // ESP and BIOS boot discovery should fail (no parttype to match)
         assert!(dev.find_partition_of_esp_optional().unwrap().is_none());
         assert!(dev.find_partition_of_bios_boot().is_none());
+        // ESP discovery works once blkid output fills the fields in
+        let props = HashMap::from([
+            ("PART_ENTRY_TYPE".to_string(), ESP.to_string()),
+            ("UUID".to_string(), "D206-1D97".to_string()),
+        ]);
+        dev.children.as_mut().unwrap()[1].backfill_from_blkid(&props);
+        let esp = dev.find_partition_of_esp_optional().unwrap().unwrap();
+        assert_eq!(esp.uuid.as_deref(), Some("D206-1D97"));
     }
 
     #[test]
