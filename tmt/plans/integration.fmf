@@ -64,7 +64,6 @@ execute:
     how: fmf
     test:
       - /tmt/tests/tests/test-21-logically-bound-switch
-  extra-fixme_skip_if_composefs: true
 
 /plan-22-logically-bound-install:
   summary: Execute logically bound images tests for installing image
@@ -72,7 +71,6 @@ execute:
     how: fmf
     test:
       - /tmt/tests/tests/test-22-logically-bound-install
-  extra-fixme_skip_if_composefs: true
 
 /plan-23-install-outside-container:
   summary: Execute tests for installing outside of a container

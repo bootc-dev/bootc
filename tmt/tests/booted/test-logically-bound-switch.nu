@@ -2,8 +2,6 @@
 # tmt:
 #   summary: Execute logically bound images tests for switching images
 #   duration: 30m
-# extra:
-#   fixme_skip_if_composefs: true
 #
 # This test does:
 # bootc image switch bootc-bound-image
@@ -39,7 +37,7 @@ def build_image [name images containers] {
     cd $td
     mkdir usr/share/containers/systemd
 
-    mut dockerfile = "FROM localhost/bootc
+    mut dockerfile = "FROM localhost/bootc as base
 COPY usr/ /usr/
 RUN echo sanity check > /usr/share/bound-image-sanity-check.txt
 " | save Dockerfile
@@ -60,6 +58,9 @@ RUN echo sanity check > /usr/share/bound-image-sanity-check.txt
             echo $"RUN ln -s /usr/share/containers/systemd/($container.name).container /usr/lib/bootc/bound-images.d/($container.name).container\n" | save Dockerfile --append
         }
     }
+
+    # Overwrite the dockerfile with our UKI version
+    tap make_uki_containerfile (cat Dockerfile) | save Dockerfile -f
 
     # Build it
     podman build -t $name .
