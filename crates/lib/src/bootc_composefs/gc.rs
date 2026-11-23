@@ -14,6 +14,7 @@ use composefs_boot::bootloader::EFI_EXT;
 use composefs_ctl::composefs;
 use composefs_ctl::composefs_boot;
 use composefs_ctl::composefs_oci;
+use ostree_ext::composefs::ImageNotFound;
 use ostree_ext::composefs::fsverity::Sha512HashValue;
 use ostree_ext::composefs_oci::linked_erofs_images;
 use rustix::fs::AtFlags;
@@ -667,6 +668,8 @@ pub(crate) async fn composefs_gc(
     let existing_tags = composefs_oci::list_refs(&*booted_cfs.repo)
         .context("Listing OCI tags in composefs repo")?;
 
+    let mut live_bound_images = vec![];
+
     for deployment in host.list_deployments() {
         let verity = &deployment.require_composefs()?.verity;
 
@@ -680,6 +683,20 @@ pub(crate) async fn composefs_gc(
         // new code, its EROFS image is reachable from the manifest and
         // this entry becomes redundant (but harmless).
         additional_roots.push(verity.clone());
+
+        let bound_images = query_bound_images_for_composefs_deployment(booted_cfs, verity);
+
+        match bound_images {
+            Ok(images) => {
+                tracing::debug!("bound_images: {images:?}");
+                live_bound_images.extend(images.iter().map(|i| i.image.clone()));
+            }
+            // This is so ugly, but some aboot tests run without initializing a repo
+            Err(e) if e.downcast_ref::<ImageNotFound>().is_some() => {
+                tracing::warn!("Image {verity} not found when querying bound images. Skipping...")
+            }
+            Err(e) => Err(e)?,
+        };
 
         if let Some(ini) = read_origin(sysroot, verity)? {
             // Collect the container image name for containers-storage GC.
@@ -736,19 +753,6 @@ pub(crate) async fn composefs_gc(
         }
     }
 
-    for deployment in host.list_deployments() {
-        let verity = &deployment.require_composefs()?.verity;
-
-        // Skip deployments that are already being GC'd.
-        if all_orphans.contains(&verity) {
-            continue;
-        }
-
-        let bound_images = query_bound_images_for_composefs_deployment(booted_cfs, verity)?;
-
-        live_container_images.extend(bound_images.iter().map(|i| i.image.clone()));
-    }
-
     // Migration: ensure every live deployment has a bootc-owned tag.
     // Deployments from before the tag-based GC won't have tags yet;
     // create them now so their OCI metadata survives this GC cycle.
@@ -797,8 +801,14 @@ pub(crate) async fn composefs_gc(
         if sysroot.try_exists(&subpath).unwrap_or(false) {
             let run = Dir::open_ambient_dir("/run", cap_std_ext::cap_std::ambient_authority())?;
             let imgstore = crate::podstorage::CStorage::create(&sysroot, &run, None)?;
-            let roots: std::collections::HashSet<&str> =
-                live_container_images.iter().map(|s| s.as_str()).collect();
+            // TODO: Update this once https://github.com/bootc-dev/bootc/pull/2693
+            // is merged
+            let roots: std::collections::HashSet<&str> = live_container_images
+                .iter()
+                .map(|s| s.as_str())
+                .chain(live_bound_images.iter().map(|i| i.as_str()))
+                .collect();
+
             let pruned = imgstore.prune_except_roots(&roots).await?;
             if !pruned.is_empty() {
                 tracing::info!("Pruned {} images from containers-storage", pruned.len());
