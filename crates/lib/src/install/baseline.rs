@@ -16,7 +16,6 @@ use std::path::Path;
 use std::process::Command;
 use std::process::Stdio;
 
-use anyhow::Ok;
 use anyhow::{Context, Result};
 use bootc_blockdev::Device;
 use bootc_utils::CommandRunExt;
@@ -1588,9 +1587,19 @@ pub(crate) fn install_create_rootfs(
         // And we want to label the root mount of /boot
         //
         // vfat doesn't support different selinux labels per file
-        if bootfstype != "vfat" {
-            crate::lsm::ensure_dir_labeled(&target_rootfs, BOOT, None, 0o755.into(), sepolicy)
-                .context("Labeling mounted bootfs")?;
+        // we explicitly handle that below
+        let label_result =
+            crate::lsm::ensure_dir_labeled(&target_rootfs, BOOT, None, 0o755.into(), sepolicy);
+
+        match label_result {
+            Ok(_) => { /* no-op */ }
+            Err(e)
+                if e.downcast_ref::<rustix::io::Errno>()
+                    .is_some_and(|e| *e == rustix::io::Errno::OPNOTSUPP) =>
+            {
+                tracing::info!("{BOOT} doesn't support xattrs... skipping labeling")
+            }
+            Err(e) => Err(e).context("Labeling mounted bootfs")?,
         }
     }
 
