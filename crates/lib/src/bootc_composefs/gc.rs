@@ -801,15 +801,11 @@ pub(crate) async fn composefs_gc(
         if sysroot.try_exists(&subpath).unwrap_or(false) {
             let run = Dir::open_ambient_dir("/run", cap_std_ext::cap_std::ambient_authority())?;
             let imgstore = crate::podstorage::CStorage::create(&sysroot, &run, None)?;
-            // TODO: Update this once https://github.com/bootc-dev/bootc/pull/2693
-            // is merged
-            let roots: std::collections::HashSet<&str> = live_container_images
-                .iter()
-                .map(|s| s.as_str())
-                .chain(live_bound_images.iter().map(|i| i.as_str()))
-                .collect();
-
-            let pruned = imgstore.prune_except_roots(&roots).await?;
+            let roots: std::collections::HashSet<&str> =
+                live_container_images.iter().map(|s| s.as_str()).collect();
+            let bound_roots: std::collections::HashSet<&str> =
+                live_bound_images.iter().map(|s| s.as_str()).collect();
+            let pruned = imgstore.prune_except_roots(&roots, &bound_roots).await?;
             if !pruned.is_empty() {
                 tracing::info!("Pruned {} images from containers-storage", pruned.len());
             }
