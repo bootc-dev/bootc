@@ -15,6 +15,7 @@ use ostree_ext::container::ManifestDiff;
 
 use crate::bootc_composefs::finalize::get_etc_diff;
 use crate::bootc_composefs::gc::GCOpts;
+use crate::boundimage::pull_bound_images_composefs;
 use crate::delta::Delta;
 use crate::install::UkiAddonOpts;
 use crate::spec::BootloaderKind;
@@ -383,6 +384,17 @@ pub(crate) async fn do_upgrade(
         );
     }
 
+    let mounted_fs = Dir::reopen_dir(
+        &repo
+            .mount(&id.to_hex())
+            .context("Failed to mount composefs image")?,
+    )?;
+
+    pull_bound_images_composefs(storage, &mounted_fs).await?;
+    // If we didn't have any LBIs on first install, but do have in the
+    // update/switch image
+    storage.ensure_imgstore_labeled()?;
+
     let entry = super::boot::primary_boot_entry(&entries)?;
     let boot_type = BootType::from(entry);
     let booted = host.require_composefs_booted()?;
@@ -395,12 +407,6 @@ pub(crate) async fn do_upgrade(
         );
     }
     super::boot::validate_bootloader(entry, bootloader)?;
-
-    let mounted_fs = Dir::reopen_dir(
-        &repo
-            .mount(&id.to_hex())
-            .context("Failed to mount composefs image")?,
-    )?;
 
     if boot_type == BootType::Aboot {
         aboot::require_aboot_deploy_in_image(&mounted_fs)?;
