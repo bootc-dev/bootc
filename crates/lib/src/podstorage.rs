@@ -414,7 +414,7 @@ impl CStorage {
         .await?
     }
 
-    #[context("Pruning")]
+    #[context("Pruning images in storage")]
     pub(crate) async fn prune_except_roots(&self, roots: &HashSet<&str>) -> Result<Vec<String>> {
         let all_images = self.list_images().await?;
         tracing::debug!("Images total: {}", all_images.len(),);

@@ -14,7 +14,7 @@ use ostree_ext::containers_image_proxy;
 use ostree_ext::ostree::Deployment;
 
 use crate::podstorage::{CStorage, PullMode};
-use crate::store::Storage;
+use crate::store::{BootedComposefs, Storage};
 
 /// The path in a root for bound images; this directory should only contain
 /// symbolic links to `.container` or `.image` files.
@@ -61,7 +61,7 @@ pub(crate) async fn pull_bound_images(sysroot: &Storage, deployment: &Deployment
 }
 
 /// Given a deployment, pull all container images it references.
-#[allow(dead_code)]
+#[context("Pulling bound images for composefs backend")]
 pub(crate) async fn pull_bound_images_composefs(
     storage: &Storage,
     mounted_erofs: &Dir,
@@ -82,6 +82,15 @@ pub(crate) async fn pull_bound_images_composefs(
     );
 
     pull_images(storage, bound_images).await
+}
+
+#[context("Querying bound images for composefs deployment")]
+pub(crate) fn query_bound_images_for_composefs_deployment(
+    booted_cfs: &BootedComposefs,
+    depl_id: &str,
+) -> Result<Vec<BoundImage>> {
+    let depl_fd = booted_cfs.repo.mount(depl_id)?;
+    query_bound_images(&Dir::reopen_dir(&depl_fd)?)
 }
 
 #[context("Querying bound images")]

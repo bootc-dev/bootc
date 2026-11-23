@@ -26,6 +26,7 @@ use crate::bootc_composefs::boot::get_global_uki_addon_name;
 use crate::bootc_composefs::uki_addon::UkiAddonType;
 use crate::bootc_composefs::uki_addon::list_installed_uki_addons;
 use crate::bootc_composefs::uki_addon::list_referenced_uki_addons;
+use crate::boundimage::query_bound_images_for_composefs_deployment;
 use crate::{
     bootc_composefs::{
         boot::{BOOTC_UKI_DIR, BootType, get_type1_dir_name, get_uki_addon_dir_name, get_uki_name},
@@ -733,6 +734,19 @@ pub(crate) async fn composefs_gc(
                 }
             }
         }
+    }
+
+    for deployment in host.list_deployments() {
+        let verity = &deployment.require_composefs()?.verity;
+
+        // Skip deployments that are already being GC'd.
+        if all_orphans.contains(&verity) {
+            continue;
+        }
+
+        let bound_images = query_bound_images_for_composefs_deployment(booted_cfs, verity)?;
+
+        live_container_images.extend(bound_images.iter().map(|i| i.image.clone()));
     }
 
     // Migration: ensure every live deployment has a bootc-owned tag.
