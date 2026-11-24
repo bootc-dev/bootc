@@ -301,3 +301,12 @@ check:
     enabled: false
     because: the derived images are built in the VM, which has no keys to sign their UKIs for Secure Boot
   test: nu booted/test-composefs-xbootldr.nu
+
+/test-68-selinux-wrapper-install-t:
+  summary: Verify a policy module lets bootc enter install_t from a wrapper service
+  duration: 30m
+  adjust:
+  - when: running_env != image_mode
+    enabled: false
+    because: these tests require features only available in image mode
+  test: nu booted/test-selinux-wrapper-install-t.nu
