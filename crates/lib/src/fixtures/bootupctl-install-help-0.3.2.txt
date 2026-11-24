@@ -1,0 +1,22 @@
+Usage: bootupctl backend install [OPTIONS] <DEST_ROOT>
+
+Arguments:
+  <DEST_ROOT>  Target root
+
+Options:
+      --src-root <SRC_ROOT>      Source root [default: /]
+  -v...                          Verbosity level (higher is more verbose)
+      --device <DEVICE>          Target device(s) for bootloader installation. Can be specified
+                                 multiple times to install to multiple devices (e.g., for multi-disk
+                                 RAID/LVM setups)
+      --filesystem <FILESYSTEM>  Filesystem path to inspect for backing devices. Bootupd will walk
+                                 up the device hierarchy to find physical disks and install to all
+                                 ESPs found
+      --with-static-configs      Enable installation of the built-in static config files
+      --write-uuid               Implies `--with-static-configs`.  When present, this also writes a
+                                 file with the UUID of the target filesystems
+      --update-firmware          On EFI systems, invoke `efibootmgr` to update the firmware
+      --component <COMPONENTS>   Only install these components
+      --auto                     Automatically choose components based on booted host state
+      --bootloader <BOOTLOADER>  The bootloader to use [possible values: grub, grub-cc, systemd]
+  -h, --help                     Print help (see more with '--help')

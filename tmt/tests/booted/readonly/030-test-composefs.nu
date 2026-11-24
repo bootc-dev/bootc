@@ -30,7 +30,7 @@ if $expecting_composefs {
         let bootctl_output = (bootctl)
 
         if ($bootctl_output | str contains 'Product: systemd-boot') {
-            # Make sure our "timeout 1" is actually present (see ../../../../contrib/packaging/switch-to-sdboot:41)
+            # Make sure our "timeout 1" is actually present (see ../../../../contrib/packaging/switch-to-sdboot)
 
             mkdir /var/tmp/efi
             mount /dev/disk/by-partlabel/EFI-SYSTEM /var/tmp/efi

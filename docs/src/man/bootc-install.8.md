@@ -24,6 +24,15 @@ documents the command and its subcommands.
 
 When installing with `systemd-boot`, bootc can let `systemd-boot` can handle enrollment of Secure Boot keys by putting signed EFI signature lists in `/usr/lib/bootc/install/secureboot-keys` which will copy over into `ESP/loader/keys` after bootloader installation. The keys will be copied to `loader/keys` subdirectory of the ESP. after installing `systemd-boot` to the system. More information on how key enrollment works with `systemd-boot` is available in the [systemd-boot](https://github.com/systemd/systemd/blob/26b2085d54ebbfca8637362eafcb4a8e3faf832f/man/systemd-boot.xml#L392) man page.
 
+The keys are staged whether bootc installs systemd-boot with `bootctl` or through
+bootupd. Through bootupd, shim sits in front of systemd-boot, so the enrolled `db` must
+also contain the Microsoft UEFI CA 2023, which signs shim, or the firmware may refuse to
+start shim. The older Microsoft Corporation UEFI CA 2011 also starts current shim builds,
+but bootupd 0.3.2 and newer refuse every bootloader update under Secure Boot without the
+2023 CA, so neither shim nor systemd-boot is updated and `bootloader-update.service` fails.
+Note that systemd-boot enrolls a key set named `auto` without asking when it runs in a
+virtual machine in setup mode.
+
 <!-- BEGIN GENERATED OPTIONS -->
 <!-- END GENERATED OPTIONS -->
 

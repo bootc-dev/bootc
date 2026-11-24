@@ -45,6 +45,9 @@ filesystem := env("BOOTC_filesystem", "ext4")
 boot_type := env("BOOTC_boot_type", "bls")
 # Only used for composefs tests
 seal_state := env("BOOTC_seal_state", "unsealed")
+# Only used for composefs systemd-boot tests: set to keep bootupd and shim in
+# the image, so systemd-boot is installed through bootupd with shim in front
+sdboot_shim := env("BOOTC_sdboot_shim", "")
 # Only used for composefs UKI tests: "v1" or "v2"
 erofs_version := env("BOOTC_erofs_version", "v1")
 # Baseconfigs to inject into the image for testing (e.g. "etc-transient" or "root-transient")
@@ -79,7 +82,8 @@ _forward_settings := "base_img=" + base_img + \
     " boot_type=" + boot_type + \
     " seal_state=" + seal_state + \
     ' baseconfigs="' + baseconfigs + '"' + \
-    " erofs_version=" + erofs_version
+    " erofs_version=" + erofs_version + \
+    " sdboot_shim=" + sdboot_shim
 testimage_label := "bootc.testimage=1"
 # Pinned to ubi9/podman 9.8-1793032728: the 9.8-1793203936 build that
 # replaced it has no sigstore signature for the registry.access.redhat.com
@@ -101,6 +105,7 @@ base_buildargs := generic_buildargs + " " + _extra_src_args \
                   + " --build-arg=seal_state=" + seal_state \
                   + " --build-arg=filesystem=" + filesystem \
                   + " --build-arg=erofs_version=" + erofs_version \
+                  + " --build-arg=sdboot_shim=" + sdboot_shim \
                   + " --build-arg=baseconfigs=" + baseconfigs
 buildargs := base_buildargs \
              + " --cap-add=all --security-opt=label=type:container_runtime_t --device /dev/fuse" \
@@ -193,6 +198,9 @@ list-variants:
         - The specified boot type (BLS/UKI)
         - The specified seal state (sealed/unsealed) determining whether we sign the UKI and
           use secure boot or not
+        - With BOOTC_sdboot_shim=1 (systemd-boot, unsealed, e.g. Fedora 45 and rawhide): keep
+          bootupd and shim, so the distro-signed systemd-boot is installed through bootupd with
+          shim in front
 
     Use `just build-sealed` as shortcut to build a sealed composefs image with systemd-boot as the bootloader
 
