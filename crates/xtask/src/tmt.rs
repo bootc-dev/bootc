@@ -23,6 +23,8 @@ const FIELD_EXPORT_IMAGE: &str = "export_image";
 const FIELD_SUMMARY: &str = "summary";
 const FIELD_ADJUST: &str = "adjust";
 const FIELD_ENABLED: &str = "enabled";
+const FIELD_WHEN: &str = "when";
+const FIELD_BECAUSE: &str = "because";
 
 const FIELD_FIXME_SKIP_IF_COMPOSEFS: &str = "fixme_skip_if_composefs";
 const FIELD_FIXME_SKIP_IF_UKI: &str = "fixme_skip_if_uki";
@@ -30,6 +32,8 @@ const FIELD_FIXME_SKIP_IF_UKI: &str = "fixme_skip_if_uki";
 /// For tests that should only run for composefs systems
 /// Ex. composefs-gc
 const FIELD_SKIP_IF_OSTREE: &str = "skip_if_ostree";
+const PACKIT_SKIP_IF_OSTREE_REASON: &str =
+    "This test requires composefs, which is unavailable in Packit's OSTree environment";
 
 // Rust tests are subcommands of the tests-integration binary, one per module
 const RUST_TESTS_DIR: &str = "crates/tests-integration/src/booted";
@@ -1075,6 +1079,56 @@ fn parse_tmt_metadata(content: &str, comment: &str) -> Result<Option<TmtMetadata
     Ok(Some(TmtMetadata { number, extra, tmt }))
 }
 
+fn plan_adjust(tmt: &serde_yaml::Value, skip_if_ostree: bool) -> Result<Option<serde_yaml::Value>> {
+    let existing_adjust = tmt
+        .as_mapping()
+        .and_then(|map| map.get(&serde_yaml::Value::String(FIELD_ADJUST.to_string())));
+
+    if !skip_if_ostree {
+        return Ok(existing_adjust.cloned());
+    }
+
+    let mut adjust = match existing_adjust {
+        Some(serde_yaml::Value::Sequence(rules)) => rules.clone(),
+        Some(_) => anyhow::bail!("Expected TMT adjust metadata to be a sequence of rules"),
+        None => Vec::new(),
+    };
+
+    let mut packit_rule = serde_yaml::Mapping::new();
+    packit_rule.insert(
+        serde_yaml::Value::String(FIELD_WHEN.to_string()),
+        serde_yaml::Value::String("running_env == packit".to_string()),
+    );
+    packit_rule.insert(
+        serde_yaml::Value::String(FIELD_ENABLED.to_string()),
+        serde_yaml::Value::Bool(false),
+    );
+    packit_rule.insert(
+        serde_yaml::Value::String(FIELD_BECAUSE.to_string()),
+        serde_yaml::Value::String(PACKIT_SKIP_IF_OSTREE_REASON.to_string()),
+    );
+    adjust.push(serde_yaml::Value::Mapping(packit_rule));
+
+    Ok(Some(serde_yaml::Value::Sequence(adjust)))
+}
+
+fn add_plan_ostree_metadata(
+    plan_value: &mut serde_yaml::Mapping,
+    tmt: &serde_yaml::Value,
+    skip_if_ostree: bool,
+) -> Result<()> {
+    if let Some(adjust) = plan_adjust(tmt, skip_if_ostree)? {
+        plan_value.insert(serde_yaml::Value::String(FIELD_ADJUST.to_string()), adjust);
+    }
+    if skip_if_ostree {
+        plan_value.insert(
+            serde_yaml::Value::String(format!("extra-{FIELD_SKIP_IF_OSTREE}")),
+            serde_yaml::Value::Bool(true),
+        );
+    }
+    Ok(())
+}
+
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
 struct TmtMetadata {
@@ -1418,15 +1472,9 @@ fn generate_integration() -> Result<(String, String)> {
             serde_yaml::Value::Mapping(discover),
         );
 
-        // Extract and add adjust section if present
-        if let serde_yaml::Value::Mapping(map) = &test.tmt {
-            if let Some(adjust) = map.get(&serde_yaml::Value::String(FIELD_ADJUST.to_string())) {
-                plan_value.insert(
-                    serde_yaml::Value::String(FIELD_ADJUST.to_string()),
-                    adjust.clone(),
-                );
-            }
-        }
+        // Keep existing adjustment rules in order and disable OSTree-only
+        // tests when Packit runs them directly under TMT.
+        add_plan_ostree_metadata(&mut plan_value, &test.tmt, test.skip_if_ostree)?;
 
         // Add extra-try_bind_storage if test wants it
         if test.try_bind_storage {
@@ -1455,13 +1503,6 @@ fn generate_integration() -> Result<(String, String)> {
         if test.skip_if_composefs {
             plan_value.insert(
                 serde_yaml::Value::String(format!("extra-{}", FIELD_FIXME_SKIP_IF_COMPOSEFS)),
-                serde_yaml::Value::Bool(true),
-            );
-        }
-
-        if test.skip_if_ostree {
-            plan_value.insert(
-                serde_yaml::Value::String(format!("extra-{}", FIELD_SKIP_IF_OSTREE)),
                 serde_yaml::Value::Bool(true),
             );
         }
@@ -1525,6 +1566,104 @@ fn generate_integration() -> Result<(String, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_plan_adjust_skip_if_ostree() {
+        let empty_tmt = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
+        let mut plan = serde_yaml::Mapping::new();
+        add_plan_ostree_metadata(&mut plan, &empty_tmt, false).unwrap();
+        assert!(!plan.contains_key(&serde_yaml::Value::String(format!(
+            "extra-{FIELD_SKIP_IF_OSTREE}"
+        ))));
+        assert!(!plan.contains_key(&serde_yaml::Value::String(FIELD_ADJUST.to_string())));
+
+        add_plan_ostree_metadata(&mut plan, &empty_tmt, true).unwrap();
+        assert_eq!(
+            plan.get(&serde_yaml::Value::String(format!(
+                "extra-{FIELD_SKIP_IF_OSTREE}"
+            ))),
+            Some(&serde_yaml::Value::Bool(true))
+        );
+        let rules = plan
+            .get(&serde_yaml::Value::String(FIELD_ADJUST.to_string()))
+            .unwrap()
+            .as_sequence()
+            .unwrap();
+        assert_eq!(rules.len(), 1);
+        let rule = rules[0].as_mapping().unwrap();
+        assert_eq!(
+            rule.get(&serde_yaml::Value::String(FIELD_WHEN.to_string())),
+            Some(&serde_yaml::Value::String(
+                "running_env == packit".to_string()
+            ))
+        );
+        assert_eq!(
+            rule.get(&serde_yaml::Value::String(FIELD_ENABLED.to_string())),
+            Some(&serde_yaml::Value::Bool(false))
+        );
+        assert_eq!(
+            rule.get(&serde_yaml::Value::String(FIELD_BECAUSE.to_string())),
+            Some(&serde_yaml::Value::String(
+                PACKIT_SKIP_IF_OSTREE_REASON.to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn test_plan_adjust_appends_after_existing_rules() {
+        let original_rule = serde_yaml::from_str::<serde_yaml::Value>(
+            r#"
+when: running_env != image_mode
+enabled: false
+"#,
+        )
+        .unwrap();
+        let second_original_rule = serde_yaml::from_str::<serde_yaml::Value>(
+            r#"
+when: distro == centos
+enabled: true
+"#,
+        )
+        .unwrap();
+        let original_adjust =
+            serde_yaml::Value::Sequence(vec![original_rule.clone(), second_original_rule.clone()]);
+        let mut tmt = serde_yaml::Mapping::new();
+        tmt.insert(
+            serde_yaml::Value::String(FIELD_ADJUST.to_string()),
+            original_adjust.clone(),
+        );
+
+        let tmt = serde_yaml::Value::Mapping(tmt);
+        let mut plan = serde_yaml::Mapping::new();
+
+        add_plan_ostree_metadata(&mut plan, &tmt, false).unwrap();
+        assert_eq!(
+            plan.get(&serde_yaml::Value::String(FIELD_ADJUST.to_string())),
+            Some(&original_adjust)
+        );
+        assert!(!plan.contains_key(&serde_yaml::Value::String(format!(
+            "extra-{FIELD_SKIP_IF_OSTREE}"
+        ))));
+
+        add_plan_ostree_metadata(&mut plan, &tmt, true).unwrap();
+        let rules = plan
+            .get(&serde_yaml::Value::String(FIELD_ADJUST.to_string()))
+            .unwrap()
+            .as_sequence()
+            .unwrap();
+        assert_eq!(rules.len(), 3);
+        assert_eq!(rules[0], original_rule);
+        assert_eq!(rules[1], second_original_rule);
+        assert_eq!(
+            rules[2]
+                .as_mapping()
+                .unwrap()
+                .get(&serde_yaml::Value::String(FIELD_WHEN.to_string())),
+            Some(&serde_yaml::Value::String(
+                "running_env == packit".to_string()
+            ))
+        );
+    }
 
     #[test]
     fn test_boot_context_values() {

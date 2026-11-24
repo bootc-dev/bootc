@@ -201,6 +201,10 @@ execute:
     how: fmf
     test:
       - /tmt/tests/tests/test-35-composefs-gc
+  adjust:
+  - when: running_env == packit
+    enabled: false
+    because: This test requires composefs, which is unavailable in Packit's OSTree environment
   extra-skip_if_ostree: true
   extra-fixme_skip_if_uki: true
 
@@ -263,6 +267,10 @@ execute:
     how: fmf
     test:
       - /tmt/tests/tests/test-41-composefs-gc-uki
+  adjust:
+  - when: running_env == packit
+    enabled: false
+    because: This test requires composefs, which is unavailable in Packit's OSTree environment
   extra-skip_if_ostree: true
 
 /plan-42-loader-entries-source:
@@ -279,6 +287,10 @@ execute:
     how: fmf
     test:
       - /tmt/tests/tests/test-43-switch-same-digest
+  adjust:
+  - when: running_env == packit
+    enabled: false
+    because: This test requires composefs, which is unavailable in Packit's OSTree environment
   extra-skip_if_ostree: true
 
 /plan-44-shadow-fixup:
@@ -294,6 +306,10 @@ execute:
     how: fmf
     test:
       - /tmt/tests/tests/test-45-composefs-corrupted-state-resilience
+  adjust:
+  - when: running_env == packit
+    enabled: false
+    because: This test requires composefs, which is unavailable in Packit's OSTree environment
   extra-skip_if_ostree: true
 
 /plan-46-etc-merge-conflict:
@@ -302,6 +318,10 @@ execute:
     how: fmf
     test:
       - /tmt/tests/tests/test-46-etc-merge-conflict
+  adjust:
+  - when: running_env == packit
+    enabled: false
+    because: This test requires composefs, which is unavailable in Packit's OSTree environment
   extra-skip_if_ostree: true
 
 /plan-47-download-only-switch:
@@ -317,6 +337,10 @@ execute:
     how: fmf
     test:
       - /tmt/tests/tests/test-48-composefs-uki-dumpfile
+  adjust:
+  - when: running_env == packit
+    enabled: false
+    because: This test requires composefs, which is unavailable in Packit's OSTree environment
   extra-skip_if_ostree: true
 
 /plan-49-composefs-1-16-bridge:
@@ -329,8 +353,11 @@ execute:
   adjust:
   - when: composefs_bridge == true
     enabled: true
-  extra-try_bind_storage: true
+  - when: running_env == packit
+    enabled: false
+    because: This test requires composefs, which is unavailable in Packit's OSTree environment
   extra-skip_if_ostree: true
+  extra-try_bind_storage: true
 
 /plan-50-switch-zstd-chunked:
   summary: Switch to an image with zstd:chunked compressed layers
@@ -342,6 +369,9 @@ execute:
   - when: running_env != image_mode
     enabled: false
     because: only the image_mode test image installs bootc-tests
+  - when: running_env == packit
+    enabled: false
+    because: This test requires composefs, which is unavailable in Packit's OSTree environment
   extra-skip_if_ostree: true
 
 /plan-51-composefs-uki-addons:
@@ -350,6 +380,10 @@ execute:
     how: fmf
     test:
       - /tmt/tests/tests/test-51-composefs-uki-addons
+  adjust:
+  - when: running_env == packit
+    enabled: false
+    because: This test requires composefs, which is unavailable in Packit's OSTree environment
   extra-skip_if_ostree: true
 
 /plan-51-composefs-verity:
@@ -362,6 +396,9 @@ execute:
   - when: running_env != image_mode
     enabled: false
     because: only the image_mode test image installs bootc-tests
+  - when: running_env == packit
+    enabled: false
+    because: This test requires composefs, which is unavailable in Packit's OSTree environment
   extra-skip_if_ostree: true
 
 /plan-51-switch-from-delta:
@@ -397,6 +434,10 @@ execute:
     how: fmf
     test:
       - /tmt/tests/tests/test-57-composefs-separate-boot
+  adjust:
+  - when: running_env == packit
+    enabled: false
+    because: This test requires composefs, which is unavailable in Packit's OSTree environment
   extra-skip_if_ostree: true
   extra-fixme_skip_if_uki: true
 
@@ -418,6 +459,9 @@ execute:
   adjust:
   - when: boot_type == aboot
     enabled: true
+  - when: running_env == packit
+    enabled: false
+    because: This test requires composefs, which is unavailable in Packit's OSTree environment
   extra-skip_if_ostree: true
 
 /plan-62-aboot-update-rollback:
@@ -430,8 +474,11 @@ execute:
   adjust:
   - when: boot_type == aboot
     enabled: true
-  extra-try_bind_storage: true
+  - when: running_env == packit
+    enabled: false
+    because: This test requires composefs, which is unavailable in Packit's OSTree environment
   extra-skip_if_ostree: true
+  extra-try_bind_storage: true
 
 /plan-63-install-shared-propagation:
   summary: Install from a shared mount namespace without leaking the storage bind mount
@@ -458,5 +505,8 @@ execute:
   - when: seal_state == sealed
     enabled: false
     because: the derived images are built in the VM, which has no keys to sign their UKIs for Secure Boot
+  - when: running_env == packit
+    enabled: false
+    because: This test requires composefs, which is unavailable in Packit's OSTree environment
   extra-skip_if_ostree: true
 # END GENERATED PLANS
