@@ -958,6 +958,165 @@ fn check_runtime_deps(root: &Dir, _config: &LintExecutionConfig) -> LintResult {
     ))
 }
 
+/// The types of the programs that systemd starts in `unconfined_service_t` or `initrc_t`.
+/// The policy defines no transition from either domain to `install_t`.
+const GENERIC_EXEC_TYPES: &[&str] = &["bin_t", "shell_exec_t"];
+const SYSTEMD_SYSTEM_UNIT_DIRS: &[&str] = &["usr/lib/systemd/system", "etc/systemd/system"];
+/// The unit settings whose value is a command line.
+const EXEC_SETTINGS: &[&str] = &[
+    "ExecCondition",
+    "ExecStartPre",
+    "ExecStart",
+    "ExecStartPost",
+    "ExecReload",
+    "ExecStop",
+    "ExecStopPost",
+];
+/// A script larger than this is not read.
+const MAX_SCRIPT_SIZE: u64 = 1024 * 1024;
+
+// Revisit once the base policies carry the transitions that
+// https://github.com/fedora-selinux/selinux-policy/pull/3327 adds, which move every
+// wrapper's bootc into install_t.
+#[distributed_slice(LINTS)]
+static LINT_INSTALL_T_WRAPPER: Lint = Lint::new_warning(
+    "install-t-wrapper",
+    indoc! { r#"
+Check for systemd services that run bootc from a script or from another program.
+The SELinux policy moves bootc into the `install_t` domain when systemd executes it
+directly. Started from a wrapper that has a generic label, bootc stays in the
+wrapper's domain, where it may lack the permission to write labels unknown to the
+running policy.
+
+Run bootc directly from `ExecStart=`, or give the wrapper its own SELinux type
+with a transition to `install_t`. An image can instead ship a policy module that
+lets `unconfined_service_t` and `initrc_t` transition to `install_t` when they
+execute bootc. This lint reads only file labels, so it still warns on such an
+image. Skip it there with `--skip install-t-wrapper`.
+"#},
+    check_install_t_wrapper,
+);
+
+/// The command lines of a unit's `Exec*=` settings, without systemd's prefix characters.
+fn unit_exec_commands(unit: &str) -> Vec<String> {
+    unit.replace("\\\n", " ")
+        .lines()
+        .filter_map(|line| {
+            let (setting, command) = line.split_once('=')?;
+            EXEC_SETTINGS
+                .contains(&setting.trim())
+                .then(|| command.trim().trim_start_matches(['@', '-', ':', '+', '!']))
+                .filter(|command| !command.is_empty())
+                .map(str::to_owned)
+        })
+        .collect()
+}
+
+/// Whether shell text names bootc outside a comment line.
+fn names_bootc(text: &str) -> bool {
+    text.lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .flat_map(|line| {
+            line.split(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.')))
+        })
+        .any(|word| word == "bootc")
+}
+
+/// The type field of an SELinux label such as `system_u:object_r:bin_t:s0`.
+fn selinux_type(label: &str) -> Option<&str> {
+    label.split(':').nth(2)
+}
+
+/// The text of the script at `path` in `root`, or `None` when `path` names no script.
+/// A file without a `#!` line counts as a script unless `require_shebang` is set.
+fn read_script(root: &Dir, path: &str, require_shebang: bool) -> Result<Option<String>> {
+    let path = path.trim_start_matches('/');
+    // A symbolic link may point outside `root`, so only a regular file is read.
+    let Some(meta) = root.symlink_metadata_optional(path)? else {
+        return Ok(None);
+    };
+    if !meta.is_file() || meta.size() > MAX_SCRIPT_SIZE {
+        return Ok(None);
+    }
+    let contents = root.read(path)?;
+    Ok((!require_shebang || contents.starts_with(b"#!"))
+        .then(|| String::from_utf8_lossy(&contents).into_owned()))
+}
+
+fn check_install_t_wrapper(root: &Dir, config: &LintExecutionConfig) -> LintResult {
+    let Some(policy) = crate::lsm::new_sepolicy_at(root)? else {
+        return lint_ok();
+    };
+    // Each unit file and drop-in, by its name relative to its unit directory.
+    let mut units = Vec::new();
+    for unit_dir in SYSTEMD_SYSTEM_UNIT_DIRS {
+        let Some(d) = root.open_dir_optional(unit_dir)? else {
+            continue;
+        };
+        for entry in d.entries_utf8()? {
+            let entry = entry?;
+            let name = entry.file_name()?;
+            let file_type = entry.file_type()?;
+            if name.ends_with(".service") && file_type.is_file() {
+                units.push((name.clone(), d.read(&name)?));
+            } else if name.ends_with(".service.d") && file_type.is_dir() {
+                let dropins = d.open_dir(&name)?;
+                for dropin in dropins.entries_utf8()? {
+                    let dropin = dropin?;
+                    let dropin_name = dropin.file_name()?;
+                    if dropin_name.ends_with(".conf") && dropin.file_type()?.is_file() {
+                        units.push((format!("{name}/{dropin_name}"), dropins.read(&dropin_name)?));
+                    }
+                }
+            }
+        }
+    }
+    let mut wrappers = BTreeSet::new();
+    for (name, unit) in units {
+        for command in unit_exec_commands(&String::from_utf8_lossy(&unit)) {
+            let mut args = command.split_whitespace();
+            let Some(program) = args.next() else {
+                continue;
+            };
+            // systemd looks up a bare program name in its search path.
+            let program = if program.starts_with('/') {
+                Utf8PathBuf::from(program)
+            } else {
+                Utf8Path::new("/usr/bin").join(program)
+            };
+            let label = crate::lsm::optional_label(&policy, &program, libc::S_IFREG | 0o755)?;
+            let Some(ty) = label
+                .as_deref()
+                .and_then(selinux_type)
+                .filter(|ty| GENERIC_EXEC_TYPES.contains(ty))
+            else {
+                continue;
+            };
+            // A shell reads its script argument whether or not the script has a `#!` line.
+            let shell = ty == "shell_exec_t";
+            let mut text = command.clone();
+            let scripts = std::iter::once((program.as_str(), true)).chain(
+                args.filter(|arg| arg.starts_with('/'))
+                    .map(|arg| (arg, !shell)),
+            );
+            for (script, require_shebang) in scripts {
+                if let Some(script) = read_script(root, script, require_shebang)? {
+                    text.push('\n');
+                    text.push_str(&script);
+                }
+            }
+            if names_bootc(&text) {
+                wrappers.insert(format!("{name}: {program}"));
+            }
+        }
+    }
+    if wrappers.is_empty() {
+        return lint_ok();
+    }
+    let header = "Found services that run bootc outside install_t";
+    format_lint_err_from_items(config, header, wrappers.iter())
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::LazyLock;
@@ -1636,6 +1795,82 @@ mod tests {
                     })
             }),
             "{err:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_unit_exec_commands() {
+        let unit = indoc! { r#"
+            [Unit]
+            Description=ExecStart=/not/a/command
+            [Service]
+            ExecSearchPath=/usr/local/bin
+            ExecStartPre=-/usr/bin/true
+            ExecStart=/usr/bin/sh -c \
+                'bootc upgrade'
+            ExecStart=
+            ExecStop=+!/usr/libexec/stop.sh now
+        "# };
+        assert_eq!(
+            unit_exec_commands(unit),
+            [
+                "/usr/bin/true",
+                "/usr/bin/sh -c      'bootc upgrade'",
+                "/usr/libexec/stop.sh now"
+            ]
+        );
+    }
+
+    #[test]
+    fn test_names_bootc() {
+        for text in [
+            "bootc upgrade",
+            "exec /usr/bin/bootc status",
+            "#!/bin/bash\nif bootc status; then :; fi",
+        ] {
+            assert!(names_bootc(text), "{text}");
+        }
+        for text in [
+            "systemctl start bootc-fetch-apply-updates.service",
+            "ostree admin status",
+            "# bootc upgrade\ntrue",
+        ] {
+            assert!(!names_bootc(text), "{text}");
+        }
+    }
+
+    #[test]
+    fn test_selinux_type() {
+        assert_eq!(selinux_type("system_u:object_r:bin_t:s0"), Some("bin_t"));
+        assert_eq!(selinux_type("<<none>>"), None);
+    }
+
+    #[test]
+    fn test_read_script() -> Result<()> {
+        let root = &fixture()?;
+        root.create_dir_all("usr/libexec")?;
+        let script = "#!/bin/sh\nbootc upgrade\n";
+        let sourced = "bootc upgrade\n";
+        root.write("usr/libexec/update.sh", script)?;
+        root.write("usr/libexec/sourced.sh", sourced)?;
+        root.write("usr/libexec/binary", b"\x7fELF")?;
+        root.symlink_contents("/usr/libexec/update.sh", "usr/libexec/link")?;
+        for require_shebang in [true, false] {
+            assert_eq!(
+                read_script(root, "/usr/libexec/update.sh", require_shebang)?.as_deref(),
+                Some(script)
+            );
+            for path in ["/usr/libexec/link", "/usr/libexec/missing"] {
+                assert_eq!(read_script(root, path, require_shebang)?, None, "{path}");
+            }
+        }
+        for path in ["/usr/libexec/sourced.sh", "/usr/libexec/binary"] {
+            assert_eq!(read_script(root, path, true)?, None, "{path}");
+        }
+        assert_eq!(
+            read_script(root, "/usr/libexec/sourced.sh", false)?.as_deref(),
+            Some(sourced)
         );
         Ok(())
     }
