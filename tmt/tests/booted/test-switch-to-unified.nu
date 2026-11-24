@@ -63,12 +63,17 @@ RUN echo 'unified-storage-test-marker' > /usr/share/unified-storage-test.txt
 
   bootc image cmd build -t localhost/bootc-unified-derived .
 
-  # Verify the build is in bootc storage
-  bootc image cmd list
+  let base_id = bootc image cmd list --format json --filter reference=localhost/bootc:latest | from json | get 0.Id
+  let derived_id = bootc image cmd list --format json --filter reference=localhost/bootc-unified-derived:latest | from json | get 0.Id
 
   # Switch to the derived image using containers-storage transport
   print "Switching to localhost/bootc-unified-derived"
   bootc switch --transport containers-storage localhost/bootc-unified-derived
+
+  # Cleanup must retain both deployments even though their origins omit :latest.
+  let stored = bootc image cmd list --format json | from json
+  assert ($stored | any {|image| $image.Id == $base_id }) "Booted image missing from bootc storage"
+  assert ($stored | any {|image| $image.Id == $derived_id }) "Staged image missing from bootc storage"
 
   tmt-reboot
 }
@@ -93,11 +98,6 @@ def third_boot [] {
   print "Testing podman access to bootc storage"
   let images = podman --storage-opt=additionalimagestore=/usr/lib/bootc/storage images --format "{{.Repository}}"
   print $"Images visible via podman: ($images)"
-
-  # The derived image (localhost/bootc-unified-derived) should persist in bootc storage
-  # since /usr/lib/bootc/storage is a symlink to persistent storage under /sysroot.
-  # The key verification is that we successfully booted into the derived image,
-  # which we already confirmed above via transport and image name checks.
 
   tap ok
 }
