@@ -359,7 +359,7 @@ or manage the membership as image content.
 #### tmpfiles.d use for setting ownership
 
 Systemd's [tmpfiles.d](https://www.freedesktop.org/software/systemd/man/latest/tmpfiles.d.html) provides a way
-to define files and directories in a way that will be processes at startup as needed. One way to work around
+to define files and directories in a way that will be processed at startup as needed. One way to work around
 SELinux security context and user or group ownership of a directory or file can be by using the z or Z directives.
 
 These directives will adjust the access mode, user and group ownership and the SELinux security context as
