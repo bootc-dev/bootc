@@ -638,6 +638,39 @@ fn image_version_and_created(
     (version, timestamp)
 }
 
+/// Image metadata for a composefs deployment, from its origin file and the
+/// image stored in the composefs repository.
+///
+/// Returns `None` if the deployment was not created from a container image.
+/// This reads only the physical root and the composefs repository, not the
+/// boot partition.
+#[context("Getting image status for deployment {verity}")]
+pub(crate) fn image_status_from_origin(
+    storage: &Storage,
+    origin: &tini::Ini,
+    verity: &str,
+) -> Result<Option<ImageStatus>> {
+    let Some(img_name_from_config) = origin.get::<String>("origin", ORIGIN_CONTAINER) else {
+        // Wasn't booted using a container image.
+        return Ok(None);
+    };
+    let ostree_img_ref = OstreeImageReference::from_str(&img_name_from_config)?;
+    let img_ref = crate::spec::ImageReference::from(ostree_img_ref);
+
+    let (img_conf, image_digest) = get_imginfo(storage, verity)?;
+
+    let architecture = img_conf.config.architecture().to_string();
+    let (version, timestamp) = image_version_and_created(&img_conf.manifest, &img_conf.config);
+
+    Ok(Some(ImageStatus {
+        image: img_ref,
+        version,
+        timestamp,
+        image_digest,
+        architecture,
+    }))
+}
+
 #[context("Getting composefs deployment metadata")]
 fn boot_entry_from_composefs_deployment(
     storage: &Storage,
@@ -646,29 +679,7 @@ fn boot_entry_from_composefs_deployment(
     missing_verity_allowed: bool,
     bootloader: Bootloader,
 ) -> Result<BootEntry> {
-    let image = match origin.get::<String>("origin", ORIGIN_CONTAINER) {
-        Some(img_name_from_config) => {
-            let ostree_img_ref = OstreeImageReference::from_str(&img_name_from_config)?;
-            let img_ref = crate::spec::ImageReference::from(ostree_img_ref);
-
-            let (img_conf, image_digest) = get_imginfo(storage, &verity)?;
-
-            let architecture = img_conf.config.architecture().to_string();
-            let (version, timestamp) =
-                image_version_and_created(&img_conf.manifest, &img_conf.config);
-
-            Some(ImageStatus {
-                image: img_ref,
-                version,
-                timestamp,
-                image_digest,
-                architecture,
-            })
-        }
-
-        // Wasn't booted using a container image. Do nothing
-        None => None,
-    };
+    let image = image_status_from_origin(storage, &origin, verity)?;
 
     let boot_type = match origin.get::<String>(ORIGIN_KEY_BOOT, ORIGIN_KEY_BOOT_TYPE) {
         Some(s) => BootType::try_from(s.as_str())?,
