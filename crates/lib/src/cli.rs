@@ -903,6 +903,9 @@ pub(crate) enum InternalsOpts {
     TestComposefs,
     /// Record the booted aboot slot in persistent deployment state.
     ComposefsAbootReconcile,
+    /// Write a journal entry describing the booted image.
+    /// Called by bootc-log-boot.service on every boot.
+    LogBoot,
     /// Loopback device cleanup helper (internal use only)
     LoopbackCleanupHelper {
         /// Device path to clean up
@@ -2581,6 +2584,7 @@ async fn run_from_opt(opt: Opt) -> Result<CliExitStatus> {
         }
         Opt::Status(opts) => super::status::status(opts).await,
         Opt::Internals(opts) => match opts {
+            InternalsOpts::LogBoot => crate::boot_journal::log_boot(),
             InternalsOpts::ComposefsAbootReconcile => {
                 let storage = get_storage().await?;
                 let digest = match storage.kind()? {

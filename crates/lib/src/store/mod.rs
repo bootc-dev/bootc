@@ -808,6 +808,39 @@ impl Storage {
         })
     }
 
+    /// Open the booted composefs system's deployment state and repository for
+    /// reading, without the boot partition.
+    ///
+    /// Unlike [`BootedStorage::new`], this does not remount `/sysroot`, mount
+    /// the ESP, or migrate boot entries, so it needs no private mount namespace
+    /// and is safe to run unattended at boot. Only the physical root and the
+    /// composefs repository are available: `boot_dir` is `None`, so anything
+    /// that reads bootloader entries fails. `is_ro` is set so that nothing
+    /// tries to write through this accessor.
+    pub(crate) fn open_booted_composefs_readonly(cmdline: &ComposefsCmdline) -> Result<Self> {
+        let physical_root =
+            Dir::open_ambient_dir("/sysroot", ambient_authority()).context("Opening /sysroot")?;
+        let run = Dir::open_ambient_dir("/run", ambient_authority()).context("Opening /run")?;
+        let mut repo = ComposefsRepository::open_path(&physical_root, COMPOSEFS)
+            .context("Opening composefs repository")?;
+        if cmdline.allow_missing_fsverity {
+            repo.set_insecure()?;
+        }
+        Ok(Self {
+            physical_root,
+            physical_root_path: Utf8PathBuf::from("/sysroot"),
+            is_ro: true,
+            boot_dir: None,
+            grub_boot_path: None,
+            boot_mount: None,
+            boot_partition: None,
+            run,
+            ostree: Default::default(),
+            composefs: OnceCell::from(Arc::new(repo)),
+            imgstore: Default::default(),
+        })
+    }
+
     /// Create a new storage accessor from an existing ostree sysroot.
     ///
     /// This is used for non-booted scenarios (e.g., `bootc install`) where

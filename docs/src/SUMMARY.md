@@ -22,6 +22,7 @@
 
 - [Upgrade and rollback](bootc-upgrades.7.md)
 - [Boot failure detection](bootc-boot-failure-detection.7.md)
+- [`man bootc-log-boot.service`](man/bootc-log-boot.service.5.md)
 - [Accessing registries and offline updates](bootc-registries-and-offline.7.md)
 - [Logically bound images](bootc-logically-bound-images.7.md)
 - [Booting local builds](bootc-local-builds.7.md)

@@ -66,6 +66,7 @@
 
 mod aboot;
 mod boot_artifact;
+mod boot_journal;
 mod bootc_composefs;
 pub(crate) mod bootc_kargs;
 mod bootloader;

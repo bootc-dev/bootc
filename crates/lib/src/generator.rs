@@ -25,6 +25,7 @@ const TRANSIENT_RELABEL_UNIT: &str = "bootc-early-overlay-relabel.service";
 const SYSINIT_TARGET: &str = "sysinit.target";
 const SHADOW_SYNC_UNIT: &str = "bootc-sysusers-shadow-sync.service";
 const EARLY_TMPFILES_UNIT: &str = "bootc-early-tmpfiles.service";
+const LOG_BOOT_UNIT: &str = "bootc-log-boot.service";
 
 /// Called when the root is read-only composefs to reconcile /etc/fstab
 #[context("bootc generator")]
@@ -189,6 +190,14 @@ pub(crate) fn generator(root: &Dir, unit_dir: &Dir) -> Result<()> {
     // encrypted swap and tmp.mount (After=swap.target).
     if is_composefs && !is_ostree {
         generate_early_tmpfiles(unit_dir)?;
+    }
+
+    // === Boot journal entry: native composefs boots only ===
+    // `bootc internals log-boot` records the booted image in the journal; see
+    // bootc-log-boot.service(5). Gate on the root mount source, as the command
+    // itself does via composefs_booted(). The ostree backend is not wired up yet.
+    if is_composefs && !is_ostree {
+        enable_unit(unit_dir, LOG_BOOT_UNIT, MULTI_USER_TARGET)?;
     }
 
     aboot_generator_impl(root, unit_dir)?;

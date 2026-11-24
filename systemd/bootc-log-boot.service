@@ -1,0 +1,19 @@
+[Unit]
+Description=Log Booted bootc Image
+Documentation=man:bootc-log-boot.service(5)
+RequiresMountsFor=/sysroot
+After=local-fs.target
+# Only composefs is supported for now. The generator already enables this unit
+# on composefs boots only; this is a backstop. Match both karg spellings: V1
+# images carry only composefs.digest=, and legacy V2 ones only composefs=.
+ConditionKernelCommandLine=|composefs
+ConditionKernelCommandLine=|composefs.digest
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/bootc internals log-boot
+# Type=oneshot has no start timeout by default; a hang here would hold up
+# multi-user.target.
+TimeoutStartSec=2min
+
+# No [Install] section, this is enabled via generator
