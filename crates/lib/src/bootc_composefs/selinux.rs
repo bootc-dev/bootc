@@ -1,13 +1,18 @@
 use anyhow::{Context, Result};
 use bootc_initramfs_setup::mount_composefs_image;
 use bootc_mount::tempmount::TempMount;
+use bootc_utils::{BindMode, ChrootCmd};
+use camino::Utf8Path;
 use cap_std_ext::cap_std::{ambient_authority, fs::Dir};
 use cap_std_ext::dirext::CapStdExtDirExt;
 use fn_error_context::context;
 
 use crate::bootc_composefs::status::ComposefsCmdline;
+use crate::composefs_consts::STATE_DIR_ABS;
 use crate::lsm::selinux_enabled;
-use crate::store::Storage;
+use crate::spec::BootEntryComposefs;
+use crate::store::{BootedComposefs, Storage};
+use crate::utils::have_executable_in_root;
 
 const SELINUX_CONFIG_PATH: &str = "etc/selinux/config";
 const SELINUX_TYPE: &str = "SELINUXTYPE=";
@@ -144,6 +149,76 @@ pub(crate) fn are_selinux_policies_compatible(
     }
 
     Ok(sl_policy_match)
+}
+
+#[context("Finalizing SeLinux Policy")]
+pub(crate) fn finalize_selinux_policy(
+    storage: &Storage,
+    booted_cfs: &BootedComposefs,
+    staged_depl: &BootEntryComposefs,
+) -> Result<()> {
+    if !selinux_enabled() {
+        tracing::debug!("SeLinux not enabled. Skipping selinux policy rebuild");
+        return Ok(());
+    }
+
+    // TODO: What if we have transient etc?
+    let sysroot_fd = storage.physical_root.reopen_as_ownedfd()?;
+
+    let composefs_fd = mount_composefs_image(
+        &sysroot_fd,
+        &staged_depl.verity,
+        booted_cfs.cmdline.allow_missing_fsverity,
+    )?;
+
+    let mounted_staged_depl = TempMount::mount_fd(&composefs_fd)?;
+
+    if !mounted_staged_depl.fd.exists(SELINUX_CONFIG_PATH) {
+        tracing::debug!("No SeLinux config found in merged etc. Skipping selinux policy rebuild");
+        return Ok(());
+    }
+
+    // Check if we have semodule
+    if !have_executable_in_root(&mounted_staged_depl.fd, "semodule")? {
+        tracing::debug!(
+            "No semodule in deployment {}, skipping policy rebuild",
+            staged_depl.verity
+        );
+        return Ok(());
+    }
+
+    let utf8_chroot_path = Utf8Path::from_path(mounted_staged_depl.dir.path())
+        .ok_or_else(|| anyhow::anyhow!("Composefs mount point is not a valid UTF-8 path"))?;
+
+    let staged_state = Utf8Path::new(STATE_DIR_ABS).join(&staged_depl.verity);
+    let staged_etc = staged_state.join("etc");
+    let staged_var = staged_state.join("var");
+
+    let chroot_cmd = || {
+        ChrootCmd::new(utf8_chroot_path)
+            .bind(&staged_etc, &"/etc", BindMode::Default)
+            .bind(&staged_var, &"/var", BindMode::Default)
+            .set_default_path()
+    };
+
+    let help = chroot_cmd()
+        .run_get_string(["semodule", "--help"])
+        .context("Running semodule --help")?;
+
+    // --rebuild-if-modules-changed is deprecated so we use --refresh
+    if !help.contains("--refresh") {
+        tracing::info!("semodule does not support '--refresh', skipping policy rebuild");
+        return Ok(());
+    }
+
+    tracing::info!("Refreshing SELinux policy");
+
+    let start = std::time::Instant::now();
+    chroot_cmd().run(["semodule", "-N", "--refresh"])?;
+
+    tracing::info!("Refreshed SELinux policy in {:?}", start.elapsed());
+
+    Ok(())
 }
 
 #[cfg(test)]

@@ -3,6 +3,7 @@ use std::{path::Path, process::Command};
 use crate::bootc_composefs::boot::{GLOBAL_UKI_ADDONS_DIR, STAGED_GLOBAL_UKI_ADDONS_DIR};
 use crate::bootc_composefs::gc::{GCOpts, composefs_gc};
 use crate::bootc_composefs::rollback::{rename_exchange_bls_entries, rename_exchange_user_cfg};
+use crate::bootc_composefs::selinux::finalize_selinux_policy;
 use crate::bootc_composefs::status::get_composefs_status;
 use crate::bootc_composefs::{aboot, boot::BootType};
 use crate::composefs_consts::STATE_DIR_ABS;
@@ -154,6 +155,8 @@ pub(crate) async fn composefs_backend_finalize(
 
     // Unmount EROFS
     drop(erofs_tmp_mnt);
+
+    finalize_selinux_policy(storage, booted_cfs, &staged_composefs)?;
 
     if staged_composefs.boot_type == BootType::Aboot {
         return finalize_staged_aboot(
