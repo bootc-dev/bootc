@@ -301,3 +301,12 @@ check:
     enabled: false
     because: the derived images are built in the VM, which has no keys to sign their UKIs for Secure Boot
   test: nu booted/test-composefs-xbootldr.nu
+
+/test-68-selinux-policy-update:
+  summary: Make sure SeLinux policy is updated on switch/update
+  duration: 15m
+  adjust:
+  - when: running_env != image_mode
+    enabled: false
+    because: these tests require features only available in image mode
+  test: nu booted/test-selinux-policy-update.nu
