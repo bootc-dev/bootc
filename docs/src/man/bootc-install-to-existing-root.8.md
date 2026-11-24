@@ -36,6 +36,15 @@ The paths `tmp`, `cache`, `log/journal`, and `lib/containers` are always exclude
 `--preserve-var-skip` to exclude additional paths relative to `/var`; each path
 may contain at most one slash, for example `lib/rpm`.
 
+Existing destination entries are never overwritten: matching directories merge
+recursively, while other collisions keep the destination entry, skip the source
+entry, and report the collision in the install output. An incompatible
+destination type for a nested mountpoint placeholder fails preservation. The
+preservation copy itself does not modify the old system's source `/var`. If
+`--cleanup` is also specified, cleanup of the previous install is scheduled for
+the next boot only after the preservation copy succeeds. Verify important state
+before separately cleaning the old system.
+
 See the [experimental preserve-var guide](../bootc-experimental-preserve-var.7.md)
 for usage details and limitations.
 

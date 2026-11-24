@@ -27,6 +27,17 @@ The migration uses reflinks when supported by the filesystem and otherwise
 performs a full copy. It creates each new entry in a staging location and
 renames it into place atomically for namespace visibility.
 
+Existing entries in the destination are not overwritten. When both source and
+destination entries are directories, their contents are merged recursively and
+children already present in the destination are retained. For other collisions,
+the destination entry is kept, the source entry is skipped, and the collision
+is reported in the install output. An incompatible destination type for a
+nested mountpoint placeholder is an error. The preservation copy itself does
+not modify the old system's source `/var`. If `--cleanup` is also specified,
+cleanup of the previous install is scheduled for the next boot, and only after
+the preservation copy succeeds. Before separately cleaning the old system,
+verify that all important state has been copied or otherwise retained.
+
 The following paths below `/var` are always excluded:
 
 - `tmp`
