@@ -6,7 +6,7 @@ use futures_util::{Future, FutureExt};
 use ostree::gio;
 use ostree::prelude::{CancellableExt, CancellableExtManual};
 
-/// Call a faillible future, while monitoring `cancellable` and return an error if cancelled.
+/// Call a fallible future, while monitoring `cancellable` and return an error if cancelled.
 pub async fn run_with_cancellable<F, R>(f: F, cancellable: &gio::Cancellable) -> Result<R>
 where
     F: Future<Output = Result<R>>,

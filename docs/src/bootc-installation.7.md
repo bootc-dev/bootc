@@ -373,7 +373,7 @@ This is a separate binary included with bootc. It is an opinionated, interactive
 
 `system-reinstall-bootc` can be run from an existing Linux system. It will pull the supplied image, prompt to setup SSH keys for accessing the system, and run `bootc install to-existing-root` with all the bind mounts and SSH keys configured.
 
-It will also add the `bootc-destructive-cleanup.service` systemd unit that will run on first boot to cleanup parts of the previous system. The cleanup actions can be configured per distribution by creating a script and packaging it similar to [this one for Fedora](https://github.com/bootc-dev/bootc/blob/main/contrib/scripts/fedora-bootc-destructive-cleanup).
+It will also add the `bootc-destructive-cleanup.service` systemd unit that will run on first boot to clean up parts of the previous system. The cleanup actions can be configured per distribution by creating a script and packaging it similar to [this one for Fedora](https://github.com/bootc-dev/bootc/blob/main/contrib/scripts/fedora-bootc-destructive-cleanup).
 
 ### Using `bootc install to-filesystem --source-imgref <imgref>`
 

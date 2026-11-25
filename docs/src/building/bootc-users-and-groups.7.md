@@ -198,7 +198,7 @@ and `/home`.  The choice for how these work is up to the base image, but
 a common default for generic base images is to have both be machine-local persistent state.
 In this model `/home` would be a symlink to `/var/home/someuser`.
 
-#### Injecting users and SSH keys via at system provisioning time
+#### Injecting users and SSH keys at system provisioning time
 
 For base images where `/etc` and `/var` are configured to persist by default, it
 will then be generally supported to inject users via "installers" such

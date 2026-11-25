@@ -83,9 +83,8 @@ launched via a systemd unit.
 RUN dnf -y install postgresql && dnf clean all
 ```
 
-Would typically also carry a systemd unit, and that
-service will be launched the same way as it would
-on a package-based system.
+The PostgreSQL package would typically also include a systemd unit.
+The service will be launched the same way as it would on a package-based system.
 
 ## Users and groups
 
@@ -163,7 +162,7 @@ this way:
 
 However, some software installs to `/opt/examplepkg` or another
 location outside of `/usr`, and may include all three types of data
-undernath its single toplevel directory.  For example, it
+underneath its single toplevel directory.  For example, it
 may write log files to `/opt/examplepkg/logs`.  A simple way to handle
 this is to change the directories that need to be writable to symbolic links
 to `/var`:

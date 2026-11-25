@@ -71,7 +71,7 @@ fn use_discoverable_partitions(state: &State) -> bool {
 // This ensures we end up under 512 to be small-sized.
 pub(crate) const BOOTPN_SIZE_MB: u32 = 510;
 // NOTE: If you change this or [`CFS_EFIPN_SIZE_MB`] below,
-// make sure to update the test test-install-reaprt.nu
+// make sure to update the test test-install-repart.nu
 pub(crate) const EFIPN_SIZE_MB: u32 = 512;
 /// EFI Partition size for composefs installations
 /// We need more space than ostree as we have UKIs and UKI addons

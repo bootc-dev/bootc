@@ -14,7 +14,7 @@ pub fn is_selinux_enabled() -> bool {
     Path::new(SELINUX_MNT).join("access").exists()
 }
 
-/// Return an error If the current process is not running in the `install_t` domain.
+/// Return an error if the current process is not running in the `install_t` domain.
 #[context("Verifying self is install_t SELinux domain")]
 pub fn verify_install_domain() -> Result<()> {
     // If it doesn't look like SELinux is enabled, then nothing to do.

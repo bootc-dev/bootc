@@ -218,7 +218,7 @@ impl Chunk {
 
     pub(crate) fn move_obj(&mut self, dest: &mut Self, checksum: &str) -> bool {
         // In most cases, we expect the object to exist in the source.  However, it's
-        // conveneient here to simply ignore objects which were already moved into
+        // convenient here to simply ignore objects which were already moved into
         // a chunk.
         if let Some((name, (size, paths))) = self.content.remove_entry(checksum) {
             let v = dest.content.insert(name, (size, paths));
@@ -848,7 +848,7 @@ fn basic_packing<'a>(
         // but pkg_per_bin_ms > 1, then the entire bin will have 1 pkg. This prevents partition
         // mixing.
         //
-        // Addressing medium-size bins limit breach by mergin internal MS partitions
+        // Addressing medium-size bins limit breach by merging internal MS partitions
         // The partitions in medium-size are merged beginning from the end so to not mix high-frequency bins with low-frequency bins. The
         // bins are kept in this order: high-frequency, medium-frequency, low-frequency.
         while r.len() > (bin_size.get() as usize - limit_new_bins - limit_max_frequency_bins) {

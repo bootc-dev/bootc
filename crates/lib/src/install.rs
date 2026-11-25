@@ -1859,7 +1859,7 @@ async fn prepare_install(
     // ostree's prepare-root.conf is read from the running root even with
     // --source-imgref, like the install configuration: tools such as
     // bootc-image-builder run bootc from the image they install. Convert the
-    // keyfile to a hashmap because GKeyFile isnt Send for probably bad reasons.
+    // keyfile to a hashmap because GKeyFile isn't Send for probably bad reasons.
     let ostree_prepareroot_config = ostree_prepareroot::load_config_from_root(&rootfs)?
         .map(|kf| -> Result<HashMap<String, String>> {
             let mut r = HashMap::new();

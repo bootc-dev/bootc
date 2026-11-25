@@ -96,7 +96,7 @@ and in general a battle tested codebase for interacting with both OCI and Docker
 ### Encapsulation
 
 For existing organizations which use ostree, APIs (and a CLI) are provided to "encapsulate"
-and "unencapsulate" an OSTree commit as as an OCI image.
+and "unencapsulate" an OSTree commit as an OCI image.
 
 ```
 $ ostree-ext-cli container encapsulate --repo=/path/to/repo exampleos/x86_64/stable docker://quay.io/exampleos/exampleos:stable

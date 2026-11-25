@@ -15,7 +15,7 @@ srpm_build_deps:
   - openssl-devel
 
 actions:
-  # The last setp here is required by Packit to return the archive name
+  # The last step here is required by Packit to return the archive name
   # https://packit.dev/docs/configuration/actions#create-archive
   create-archive:
     - bash -c "cargo install cargo-vendor-filterer"

@@ -586,10 +586,10 @@ pub(crate) fn get_global_uki_addon_name(name: &str) -> String {
     format!("{UKI_NAME_PREFIX}{name_wo_suffix}{EFI_ADDON_FILE_EXT}")
 }
 
-/// Compute SHA256Sum of VMlinuz + Initrd
+/// Compute SHA256Sum of vmlinuz + Initrd
 ///
 /// # Arguments
-/// * entry - BootEntry containing VMlinuz and Initrd
+/// * entry - BootEntry containing vmlinuz and Initrd
 /// * repo - The composefs repository
 #[context("Computing boot digest")]
 fn compute_boot_digest(
@@ -639,7 +639,7 @@ fn compute_boot_digest_type1(dir: &Dir) -> Result<String> {
 /// Compute SHA256Sum of .linux + .initrd section of the UKI
 ///
 /// # Arguments
-/// * entry - BootEntry containing VMlinuz and Initrd
+/// * entry - BootEntry containing vmlinuz and Initrd
 /// * repo - The composefs repository
 #[context("Computing boot digest")]
 pub(crate) fn compute_boot_digest_uki<R: Read + Seek>(uki_reader: &mut R) -> Result<String> {
@@ -686,7 +686,7 @@ pub(crate) fn compute_boot_digest_aboot<R: Read + Seek>(
     Ok(hex::encode(hasher.finish()?))
 }
 
-/// Given the SHA256 sum of current VMlinuz + Initrd combo, find boot entry with the same SHA256Sum
+/// Given the SHA256 sum of current vmlinuz + Initrd combo, find boot entry with the same SHA256Sum
 ///
 /// # Returns
 /// Returns the directory name that has the same sha256 digest for vmlinuz + initrd as the one
@@ -811,10 +811,10 @@ fn replace_composefs_karg(cmdline: &mut Cmdline, new_karg: &str) -> Result<()> {
     Ok(())
 }
 
-/// Sets up and writes BLS entries and binaries (VMLinuz + Initrd) to disk
+/// Sets up and writes BLS entries and binaries (vmlinuz + Initrd) to disk
 ///
 /// # Returns
-/// Returns the SHA256Sum of VMLinuz + Initrd combo. Error if any
+/// Returns the SHA256Sum of vmlinuz + Initrd combo. Error if any
 #[context("Setting up BLS boot")]
 pub(crate) fn setup_composefs_bls_boot(
     setup_type: BootSetupType,

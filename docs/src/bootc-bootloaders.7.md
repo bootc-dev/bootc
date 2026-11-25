@@ -24,7 +24,7 @@ by default (except on s390x).
 Instead, if the container image ships one at `/usr/lib/bootc/install/systemd-boot/loader.conf`,
 `bootc` copies it verbatim onto the ESP (as `loader/loader.conf`) after running
 `bootctl install`. This lets the base image or a package define the initial
-configuration for eg. the boot menu timeout.
+configuration for the boot menu timeout, for example.
 
 If the image does not ship this file, the commented-out template written by `bootctl install`
 is left in place.

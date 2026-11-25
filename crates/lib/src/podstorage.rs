@@ -185,7 +185,7 @@ pub(crate) fn setup_auth(cmd: &mut Command, fds: &mut CmdFds, sysroot: &Dir) -> 
 }
 
 // Initialize a `podman` subprocess with:
-// - storage overridden to point to to storage_root
+// - storage overridden to point to storage_root
 // - Authentication (auth.json) using the bootc/ostree owned auth
 fn new_podman_cmd_in(sysroot: &Dir, storage_root: &Dir, run_root: &Dir) -> Result<Command> {
     let mut cmd = Command::new(bootc_utils::podman_bin());
