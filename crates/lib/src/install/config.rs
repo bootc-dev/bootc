@@ -132,6 +132,8 @@ pub(crate) struct InstallConfiguration {
     /// Enforce that the containers-storage stack has a non-default
     /// (i.e. not `insecureAcceptAnything`) container image signature policy.
     pub(crate) enforce_container_sigpolicy: Option<bool>,
+    /// Paths below `/var` which should not be copied by `--preserve-var`.
+    pub(crate) preserve_var_skip: Option<Vec<String>>,
 }
 
 fn merge_basic<T>(s: &mut Option<T>, o: Option<T>, _env: &EnvProperties) {
@@ -226,6 +228,11 @@ impl Mergeable for InstallConfiguration {
                 other.enforce_container_sigpolicy,
                 env,
             );
+            if let Some(other_skip) = other.preserve_var_skip {
+                self.preserve_var_skip
+                    .get_or_insert_with(Default::default)
+                    .extend(other_skip)
+            }
             if let Some(other_kargs) = other.kargs {
                 self.kargs
                     .get_or_insert_with(Default::default)

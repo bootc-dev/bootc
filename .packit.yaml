@@ -102,6 +102,28 @@ jobs:
             context:
               running_env: "packit"
 
+  # This plan runs the package-mode migration on one guest. Testing Farm's
+  # default pipeline provisions a single Artemis guest for this plan.
+  - job: tests
+    trigger: pull_request
+    identifier: package-mode-tier-1
+    require:
+      label:
+        present:
+          - ci/tier-1
+    targets:
+      - centos-stream-10-x86_64
+      - centos-stream-10-aarch64
+      - fedora-latest-stable-x86_64
+      - fedora-latest-stable-aarch64
+    tmt_plan: /tmt/plans/package-mode
+    tf_extra_params:
+      environments:
+        - tmt:
+            context:
+              running_env: "packit"
+              package_source: "artifacts"
+
   # ci/merge: full target set
   - job: tests
     trigger: pull_request
@@ -123,6 +145,28 @@ jobs:
         - tmt:
             context:
               running_env: "packit"
+
+  - job: tests
+    trigger: pull_request
+    identifier: package-mode-full
+    require:
+      label:
+        present:
+          - ci/merge
+    targets:
+      - centos-stream-9-x86_64
+      - centos-stream-9-aarch64
+      - centos-stream-10-x86_64
+      - centos-stream-10-aarch64
+      - fedora-all-x86_64
+      - fedora-all-aarch64
+    tmt_plan: /tmt/plans/package-mode
+    tf_extra_params:
+      environments:
+        - tmt:
+            context:
+              running_env: "packit"
+              package_source: "artifacts"
 
   - job: propose_downstream
     trigger: release
