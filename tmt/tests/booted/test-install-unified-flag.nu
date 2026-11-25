@@ -1,6 +1,6 @@
 # number: 30
 # extra:
-#   fixme_skip_if_composefs: true
+#   fixme_skip_if_composefs: never enabled on composefs, which only later gained unified storage; marked in bulk by PR 1913
 # tmt:
 #   summary: Test bootc install with experimental unified storage flag
 #   duration: 30m

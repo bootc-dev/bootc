@@ -3,7 +3,7 @@
 #   summary: Execute logically bound images tests for switching images
 #   duration: 30m
 # extra:
-#   fixme_skip_if_composefs: true
+#   fixme_skip_if_composefs: the composefs backend doesn't pull logically bound images (issue 2540 covers install)
 #
 # This test does:
 # bootc image switch bootc-bound-image

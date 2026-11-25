@@ -3,8 +3,7 @@
 #   summary: Test bootc install with --bootloader=none
 #   duration: 30m
 # extra:
-#   # bootloader=none is not supported for composefs
-#   fixme_skip_if_composefs: true
+#   fixme_skip_if_composefs: composefs install rejects --bootloader=none
 
 use std assert
 use tap.nu

@@ -3,7 +3,7 @@
 #   summary: Execute factory reset tests
 #   duration: 30m
 # extra:
-#   fixme_skip_if_composefs: true
+#   fixme_skip_if_composefs: install reset (factory reset) only supports ostree
 #
 use std assert
 use tap.nu
