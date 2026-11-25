@@ -766,6 +766,22 @@ impl ImageImporter {
         self.target_imgref = Some(target.clone())
     }
 
+    fn already_present(&self, state: Box<LayeredImageState>) -> Result<PrepareResult> {
+        // A cache hit skips import(), but must retain the requested target just
+        // as a fresh import would. Leave existing source refs to normal cleanup.
+        if !self.no_imgref
+            && let Some(target) = &self.target_imgref
+        {
+            self.repo.set_ref_immediate(
+                None,
+                &ref_for_image(&target.imgref)?,
+                Some(&state.merge_commit),
+                gio::Cancellable::NONE,
+            )?;
+        }
+        Ok(PrepareResult::AlreadyPresent(state))
+    }
+
     /// Do not write the final image ref, but do write refs for shared layers.
     /// This is useful in scenarios where you want to "pre-pull" an image,
     /// but in such a way that it does not need to be manually removed later.
@@ -1144,7 +1160,7 @@ impl ImageImporter {
             &manifest_digest,
             manifest.config().digest(),
         ) {
-            PreviousState::UpToDate(state) => return Ok(PrepareResult::AlreadyPresent(state)),
+            PreviousState::UpToDate(state) => return self.already_present(state),
             PreviousState::Outdated(previous) => previous.unzip(),
         };
 
@@ -1181,7 +1197,7 @@ impl ImageImporter {
                 // A digested pull spec, and our existing state matches.
                 if previous_state.manifest_digest == target_digest {
                     tracing::debug!("Digest-based pullspec {:?} already present", self.imgref);
-                    return Ok(PrepareResult::AlreadyPresent(previous_state));
+                    return self.already_present(previous_state);
                 }
                 Some(previous_state)
             } else {
@@ -1212,7 +1228,7 @@ impl ImageImporter {
             &manifest_digest,
             manifest.config().digest(),
         ) {
-            PreviousState::UpToDate(state) => return Ok(PrepareResult::AlreadyPresent(state)),
+            PreviousState::UpToDate(state) => return self.already_present(state),
             PreviousState::Outdated(previous) => previous.unzip(),
         };
 

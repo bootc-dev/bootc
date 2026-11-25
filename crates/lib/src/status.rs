@@ -290,6 +290,25 @@ pub(crate) fn boot_entry_from_deployment(
 }
 
 impl BootEntry {
+    /// The containers-storage image ID is the OCI config digest, independent of
+    /// the name used to pull the image or the deployment's update origin.
+    pub(crate) fn container_image_id(
+        &self,
+        storage: &crate::store::Storage,
+    ) -> Result<Option<String>> {
+        if self.image.is_none() {
+            return Ok(None);
+        }
+        if let Some(composefs) = &self.composefs {
+            let (image, _) =
+                crate::bootc_composefs::status::get_imginfo(storage, &composefs.verity)?;
+            return Ok(Some(image.manifest.config().digest().digest().to_owned()));
+        }
+        Ok(self
+            .query_image(&storage.get_ostree()?.repo())?
+            .map(|image| image.manifest.config().digest().digest().to_owned()))
+    }
+
     /// Given a boot entry, find its underlying ostree container image
     pub(crate) fn query_image(
         &self,
