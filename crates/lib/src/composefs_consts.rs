@@ -1,4 +1,4 @@
-/// Directory to store transient state, such as staged deployemnts etc
+/// Directory to store transient state, such as staged deployments etc
 pub(crate) const COMPOSEFS_TRANSIENT_STATE_DIR: &str = "/run/composefs";
 /// File created in /run/composefs to record a staged-deployment
 pub(crate) const COMPOSEFS_STAGED_DEPLOYMENT_FNAME: &str = "staged-deployment";

@@ -2,7 +2,7 @@
 //!
 //! There could be the following cases (See ./delete.rs:delete_composefs_deployment):
 //! - We delete the bootloader entry but fail to delete image
-//! - We delete bootloader + image but fail to delete the state/unrefenced objects etc
+//! - We delete bootloader + image but fail to delete the state/unreferenced objects etc
 
 use std::collections::HashSet;
 
@@ -324,7 +324,7 @@ fn get_boot_dump(booted_cfs: &BootedComposefs, verity: &str) -> Result<Option<Ve
 
     let Ok(verity_to_sha) = verity_to_sha else {
         // We do not want to block on GC if we find corrupted state
-        tracing::warn!("Bad FSVerity '{verity}' when checkign additional roots, skipping");
+        tracing::warn!("Bad FSVerity '{verity}' when checking additional roots, skipping");
         return Ok(None);
     };
 

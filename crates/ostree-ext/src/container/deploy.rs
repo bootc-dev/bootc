@@ -28,7 +28,7 @@ pub struct DeployOpts<'a> {
     ///
     /// In many cases, one may want a workflow where a system is provisioned from
     /// an image with a specific digest (e.g. `quay.io/example/os@sha256:...) for
-    /// reproducibilty.  However, one would want `ostree admin upgrade` to fetch
+    /// reproducibility.  However, one would want `ostree admin upgrade` to fetch
     /// `quay.io/example/os:latest`.
     ///
     /// To implement this, use this option for the latter `:latest` tag.

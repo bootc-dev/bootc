@@ -24,10 +24,10 @@ to create a containerized development environment
  dev environment using a bootc image as well).
 
 At the current time most upstream developers use a Fedora derivative
-as a base, and the [hack/Containerfile](hack/Containerfile) defaults
-to Fedora.  However, bootc itself is not intended to strongly tie to a particular
-OS or distribution, and patches to handle others are gratefully
-accepted!
+as a base. The project's [Dockerfile](Dockerfile) defaults to CentOS Stream,
+and `BOOTC_base` selects another base image when using `just`. Bootc supports
+multiple operating systems and distributions, and patches to support others
+are welcome.
 
 ## Key recommended ingredients:
 

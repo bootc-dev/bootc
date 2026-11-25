@@ -4,7 +4,7 @@ use std::process::Command;
 
 use crate::composefs_consts::BOOTC_FINALIZE_STAGED_SERVICE;
 
-/// Starts the finaize staged service which will "unstage" the deployment
+/// Starts the finalize staged service which will "unstage" the deployment
 /// This is called before an upgrade or switch operation, as these create a staged
 /// deployment
 #[context("Starting finalize staged service")]

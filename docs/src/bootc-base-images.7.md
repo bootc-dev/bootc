@@ -7,7 +7,7 @@ Many users will be more interested in base (container) images.
 Currently, the [Fedora/CentOS bootc project](https://docs.fedoraproject.org/en-US/bootc/)
 is the most closely aligned upstream project.
 
-For pre-built base images; any Fedora derivative already using `ostree` can be seamlessly converted into using bootc;
+For pre-built base images, any Fedora derivative already using `ostree` can be seamlessly converted into using bootc;
 for example, [Fedora CoreOS](https://quay.io/repository/fedora/fedora-coreos) can be used as a
 base image; you will want to also `rpm-ostree install bootc` in your image builds currently.
 There are some overlaps between `bootc` and `ignition` and `zincati` however; see

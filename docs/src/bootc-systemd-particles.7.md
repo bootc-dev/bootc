@@ -38,7 +38,7 @@ it is not a goal for installations to be equivalent to `dd`.  The bootc creator 
 
 ### New Goal: An explicit alignment with cloud-native
 
-The bootc project has an explicit goal to to take formats, cues and inspiration
+The bootc project has an explicit goal to take formats, cues and inspiration
 from the container and cloud-native ecosystem.  More on this in several sections below.
 
 ### New Goal: Continued explicit support for "unlocked" systems

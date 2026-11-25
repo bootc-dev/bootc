@@ -115,7 +115,7 @@ impl ImageReference {
             Transport::Registry => {
                 let reference: oci_spec::distribution::Reference = self.image.parse()?;
 
-                // Check if the image reference needs canonicicalization
+                // Check if the image reference needs canonicalization
                 let Some(reference) = canonicalize_reference(reference) else {
                     return Ok(self);
                 };
@@ -250,7 +250,7 @@ pub enum Bootloader {
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum BootloaderKind {
-    /// Bootloader that support Bootloader Specification
+    /// Bootloaders that support the Boot Loader Specification
     /// GrubCC and SystemdBoot
     BLSCompatible,
     /// Classic Grub
@@ -288,7 +288,7 @@ impl FromStr for Bootloader {
 
 impl Bootloader {
     /// Returns whether the Bootloader is BLSCompatible
-    /// Throws and error if Bootloader is None
+    /// Returns an error for `Ukiboot` or `None`.
     pub(crate) fn kind(&self) -> Result<BootloaderKind> {
         match self {
             Bootloader::Grub => Ok(BootloaderKind::GRUBClassic),

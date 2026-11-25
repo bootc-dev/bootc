@@ -52,7 +52,7 @@ pub trait CommandRunExt {
     ///
     /// # Streams
     ///
-    /// - stdin, stdout, stderr: All nherited
+    /// - stdin, stdout, stderr: All inherited
     ///
     /// # Errors
     ///

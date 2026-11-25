@@ -44,7 +44,7 @@ start by looking at [ADOPTERS.md](ADOPTERS.md).
 
 ## Community discussion
 
-- [Github discussion forum](https://github.com/containers/bootc/discussions) for async discussion
+- [GitHub discussion forum](https://github.com/containers/bootc/discussions) for async discussion
 - [#bootc-dev on CNCF Slack](https://cloud-native.slack.com/archives/C08SKSQKG1L) for live chat
 - Recurring live meeting hosted on [CNCF Zoom](https://zoom-lfx.platform.linuxfoundation.org/meeting/96540875093?password=7889708d-c520-4565-90d3-ce9e253a1f65) each Friday at 15:30 UTC.
 
