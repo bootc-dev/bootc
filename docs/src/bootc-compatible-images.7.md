@@ -76,6 +76,16 @@ The default mechanism for labeling today is that bootc will load the file contex
 
 It is not supported to add `security.selinux` extended attributes into the OCI tar layers, though support for this may be added if requested.
 
+### Running bootc from a systemd unit
+
+bootc runs in the `install_t` domain, which lets it write labels unknown to the running policy. The policy moves bootc into `install_t` when systemd executes `/usr/bin/bootc` directly from a unit's `ExecStart=`. A unit that starts bootc from a script or a shell runs it in `unconfined_service_t` or `initrc_t` instead, and bootc then re-executes a relabeled copy of itself from `$TMPDIR`. If that fails, for example because `$TMPDIR` is mounted `noexec`, bootc exits with an error and logs a journal entry whose `BOOTC_SELINUX_CONTEXT` field holds the context bootc ran in. To list these entries:
+
+```
+journalctl MESSAGE_ID=6ef49a449e1140d8835ada26ce80e0b9
+```
+
+To fix the failure, run bootc directly from `ExecStart=`, or add policy transitions from `unconfined_service_t` and `initrc_t` to `install_t` as in [selinux-policy#3327](https://github.com/fedora-selinux/selinux-policy/pull/3327).
+
 ### More details
 
 Container runtimes such as `podman` and `docker` commonly

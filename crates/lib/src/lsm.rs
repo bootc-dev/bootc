@@ -29,6 +29,8 @@ const SELINUX_XATTR: &[u8] = b"security.selinux\0";
 #[cfg(feature = "selinux")]
 const SELINUX_INITIAL_SID_UNLABELED: &str = "unlabeled";
 const SELF_CURRENT: &str = "/proc/self/attr/current";
+/// Journal `MESSAGE_ID` for a failure to enter `install_t`.
+pub(crate) const INSTALL_T_JOURNAL_ID: &str = "6ef49a449e1140d8835ada26ce80e0b9";
 
 /// Whether SELinux is enabled for the current process.
 ///
@@ -138,11 +140,29 @@ pub(crate) fn selinux_ensure_install(reexec_env: &[(&str, &str)]) -> Result<bool
     tracing::debug!("Created {tmpf:?}");
 
     let mut cmd = Command::new(&tmpf);
-    cmd.env(guardenv, tmpf);
+    cmd.env(guardenv, &tmpf);
     cmd.env(bootc_utils::reexec::ORIG, srcpath);
     bootc_utils::reexec::prepare_reexec(&mut cmd, reexec_env);
     cmd.log_debug();
-    Err(anyhow::Error::msg(cmd.exec()).context("execve"))
+    let err = cmd.exec();
+    let current = current.trim_end_matches(['\0', '\n']);
+    let msg = format!(
+        "bootc is running as {current} without install_t, and executing its relabeled copy \
+         {tmpf} failed (execve: {err}). This usually means a systemd unit started bootc from a \
+         script or shell. Run bootc directly from ExecStart=, or add a transition to install_t \
+         as in https://github.com/fedora-selinux/selinux-policy/pull/3327"
+    );
+    crate::journal::journal_send(
+        libsystemd::logging::Priority::Error,
+        &msg,
+        [
+            ("MESSAGE_ID", INSTALL_T_JOURNAL_ID),
+            ("SYSLOG_IDENTIFIER", "bootc"),
+            ("BOOTC_SELINUX_CONTEXT", current),
+        ]
+        .into_iter(),
+    );
+    Err(anyhow::Error::msg(msg))
 }
 
 /// Query whether SELinux is apparently enabled in the target root

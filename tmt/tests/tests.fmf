@@ -301,3 +301,12 @@ check:
     enabled: false
     because: the derived images are built in the VM, which has no keys to sign their UKIs for Secure Boot
   test: nu booted/test-composefs-xbootldr.nu
+
+/test-71-selinux-install-t-error:
+  summary: Verify bootc explains a failure to enter install_t and logs it to the journal
+  duration: 10m
+  adjust:
+  - when: running_env != image_mode
+    enabled: false
+    because: these tests require features only available in image mode
+  test: nu booted/test-selinux-install-t-error.nu
