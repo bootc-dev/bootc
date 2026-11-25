@@ -1054,23 +1054,19 @@ fn get_keyfile(root_partition: &RepartPartition) -> Result<String> {
 ///   the keyfile from the repart definition is used (`get_keyfile`); otherwise it
 ///   relies on an enrolled token (e.g. TPM2). The decrypted volume is mapped as
 ///   [`DECRYPTED_LUKS_NAME`].
-/// - **Kernel args (boot time):** when `discoverable` is false, `luks.uuid=` is
-///   emitted, plus `luks.options=tpm2-device=auto` (with `headless=true` only
-///   when there is no passphrase fallback) if a `systemd-tpm2` token is present.
-///   When `discoverable` is true these are omitted, because
-///   `systemd-gpt-auto-generator` already sets up `systemd-cryptsetup@root` and a
-///   second unit would fight it for the device.
 ///
-/// Returns `(rootdev_path, kargs, decrypted_device)`:
+/// - **Kernel args (boot time):** none. LUKS roots created by systemd-repart are
+///   only supported with discoverable partitions (DPS) and BLI complaint bootloaders
+///
+/// Returns `(rootdev_path, decrypted_device)`:
 /// - `rootdev_path`: the path to mount as root — the decrypted mapper path for
 ///   LUKS, or the original partition path otherwise.
-/// - `kargs`: boot-time LUKS kernel arguments, or `None` when not LUKS.
 /// - `decrypted_device`: the re-queried mapper [`Device`] for LUKS, else `None`.
 fn check_if_luks_encrypted(
     root_device: &Device,
     layout: &PartitionLayout,
     discoverable: bool,
-) -> Result<(String, Option<Vec<String>>, Option<Device>)> {
+) -> Result<(String, Option<Device>)> {
     use bootc_blockdev::luks::LuksMetadata;
     use std::collections::HashSet;
 
@@ -1078,16 +1074,23 @@ fn check_if_luks_encrypted(
     // encrypted
     if root_device.fstype.as_deref() != Some("crypto_LUKS") {
         // Not LUKS encrypted
-        return Ok((root_device.path(), None, None));
+        return Ok((root_device.path(), None));
     }
 
-    let root_uuid = root_device
-        .uuid
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("No UUID for root device"))?;
+    // LUKS roots created by systemd-repart are only supported with discoverable
+    // partitions (DPS). Without DPS we would have to emit our own `luks.uuid=` /
+    // `luks.options=` kernel arguments; that path adds conceptual complexity for
+    // a configuration (e.g. GRUB without the `bli` module) we expect to retire,
+    // so require DPS instead.
+    anyhow::ensure!(
+        discoverable,
+        "LUKS root via systemd-repart requires discoverable partitions; set \
+         `discoverable-partitions = true` in the install config, or use a \
+         BLI-capable bootloader (systemd-boot or grub-cc)"
+    );
 
-    // We need to check the luks volume tokens to figure out what kargs to
-    // add
+    // We need to check the luks volume tokens to figure out whether a plain
+    // keyslot exists, which determines how we open the device at install time
     let luks_meta = LuksMetadata::query_json(&root_device.path())?;
 
     // The set of keyslot ids 0/1/2 etc that are bound to a
@@ -1102,13 +1105,6 @@ fn check_if_luks_encrypted(
         .flat_map(|t| t.keyslots.iter().map(String::as_str))
         .collect();
 
-    // Whether the volume can be unlocked by the TPM, i.e. at least
-    // one token is of type "systemd-tpm2". This alone decides
-    // whether we add the `tpm2-device=auto` karg
-    //
-    // This is independent of whether a passphrase/keyfile slot also exists
-    let has_tpm = luks_meta.tokens.values().any(|t| t.kind == "systemd-tpm2");
-
     // Whether a plain keyslot exists: one not bound to any token,
     // unlocked by raw key material supplied directly (a typed
     // passphrase or a `--key-file`). The LUKS header does not record
@@ -1119,33 +1115,6 @@ fn check_if_luks_encrypted(
         .keyslots
         .keys()
         .any(|id| !covered.contains(id.as_str()));
-
-    // We do not want this if we have systemd-cryptsetup@root.service else
-    // we get the following error on boot
-    //
-    // Cannot use device /dev/gpt-auto-root-luks which is in use (already mapped or mounted)
-    //
-    // as we get two services 'systemd-gpt-auto-generator' and 'systemd-cryptsetup@root.service'
-    // fighting for the same device
-    let kargs = if !discoverable {
-        let mut kargs = vec![format!("luks.uuid={root_uuid}")];
-
-        if has_tpm {
-            let headless = if has_plain_slot {
-                // Don't disable password querying
-                ""
-            } else {
-                ",headless=true"
-            };
-
-            // TPM + keyfile or TPM only, doesn't really matter
-            kargs.push(format!("luks.options=tpm2-device=auto{headless}"));
-        };
-
-        kargs
-    } else {
-        vec![]
-    };
 
     // LUKS device is opened by a passphrase or a keyfile
     //
@@ -1185,7 +1154,7 @@ fn check_if_luks_encrypted(
     let decrypted_root_device =
         bootc_blockdev::list_dev(Utf8Path::new(&rootdev)).context("Re-querying LUKS root dev")?;
 
-    Ok((rootdev, Some(kargs), Some(decrypted_root_device)))
+    Ok((rootdev, Some(decrypted_root_device)))
 }
 
 #[context("Creating rootfs")]
@@ -1391,7 +1360,10 @@ pub(crate) fn install_create_rootfs(
     }
 
     let (rootdev_path, root_blockdev_kargs, decrypted_root_device) = match block_setup {
-        BlockSetup::Direct => check_if_luks_encrypted(root_device, &layout, discoverable)?,
+        BlockSetup::Direct => {
+            let luks_res = check_if_luks_encrypted(root_device, &layout, discoverable)?;
+            (luks_res.0, None, luks_res.1)
+        }
 
         BlockSetup::Tpm2Luks => {
             let uuid = uuid::Uuid::new_v4().to_string();

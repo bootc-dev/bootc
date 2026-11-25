@@ -330,29 +330,11 @@ EOF
 def test_repart_luks [] {
     tap begin "install with systemd-repart (LUKS)"
 
-    let xbootldr_fstype = if (tap is_composefs) {
-      "vfat"
-    } else {
-      # Ostree creates symlinks here so we can't use vfat
-      "ext4"
-    }
-
-    # GRUB cannot read a LUKS-encrypted /boot, so when booting via grub we need
-    # an unencrypted XBOOTLDR partition (holding the kernel/initramfs) alongside
-    # the BIOS boot partition already provided by $bios. grub-cc and systemd-boot
-    # / UKI don't require this.
-    let xbootldr = if $bootloader == "grub" {
-        $"
-RUN <<EOF cat > /usr/lib/repart.d/05-xbootldr.conf
-[Partition]
-Type=xbootldr
-Format=($xbootldr_fstype)
-SizeMinBytes=512M
-SizeMaxBytes=512M
-EOF
-        "
-    } else {
-        ""
+    # LUKS + repart only supported for BLS complaint bootloaders
+    # This also skips ostree
+    if $bootloader == "grub" {
+        print "SKIP: LUKS via systemd-repart requires DPS; not supported on plain grub"
+        return
     }
 
     # repart's KeyFile= was introduced in systemd 259. On older systemd it is
@@ -400,7 +382,6 @@ RUN rm -rf /usr/lib/bootc/bound-images.d/*
 
 RUN mkdir -p /usr/lib/repart.d
 ($bios)
-($xbootldr)
 ($keyfile_setup)
 RUN <<'EOF' cat > /usr/lib/repart.d/00-esp.conf
 [Partition]
@@ -428,11 +409,6 @@ EOF
         let part_types = ($children | get parttype)
 
         assert ($part_types | any {|t| ($t | str downcase) == $ESP_DPS_UUID }) "ESP partition not found"
-
-        # For grub we also expect an XBOOTLDR partition for /boot
-        if $bootloader == "grub" {
-            assert ($part_types | any {|t| ($t | str downcase) == $XBOOTLDR_DPS_UUID }) "XBOOTLDR partition not found"
-        }
 
         # Root partition must be LUKS encrypted
         assert ($children | any {|c| ($c.fstype? | default "") == "crypto_LUKS" }) "Root partition is not LUKS encrypted"
