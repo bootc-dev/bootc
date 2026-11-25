@@ -435,33 +435,29 @@ async fn handle_layer_progress_print(mut config: LayerProgressConfig) {
         .await;
 }
 
-/// Gather all bound images in all deployments, then prune the image store,
-/// using the gathered images as the roots (that will not be GC'd).
+/// Prune the image store, keeping the host and bound images of live deployments.
 pub(crate) async fn prune_container_store(sysroot: &Storage) -> Result<()> {
     let ostree = sysroot.get_ostree()?;
-    let deployments = ostree.deployments();
-    let mut all_bound_images = Vec::new();
-    for deployment in deployments {
+    let repo = ostree.repo();
+    let mut roots = HashSet::new();
+    for deployment in ostree.deployments() {
         let bound = crate::boundimage::query_bound_images_for_deployment(ostree, &deployment)?;
-        all_bound_images.extend(bound.into_iter());
-        // Also include the host image itself
-        // Note: Use just the image name (not the full transport:image format) because
-        // podman's image names don't include the transport prefix.
-        if let Some(host_image) = crate::status::boot_entry_from_deployment(ostree, &deployment)?
-            .image
-            .map(|i| i.image)
-        {
-            all_bound_images.push(crate::boundimage::BoundImage {
-                image: host_image.image.clone(),
-                auth_file: None,
-            });
+        roots.extend(bound.into_iter().map(|bound| bound.image));
+
+        let entry = crate::status::boot_entry_from_deployment(ostree, &deployment)?;
+        // The config digest is the image ID in containers-storage, even if the
+        // deployment's origin omits the default tag or the tag has moved.
+        if let Some(image) = entry.query_image(&repo)? {
+            roots.insert(image.manifest.config().digest().digest().to_owned());
+        }
+        if let Some(image) = entry.image {
+            roots.insert(image.image.image);
         }
     }
-    // Convert to a hashset of just the image names
-    let image_names = HashSet::from_iter(all_bound_images.iter().map(|img| img.image.as_str()));
+    let roots = roots.iter().map(String::as_str).collect();
     let pruned = sysroot
         .get_ensure_imgstore()?
-        .prune_except_roots(&image_names)
+        .prune_except_roots(&roots)
         .await?;
     tracing::debug!("Pruned images: {}", pruned.len());
     Ok(())
