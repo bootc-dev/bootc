@@ -72,7 +72,7 @@ let fatal = ($failed | filter { |l|
 })
 
 for unit in ($tolerated | each { |l| $l | split row " " | first }) {
-    print $"# WARNING: tolerated failure of best-effort unit ($unit) (ignoring for test result)"
+    print $"# WARNING: tolerated failure of best-effort unit ($unit) \(ignoring for test result\)"
     print-journal $unit
 }
 
