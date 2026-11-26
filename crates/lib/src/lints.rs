@@ -838,6 +838,14 @@ fn check_runtime_only_dirs(root: &Dir, config: &LintExecutionConfig) -> LintResu
     let mut found_content = BTreeSet::new();
 
     for dirname in RUNTIME_ONLY_DIRS {
+        // A missing path or a non-directory (e.g. a symlink) has no content
+        // to check here; the api-base-directories lint reports it.
+        if !root
+            .symlink_metadata_optional(dirname)?
+            .is_some_and(|m| m.is_dir())
+        {
+            continue;
+        }
         // Use open_dir_noxdev so that if the directory is a mount point
         // (e.g. the user passed --mount=type=tmpfs,target=/run) we skip
         // it — content on a different filesystem is ephemeral and won't
@@ -1259,6 +1267,34 @@ mod tests {
 
         // Clean state should pass
         check_runtime_only_dirs(root, config).unwrap().unwrap();
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_runtime_only_dirs_not_dirs() -> Result<()> {
+        let root = &fixture()?;
+        let config = &LintExecutionConfig::default();
+
+        // Neither /run nor /tmp exist
+        check_runtime_only_dirs(root, config).unwrap().unwrap();
+
+        // /run is a regular file and /tmp is a symlink to a directory with
+        // content: neither is walked
+        root.write("run", "not a directory")?;
+        root.create_dir_all("var/tmp")?;
+        root.write("var/tmp/build-artifact", "some data")?;
+        root.symlink_contents("var/tmp", "tmp")?;
+        check_runtime_only_dirs(root, config).unwrap().unwrap();
+
+        // A real /tmp next to the non-directory /run is still checked
+        root.remove_file("tmp")?;
+        root.create_dir("tmp")?;
+        root.write("tmp/build-artifact", "some data")?;
+        let Err(e) = check_runtime_only_dirs(root, config).unwrap() else {
+            unreachable!("expected warning for /tmp/build-artifact")
+        };
+        assert!(e.to_string().contains("/tmp/build-artifact"));
 
         Ok(())
     }
