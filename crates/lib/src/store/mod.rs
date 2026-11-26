@@ -505,8 +505,7 @@ const LOADER_DEVICE_PART_UUID: &str = "LoaderDevicePartUUID-4a67b082-0a4c-41cf-b
 /// the wrong ESP in dual booted systems
 #[context("Finding ESP used for booting")]
 pub(crate) fn find_booted_from_esp(physical_root: &Dir) -> Result<String> {
-    let root_dev = bootc_blockdev::list_dev_by_dir(&physical_root)?;
-    let all_roots = root_dev.find_all_roots()?;
+    let all_roots = bootc_blockdev::list_roots_by_dir(physical_root)?;
 
     let device_uuid = match read_uefi_var(LOADER_DEVICE_PART_UUID) {
         Ok(u) => u,
@@ -516,9 +515,11 @@ pub(crate) fn find_booted_from_esp(physical_root: &Dir) -> Result<String> {
         Err(EfiError::MissingVar) => {
             tracing::debug!("Missing {LOADER_DEVICE_PART_UUID}, searching through all ESPs...");
 
-            let all_esps = root_dev
-                .find_colocated_esps()?
-                .ok_or_else(|| anyhow::anyhow!("No ESP found"))?;
+            let all_esps = all_roots
+                .iter()
+                .filter_map(|root| root.find_partition_of_esp_optional().transpose())
+                .collect::<Result<Vec<_>>>()?;
+            anyhow::ensure!(!all_esps.is_empty(), "No ESP found");
 
             if all_esps.len() == 1 {
                 // If only one ESP, there's no ambiguity

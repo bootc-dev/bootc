@@ -373,23 +373,33 @@ impl Device {
         if self.partn.is_none() {
             self.partn = self.read_sysfs_property("partition")?;
         }
-        // When udev is unavailable, lsblk can't populate parttype/pttype from
-        // the udev database. Fall back to blkid -p which probes the disk
-        // directly. See https://github.com/osbuild/osbuild/pull/2428
-        if !have_udev() && (self.parttype.is_none() || self.pttype.is_none()) {
-            let props = blkid_probe(&self.path())?;
-            if self.parttype.is_none() {
-                self.parttype = props.get("PART_ENTRY_TYPE").cloned();
-            }
-            if self.pttype.is_none() {
-                self.pttype = props.get("PTTYPE").cloned();
-            }
+        // When udev is unavailable, lsblk can't populate the partition and
+        // filesystem properties from the udev database. Fall back to blkid -p
+        // which probes the disk directly.
+        // See https://github.com/osbuild/osbuild/pull/2428
+        if !have_udev() {
+            self.backfill_from_blkid(&blkid_probe(&self.path())?);
         }
         // Recurse to child devices
         for child in self.children.iter_mut().flatten() {
             child.backfill_missing()?;
         }
         Ok(())
+    }
+
+    /// Fill the properties lsblk left empty from `blkid -p` output.
+    fn backfill_from_blkid(&mut self, props: &HashMap<String, String>) {
+        for (field, key) in [
+            (&mut self.parttype, "PART_ENTRY_TYPE"),
+            (&mut self.pttype, "PTTYPE"),
+            (&mut self.fstype, "TYPE"),
+            (&mut self.uuid, "UUID"),
+            (&mut self.label, "LABEL"),
+        ] {
+            if field.is_none() {
+                *field = props.get(key).cloned();
+            }
+        }
     }
 
     /// Query parent devices via `lsblk --inverse`.
@@ -490,8 +500,9 @@ pub fn list_dev(dev: &Utf8Path) -> Result<Device> {
         .ok_or_else(|| anyhow!("no device output from lsblk for {dev}"))
 }
 
-#[context("Finding block device for ZFS dataset {dataset}")]
-fn list_dev_for_zfs_dataset(dataset: &str) -> Result<Device> {
+/// List the block devices of the ZFS pool holding a dataset.
+#[context("Finding block devices for ZFS dataset {dataset}")]
+fn list_devs_for_zfs_dataset(dataset: &str) -> Result<Vec<Device>> {
     let dataset = dataset.strip_prefix("ZFS=").unwrap_or(dataset);
     let pool = dataset
         .split('/')
@@ -503,26 +514,84 @@ fn list_dev_for_zfs_dataset(dataset: &str) -> Result<Device> {
         .run_get_string()
         .with_context(|| format!("Querying ZFS pool {pool}"))?;
 
+    let mut devs = Vec::new();
     for line in output.lines() {
         if line.starts_with('\t') || line.starts_with(' ') {
             let dev_path = line.trim_start().split('\t').next().unwrap_or("").trim();
             if dev_path.starts_with('/') {
-                return list_dev(Utf8Path::new(dev_path));
+                // A leaf vdev can be a regular file, or a device that has
+                // gone away; skip it as long as another one resolves.
+                match list_dev(Utf8Path::new(dev_path)) {
+                    Ok(dev) => devs.push(dev),
+                    Err(e) => tracing::debug!("Skipping {dev_path}: {e:#}"),
+                }
             }
         }
     }
+    anyhow::ensure!(
+        !devs.is_empty(),
+        "Could not find a block device backing ZFS pool {pool}"
+    );
+    Ok(devs)
+}
 
-    anyhow::bail!("Could not find a block device backing ZFS pool {pool}")
+/// List the block devices backing a filesystem, given its type and mount
+/// source as findmnt reports them.
+pub fn list_devs_by_source(fstype: &str, source: &str) -> Result<Vec<Device>> {
+    if fstype == "zfs" || source.starts_with("ZFS=") {
+        return list_devs_for_zfs_dataset(source);
+    }
+    // A multi-device bcachefs names its devices colon separated
+    // (`/dev/nvme0n1p1:/dev/sda`); any other source is a single device.
+    let paths = if fstype == "bcachefs" {
+        source.split(':').collect()
+    } else {
+        vec![source]
+    };
+    paths
+        .into_iter()
+        .map(|path| list_dev(Utf8Path::new(path)))
+        .collect()
+}
+
+/// List the whole disks backing the filesystem mounted at the given
+/// directory, each disk once.
+pub fn list_roots_by_dir(dir: &Dir) -> Result<Vec<Device>> {
+    let fsinfo = bootc_mount::inspect_filesystem_of_dir(dir)?;
+    let mut seen = HashSet::new();
+    let mut roots = Vec::new();
+    for dev in list_devs_by_source(&fsinfo.fstype, &fsinfo.source)? {
+        for root in dev.find_all_roots()? {
+            if seen.insert(root.name.clone()) {
+                roots.push(root);
+            }
+        }
+    }
+    Ok(roots)
+}
+
+/// Out of the devices backing one filesystem, select the one to install a
+/// bootloader for: the first whose disk carries an ESP, else the first.
+pub fn select_bootloader_dev(devs: &[Device]) -> Result<Device> {
+    // A single device is the answer without looking for an ESP.
+    if devs.len() > 1 {
+        for dev in devs {
+            if dev.find_colocated_esps()?.is_some() {
+                return Ok(dev.clone());
+            }
+        }
+    }
+    devs.first()
+        .cloned()
+        .ok_or_else(|| anyhow!("No block device backs the filesystem"))
 }
 
 /// List the device containing the filesystem mounted at the given directory.
+/// When several devices back it, this is the one [`select_bootloader_dev`]
+/// selects.
 pub fn list_dev_by_dir(dir: &Dir) -> Result<Device> {
     let fsinfo = bootc_mount::inspect_filesystem_of_dir(dir)?;
-    let source = &fsinfo.source;
-    if fsinfo.fstype == "zfs" || source.starts_with("ZFS=") {
-        return list_dev_for_zfs_dataset(source);
-    }
-    list_dev(&Utf8PathBuf::from(source))
+    select_bootloader_dev(&list_devs_by_source(&fsinfo.fstype, &fsinfo.source)?)
 }
 
 /// The statfs magic of ZFS (`ZFS_SUPER_MAGIC` in OpenZFS), which libc lacks.
@@ -578,8 +647,16 @@ pub fn is_dir_backing_device_ro(dir: &Dir) -> Result<Option<bool>> {
         tracing::debug!("Filesystem source {source} is not a block device node");
         return Ok(None);
     }
-    let dev = list_dev(&Utf8PathBuf::from(source))?;
-    Ok(dev.ro)
+    let devs = list_devs_by_source(&fsinfo.fstype, source)?;
+    // Read-only if any device is, read-write if every device is known to
+    // be, else unknown.
+    Ok(if devs.iter().any(|d| d.ro == Some(true)) {
+        Some(true)
+    } else if devs.iter().all(|d| d.ro == Some(false)) {
+        Some(false)
+    } else {
+        None
+    })
 }
 #[derive(Debug)]
 pub struct LoopbackDevice {
@@ -896,7 +973,7 @@ mod test {
     fn test_parse_lsblk_no_udev() {
         let fixture = include_str!("../tests/fixtures/lsblk-no-udev.json");
         let devs: DevicesOutput = serde_json::from_str(fixture).unwrap();
-        let dev = devs.blockdevices.into_iter().next().unwrap();
+        let mut dev = devs.blockdevices.into_iter().next().unwrap();
         // Without udev, parttype and pttype are null
         assert!(dev.pttype.is_none());
         let children = dev.children.as_deref().unwrap();
@@ -904,9 +981,18 @@ mod test {
         assert!(children[0].parttype.is_none());
         assert!(children[1].parttype.is_none());
         assert!(children[2].parttype.is_none());
+        assert!(children[1].uuid.is_none());
         // ESP and BIOS boot discovery should fail (no parttype to match)
         assert!(dev.find_partition_of_esp_optional().unwrap().is_none());
         assert!(dev.find_partition_of_bios_boot().is_none());
+        // ESP discovery works once blkid output fills the fields in
+        let props = HashMap::from([
+            ("PART_ENTRY_TYPE".to_string(), ESP.to_string()),
+            ("UUID".to_string(), "D206-1D97".to_string()),
+        ]);
+        dev.children.as_mut().unwrap()[1].backfill_from_blkid(&props);
+        let esp = dev.find_partition_of_esp_optional().unwrap().unwrap();
+        assert_eq!(esp.uuid.as_deref(), Some("D206-1D97"));
     }
 
     #[test]
