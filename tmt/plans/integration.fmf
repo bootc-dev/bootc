@@ -507,4 +507,16 @@ execute:
     enabled: false
     because: This test requires composefs, which is unavailable in Packit's OSTree environment
   extra-skip_if_ostree: true
+
+/plan-71-selinux-install-t-error:
+  summary: Verify bootc explains a failure to enter install_t and logs it to the journal
+  discover:
+    how: fmf
+    test:
+      - /tmt/tests/tests/test-71-selinux-install-t-error
+  adjust:
+  - when: running_env != image_mode
+    enabled: false
+    because: these tests require features only available in image mode
+  extra-fixme_skip_if_composefs: true
 # END GENERATED PLANS
