@@ -122,7 +122,6 @@ execute:
   - when: running_env != image_mode
     enabled: false
     because: these tests require features only available in image mode
-  extra-fixme_skip_if_composefs: true
 
 /plan-28-factory-reset:
   summary: Execute factory reset tests
@@ -507,4 +506,15 @@ execute:
     enabled: false
     because: This test requires composefs, which is unavailable in Packit's OSTree environment
   extra-skip_if_ostree: true
+
+/plan-68-selinux-policy-update:
+  summary: Make sure SeLinux policy is updated on switch/update
+  discover:
+    how: fmf
+    test:
+      - /tmt/tests/tests/test-68-selinux-policy-update
+  adjust:
+  - when: running_env != image_mode
+    enabled: false
+    because: these tests require features only available in image mode
 # END GENERATED PLANS

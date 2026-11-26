@@ -6,8 +6,6 @@
 #     - when: running_env != image_mode
 #       enabled: false
 #       because: these tests require features only available in image mode
-# extra:
-#   fixme_skip_if_composefs: true
 #
 # Verify that correct labels are applied after a deployment
 use std assert
@@ -27,7 +25,7 @@ def initial_build [] {
     bootc image copy-to-storage
 
     # A simple derived container that customizes selinux policy for random dir
-    "FROM localhost/bootc
+    tap make_uki_containerfile "FROM localhost/bootc as base
 RUN mkdir /opt123; echo \"/opt123 /opt\" >> /etc/selinux/targeted/contexts/files/file_contexts.subs_dist
 " | save Dockerfile
     # Build it
