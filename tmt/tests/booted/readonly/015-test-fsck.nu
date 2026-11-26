@@ -3,15 +3,15 @@ use tap.nu
 
 tap begin "Run fsck"
 
-# Detect composefs by checking if composefs field is present
-let st = bootc status --json | from json
-let is_composefs = (tap is_composefs)
-
-if $is_composefs {
-    print "# TODO composefs: skipping test - fsck requires ostree-booted host"
-} else {
-    # That's it, just ensure we've run a fsck on our basic install.
-    bootc internals fsck
-}
+# The readonly variants do not initialize storage and work on either backend.
+bootc internals fsck --readonly
+let report = bootc internals fsck --report | from json
+assert equal $report.collection.mode readonly
+assert equal $report.report_version 1
+# Parsing the command output proves that report mode leaves stdout as JSON only.
+assert ($report.bootloader.classification | is-not-empty)
+assert ($report.bootloader.esp.status | is-not-empty)
+# nushell describes a non-empty list of records as a table
+assert (($report.boot_entries | describe) =~ '^(list|table)')
 
 tap ok
