@@ -2,11 +2,15 @@ ARG base=localhost/bootc
 FROM ${base} AS rootfs
 COPY tmt/tests/ukiboot/aboot.cfg /etc/aboot.cfg
 COPY tmt/tests/ukiboot/kargs.toml /usr/lib/bootc/kargs.d/90-ukiboot.toml
+# systemd's %post runs systemd-machine-id-setup, so a dnf install that changes
+# the systemd version writes a real machine ID. Restore the base image's empty
+# file so the image doesn't ship one; the lint at the end checks this.
 RUN --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
     dnf -y --setopt=install_weak_deps=False install aboot-deploy aboot-update ukiboot systemd-ukify systemd-boot && \
     dnf clean all && rm -rf /var/cache /var/log /var/lib/dnf && \
     rm -rf /etc/repart.d /run/repart.d /usr/lib/repart.d /usr/local/lib/repart.d /usr/lib/bootc/bound-images.d && \
-    systemctl enable ukiboot-set-success.service
+    systemctl enable ukiboot-set-success.service && \
+    if [ -s /etc/machine-id ]; then truncate -s 0 /etc/machine-id; fi
 # Temporary compatibility with ukiboot < 0.2.2.
 # Remove once Fedora ships the upstream vendor symlink:
 # https://gitlab.com/CentOS/automotive/src/ukiboot/-/merge_requests/42

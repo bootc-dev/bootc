@@ -159,6 +159,14 @@ RUN --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp \
     if [[ ${#pkgs_to_install[@]} -gt 0 ]]; then
         dnf install -y "${pkgs_to_install[@]}"
     fi
+
+    # systemd's %post runs systemd-machine-id-setup, so any install above that
+    # upgrades or downgrades systemd (e.g. systemd-ukify pulling in a matching
+    # version) writes a real machine ID. Restore the base image's empty file so
+    # test images don't share one; `bootc container lint` checks this.
+    if [ -s /etc/machine-id ]; then
+        truncate -s 0 /etc/machine-id
+    fi
 EOF
 
 # Note we don't do any customization here yet
