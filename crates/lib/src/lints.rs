@@ -448,6 +448,120 @@ fn check_buildah_injected(root: &Dir, _config: &LintExecutionConfig) -> LintResu
 }
 
 #[distributed_slice(LINTS)]
+static LINT_MACHINE_ID: Lint = Lint::new_warning(
+    "machine-id",
+    indoc! { r#"
+Check that the image does not contain a machine ID. The ID must be unique per
+system, but every system installed from the image would share it.
+
+/etc/machine-id should be missing, empty, or contain `uninitialized`. In all
+three cases systemd generates an ID at boot. Only a missing file or
+`uninitialized` counts as a first boot for `ConditionFirstBoot=`. See
+machine-id(5).
+
+/var/lib/dbus/machine-id should be missing, empty, or a symlink, because systemd
+copies the D-Bus machine ID when /etc/machine-id has none.
+"# },
+    check_machine_id,
+);
+/// Look up `path` without following a symlink in any component.
+///
+/// Returns `None` when the path or any of its parents is missing or is a
+/// symlink. The per-machine state lints use this because they assume a
+/// symlinked path points at runtime state, and because cap-std refuses to
+/// resolve absolute symlinks, which would otherwise abort the lint run.
+fn symlink_metadata_no_symlinks(
+    root: &Dir,
+    path: &Utf8Path,
+) -> Result<Option<cap_std::fs::Metadata>> {
+    let mut prefix = Utf8PathBuf::new();
+    let mut meta = None;
+    for component in path.components() {
+        prefix.push(component);
+        match root.symlink_metadata_optional(&prefix)? {
+            Some(m) if !m.is_symlink() => meta = Some(m),
+            _ => return Ok(None),
+        }
+    }
+    Ok(meta)
+}
+
+/// Whether machine-id file contents leave the ID for systemd to generate.
+/// These are the only unset states systemd's reader accepts: a zero-length
+/// file, or `uninitialized` with or without its newline. Anything else,
+/// whitespace included, is either an ID or invalid content.
+fn machine_id_is_unset(contents: &[u8]) -> bool {
+    matches!(contents, b"" | b"uninitialized" | b"uninitialized\n")
+}
+fn check_machine_id(root: &Dir, config: &LintExecutionConfig) -> LintResult {
+    const PATHS: &[&str] = &["etc/machine-id", "var/lib/dbus/machine-id"];
+    let mut found = Vec::new();
+    for path in PATHS {
+        // Symlinks are assumed to point at runtime state (for example
+        // /run, or /etc/machine-id for the D-Bus path), so only regular
+        // files reached without a symlink are checked.
+        let Some(meta) = symlink_metadata_no_symlinks(root, Utf8Path::new(path))? else {
+            continue;
+        };
+        if meta.is_file() && !machine_id_is_unset(&root.read(path)?) {
+            found.push(format!("/{path}"));
+        }
+    }
+    if found.is_empty() {
+        return lint_ok();
+    }
+    let header = "Found a machine ID (or invalid content) that every system installed from this image \
+                  would share; remove these files, or write `uninitialized` to /etc/machine-id";
+    format_lint_err_from_items(config, header, found.iter())
+}
+
+#[distributed_slice(LINTS)]
+static LINT_SSH_HOST_KEYS: Lint = Lint::new_warning(
+    "ssh-host-keys",
+    indoc! { r#"
+Check for SSH host private keys in /etc/ssh. Every system installed from the
+image would share them, so clients could not tell the systems apart, and anyone
+holding the image could impersonate any of them. Remove the keys (and their .pub
+files) from the image, and generate them on each system's first boot instead,
+for example with the distribution's sshd-keygen service or `ssh-keygen -A`.
+"# },
+    check_ssh_host_keys,
+);
+fn check_ssh_host_keys(root: &Dir, config: &LintExecutionConfig) -> LintResult {
+    const SSH_DIR: &str = "etc/ssh";
+    // As for machine-id, a symlinked /etc or /etc/ssh is skipped.
+    match symlink_metadata_no_symlinks(root, Utf8Path::new(SSH_DIR))? {
+        Some(m) if m.is_dir() => {}
+        _ => return lint_ok(),
+    }
+    let d = root.open_dir(SSH_DIR)?;
+    let mut keys = BTreeSet::new();
+    for ent in d.entries()? {
+        let ent = ent?;
+        let name = ent.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        // Private keys are named ssh_host_<type>_key; the public halves
+        // add a .pub suffix and are not a problem on their own.
+        if !(name.starts_with("ssh_host_") && name.ends_with("_key")) {
+            continue;
+        }
+        // Symlinks are assumed to point at runtime state, and an empty
+        // file holds no key to share.
+        if ent.file_type()?.is_file() && ent.metadata()?.len() > 0 {
+            keys.insert(format!("/etc/ssh/{name}"));
+        }
+    }
+    if keys.is_empty() {
+        return lint_ok();
+    }
+    let header = "Found SSH host private keys that every system installed from this image would \
+                  share; remove them and their .pub files, and generate keys at first boot instead";
+    format_lint_err_from_items(config, header, keys.iter())
+}
+
+#[distributed_slice(LINTS)]
 static LINT_ETC_USRUSETC: Lint = Lint::new_fatal(
     "etc-usretc",
     indoc! { r#"
@@ -1474,6 +1588,155 @@ mod tests {
         assert!(check_buildah_injected(&td, config).unwrap().is_err());
         td.write("etc/hostname", b"some static hostname")?;
         assert!(check_buildah_injected(&td, config).unwrap().is_ok());
+        Ok(())
+    }
+
+    #[test]
+    fn test_machine_id_is_unset() {
+        // The states machine-id(5) defines for an image.
+        for unset in ["", "uninitialized", "uninitialized\n"] {
+            assert!(machine_id_is_unset(unset.as_bytes()), "{unset:?}");
+        }
+        // A real ID, with or without a trailing newline, and invalid
+        // content, which systemd does not treat as empty.
+        for set in [
+            "b08dfa6083e7567a1921a715000001fb\n",
+            "b08dfa6083e7567a1921a715000001fb",
+            "\n",
+            " uninitialized\n",
+            "uninitialized\n\n",
+            "garbage",
+            "uninitialized-but-not-really",
+        ] {
+            assert!(!machine_id_is_unset(set.as_bytes()), "{set:?}");
+        }
+    }
+
+    #[test]
+    fn test_machine_id() -> Result<()> {
+        const ID: &str = "b08dfa6083e7567a1921a715000001fb\n";
+        let td = fixture()?;
+        let config = &LintExecutionConfig::default();
+        let err = |td: &Dir| {
+            check_machine_id(td, config)
+                .unwrap()
+                .unwrap_err()
+                .to_string()
+        };
+        // No /etc at all, then an /etc without machine-id.
+        check_machine_id(&td, config).unwrap().unwrap();
+        td.create_dir("etc")?;
+        check_machine_id(&td, config).unwrap().unwrap();
+        td.write("etc/machine-id", "uninitialized\n")?;
+        check_machine_id(&td, config).unwrap().unwrap();
+
+        td.write("etc/machine-id", ID)?;
+        let msg = err(&td);
+        assert!(msg.contains("  /etc/machine-id\n"), "{msg}");
+        assert!(!msg.contains("dbus"), "{msg}");
+        assert!(msg.contains("write `uninitialized`"), "{msg}");
+
+        // A symlink is not checked, even if its target holds an ID.
+        td.remove_file("etc/machine-id")?;
+        td.symlink("../run/machine-id", "etc/machine-id")?;
+        check_machine_id(&td, config).unwrap().unwrap();
+
+        // systemd copies the D-Bus machine ID, so a fixed one there fails
+        // even when /etc/machine-id is unset.
+        td.create_dir_all("var/lib/dbus")?;
+        td.write("var/lib/dbus/machine-id", ID)?;
+        let msg = err(&td);
+        assert!(msg.contains("  /var/lib/dbus/machine-id\n"), "{msg}");
+        assert!(!msg.contains("  /etc/machine-id\n"), "{msg}");
+
+        // Both paths are reported together.
+        td.remove_file("etc/machine-id")?;
+        td.write("etc/machine-id", ID)?;
+        let msg = err(&td);
+        assert!(msg.contains("  /etc/machine-id\n"), "{msg}");
+        assert!(msg.contains("  /var/lib/dbus/machine-id\n"), "{msg}");
+
+        // The D-Bus path is usually a symlink to /etc/machine-id.
+        td.write("etc/machine-id", "")?;
+        td.remove_file("var/lib/dbus/machine-id")?;
+        td.symlink("../../../etc/machine-id", "var/lib/dbus/machine-id")?;
+        check_machine_id(&td, config).unwrap().unwrap();
+        Ok(())
+    }
+
+    #[test]
+    fn test_per_machine_state_symlinked_parents() -> Result<()> {
+        let config = &LintExecutionConfig::default();
+        const ID: &str = "b08dfa6083e7567a1921a715000001fb\n";
+
+        // cap-std refuses to resolve absolute symlinks, so these must not
+        // turn into runtime errors that abort the whole lint run.
+        let td = fixture()?;
+        td.create_dir_all("var/lib")?;
+        td.create_dir("etc")?;
+        td.symlink_contents("/run/dbus", "var/lib/dbus")?;
+        td.symlink_contents("/usr/share/ssh", "etc/ssh")?;
+        check_machine_id(&td, config).unwrap().unwrap();
+        check_ssh_host_keys(&td, config).unwrap().unwrap();
+
+        // The same for a symlinked top-level directory.
+        let td = fixture()?;
+        td.symlink_contents("/usr/etc", "etc")?;
+        check_machine_id(&td, config).unwrap().unwrap();
+        check_ssh_host_keys(&td, config).unwrap().unwrap();
+
+        // Relative parent symlinks are skipped too, even when they lead
+        // to state inside the image: symlinked state directories are
+        // assumed to point at runtime state.
+        let td = fixture()?;
+        td.create_dir_all("usr/share/ssh")?;
+        td.write("usr/share/ssh/ssh_host_ed25519_key", "private")?;
+        td.create_dir("etc")?;
+        td.symlink("../usr/share/ssh", "etc/ssh")?;
+        td.create_dir_all("usr/share/dbus")?;
+        td.write("usr/share/dbus/machine-id", ID)?;
+        td.create_dir_all("var/lib")?;
+        td.symlink("../../usr/share/dbus", "var/lib/dbus")?;
+        check_machine_id(&td, config).unwrap().unwrap();
+        check_ssh_host_keys(&td, config).unwrap().unwrap();
+        Ok(())
+    }
+
+    #[test]
+    fn test_ssh_host_keys() -> Result<()> {
+        let td = fixture()?;
+        let config = &LintExecutionConfig::default();
+        // No /etc/ssh, then an /etc/ssh with only configuration.
+        check_ssh_host_keys(&td, config).unwrap().unwrap();
+        td.create_dir_all("etc/ssh/sshd_config.d")?;
+        td.write("etc/ssh/sshd_config", "")?;
+        td.write("etc/ssh/ssh_config", "")?;
+        td.write("etc/ssh/moduli", "")?;
+        check_ssh_host_keys(&td, config).unwrap().unwrap();
+
+        // Public keys on their own are fine.
+        td.write("etc/ssh/ssh_host_ed25519_key.pub", "ssh-ed25519 AAAA")?;
+        check_ssh_host_keys(&td, config).unwrap().unwrap();
+
+        // A symlink named like a key is not a key baked into the image.
+        td.symlink_contents("/run/ssh_host_rsa_key", "etc/ssh/ssh_host_rsa_key")?;
+        check_ssh_host_keys(&td, config).unwrap().unwrap();
+
+        // An empty file holds no key to share.
+        td.write("etc/ssh/ssh_host_dsa_key", "")?;
+        check_ssh_host_keys(&td, config).unwrap().unwrap();
+
+        // Private keys fail, and each one is listed.
+        td.write("etc/ssh/ssh_host_ed25519_key", "private")?;
+        td.write("etc/ssh/ssh_host_ecdsa_key", "private")?;
+        let e = check_ssh_host_keys(&td, config).unwrap().unwrap_err();
+        let msg = e.to_string();
+        assert!(msg.contains("  /etc/ssh/ssh_host_ecdsa_key\n"), "{msg}");
+        assert!(msg.contains("  /etc/ssh/ssh_host_ed25519_key\n"), "{msg}");
+        assert!(!msg.contains("ssh_host_ed25519_key.pub"), "{msg}");
+        assert!(!msg.contains("ssh_host_rsa_key"), "{msg}");
+        assert!(!msg.contains("ssh_host_dsa_key"), "{msg}");
+        assert!(msg.contains("generate keys at first boot"), "{msg}");
         Ok(())
     }
 
