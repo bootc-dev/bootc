@@ -16,6 +16,38 @@ host root filesystem\'s `/boot` partition will be wiped, but the
 content of the existing root will otherwise be retained, and will need
 to be cleaned up if desired when rebooted into the new root.
 
+The experimental `--preserve-var` option copies the running system's `/var` into
+the new deployment before rebooting. It requires `--experimental` and the OSTree
+backend, uses reflinks
+when supported, and otherwise performs a full copy. Reflinks are created per
+file. Each new entry is staged and renamed into place atomically for namespace
+visibility, but the migration is not a tree-wide point-in-time snapshot or a
+global all-or-nothing transaction: it proceeds over time, and a later failure
+can leave a partial migration. The copy is not a consistent snapshot of live
+data; stop stateful services or use a consistent snapshot before copying live
+database data. There is no crash-durability guarantee: copied content and
+renames are not guaranteed to survive sudden power loss or a kernel failure.
+Do not combine `--preserve-var` with `--replace=wipe`, which would erase the
+source `/var` before it can be copied. An interrupted migration may leave
+hidden `.bootc-preserve-var.*` staging directories in the new `/var`; they are
+not automatically cleaned up, so make sure no migration is still running and
+verify an individual directory is abandoned before removing it.
+The paths `tmp`, `cache`, `log/journal`, and `lib/containers` are always excluded. Repeat
+`--preserve-var-skip` to exclude additional paths relative to `/var`; each path
+may contain at most one slash, for example `lib/rpm`.
+
+Existing destination entries are never overwritten: matching directories merge
+recursively, while other collisions keep the destination entry, skip the source
+entry, and report the collision in the install output. An incompatible
+destination type for a nested mountpoint placeholder fails preservation. The
+preservation copy itself does not modify the old system's source `/var`. If
+`--cleanup` is also specified, cleanup of the previous install is scheduled for
+the next boot only after the preservation copy succeeds. Verify important state
+before separately cleaning the old system.
+
+See the [experimental preserve-var guide](../bootc-experimental-preserve-var.7.md)
+for usage details and limitations.
+
 ## Managing configuration: before and after reboot
 
 When using `to-existing-root`, there are two distinct scenarios for managing
@@ -235,6 +267,18 @@ of migrating the fstab entries. See the "Injecting kernel arguments" section abo
 **--global-uki-addon**=*GLOBAL*
 
     Experimental. Name of the global UKI addons to install without the ".addon.efi" suffix. This option can be provided multiple times if multiple addons are to be installed (composefs backend only). On upgrade and switch, global addons already installed are carried forward; passing this flag adds further addons on top
+
+**--experimental**
+
+    Acknowledge that this feature is experimental
+
+**--preserve-var**
+
+    Experimental. Requires `--experimental`; preserve the running system's `/var` data into the new bootc deployment
+
+**--preserve-var-skip**=*PATH*
+
+    Relative paths below `/var` to leave out while preserving `/var`. Requires `--preserve-var`
 
 <!-- END GENERATED OPTIONS -->
 
