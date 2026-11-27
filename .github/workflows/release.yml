@@ -6,6 +6,8 @@ on:
 
 permissions:
   contents: write
+  id-token: write
+  attestations: write
 
 jobs:
   release:
@@ -89,6 +91,13 @@ jobs:
 
       - name: Run cargo xtask package
         run: cargo xtask package
+
+      - name: Attest build provenance
+        uses: actions/attest@v4
+        with:
+          subject-path: |
+            target/bootc-${{ steps.extract_version.outputs.version }}.tar.zstd
+            target/bootc-${{ steps.extract_version.outputs.version }}-vendor.tar.zstd
 
       - name: Create Release
         id: create_release
