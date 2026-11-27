@@ -28,6 +28,7 @@ use cap_std_ext::{cap_std, cap_tempfile};
 use fn_error_context::context;
 use ostree_ext::container::{ImageReference, Transport};
 use ostree_ext::ostree::{self};
+use serde::de::DeserializeOwned;
 use std::os::fd::OwnedFd;
 use tokio::process::Command as AsyncCommand;
 
@@ -386,10 +387,10 @@ impl CStorage {
         })
     }
 
-    #[context("Listing images")]
-    pub(crate) async fn list_images(&self) -> Result<Vec<crate::podman::ImageListEntry>> {
-        let mut cmd = self.new_image_cmd()?;
-        cmd.args(["list", "--format=json"]);
+    async fn run_images_cmd<T: Send + DeserializeOwned + 'static>(
+        &self,
+        mut cmd: Command,
+    ) -> Result<T> {
         cmd.stdin(Stdio::null());
         // It's maximally convenient for us to just pipe the whole output to a tempfile
         let mut stdout = tempfile::tempfile()?;
@@ -408,28 +409,81 @@ impl CStorage {
         tokio::task::spawn_blocking(move || -> Result<_> {
             stdout.seek(std::io::SeekFrom::Start(0))?;
             let stdout = std::io::BufReader::new(stdout);
-            let r = serde_json::from_reader(stdout)?;
+            let r: T = serde_json::from_reader(stdout)?;
             Ok(r)
         })
         .await?
     }
 
+    #[context("Listing images")]
+    pub(crate) async fn list_images(&self) -> Result<Vec<crate::podman::ImageListEntry>> {
+        let mut cmd = self.new_image_cmd()?;
+        cmd.args(["list", "--format=json"]);
+        self.run_images_cmd(cmd).await
+    }
+
+    #[context("Inspecting image {image}")]
+    pub(crate) async fn inspect_image(&self, image: &str) -> Result<Vec<crate::podman::Inspect>> {
+        let mut cmd = self.new_image_cmd()?;
+        cmd.args(["inspect", image]);
+        self.run_images_cmd(cmd).await
+    }
+
     #[context("Pruning images in storage")]
-    pub(crate) async fn prune_except_roots(&self, roots: &HashSet<&str>) -> Result<Vec<String>> {
+    pub(crate) async fn prune_except_roots(
+        &self,
+        non_bound_roots: &HashSet<&str>,
+        bound_roots: &HashSet<&str>,
+    ) -> Result<Vec<String>> {
+        // NOTE: We have bound and non bound images as separate params as we can only 100% expect
+        // bound images to be present in our container store (in the non unified case).
+        // The image used for switching or provisioning the system might not exist on the
+        // system
         let all_images = self.list_images().await?;
-        tracing::debug!("Images total: {}", all_images.len(),);
+        tracing::debug!("Images total: {}", all_images.len());
+
+        tracing::debug!("non_bound_roots: {non_bound_roots:?}");
+        tracing::debug!("bound_roots: {bound_roots:?}");
+
+        // Gather image IDs instead of comparing imgae names as users might've
+        // omitted the `docker/` prefix resulting in us incorrectly pruning a
+        // required image
+        let mut root_images_ids = vec![];
+
+        for img in bound_roots {
+            match self.inspect_image(img).await {
+                Ok(inspect) => {
+                    if let Some(image) = inspect.first() {
+                        root_images_ids.push(image.id.clone());
+                        continue;
+                    }
+
+                    tracing::warn!("Did not get image info for {img}")
+                }
+                // The bound image might've been skipped on installation
+                // So, don't throw an error if we fail to find it
+                Err(e) => {
+                    tracing::warn!("Failed to get image info for {img}: {e}")
+                }
+            }
+        }
+
         let mut garbage = Vec::new();
         for image in all_images {
-            if image
+            let found_by_name = image
                 .names
                 .iter()
                 .flatten()
-                .all(|name| !roots.contains(name.as_str()))
-            {
+                .any(|name| non_bound_roots.contains(name.as_str()));
+
+            let found_by_id = root_images_ids.contains(&image.id);
+
+            if !found_by_name && !found_by_id {
                 garbage.push(image.id);
             }
         }
-        tracing::debug!("Images to prune: {}", garbage.len());
+
+        tracing::debug!("Images to prune: {:?}", garbage);
         for garbage in garbage.chunks(SUBCMD_ARGV_CHUNKING) {
             let mut cmd = self.new_image_cmd()?;
             cmd.stdin(Stdio::null());

@@ -72,18 +72,21 @@ RUN echo sanity check > /usr/share/bound-image-sanity-check.txt
 def verify_images [images containers] {
     let bound_images = $images | where bound == true
     let bound_containers = $containers | where bound == true
-    let num_bound = ($bound_images | length) + ($bound_containers | length)
 
-    let image_names = podman --storage-opt=additionalimagestore=/usr/lib/bootc/storage images --format json | from json | select -i Names
-
+    # Use `podman image exists` rather than matching the stored name string
+    # exactly as podman normalizes references when storing them (`busybox`
+    # becomes `docker.io/library/busybox` and `repo:tag@digest`
+    # becomes `repo@digest`), so an exact-string match on the name fails
+    # even when the image is present.
+    # See https://github.com/bootc-dev/bootc/issues/2640
     for $image in $bound_images {
-        let found = $image_names | where Names == [$image.image]
-        assert (($found | length) > 0) $"($image.image) not found"
+        let res = do { podman --storage-opt=additionalimagestore=/usr/lib/bootc/storage image exists $image.image } | complete
+        assert ($res.exit_code == 0) $"($image.image) not found"
     }
 
     for $container in $bound_containers {
-        let found = $image_names | where Names == [$container.image]
-        assert (($found | length) > 0) $"($container.image) not found"
+        let res = do { podman --storage-opt=additionalimagestore=/usr/lib/bootc/storage image exists $container.image } | complete
+        assert ($res.exit_code == 0) $"($container.image) not found"
     }
 }
 
@@ -95,6 +98,9 @@ def first_boot [] {
     # build a bootc image that includes bound images
     let images = [
         { "bound": true, "image": "registry.access.redhat.com/ubi9/ubi-minimal:9.4", "name": "ubi-minimal" },
+        # Don't use a fully qualified path to test https://github.com/bootc-dev/bootc/issues/2640
+        # NOTE: Not using a tagged image here as that could lead to flakes
+        { "bound": true, "image": "busybox", "name": "busybox" },
         { "bound": false, "image": "quay.io/centos-bootc/centos-bootc:stream9", "name": "centos-bootc" }
     ]
 

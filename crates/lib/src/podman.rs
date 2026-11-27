@@ -11,6 +11,7 @@ pub(crate) const CONTAINER_STORAGE: &str = "/var/lib/containers";
 #[serde(rename_all = "PascalCase")]
 pub(crate) struct Inspect {
     pub(crate) digest: String,
+    pub(crate) id: String,
 }
 
 /// This is output from `podman image list --format=json`.

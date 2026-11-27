@@ -441,6 +441,7 @@ pub(crate) async fn prune_container_store(sysroot: &Storage) -> Result<()> {
     let ostree = sysroot.get_ostree()?;
     let deployments = ostree.deployments();
     let mut all_bound_images = Vec::new();
+    let mut all_host_images = Vec::new();
     for deployment in deployments {
         let bound = crate::boundimage::query_bound_images_for_deployment(ostree, &deployment)?;
         all_bound_images.extend(bound.into_iter());
@@ -451,17 +452,18 @@ pub(crate) async fn prune_container_store(sysroot: &Storage) -> Result<()> {
             .image
             .map(|i| i.image)
         {
-            all_bound_images.push(crate::boundimage::BoundImage {
+            all_host_images.push(crate::boundimage::BoundImage {
                 image: host_image.image.clone(),
                 auth_file: None,
             });
         }
     }
     // Convert to a hashset of just the image names
-    let image_names = HashSet::from_iter(all_bound_images.iter().map(|img| img.image.as_str()));
+    let bound_images = HashSet::from_iter(all_bound_images.iter().map(|img| img.image.as_str()));
+    let non_bound_images = HashSet::from_iter(all_host_images.iter().map(|img| img.image.as_str()));
     let pruned = sysroot
         .get_ensure_imgstore()?
-        .prune_except_roots(&image_names)
+        .prune_except_roots(&non_bound_images, &bound_images)
         .await?;
     tracing::debug!("Pruned images: {}", pruned.len());
     Ok(())
