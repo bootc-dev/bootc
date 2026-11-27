@@ -314,6 +314,73 @@ impl Device {
             .ok_or_else(|| anyhow!("ESP partition not found on {}", self.path()))
     }
 
+    /// Find a descendant partition by UUID (case-insensitive).
+    ///
+    /// If lsblk does not provide partition UUIDs for device-mapper mappings,
+    /// read the GPT of each intermediate device and match partition numbers
+    /// to the mapped children.
+    pub fn find_device_by_partuuid(&self, partuuid: &str) -> Option<&Device> {
+        if let Some(device) = self.find_device_by_partuuid_in_lsblk(partuuid) {
+            return Some(device);
+        }
+
+        if self.has_children() && matches!(self.pttype.as_deref(), Some("gpt") | None) {
+            if let Ok(mut file) = std::fs::File::open(self.path()) {
+                if let Some(device) = self.find_device_by_partuuid_in_gpt(&mut file, partuuid) {
+                    return Some(device);
+                }
+            }
+        }
+
+        for child in self
+            .children
+            .iter()
+            .flatten()
+            .filter(|child| child.has_children())
+        {
+            if let Some(device) = child.find_device_by_partuuid(partuuid) {
+                return Some(device);
+            }
+        }
+        None
+    }
+
+    fn find_device_by_partuuid_in_gpt<R: std::io::Read + std::io::Seek>(
+        &self,
+        reader: &mut R,
+        partuuid: &str,
+    ) -> Option<&Device> {
+        let partuuid = uuid::Uuid::parse_str(partuuid).ok()?;
+        let gpt = gptman::GPT::find_from(reader).ok()?;
+        let (partition_number, _) = gpt.iter().find(|(_, partition)| {
+            uuid::Uuid::from_bytes_le(partition.unique_partition_guid) == partuuid
+        })?;
+        let parent_path = self.path();
+        let parent_name = Utf8Path::new(&parent_path).file_name()?;
+        self.children.iter().flatten().find(|child| {
+            child.partn == Some(partition_number)
+                || Utf8Path::new(&child.path())
+                    .file_name()
+                    .and_then(|name| parse_partition_number_from_suffix(parent_name, name))
+                    .and_then(|number| number.parse::<u32>().ok())
+                    == Some(partition_number)
+        })
+    }
+
+    fn find_device_by_partuuid_in_lsblk(&self, partuuid: &str) -> Option<&Device> {
+        self.children.as_ref()?.iter().find_map(|child| {
+            if child
+                .partuuid
+                .as_ref()
+                .is_some_and(|uuid| uuid.eq_ignore_ascii_case(partuuid))
+            {
+                Some(child)
+            } else {
+                child.find_device_by_partuuid_in_lsblk(partuuid)
+            }
+        })
+    }
+
     /// Find a child partition by partition number (1-indexed).
     pub fn find_device_by_partno(&self, partno: u32) -> Result<&Device> {
         self.children
@@ -1095,6 +1162,67 @@ mod test {
                 "{parttype} {fstype:?}"
             );
         }
+    }
+
+    #[test]
+    fn test_find_device_by_partuuid_nested() {
+        let disk: Device = serde_json::from_value(serde_json::json!({
+            "name": "sda",
+            "path": "/dev/sda",
+            "size": 242727940096_u64,
+            "children": [{
+                "name": "sda10",
+                "path": "/dev/sda10",
+                "size": 242672721920_u64,
+                "children": [{
+                    "name": "dm-0",
+                    "path": "/dev/mapper/sda10p1",
+                    "size": 2147483648_u64,
+                    "parttype": ESP,
+                    "partuuid": "91dbba6f-fcb1-41a8-9231-c94fba37d3ce",
+                    "fstype": "vfat"
+                }]
+            }]
+        }))
+        .unwrap();
+
+        let esp = disk
+            .find_device_by_partuuid("91DBBA6F-FCB1-41A8-9231-C94FBA37D3CE")
+            .unwrap();
+        assert_eq!(esp.path(), "/dev/mapper/sda10p1");
+        assert!(disk.find_device_by_partuuid("missing").is_none());
+    }
+
+    #[test]
+    fn test_find_device_by_partuuid_in_gpt() {
+        let image = tempfile::NamedTempFile::new().unwrap();
+        image.as_file().set_len(100 * 512).unwrap();
+        let parent_name = image.path().file_name().unwrap().to_str().unwrap();
+        let child_path = format!("/dev/mapper/{parent_name}-part1");
+        let disk: Device = serde_json::from_value(serde_json::json!({
+            "name": parent_name,
+            "path": image.path(),
+            "size": 51200_u64,
+            "children": [{
+                "name": "dm-0",
+                "path": child_path,
+                "size": 40960_u64
+            }]
+        }))
+        .unwrap();
+        let mut gpt = gptman::GPT::new_from(&mut image.as_file(), 512, [0xff; 16]).unwrap();
+        gpt[1].unique_partition_guid =
+            uuid::Uuid::parse_str("91DBBA6F-FCB1-41A8-9231-C94FBA37D3CE")
+                .unwrap()
+                .to_bytes_le();
+        gpt[1].starting_lba = 40;
+        gpt[1].ending_lba = 80;
+        gpt.write_into(&mut image.as_file()).unwrap();
+
+        let esp = disk
+            .find_device_by_partuuid("91dbba6f-fcb1-41a8-9231-c94fba37d3ce")
+            .unwrap();
+        assert_eq!(esp.path(), child_path);
     }
 
     #[test]

@@ -564,16 +564,8 @@ pub(crate) fn find_booted_from_esp(physical_root: &Dir) -> Result<String> {
     tracing::debug!("Found {device_uuid} in {LOADER_DEVICE_PART_UUID}");
 
     for root in all_roots {
-        let Some(children) = root.children else {
-            continue;
-        };
-
-        for child in children {
-            if child.partuuid.as_ref().is_some_and(|partuuid| {
-                *partuuid.to_ascii_lowercase() == device_uuid.to_ascii_lowercase()
-            }) {
-                return Ok(child.path());
-            }
+        if let Some(device) = root.find_device_by_partuuid(&device_uuid) {
+            return Ok(device.path());
         }
     }
 
