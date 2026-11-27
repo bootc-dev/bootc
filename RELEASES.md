@@ -71,8 +71,9 @@ Releases are fully automated using GitHub Actions workflows.
 3. GPG-signed git tag created: `v<version>`
 4. Tag pushed to repository
 5. Source packaging executed via `cargo xtask package`
-6. Draft GitHub release created
-7. Release assets uploaded:
+6. Build provenance attested for both archives
+7. Draft GitHub release created
+8. Release assets uploaded:
    - `bootc-<version>-vendor.tar.zstd` - Vendored Rust dependencies for offline builds
    - `bootc-<version>.tar.zstd` - Source tarball
 
@@ -116,6 +117,22 @@ Each release on [GitHub Releases](https://github.com/bootc-dev/bootc/releases) i
   - Pre-downloaded Cargo dependencies for offline builds
   - Required for air-gapped or restricted network environments
   - Ensures reproducible builds with exact dependency versions
+
+### Verifying the Archives
+
+Releases are immutable, so GitHub attests each release's tag and the digests of its assets. From bootc 1.17.6 on, the release workflow also attests each archive's build provenance, which names the workflow run that built the archive and the commit it built from:
+
+```bash
+version=<version>
+commit=$(gh api repos/bootc-dev/bootc/commits/v$version --jq .sha)
+for archive in bootc-$version.tar.zstd bootc-$version-vendor.tar.zstd; do
+  # Check that the archive is an asset of the release
+  gh release verify-asset v$version $archive --repo bootc-dev/bootc
+  # Check that the release workflow built the archive from the tagged commit
+  gh attestation verify $archive --repo bootc-dev/bootc \
+    --signer-workflow bootc-dev/bootc/.github/workflows/release.yml --source-digest $commit
+done
+```
 
 ### Release Notes
 
