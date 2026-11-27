@@ -46,6 +46,49 @@ install boot assets. See
 This is no different from non-LUKS cases; either use discoverable
 partitions or `root=` plus `luks.uuid` style kernel arguments.
 
+## Encryption with `systemd-repart`
+
+A recommended way to provision an encrypted root for a bootc system is to
+declare the partition layout — including LUKS — with
+[`systemd-repart`](https://www.freedesktop.org/software/systemd/man/latest/systemd-repart.html)
+drop-ins, and let it create and encrypt the root partition (via `Encrypt=`
+and `KeyFile=`).
+
+This is **preferred over `bootc install to-disk --block-setup=tpm2-luks`**,
+which will be deprecated in the future.
+
+
+### Discoverable partitions (DPS) are required
+
+LUKS roots created by `systemd-repart` are only supported with
+[discoverable partitions (DPS)](https://uapi-group.org/specifications/specs/discoverable_partitions_specification/).
+At boot, `systemd-gpt-auto-generator` finds the root partition by its DPS type
+GUID and sets up `systemd-cryptsetup@root` itself; bootc therefore emits no
+`root=` or `luks.*` kernel arguments for this case. A non-DPS setup would
+require bootc to carry that plumbing itself, so it is rejected — use a
+BLI-capable bootloader (`systemd-boot` or `grub-cc`), or set
+`discoverable-partitions = true` in the install config for a GRUB build that
+includes the `bli` module.
+
+Plain GRUB without the `bli` module does not support DPS, so LUKS via
+`systemd-repart` is **not supported** there. Set up encryption independently of
+bootc instead (see the recommendation above).
+
+### Required partitions depend on the bootloader
+
+With a BLI-capable bootloader the partitions you must include in your
+`systemd-repart` definitions still differ:
+
+- **`systemd-boot`:** a BIOS boot partition and XBOOTLDR are **not needed**,
+  since the bootloader lives on the ESP and loads its kernel/UKI from there.
+  An XBOOTLDR **can** still be useful — for example when the ESP is too small
+  to hold the UKIs of the booted, staged and rollback deployments (see
+  [XBOOTLDR partitions](bootc-bootloaders.7.md#xbootldr-partitions)).
+
+- **`grub-cc`:** a BIOS boot partition is still required (GRUB's core image
+  lives there), but a separate unencrypted XBOOTLDR is not, since it loads its
+  kernel from the ESP.
+
 ## First-boot encryption of an already-populated filesystem
 
 It's common to have a "golden image" (a KubeVirt containerdisk, a

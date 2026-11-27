@@ -15,6 +15,8 @@ use bootc_utils::CommandRunExt;
 pub mod dps;
 use dps::{BIOS_BOOT, ESP, XBOOTLDR};
 
+pub mod luks;
+
 /// Check whether the udev database is accessible (cached for the process lifetime).
 ///
 /// When running inside a container or sandbox without `/run/udev`
