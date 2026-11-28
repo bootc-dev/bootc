@@ -467,16 +467,21 @@ copies the D-Bus machine ID when /etc/machine-id has none.
 /// Look up `path` without following a symlink in any component.
 ///
 /// Returns `None` when the path or any of its parents is missing or is a
-/// symlink. The per-machine state lints use this because they assume a
-/// symlinked path points at runtime state, and because cap-std refuses to
-/// resolve absolute symlinks, which would otherwise abort the lint run.
+/// symlink, or when a parent is not a directory. The per-machine state lints
+/// use this because they assume a symlinked path points at runtime state,
+/// and because cap-std refuses to resolve absolute symlinks, which would
+/// otherwise abort the lint run. A parent that is not a directory would
+/// abort it too, with ENOTDIR.
 fn symlink_metadata_no_symlinks(
     root: &Dir,
     path: &Utf8Path,
 ) -> Result<Option<cap_std::fs::Metadata>> {
     let mut prefix = Utf8PathBuf::new();
-    let mut meta = None;
+    let mut meta: Option<cap_std::fs::Metadata> = None;
     for component in path.components() {
+        if meta.as_ref().is_some_and(|m| !m.is_dir()) {
+            return Ok(None);
+        }
         prefix.push(component);
         match root.symlink_metadata_optional(&prefix)? {
             Some(m) if !m.is_symlink() => meta = Some(m),
@@ -1697,6 +1702,30 @@ mod tests {
         td.write("usr/share/dbus/machine-id", ID)?;
         td.create_dir_all("var/lib")?;
         td.symlink("../../usr/share/dbus", "var/lib/dbus")?;
+        check_machine_id(&td, config).unwrap().unwrap();
+        check_ssh_host_keys(&td, config).unwrap().unwrap();
+        Ok(())
+    }
+
+    #[test]
+    fn test_per_machine_state_nondir_parents() -> Result<()> {
+        let config = &LintExecutionConfig::default();
+
+        // A parent that is a regular file means the state path can't
+        // exist; it must not turn into ENOTDIR and abort the lint run.
+        let td = fixture()?;
+        td.write("etc", "not a directory")?;
+        td.create_dir("var")?;
+        td.write("var/lib", "not a directory")?;
+        check_machine_id(&td, config).unwrap().unwrap();
+        check_ssh_host_keys(&td, config).unwrap().unwrap();
+
+        // The same one level deeper.
+        let td = fixture()?;
+        td.create_dir_all("etc")?;
+        td.write("etc/ssh", "not a directory")?;
+        td.create_dir_all("var/lib")?;
+        td.write("var/lib/dbus", "not a directory")?;
         check_machine_id(&td, config).unwrap().unwrap();
         check_ssh_host_keys(&td, config).unwrap().unwrap();
         Ok(())
