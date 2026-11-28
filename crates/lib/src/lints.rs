@@ -467,16 +467,21 @@ copies the D-Bus machine ID when /etc/machine-id has none.
 /// Look up `path` without following a symlink in any component.
 ///
 /// Returns `None` when the path or any of its parents is missing or is a
-/// symlink. The per-machine state lints use this because they assume a
-/// symlinked path points at runtime state, and because cap-std refuses to
-/// resolve absolute symlinks, which would otherwise abort the lint run.
+/// symlink, or when a parent is not a directory. The per-machine state lints
+/// use this because they assume a symlinked path points at runtime state,
+/// and because cap-std refuses to resolve absolute symlinks, which would
+/// otherwise abort the lint run. A parent that is not a directory would
+/// abort it too, with ENOTDIR.
 fn symlink_metadata_no_symlinks(
     root: &Dir,
     path: &Utf8Path,
 ) -> Result<Option<cap_std::fs::Metadata>> {
     let mut prefix = Utf8PathBuf::new();
-    let mut meta = None;
+    let mut meta: Option<cap_std::fs::Metadata> = None;
     for component in path.components() {
+        if meta.as_ref().is_some_and(|m| !m.is_dir()) {
+            return Ok(None);
+        }
         prefix.push(component);
         match root.symlink_metadata_optional(&prefix)? {
             Some(m) if !m.is_symlink() => meta = Some(m),
@@ -559,6 +564,60 @@ fn check_ssh_host_keys(root: &Dir, config: &LintExecutionConfig) -> LintResult {
     let header = "Found SSH host private keys that every system installed from this image would \
                   share; remove them and their .pub files, and generate keys at first boot instead";
     format_lint_err_from_items(config, header, keys.iter())
+}
+
+#[distributed_slice(LINTS)]
+static LINT_SYSTEMD_SECRETS: Lint = Lint::new_warning(
+    "systemd-secrets",
+    indoc! { r#"
+Check for systemd's per-machine secrets in /var/lib/systemd. Every system
+installed from the image would share them.
+
+/var/lib/systemd/credential.secret is the host key systemd-creds uses to
+encrypt credentials: alone when no TPM2 is available, as during a container
+build, and combined with the TPM2 otherwise. Anyone holding the image holds
+the key, so credentials encrypted with it alone at build time are not
+confidential. Every system could also decrypt the host-key credentials of
+every other one. Remove the key; systemd-creds creates a new one on first use.
+Credentials encrypted with the old key can then no longer be decrypted, so
+deliver them to each system at install or boot instead (see
+systemd.system-credentials(7)), or encrypt them on each system.
+
+/var/lib/systemd/random-seed matters less: by default systemd does not credit
+the seed to the kernel's entropy pool, and it writes a new seed at boot.
+Removing it still keeps systems from starting from the same seed, and makes
+the image more reproducible.
+"# },
+    check_systemd_secrets,
+);
+fn check_systemd_secrets(root: &Dir, config: &LintExecutionConfig) -> LintResult {
+    const CREDENTIAL_SECRET: &str = "var/lib/systemd/credential.secret";
+    const PATHS: &[&str] = &[CREDENTIAL_SECRET, "var/lib/systemd/random-seed"];
+    let mut found = Vec::new();
+    for &path in PATHS {
+        // As for machine-id, a path with a symlink in any component is
+        // skipped.
+        let Some(meta) = symlink_metadata_no_symlinks(root, Utf8Path::new(path))? else {
+            continue;
+        };
+        // An empty file holds no secret to share.
+        if meta.is_file() && meta.len() > 0 {
+            found.push(path);
+        }
+    }
+    if found.is_empty() {
+        return lint_ok();
+    }
+    let mut header = String::from(
+        "Found systemd secrets that every system installed from this image would share; \
+         remove them so that systemd generates them on each system",
+    );
+    if found.contains(&CREDENTIAL_SECRET) {
+        header.push_str(
+            ", and deliver credentials encrypted with the old key at install or boot instead",
+        );
+    }
+    format_lint_err_from_items(config, &header, found.iter().map(|p| format!("/{p}")))
 }
 
 #[distributed_slice(LINTS)]
@@ -1676,14 +1735,18 @@ mod tests {
         td.create_dir("etc")?;
         td.symlink_contents("/run/dbus", "var/lib/dbus")?;
         td.symlink_contents("/usr/share/ssh", "etc/ssh")?;
+        td.symlink_contents("/run/systemd", "var/lib/systemd")?;
         check_machine_id(&td, config).unwrap().unwrap();
         check_ssh_host_keys(&td, config).unwrap().unwrap();
+        check_systemd_secrets(&td, config).unwrap().unwrap();
 
         // The same for a symlinked top-level directory.
         let td = fixture()?;
         td.symlink_contents("/usr/etc", "etc")?;
+        td.symlink_contents("/sysroot/var", "var")?;
         check_machine_id(&td, config).unwrap().unwrap();
         check_ssh_host_keys(&td, config).unwrap().unwrap();
+        check_systemd_secrets(&td, config).unwrap().unwrap();
 
         // Relative parent symlinks are skipped too, even when they lead
         // to state inside the image: symlinked state directories are
@@ -1697,8 +1760,107 @@ mod tests {
         td.write("usr/share/dbus/machine-id", ID)?;
         td.create_dir_all("var/lib")?;
         td.symlink("../../usr/share/dbus", "var/lib/dbus")?;
+        td.create_dir_all("usr/share/systemd")?;
+        td.write("usr/share/systemd/credential.secret", "secret")?;
+        td.write("usr/share/systemd/random-seed", "seed")?;
+        td.symlink("../../usr/share/systemd", "var/lib/systemd")?;
         check_machine_id(&td, config).unwrap().unwrap();
         check_ssh_host_keys(&td, config).unwrap().unwrap();
+        check_systemd_secrets(&td, config).unwrap().unwrap();
+        Ok(())
+    }
+
+    #[test]
+    fn test_per_machine_state_nondir_parents() -> Result<()> {
+        let config = &LintExecutionConfig::default();
+
+        // A parent that is a regular file means the state path can't
+        // exist; it must not turn into ENOTDIR and abort the lint run.
+        let td = fixture()?;
+        td.write("etc", "not a directory")?;
+        td.create_dir("var")?;
+        td.write("var/lib", "not a directory")?;
+        check_machine_id(&td, config).unwrap().unwrap();
+        check_ssh_host_keys(&td, config).unwrap().unwrap();
+        check_systemd_secrets(&td, config).unwrap().unwrap();
+
+        // The same one level deeper.
+        let td = fixture()?;
+        td.create_dir_all("etc")?;
+        td.write("etc/ssh", "not a directory")?;
+        td.create_dir_all("var/lib")?;
+        td.write("var/lib/dbus", "not a directory")?;
+        td.write("var/lib/systemd", "not a directory")?;
+        check_machine_id(&td, config).unwrap().unwrap();
+        check_ssh_host_keys(&td, config).unwrap().unwrap();
+        check_systemd_secrets(&td, config).unwrap().unwrap();
+        Ok(())
+    }
+
+    #[test]
+    fn test_systemd_secrets() -> Result<()> {
+        const KEY: &str = "  /var/lib/systemd/credential.secret\n";
+        const SEED: &str = "  /var/lib/systemd/random-seed\n";
+        let td = fixture()?;
+        let config = &LintExecutionConfig::default();
+        let err = |td: &Dir| {
+            check_systemd_secrets(td, config)
+                .unwrap()
+                .unwrap_err()
+                .to_string()
+        };
+        // No /var/lib/systemd at all, then an empty one.
+        check_systemd_secrets(&td, config).unwrap().unwrap();
+        td.create_dir_all("var/lib/systemd")?;
+        check_systemd_secrets(&td, config).unwrap().unwrap();
+
+        // An empty file holds no secret to share.
+        td.write("var/lib/systemd/credential.secret", "")?;
+        td.write("var/lib/systemd/random-seed", "")?;
+        check_systemd_secrets(&td, config).unwrap().unwrap();
+
+        // Each file fails on its own.
+        td.write("var/lib/systemd/credential.secret", "secret")?;
+        let msg = err(&td);
+        assert!(msg.contains(KEY), "{msg}");
+        assert!(!msg.contains(SEED), "{msg}");
+        assert!(
+            msg.contains("systemd generates them on each system"),
+            "{msg}"
+        );
+        assert!(msg.contains("encrypted with the old key"), "{msg}");
+        td.write("var/lib/systemd/credential.secret", "")?;
+        td.write("var/lib/systemd/random-seed", "seed")?;
+        let msg = err(&td);
+        assert!(!msg.contains(KEY), "{msg}");
+        assert!(msg.contains(SEED), "{msg}");
+        // The credentials advice only applies to the host key.
+        assert!(!msg.contains("old key"), "{msg}");
+
+        // Both are reported together.
+        td.write("var/lib/systemd/credential.secret", "secret")?;
+        let msg = err(&td);
+        assert!(msg.contains(KEY), "{msg}");
+        assert!(msg.contains(SEED), "{msg}");
+
+        // A symlink is not checked, even if its target holds a secret.
+        td.create_dir_all("usr/share/systemd")?;
+        td.write("usr/share/systemd/credential.secret", "secret")?;
+        td.remove_file("var/lib/systemd/credential.secret")?;
+        td.symlink(
+            "../../../usr/share/systemd/credential.secret",
+            "var/lib/systemd/credential.secret",
+        )?;
+        td.remove_file("var/lib/systemd/random-seed")?;
+        td.symlink_contents("/run/random-seed", "var/lib/systemd/random-seed")?;
+        check_systemd_secrets(&td, config).unwrap().unwrap();
+
+        // Nor is anything that is not a regular file.
+        td.remove_file("var/lib/systemd/credential.secret")?;
+        td.remove_file("var/lib/systemd/random-seed")?;
+        td.create_dir("var/lib/systemd/credential.secret")?;
+        td.create_dir("var/lib/systemd/random-seed")?;
+        check_systemd_secrets(&td, config).unwrap().unwrap();
         Ok(())
     }
 
